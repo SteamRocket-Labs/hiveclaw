@@ -48,6 +48,26 @@ async def require_current_group_member(db, *, session, user=None, principal=None
     return config
 
 
+async def resolve_shared_group_web_authority(db, *, session, user, action, audit=True):
+    from app.core.permissions import (
+        _audit_scoped_business_admin_session_access, check_agent_access, is_scoped_business_admin,
+        reject_non_executing_agent_access, require_writable_session,
+    )
+    from app.services.session_v2_persistence import AuthenticatedSessionAuthority, _AUTHORITY_SEAL
+
+    if action not in {"mutate_session_input", "answer_session_question"}:
+        raise HTTPException(403, detail={"code": "shared_group_input_action_required"})
+    await require_current_group_member(db, session=session, user=user)
+    agent, access = await check_agent_access(db, user, session.agent_id)
+    reject_non_executing_agent_access(access)
+    require_writable_session(session, action=action)
+    if audit and is_scoped_business_admin(user, resource_tenant_id=session.tenant_id):
+        await _audit_scoped_business_admin_session_access(db, user=user, agent=agent, session=session, action=action)
+    return AuthenticatedSessionAuthority(tenant_id=session.tenant_id, agent_id=session.agent_id,
+        principal_type="user", principal_id=user.id, session_id=session.id,
+        authority_source="shared_group_web_member", action=action, _seal=_AUTHORITY_SEAL)
+
+
 async def resolve_shared_group_input_authority(db, *, actor, session, ingress_event_id):
     from app.core.permissions import check_agent_access, reject_non_executing_agent_access, require_writable_session
     from app.models.audit import ChatMessage
@@ -138,7 +158,7 @@ async def _load_shared_group_task_actor(db, *, task, session):
     context = await resolve_session_command_authority(db, command=command, session=session, action="mutate_session_input")
     actor = context.actor
     if (task.root_user_id != actor.id or str(metadata.get("user_id") or "") != str(actor.id or "")
-        or str(metadata.get("external_principal_id") or "") != str(actor.external_principal_id)):
+        or str(metadata.get("external_principal_id") or "") != str(getattr(actor, "external_principal_id", None) or "")):
         raise PermissionError("shared_group_runtime_actor_mismatch")
     return actor
 
@@ -188,6 +208,25 @@ async def validate_shared_group_model_inputs(db, *, tenant_id, agent_id, session
     principal = AgentRuntimePrincipal(agent_id=agent_id, requester_user_id=actor.id, session_id=str(session_id),
         runtime_task_id=str(run_id))
     await _validate_input_dependencies(db, tenant_id, input_bindings.get("dependencies"), user=None, runtime_request=principal)
+
+
+async def bind_shared_group_permission_source(db, *, task, session, invocation):
+    from app.models.session_v2 import SessionCommand
+    from app.services.delegation_context_sources import PermissionContextSource, _permission_inputs
+
+    metadata = invocation.session_context.metadata
+    metadata.pop("_session_permission_context_source", None)
+    await load_shared_group_runtime_actor(db, task=task, session=session)
+    command = await db.get(SessionCommand, uuid.UUID(task.metadata_json["session_v2_command_id"]))
+    admitted = dict((command.target_json or {}).get("runtime_metadata") or {})
+    profile = admitted.get("permission_profile") or {}
+    exact = (profile.get("capability_policy_snapshot") or {}).get("session_exact_scope") is True
+    source = PermissionContextSource(
+        reference={"source_kind": "session_command", "source_id": str(command.id), "source_version": command.request_hash},
+        permission_inputs=_permission_inputs(admitted),
+        allowed_tool_names=tuple(profile.get("allowed_tools") or ()) if exact else ())
+    if source.matches(metadata, invocation.allowed_tool_names):
+        metadata["_session_permission_context_source"] = source
 
 
 async def read_shared_group_history(db, *, session, messages, user=None, run_id=None):

@@ -27,13 +27,16 @@ def _permission_inputs(metadata):
 
 
 @dataclass(frozen=True)
-class DelegationContextSource:
+class PermissionContextSource:
     reference: dict
     permission_inputs: dict
     allowed_tool_names: tuple[str, ...]
 
     def matches(self, metadata, allowed_tool_names):
         return self.permission_inputs == _permission_inputs(metadata) and self.allowed_tool_names == tuple(allowed_tool_names)
+
+
+DelegationContextSource = PermissionContextSource
 
 
 @dataclass(frozen=True)

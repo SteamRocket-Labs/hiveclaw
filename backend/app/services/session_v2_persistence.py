@@ -259,6 +259,11 @@ async def resolve_session_mutation_authority(
             session_id=session_uuid,
             action=action,
         )
+    session = await db.get(ChatSession, session_uuid)
+    if session is not None and session.agent_id == agent_uuid and getattr(session, "audience_kind", None) == "group":
+        from app.services.shared_group_authority import resolve_shared_group_web_authority
+
+        return await resolve_shared_group_web_authority(db, session=session, user=user, action=action, audit=audit)
     decision = await authorize_session_action(
         db,
         user,

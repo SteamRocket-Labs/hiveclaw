@@ -117,13 +117,14 @@ class SessionOut(BaseModel):
 
     id: str
     agent_id: str
-    user_id: str
+    user_id: str | None
     username: Optional[str] = None  # display_name ?? username
     source_channel: str = "web"  # web / feishu / discord / slack / agent
     session_kind: str = "human_chat"
     actor_type: str = "user"
     runtime_source: str = "web_chat"
     visibility_scope: str = "direct_user"
+    audience_kind: str | None = None
     listed_surface: str = "chat"
     parent_session_id: Optional[str] = None
     root_session_id: Optional[str] = None
@@ -1018,6 +1019,12 @@ async def _get_run_session_and_agent(
     )
     if require_execution:
         reject_non_executing_agent_access(access_level)
+    if getattr(session, "audience_kind", None) == "group" and action == "start_session_run":
+        from app.services.shared_group_authority import resolve_shared_group_web_authority
+
+        authority = await resolve_shared_group_web_authority(db, session=session, user=current_user,
+            action="mutate_session_input", audit=False)
+        return session, agent, authority.authority_source
     authority_source = await _authorize_loaded_session(
         db=db,
         session=session,
@@ -1108,7 +1115,7 @@ async def _authorize_loaded_session(
 @router.get("/{agent_id}/sessions")
 async def list_sessions(
     agent_id: uuid.UUID,
-    scope: str = Query("mine", description="'mine' or 'all'"),
+    scope: str = Query("mine", description="'mine', 'groups', or 'all'"),
     operator_reason: str | None = Query(default=None),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
@@ -1121,6 +1128,37 @@ async def list_sessions(
         if scope == "all"
         else check_agent_access(db, current_user, agent_id)
     )
+
+    if scope == "groups":
+        from app.core.permissions import agent_access_allows_execution, require_writable_session
+        from app.services.shared_group_authority import require_current_group_member
+
+        sessions = list(await db.scalars(select(ChatSession).where(ChatSession.agent_id == agent_id,
+            ChatSession.tenant_id == agent.tenant_id, ChatSession.audience_kind == "group",
+            ChatSession.listed_surface == "chat").order_by(
+                ChatSession.last_message_at.desc().nulls_last(), ChatSession.created_at.desc())))
+        out = []
+        for session in sessions:
+            try:
+                await require_current_group_member(db, session=session, user=current_user)
+            except HTTPException as exc:
+                if exc.status_code == 403:
+                    continue
+                raise
+            can_write = agent_access_allows_execution(_access_level)
+            try:
+                require_writable_session(session, action="mutate_session_input")
+            except HTTPException:
+                can_write = False
+            # Model-generated titles, drafts, and permission metadata can contain private sources.
+            out.append(SessionOut(id=str(session.id), agent_id=str(agent_id), user_id=None,
+                source_channel=session.source_channel, session_kind=session.session_kind,
+                actor_type=session.actor_type, runtime_source=session.runtime_source,
+                visibility_scope=session.visibility_scope, audience_kind="group", listed_surface=session.listed_surface,
+                title="Shared group work", created_at=session.created_at.isoformat(),
+                last_message_at=session.last_message_at.isoformat() if session.last_message_at else None,
+                read_only=not can_write, authority_source="shared_group_member"))
+        return out
 
     if scope == "all":
         if is_scoped_business_admin(current_user, resource_tenant_id=getattr(agent, "tenant_id", None)):

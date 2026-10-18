@@ -901,7 +901,14 @@ async def _invoke_model(state: _WebChatRunState, callbacks: _WebChatCallbacks, s
 
             channel_token = channel_delivery_target.set(target)
         try:
-            return await state.ports.runtime.invoke_agent(_agent_invocation_request(state, callbacks, suffix))
+            invocation = _agent_invocation_request(state, callbacks, suffix)
+            if getattr(state.session, "audience_kind", None) == "group":
+                from app.services.shared_group_authority import bind_shared_group_permission_source
+
+                async with state.ports.runtime.tenant_scoped_session(state.agent.tenant_id) as db:
+                    await bind_shared_group_permission_source(db, task=state.runtime_task, session=state.session,
+                        invocation=invocation)
+            return await state.ports.runtime.invoke_agent(invocation)
         except state.ports.events.terminal_signal_type as signal:
             state.interactive_pause_summary = signal.summary
             return None

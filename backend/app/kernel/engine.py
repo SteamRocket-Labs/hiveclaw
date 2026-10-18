@@ -1356,14 +1356,14 @@ def _build_permissions_context(request: InvocationRequest, runtime_config: Runti
     handoff_context = _render_pending_skill_handoffs(metadata)
     if handoff_context:
         permissions_prompt += "\n" + handoff_context
-    from app.services.delegation_context_sources import DelegationContextSource, PERMISSION_INPUT_KEYS
+    from app.services.delegation_context_sources import PermissionContextSource, PERMISSION_INPUT_KEYS
 
     contributor_keys = PERMISSION_INPUT_KEYS
     sources = ()
     if (any(metadata.get(key) for key in contributor_keys) or request.allowed_tool_names
         or getattr(runtime_config, "tenant_resolution_error", None)):
-        source = metadata.get("_delegation_context_source")
-        if (isinstance(source, DelegationContextSource) and source.matches(metadata, request.allowed_tool_names)
+        source = metadata.get("_session_permission_context_source") or metadata.get("_delegation_context_source")
+        if (isinstance(source, PermissionContextSource) and source.matches(metadata, request.allowed_tool_names)
             and not getattr(runtime_config, "tenant_resolution_error", None)):
             sources = (source.reference,)
         else:

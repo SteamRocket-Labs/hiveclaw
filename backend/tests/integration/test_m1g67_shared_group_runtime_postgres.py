@@ -16,7 +16,7 @@ pytestmark = [pytest.mark.usefixtures("migrated_pg_url"), pytest.mark.skipif(pla
     reason="Native macOS context gate; Linux delivery is deferred.")]
 
 
-@pytest.mark.parametrize("mutation", [None, "forged_actor", "unlinked", "private_source", "private_recipient", "unknown_recipient", "queued_member", "same_sender", "explicit_other", "private_context", "shared_context"])
+@pytest.mark.parametrize("mutation", [None, "forged_actor", "unlinked", "private_source", "private_recipient", "unknown_recipient", "queued_member", "same_sender", "explicit_other", "private_context", "shared_context", "web_member"])
 async def test_shared_work_runs_with_its_original_sender_and_real_tool_sources(
     owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, mutation,
 ):
@@ -54,6 +54,9 @@ async def test_shared_work_runs_with_its_original_sender_and_real_tool_sources(
     from app.services.session_input_dispatch import recover_admitted_session_inputs_once
     from app.services.web_chat_runtime import execute_web_chat_run
 
+    web_requester = mutation == "web_member"
+    if web_requester:
+        mutation = "private_context"
     private_canary = "PRIVATE_GROUP_NOTE_CANARY"
     seed = await _seed_run(owner_sessionmaker, tmp_path, prompt="PRIVATE_GROUP_SOURCE_CANARY")
     factory = database.async_session
@@ -169,6 +172,68 @@ async def test_shared_work_runs_with_its_original_sender_and_real_tool_sources(
                 await db.commit()
         return event, accepted
 
+    async def submit_web(content, key):
+        from fastapi import FastAPI
+        from httpx import ASGITransport, AsyncClient
+        from app.api import chat_sessions
+        from app.core.security import get_current_user
+
+        async def current_user():
+            async with app_user_sessionmaker() as db:
+                await pin_rls_tenant_context(db, seed["tenant_id"])
+                return await db.get(User, seed["user_id"])
+
+        async def current_db():
+            async with app_user_sessionmaker() as db:
+                await pin_rls_tenant_context(db, seed["tenant_id"])
+                yield db
+
+        web = FastAPI()
+        web.include_router(chat_sessions.router)
+        web.dependency_overrides[get_current_user] = current_user
+        web.dependency_overrides[database.get_db] = current_db
+        input_id = uuid5(shared_id, key)
+        url = f"/agents/{seed['agent_id']}/sessions"
+        async with AsyncClient(transport=ASGITransport(app=web), base_url="http://group.fixture") as browser:
+            response = await browser.post(f"{url}/{shared_id}/runs", json={
+                "content": content, "input_id": str(input_id), "idempotency_key": key})
+            (tmp_path / "web-input.json").write_text(response.text)
+            assert response.status_code == 202, response.text
+            discovery = await browser.get(url, params={"scope": "groups"})
+            assert discovery.status_code == 200, discovery.text
+            group = next(row for row in discovery.json() if row["id"] == str(shared_id))
+            assert group["user_id"] is None and group["audience_kind"] == "group"
+            assert not group["is_current_user_session"] and not group["read_only"]
+            assert group["active_projection"] is None and private_canary not in discovery.text
+            assert not group["permission_profile"] and not group["writable_roots"]
+            assert all(row["id"] != str(seed["session_id"]) for row in discovery.json())
+            (tmp_path / "web-groups.json").write_text(discovery.text)
+            async def no_members(*_args, **_kwargs):
+                return set()
+            async def members_offline(*_args, **_kwargs):
+                raise RuntimeError("Synthetic membership outage")
+            for lookup, status in ((no_members, 403), (members_offline, 503)):
+                with monkeypatch.context() as patch:
+                    patch.setattr(FeishuService, "get_chat_member_open_ids", lookup)
+                    denied = await browser.post(f"{url}/{shared_id}/runs", json={
+                        "content": content, "input_id": str(input_id), "idempotency_key": key})
+                    assert denied.status_code == status, denied.text
+                    inventory = await browser.get(url, params={"scope": "groups"})
+                    if status == 403:
+                        assert inventory.status_code == 200 and inventory.json() == []
+                    else:
+                        assert inventory.status_code == 503 and inventory.json()["detail"]["code"] == "group_membership_unavailable"
+            for endpoint in ("branches", "inputs"):
+                if endpoint == "branches":
+                    denied = await browser.post(f"{url}/{shared_id}/branches", json={
+                        "mode": "branch", "anchor_event_id": str(input_id)})
+                else:
+                    denied = await browser.post(f"{url}/{shared_id}/inputs", json={
+                        "kind": "queue_next_turn", "input_id": str(uuid4()), "idempotency_key": "unsupported-direct-control",
+                        "content_parts": [{"type": "text", "text": content}]})
+                assert denied.status_code == 403, denied.text
+        return SimpleNamespace(event_id=input_id), response.json()
+
     event, accepted = await submit(actor, "ou_group_requester", prompt, "native-shared-work")
     command_id = UUID(accepted["command_id"])
     async with app_user_sessionmaker() as db:
@@ -216,8 +281,11 @@ async def test_shared_work_runs_with_its_original_sender_and_real_tool_sources(
                     expected_turn_id=task.metadata_json["turn_id"])
             assert conflict.value.status_code == 409 and conflict.value.detail["code"] == "shared_group_requester_conflict"
         else:
-            second_event, second = await submit(sender, subject,
-                "SAME_REQUESTER_UPDATE" if mutation == "same_sender" else other_content, "native-shared-second")
+            if web_requester:
+                second_event, second = await submit_web(other_content, "native-shared-second")
+            else:
+                second_event, second = await submit(sender, subject,
+                    "SAME_REQUESTER_UPDATE" if mutation == "same_sender" else other_content, "native-shared-second")
             second_command_id = UUID(second["command_id"])
         async with app_user_sessionmaker() as db:
             await pin_rls_tenant_context(db, seed["tenant_id"])
@@ -230,7 +298,7 @@ async def test_shared_work_runs_with_its_original_sender_and_real_tool_sources(
                 incoming = await db.get(SessionTurnInput, second_event.event_id)
                 assert incoming.intent == ("steer_current_turn" if mutation == "same_sender" else "queue_next_turn")
                 assert incoming.target_run_id == (run_id if mutation == "same_sender" else None)
-                assert (await db.get(SessionCommand, second_command_id)).principal_id == sender.external_principal_id
+                assert (await db.get(SessionCommand, second_command_id)).principal_id == (seed["user_id"] if web_requester else sender.external_principal_id)
                 if mutation in {"queued_member", "private_context", "shared_context"}:
                     from app.services.session_semantic_history import load_session_semantic_history
                     prior = await load_session_semantic_history(db, tenant_id=seed["tenant_id"], agent_id=seed["agent_id"], session_id=shared_id)
@@ -354,17 +422,21 @@ async def test_shared_work_runs_with_its_original_sender_and_real_tool_sources(
             assert sends[0]["reply_target"]["receive_id"] == "oc_native_group"
             assert delivery.status == "delivered"
     if mutation in {"queued_member", "private_context", "shared_context"}:
-        with use_channel_ingress_context(event_id=second_event.event_id, tenant_id=seed["tenant_id"],
-            agent_id=seed["agent_id"], provider="feishu", installation_ref=installation):
-            bind_channel_ingress_external_principal(other.actor.external_principal_id)
-            async with app_user_sessionmaker() as db:
-                await pin_rls_tenant_context(db, seed["tenant_id"])
-                replay = await submit_live_human_input(db=db, agent=await db.get(Agent, seed["agent_id"]),
-                    user=other.actor, session=await db.get(ChatSession, shared_id), source="feishu",
-                    content=other_content, input_id=second_event.event_id, idempotency_key="native-shared-second",
-                    runtime_metadata={"source": "feishu", "channel": "feishu"})
-                assert replay["command_id"] == str(second_command_id)
-                await db.commit()
+        if web_requester:
+            _, replay = await submit_web(other_content, "native-shared-second")
+            assert replay["command_id"] == str(second_command_id)
+        else:
+            with use_channel_ingress_context(event_id=second_event.event_id, tenant_id=seed["tenant_id"],
+                agent_id=seed["agent_id"], provider="feishu", installation_ref=installation):
+                bind_channel_ingress_external_principal(other.actor.external_principal_id)
+                async with app_user_sessionmaker() as db:
+                    await pin_rls_tenant_context(db, seed["tenant_id"])
+                    replay = await submit_live_human_input(db=db, agent=await db.get(Agent, seed["agent_id"]),
+                        user=other.actor, session=await db.get(ChatSession, shared_id), source="feishu",
+                        content=other_content, input_id=second_event.event_id, idempotency_key="native-shared-second",
+                        runtime_metadata={"source": "feishu", "channel": "feishu"})
+                    assert replay["command_id"] == str(second_command_id)
+                    await db.commit()
         from app.services.runtime_terminal_boundary_outbox import RuntimeTerminalBoundaryOutboxService
         from app.services.web_terminal_boundary_processor import WebTerminalBoundaryProcessor
         processor = WebTerminalBoundaryProcessor(session_factory=app_user_sessionmaker, data_root=seed["data_root"])
@@ -378,14 +450,26 @@ async def test_shared_work_runs_with_its_original_sender_and_real_tool_sources(
                 admission_ids=(uuid5(second_command_id, "input-admission:revision:1"),))
             successor = await db.scalar(select(RuntimeTask).where(RuntimeTask.id == uuid5(second_event.event_id, "session-v2-successor-run")))
             assert successor is not None and successor.root_user_id == seed["user_id"] != member.id
-            assert successor.metadata_json["external_principal_id"] == str(other.actor.external_principal_id)
+            assert successor.metadata_json.get("external_principal_id") == (None if web_requester else str(other.actor.external_principal_id))
             assert (await db.get(SessionTurnInput, second_event.event_id)).target_run_id == successor.id
             successor.status, successor.claimed_by = "running", "group-next-requester"
             successor.claim_version, successor.attempt_count = 1, 1
             successor.claim_expires_at = datetime.now(timezone.utc) + timedelta(minutes=10)
             from app.services.shared_group_authority import load_shared_group_runtime_actor
             restored = await load_shared_group_runtime_actor(db, task=successor, session=await db.get(ChatSession, shared_id))
-            assert restored.id == seed["user_id"] and restored.external_principal_id == other.actor.external_principal_id
+            assert restored.id == seed["user_id"] and getattr(restored, "external_principal_id", None) == (None if web_requester else other.actor.external_principal_id)
+            if web_requester:
+                from copy import deepcopy
+                from app.services.shared_group_authority import bind_shared_group_permission_source
+                command = await db.get(SessionCommand, second_command_id)
+                permissions = deepcopy(command.target_json["runtime_metadata"])
+                invocation = SimpleNamespace(session_context=SimpleNamespace(metadata=permissions), allowed_tool_names=())
+                await bind_shared_group_permission_source(db, task=successor, session=await db.get(ChatSession, shared_id), invocation=invocation)
+                source = permissions["_session_permission_context_source"]
+                assert source.reference == {"source_kind": "session_command", "source_id": str(command.id), "source_version": command.request_hash}
+                permissions["writable_roots"] = ["workspace/forged"]
+                await bind_shared_group_permission_source(db, task=successor, session=await db.get(ChatSession, shared_id), invocation=invocation)
+                assert "_session_permission_context_source" not in permissions
             await db.commit()
         if mutation in {"private_context", "shared_context"}:
             assert private_canary not in json.dumps(client.requests[0])
@@ -539,3 +623,28 @@ async def test_shared_work_runs_with_its_original_sender_and_real_tool_sources(
                 monkeypatch.setattr(FeishuService, "get_chat_member_open_ids", membership_offline)
                 offline = await browser.get(url + "/transcript", params={"schema_version": 2})
                 assert offline.status_code == 503 and offline.json()["detail"]["code"] == "group_membership_unavailable"
+
+    if web_requester:
+        from app.models.security_audit import SecurityAuditEvent
+        monkeypatch.setattr(FeishuService, "get_chat_member_open_ids", members)
+        async with app_user_sessionmaker() as db:
+            await pin_rls_tenant_context(db, seed["tenant_id"])
+            (await db.get(User, seed["user_id"])).role = "org_admin"
+            await db.commit()
+        async with AsyncClient(transport=ASGITransport(app=web), base_url="http://group.fixture") as browser:
+            admin_input = uuid5(shared_id, "web-admin-addendum")
+            admin_response = await browser.post(url + "/runs", json={"content": "Administrator addendum.",
+                "input_id": str(admin_input), "idempotency_key": "web-admin-addendum"})
+            assert admin_response.status_code in {201, 202}, admin_response.text
+        async with app_user_sessionmaker() as db:
+            await pin_rls_tenant_context(db, seed["tenant_id"])
+            audits = list(await db.scalars(select(SecurityAuditEvent).where(
+                SecurityAuditEvent.tenant_id == seed["tenant_id"], SecurityAuditEvent.resource_id == shared_id,
+                SecurityAuditEvent.event_type == "session.scoped_business_admin_access",
+                SecurityAuditEvent.action == "mutate_session_input")))
+            assert len(audits) == 1 and audits[0].actor_id == seed["user_id"]
+            command = await db.scalar(select(SessionCommand).where(SessionCommand.session_id == shared_id,
+                SessionCommand.idempotency_key == "web-admin-addendum"))
+            assert command.principal_type == "user" and command.principal_id == seed["user_id"]
+            assert audits[0].details["authority_source"] == "scoped_business_admin"
+            assert (await db.get(ChatSession, shared_id)).user_id is None

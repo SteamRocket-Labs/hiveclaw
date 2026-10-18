@@ -12,6 +12,9 @@ class _SessionResult:
     def __init__(self, sessions):
         self._sessions = sessions
 
+    def __iter__(self):
+        return iter(self._sessions)
+
     def scalars(self):
         return self
 
@@ -30,6 +33,18 @@ class _FakeDB:
 
     async def execute(self, _statement):
         return _SessionResult(self.sessions)
+
+    async def scalars(self, statement):
+        from app.models.organization_identity import ContentInputReceipt
+
+        assert statement.column_descriptions[0]['entity'] is ContentInputReceipt
+        return _SessionResult([])  # Legacy checkpoint fixtures have no original content receipts.
+
+    async def scalar(self, statement):
+        from app.models.organization_identity import ContentInputReceipt
+
+        assert statement.column_descriptions[0]['entity'] is ContentInputReceipt
+        return None
 
     def add(self, value):
         self.added.append(value)

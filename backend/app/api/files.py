@@ -712,6 +712,15 @@ async def list_file_versions(
         path=normalized,
         sessions=sessions,
     )
+    from app.services.workspace_receipt_versions import collect_receipt_versions
+
+    receipt_versions = await collect_receipt_versions(db, _agent_access[0].tenant_id, agent_id, normalized)
+    if receipt_versions:
+        from dataclasses import replace
+
+        versions = [replace(version, restorable=False) for version in versions]
+    versions = [*receipt_versions, *versions]
+    versions.sort(key=lambda item: (item.created_at, item.version_id), reverse=True)
     page = versions[offset : offset + limit]
     current = _current_file_version_state(agent_id, normalized)
     return FileVersionPage(
@@ -758,13 +767,15 @@ async def read_file_version(
     )
 
     try:
-        version = await asyncio.to_thread(
-            read_workspace_file_version,
-            agent_id=agent_id,
-            path=normalized,
-            version_id=version_id,
-            sessions=sessions,
-        )
+        from app.services.content_input_receipts import ContentInputReceiptError
+        from app.services.workspace_receipt_versions import read_receipt_version
+
+        version = await read_receipt_version(db, _agent_access[0].tenant_id, agent_id, normalized, version_id, current_user)
+        if version is None:
+            version = await asyncio.to_thread(
+                read_workspace_file_version, agent_id=agent_id, path=normalized, version_id=version_id, sessions=sessions)
+    except ContentInputReceiptError as exc:
+        raise _content_receipt_http_error(exc) from exc
     except WorkspaceFileVersionNotFound as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File version not found") from exc
     except WorkspaceFileVersionUnavailable as exc:
@@ -822,13 +833,15 @@ async def download_file_version(
     )
 
     try:
-        version = await asyncio.to_thread(
-            read_workspace_file_version,
-            agent_id=agent_id,
-            path=normalized,
-            version_id=version_id,
-            sessions=sessions,
-        )
+        from app.services.content_input_receipts import ContentInputReceiptError
+        from app.services.workspace_receipt_versions import read_receipt_version
+
+        version = await read_receipt_version(db, _agent_access[0].tenant_id, agent_id, normalized, version_id, current_user)
+        if version is None:
+            version = await asyncio.to_thread(
+                read_workspace_file_version, agent_id=agent_id, path=normalized, version_id=version_id, sessions=sessions)
+    except ContentInputReceiptError as exc:
+        raise _content_receipt_http_error(exc) from exc
     except WorkspaceFileVersionNotFound as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File version not found") from exc
     except WorkspaceFileVersionUnavailable as exc:
@@ -891,13 +904,14 @@ async def restore_file_version(
         )
         agent = mutation_agent_access[0]
         try:
-            version = await asyncio.to_thread(
-                resolve_workspace_file_version,
-                agent_id=agent_id,
-                path=normalized,
-                version_id=version_id,
-                sessions=sessions,
-            )
+            from app.services.content_input_receipts import ContentInputReceiptError
+            from app.services.workspace_receipt_versions import resolve_receipt_version
+
+            receipted = await resolve_receipt_version(db, agent.tenant_id, agent_id, normalized, version_id, current_user)
+            version = receipted[1] if receipted is not None else await asyncio.to_thread(
+                resolve_workspace_file_version, agent_id=agent_id, path=normalized, version_id=version_id, sessions=sessions)
+        except ContentInputReceiptError as exc:
+            raise _content_receipt_http_error(exc) from exc
         except WorkspaceFileVersionNotFound as exc:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File version not found") from exc
         if not version.restorable or version.state == "unavailable":
@@ -937,6 +951,27 @@ async def restore_file_version(
         except Exception as exc:
             raise _workspace_authority_http_error(exc) from exc
 
+        from app.services.content_input_receipts import latest_workspace_receipt, validate_browser_workspace_receipt
+
+        previous_receipt = await latest_workspace_receipt(db, agent.tenant_id, agent_id, normalized)
+        if previous_receipt is not None:
+            if receipted is None:
+                raise HTTPException(status_code=409, detail={"code": "workspace_content_unverified",
+                    "message": "This checkpoint lacks its original source receipt. Preserve it and reconcile before restoring."})
+            try:
+                await validate_browser_workspace_receipt(db, agent.tenant_id, current_user, previous_receipt,
+                    current.get("sha256") if current.get("exists") else previous_receipt.content_sha256)
+            except ContentInputReceiptError as exc:
+                raise _content_receipt_http_error(exc) from exc
+
+        if receipted is not None:
+            from app.services.content_input_receipts import validate_browser_input_dependencies
+
+            try:
+                await validate_browser_input_dependencies(db, agent.tenant_id, current_user, receipted[0].dependencies_json)
+            except ContentInputReceiptError as exc:
+                raise _content_receipt_http_error(exc) from exc
+
         restore = await asyncio.to_thread(
             restore_workspace_snapshot_locked,
             agent_id=agent_id,
@@ -972,6 +1007,18 @@ async def restore_file_version(
                 )
             else:
                 await mark_workspace_path_deleted(db, agent_id=agent_id, path=normalized)
+            if receipted is not None:
+                from app.services.content_input_receipts import record_workspace_receipt, validate_browser_input_dependencies
+                from app.services.workspace_receipt_versions import capture_receipt_version
+
+                restored_receipt = record_workspace_receipt(db, agent.tenant_id, agent_id, normalized,
+                    target_state["sha256"], previous_receipt, additional_dependencies=receipted[0].dependencies_json)
+                await db.flush()
+                try:
+                    await validate_browser_input_dependencies(db, agent.tenant_id, current_user, restored_receipt.dependencies_json)
+                    await asyncio.to_thread(capture_receipt_version, agent_id, normalized, restored_receipt)
+                except ContentInputReceiptError as exc:
+                    raise _content_receipt_http_error(exc) from exc
             db.add(
                 AuditLog(
                     tenant_id=agent.tenant_id,
@@ -1410,6 +1457,10 @@ async def write_file(
                         db, agent.tenant_id, current_user, previous_receipt, verified_base,
                     )
                 receipt = record_workspace_receipt(db, agent.tenant_id, agent_id, path, content_hash, previous_receipt)
+                from app.services.workspace_receipt_versions import capture_receipt_version
+
+                await db.flush()
+                await asyncio.to_thread(capture_receipt_version, agent_id, path, receipt)
                 await db.commit()
             except Exception as exc:
                 await db.rollback()

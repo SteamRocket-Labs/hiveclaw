@@ -112,6 +112,14 @@ async def test_replacement_retains_trusted_source_union_and_rechecks_revocation(
             **({"json": {"content": "Cannot drop restrictions"}} if method == "put" else {}))
         assert response.status_code == 403, response.text
         assert content not in response.text
+    history = await n.client.get(f"/agents/{n.agent}/files/versions", params={"path": path})
+    assert history.status_code == 200, history.text
+    version = next(item for item in history.json()["versions"] if item["content_hash"] == hashlib.sha256(b"Derived result").hexdigest())
+    for action, method in (("content", "get"), ("download", "get"), ("restore", "post")):
+        response = await getattr(n.client, method)(f"/agents/{n.agent}/files/versions/{version['version_id']}/{action}",
+            params={"path": path}, **({"json": {"expected_current_exists": True,
+                "expected_current_hash": hashlib.sha256(content.encode()).hexdigest()}} if method == "post" else {}))
+        assert response.status_code == 403 and "Derived result" not in response.text, response.text
     assert (n.root / path).read_text() == content
 
 
@@ -195,3 +203,86 @@ async def test_failed_receipt_commit_keeps_possible_effect_unknown_and_unreadabl
     assert (n.root / path).read_text() == "Possibly saved body"
     read = await n.client.get(url, params={"path": path})
     assert read.status_code == 409 and "Possibly saved body" not in read.text
+
+
+async def test_human_saved_versions_remain_reopenable_and_restorable(native_workspace):  # noqa: F811
+    n = native_workspace
+    path = 'workspace/continuous.md'
+    base = f'/agents/{n.agent}/files'
+    original, replacement = 'First saved revision 你好\r\n', 'Second saved revision'
+    first = await n.client.put(f'{base}/content', params={'path': path}, json={'content': original})
+    assert first.status_code == 200, first.text
+    second = await n.client.put(f'{base}/content', params={'path': path}, json={
+        'content': replacement, 'expected_current_hash': first.json()['content_hash']})
+    assert second.status_code == 200, second.text
+    history = await n.client.get(f'{base}/versions', params={'path': path})
+    assert history.status_code == 200, history.text
+    historical = next((row for row in history.json()['versions'] if row['content_hash'] == first.json()['content_hash']), None)
+    assert historical is not None and historical['restorable'], history.text
+    version = f"{base}/versions/{historical['version_id']}"
+    reopened = await n.client.get(f'{version}/content', params={'path': path})
+    assert reopened.status_code == 200 and reopened.json()['content'] == original, reopened.text
+    downloaded = await n.client.get(f'{version}/download', params={'path': path})
+    assert downloaded.status_code == 200 and downloaded.content == original.encode(), downloaded.text
+    restore = await n.client.post(f'{version}/restore', params={'path': path}, json={
+        'expected_current_exists': True, 'expected_current_hash': second.json()['content_hash']})
+    assert restore.status_code == 200, restore.text
+    current = await n.client.get(f'{base}/content', params={'path': path})
+    assert current.status_code == 200 and current.json()['content'].replace('\r\n', '\n') == original.replace('\r\n', '\n'), current.text
+    assert current.json()['content_revision'] == 3
+
+
+@pytest.mark.parametrize("change", ["bytes", "alias"])
+async def test_changed_historical_snapshot_is_withheld_without_touching_current_file(
+    native_workspace, app_user_sessionmaker, change,  # noqa: F811
+):
+    n = native_workspace
+    path = "workspace/history.txt"
+    for body in ("Original saved body", "Current saved body"):
+        result = await n.client.put(f"/agents/{n.agent}/files/content", params={"path": path}, json={"content": body})
+        assert result.status_code == 200, result.text
+    history = (await n.client.get(f"/agents/{n.agent}/files/versions", params={"path": path})).json()
+    version = next(item for item in history["versions"] if item["content_hash"] == hashlib.sha256(b"Original saved body").hexdigest())
+    async with app_user_sessionmaker() as db:
+        await pin_rls_tenant_context(db, n.tenant)
+        receipt = (await receipts(db, n, path))[0]
+        cached = n.root / f"runtime_artifacts/workspace_content_versions/{receipt.id}/files/history.txt"
+    if change == "bytes":
+        cached.write_text("Unverified rewritten history")
+    else:
+        held = cached.with_suffix(".held")
+        cached.rename(held)
+        cached.symlink_to(held)  # Even identical bytes cannot make an alias canonical.
+    for action, method in (("content", "get"), ("download", "get"), ("restore", "post")):
+        response = await getattr(n.client, method)(f"/agents/{n.agent}/files/versions/{version['version_id']}/{action}",
+            params={"path": path}, **({"json": {"expected_current_exists": True,
+                "expected_current_hash": hashlib.sha256(b"Current saved body").hexdigest()}} if method == "post" else {}))
+        assert response.status_code == 503 and "Original saved body" not in response.text, response.text
+    assert (n.root / path).read_text() == "Current saved body"
+
+
+async def test_unpinned_checkpoint_does_not_claim_restorability_over_a_receipted_file(
+    native_workspace, app_user_sessionmaker,  # noqa: F811
+):
+    from app.models.chat_session import ChatSession
+    from app.services.session_workspace_snapshot import capture_workspace_snapshot, index_session_workspace_snapshot
+
+    n = native_workspace
+    path = "workspace/receipt-checkpoint.txt"
+    created = await n.client.put(f"/agents/{n.agent}/files/content", params={"path": path}, json={"content": "Saved body"})
+    assert created.status_code == 200, created.text
+    checkpoint = uuid.uuid4()
+    snapshot = capture_workspace_snapshot(agent_id=n.agent, session_id=n.session, checkpoint_event_id=checkpoint)
+    async with app_user_sessionmaker() as db:
+        await pin_rls_tenant_context(db, n.tenant)
+        session = await db.get(ChatSession, n.session)
+        index_session_workspace_snapshot(session, checkpoint_event_id=checkpoint, snapshot=snapshot)
+        await db.commit()
+    history = await n.client.get(f"/agents/{n.agent}/files/versions", params={"path": path})
+    assert history.status_code == 200, history.text
+    versions = history.json()["versions"]
+    assert len(versions) == 2 and sum(item["restorable"] for item in versions) == 1, versions
+    unpinned = next(item for item in versions if not item["restorable"])
+    denied = await n.client.post(f"/agents/{n.agent}/files/versions/{unpinned['version_id']}/restore",
+        params={"path": path}, json={"expected_current_exists": True, "expected_current_hash": created.json()["content_hash"]})
+    assert denied.status_code == 409 and (n.root / path).read_text() == "Saved body", denied.text

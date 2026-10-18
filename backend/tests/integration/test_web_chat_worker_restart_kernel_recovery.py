@@ -400,6 +400,7 @@ async def _run_turn(
 
     async with owner_sessionmaker() as _db:
         _live_task = await _db.get(_RuntimeTaskModel, seed["run_id"])
+        metadata = dict(_live_task.metadata_json or {}) if _live_task is not None else {"turn_id": seed["turn_id"]}
         _owner = (
             (
                 _live_task.claimed_by or "unclaimed",
@@ -413,7 +414,7 @@ async def _run_turn(
         agent=SimpleNamespace(id=seed["agent_id"], tenant_id=seed["tenant_id"]),
         session_id=str(seed["session_id"]),
         run_uuid=seed["run_id"],
-        metadata={"turn_id": seed["turn_id"]},
+        metadata=metadata,
         runtime_task=SimpleNamespace(
             claimed_by=_owner[0],
             claim_version=_owner[1],
@@ -986,6 +987,7 @@ async def test_crash_before_any_invocation_replays_sealed_calls_from_scratch(
 
     row = await _round_row(owner_sessionmaker, seed["run_id"], 1)
     assert row.state == "round_committed"
+    original_request_hash = row.model_request_hash
     assert await _invocations(owner_sessionmaker, seed["run_id"]) == []
 
     await _expire_and_reclaim(owner_sessionmaker, seed["run_id"])
@@ -1000,6 +1002,8 @@ async def test_crash_before_any_invocation_replays_sealed_calls_from_scratch(
 
     client2 = ScriptedLLMClient([{"content": "done", "tool_calls": [], "finish_reason": "stop"}])
     _patch_invoker_seams(monkeypatch, client2, seed, owner_sessionmaker)
+    # A new worker's current request budget cannot replace a durably sealed response.
+    monkeypatch.setattr("app.runtime.invoker.get_max_tokens", lambda *args, **kwargs: 4096)
     _install_counting_executor(monkeypatch, seed, counters)
     await _run_turn(
         owner_sessionmaker,
@@ -1016,6 +1020,11 @@ async def test_crash_before_any_invocation_replays_sealed_calls_from_scratch(
     assert [(i.provider_tool_use_id, i.effect_state) for i in invocations] == [("call-PRE", "effect_committed")]
     assert counters["calls"] == [("write_file", {"path": "workspace/pre-marker.md", "content": "PRE-BYTES"})]
     assert marker.read_text() == "PRE-BYTES"
+
+    replayed = await _round_row(owner_sessionmaker, seed["run_id"], 1)
+    assert replayed.model_request_hash == original_request_hash
+    assert replayed.model_request_snapshot_json["max_tokens"] == 2048
+    assert len(client2.requests) == 1  # Only the next, uncommitted logical round reaches the provider.
 
 
 async def test_mixed_settled_and_pending_batch_resumes_durable_result(

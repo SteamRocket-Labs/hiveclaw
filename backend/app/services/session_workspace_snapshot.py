@@ -370,6 +370,9 @@ def _load_manifest(
     if not _is_within(manifest_path, agent_root):
         raise ValueError("workspace snapshot manifest escapes agent root")
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    expected = snapshot.get("expected_file_hashes")
+    if expected is not None and {item["path"]: item["sha256"] for item in manifest.get("files", [])} != expected:
+        raise ValueError("workspace snapshot no longer matches its authorized content receipts")
     return manifest_path, manifest
 
 

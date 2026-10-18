@@ -124,7 +124,9 @@ def resolve_workspace_storage_path(workspace: Path, path: str) -> Path:
 
         if (_is_workspace_path(requested) or _is_workspace_path(resolved)
             or _is_session_source_path(requested) or _is_session_source_path(resolved)
-            or is_chat_artifact_snapshot_storage_path(requested) or is_chat_artifact_snapshot_storage_path(resolved)):
+            or is_chat_artifact_snapshot_storage_path(requested) or is_chat_artifact_snapshot_storage_path(resolved)
+            or requested.startswith("runtime_artifacts/workspace_content_versions/")
+            or resolved.startswith("runtime_artifacts/workspace_content_versions/")):
             # Configured parent roots may be OS aliases; resource paths may not be.
             current = root
             for part in Path(requested).parts:

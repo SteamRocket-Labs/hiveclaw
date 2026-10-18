@@ -749,11 +749,12 @@ async def validate_artifact_content_receipt(db, tenant_id, user, artifact, *, ru
         runtime_request=runtime_principal, active_receipts=frozenset({receipt.id}))
 
 
-def record_workspace_receipt(db, tenant_id: uuid.UUID, agent_id: uuid.UUID, path: str, content_sha256: str, previous):
+def record_workspace_receipt(db, tenant_id: uuid.UUID, agent_id: uuid.UUID, path: str, content_sha256: str, previous,
+    *, additional_dependencies=()):
     # Authenticated human input adds no authority to the previous source audience.
-    dependencies = previous.dependencies_json if previous is not None else []
+    dependencies = [*(previous.dependencies_json if previous is not None else []), *additional_dependencies]
     unique = sorted({(row["source_kind"], row["source_id"], row["source_version"]) for row in dependencies})
-    receipt = ContentInputReceipt(tenant_id=tenant_id, carrier_kind="workspace_artifact",
+    receipt = ContentInputReceipt(id=uuid.uuid4(), tenant_id=tenant_id, carrier_kind="workspace_artifact",
         carrier_ref=workspace_artifact_ref(agent_id, path), revision=previous.revision + 1 if previous else 1,
         content_sha256=content_sha256,
         dependencies_json=[dict(zip(("source_kind", "source_id", "source_version"), row)) for row in unique])
@@ -926,6 +927,10 @@ async def record_native_workspace_receipts(db, *, context, invocation, model, ar
                 # failed authority checks roll it back without losing execution evidence.
                 await validate_runtime_input_dependencies(db, request, [{"source_kind": "workspace_artifact",
                     "source_id": str(receipt_id), "source_version": digest}])
+                import asyncio
+                from app.services.workspace_receipt_versions import capture_receipt_version
+
+                await asyncio.to_thread(capture_receipt_version, context.agent_id, path, existing)
             receipts[path] = str(receipt_id)
         except ContentInputReceiptError as exc:
             failures[path] = {"status": "denied" if exc.status_code == 403 else "unavailable", "reason_code": exc.code}

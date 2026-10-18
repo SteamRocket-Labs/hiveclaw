@@ -767,20 +767,27 @@ async def run_user_prompt_admission(
         input_row = await db.get(SessionTurnInput, input_uuid)
         assert input_row is not None
         try:
-            result = await hook_executor(
-                hook_run_id=str(claim.hook_run_id),
-                agent_id=authority.agent_id,
-                session_id=str(authority.session_id),
-                prompt=_prompt_bytes(list(input_row.content_parts_json or [])),
-                source="session_input_admission",
-                metadata={
-                    "tenant_id": str(authority.tenant_id),
-                    "principal_type": authority.principal_type,
-                    "principal_id": str(authority.principal_id),
-                    "command_id": str(input_row.command_id),
-                    "input_id": str(input_uuid),
-                },
+            from app.services.execution_environments import command_environment_context
+            from app.services.session_input_environment import admission_command_frame
+
+            frame = await admission_command_frame(
+                db, authority=authority, input_row=input_row, claim=claim, worker_id=worker_id
             )
+            with command_environment_context(frame):
+                result = await hook_executor(
+                    hook_run_id=str(claim.hook_run_id),
+                    agent_id=authority.agent_id,
+                    session_id=str(authority.session_id),
+                    prompt=_prompt_bytes(list(input_row.content_parts_json or [])),
+                    source="session_input_admission",
+                    metadata={
+                        "tenant_id": str(authority.tenant_id),
+                        "principal_type": authority.principal_type,
+                        "principal_id": str(authority.principal_id),
+                        "command_id": str(input_row.command_id),
+                        "input_id": str(input_uuid),
+                    },
+                )
         except Exception as exc:  # executor failure is an observable fail-open boundary
             result = HookResult(
                 failure=True,

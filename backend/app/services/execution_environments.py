@@ -6,6 +6,7 @@ from contextlib import asynccontextmanager, contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 from sqlalchemy import func, select
 from sqlalchemy.exc import SQLAlchemyError
@@ -140,13 +141,22 @@ class EnvironmentCommandScope:
     outcome: dict = field(default_factory=dict)
     resource_state: str = "not_created"
     selected_provider: str | None = None
+    source_binding: Any = field(default=None, repr=False)
 
-    async def _authority(self, db):
+    async def _authority(self, db, *, before_command=False):
         from app.models.tenant import Tenant
         from app.services.agent_identity_lifecycle import resolve_live_effect_principal
 
         agent = await db.get(Agent, self.agent_id, populate_existing=True)
-        user = await db.get(User, self.user_id, populate_existing=True)
+        user = (
+            (
+                await self.source_binding.authorize(db, self)
+                if before_command
+                else await self.source_binding.revalidate(db, self)
+            )
+            if self.source_binding is not None
+            else await db.get(User, self.user_id, populate_existing=True)
+        )
         tenant = await db.get(Tenant, self.tenant_id, populate_existing=True)
         if (
             agent is None
@@ -172,7 +182,7 @@ class EnvironmentCommandScope:
         async with tenant_scoped_session(
             self.tenant_id, require_tenant=True, source="environment_command_attach"
         ) as db:
-            await self._authority(db)
+            await self._authority(db, before_command=True)
             await lock_environment(db, self.tenant_id, self.agent_id)
             env = await db.scalar(
                 select(ExecutionEnvironment)
@@ -238,6 +248,8 @@ class EnvironmentCommandScope:
     async def execute(self, operation, *, provider, timeout):
         task = None
         try:
+            if self.user_id is None and self.source_binding is not None:
+                raise EnvironmentError("environment_source_authority_unbound", 403)
             try:
                 self.tenant_id, self.agent_id, self.user_id = (
                     uuid.UUID(str(value)) for value in (self.tenant_id, self.agent_id, self.user_id)
@@ -254,6 +266,11 @@ class EnvironmentCommandScope:
                     raise EnvironmentError("environment_provider_changed")
                 elif self.resource_state not in {"not_created", "command_completed", "stopped"}:
                     raise EnvironmentError("environment_reconciliation_required")
+                elif self.source_binding is not None:
+                    async with tenant_scoped_session(
+                        self.tenant_id, require_tenant=True, source="environment_command_source"
+                    ) as db:
+                        await self._authority(db, before_command=True)
                 await self._check()
             except EnvironmentError:
                 raise
@@ -271,6 +288,13 @@ class EnvironmentCommandScope:
                     except Exception as exc:
                         raise EnvironmentError("environment_state_unavailable", 503) from exc
             result = task.result()
+            if self.source_binding is not None:
+                try:
+                    await self._check()
+                except EnvironmentError:
+                    raise
+                except Exception as exc:
+                    raise EnvironmentError("environment_state_unavailable", 503) from exc
             self.outcome = {
                 "status": "failed" if result.error else "completed",
                 "exit_code": result.exit_code,
@@ -310,6 +334,7 @@ class EnvironmentCommandScope:
             "generation": self.generation,
             "fence_version": self.fence_version,
             "outcome": dict(self.outcome),
+            **({"source": self.source_binding.receipt()} if self.source_binding is not None else {}),
         }
 
     async def release(self):
@@ -329,7 +354,11 @@ class EnvironmentCommandScope:
             env = await db.get(ExecutionEnvironment, self.environment_id, with_for_update=True)
             if lease is None or env is None or lease.fence_version != self.fence_version:
                 raise EnvironmentError("environment_release_unknown", 503)
-            lease.outcome = {**(self.outcome or {"status": "interrupted"}), "resource_state": self.resource_state}
+            lease.outcome = {
+                **(self.outcome or {"status": "interrupted"}),
+                "resource_state": self.resource_state,
+                **({"source": self.source_binding.receipt()} if self.source_binding is not None else {}),
+            }
             env.last_used_at = datetime.now(UTC)
             if self.resource_state in {"not_created", "command_completed", "stopped"}:
                 lease.status = "released"
@@ -352,15 +381,30 @@ class EnvironmentCommandFrame:
     agent_id: uuid.UUID | str | None
     user_id: uuid.UUID | str | None
     runtime_task_id: uuid.UUID | str | None
+    source_binding: Any = field(default=None, repr=False, compare=False)
 
 
 _COMMAND_FRAME: ContextVar[EnvironmentCommandFrame | None] = ContextVar("environment_command_frame", default=None)
 
 
+def _command_frame(context):
+    binding = getattr(context, "source_binding", None)
+    parent = _COMMAND_FRAME.get()
+    if (
+        binding is None
+        and parent is not None
+        and all(str(getattr(parent, key)) == str(getattr(context, key)) for key in ("tenant_id", "user_id"))
+    ):
+        binding = parent.source_binding
+    return EnvironmentCommandFrame(
+        context.tenant_id, context.agent_id, context.user_id, context.runtime_task_id, binding
+    )
+
+
 @contextmanager
 def command_environment_context(context):
     # Only the resolved host context supplies authority; hook payloads remain data.
-    frame = EnvironmentCommandFrame(context.tenant_id, context.agent_id, context.user_id, context.runtime_task_id)
+    frame = _command_frame(context)
     token = _COMMAND_FRAME.set(frame)
     try:
         yield
@@ -373,7 +417,8 @@ async def execute_environment_command(operation, *, provider, timeout):
     scope = current_environment_scope()
     if scope is not None and (
         frame is None
-        or all(
+        or scope.source_binding is frame.source_binding
+        and all(
             str(getattr(scope, key)) == str(getattr(frame, key))
             for key in ("tenant_id", "agent_id", "user_id", "runtime_task_id")
         )
@@ -400,16 +445,20 @@ def record_environment_resource_state(state):
 @asynccontextmanager
 async def environment_command_scope(context, invocation_key):
     # The governed runtime supplies this frame; tool arguments cannot select a resource owner.
+    frame = _command_frame(context)
     scope = EnvironmentCommandScope(
-        tenant_id=context.tenant_id,
-        agent_id=context.agent_id,
-        user_id=context.user_id,
+        tenant_id=frame.tenant_id,
+        agent_id=frame.agent_id,
+        user_id=frame.user_id,
         invocation_key=invocation_key,
-        runtime_task_id=context.runtime_task_id,
+        runtime_task_id=frame.runtime_task_id,
+        source_binding=frame.source_binding,
     )
     token = _COMMAND_SCOPE.set(scope)
     frame_token = _COMMAND_FRAME.set(
-        EnvironmentCommandFrame(scope.tenant_id, scope.agent_id, scope.user_id, scope.runtime_task_id)
+        EnvironmentCommandFrame(
+            scope.tenant_id, scope.agent_id, scope.user_id, scope.runtime_task_id, scope.source_binding
+        )
     )
     try:
         yield scope

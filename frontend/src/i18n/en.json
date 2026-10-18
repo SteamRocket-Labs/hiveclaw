@@ -2163,6 +2163,24 @@
       "description": "Control which actions this employee can perform."
     },
     "workspace": {
+      "office": {
+        "writeDenied": "Save access is unavailable. Your local edits are kept; ask the file owner for edit access.",
+        "retainedEdit": "Retained edit: the document field identity changed. Copy this text into the current field before saving.",
+        "discardRetained": "Discard this retained edit",
+        "savedWithIssues": "Saved. {{count}} existing document validation issues remain.",
+        "preview": "Preview",
+        "edit": "Edit contents",
+        "previewFailed": "Preview is unavailable. Download the file or try again.",
+        "loadFailed": "Could not load the saved document. Your edits are kept.",
+        "saveFailed": "Could not save the document. Your edits are kept.",
+        "fieldsRemoved": "Some edited fields no longer exist. Copy the edits you need before discarding this draft.",
+        "discard": "Discard my edits and use current version",
+        "keepEdits": "Apply my edits to this version",
+        "textBlock": "Text block {{index}}",
+        "contentScope": "Edit document text, cell values and formulas, or slide text. Saving updates this workspace file.",
+        "noFields": "This file has no editable text or populated cells. The preview and original file remain available.",
+        "accessChanged": "Access changed. Reopen the document with current permission."
+      },
       "title": "Workspace",
       "sharedMemoryTitle": "Shared Team Memory",
       "sharedMemoryDesc": "Tenant-scoped notes and playbooks available to this workspace.",

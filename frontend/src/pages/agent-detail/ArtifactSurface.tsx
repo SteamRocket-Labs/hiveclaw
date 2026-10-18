@@ -182,7 +182,7 @@ export function ArtifactPreviewPanel({
   const [openedFile, setOpenedFile] = useState<string | null>(null);
   const [showCurrent, setShowCurrent] = useState(false);
   const currentFileOpen = openedFile === fileIdentity && showCurrent;
-  const canOpenCurrent = workspaceAgentId && preview.artifact.path.startsWith('workspace/') && ['markdown', 'text'].includes(previewKind);
+  const canOpenCurrent = workspaceAgentId && preview.artifact.path.startsWith('workspace/') && ['markdown', 'text', 'office'].includes(previewKind);
   const [editor, setEditor] = useState<{ identity: string; state: FileEditorState } | null>(null);
   const editorChanged = useCallback((state: FileEditorState) => setEditor({ identity: fileIdentity, state }), [fileIdentity]);
   const currentEditor = editor?.identity === fileIdentity ? editor.state : null;

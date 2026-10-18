@@ -3,6 +3,8 @@ import { useTranslation } from 'react-i18next';
 
 import FileBrowser, { type FileBrowserApi, type FileEditorState } from '../../components/FileBrowser';
 import { fileApi } from '../../api/domains/files';
+import { officeApi } from '../../api/domains/office';
+import { useAuthStore } from '../../stores';
 import './AgentWorkspaceSection.css';
 
 type AgentWorkspaceSectionProps = {
@@ -13,6 +15,7 @@ type AgentWorkspaceSectionProps = {
   operatorReason?: string;
   onOperatorAuthorityDenied?: (error: unknown) => void;
   onEditorStateChange?: (state: FileEditorState) => void;
+  principalScopeKey?: string;
 };
 
 function isForbiddenOperatorResponse(error: unknown): boolean {
@@ -28,8 +31,10 @@ export default function AgentWorkspaceSection({
   operatorReason,
   onOperatorAuthorityDenied,
   onEditorStateChange,
+  principalScopeKey = '',
 }: AgentWorkspaceSectionProps) {
   const { t } = useTranslation();
+  const subject = useAuthStore(state => state.user);
   const normalizedOperatorReason = operatorReason?.trim() ?? '';
   const operatorAuthorityScope = canUseOperatorView && normalizedOperatorReason
     ? `${agentId}\u0000${normalizedOperatorReason}`
@@ -53,6 +58,11 @@ export default function AgentWorkspaceSection({
       ? { operatorView: true, reason: normalizedOperatorReason }
       : undefined;
     return {
+      office: {
+        read: (path) => officeApi.readContent(agentId, path),
+        write: operatorView ? undefined : (path, changes) => officeApi.writeContent(agentId, path, changes),
+        preview: (path) => guardOperatorRead(officeApi.getWorkspacePreview(agentId, path, authority)),
+      },
       list: (path) => guardOperatorRead(fileApi.list(agentId, path, authority)),
       read: (path) => guardOperatorRead(fileApi.read(agentId, path, authority)),
       versions: (path, offset, limit) => guardOperatorRead(fileApi.versions(agentId, path, offset, limit, authority)),
@@ -120,7 +130,7 @@ export default function AgentWorkspaceSection({
         </div>
       ) : null}
       <FileBrowser
-        key={`${agentId}:${singleFile || 'workspace'}:${operatorView ? `operator:${normalizedOperatorReason}` : 'owner'}`}
+        key={`${principalScopeKey}:${subject?.id}:${subject?.role}:${agentId}:${singleFile || 'workspace'}:${operatorView ? `operator:${normalizedOperatorReason}` : 'owner'}`}
         api={adapter}
         rootPath="workspace"
         singleFile={singleFile}

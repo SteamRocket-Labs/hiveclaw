@@ -2163,6 +2163,24 @@
       "description": "控制此员工可执行的操作。"
     },
     "workspace": {
+      "office": {
+        "writeDenied": "当前没有保存权限，已保留本地修改。请向文件拥有者申请编辑权限。",
+        "retainedEdit": "保留的修改：文档内容标识已变化，保存前请将文字复制到当前内容中。",
+        "discardRetained": "放弃这段保留的修改",
+        "savedWithIssues": "已保存，文档原有的 {{count}} 处格式校验问题仍在。",
+        "preview": "预览",
+        "edit": "编辑内容",
+        "previewFailed": "预览暂不可用，可下载文件或重试。",
+        "loadFailed": "无法读取已保存文档，当前修改已保留。",
+        "saveFailed": "文档未能保存，当前修改已保留。",
+        "fieldsRemoved": "部分已编辑内容已不在当前文档中。放弃草稿前，请先复制需要保留的修改。",
+        "discard": "放弃当前修改，使用已保存版本",
+        "keepEdits": "以此版本为基础保留我的修改",
+        "textBlock": "第 {{index}} 段文字",
+        "contentScope": "可修改文档文字、单元格值及公式，或幻灯片文字。保存后更新同一工作区文件。",
+        "noFields": "此文件暂无可编辑文字或已填写的单元格，仍可预览和下载原文件。",
+        "accessChanged": "访问权限已变化，请确认当前权限后重新打开文档。"
+      },
       "title": "工作区",
       "sharedMemoryTitle": "团队共享记忆",
       "sharedMemoryDesc": "当前工作区可复用的租户级笔记与操作手册。",

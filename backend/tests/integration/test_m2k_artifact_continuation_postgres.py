@@ -68,7 +68,7 @@ async def test_artifact_editor_continues_saved_bytes_once_in_the_original_work(
             run_url = f"/api/agents/{seed['agent_id']}/sessions/{seed['session_id']}/runs"
             for _ in range(2):
                 response = await client.post(run_url, json=request)
-                assert response.status_code == 200, response.text
+                assert response.status_code == 201, response.text
         if not receipted:
             from app.models.organization_identity import ContentInputReceipt
             from app.services.content_input_receipts import workspace_artifact_ref

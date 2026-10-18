@@ -134,6 +134,31 @@ class OfficeCLIAdapter:
 
         verified_binary = self._verify_binary_sha256()
 
+        if command == "query":
+            selector = normalized_options.pop("selector", None)
+            depth = normalized_options.pop("depth", None)
+            if not isinstance(selector, str) or not selector.strip():
+                raise OfficeCLICommandError("OfficeCLI query requires a selector")
+            if depth is not None and (type(depth) is not int or depth < 0):
+                raise OfficeCLICommandError("OfficeCLI query depth must be a non-negative integer")
+            args = [verified_binary, command, str(path), selector, "--json", *self._option_args(normalized_options)]
+            payload = self._run_json(command, args, cwd=cwd)
+            if depth is not None:
+                data = payload.get("data")
+                if not isinstance(data, dict) or not isinstance(data.get("results"), list):
+                    raise OfficeCLIOutputError("OfficeCLI query returned invalid matched nodes")
+                expanded = []
+                for node in data["results"]:
+                    if not isinstance(node, dict) or not isinstance(node.get("path"), str) or not node["path"].startswith("/"):
+                        raise OfficeCLIOutputError("OfficeCLI query returned an invalid node path")
+                    result = self._run_json("get", [verified_binary, "get", str(path), node["path"],
+                        "--depth", str(depth), "--json"], cwd=cwd)
+                    if result.get("success") is not True or not isinstance(result.get("data"), dict):
+                        raise OfficeCLIOutputError("OfficeCLI get could not expand the matched node")
+                    expanded.append(result["data"])
+                payload = {**payload, "data": {**data, "results": expanded}}
+            return payload
+
         args = [verified_binary, command, str(path), "--json"]
         args.extend(self._option_args(normalized_options))
         return self._run_json(command, args, cwd=cwd)

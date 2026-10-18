@@ -1321,6 +1321,22 @@ async def write_file(
     db: AsyncSession = Depends(get_db),
 ):
     """Write content to a file (create or overwrite)."""
+    return await _write_file_bytes(agent_id, path, data.content.encode("utf-8"),
+        expected_current_hash=data.expected_current_hash, operator_view=operator_view, operator_reason=operator_reason,
+        current_user=current_user, db=db)
+
+
+async def _write_file_bytes(
+    agent_id: uuid.UUID,
+    path: str,
+    raw: bytes,
+    *,
+    expected_current_hash: str | None,
+    current_user: User,
+    db: AsyncSession,
+    operator_view: bool = False,
+    operator_reason: str | None = None,
+):
     agent, _access = await check_agent_access(db, current_user, agent_id)
     _raise_managed_path_write_guard(path)
     from app.services.session_workspace_snapshot import async_agent_workspace_lock
@@ -1370,7 +1386,7 @@ async def write_file(
                         await db.commit()
                     raise _content_receipt_http_error(ContentInputReceiptError("workspace_content_unverified",
                         "The file no longer matches its verified receipt. Preserve it and regenerate from authorized inputs."))
-                if data.expected_current_hash is not None and verified_base != data.expected_current_hash:
+                if expected_current_hash is not None and verified_base != expected_current_hash:
                     raise HTTPException(status_code=409, detail={
                         "code": "workspace_content_conflict", "retryable": False, "outcome": "conflict",
                         "message": "The file changed since it was read. Keep your draft and read the current version before saving again.",
@@ -1379,14 +1395,13 @@ async def write_file(
                     await validate_browser_workspace_receipt(db, agent.tenant_id, current_user, previous_receipt, verified_base)
                 except ContentInputReceiptError as exc:
                     raise _content_receipt_http_error(exc) from exc
-            elif data.expected_current_hash is not None:
+            elif expected_current_hash is not None:
                 raise HTTPException(status_code=409, detail={"code": "workspace_content_conflict", "retryable": False,
                     "outcome": "conflict", "message": "The file is missing. Keep the draft and reconcile before saving again."})
             elif previous_receipt is not None:
                 raise HTTPException(status_code=409, detail={"code": "workspace_content_unverified", "retryable": False,
                     "message": "The previously receipted file is missing. Preserve its history and regenerate a new path."})
 
-        raw = data.content.encode("utf-8")
         content_hash = hashlib.sha256(raw).hexdigest()
         write_started = False
 
@@ -1397,7 +1412,7 @@ async def write_file(
                     write_started = True
                     output.write(raw)
                 return
-            expected = verified_base if resource_decision is not None else data.expected_current_hash
+            expected = verified_base if resource_decision is not None else expected_current_hash
             if expected is None:
                 with open_workspace_file(_agent_base_dir(agent_id), path, mode="wb") as output:
                     write_started = True

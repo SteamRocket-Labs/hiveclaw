@@ -8,6 +8,7 @@ import re
 import shutil
 import tempfile
 from dataclasses import dataclass, replace
+from collections import Counter
 from datetime import UTC, datetime
 from hashlib import sha256
 from pathlib import Path
@@ -17,6 +18,7 @@ from uuid import UUID
 from app.config import get_settings
 from app.services.officecli_adapter import OfficeCLIAdapter
 from app.services.officecli_adapter import OfficeCLIError
+from app.services.officecli_adapter import OfficeCLIExecutionError
 
 
 logger = logging.getLogger(__name__)
@@ -282,6 +284,72 @@ class OfficeDocumentService:
     def run_dump(self, rel_path: str) -> dict[str, Any]:
         target = self._require_existing_file(rel_path)
         return self.adapter.run("get", target, cwd=self.workspace)
+
+    def editable_content(self, rel_path: str) -> dict[str, Any]:
+        target = self._require_existing_file(rel_path)
+        kind = target.suffix.lower().lstrip(".")
+        selector = {"docx": "paragraph", "xlsx": "cell", "pptx": "shape"}.get(kind)
+        if selector is None:
+            raise OfficePreviewUnsupportedTypeError("This document format does not support content editing")
+        payload = self.run_query(rel_path, selector=selector)
+        data = payload.get("data")
+        if (payload.get("success") is not True or not isinstance(data, dict)
+            or not isinstance(data.get("results"), list) or data.get("matches") != len(data["results"])):
+            raise OfficePreviewMalformedError("OfficeCLI returned an incomplete content inventory")
+        fields = []
+        for node in data["results"]:
+            if not isinstance(node, dict) or not isinstance(node.get("path"), str) or not node["path"].startswith("/"):
+                raise OfficePreviewMalformedError("OfficeCLI returned an invalid content node")
+            if kind == "pptx" and not isinstance(node.get("text"), str):
+                continue
+            value = node.get("text", "")
+            formatting = node.get("format") or {}
+            if kind == "xlsx" and formatting.get("formula") is not None:
+                value = "=" + str(formatting["formula"])
+            if not isinstance(value, str):
+                raise OfficePreviewMalformedError("OfficeCLI returned an invalid content value")
+            fields.append({"node_path": node["path"], "value": value,
+                "name": str(formatting.get("name") or "")})
+        return {"kind": kind, "fields": fields}
+
+    def apply_content_changes(self, rel_path: str, changes: list[dict[str, str]]) -> dict[str, Any]:
+        model = self.editable_content(rel_path)
+        fields = {field["node_path"]: field for field in model["fields"]}
+        selected = set()
+        operations = []
+        for change in changes:
+            path = change["node_path"]
+            if path not in fields or path in selected:
+                raise ValueError("Select a current document field once before applying changes")
+            selected.add(path)
+            if change["value"] != fields[path]["value"]:
+                operations.append({"command": "set", "path": path,
+                    "props": {"value" if model["kind"] == "xlsx" else "text": change["value"]}})
+        remaining_issues = None
+        if operations:
+            before = self._content_validation_issues(rel_path)
+            result = self.run_apply(rel_path, operations=operations)
+            after = self._content_validation_issues(rel_path)
+            if result.get("success") is not True or after - before:
+                raise OfficeDocumentError("Document changes could not be validated")
+            remaining_issues = sum(after.values())
+        # Validation opens the edited package. Consumers reload content through a
+        # fresh authorized read after the canonical write, rather than using a private-copy model.
+        return {"changed": bool(operations), "validation_issue_count": remaining_issues}
+
+    def _content_validation_issues(self, rel_path: str) -> Counter:
+        try:
+            payload = self.run_validate(rel_path)
+        except OfficeCLIExecutionError as exc:
+            payload = exc.payload
+            if not isinstance(payload, dict) or payload.get("success") is not False:
+                raise
+        if payload.get("success") is True:
+            return Counter()
+        data = payload.get("data")
+        if not isinstance(data, dict) or not isinstance(data.get("errors"), list) or data.get("count") != len(data["errors"]):
+            raise OfficePreviewMalformedError("OfficeCLI returned invalid validation evidence")
+        return Counter(json.dumps(issue, sort_keys=True) for issue in data["errors"])
 
     def run_apply(
         self,

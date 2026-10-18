@@ -4,11 +4,11 @@ import asyncio
 import logging
 import time
 import uuid
-from contextlib import contextmanager
+from contextlib import asynccontextmanager, contextmanager
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import Response
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -34,6 +34,7 @@ from app.services.office_document_service import (
     OfficePreviewUnsupportedTypeError,
 )
 from app.services.office_preview_metrics import record_office_preview
+from app.services.officecli_adapter import OfficeCLIError
 from app.services.workspace_resource_authority import (
     WorkspaceAuthorityError,
     authorize_workspace_path,
@@ -50,6 +51,109 @@ class OfficeDocumentCreateIn(BaseModel):
     path: str
     kind: str = Field(pattern="^(docx|xlsx|pptx)$")
     template_path: str | None = None
+
+
+class OfficeContentChange(BaseModel):
+    model_config = {"extra": "forbid"}
+    node_path: str
+    value: str
+
+
+class OfficeContentWrite(BaseModel):
+    model_config = {"extra": "forbid"}
+    expected_current_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    changes: list[OfficeContentChange] = Field(min_length=1)
+
+
+@asynccontextmanager
+async def _office_content_source(db, current_user, *, agent_id, path):
+    from app.api.files import _content_receipt_http_error, _workspace_authority_http_error
+    from app.services.content_input_receipts import (
+        ContentInputReceiptError, latest_workspace_receipt, validate_browser_workspace_receipt,
+    )
+    from app.services.workspace_resource_authority import snapshot_workspace_file
+
+    access, _decision, target, normalized = await _authorize_office_request_path(
+        db, current_user, agent_id=agent_id, path=path, action="read")
+    if not target.is_file():
+        raise HTTPException(status_code=404, detail="Office document not found")
+    if target.stat().st_size > settings.OFFICECLI_PREVIEW_MAX_BYTES:
+        raise HTTPException(status_code=413, detail="Document exceeds the configured Office processing limit")
+    receipt = await latest_workspace_receipt(db, access[0].tenant_id, agent_id, normalized)
+    source = None
+    try:
+        source, captured = await asyncio.to_thread(snapshot_workspace_file, _agent_workspace(agent_id), normalized,
+            expected_sha256=receipt.content_sha256 if receipt is not None else None)
+        digest = await asyncio.to_thread(_content_hash, captured)
+        if captured.stat().st_size > settings.OFFICECLI_PREVIEW_MAX_BYTES:
+            raise HTTPException(status_code=413, detail="Document exceeds the configured Office processing limit")
+        await validate_browser_workspace_receipt(db, access[0].tenant_id, current_user, receipt, digest)
+        yield captured, normalized, digest
+        await _authorize_office_request_path(db, current_user, agent_id=agent_id, path=normalized, action="read")
+        await validate_browser_workspace_receipt(db, access[0].tenant_id, current_user, receipt, digest)
+    except ContentInputReceiptError as exc:
+        raise _content_receipt_http_error(exc) from exc
+    except WorkspaceAuthorityError as exc:
+        raise _workspace_authority_http_error(exc) from exc
+    finally:
+        if source is not None:
+            source.cleanup()
+
+
+def _office_content_error(exc):
+    if isinstance(exc, ValueError):
+        return HTTPException(status_code=422, detail={"code": "office_content_invalid", "message": str(exc),
+            "outcome": "not_applied"})
+    return HTTPException(status_code=503, detail={"code": "office_content_unavailable",
+        "message": "Document processing is unavailable. Keep your edits and retry with the saved version.",
+        "outcome": "not_applied", "retryable": True})
+
+
+@router.get("/content")
+async def read_office_content(agent_id: uuid.UUID, path: str,
+    current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    async with _office_content_source(db, current_user, agent_id=agent_id, path=path) as (captured, normalized, digest):
+        try:
+            model = await asyncio.to_thread(OfficeDocumentService(captured.parent).editable_content, captured.name)
+        except (OfficeDocumentError, OfficeCLIError, ValueError) as exc:
+            raise _office_content_error(exc) from exc
+        read_only = False
+        try:
+            await _authorize_office_request_path(db, current_user, agent_id=agent_id, path=normalized, action="write")
+        except HTTPException as exc:
+            if exc.status_code != 403:
+                raise
+            read_only = True
+        result = {"path": normalized, "content_hash": digest, "read_only": read_only, **model}
+    return JSONResponse(content=result, headers={"Cache-Control": "private, no-store"})
+
+
+@router.put("/content")
+async def write_office_content(agent_id: uuid.UUID, path: str, body: OfficeContentWrite,
+    operator_view: bool = False,
+    current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    from app.api.files import _write_file_bytes
+
+    if operator_view:
+        raise HTTPException(status_code=403, detail={"code": "workspace_operator_read_only",
+            "message": "Operator inspection cannot edit document content"})
+    await _authorize_office_request_path(db, current_user, agent_id=agent_id, path=path, action="write")
+    async with _office_content_source(db, current_user, agent_id=agent_id, path=path) as (captured, normalized, digest):
+        if digest != body.expected_current_hash:
+            raise HTTPException(status_code=409, detail={"code": "workspace_content_conflict", "outcome": "conflict",
+                "retryable": False, "message": "The document changed. Keep your edits and read the current version."})
+        try:
+            result = await asyncio.to_thread(OfficeDocumentService(captured.parent).apply_content_changes,
+                captured.name, [change.model_dump() for change in body.changes])
+            raw = await asyncio.to_thread(captured.read_bytes)
+        except (OfficeDocumentError, OfficeCLIError, ValueError) as exc:
+            raise _office_content_error(exc) from exc
+    if result["changed"]:
+        saved = await _write_file_bytes(agent_id, normalized, raw, expected_current_hash=digest,
+            current_user=current_user, db=db)
+    else:
+        saved = {"status": "unchanged", "path": normalized, "content_hash": digest}
+    return {**saved, "validation_issue_count": result["validation_issue_count"]}
 
 
 def _agent_workspace(agent_id: uuid.UUID) -> Path:
@@ -87,7 +191,11 @@ async def _authorize_office_request_path(
     manager_override_reason: str | None = None,
 ):
     normalized = _require_office_workspace_path(path)
-    target = OfficeDocumentService(_agent_workspace(agent_id)).resolve_document_path(normalized)
+    try:
+        target = OfficeDocumentService(_agent_workspace(agent_id)).resolve_document_path(normalized)
+    except OfficeDocumentPathError as exc:
+        raise HTTPException(status_code=403, detail={"code": "workspace_resource_alias_forbidden",
+            "message": "Use an independent canonical document path"}) from exc
     resolved_agent_access = agent_access or await (
         check_agent_operator_reachability(db, current_user, agent_id)
         if allow_manager_override and action == "read"

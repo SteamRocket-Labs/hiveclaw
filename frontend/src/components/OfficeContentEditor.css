@@ -1,0 +1,9 @@
+.office-content-editor { display: grid; gap: 12px; }
+.office-content-toolbar { display: flex; gap: 8px; flex-wrap: wrap; }
+.office-content-preview { width: 100%; min-height: 360px; border: 0; background: white; }
+.office-content-editor form { display: grid; gap: 12px; }
+.office-content-field { display: grid; gap: 4px; font-size: 12px; }
+.office-content-field textarea { min-height: 64px; resize: vertical; }
+.office-content-editor form > button { justify-self: end; }
+.office-content-current { padding: 12px; border: 1px solid var(--border-subtle); border-radius: 8px; }
+.office-content-current pre { white-space: pre-wrap; overflow-wrap: anywhere; }

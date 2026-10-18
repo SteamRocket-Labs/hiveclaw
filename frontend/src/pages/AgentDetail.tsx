@@ -2695,6 +2695,7 @@ function AgentDetailInner() {
                             <LocalAgents key="workspace" agentId={id!} agentName={agent.name} embedded initialTab="workspace" />
                         ) : (
                             <AgentWorkspaceSection
+                                principalScopeKey={readinessScopeKey}
                                 agentId={id!}
                                 canUseOperatorView={canOperatorInspect}
                                 operatorOnly={isOperatorOnly}

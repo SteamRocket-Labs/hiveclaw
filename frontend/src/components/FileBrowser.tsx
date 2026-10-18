@@ -19,6 +19,7 @@ import { FILE_LIST_PAGE_SIZE, visibleFileWindow } from './fileBrowserWindow';
 import { useFileVersionHistory } from './useFileVersionHistory';
 import { ApiError } from '../api/core/errors';
 import './FileBrowser.css';
+import OfficeContentEditor, { type OfficeContentApi } from './OfficeContentEditor';
 
 // ─── Types ─────────────────────────────────────────────
 
@@ -30,6 +31,7 @@ export interface FileItem {
 }
 
 export interface FileBrowserApi {
+    office?: OfficeContentApi;
     list: (path: string) => Promise<FileItem[]>;
     read: (path: string) => Promise<{ content: string; content_hash?: string | null }>;
     write: (path: string, content: string) => Promise<any>;
@@ -75,6 +77,8 @@ export interface FileEditorState {
     unavailable: boolean;
     lastSavedHash?: string | null;
 }
+
+const isOfficeFile = (path: string) => /\.(docx|xlsx|pptx)$/i.test(path);
 
 // ─── Text file detection ───────────────────────────────
 
@@ -148,14 +152,19 @@ export default function FileBrowser({
     const [promptValue, setPromptValue] = useState('');
     const [uploadProgress, setUploadProgress] = useState<{ fileName: string; percent: number } | null>(null);
     const [imagePreviewUrl, setImagePreviewUrl] = useState<string | null>(null);
+    const [officeState, setOfficeState] = useState<FileEditorState | null>(null);
+    const officeChanged = useCallback((state: FileEditorState) => {
+        setOfficeState(state); onEditorStateChange?.(state);
+    }, [onEditorStateChange]);
     const textareaRef = useRef<HTMLTextAreaElement>(null);
 
     const dirty = editing && editContent !== content;
     const editorBusy = saving || loadingCurrent;
     const editorUnavailable = !contentLoaded || readError || conflict || saveUnknown;
     useEffect(() => {
+        if (api.office && isOfficeFile(singleFile || viewing || '')) return;
         onEditorStateChange?.({ path: singleFile || viewing, dirty, busy: editorBusy, unavailable: editorUnavailable, lastSavedHash });
-    }, [singleFile, viewing, dirty, editorBusy, editorUnavailable, lastSavedHash, onEditorStateChange]);
+    }, [api.office, singleFile, viewing, dirty, editorBusy, editorUnavailable, lastSavedHash, onEditorStateChange]);
 
     // Auto-resize textarea to match content height
     useEffect(() => {
@@ -212,6 +221,7 @@ export default function FileBrowser({
         setLoadingCurrent(false);
         setSaving(false);
         if (!target) return;
+        if (api.office && isOfficeFile(target)) return;
         api.read(target).then(data => {
             if (request !== contentRequest.current) return;
             setContent(data.content || '');
@@ -549,7 +559,7 @@ export default function FileBrowser({
     const renderFileHistory = () => historyPath && fileHistory.open ? (
         <FileVersionHistoryPanel
             path={historyPath}
-            readOnly={readOnly}
+            readOnly={readOnly || Boolean(officeState?.path === historyPath && (officeState.dirty || officeState.busy || officeState.unavailable))}
             page={fileHistory.historyPage}
             selected={fileHistory.selected}
             selectedVersionId={fileHistory.selectedVersionId}
@@ -579,7 +589,7 @@ export default function FileBrowser({
                             {t('agent.workspace.fileHistory.title', 'Version history')}
                         </button>
                     )}
-                    {edit && (
+                    {edit && !isOfficeFile(singleFile) && (
                         !editing ? (
                             <button className="btn btn-secondary" disabled={editDisabled} onClick={beginEditing}>{t('agent.soul.editButton')}</button>
                         ) : (
@@ -592,7 +602,10 @@ export default function FileBrowser({
                         )
                     )}
                 </div>
-                {editing ? (
+                {api.office && isOfficeFile(singleFile) ? (
+                    <OfficeContentEditor key={`${singleFile}:${viewRevision}`} path={singleFile} api={api.office}
+                        readOnly={readOnly || !edit} onEditorStateChange={officeChanged} onSaved={onRefresh} />
+                ) : editing ? (
                     renderEditor()
                 ) : readError ? renderReadError() : !contentLoaded ? (
                     <div className="file-browser-loading">{t('common.loading')}</div>
@@ -655,7 +668,10 @@ export default function FileBrowser({
                     )}
                 </div>
                 <div className="card">
-                    {isText ? (
+                    {api.office && isOfficeFile(viewing) ? (
+                        <OfficeContentEditor key={`${viewing}:${viewRevision}`} path={viewing} api={api.office}
+                            readOnly={readOnly || !edit} onEditorStateChange={officeChanged} onSaved={onRefresh} />
+                    ) : isText ? (
                         editing ? (
                             renderEditor()
                         ) : readError ? renderReadError() : !contentLoaded ? (

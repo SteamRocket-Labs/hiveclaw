@@ -6,6 +6,31 @@ import shutil
 import pytest
 
 
+@pytest.mark.parametrize("kind,selector,matches", [("docx", "paragraph", 4), ("xlsx", "cell", 2), ("pptx", "shape", 1)])
+@pytest.mark.parametrize("depth", [None, 0, 2])
+def test_native_query_preserves_matched_nodes_and_requested_depth(tmp_path, kind, selector, matches, depth):
+    from app.scripts.verify_officecli_binary_contract import _write_contract_fixtures
+    from app.services.office_document_service import OfficeDocumentService
+    from app.services.officecli_adapter import OfficeCLIAdapter
+
+    binary = os.environ.get("OFFICECLI_BIN") or shutil.which("officecli")
+    if not binary:
+        pytest.skip("OfficeCLI binary is unavailable locally")
+    _write_contract_fixtures(tmp_path)
+    service = OfficeDocumentService(tmp_path, adapter=OfficeCLIAdapter(binary=binary))
+    result = service.run_query(f"contract.{kind}", selector=selector, depth=depth)
+    assert result["success"] is True
+    assert result["data"]["matches"] == matches
+    nodes = result["data"]["results"]
+    assert len(nodes) == matches
+    assert all(node["path"].startswith("/") for node in nodes)
+    assert any("OfficeCLI contract" in node.get("text", "") for node in nodes)
+    if depth == 0:
+        assert all(not node.get("children") for node in nodes)
+    if depth == 2 and kind != "xlsx":
+        assert any(node.get("children") for node in nodes)
+
+
 def test_native_xlsx_template_passes_installed_validator(tmp_path) -> None:
     from xml.etree import ElementTree
     from zipfile import ZipFile

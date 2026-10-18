@@ -182,6 +182,7 @@ async def test_real_worker_command_environment_stop_resume_and_saved_files(
 async def _exercise_real_worker_environment(
     owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, *, recovery=None,
     initial_delivery=False, recovery_invocation_key="crashed-before-resource",
+    initial_command=None, initial_artifact_paths=None,
 ):
     from app.api.environments import router
     import app.database as database
@@ -329,7 +330,9 @@ async def _exercise_real_worker_environment(
                     "finish_reason": "tool_calls",
                 },
                 {"content": "The command outcome is recorded in this work."
-                 + ("\nDELIVERABLE: workspace/saved.txt" if initial_delivery and first else ""), "finish_reason": "stop"},
+                 + ("\n" + "\n".join(f"DELIVERABLE: {path}" for path in initial_artifact_paths)
+                    if first and initial_artifact_paths else "\nDELIVERABLE: workspace/saved.txt" if first and initial_delivery else ""),
+                 "finish_reason": "stop"},
             ]
         )
         monkeypatch.setattr(invoker, "create_llm_client", lambda **_kwargs: script)
@@ -362,7 +365,7 @@ async def _exercise_real_worker_environment(
         assert initial.status_code == 200 and initial.json()["environment"] is None
         assert initial.headers["cache-control"] == "no-store"
         script = await run(
-            f"{python} -I -c \"open('saved.txt','w').write('CANONICAL_ENVIRONMENT_FILE'); print('FIRST_COMMAND')\"",
+            initial_command or f"{python} -I -c \"open('saved.txt','w').write('CANONICAL_ENVIRONMENT_FILE'); print('FIRST_COMMAND')\"",
             first=True,
         )
         assert (seed["agent_root"] / "workspace/saved.txt").read_text() == "CANONICAL_ENVIRONMENT_FILE"

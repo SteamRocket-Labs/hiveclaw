@@ -83,6 +83,21 @@ async def resolve_shared_group_web_authority(db, *, session, user, action, audit
 
 
 async def resolve_shared_group_input_authority(db, *, actor, session, ingress_event_id):
+    return await _resolve_shared_group_ingress_authority(db, actor=actor, session=session,
+        ingress_event_id=ingress_event_id, require_message=True)
+
+
+async def resolve_shared_group_entry_authority(db, *, actor, session):
+    from app.services.channel_ingress_context import current_channel_ingress_context
+
+    ingress = current_channel_ingress_context()
+    if ingress is None:
+        raise PermissionError("shared_group_ingress_required")
+    return await _resolve_shared_group_ingress_authority(db, actor=actor, session=session,
+        ingress_event_id=ingress.event_id, require_message=False)
+
+
+async def _resolve_shared_group_ingress_authority(db, *, actor, session, ingress_event_id, require_message):
     from app.core.permissions import check_agent_access, reject_non_executing_agent_access, require_writable_session
     from app.models.audit import ChatMessage
     from app.models.channel_ingress_event import ChannelIngressEvent
@@ -97,7 +112,7 @@ async def resolve_shared_group_input_authority(db, *, actor, session, ingress_ev
         ChatMessage.tenant_id == session.tenant_id, ChatMessage.agent_id == session.agent_id,
         ChatMessage.conversation_id == str(session.id), ChatMessage.role == "user",
         ChatMessage.external_principal_id == actor.external_principal_id,
-        ChatMessage.source_ingress_event_id == ingress_event_id))
+        ChatMessage.source_ingress_event_id == ingress_event_id)) if require_message else None
     payload = (event.payload_json or {}).get("body", {}) if event is not None else {}
     body = payload.get("event", {}) if isinstance(payload, dict) else {}
     body = body if isinstance(body, dict) else {}
@@ -108,7 +123,8 @@ async def resolve_shared_group_input_authority(db, *, actor, session, ingress_ev
         and ingress.agent_id == session.agent_id and ingress.provider == "feishu"
         and ingress.installation_ref == session.group_installation_ref
         and ingress.external_principal_id == actor.external_principal_id)
-    if (principal is None or event is None or message is None
+    if (principal is None or event is None or (require_message and message is None)
+        or (not require_message and not claimed)
         or event.tenant_id != session.tenant_id or event.agent_id != session.agent_id
         or event.provider != "feishu" or event.handler_key != "feishu.event"
         or event.status not in {"processing", "processed"}
@@ -116,10 +132,11 @@ async def resolve_shared_group_input_authority(db, *, actor, session, ingress_ev
         or (event.external_principal_id != principal.id and not (event.external_principal_id is None and claimed))
         or (body.get("message") or {}).get("chat_type") != "group"
         or (body.get("message") or {}).get("chat_id") != session.group_subject_id
-        or sender.get("open_id") != principal.subject_id or principal.linked_user_id != message.user_id):
+        or sender.get("open_id") != principal.subject_id
+        or (message is not None and principal.linked_user_id != message.user_id)):
         raise PermissionError("shared_group_ingress_mismatch")
     fresh = await load_external_runtime_actor(db, tenant_id=session.tenant_id,
-        principal_id=principal.id, expected_user_id=message.user_id)
+        principal_id=principal.id, expected_user_id=message.user_id if message is not None else actor.id)
     if ((principal.linked_user_id is not None and not fresh.authority_bound)
         or fresh.id != actor.id or fresh.authority_bound != actor.authority_bound or actor.tenant_id != session.tenant_id
         or not actor.is_active):

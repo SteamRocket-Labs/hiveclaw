@@ -44,7 +44,8 @@ async def find_or_create_shared_group_session(
         delivery_target_json={"channel": "feishu", "receive_id": chat_id, "receive_id_type": "chat_id",
             "chat_type": "group", "chat_id": chat_id},
     ).on_conflict_do_nothing(constraint="uq_chat_sessions_agent_ext_conv"))
-    session = await db.scalar(select(ChatSession).where(ChatSession.agent_id == agent_id, ChatSession.external_conv_id == key))
+    session = await db.scalar(select(ChatSession).where(ChatSession.agent_id == agent_id, ChatSession.external_conv_id == key)
+        .with_for_update())
     if (session is None or session.tenant_id != tenant_id or session.audience_kind != "group"
         or session.group_installation_ref != installation_ref or session.group_subject_id != chat_id
         or session.visibility_scope != "group" or session.user_id is not None or session.external_principal_id is not None):

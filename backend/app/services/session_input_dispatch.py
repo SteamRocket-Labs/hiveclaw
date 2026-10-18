@@ -968,6 +968,7 @@ async def dispatch_admitted_input_fast_path(
         db,
         worker_id=worker_id,
         tenant_id=admission.tenant_id,
+        admission_ids=(admission.id,),
         limit=1,
     )
     current = await db.get(SessionInputAdmission, admission.id)

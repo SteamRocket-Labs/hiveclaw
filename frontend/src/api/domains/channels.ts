@@ -52,6 +52,12 @@ export interface AgentChannelConfig {
   } | null;
 }
 
+export interface FeishuSharedGroupEntry {
+  installation_ref: string;
+  revision: string;
+  chat_ids: string[];
+}
+
 export interface WeChatPersonalStatus {
   connected: boolean;
   account_id?: string;
@@ -62,6 +68,9 @@ export interface WeChatPersonalStatus {
 }
 
 export const channelApi = {
+  feishuSharedGroups: (agentId: string) => get<FeishuSharedGroupEntry>(`/agents/${agentId}/channel/shared-groups`),
+  saveFeishuSharedGroups: (agentId: string, expectedRevision: string, chatIds: string[]) =>
+    put<FeishuSharedGroupEntry>(`/agents/${agentId}/channel/shared-groups`, { expected_revision: expectedRevision, chat_ids: chatIds }),
   get: (agentId: string) => get<AgentChannelConfig>(`/agents/${agentId}/channel`).catch(() => null),
   create: (agentId: string, data: unknown) => post<unknown>(`/agents/${agentId}/channel`, data),
   update: (agentId: string, data: unknown) => put<unknown>(`/agents/${agentId}/channel`, data),

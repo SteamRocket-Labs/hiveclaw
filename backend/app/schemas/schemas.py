@@ -482,7 +482,8 @@ class ChannelConfigOut(BaseModel):
     def serialize_extra_config(self, value: dict | None) -> dict | None:
         from app.services.channel_secret_storage import redact_channel_extra_config
 
-        return redact_channel_extra_config(value, reveal_suffix=True) if value else value
+        public = {key: item for key, item in (value or {}).items() if key != "shared_group_entry"}
+        return redact_channel_extra_config(public, reveal_suffix=True) if value else value
 
     def to_safe(self) -> "ChannelConfigOut":
         """Return a copy with secrets masked for non-admin users."""

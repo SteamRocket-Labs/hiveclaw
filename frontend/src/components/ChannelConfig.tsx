@@ -9,6 +9,7 @@ import {
 import { toolsApi, type FeishuRuntimeStatus } from '../api/domains/tools';
 import FeishuAppRegistrationSetup from './FeishuAppRegistrationSetup';
 import FeishuRuntimeStatusCard from './FeishuRuntimeStatusCard';
+import FeishuSharedGroups from './FeishuSharedGroups';
 import WeChatPersonalSetup from './WeChatPersonalSetup';
 import './ChannelConfig.css';
 
@@ -1002,6 +1003,7 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
                                 )}
 
                                 {/* WeCom websocket status */}
+                                {ch.id === 'feishu' && <FeishuSharedGroups agentId={agentId!} />}
                                 {ch.id === 'wecom' && configConnMode === 'websocket' && (
                                     <div className="channel-config-status-box">
                                         <div className="channel-config-hstack-sm">

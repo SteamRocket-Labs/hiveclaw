@@ -156,6 +156,9 @@
   width: 100%;
 }
 .channel-config-field-input-secret { padding-right: 36px; }
+.channel-config-group-entry { min-width: 0; overflow-wrap: anywhere; }
+.channel-config-group-entry textarea { box-sizing: border-box; max-width: 100%; resize: vertical; }
+.channel-config-group-entry .channel-config-hstack-sm { flex-wrap: wrap; }
 .channel-config-pwd-toggle {
   position: absolute;
   right: 8px;

@@ -5347,5 +5347,16 @@
     "openEmployee": "Open employee work",
     "optional": "Optional company integrations",
     "optionalBoundary": "These are saved configuration records. Sign-in, channel delivery and directory sync require their own real checks."
+  },
+  "feishuSharedGroups": {
+    "title": "Shared group work",
+    "description": "Choose the group IDs whose new messages should enter one shared work conversation. Current group membership and employee permissions still apply. Other groups and direct messages keep their separate conversations.",
+    "history": "Existing private history stays private. Removing a group changes new message entry; accepted work and earlier shared history remain available to authorized members.",
+    "readFailed": "Could not read the current setting. Your draft is kept; refresh to retry.",
+    "saveFailed": "Could not confirm this save. Refresh the saved list, compare it with your draft, then save again if needed.",
+    "saved": "Saved groups",
+    "none": "None",
+    "ids": "Group IDs, one per line",
+    "confirmed": "Group entry setting saved."
   }
 }

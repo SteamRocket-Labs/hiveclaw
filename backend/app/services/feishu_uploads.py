@@ -68,8 +68,13 @@ async def save_feishu_upload(db, *, actor, session, message_id, resource_key, fi
     from app.services.workspace_resource_authority import register_workspace_path
     from app.services.content_input_receipts import latest_workspace_receipt, lock_workspace_receipt_write, record_workspace_receipt
 
-    authority = await resolve_session_mutation_authority(db, user=actor, agent_id=session.agent_id,
-        session_id=session.id, action="mutate_session_input")
+    if session.audience_kind == "group":
+        from app.services.shared_group_authority import resolve_shared_group_entry_authority
+
+        authority = await resolve_shared_group_entry_authority(db, actor=actor, session=session)
+    else:
+        authority = await resolve_session_mutation_authority(db, user=actor, agent_id=session.agent_id,
+            session_id=session.id, action="mutate_session_input")
     ingress = current_channel_ingress_context()
     if ingress and (ingress.tenant_id, ingress.agent_id, ingress.external_principal_id, ingress.provider) != (
         authority.tenant_id, authority.agent_id, actor.external_principal_id, "feishu"):

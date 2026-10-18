@@ -10,7 +10,7 @@ from typing import Literal
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.responses import HTMLResponse
 from loguru import logger
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -817,6 +817,55 @@ async def cancel_feishu_app_registration(
     return _registration_response(registration)
 
 
+class FeishuSharedGroupSettings(BaseModel):
+    expected_revision: str
+    chat_ids: list[str]
+
+    @field_validator("chat_ids")
+    @classmethod
+    def validate_chat_ids(cls, values):
+        if any(not value or len(value) > 200 or any(char.isspace() or ord(char) < 32 for char in value) for value in values):
+            raise ValueError("Group IDs must be nonempty, contain no whitespace, and be at most 200 characters")
+        return sorted(set(values))
+
+
+@router.get("/agents/{agent_id}/channel/shared-groups")
+async def get_shared_group_settings(agent_id: uuid.UUID, response: Response,
+    current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    agent = await require_agent_manage_access(db, current_user, agent_id)
+    config = await db.scalar(select(ChannelConfig).where(ChannelConfig.agent_id == agent_id,
+        ChannelConfig.tenant_id == agent.tenant_id, ChannelConfig.channel_type == "feishu"))
+    if config is None or not config.is_configured:
+        raise HTTPException(404, detail="Channel not configured")
+    from app.services.feishu_group_entry import group_entry_settings
+
+    response.headers["Cache-Control"] = "no-store"
+    return group_entry_settings(config)
+
+
+@router.put("/agents/{agent_id}/channel/shared-groups")
+async def update_shared_group_settings(agent_id: uuid.UUID, data: FeishuSharedGroupSettings, response: Response,
+    current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    agent = await require_agent_manage_access(db, current_user, agent_id)
+    config = await db.scalar(select(ChannelConfig).where(ChannelConfig.agent_id == agent_id,
+        ChannelConfig.tenant_id == agent.tenant_id, ChannelConfig.channel_type == "feishu")
+        .with_for_update().execution_options(populate_existing=True))
+    if config is None or not config.is_configured:
+        raise HTTPException(404, detail="Channel not configured")
+    from app.services.feishu_group_entry import save_group_entry_settings
+
+    result = await save_group_entry_settings(db, config=config, expected_revision=data.expected_revision, chat_ids=data.chat_ids)
+    await require_agent_manage_access(db, current_user, agent_id)
+    from app.models.audit import AuditLog
+
+    db.add(AuditLog(tenant_id=agent.tenant_id, agent_id=agent_id, user_id=current_user.id,
+        action="feishu_shared_group_entry_updated", details={"channel_config_id": str(config.id),
+            "previous_revision": data.expected_revision, "revision": result["revision"], "group_count": len(result["chat_ids"])}))
+    await db.commit()
+    response.headers["Cache-Control"] = "no-store"
+    return result
+
+
 @router.post("/agents/{agent_id}/channel", response_model=ChannelConfigOut, status_code=status.HTTP_201_CREATED)
 async def configure_channel(
     agent_id: uuid.UUID,
@@ -836,6 +885,8 @@ async def configure_channel(
     )
     existing = result.scalar_one_or_none()
     existing_extra = existing.extra_config if existing else {}
+    if "shared_group_entry" in (data.extra_config or {}):
+        raise HTTPException(422, detail="Use the shared-groups setting to select shared group entry")
     incoming_extra = {**(existing_extra or {}), **(data.extra_config or {})}
     incoming_extra["platform_region"] = resolve_feishu_platform(incoming_extra).region
     incoming_extra["setup_method"] = "manual"
@@ -1475,8 +1526,14 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
             delivery_target["external_principal_id"] = str(external_principal_id)
             delivery_target["user_label"] = runtime_actor.display_name or sender_name or sender_open_id[:8]
 
+            from app.services.feishu_group_entry import select_shared_feishu_session
+
+            _shared_sess = await select_shared_feishu_session(db, config=config, agent_id=agent_id,
+                tenant_id=agent_tenant_id, actor=runtime_actor, chat_type=chat_type, chat_id=chat_id,
+                title=user_text, new_session=_is_feishu_new_session_command(user_text))
+
             if _is_feishu_new_session_command(user_text):
-                _new_sess = await start_new_channel_session(
+                _new_sess = _shared_sess if _shared_sess is not None else await start_new_channel_session(
                     db=db,
                     agent_id=agent_id,
                     tenant_id=agent_tenant_id,
@@ -1490,7 +1547,8 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
                 )
                 session_conv_id = str(_new_sess.id)
                 delivery_target["session_id"] = session_conv_id
-                _new_sess.delivery_target_json = delivery_target
+                if _shared_sess is None:
+                    _new_sess.delivery_target_json = delivery_target
                 await db.commit()
                 await feishu_service.send_message(
                     config.app_id,
@@ -1504,7 +1562,8 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
                 )
                 return {"code": 0, "msg": "new session created"}
 
-            approval_shortcut = await _try_resolve_feishu_text_approval(
+            # Shared work uses its session-bound controls, not a private latest-ticket shortcut.
+            approval_shortcut = None if _shared_sess is not None else await _try_resolve_feishu_text_approval(
                 db=db,
                 agent=agent_obj,
                 user_text=user_text,
@@ -1521,33 +1580,34 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
             _hist_limit = await compute_history_limit_for_agent(agent_id)
 
             # Pre-resolve session so history lookup uses the UUID  (session created later if new)
-            pre_session_conv_ids = [conv_id, *legacy_conv_ids]
-            _pre_sess_r = await db.execute(
-                select(ChatSession).where(
-                    ChatSession.agent_id == agent_id,
-                    ChatSession.external_conv_id.in_(pre_session_conv_ids),
-                )
-            )
-            _pre_sessions = list(_pre_sess_r.scalars().all())
-            _pre_sess = next((sess for sess in _pre_sessions if sess.external_conv_id == conv_id), None)
-            if _pre_sess is None and _pre_sessions:
-                _pre_sess = _pre_sessions[0]
-            _history_conv_id = str(_pre_sess.id) if _pre_sess else conv_id
-            history_result = await db.execute(
-                select(ChatMessage)
-                .where(ChatMessage.agent_id == agent_id, ChatMessage.conversation_id == _history_conv_id)
-                .order_by(ChatMessage.created_at.desc())
-                .limit(_hist_limit)
-            )
-            history_msgs = history_result.scalars().all()
             history = []
-            for m in reversed(history_msgs):
-                entry = {"role": m.role, "content": m.content}
-                if getattr(m, "thinking", None):
-                    entry["reasoning_content"] = m.thinking
-                if getattr(m, "thinking_signature", None):
-                    entry["reasoning_signature"] = m.thinking_signature
-                history.append(entry)
+            if _shared_sess is None:
+                pre_session_conv_ids = [conv_id, *legacy_conv_ids]
+                _pre_sess_r = await db.execute(
+                    select(ChatSession).where(
+                        ChatSession.agent_id == agent_id,
+                        ChatSession.external_conv_id.in_(pre_session_conv_ids),
+                    )
+                )
+                _pre_sessions = list(_pre_sess_r.scalars().all())
+                _pre_sess = next((sess for sess in _pre_sessions if sess.external_conv_id == conv_id), None)
+                if _pre_sess is None and _pre_sessions:
+                    _pre_sess = _pre_sessions[0]
+                _history_conv_id = str(_pre_sess.id) if _pre_sess else conv_id
+                history_result = await db.execute(
+                    select(ChatMessage)
+                    .where(ChatMessage.agent_id == agent_id, ChatMessage.conversation_id == _history_conv_id)
+                    .order_by(ChatMessage.created_at.desc())
+                    .limit(_hist_limit)
+                )
+                history_msgs = history_result.scalars().all()
+                for m in reversed(history_msgs):
+                    entry = {"role": m.role, "content": m.content}
+                    if getattr(m, "thinking", None):
+                        entry["reasoning_content"] = m.thinking
+                    if getattr(m, "thinking_signature", None):
+                        entry["reasoning_signature"] = m.thinking_signature
+                    history.append(entry)
 
             try:
                 from app.core.execution_context import set_delegated_user_identity
@@ -1565,7 +1625,7 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
             # ── Find-or-create a ChatSession via external_conv_id (DB-based, no cache needed) ──
             from datetime import datetime as _dt, timezone as _tz
 
-            _sess = await find_or_create_channel_session(
+            _sess = _shared_sess if _shared_sess is not None else await find_or_create_channel_session(
                 db=db,
                 agent_id=agent_id,
                 tenant_id=agent_tenant_id,
@@ -1579,16 +1639,24 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
             )
             session_conv_id = str(_sess.id)
             delivery_target["session_id"] = session_conv_id
-            _sess.delivery_target_json = delivery_target
+            if _shared_sess is None:
+                _sess.delivery_target_json = delivery_target
 
             from app.services.feishu_uploads import save_feishu_upload
 
-            for key, content in _post_uploads:
-                await save_feishu_upload(db, actor=runtime_actor, session=_sess,
-                    message_id=message.get("message_id"), resource_key=key, filename=f"image_{key[-8:]}.jpg", content=content)
             # Save user message
-            db.add(
-                ChatMessage(
+            previous_input = None
+            if _shared_sess is not None:
+                from app.services.channel_ingress_context import current_channel_ingress_context
+
+                previous_input = await db.scalar(select(ChatMessage).where(
+                    ChatMessage.source_ingress_event_id == current_channel_ingress_context().event_id))
+                if previous_input is not None and (previous_input.tenant_id, previous_input.agent_id,
+                    previous_input.user_id, previous_input.external_principal_id, previous_input.conversation_id, previous_input.content) != (
+                    agent_tenant_id, agent_id, platform_user_id, external_principal_id, session_conv_id, user_text):
+                    raise HTTPException(409, detail="Group input conflicts with its original receipt")
+            if previous_input is None:
+                db.add(ChatMessage(
                     agent_id=agent_id,
                     tenant_id=agent_tenant_id,
                     user_id=platform_user_id,
@@ -1596,8 +1664,11 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
                     role="user",
                     content=user_text,
                     conversation_id=session_conv_id,
-                )
-            )
+                ))
+            await db.flush()
+            for key, content in _post_uploads:
+                await save_feishu_upload(db, actor=runtime_actor, session=_sess,
+                    message_id=message.get("message_id"), resource_key=key, filename=f"image_{key[-8:]}.jpg", content=content)
             _sess.last_message_at = _dt.now(_tz.utc)
             await db.commit()
 
@@ -2232,8 +2303,13 @@ async def _handle_feishu_file(
             "external_principal_id": str(external_principal_id),
         }
 
+        from app.services.feishu_group_entry import select_shared_feishu_session
+
+        _shared_sess = await select_shared_feishu_session(db, config=config, agent_id=agent_id,
+            tenant_id=_feishu_tenant_id, actor=runtime_actor, chat_type=chat_type, chat_id=chat_id,
+            title=f"[文件] {filename}")
         # Find-or-create session
-        _sess = await find_or_create_channel_session(
+        _sess = _shared_sess if _shared_sess is not None else await find_or_create_channel_session(
             db=db,
             agent_id=agent_id,
             tenant_id=_feishu_tenant_id,
@@ -2247,12 +2323,14 @@ async def _handle_feishu_file(
         )
         session_conv_id = str(_sess.id)
         delivery_target["session_id"] = session_conv_id
-        _sess.delivery_target_json = delivery_target
+        if _shared_sess is None:
+            _sess.delivery_target_json = delivery_target
 
         from app.services.session_v2_persistence import resolve_session_mutation_authority
 
-        await resolve_session_mutation_authority(db, user=runtime_actor, agent_id=agent_id,
-            session_id=_sess.id, action="mutate_session_input")
+        if _shared_sess is None:
+            await resolve_session_mutation_authority(db, user=runtime_actor, agent_id=agent_id,
+                session_id=_sess.id, action="mutate_session_input")
 
         # Download the file
         try:
@@ -2324,13 +2402,15 @@ async def _handle_feishu_file(
         from app.services.memory_service import compute_history_limit_for_agent as _chlfa
 
         _hist_limit2 = await _chlfa(agent_id)
-        _hist_r = await db.execute(
-            _select(ChatMessage)
-            .where(ChatMessage.agent_id == agent_id, ChatMessage.conversation_id == session_conv_id)
-            .order_by(ChatMessage.created_at.desc())
-            .limit(_hist_limit2)
-        )
-        _history = [{"role": m.role, "content": m.content} for m in reversed(_hist_r.scalars().all())]
+        _history = []
+        if _shared_sess is None:
+            _hist_r = await db.execute(
+                _select(ChatMessage)
+                .where(ChatMessage.agent_id == agent_id, ChatMessage.conversation_id == session_conv_id)
+                .order_by(ChatMessage.created_at.desc())
+                .limit(_hist_limit2)
+            )
+            _history = [{"role": m.role, "content": m.content} for m in reversed(_hist_r.scalars().all())]
 
         await db.commit()
 

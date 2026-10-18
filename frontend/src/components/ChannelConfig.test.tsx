@@ -4,6 +4,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import ChannelConfig from './ChannelConfig';
 
+vi.mock('./FeishuSharedGroups', () => ({ default: () => null }));
+
 const testState = vi.hoisted(() => ({
   feishuConfig: null as Record<string, unknown> | null,
 }));

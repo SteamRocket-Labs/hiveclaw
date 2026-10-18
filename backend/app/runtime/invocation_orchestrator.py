@@ -69,22 +69,28 @@ async def run_agent_invocation(
     ports: InvocationPorts,
 ) -> AgentInvocationResult:
     """Run the single public invocation owner through explicit lifecycle stages."""
-    ports.normalize_session_context(request)
-    quota_result = await ports.enforce_quota(request)
-    if quota_result is not None:
-        return quota_result
-    state = await _assemble_invocation_state(request, ports)
-    for hook_stage in (_run_setup_hook, _run_prompt_hook, _run_session_start_hook):
-        blocked = await hook_stage(state)
-        if blocked is not None:
-            aux_surfaces, aux_refs = _secret_aux_evidence(state)
-            await _emit_secret_egress_event(
-                state,
-                surfaces=aux_surfaces,
-                source_refs=aux_refs,
-            )
-            return blocked
-    return await _invoke_and_close(state)
+    from app.services.execution_environments import EnvironmentCommandFrame, command_environment_context
+    from app.services.runtime_task_fence import current_runtime_task_fence
+
+    fence = current_runtime_task_fence()
+    frame = EnvironmentCommandFrame(request.tenant_id, request.agent_id, request.user_id, fence.task_id if fence else None)
+    with command_environment_context(frame):
+        ports.normalize_session_context(request)
+        quota_result = await ports.enforce_quota(request)
+        if quota_result is not None:
+            return quota_result
+        state = await _assemble_invocation_state(request, ports)
+        for hook_stage in (_run_setup_hook, _run_prompt_hook, _run_session_start_hook):
+            blocked = await hook_stage(state)
+            if blocked is not None:
+                aux_surfaces, aux_refs = _secret_aux_evidence(state)
+                await _emit_secret_egress_event(
+                    state,
+                    surfaces=aux_surfaces,
+                    source_refs=aux_refs,
+                )
+                return blocked
+        return await _invoke_and_close(state)
 
 
 async def _assemble_invocation_state(

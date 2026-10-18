@@ -2,7 +2,7 @@
 
 import asyncio
 import uuid
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
@@ -346,6 +346,47 @@ class EnvironmentCommandScope:
 _COMMAND_SCOPE: ContextVar[EnvironmentCommandScope | None] = ContextVar("environment_command_scope", default=None)
 
 
+@dataclass(frozen=True)
+class EnvironmentCommandFrame:
+    tenant_id: uuid.UUID | str | None
+    agent_id: uuid.UUID | str | None
+    user_id: uuid.UUID | str | None
+    runtime_task_id: uuid.UUID | str | None
+
+
+_COMMAND_FRAME: ContextVar[EnvironmentCommandFrame | None] = ContextVar("environment_command_frame", default=None)
+
+
+@contextmanager
+def command_environment_context(context):
+    # Only the resolved host context supplies authority; hook payloads remain data.
+    frame = EnvironmentCommandFrame(context.tenant_id, context.agent_id, context.user_id, context.runtime_task_id)
+    token = _COMMAND_FRAME.set(frame)
+    try:
+        yield
+    finally:
+        _COMMAND_FRAME.reset(token)
+
+
+async def execute_environment_command(operation, *, provider, timeout):
+    frame = _COMMAND_FRAME.get()
+    scope = current_environment_scope()
+    if scope is not None and (
+        frame is None
+        or all(
+            str(getattr(scope, key)) == str(getattr(frame, key))
+            for key in ("tenant_id", "agent_id", "user_id", "runtime_task_id")
+        )
+    ):
+        return await scope.execute(operation, provider=provider, timeout=timeout)
+    if frame is None:
+        return await operation()
+    # Pre/governance/post hooks have their own command lifetime. The backend
+    # retains its existing scope through canonical workspace settlement.
+    async with environment_command_scope(frame, uuid.uuid4().hex) as owned:
+        return await owned.execute(operation, provider=provider, timeout=timeout)
+
+
 def current_environment_scope():
     return _COMMAND_SCOPE.get()
 
@@ -367,10 +408,14 @@ async def environment_command_scope(context, invocation_key):
         runtime_task_id=context.runtime_task_id,
     )
     token = _COMMAND_SCOPE.set(scope)
+    frame_token = _COMMAND_FRAME.set(
+        EnvironmentCommandFrame(scope.tenant_id, scope.agent_id, scope.user_id, scope.runtime_task_id)
+    )
     try:
         yield scope
     finally:
         _COMMAND_SCOPE.reset(token)
+        _COMMAND_FRAME.reset(frame_token)
         if scope.lease_id is not None:
             cleanup = asyncio.create_task(scope.release())
             interrupted = False

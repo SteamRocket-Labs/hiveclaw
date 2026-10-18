@@ -89,6 +89,7 @@ class HookRunRecord:
     output_text: str = ""
     error: str | None = None
     hook_result: HookResult | None = None
+    environment_receipt: dict[str, Any] | None = None
 
 
 async def _maybe_await(value: Any) -> Any:
@@ -362,6 +363,7 @@ class GovernedHookRunner:
                 "hook_type": spec.type,
                 "status": record.status,
                 "exit_code": record.exit_code,
+                **({"environment": record.environment_receipt} if record.environment_receipt else {}),
                 "error": record.error,
                 "failure_mode": spec.failure_mode or default_hook_failure_mode(spec.event),
                 "retryable": record.status in {"failed", "non_blocking_error", "disabled"},
@@ -414,6 +416,7 @@ class GovernedHookRunner:
                 stderr=result.stderr,
                 exit_code=result.exit_code,
                 error=result.error,
+                environment_receipt=result.evidence.get("environment"),
             )
         if result.exit_code == 2:
             reason = output_text or "hook returned blocking exit code 2"
@@ -427,6 +430,7 @@ class GovernedHookRunner:
                 exit_code=result.exit_code,
                 output_text=output_text,
                 hook_result=HookResult(block=True, reason=reason),
+                environment_receipt=result.evidence.get("environment"),
             )
         parsed = _parse_json_object(result.stdout)
         parsed_output = parse_hook_json_output(
@@ -453,6 +457,7 @@ class GovernedHookRunner:
             output_text=output_text,
             error="hook command timed out" if result.timed_out else None,
             hook_result=hook_result,
+            environment_receipt=result.evidence.get("environment"),
         )
 
     async def _run_prompt(self, spec: HookSpec, ctx: HookContext) -> HookRunRecord:

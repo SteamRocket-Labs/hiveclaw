@@ -71,3 +71,58 @@ async def test_release_database_failure_is_unknown_without_private_error_text(mo
     with pytest.raises(environments.EnvironmentError, match="^environment_release_unknown$") as error:
         await current.release()
     assert error.value.status == 503
+
+
+@pytest.mark.parametrize("nested_backend", [False, True])
+async def test_nested_call_uses_its_resolved_principal_then_restores_parent(monkeypatch, nested_backend):
+    from app.services.code_execution.contracts import CodeExecutionResult
+
+    parent, child = scope(), scope()
+    observed = []
+
+    async def execute(current, _operation, **_kwargs):
+        observed.append((current.tenant_id, current.agent_id, current.user_id, current.runtime_task_id))
+        return CodeExecutionResult(stdout="scoped")
+
+    monkeypatch.setattr(environments.EnvironmentCommandScope, "execute", execute)
+
+    async def operation():
+        raise AssertionError("Nested commands cannot escape resource supervision")
+
+    async with environments.environment_command_scope(parent, "parent"):
+        if nested_backend:
+            async with environments.environment_command_scope(child, "child"):
+                await environments.execute_environment_command(operation, provider="local", timeout=1)
+        else:
+            with environments.command_environment_context(child):
+                await environments.execute_environment_command(operation, provider="local", timeout=1)
+        await environments.execute_environment_command(operation, provider="local", timeout=1)
+    assert observed == [
+        (value.tenant_id, value.agent_id, value.user_id, value.runtime_task_id) for value in (child, parent)
+    ]
+    assert environments.current_environment_scope() is None
+
+
+async def test_command_frame_copies_identity_and_unwinds_without_affecting_diagnostics(monkeypatch):
+    from app.services.code_execution.contracts import CodeExecutionResult
+
+    context = scope()
+    original_user = context.user_id
+
+    async def execute(current, _operation, **_kwargs):
+        assert current.user_id == original_user
+        return CodeExecutionResult(stdout="scoped")
+
+    monkeypatch.setattr(environments.EnvironmentCommandScope, "execute", execute)
+
+    async def operation():
+        return CodeExecutionResult(stdout="unmanaged-diagnostic")
+
+    with pytest.raises(RuntimeError, match="synthetic-frame-failure"):
+        with environments.command_environment_context(context):
+            context.user_id = uuid4()
+            result = await environments.execute_environment_command(operation, provider="local", timeout=1)
+            assert result.stdout == "scoped"
+            raise RuntimeError("synthetic-frame-failure")
+    result = await environments.execute_environment_command(operation, provider="local", timeout=1)
+    assert result.stdout == "unmanaged-diagnostic"

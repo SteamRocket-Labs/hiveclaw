@@ -99,19 +99,24 @@ async def run_tool_execution(
         tool_call_id=request.tool_call_id or ports.new_tool_call_id(),
         arguments=dict(request.arguments or {}),
     )
-    for stage in (
-        _prepare_runtime_context,
-        _apply_exact_secret_preflight,
-        _apply_exact_session_scope,
-        _apply_plan_mode_and_runtime_arguments,
-        _apply_hooks_and_assets,
-        _apply_workspace_mutation_path_authority,
-        _apply_governance,
-    ):
-        stopped = await stage(state)
-        if stopped is not None:
-            return stopped.value
-    return await _execute_tool(state)
+    prepared = await _prepare_runtime_context(state)
+    if prepared is not None:
+        return prepared.value
+    from app.services.execution_environments import command_environment_context
+
+    with command_environment_context(state.runtime_context):
+        for stage in (
+            _apply_exact_secret_preflight,
+            _apply_exact_session_scope,
+            _apply_plan_mode_and_runtime_arguments,
+            _apply_hooks_and_assets,
+            _apply_workspace_mutation_path_authority,
+            _apply_governance,
+        ):
+            stopped = await stage(state)
+            if stopped is not None:
+                return stopped.value
+        return await _execute_tool(state)
 
 
 def _approval_error(state: _ToolExecutionState, *, error_class: str, message: str, hint: str) -> _Stop:

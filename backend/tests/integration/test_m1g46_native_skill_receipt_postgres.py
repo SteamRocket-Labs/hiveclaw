@@ -16,7 +16,7 @@ pytestmark = [pytest.mark.usefixtures("migrated_pg_url"), pytest.mark.skipif(pla
 
 
 async def _run_native_skill_task(
-    owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, *, load_skill_name="source-probe", delegated=False, client_script=None, compact_session_ids=False,
+    owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, *, load_skill_name="source-probe", delegated=False, client_script=None, compact_session_ids=False, settle_delegation=False,
 ):
     import app.database as database
     import app.runtime.invoker as invoker
@@ -119,9 +119,21 @@ async def _run_native_skill_task(
             await db.commit()
         token = set_runtime_task_fence(task_id=run_id, worker_id="delegation-native-worker", claim_version=1)
         try:
-            seed["delegation_result"] = await orchestrator._delegate_after_cycle_check(request,
-                trace_id="native-delegation", child_session_id=child_key,
-                tool_profile=orchestrator._resolve_delegation_tool_profile("worker_safe"), is_delegation=True)
+            if settle_delegation:
+                orchestrator._spawn_async_delegation_task(task_id=str(run_id), request=request, trace_id="native-delegation")
+                pending = orchestrator._async_tasks[str(run_id)].task
+                try:
+                    seed["delegation_result"] = await asyncio.wait_for(pending, timeout=90)
+                finally:
+                    pending.cancel()
+                    await asyncio.gather(pending, return_exceptions=True)
+                    orchestrator._async_tasks.pop(str(run_id), None)
+                    orchestrator._async_task_fallback_records.pop(str(run_id), None)
+                    orchestrator._async_task_parent_ids.pop(str(run_id), None)
+            else:
+                seed["delegation_result"] = await orchestrator._delegate_after_cycle_check(request,
+                    trace_id="native-delegation", child_session_id=child_key,
+                    tool_profile=orchestrator._resolve_delegation_tool_profile("worker_safe"), is_delegation=True)
         finally:
             reset_runtime_task_fence(token)
         seed.update(run_id=run_id, session_id=child_session, delegation_request=request)

@@ -897,10 +897,18 @@ class RuntimeTerminalBoundaryOutboxService:
                 worker_id=worker_id,
                 canonical_validator=canonical_validator,
             )
-        callback_task = asyncio.create_task(
-            process_callback(item),
-            name=f"terminal-boundary-callback:{item.id}",
-        )
+            from app.services.terminal_command_environment import terminal_command_frame
+
+            frame = await terminal_command_frame(
+                db, item=item, worker_id=worker_id, canonical_validator=canonical_validator
+            )
+        from app.services.execution_environments import command_environment_context
+
+        with command_environment_context(frame):
+            callback_task = asyncio.create_task(
+                process_callback(item),
+                name=f"terminal-boundary-callback:{item.id}",
+            )
         renew_task = asyncio.create_task(
             self._renew_terminal_boundary_claim_until_cancelled(item=item, worker_id=worker_id),
             name=f"terminal-boundary-renew:{item.id}",

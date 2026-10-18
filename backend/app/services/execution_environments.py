@@ -174,9 +174,13 @@ class EnvironmentCommandScope:
             raise EnvironmentError("environment_authority_unavailable", 403)
         if self.runtime_task_id is not None:
             task = await db.get(RuntimeTask, self.runtime_task_id, populate_existing=True)
-            if task is None or task.tenant_id != self.tenant_id or task.status != "running":
+            if task is None or task.tenant_id != self.tenant_id:
                 raise EnvironmentError("environment_runtime_claim_unavailable", 403)
-            assert_runtime_task_fence(task)
+            terminal_owner = getattr(self.source_binding, "owns_terminal_task", None)
+            if terminal_owner is None or not terminal_owner(task):
+                if task.status != "running":
+                    raise EnvironmentError("environment_runtime_claim_unavailable", 403)
+                assert_runtime_task_fence(task)
 
     async def _acquire(self, provider, timeout):
         async with tenant_scoped_session(

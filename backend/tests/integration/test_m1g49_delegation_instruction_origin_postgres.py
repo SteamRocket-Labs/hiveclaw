@@ -13,7 +13,101 @@ pytestmark = [pytest.mark.usefixtures("migrated_pg_url"), pytest.mark.skipif(pla
     reason="Native macOS context gate; Linux delivery is deferred.")]
 
 
-@pytest.mark.parametrize("input_case", ["complete", "unbound", "revoked", "first_task", "first_task_unbound", "first_task_revoked", "first_task_refined", "first_task_delivery", "first_task_parent_model", "first_task_refined_native", "first_task_native_creation", "first_task_fresh_employee", "first_task_saved_reopen", "first_task_question", "first_task_question_after_write"])
+async def _start_feishu_creation_work(seed, app_user_sessionmaker, monkeypatch):
+    from sqlalchemy import select
+    from app.api import feishu
+    from app.database import pin_rls_tenant_context
+    from app.models.channel_config import ChannelConfig
+    from app.models.channel_ingress_event import ChannelIngressEvent
+    from app.models.chat_session import ChatSession
+    from app.models.runtime_task import RuntimeTask
+    from app.models.session_v2 import SessionCommand, SessionTurnInput
+    from app.services.channel_ingress_inbox import accept_authenticated_channel_event, ChannelIngressInboxService
+    from app.services.external_principal_service import bind_authenticated_self_channel_principal
+    from app.services.session_input_dispatch import recover_admitted_session_inputs_once
+    from app.services.direct_employee_creation import _human_request
+    from app.services.hr_creation_service import HrCreationConflict
+    from app.models.external_principal import ExternalPrincipal
+
+    async with app_user_sessionmaker() as db:
+        await pin_rls_tenant_context(db, seed["tenant_id"])
+        prior = await db.get(RuntimeTask, seed["run_id"])
+        prior.status = "completed"
+        config = ChannelConfig(id=uuid4(), tenant_id=seed["tenant_id"], agent_id=seed["agent_id"], channel_type="feishu",
+            app_id="synthetic-creation-app", app_secret="synthetic-creation-secret", is_configured=True)
+        db.add(config)
+        await db.flush()
+        bound = await bind_authenticated_self_channel_principal(db, tenant_id=seed["tenant_id"], config=config,
+            provider_subject_id="ou_creation_owner", user_id=seed["user_id"], actor_user_id=seed["user_id"])
+        principal_id, installation = bound.principal.id, str(config.id)
+        await db.commit()
+
+    async def profile(_agent_id, **_kwargs):
+        return {"open_id": "ou_creation_owner", "name": "Creation Owner"}
+
+    async def send(*_args, **_kwargs):
+        return {"data": {"message_id": "synthetic-creation-message"}}
+
+    async def no_card(*_args, **_kwargs):
+        raise RuntimeError("Synthetic CardKit unavailable; use the existing message fallback")
+
+    monkeypatch.setattr(feishu, "_resolve_feishu_sender_profile", profile)
+    monkeypatch.setattr(feishu.feishu_service, "send_message", send)
+    monkeypatch.setattr(feishu.feishu_service, "create_card_entity", no_card)
+    monkeypatch.setattr(feishu.feishu_service, "patch_message", send)
+    body = {"header": {"event_type": "im.message.receive_v1", "event_id": "synthetic-create-event"},
+        "event": {"sender": {"sender_id": {"open_id": "ou_creation_owner"}},
+            "message": {"message_type": "text", "chat_type": "p2p", "message_id": "synthetic-create-message",
+                "content": json.dumps({"text": "Create a research employee and request the authorized report."})}}}
+    async with app_user_sessionmaker() as db:
+        await pin_rls_tenant_context(db, seed["tenant_id"])
+        receipt = await accept_authenticated_channel_event(db, tenant_id=seed["tenant_id"], agent_id=seed["agent_id"],
+            provider="feishu", installation_ref=installation, provider_event_id="synthetic-create-event",
+            handler_key="feishu.event", body=body)
+    stats = await ChannelIngressInboxService(session_factory=app_user_sessionmaker).drain_once(worker_id="creation-ingress")
+    assert stats["processed"] == 1 and stats["retried"] == 0, stats
+    async with app_user_sessionmaker() as db:
+        await pin_rls_tenant_context(db, seed["tenant_id"])
+        ingress = await db.get(ChannelIngressEvent, receipt.event_id)
+        assert ingress.external_principal_id == principal_id, ingress.processing_receipt_json
+        row = await db.get(SessionTurnInput, receipt.event_id)
+        # The bounded live fast path may defer; drive the real durable dispatcher too.
+        await recover_admitted_session_inputs_once(db, worker_id="creation-ingress-dispatch", tenant_id=seed["tenant_id"],
+            admission_ids=(uuid5(row.command_id, "input-admission:revision:1"),))
+        session = await db.get(ChatSession, row.session_id)
+        run = await db.scalar(select(RuntimeTask).where(
+            RuntimeTask.tenant_id == seed["tenant_id"], RuntimeTask.parent_session_id == str(session.id),
+            RuntimeTask.metadata_json["session_v2_input_id"].astext == str(row.id)))
+        assert run is not None
+        command = await db.get(SessionCommand, row.command_id)
+        assert session.external_principal_id == principal_id and session.actor_type == "external_principal"
+        assert command.principal_type == "external_principal" and command.principal_id == principal_id
+        assert session.user_id == run.root_user_id == seed["user_id"]
+        principal = await db.get(ExternalPrincipal, principal_id)
+        for field, changed in (("status", "revoked"), ("linked_user_id", None)):
+            before = getattr(principal, field)
+            setattr(principal, field, changed)
+            await db.flush()
+            with pytest.raises(HrCreationConflict) as denied:
+                await _human_request(db, tenant_id=seed["tenant_id"], user_id=seed["user_id"],
+                    agent_id=seed["agent_id"], session_id=session.id, run_id=run.id, input_id=row.id)
+            assert denied.value.code == "source_execute_denied"
+            setattr(principal, field, before)
+            await db.flush()
+        ingress.installation_ref = "another-installation"
+        await db.flush()
+        with pytest.raises(HrCreationConflict) as wrong_installation:
+            await _human_request(db, tenant_id=seed["tenant_id"], user_id=seed["user_id"],
+                agent_id=seed["agent_id"], session_id=session.id, run_id=run.id, input_id=row.id)
+        assert wrong_installation.value.code == "direct_human_input_required"
+        ingress.installation_ref = installation
+        await db.commit()
+        seed.update(run_id=run.id, session_id=session.id, turn_id=run.metadata_json["turn_id"],
+            feishu_principal_id=principal_id, feishu_ingress_id=ingress.id)
+        return command.id
+
+
+@pytest.mark.parametrize("input_case", ["complete", "unbound", "revoked", "first_task", "first_task_unbound", "first_task_revoked", "first_task_refined", "first_task_delivery", "first_task_parent_model", "first_task_refined_native", "first_task_native_creation", "first_task_fresh_employee", "first_task_saved_reopen", "first_task_question", "first_task_question_after_write", "first_task_feishu_question"])
 async def test_governed_delegation_preserves_its_parent_instruction_origin(
     owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, input_case,
 ):
@@ -33,11 +127,12 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
 
     first_task = input_case.startswith("first_task")
     question_after_write = input_case == "first_task_question_after_write"
+    feishu_creation = input_case == "first_task_feishu_question"
     saved_reopen = input_case == "first_task_saved_reopen"
-    native_creation = input_case in {"first_task_native_creation", "first_task_fresh_employee", "first_task_saved_reopen", "first_task_question", "first_task_question_after_write"}
-    parent_model_case = input_case in {"first_task_parent_model", "first_task_refined_native", "first_task_native_creation", "first_task_fresh_employee", "first_task_saved_reopen", "first_task_question", "first_task_question_after_write"}
+    native_creation = feishu_creation or input_case in {"first_task_native_creation", "first_task_fresh_employee", "first_task_saved_reopen", "first_task_question", "first_task_question_after_write"}
+    parent_model_case = feishu_creation or input_case in {"first_task_parent_model", "first_task_refined_native", "first_task_native_creation", "first_task_fresh_employee", "first_task_saved_reopen", "first_task_question", "first_task_question_after_write"}
     delivery_case = input_case == "first_task_delivery" or parent_model_case
-    native_refined = input_case in {"first_task_refined_native", "first_task_native_creation", "first_task_fresh_employee", "first_task_saved_reopen", "first_task_question", "first_task_question_after_write"}
+    native_refined = feishu_creation or input_case in {"first_task_refined_native", "first_task_native_creation", "first_task_fresh_employee", "first_task_saved_reopen", "first_task_question", "first_task_question_after_write"}
     refined_input = input_case == "first_task_refined"
     unbound_input = input_case in {"unbound", "first_task_unbound"}
     revoked_input = input_case in {"revoked", "first_task_revoked"}
@@ -132,6 +227,8 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
             run = await db.get(RuntimeTask, seed["run_id"])
             run.status = "running"
             await db.commit()
+    if feishu_creation:
+        creation_command_id = await _start_feishu_creation_work(seed, app_user_sessionmaker, monkeypatch)
     class SyntheticMemoryTransport:
         async def stream(self, **_kwargs):
             from types import SimpleNamespace
@@ -218,7 +315,7 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
 
             assert (await db.get(RuntimeTask, seed["run_id"])).status == "completed"
             assert await creation_tool_result_bound(db, tenant_id=seed["tenant_id"], agent_id=seed["agent_id"],
-                invocation=invocation, content=result)
+                invocation=invocation, content=result), result
             assert not await creation_tool_result_bound(db, tenant_id=seed["tenant_id"], agent_id=seed["agent_id"],
                 invocation=invocation, content=json.dumps({**json.loads(result), "provisioning_task_id": str(uuid4())}))
             creating_rounds = list(await db.scalars(select(SessionModelResult).where(SessionModelResult.run_id == seed["run_id"])))
@@ -328,7 +425,7 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
         return result
     monkeypatch.setattr(content_input_receipts, "record_native_workspace_receipts", observe_writer)
     monkeypatch.setattr(invoker, "create_llm_client", lambda **_kwargs: client)
-    if input_case in {"first_task_question", "first_task_question_after_write"}:
+    if feishu_creation or input_case in {"first_task_question", "first_task_question_after_write"}:
         from app.models.chat_transcript_event import ChatTranscriptEvent
 
         client = ScriptedLLMClient([{"tool_calls": [{"id": "child-question", "type": "function", "function": {
@@ -350,7 +447,7 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
             child = await db.get(RuntimeTask, task_id)
             questions = list(await db.scalars(select(ChatTranscriptEvent).where(
                 ChatTranscriptEvent.run_id == task_id, ChatTranscriptEvent.item_kind == "user_question")))
-            assert len(questions) == 1 and questions[0].lifecycle == "waiting"
+            assert len(questions) == 1 and questions[0].lifecycle == "waiting", (child.status, child.result_summary, child.metadata_json)
             assert child.status == "suspended", (child.status, child.result_summary, child.metadata_json)
             assert child.completed_at is None
             assert len(client.requests) == question_calls
@@ -410,6 +507,8 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
             assert work["session_id"] == request.session_id and work["question"]["item_id"] == str(question_id)
             assert work["question"]["payload"]["questions"][0]["question"] == "Which audience?"
             assert work["can_answer"] is True
+            if feishu_creation:
+                (tmp_path / "original-work-first-task.json").write_text(json.dumps(original.json(), indent=2))
             other = SimpleNamespace(id=uuid4(), tenant_id=user.tenant_id, role=user.role,
                 is_active=True, department_id=user.department_id)
             app.dependency_overrides[get_current_user] = lambda: other

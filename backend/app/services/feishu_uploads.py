@@ -66,6 +66,7 @@ async def save_feishu_upload(db, *, actor, session, message_id, resource_key, fi
     from app.config import get_settings
     from app.services.channel_ingress_context import current_channel_ingress_context
     from app.services.workspace_resource_authority import register_workspace_path
+    from app.services.content_input_receipts import latest_workspace_receipt, lock_workspace_receipt_write, record_workspace_receipt
 
     authority = await resolve_session_mutation_authority(db, user=actor, agent_id=session.agent_id,
         session_id=session.id, action="mutate_session_input")
@@ -93,11 +94,17 @@ async def save_feishu_upload(db, *, actor, session, message_id, resource_key, fi
     if manifest and (manifest.tenant_id, manifest.owner_user_id, manifest.root_session_id, manifest.source, manifest.content_hash, manifest.deleted_at) != (
         authority.tenant_id, actor.id, root_session_id, "feishu_upload", digest, None):
         raise HTTPException(409, "Upload authority or contents changed; preserve the current file and upload a new message")
+    await lock_workspace_receipt_write(db, authority.tenant_id, authority.agent_id, path)
+    previous = await latest_workspace_receipt(db, authority.tenant_id, authority.agent_id, path)
+    if previous is not None and previous.content_sha256 != digest:
+        raise HTTPException(409, "Upload content receipt changed; preserve the current file and upload a new message")
     root = Path(get_settings().AGENT_DATA_DIR).resolve()
     root.mkdir(parents=True, exist_ok=True)
     _store_upload(root, (str(session.agent_id), *Path(path).parts), content)
     await register_workspace_path(db, tenant_id=authority.tenant_id, agent_id=authority.agent_id, path=path,
         owner_user_id=actor.id, root_session_id=root_session_id, source="feishu_upload", content_hash=digest)
+    if previous is None:
+        record_workspace_receipt(db, authority.tenant_id, authority.agent_id, path, digest, None)
     if ingress:
         ingress.session_id = session.id
     return path

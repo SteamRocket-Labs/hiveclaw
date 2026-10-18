@@ -45,14 +45,39 @@ async def _human_request(db, *, tenant_id, user_id, agent_id, session_id, run_id
     if (
         agent.agent_type != "native" or agent.agent_class != "internal_tenant"
         or session is None or session.tenant_id != tenant_id or session.agent_id != agent_id
-        or session.user_id != user_id or session.external_principal_id is not None
-        or session.session_kind != "human_chat" or session.actor_type != "user"
+        or session.user_id != user_id
+        or session.session_kind != "human_chat"
         or session.visibility_scope != "direct_user" or session.listed_surface != "chat"
         or run is None or run.tenant_id != tenant_id or run.root_user_id != user_id
         or run.parent_agent_id != agent_id or run.child_agent_id != agent_id
         or run.parent_session_id != str(session_id) or run.child_session_id != str(session_id)
         or run.root_session_id != str(session_id)
     ):
+        _refused("source_execute_denied", "Creation requires the requester's original direct work.")
+    principal_type, principal_id = "user", user_id
+    external_principal = None
+    if session.external_principal_id is not None:
+        from fastapi import HTTPException
+        from app.models.external_principal import ExternalPrincipal
+        from app.services.external_principal_service import load_external_runtime_actor
+        from app.services.session_v2_persistence import resolve_session_mutation_authority
+
+        if session.source_channel != "feishu" or session.runtime_source != "channel_chat" or session.actor_type != "external_principal":
+            _refused("source_execute_denied", "Creation requires the requester's verified direct channel work.")
+        try:
+            actor = await load_external_runtime_actor(db, tenant_id=tenant_id,
+                principal_id=session.external_principal_id, expected_user_id=user_id)
+            authority = await resolve_session_mutation_authority(db, user=actor, agent_id=agent_id,
+                session_id=session_id, action="mutate_session_input", audit=False)
+        except (HTTPException, LookupError, PermissionError, ValueError) as exc:
+            raise HrCreationConflict("source_execute_denied", "The original channel identity is no longer authorized.") from exc
+        if actor.id != user_id or not actor.authority_bound:
+            _refused("source_execute_denied", "An explicitly bound active user is required for creation.")
+        principal_type, principal_id = authority.principal_type, authority.principal_id
+        external_principal = await db.get(ExternalPrincipal, principal_id)
+        if external_principal is None:
+            _refused("source_execute_denied", "The original channel identity is unavailable.")
+    elif session.actor_type != "user":
         _refused("source_execute_denied", "Creation requires the requester's original direct work.")
     metadata = run.metadata_json or {}
     raw_input = metadata.get("session_v2_input_id") or metadata.get("session_v2_rolled_over_input_id")
@@ -70,7 +95,7 @@ async def _human_request(db, *, tenant_id, user_id, agent_id, session_id, run_id
         ))
         or row.status not in {"bound", "applied", "rolled_over"}
         or command is None or command.tenant_id != tenant_id or command.session_id != session_id
-        or command.principal_type != "user" or command.principal_id != user_id
+        or command.principal_type != principal_type or command.principal_id != principal_id
         or command.namespace != "human_input" or command.status not in {"accepted", "applied"}
         or str(command.id) != str(metadata.get("session_v2_command_id"))
     ):
@@ -86,7 +111,11 @@ async def _human_request(db, *, tenant_id, user_id, agent_id, session_id, run_id
                 and ingress.agent_id == agent_id and ingress.status in {"processing", "processed"}
                 and ingress.result_session_id in {None, session_id} and ingress.result_runtime_task_id in {None, run_id}
                 and (command.target_json or {}).get("runtime_metadata", {}).get("channel_ingress_event_id") == str(row.id)
-                and ingress.external_principal_id is None):
+                and ingress.external_principal_id in {None, session.external_principal_id}
+                and (external_principal is None or (
+                    external_principal.provider == "feishu" and ingress.installation_ref == external_principal.installation_ref
+                    and ingress.handler_key == "feishu.event"
+                    and (ingress.external_principal_id == external_principal.id or ingress.status == "processing")))):
             return row, run
     _refused("direct_human_input_required", "Relayed briefs and background work cannot authorize direct creation.")
 

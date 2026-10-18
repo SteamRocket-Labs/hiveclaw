@@ -100,6 +100,12 @@ async def test_feishu_uploads_keep_sender_ownership_and_never_overwrite_provider
         second = next(row for row in rows if row.owner_user_id == other_id)
         assert first.path != second.path and first.root_session_id != second.root_session_id
         assert all(row.path.startswith("workspace/uploads/feishu/") and row.authority_state == "owned" for row in rows)
+        from app.services.content_input_receipts import latest_workspace_receipt
+
+        for upload_manifest in rows:
+            receipt = await latest_workspace_receipt(db, tenant, agent_id, upload_manifest.path)
+            assert receipt is not None and receipt.revision == 1 and receipt.content_sha256 == upload_manifest.content_hash
+            assert receipt.dependencies_json == []
         inputs = (await db.scalars(select(ChatMessage).where(ChatMessage.agent_id == agent_id, ChatMessage.role == "user"))).all()
         assert len(inputs) == 2 and {row.user_id for row in inputs} == {user_id, other_id}
         first_input = next(row for row in inputs if row.user_id == user_id)

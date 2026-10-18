@@ -33,7 +33,7 @@ class SecurityAuditEvent(Base):
     event_hash: Mapped[str] = mapped_column(String(64), nullable=False, default="")
 
     # Execution Identity (Block C) — who triggered/is responsible for this action
-    execution_identity_type: Mapped[str | None] = mapped_column(String(20))  # agent_bot | delegated_user
+    execution_identity_type: Mapped[str | None] = mapped_column(String(40))
     execution_identity_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
     execution_identity_label: Mapped[str | None] = mapped_column(String(200))
 

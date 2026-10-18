@@ -689,6 +689,11 @@ async def call_agent_llm(
                 session_id=durable_session.id,
             )
         dispatch_status = str(receipt.get("dispatch_status") or "")
+        if run_id is None:
+            return ChannelTransportReceipt(
+                "消息已记录，尚未确认启动任务。请在原工作中查看处理状态；需要修复时继续处理这条消息。",
+                dispatch_status=dispatch_status,
+            )
         if dispatch_status.startswith("mailbox_"):
             return ChannelTransportReceipt(
                 f"已接收补充消息，并排队到当前任务（run_id={run_id}）。完成后我会回到当前会话。",

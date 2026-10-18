@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 from uuid import uuid4
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -34,6 +35,23 @@ class _QueuedDB:
 
     async def commit(self):
         self.commits += 1
+
+
+@pytest.mark.parametrize("admission", ["admitted", "pending", "rejected", "needs_reconciliation"])
+async def test_channel_ack_does_not_claim_a_run_before_one_exists(monkeypatch, admission):
+    from app.services.channel_agent_runtime import call_agent_llm, should_persist_channel_reply_as_assistant
+
+    agent_id, user_id, session_id = uuid4(), uuid4(), uuid4()
+    agent = SimpleNamespace(id=agent_id, tenant_id=None, expires_at=None, deleted_at=None, deactivated_at=None,
+        sponsor=None, sponsor_is_active=None)
+    session = SimpleNamespace(id=session_id)
+    db = SimpleNamespace(execute=AsyncMock(return_value=_ScalarResult(agent)), scalar=AsyncMock(return_value=session))
+    monkeypatch.setattr("app.services.session_live_input.submit_live_human_input", AsyncMock(return_value={
+        "input_id": str(uuid4()), "admission_state": admission, "dispatch_status": "not_dispatched", "run": None}))
+    reply = await call_agent_llm(db, agent_id, "Prepare the report", user_id=user_id, session_id=str(session_id),
+        durable_run=True, durable_session=session, durable_user=SimpleNamespace(id=user_id), ingress_event_id=uuid4())
+    assert "尚未确认启动" in reply and "run_id=None" not in reply and "正在后台处理" not in reply
+    assert reply.run_id is None and should_persist_channel_reply_as_assistant(reply) is False
 
 
 @pytest.mark.asyncio

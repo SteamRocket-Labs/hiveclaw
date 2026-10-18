@@ -37,7 +37,7 @@ class InvocationSpan(Base):
     tenant_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("tenants.id"), nullable=False)
     agent_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("agents.id"), nullable=True)
     user_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
-    execution_identity_type: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    execution_identity_type: Mapped[str | None] = mapped_column(String(40), nullable=True)
     execution_identity_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
     execution_identity_label: Mapped[str | None] = mapped_column(String(200), nullable=True)
     runtime_task_id: Mapped[uuid.UUID | None] = mapped_column(

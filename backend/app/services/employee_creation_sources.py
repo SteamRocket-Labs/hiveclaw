@@ -157,7 +157,7 @@ async def _creation_seed_dependencies(db, *, draft, parent, dependencies):
     from app.models.invocation_span import InvocationSpan
 
     published = []
-    allowed = {"agent_identity": {"identity"}, "agent_context_resource": {"soul", "a2a-collaborators"},
+    allowed = {"agent_identity": {"identity"}, "agent_context_resource": {"soul", "a2a-collaborators", "channels"},
         "agent_resident_memory": {"memory/self/self.md"}}
     for dependency in dependencies:
         kind, source_id = dependency["source_kind"], dependency["source_id"]
@@ -173,6 +173,28 @@ async def _creation_seed_dependencies(db, *, draft, parent, dependencies):
             if (row is not None and row.tenant_id == draft.tenant_id and row.agent_id == parent.id
                 and row.user_id == draft.requested_by_user_id and row.session_id == str(draft.session_id)):
                 published.append(dependency)
+        elif kind == "session_command":
+            from app.models.session_v2 import SessionCommand
+            from app.services.direct_employee_creation import _human_request
+            from app.services.hr_creation_service import HrCreationConflict, direct_creation_authorization
+            from app.services.content_input_receipts import ContentInputReceiptError
+
+            try:
+                command = await db.get(SessionCommand, uuid.UUID(source_id), populate_existing=True)
+            except ValueError:
+                continue
+            if command is not None and command.principal_type == "external_principal":
+                evidence = direct_creation_authorization(draft)
+                if evidence is None:
+                    continue
+                try:
+                    original, _ = await _human_request(db, tenant_id=draft.tenant_id, user_id=draft.requested_by_user_id,
+                        agent_id=draft.hr_agent_id, session_id=draft.session_id,
+                        run_id=uuid.UUID(evidence["source_run_id"]), input_id=evidence["input_id"])
+                except HrCreationConflict as exc:
+                    raise ContentInputReceiptError("content_source_access_denied", "The original channel input is no longer authorized.", 403) from exc
+                if command.id == original.command_id and original.content_hash == evidence["input_hash"]:
+                    published.append(dependency)
     return published
 
 

@@ -230,7 +230,7 @@ describe('HrBlueprintPreviewCard decision hierarchy', () => {
       created_agent_id: '00000240-0000-4000-8000-000000000000',
       blueprint: {},
     };
-    client.setQueryData(['hr-creation-draft', 'hr-agent', preview.blueprintId], completedDraft);
+    client.setQueryData(['hr-creation-draft', 'hr-agent', preview.blueprintId, undefined], completedDraft);
     hrMocks.get.mockResolvedValue(completedDraft);
 
     render(

@@ -32,6 +32,14 @@ export interface HrCreationDraft {
   created_agent_id?: string | null;
   provisioning_task_id?: string | null;
   provisioning?: Record<string, unknown>;
+  first_task_work?: {
+    runtime_task_id: string;
+    agent_id: string;
+    session_id: string;
+    status: string;
+    can_answer: boolean;
+    question: { item_id: string; payload: Record<string, unknown> } | null;
+  } | null;
   provisioning_steps?: Array<{
     step_key: string;
     step_kind: string;

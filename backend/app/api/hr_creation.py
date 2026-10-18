@@ -51,6 +51,7 @@ class HrCreationDraftOut(BaseModel):
     provisioning_task_id: str | None = None
     provisioning: dict[str, Any] = Field(default_factory=dict)
     provisioning_steps: list[dict[str, Any]] = Field(default_factory=list)
+    first_task_work: dict[str, Any] | None = None
     creation_state: str | None = None
     failure: dict[str, Any] | None = None
     hr_agent_id: str | None = None
@@ -296,7 +297,10 @@ async def get_hr_creation_draft(
         db=db, current_user=current_user, agent_id=agent_id, draft_id=draft_id, for_update=False
     )
     task = await _linked_provisioning_task_or_none(db, draft=draft)
-    return _out(hr_creation_draft_payload(draft, runtime_task=task))
+    from app.services.employee_first_task import load_first_task_work
+
+    return _out({**hr_creation_draft_payload(draft, runtime_task=task),
+        "first_task_work": await load_first_task_work(db, draft=draft, user=current_user)})
 
 
 @router.post("/{agent_id}/hr-creation-drafts/{draft_id}/confirm", response_model=HrCreationDraftOut)

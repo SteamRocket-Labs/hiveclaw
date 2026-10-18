@@ -384,6 +384,9 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
                 yield db
         app = FastAPI()
         app.include_router(router, prefix="/api")
+        from app.api.hr_creation import router as creation_router
+
+        app.include_router(creation_router, prefix="/api")
         app.dependency_overrides[get_db] = answer_db
         app.dependency_overrides[get_current_user] = lambda: user
         answer_id = uuid4()
@@ -399,6 +402,31 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
                     admission_ids=(uuid5(UUID(response.json()["command_id"]), f"input-admission:revision:{revision}"),))
                 assert (await db.get(SessionTurnInput, answer_id)).status == "queued"
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://question.local") as browser:
+            draft_url = f"/api/agents/{seed['agent_id']}/hr-creation-drafts/{creation['blueprint_id']}"
+            original = await browser.get(draft_url)
+            assert original.status_code == 200, original.text
+            work = original.json()["first_task_work"]
+            assert work["status"] == "suspended" and work["agent_id"] == str(receiver)
+            assert work["session_id"] == request.session_id and work["question"]["item_id"] == str(question_id)
+            assert work["question"]["payload"]["questions"][0]["question"] == "Which audience?"
+            assert work["can_answer"] is True
+            other = SimpleNamespace(id=uuid4(), tenant_id=user.tenant_id, role=user.role,
+                is_active=True, department_id=user.department_id)
+            app.dependency_overrides[get_current_user] = lambda: other
+            try:
+                denied = await browser.get(draft_url)
+                assert denied.status_code in {403, 404} and "Which audience?" not in denied.text
+            finally:
+                app.dependency_overrides[get_current_user] = lambda: user
+            soul = seed["data_root"] / str(receiver) / "soul.md"
+            original_soul = soul.read_bytes()
+            try:
+                soul.write_bytes(original_soul + b"\nChanged after the question.\n")
+                unavailable = (await browser.get(draft_url)).json()["first_task_work"]
+                assert unavailable["status"] == "unavailable" and unavailable["question"] is None
+                assert unavailable["can_answer"] is False
+            finally:
+                soul.write_bytes(original_soul)
             ordinary = await browser.post(f"/api/agents/{receiver}/sessions/{request.session_id}/inputs", json={
                 "kind": "start_turn", "input_id": str(uuid4()), "idempotency_key": str(uuid4()),
                 "content_parts": [{"type": "text", "text": "Unrelated work"}]})
@@ -418,10 +446,14 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
                 child = await db.get(RuntimeTask, task_id)
                 assert child.status == "suspended" and len(client.requests) == question_calls
                 question_id = UUID(child.metadata_json["delegation_waiting_question_item_id"])
+            reopened = (await browser.get(draft_url)).json()["first_task_work"]
+            assert reopened["question"]["item_id"] == str(question_id) != work["question"]["item_id"]
             answer_id = uuid4()
             body.update(input_id=str(answer_id), idempotency_key=str(answer_id), request_item_id=str(question_id))
             response = await browser.post(f"/api/agents/{receiver}/sessions/{request.session_id}/inputs", json=body)
             await dispatch_answer(response)
+            answered = (await browser.get(draft_url)).json()["first_task_work"]
+            assert answered["question"] is None and answered["runtime_task_id"] == str(task_id)
         async with owner_sessionmaker() as db:
             child = await db.get(RuntimeTask, task_id)
             assert child.status == "pending" and child.completed_at is None
@@ -462,6 +494,9 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
             assert len(tools) == question_calls
             question_tool = next(tool for tool in tools if tool.tool_name == "ask_user_question")
             assert (await db.get(SessionTurnInput, answer_id)).status == "applied"
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://question.local") as browser:
+            completed = (await browser.get(draft_url)).json()["first_task_work"]
+            assert completed["status"] == "completed" and completed["question"] is None
         from app.services.direct_invocation_terminal_boundary_processor import DirectInvocationTerminalBoundaryProcessor
         from app.services.runtime_terminal_boundary_outbox import RuntimeTerminalBoundaryOutboxService
         from app.services.runtime_notification_outbox import RuntimeNotificationOutboxService

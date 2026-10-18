@@ -21,6 +21,71 @@ def needs_first_task_dispatch(draft) -> bool:
                 and (draft.provisioning_json or {}).get("first_task", {}).get("status") != "dispatched")
 
 
+async def load_first_task_work(db, *, draft, user):
+    """Private HTTP view of the existing task, never a parent-model message."""
+    from fastapi import HTTPException
+    from sqlalchemy import select
+    from app.core.permissions import authorize_session_action, check_agent_access
+    from app.models.chat_transcript_event import ChatTranscriptEvent
+    from app.models.session_v2 import SessionToolInvocation
+    from app.services.content_input_receipts import ContentInputReceiptError, _validate_input_dependencies
+    from app.services.session_model_inputs import _origin_dependencies
+    from app.services.session_user_question import question_payload
+
+    evidence = direct_creation_authorization(draft)
+    if user.id != draft.requested_by_user_id or not evidence or not evidence.get("first_task"):
+        return None
+    task_id = uuid.uuid5(draft.id, "explicit-first-task.v1")
+    session_id = uuid.uuid5(task_id, "session")
+    task = await db.get(RuntimeTask, task_id)
+    if task is None:
+        return None
+    work = {"runtime_task_id": str(task_id), "agent_id": str(draft.created_agent_id),
+        "session_id": str(session_id), "status": "needs_reconciliation", "question": None, "can_answer": False}
+    if (task.tenant_id != draft.tenant_id or task.task_type != "delegation"
+        or task.parent_agent_id != draft.hr_agent_id or task.child_agent_id != draft.created_agent_id
+        or task.root_user_id != user.id or task.parent_session_id != str(draft.session_id)
+        or task.child_session_id != str(session_id) or task.prompt != evidence["first_task"]):
+        return work
+    work["status"] = task.status
+    if task.status != "suspended" or not (task.metadata_json or {}).get("delegation_waiting_question_item_id"):
+        return work
+    try:
+        await authorize_session_action(db, user, agent_id=task.child_agent_id, session_id=session_id,
+            action="read_content_input_source")
+        child, access = await check_agent_access(db, user, task.child_agent_id)
+        question_id = uuid.UUID(task.metadata_json["delegation_waiting_question_item_id"])
+        question = await db.scalar(select(ChatTranscriptEvent).where(
+            ChatTranscriptEvent.tenant_id == draft.tenant_id, ChatTranscriptEvent.agent_id == task.child_agent_id,
+            ChatTranscriptEvent.session_id == session_id, ChatTranscriptEvent.run_id == task.id,
+            ChatTranscriptEvent.item_kind == "user_question", ChatTranscriptEvent.item_id == question_id,
+        ).order_by(ChatTranscriptEvent.sequence.desc()).limit(1))
+        if question is None or question.lifecycle != "waiting" or question_payload(question).get("requested_by_user_id") != str(user.id):
+            return work
+        invocation = await db.get(SessionToolInvocation, question.invocation_id) if question.invocation_id else None
+        if (invocation is None or invocation.tenant_id != task.tenant_id or invocation.run_id != task.id
+            or invocation.session_id != session_id or invocation.tool_name != "ask_user_question"):
+            raise ContentInputReceiptError("user_question_unverified", "The question source is unavailable.", 503)
+        dependencies, complete = await _origin_dependencies(db, tenant_id=task.tenant_id,
+            agent_id=task.child_agent_id, ref=f"session-tool-result:{invocation.id}")
+        if not complete:
+            raise ContentInputReceiptError("user_question_unverified", "The question source is unavailable.", 503)
+        await _validate_input_dependencies(db, task.tenant_id, dependencies, user=user)
+        result = await db.get(ChatTranscriptEvent, invocation.result_event_id)
+        payload = json.loads(question_payload(result)["content"])
+        work["question"] = {"item_id": str(question.item_id), "payload": payload}
+        work["can_answer"] = access in {"use", "manage"} and child.deleted_at is None and child.deactivated_at is None
+    except ContentInputReceiptError as exc:
+        work.update(status="unavailable" if exc.status_code == 403 else "unknown", reason=exc.code)
+    except HTTPException as exc:
+        if exc.status_code not in {403, 404, 410}:
+            raise
+        work.update(status="unavailable", reason="question_access_unavailable")
+    except (ValueError, TypeError, KeyError):
+        work.update(status="unknown", reason="user_question_unverified")
+    return work
+
+
 async def resume_first_task_from_tool(context, arguments) -> str:
     from fastapi import HTTPException
     from sqlalchemy import select

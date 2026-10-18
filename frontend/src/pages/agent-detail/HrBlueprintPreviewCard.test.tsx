@@ -2,6 +2,8 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it, vi } from 'vitest';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 
+vi.mock('../../stores', () => ({ useAuthStore: () => undefined }));
+
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
     t: (key: string, fallback?: string) => ({
@@ -95,7 +97,7 @@ describe('HrBlueprintPreviewCard', () => {
   it('labels a rejected terminal draft as rejected instead of created', () => {
     const client = new QueryClient();
     client.setQueryData(
-      ['hr-creation-draft', 'hr-agent', preview.blueprintId],
+      ['hr-creation-draft', 'hr-agent', preview.blueprintId, undefined],
       {
         blueprint_id: preview.blueprintId,
         blueprint_version: preview.blueprintVersion,
@@ -158,7 +160,7 @@ describe('HrBlueprintPreviewCard', () => {
   it('shows persisted provisioning evidence and exposes a recovery action', () => {
     const client = new QueryClient();
     client.setQueryData(
-      ['hr-creation-draft', 'hr-agent', preview.blueprintId],
+      ['hr-creation-draft', 'hr-agent', preview.blueprintId, undefined],
       {
         blueprint_id: preview.blueprintId,
         blueprint_version: preview.blueprintVersion,
@@ -205,7 +207,7 @@ describe('HrBlueprintPreviewCard', () => {
   it('renders the fetched canonical draft instead of a stale streamed preview', () => {
     const client = new QueryClient();
     client.setQueryData(
-      ['hr-creation-draft', 'hr-agent', preview.blueprintId],
+      ['hr-creation-draft', 'hr-agent', preview.blueprintId, undefined],
       {
         status: 'preview',
         blueprint_id: preview.blueprintId,

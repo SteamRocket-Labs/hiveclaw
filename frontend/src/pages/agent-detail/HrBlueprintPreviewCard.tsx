@@ -1,9 +1,13 @@
-import { useId, useState } from 'react';
+import { useId, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 
 import { hrCreationApi, type HrCreationDraft } from '../../api/domains/hrCreation';
-import { parsePreviewAgentBlueprintResult, type HrPreviewToolResult } from './toolResultEnvelope';
+import { normalizeToolCallResult, parsePreviewAgentBlueprintResult, type HrPreviewToolResult } from './toolResultEnvelope';
+import { chatApi } from '../../api/domains/chat';
+import { StructuredToolResultBody } from './StructuredToolResult';
+import { runtimeStatusLabel } from './SessionRuntimePanel';
+import { useAuthStore } from '../../stores';
 import './HrBlueprintPreviewCard.css';
 import { blueprintStatusLabel } from './hrCreationStatus';
 
@@ -154,10 +158,12 @@ export function HrBlueprintPreviewCard({ agentId, preview, onSendMessage }: HrBl
   const [revisionOpen, setRevisionOpen] = useState(false);
   const [revisionText, setRevisionText] = useState('');
   const [revisionSubmitting, setRevisionSubmitting] = useState(false);
+  const answerIntent = useRef<{ questionId: string; text: string; inputId: string } | null>(null);
   const revisionInputId = useId();
-  const queryKey = ['hr-creation-draft', agentId, preview.blueprintId] as const;
+  const viewerId = useAuthStore((state) => state.user?.id);
+  const queryKey = ['hr-creation-draft', agentId, preview.blueprintId, viewerId] as const;
   const canLoad = Boolean(agentId && preview.blueprintId);
-  const { data: draft } = useQuery({
+  const { data: draft, isError: loadFailed } = useQuery({
     queryKey,
     queryFn: () => hrCreationApi.get(agentId!, preview.blueprintId!),
     enabled: canLoad,
@@ -166,8 +172,11 @@ export function HrBlueprintPreviewCard({ agentId, preview, onSendMessage }: HrBl
     staleTime: 0,
     refetchOnWindowFocus: false,
     refetchInterval: (query) => {
-      const currentStatus = (query.state.data as HrCreationDraft | undefined)?.draft_status;
-      return currentStatus && ['confirmed', 'creating', 'provisioning'].includes(currentStatus) ? 1_500 : false;
+      const current = query.state.data as HrCreationDraft | undefined;
+      return (current?.draft_status && ['confirmed', 'creating', 'provisioning'].includes(current.draft_status))
+        || (current?.recovery?.task_status && ['pending', 'running', 'resumable'].includes(current.recovery.task_status))
+        || (current?.first_task_work && ['pending', 'running', 'resumable', 'suspended'].includes(current.first_task_work.status))
+        ? 1_500 : false;
     },
   });
   const status = draft?.draft_status || preview.status;
@@ -186,6 +195,8 @@ export function HrBlueprintPreviewCard({ agentId, preview, onSendMessage }: HrBl
     || canonicalPreview.knowledgeDebt.length > 0;
   const durableAction = draft?.recovery?.can_retry ? 'retry' : hrCreationActionForStatus(status);
   const firstTask = draft?.provisioning?.first_task as { status?: string; session_id?: string; error?: string } | undefined;
+  const work = !loadFailed && canLoad && viewerId && draft?.requested_by_user_id === viewerId ? draft.first_task_work : null;
+  const question = work?.question ? normalizeToolCallResult('ask_user_question', work.question.payload).toolMeta : null;
 
   const confirmMutation = useMutation({
     mutationFn: () => hrCreationApi.confirm(agentId!, preview.blueprintId!, {
@@ -285,13 +296,35 @@ export function HrBlueprintPreviewCard({ agentId, preview, onSendMessage }: HrBl
         <section className="hr-blueprint-boundaries">
           <h4>{t('agent.chat.toolResults.explicitFirstTask', 'Your first task')}</h4>
           <p>{canonicalPreview.explicitFirstTask}</p>
-          <p>{firstTask?.status === 'dispatched'
+          <p>{work
+            ? runtimeStatusLabel(work.question ? 'waiting_user' : work.status === 'resumable' ? 'resuming' : work.status, t)
+            : firstTask?.status === 'dispatched'
             ? t('agent.chat.toolResults.firstTaskDispatched', 'Task dispatched. Updates and results return to this work.')
             : firstTask?.status
               ? t('agent.chat.toolResults.firstTaskRecovery', 'Employee ready. The first task needs recovery; it has not been reported as started.')
               : t('agent.chat.toolResults.firstTaskWaiting', 'The task will start once the employee is ready.')}</p>
           {firstTask?.error === 'capability_denied' && <p>{t('agent.chat.toolResults.firstTaskDenied', 'Company policy blocks this task. Restore the required permission before retrying.')}</p>}
           {firstTask?.error === 'approval_required' && <p>{t('agent.chat.toolResults.firstTaskApproval', 'This task needs scoped authorization before retrying.')}</p>}
+          {work && question?.kind === 'user_clarification' && work.question && (
+            <StructuredToolResultBody key={work.question.item_id} toolName="ask_user_question" toolMeta={question}
+              agentId={work.agent_id} sessionId={work.session_id} questionItemId={work.question.item_id}
+              onAnswerQuestion={work.can_answer ? async (questionId, text) => {
+                if (answerIntent.current?.questionId !== questionId || answerIntent.current.text !== text) {
+                  answerIntent.current = { questionId, text, inputId: crypto.randomUUID() };
+                }
+                const receipt = await chatApi.answerQuestion(work.agent_id, work.session_id, questionId, text, answerIntent.current.inputId);
+                await queryClient.invalidateQueries({ queryKey });
+                if (receipt.admission_state !== 'admitted' || ['rejected', 'needs_reconciliation', 'cancelled'].includes(receipt.status)) {
+                  throw new Error(t('agent.clarification.notApplied', 'The answer is stored but could not be applied. Retry or review this work.'));
+                }
+                return receipt;
+              } : undefined} />
+          )}
+          {work && ['unknown', 'unavailable', 'needs_reconciliation'].includes(work.status) && (
+            <button type="button" onClick={() => queryClient.invalidateQueries({ queryKey })}>
+              {t('common.refresh', 'Refresh')}
+            </button>
+          )}
         </section>
       )}
       <div className="hr-blueprint-facts">

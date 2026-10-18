@@ -174,6 +174,7 @@ async def revise_unbound_human_input(
     expected_revision: int,
     content_parts: list[dict[str, Any]],
     user=None,
+    allow_project_selection: bool = False,
 ) -> InputMailboxReceipt:
     input_uuid = input_id if isinstance(input_id, uuid.UUID) else uuid.UUID(str(input_id))
     row, admission, _command = await _locked_input(db, authority=authority, input_id=input_uuid)
@@ -185,6 +186,21 @@ async def revise_unbound_human_input(
         raise InputRevisionConflict(current_revision=row.revision)
     if not isinstance(content_parts, list):
         raise ValueError("content_parts must be an array")
+    from app.services.project_context import ORIGIN_KEY, references, selection_origin, validate_selection
+    from app.services.content_input_receipts import ContentInputReceiptError
+
+    project_origin = None
+    try:
+        project_refs = references(content_parts)
+    except ValueError as exc:
+        raise ContentInputReceiptError("project_selection_invalid", "Select valid project references.", 400) from exc
+    if project_refs:
+        if not allow_project_selection or user is None:
+            raise ContentInputReceiptError("project_selection_origin_denied", "Project references require authenticated human selection.", 403)
+        from app.models.chat_session import ChatSession
+
+        await validate_selection(db, session=await db.get(ChatSession, row.session_id), user=user, parts=content_parts)
+        project_origin = selection_origin(agent_id=authority.agent_id, session_id=row.session_id, user_id=user.id)
     if row.intent == "answer_request" and row.request_item_id is not None:
         from app.services.session_user_question import load_answer_question, validate_configuration_answer
 
@@ -239,6 +255,7 @@ async def revise_unbound_human_input(
                 "revision": row.revision,
                 "previous_revision": previous_revision,
                 "previous_content_hash": previous_hash,
+                **({ORIGIN_KEY: project_origin} if project_origin is not None else {}),
                 "content_hash": row.content_hash,
                 "content_parts": content_parts,
             },
@@ -950,6 +967,10 @@ def input_parts_to_runtime_messages(rows: Iterable[SessionTurnInput], *, answer_
     messages: list[dict[str, Any]] = []
     for row in rows:
         parts = list(row.content_parts_json or [])
+        from app.services.project_context import project_input_projection
+
+        has_project = any(isinstance(part, dict) and part.get("type") == "project_ref" for part in parts)
+        parts = project_input_projection(parts, row.id)
         role = "user"
         if parts and isinstance(parts[0], dict):
             candidate_role = str(parts[0].get("role") or "user").strip().lower()
@@ -959,6 +980,10 @@ def input_parts_to_runtime_messages(rows: Iterable[SessionTurnInput], *, answer_
             content: Any = (answer_projections or {}).get(str(row.id), parts[0]["text"])
         else:
             content = parts
+        if has_project:
+            from app.services.session_user_checkpoint import render_human_input_content
+
+            content = render_human_input_content(parts)
         messages.append(
             {
                 "role": role,

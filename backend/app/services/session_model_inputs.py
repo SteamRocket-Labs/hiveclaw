@@ -393,6 +393,14 @@ async def _origin_dependencies(db, *, tenant_id, agent_id, ref):
     # The call's own audience remains a source, including empty searches and private query arguments.
     dependencies = [*dependencies, {"source_kind": "session_tool_invocation", "source_id": str(invocation.id),
         "source_version": payload["content_hash"]}]
+    if invocation.tool_name == "read_project_resource":
+        from app.services.project_context import project_failure_receipt, project_tool_receipt
+
+        proof = await project_tool_receipt(db, invocation=invocation, payload=payload)
+        if proof is not None:
+            dependencies.append({"source_kind": "project_resource", "source_id": str(invocation.id),
+                "source_version": payload["content_hash"]})
+        return _unique_dependencies(dependencies), inherited_complete and (proof is not None or project_failure_receipt(payload))
     try:
         handoff = json.loads(content)
     except (ValueError, TypeError):

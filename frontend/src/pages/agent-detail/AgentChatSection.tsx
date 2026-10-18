@@ -34,6 +34,7 @@ import { sessionTitleForUser } from '../session-workbench/sessionTitlePresentati
 import { shouldRenderThreadItemInConversation, ThreadItemRenderer } from '../session-workbench/ThreadItemRenderer';
 import { normalizeThreadItemPayload } from '../session-workbench/threadItemReducer';
 import { SessionComposer } from '../session-workbench/SessionComposer';
+import { ProjectContextPicker, type SelectedProjectContext } from '../session-workbench/ProjectContextPicker';
 import { SessionGoalPanel } from '../session-workbench/SessionGoalPanel';
 import {
   SessionAgentTeamCloseControl,
@@ -403,7 +404,7 @@ interface AgentChatSectionProps {
   chatInput: string;
   onSetChatInput: (value: string) => void;
   onHandlePaste: (e: React.ClipboardEvent<HTMLTextAreaElement>) => void;
-  onSendChatMsg: () => void;
+  onSendChatMsg: (options?: SessionMessageOptions) => void | Promise<unknown>;
   onBranchMessage?: (message: AgentChatMessage, mode: ConversationBranchMode, content?: string) => void | Promise<unknown>;
   /** Sends an explicit message (not from the composer) — used by inline cards. */
   onSendMessage?: (text: string, options?: SessionMessageOptions) => void | Promise<unknown>;
@@ -1266,6 +1267,14 @@ function AgentChatSection({
         ? `operator:${principalScopeKey}:${currentUser?.id ?? ''}:${currentUser?.role ?? ''}:${effectiveAgentId ?? ''}:${activeSessionId ?? ''}:${normalizedOperatorReason}`
         : 'operator:unavailable')
     : `owner:${principalScopeKey}:${currentUser?.id ?? ''}:${currentUser?.role ?? ''}:${effectiveAgentId ?? ''}:${activeSessionId ?? ''}`;
+  const [projectContext, setProjectContext] = React.useState<{ scope: string; selection: SelectedProjectContext | null } | null>(null);
+  const [projectSending, setProjectSending] = React.useState(false);
+  const [projectSendError, setProjectSendError] = React.useState('');
+  const projectAttempt = React.useRef<{ fingerprint: string; inputId: string } | null>(null);
+  const projectScopeRef = React.useRef(childAuthorityIdentity);
+  projectScopeRef.current = childAuthorityIdentity;
+  const selectedProjectContext = projectContext?.scope === childAuthorityIdentity ? projectContext.selection : null;
+  React.useEffect(() => { setProjectSending(false); setProjectSendError(''); projectAttempt.current = null; }, [childAuthorityIdentity]);
   const { artifactPreview, closeArtifactPreview, downloadArtifactFile, openArtifact } = useArtifactPreview({
     authorityIdentity: childAuthorityIdentity,
     effectiveAgentId,
@@ -1333,9 +1342,26 @@ function AgentChatSection({
     [fileInputRef, focusChatInput, onSetChatInput, onToggleGoalMode, onTogglePlanMode],
   );
 
-  const sendFromComposer = React.useCallback(() => {
-    onSendChatMsg();
-  }, [onSendChatMsg]);
+  const sendFromComposer = React.useCallback(async () => {
+    if (!selectedProjectContext) { onSendChatMsg(); return; }
+    if (projectSending) return;
+    if (chatInput.trim().startsWith('/')) { setProjectSendError(t('projects.contextCommandUnsupported')); return; }
+    const scope = childAuthorityIdentity;
+    const fingerprint = JSON.stringify([scope, selectedProjectContext, chatInput, attachedFiles, planModeRequested, goalModeRequested, sessionPermissionMode]);
+    const request = projectAttempt.current?.fingerprint === fingerprint ? projectAttempt.current
+      : { fingerprint, inputId: globalThis.crypto.randomUUID() };
+    projectAttempt.current = request;
+    setProjectSending(true); setProjectSendError('');
+    try {
+      const accepted = await onSendChatMsg({ inputId: request.inputId, expectedSessionId: activeSessionId || undefined,
+        parts: [{ ...selectedProjectContext }] });
+      if (projectScopeRef.current !== scope) return;
+      if (accepted === true) { setProjectContext(null); projectAttempt.current = null; }
+      else setProjectSendError(t('projects.contextSendUnconfirmed'));
+    } catch { if (projectScopeRef.current === scope) setProjectSendError(t('projects.contextSendUnconfirmed')); }
+    finally { if (projectScopeRef.current === scope) setProjectSending(false); }
+  }, [onSendChatMsg, selectedProjectContext, projectSending, chatInput, attachedFiles, planModeRequested, goalModeRequested,
+    sessionPermissionMode, childAuthorityIdentity, activeSessionId, t]);
 
   const composerPlaceholder =
     attachedFiles.length > 0
@@ -2376,12 +2402,19 @@ function AgentChatSection({
                 agentUsage={{ usedToday: agent?.tokens_used_today, limitToday: agent?.max_tokens_per_day, usedMonth: agent?.tokens_used_month, limitMonth: agent?.max_tokens_per_month }}
                 agentPermissions={agentPermissions} sessionPermissionMode={sessionPermissionMode}
               />
+              {!operatorView && !isDraftSession && activeSession?.audience_kind !== 'group' && currentUser?.id && activeSessionId && (
+                <ProjectContextPicker key={childAuthorityIdentity} scope={{ userId: currentUser.id,
+                  tenantId: currentUser.role === 'platform_admin' ? localStorage.getItem('current_tenant_id') || '' : currentUser.tenant_id }}
+                  disabled={!canUseComposer || projectSending} selection={selectedProjectContext}
+                  onSelect={selection => { setProjectContext({ scope: childAuthorityIdentity, selection }); setProjectSendError(''); }} />
+              )}
+              {projectSendError && <p role="alert">{projectSendError}</p>}
               <SessionComposer
                 value={chatInput}
                 inputRef={chatInputRef}
                 fileInputRef={fileInputRef}
                 placeholder={composerPlaceholder}
-                disabled={!canUseComposer}
+                disabled={!canUseComposer || projectSending}
                 attachments={attachedFiles}
                 permissionMode={sessionPermissionMode}
                 permissionModeLabel={permissionModeLabel}

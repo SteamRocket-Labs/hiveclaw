@@ -5467,6 +5467,17 @@
       "resume": "Resume command environment"
   },
   "projects": {
+    "context": "Project context",
+    "contextChoose": "Choose references for this work",
+    "contextProject": "Choose a project",
+    "contextSelected": "{{count}} project references selected",
+    "contextRemove": "Remove project context",
+    "contextHint": "Select the sources for this message. Each source keeps its own access rules. New project references require another selection.",
+    "contextSourceUnavailable": "Source unavailable",
+    "contextLoadFailed": "Project references could not be loaded. Your selected references are kept.",
+    "contextRetry": "Retry",
+    "contextCommandUnsupported": "Send a task message with project context. Remove project context before using a slash command.",
+    "contextSendUnconfirmed": "This input has not been confirmed. Your draft and selected references are kept; retry in this work.",
     "recorded": "Project request recorded. Reload to inspect the current project.",
     "actionDenied": "This action is not currently authorized. Reload the project or choose an authorized source.",
     "title": "Projects",

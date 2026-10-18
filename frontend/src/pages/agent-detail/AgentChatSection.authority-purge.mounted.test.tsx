@@ -89,6 +89,34 @@ vi.mock('../../components/MarkdownRenderer', () => ({
 }));
 
 import AgentChatSection from './AgentChatSection';
+import { projectsApi } from '../../api/domains/projects';
+
+it('keeps selected project inputs and the same input identifier after an unconfirmed original-work send', async () => {
+  const base = props('', false, 'original-work');
+  vi.spyOn(projectsApi, 'list').mockResolvedValue({ projects: [{ id: 'project', title: 'Research', revision: 1,
+    owner_user_id: 'operator-user', archived: false, can_manage: true, can_write: true }], next_offset: null });
+  vi.spyOn(projectsApi, 'read').mockResolvedValue({ id: 'project', title: 'Research', revision: 1,
+    owner_user_id: 'operator-user', archived: false, can_manage: true, can_write: true, next_offset: null,
+    entries: [{ id: 'source', target_kind: 'workspace_file', section: '', removed: false, state: 'linked', title: 'source.md' }] });
+  const send = vi.fn().mockResolvedValueOnce(undefined).mockResolvedValueOnce(true);
+  render(<AgentChatSection {...base} agent={{ ...base.agent, access_level: 'use' }} currentUser={{ id: 'operator-user', tenant_id: 'company' }}
+    activeSession={{ ...base.activeSession, user_id: 'operator-user', read_only: false, is_current_user_session: true, operator_view: false }}
+    historyMsgs={[]} chatInput="Use the selected sources" onSendChatMsg={send} planModeRequested={true} goalModeRequested={true} />);
+  fireEvent.click(screen.getByRole('button', { name: 'projects.context' }));
+  await waitFor(() => expect(screen.getByRole('option', { name: 'Research' })).toBeTruthy());
+  fireEvent.change(screen.getByRole('combobox', { name: 'projects.contextProject' }), { target: { value: 'project' } });
+  fireEvent.click(await screen.findByRole('checkbox', { name: 'source.md' }));
+  fireEvent.click(screen.getByRole('button', { name: 'chat.send' }));
+  await waitFor(() => expect(send).toHaveBeenCalledTimes(1));
+  await waitFor(() => expect(screen.getByText('projects.contextSendUnconfirmed')).toBeTruthy());
+  expect((screen.getByRole('checkbox', { name: 'source.md' }) as HTMLInputElement).checked).toBe(true);
+  const original = send.mock.calls[0][0];
+  expect(original).toMatchObject({ expectedSessionId: 'original-work', parts: [{ type: 'project_ref', project_id: 'project', entry_ids: ['source'] }] });
+  fireEvent.click(screen.getByRole('button', { name: 'chat.send' }));
+  await waitFor(() => expect(send).toHaveBeenCalledTimes(2));
+  expect(send.mock.calls[1][0].inputId).toBe(original.inputId);
+  await waitFor(() => expect((screen.getByRole('checkbox', { name: 'source.md' }) as HTMLInputElement).checked).toBe(false));
+});
 
 it.each(['owner', 'other_user', 'operator', 'read_grant'])('answers a delegated question only as its executing owner: %s', async (mode) => {
   const base = props('Audit', mode === 'operator', 'delegated-session');

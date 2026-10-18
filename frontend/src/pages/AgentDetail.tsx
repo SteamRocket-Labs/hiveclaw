@@ -1864,8 +1864,15 @@ function AgentDetailInner() {
         }
     }, [activeSession?.id, activeTab]);
 
-    const sendChatMsg = async () => {
+    const sendChatMsg = async (options?: SessionMessageOptions) => {
         if (!id || !activeSession?.id) return;
+        if (options?.expectedSessionId && String(activeSession.id) !== options.expectedSessionId) return false;
+        const expectedSubject = `${readinessScopeKey}:${currentUser?.role || ''}`;
+        const stillOriginalSubject = () => {
+            const subject = useAuthStore.getState().user;
+            return `${localStorage.getItem('current_tenant_id') || subject?.tenant_id || ''}:${subject?.id || ''}:${subject?.role || ''}` === expectedSubject;
+        };
+        if (options?.parts?.length && !stillOriginalSubject()) return false;
         if (!chatInput.trim() && attachedFiles.length === 0) return;
         let userMsg = chatInput.trim();
         const goalObjective = userMsg;
@@ -2017,7 +2024,7 @@ function AgentDetailInner() {
 
         const fileName = attachedFiles.map(f => f.name).join(', ');
         let completedGoalRequestId: string | null = null;
-        let acceptedInputId: string = globalThis.crypto.randomUUID();
+        let acceptedInputId: string = options?.inputId || globalThis.crypto.randomUUID();
         try {
             let started: { session: ChatSession; run: SessionStartResponse } | null;
             if (goalModeRequested) {
@@ -2028,11 +2035,12 @@ function AgentDetailInner() {
                     contentForLLM,
                     userMsg,
                     attachmentPayload.map((attachment) => [attachment.name, attachment.path]),
+                    options?.parts || [],
                 ]);
                 const previousGoalRequest = goalStartRequestRef.current;
-                const goalRequestId = previousGoalRequest?.fingerprint === goalFingerprint
+                const goalRequestId = options?.inputId || (previousGoalRequest?.fingerprint === goalFingerprint
                     ? previousGoalRequest.requestId
-                    : globalThis.crypto.randomUUID();
+                    : globalThis.crypto.randomUUID());
                 goalStartRequestRef.current = { fingerprint: goalFingerprint, requestId: goalRequestId };
                 const goal = await ccParityApi.startGoal(id, String(goalSession.id), {
                     request_id: goalRequestId,
@@ -2041,6 +2049,7 @@ function AgentDetailInner() {
                     display_content: userMsg,
                     file_name: fileName,
                     attachments: attachmentPayload,
+                    parts: options?.parts || [],
                     start_immediately: true,
                 });
                 const run = goal.run as SessionRun | null | undefined;
@@ -2054,6 +2063,7 @@ function AgentDetailInner() {
                     display_content: userMsg,
                     file_name: fileName,
                     attachments: attachmentPayload,
+                    parts: options?.parts || [],
                     plan_mode_requested: planModeRequested,
                     permission_mode: sessionPermissionMode,
                     input_id: acceptedInputId,
@@ -2061,6 +2071,7 @@ function AgentDetailInner() {
                 });
             }
             if (!started?.session?.id) return;
+            if (options?.expectedSessionId && (activeSessionIdRef.current !== options.expectedSessionId || !stillOriginalSubject())) return true;
             const runSessionId = String(started.session.id);
             const activeRuntimeKey = buildSessionRuntimeKey(id, runSessionId);
             if (!activeRunStateRef.current[activeRuntimeKey]?.runId) {
@@ -2083,6 +2094,7 @@ function AgentDetailInner() {
             setGoalModeRequested(false);
             applySubmittedRun(activeRuntimeKey, started.run);
             invalidateSessionRuntimeQueries(id, runSessionId);
+            return true;
             if (completedGoalRequestId && goalStartRequestRef.current?.requestId === completedGoalRequestId) {
                 goalStartRequestRef.current = null;
             }

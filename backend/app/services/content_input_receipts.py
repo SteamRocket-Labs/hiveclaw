@@ -104,6 +104,12 @@ async def _validate_input_dependency_batch(db, tenant_id: uuid.UUID, dependencie
             await _validate_input_dependencies(db, tenant_id, [dependency], user=published_user,
                 active_workspace_receipts=active_workspace_receipts)
             continue
+        if dependency["source_kind"] == "project_resource":
+            from app.services.project_context import validate_project_dependency
+
+            await validate_project_dependency(db, tenant_id, dependency, user=user, runtime_request=runtime_request,
+                active_receipts=active_workspace_receipts)
+            continue
         if dependency["source_kind"] in {"agent_skill_file", "agent_platform_skill_file"}:
             from app.services.skill_source_receipts import validate_skill_file_dependency
 
@@ -197,7 +203,15 @@ async def _validate_agent_context_dependency(db, tenant_id, dependency, *, user,
         if runtime_request is not None:
             principal, _requester = await _runtime_input_actor(db, tenant_id, runtime_request)
             if principal.agent_id != agent_id:
-                raise ValueError("context_source_actor_mismatch")
+                from app.services.project_context import project_source_read_allowed
+
+                if not project_source_read_allowed(tenant_id, principal):
+                    raise ValueError("context_source_actor_mismatch")
+                source = await db.scalar(select(Agent).where(Agent.id == agent_id, Agent.tenant_id == tenant_id)
+                    .execution_options(populate_existing=True))
+                if source is None:
+                    raise ValueError("context_source_agent_unavailable")
+                await check_agent_access(db, _requester, agent_id)
         else:
             source = await db.scalar(select(Agent).where(Agent.id == agent_id, Agent.tenant_id == tenant_id)
                 .execution_options(populate_existing=True))
@@ -497,6 +511,13 @@ async def _authorize_session_input_source(db, tenant_id, session, *, user, runti
         if session.user_id != requester.id:
             raise ValueError("session_source_actor_mismatch")
         if session.agent_id != principal.agent_id:
+            from app.services.project_context import project_source_read_allowed
+
+            if project_source_read_allowed(tenant_id, principal):
+                from app.core.permissions import check_agent_access
+
+                await check_agent_access(db, requester, session.agent_id)
+                return
             if not delegated_user_command:
                 raise ValueError("session_source_actor_mismatch")
             from datetime import datetime, timezone
@@ -657,11 +678,13 @@ async def _validate_workspace_dependency(db, tenant_id, dependency, *, user, run
     principal = None
     if runtime_request is not None:
         principal, user = await _runtime_input_actor(db, tenant_id, runtime_request)
-        if principal.agent_id != agent_id:
+        from app.services.project_context import project_source_read_allowed
+
+        if principal.agent_id != agent_id and not project_source_read_allowed(tenant_id, principal):
             raise ContentInputReceiptError("content_source_access_denied", "The workspace source belongs to another employee.", 403)
     try:
         await authorize_workspace_path(db, user, agent_id=agent_id, path=path, action="read", path_exists=True,
-            session_id=uuid.UUID(principal.session_id) if principal is not None else None,
+            session_id=uuid.UUID(principal.session_id) if principal is not None and principal.agent_id == agent_id else None,
             runtime_principal=principal)
     except (HTTPException, WorkspaceAuthorityError) as exc:
         raise ContentInputReceiptError("content_source_access_denied", "The workspace source is no longer authorized for this reader.", 403) from exc

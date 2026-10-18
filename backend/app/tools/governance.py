@@ -55,6 +55,7 @@ _STATIC_SAFE_TOOLS = {
     "read_file",
     "read_context_resource",
     "read_runtime_result",
+    "read_project_resource",
     "read_mcp_resource",
     "load_skill",
     "search_clawhub",

@@ -74,6 +74,7 @@ _CAPABILITY_GATE_EXEMPT_TOOLS: frozenset[str] = frozenset(
         "read_file",
         "read_context_resource",
         "read_runtime_result",
+        "read_project_resource",
         "load_skill",
         "web_fetch",
         "web_search",

@@ -142,6 +142,7 @@ async def submit_live_human_input(
     plan_mode_requested: bool = False,
     runtime_metadata: dict[str, Any] | None = None,
     role: str = "user",
+    allow_project_selection: bool = False,
     a2a_peer_agent_id: uuid.UUID | str | None = None,
     runtime_result_page_id: uuid.UUID | str | None = None,
     runtime_result_page_claim_token: uuid.UUID | str | None = None,
@@ -197,6 +198,27 @@ async def submit_live_human_input(
         file_name=file_name,
         role=role,
     )
+    from app.services.project_context import ORIGIN_KEY, references, selection_origin, validate_selection
+    from app.services.content_input_receipts import ContentInputReceiptError
+
+    runtime_metadata.pop(ORIGIN_KEY, None)
+    try:
+        selected_projects = references(content_parts)
+    except ValueError as exc:
+        from fastapi import HTTPException
+
+        raise HTTPException(400, detail={"code": "project_selection_invalid"}) from exc
+    if selected_projects:
+        from fastapi import HTTPException
+
+        if (not allow_project_selection or role != "user" or a2a_peer_agent_id is not None
+            or runtime_result_page_id is not None):
+            raise HTTPException(403, detail={"code": "project_selection_origin_denied"})
+        try:
+            await validate_selection(db, session=session, user=user, parts=content_parts)
+        except ContentInputReceiptError as exc:
+            raise HTTPException(exc.status_code, detail={"code": exc.code, "message": str(exc)}) from exc
+        runtime_metadata[ORIGIN_KEY] = selection_origin(agent_id=agent.id, session_id=session.id, user_id=user.id)
     if a2a_peer_agent_id is not None and runtime_result_page_id is not None:
         raise ValueError("a2a peer and runtime result integration lanes are mutually exclusive")
     command_authority_stamp: dict[str, str] | None = None

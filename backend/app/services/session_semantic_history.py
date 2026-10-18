@@ -336,6 +336,11 @@ def _user_messages(
         if not content:
             continue
         parts = _event_payload(view.source).get("content_parts") or []
+        if any(isinstance(part, dict) and part.get("type") == "project_ref" for part in parts):
+            from app.services.project_context import project_input_projection
+            from app.services.session_user_checkpoint import render_human_input_content
+
+            content = render_human_input_content(project_input_projection(parts, input_id))
         role = "system" if parts and isinstance(parts[0], dict) and parts[0].get("role") == "system" else "user"
         messages.append(
             SessionSemanticMessage(

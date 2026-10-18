@@ -7,6 +7,7 @@ export interface SessionMessageOptions {
   expectedSessionId?: string;
   displayContent?: string;
   planMode?: boolean;
+  parts?: Array<Record<string, unknown>>;
 }
 
 export interface ArtifactContinuationContext {

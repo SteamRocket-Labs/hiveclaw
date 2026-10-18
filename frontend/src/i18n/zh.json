@@ -5467,6 +5467,17 @@
       "resume": "恢复命令环境"
   },
   "projects": {
+    "context": "项目资料",
+    "contextChoose": "为本次工作选择资料",
+    "contextProject": "选择项目",
+    "contextSelected": "已选择 {{count}} 项项目资料",
+    "contextRemove": "移除项目资料",
+    "contextHint": "选择本条消息使用的资料。每份资料仍受自身权限约束；项目新增资料需要再次选择。",
+    "contextSourceUnavailable": "来源不可用",
+    "contextLoadFailed": "暂时无法读取项目资料。已选资料会保留。",
+    "contextRetry": "重试",
+    "contextCommandUnsupported": "请发送带项目资料的任务消息。使用斜杠命令前，请先移除项目资料。",
+    "contextSendUnconfirmed": "尚未确认本次输入。草稿和所选资料已保留，可在原工作中重试。",
     "recorded": "项目请求已记录，可重新加载核查当前项目。",
     "actionDenied": "当前操作未获授权，请重新加载项目或选择已获准的来源。",
     "title": "项目",

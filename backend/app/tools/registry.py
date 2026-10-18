@@ -48,6 +48,7 @@ _FILE_SYSTEM = {
     "read_file",
     "read_context_resource",
     "read_runtime_result",
+    "read_project_resource",
     "write_file",
     "edit_file",
     "glob_search",

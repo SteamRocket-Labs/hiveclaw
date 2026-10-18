@@ -339,3 +339,10 @@
     transition: none;
   }
 }
+.session-project-picker { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 0 0 8px; font-size: 13px; }
+.session-project-picker fieldset { flex-basis: 100%; min-width: 0; border: 1px solid var(--border-color, #e2e8f0); border-radius: 8px; padding: 10px; }
+.session-project-picker fieldset p { margin: 0 0 8px; color: var(--text-secondary, #64748b); }
+.session-project-picker select { max-width: 100%; }
+.session-project-references { display: flex; flex-direction: column; gap: 6px; max-height: 220px; overflow: auto; margin-top: 8px; }
+.session-project-references label { display: flex; align-items: center; gap: 6px; }
+.session-project-references small { color: var(--text-secondary, #64748b); }

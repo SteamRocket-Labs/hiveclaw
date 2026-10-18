@@ -605,6 +605,7 @@ async def websocket_chat(
                         file_name=file_name,
                         attachments=data.get("attachments") if isinstance(data.get("attachments"), list) else None,
                         parts=data.get("parts") if isinstance(data.get("parts"), list) else None,
+                        allow_project_selection=True,
                     )
                 await send_json(
                     {

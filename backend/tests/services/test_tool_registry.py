@@ -77,6 +77,7 @@ def test_minimal_kernel_tool_set_stays_small_and_explicit():
         "read_file",
         "read_context_resource",
         "read_runtime_result",
+        "read_project_resource",
         "write_file",
         "edit_file",
         "glob_search",
@@ -107,6 +108,8 @@ def test_minimal_kernel_tool_set_stays_small_and_explicit():
         # A regular Agent may hand a creation brief to governed System HR;
         # preview/create authority remains HR-only and separately gated.
         "start_hr_agent_handoff",
+        "preview_agent_blueprint",
+        "create_employee_from_request",
         "delegate_to_agent",
         "check_async_task",
         "cancel_async_task",

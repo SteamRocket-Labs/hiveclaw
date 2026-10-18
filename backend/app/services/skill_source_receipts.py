@@ -300,7 +300,13 @@ async def validate_skill_file_dependency(db, tenant_id, dependency, *, user, run
         if runtime_request is not None:
             principal, user = await _runtime_input_actor(db, tenant_id, runtime_request)
             if principal.agent_id != agent_id:
-                raise ValueError("skill_source_actor_mismatch")
+                from app.services.project_context import project_source_read_allowed
+
+                if not project_source_read_allowed(tenant_id, principal):
+                    raise ValueError("skill_source_actor_mismatch")
+                agent, _level = await check_agent_access(db, user, agent_id)
+                if agent.tenant_id != tenant_id:
+                    raise ValueError("skill_source_tenant_mismatch")
         else:
             agent, _level = await check_agent_access(db, user, agent_id)
             if agent.tenant_id != tenant_id:

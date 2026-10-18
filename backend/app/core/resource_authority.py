@@ -241,9 +241,12 @@ async def authorize_resource_action(
         if not isinstance(runtime_principal, AgentRuntimePrincipal) or runtime_principal.requester_user_id != user.id:
             raise HTTPException(status_code=403, detail="Runtime resource authority context mismatch")
         if runtime_principal.agent_id != agent_id:
+            from app.services.project_context import project_source_read_allowed
+
             cross_agent_input = (resource_kind in {"chat_artifact", "workspace_file"} and action == "read"
-                and runtime_principal.purpose == "a2a_delegation" and not runtime_principal.autonomous
-                and bool(runtime_principal.session_id) and bool(runtime_principal.delegation_id))
+                and ((runtime_principal.purpose == "a2a_delegation" and not runtime_principal.autonomous
+                    and bool(runtime_principal.session_id) and bool(runtime_principal.delegation_id))
+                    or project_source_read_allowed(user.tenant_id, runtime_principal)))
             if not cross_agent_input:
                 raise HTTPException(status_code=403, detail="Runtime resource authority context mismatch")
             from app.services.content_input_receipts import ContentInputReceiptError, _runtime_input_actor

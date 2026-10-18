@@ -273,6 +273,7 @@ async def start_session_goal(
                 file_name=body.file_name,
                 attachments=list(body.attachments),
                 parts=list(body.parts),
+                allow_project_selection=True,
                 runtime_metadata={
                     "runtime_task_type": "web_chat_turn",
                     "budget_interactive": False,

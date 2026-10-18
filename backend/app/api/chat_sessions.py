@@ -1644,6 +1644,7 @@ async def create_session_run(
             },
             attachments=body.attachments,
             parts=body.parts,
+            allow_project_selection=True,
         )
         run = dict(receipt.get("run") or {})
     except IdempotencyConflict as exc:
@@ -1697,6 +1698,7 @@ async def start_session_run(
             },
             attachments=body.attachments,
             parts=body.parts,
+            allow_project_selection=True,
         )
         if receipt.get("run"):
             return receipt["run"]
@@ -1778,6 +1780,7 @@ async def branch_session(
                     file_name=request.file_name,
                     attachments=getattr(request, "attachments", None) or [],
                     parts=getattr(request, "parts", None) or [],
+                    allow_project_selection=True,
                     runtime_metadata=runtime_metadata,
                 )
                 run_payload = dict(receipt.get("run") or {}) or None
@@ -2137,6 +2140,7 @@ async def _submit_session_human_input(
             session=session,
             content="",
             parts=body.content_parts,
+            allow_project_selection=True,
             source="session_input_api",
             input_id=body.input_id,
             idempotency_key=body.idempotency_key,
@@ -2204,6 +2208,7 @@ async def revise_session_human_input(
 ) -> dict[str, Any]:
     from app.models.session_v2 import SessionTurnInput
     from app.services.session_human_input import InputRevisionConflict, revise_unbound_human_input
+    from app.services.content_input_receipts import ContentInputReceiptError
     from app.services.session_input_admission import run_user_prompt_admission
     from app.services.session_input_dispatch import dispatch_admitted_input_fast_path
     from app.services.session_v2_persistence import resolve_session_mutation_authority
@@ -2235,6 +2240,7 @@ async def revise_session_human_input(
             input_id=input_id,
             expected_revision=_if_match_revision(if_match),
             content_parts=body.content_parts,
+            allow_project_selection=True,
         )
         await db.commit()
         admission = await run_user_prompt_admission(
@@ -2252,6 +2258,9 @@ async def revise_session_human_input(
                 admission_id=admission.admission_id,
                 worker_id=f"input-revision-dispatch:{input_id}:{receipt.revision}",
             )
+    except ContentInputReceiptError as exc:
+        await db.rollback()
+        raise HTTPException(exc.status_code, detail={"code": exc.code, "message": str(exc)}) from exc
     except InputRevisionConflict as exc:
         await db.rollback()
         raise HTTPException(

@@ -316,6 +316,17 @@ async def cancel_unbound_human_input(
         raise InputRevisionConflict(current_revision=row.revision)
     if admission.state in {"hook_running", "hook_result_committed"}:
         raise ValueError("human_input_admission_in_progress")
+    delegation = None
+    if row.intent == "answer_request" and row.target_run_id is not None:
+        delegation = await db.scalar(select(RuntimeTask).where(
+            RuntimeTask.id == row.target_run_id, RuntimeTask.tenant_id == authority.tenant_id,
+            RuntimeTask.task_type == "delegation", RuntimeTask.child_agent_id == authority.agent_id,
+            func.replace(func.lower(RuntimeTask.child_session_id), "-", "") == authority.session_id.hex,
+        ).with_for_update())
+        if delegation is not None and delegation.status == "running":
+            from fastapi import HTTPException
+
+            raise HTTPException(status_code=409, detail={"code": "delegation_answer_already_resuming"})
     row.status = "cancelled"
     row.revision = int(row.revision) + 1
     row.version = int(row.version) + 1
@@ -327,6 +338,14 @@ async def cancel_unbound_human_input(
         from app.services.session_user_question import reopen_cancelled_answer
 
         await reopen_cancelled_answer(db, authority=authority, row=row)
+        if delegation is not None and delegation.status == "pending":
+            from app.services.runtime_root_ledger import transition_runtime_root_item_by_task
+
+            delegation.status = "suspended"
+            delegation.metadata_json = {**(delegation.metadata_json or {}), "delegation_waiting_question_item_id":
+                str(uuid.uuid5(row.id, f"question-after-cancel:{row.revision}"))}
+            await transition_runtime_root_item_by_task(db, runtime_task_id=delegation.id,
+                requested_state="suspended", reason_code="delegation_answer_cancelled")
     drafts = [
         SessionEventDraft(
             item_id=row.id,
@@ -575,15 +594,23 @@ async def queue_admitted_human_input(
             .where(
                 RuntimeTask.id == row.target_run_id,
                 RuntimeTask.tenant_id == authority.tenant_id,
-                RuntimeTask.parent_agent_id == authority.agent_id,
-                RuntimeTask.parent_session_id == str(authority.session_id),
+                or_(and_(RuntimeTask.parent_agent_id == authority.agent_id,
+                         RuntimeTask.parent_session_id == str(authority.session_id)),
+                    and_(RuntimeTask.task_type == "delegation", row.intent == "answer_request",
+                         RuntimeTask.child_agent_id == authority.agent_id,
+                         func.replace(func.lower(RuntimeTask.child_session_id), "-", "") == authority.session_id.hex)),
             )
             .with_for_update()
         )
         active_turn_id = (
             str((task.metadata_json or {}).get("turn_id") or f"turn-{task.id.hex}") if task is not None else None
         )
-        if row.intent == "answer_request" and task is not None and is_executable_chat_task_type(task.task_type):
+        delegated_answer = (row.intent == "answer_request" and task is not None and task.task_type == "delegation"
+            and task.child_agent_id == authority.agent_id
+            and uuid.UUID(str(task.child_session_id)) == authority.session_id)
+        if row.intent == "answer_request" and task is not None and (
+            is_executable_chat_task_type(task.task_type) or delegated_answer
+        ):
             from app.services.session_user_question import question_payload, record_question_answer
 
             requester = question_payload(question).get("requested_by_user_id") or str(task.root_user_id)
@@ -607,7 +634,7 @@ async def queue_admitted_human_input(
         # reject for answer).
         if (
             task is None
-            or not is_executable_chat_task_type(task.task_type)
+            or not (is_executable_chat_task_type(task.task_type) or delegated_answer)
             or active_turn_id != row.target_turn_id
             or task.status not in SESSION_TARGETABLE_RUN_STATUSES
         ):
@@ -627,6 +654,15 @@ async def queue_admitted_human_input(
             )
         row.status = "queued"
         row.version = int(row.version) + 1
+        if delegated_answer and task.status == "suspended" and (
+            (task.metadata_json or {}).get("delegation_waiting_question_item_id") == str(question.item_id)
+        ):
+            from app.services.runtime_root_ledger import transition_runtime_root_item_by_task
+
+            task.status = "pending"
+            task.claimed_by, task.claim_expires_at = None, None
+            await transition_runtime_root_item_by_task(db, runtime_task_id=task.id, requested_state="queued",
+                reason_code="delegation_question_answered")
         await append_session_events(
             db,
             tenant_id=authority.tenant_id,

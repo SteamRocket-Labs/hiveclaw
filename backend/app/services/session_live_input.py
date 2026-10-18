@@ -245,7 +245,7 @@ async def submit_live_human_input(
             user=user,
             agent_id=agent.id,
             session_id=session.id,
-            action="mutate_session_input",
+            action="answer_session_question" if requested_kind == "answer_request" else "mutate_session_input",
         )
     if requested_kind == "answer_request":
         from fastapi import HTTPException

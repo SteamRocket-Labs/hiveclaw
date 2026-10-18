@@ -90,6 +90,31 @@ vi.mock('../../components/MarkdownRenderer', () => ({
 
 import AgentChatSection from './AgentChatSection';
 
+it.each(['owner', 'other_user', 'operator', 'read_grant'])('answers a delegated question only as its executing owner: %s', async (mode) => {
+  const base = props('Audit', mode === 'operator', 'delegated-session');
+  const answer = vi.fn().mockResolvedValue({ status: 'queued' });
+  const message = { id: 'question-event', transcriptEventId: 'question-item', role: 'tool_call' as const, content: '',
+    toolName: 'ask_user_question', toolMeta: { kind: 'user_clarification' as const, blocking: true, nextAction: null,
+      questions: [{ header: 'Audience', question: 'Which audience?', multiSelect: false,
+        options: [{ label: 'Team', description: 'Prepare the team report' }] }] } };
+  render(<AgentChatSection {...base} agent={{ ...base.agent, access_level: mode === 'read_grant' ? 'read' : 'use' }}
+    activeSession={{ ...base.activeSession, session_kind: 'delegation_run', user_id: 'operator-user',
+      operator_view: mode === 'operator' }} currentUser={{ id: mode === 'other_user' ? 'other-user' : 'operator-user' }}
+    historyMsgs={[message]} onAnswerQuestion={answer} />);
+  expect(screen.getByText('Which audience?')).toBeTruthy();
+  const submit = screen.queryByRole('button', { name: 'Submit answer' });
+  if (mode !== 'owner') {
+    expect(submit).toBeNull();
+    expect(answer).not.toHaveBeenCalled();
+    return;
+  }
+  expect(submit).not.toBeNull();
+  fireEvent.click(screen.getByRole('radio', { name: /Team/ }));
+  fireEvent.click(submit!);
+  await waitFor(() => expect(answer).toHaveBeenCalledWith('question-item', 'Audience: Team'));
+  expect(screen.queryByRole('textbox', { name: /message/i })).toBeNull();
+});
+
 function deferred<T>() {
   let resolve!: (value: T) => void;
   const promise = new Promise<T>((res) => {
@@ -134,7 +159,7 @@ function props(operatorReason: string, isAdmin = true, sessionId = 'operator-ses
     currentUser: { id: 'operator-user' },
     isAdmin,
     operatorReason,
-    chatScope: 'all',
+    chatScope: 'all' as const,
     onSetChatScope: vi.fn(),
     onLoadAllSessions: vi.fn(),
     onCreateNewSession: vi.fn(),

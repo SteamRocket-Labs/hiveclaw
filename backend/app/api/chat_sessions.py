@@ -2066,7 +2066,7 @@ async def _submit_session_human_input(
         agent_id=agent_id,
         session_id=session_id,
         current_user=current_user,
-        action="submit_session_human_input",
+        action="answer_session_question" if body.kind == "answer_request" else "submit_session_human_input",
         require_writable=True,
         require_execution=True,
     )
@@ -2149,12 +2149,15 @@ async def revise_session_human_input(
     from app.services.session_input_dispatch import dispatch_admitted_input_fast_path
     from app.services.session_v2_persistence import resolve_session_mutation_authority
 
+    existing = await db.get(SessionTurnInput, input_id)
+    action = ("answer_session_question" if existing is not None and existing.session_id == session_id
+        and existing.intent == "answer_request" else "mutate_session_input")
     await _get_run_session_and_agent(
         db=db,
         agent_id=agent_id,
         session_id=session_id,
         current_user=current_user,
-        action="mutate_session_input",
+        action=action,
         require_writable=True,
         require_execution=True,
     )
@@ -2163,7 +2166,7 @@ async def revise_session_human_input(
         user=current_user,
         agent_id=agent_id,
         session_id=session_id,
-        action="mutate_session_input",
+        action=action,
     )
     try:
         receipt = await revise_unbound_human_input(
@@ -2222,14 +2225,18 @@ async def cancel_session_human_input(
 ) -> dict[str, Any]:
     from app.services.session_human_input import InputRevisionConflict, cancel_unbound_human_input
     from app.services.session_v2_persistence import resolve_session_mutation_authority
+    from app.models.session_v2 import SessionTurnInput
 
+    existing = await db.get(SessionTurnInput, input_id)
+    action = ("answer_session_question" if existing is not None and existing.session_id == session_id
+        and existing.intent == "answer_request" else "mutate_session_input")
     await _get_run_session_and_agent(db=db, agent_id=agent_id, session_id=session_id, current_user=current_user)
     authority = await resolve_session_mutation_authority(
         db,
         user=current_user,
         agent_id=agent_id,
         session_id=session_id,
-        action="mutate_session_input",
+        action=action,
     )
     try:
         receipt = await cancel_unbound_human_input(

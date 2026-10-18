@@ -18,6 +18,45 @@ from app.services import session_model_round as rounds
 from app.services.runtime_task_fence import assert_runtime_task_fence
 
 
+async def suspend_delegation_for_question(request, *, provider_request_id):
+    """Keep a canonical question recoverable without emitting a false terminal result."""
+    from app.models.chat_transcript_event import ChatTranscriptEvent
+    from app.models.session_v2 import SessionInputAdmission, SessionModelResult, SessionTurnInput
+    from app.services.runtime_root_ledger import transition_runtime_root_item_by_task
+    from app.services.runtime_terminal_settlement import lock_runtime_task_with_session_authority
+
+    async with tenant_scoped_session(request.tenant_id, require_tenant=True) as db:
+        task = await lock_runtime_task_with_session_authority(db, task_id=uuid.UUID(str(request.runtime_task_id)))
+        if task is None:
+            raise SessionRestartRecoveryRequired(reason_code="delegation_session_scope_unavailable", detail={})
+        assert_runtime_task_fence(task)
+        child_session_id = uuid.UUID(str(task.child_session_id))
+        question = await db.scalar(select(ChatTranscriptEvent).join(
+            SessionModelResult, SessionModelResult.id == ChatTranscriptEvent.result_id).where(
+            ChatTranscriptEvent.tenant_id == task.tenant_id, ChatTranscriptEvent.agent_id == task.child_agent_id,
+            ChatTranscriptEvent.session_id == child_session_id, ChatTranscriptEvent.run_id == task.id,
+            ChatTranscriptEvent.item_kind == "user_question",
+            SessionModelResult.provider_request_id == provider_request_id,
+            SessionModelResult.state == "round_committed",
+        ).order_by(ChatTranscriptEvent.sequence.desc()).limit(1))
+        if question is None or question.lifecycle not in {"waiting", "completed"}:
+            raise SessionRestartRecoveryRequired(reason_code="delegation_question_receipt_missing", detail={})
+        answer = await db.scalar(select(SessionTurnInput.id).join(
+            SessionInputAdmission, SessionInputAdmission.input_id == SessionTurnInput.id).where(
+            SessionTurnInput.tenant_id == task.tenant_id, SessionTurnInput.session_id == child_session_id,
+            SessionTurnInput.target_run_id == task.id, SessionTurnInput.request_item_id == question.item_id,
+            SessionTurnInput.intent == "answer_request", SessionTurnInput.status == "queued",
+            SessionInputAdmission.input_revision == SessionTurnInput.revision,
+            SessionInputAdmission.state == "admitted"))
+        task.status = "pending" if answer is not None else "suspended"
+        task.metadata_json = {**(task.metadata_json or {}), "delegation_waiting_question_item_id": str(question.item_id),
+            "terminal_reason": "clarification_required"}
+        task.claimed_by, task.claim_expires_at = None, None
+        await transition_runtime_root_item_by_task(db, runtime_task_id=task.id,
+            requested_state="queued" if answer is not None else "suspended", reason_code="delegation_question")
+        await db.commit()
+
+
 @dataclass
 class DelegationSessionRuntime:
     scope: dict[str, Any]

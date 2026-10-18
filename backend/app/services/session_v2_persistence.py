@@ -48,8 +48,8 @@ _AUTHORITY_SEAL = object()
 
 # Narrow server-derived authority for an authenticated parent Agent's message
 # to its exact active A2A delegation child session.  ``delegation_run`` is
-# product read-only for user-facing HTTP/WS mutation (require_writable_session
-# 409), and that boundary is NOT weakened here: this lane never goes through
+# product read-only apart from answering its canonical question. This peer
+# lane never goes through
 # the user writable gate.  Instead the resolver mechanically revalidates the
 # durable binding — tenant, peer Agent, child Agent/session, root user, root
 # session, and the delegation RuntimeTask — on every accept and on every
@@ -264,6 +264,18 @@ async def resolve_session_mutation_authority(
     tenant_id = decision.session.tenant_id
     if tenant_id is None or decision.agent.tenant_id != tenant_id:
         raise ValueError("session_tenant_mismatch")
+    if action == "answer_session_question" and decision.session.session_kind == "delegation_run":
+        from app.models.runtime_task import RuntimeTask
+
+        task = await db.get(RuntimeTask, decision.session.runtime_task_id)
+        if (not _is_a2a_delegation_child_session(decision.session)
+            or task is None or task.tenant_id != tenant_id or task.task_type != "delegation"
+            or task.child_agent_id != decision.agent.id
+            or _uuid(task.child_session_id, "child_session_id") != decision.session.id
+            or task.root_user_id != user.id or decision.session.user_id != user.id):
+            from fastapi import HTTPException
+
+            raise HTTPException(status_code=403, detail={"code": "delegation_question_requester_mismatch"})
     return AuthenticatedSessionAuthority(
         tenant_id=tenant_id,
         agent_id=decision.agent.id,
@@ -771,7 +783,7 @@ async def resolve_session_command_authority(
         user=actor,
         agent_id=agent.id,
         session_id=session.id,
-        action=action,
+        action="answer_session_question" if command.command_kind == "answer_request" else action,
         audit=False,
     )
     if authority.principal_type != principal_type or authority.principal_id != command.principal_id:
@@ -1218,6 +1230,8 @@ async def accept_human_input(
     kind = str(intent.get("kind") or "")
     if kind not in _HUMAN_INPUT_INTENTS:
         raise ValueError("unsupported HumanInput intent")
+    if authority.action == "answer_session_question" and kind != "answer_request":
+        raise ValueError("question answer authority cannot start other work")
     if str(intent.get("session_id") or "") != str(session_uuid):
         raise ValueError("intent session does not match authority")
     input_id = _uuid(intent.get("input_id"), "input_id")

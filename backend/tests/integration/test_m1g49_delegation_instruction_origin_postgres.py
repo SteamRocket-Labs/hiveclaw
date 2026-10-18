@@ -3,7 +3,7 @@
 import json
 import platform
 import sys
-from uuid import uuid4
+from uuid import uuid4, uuid5
 
 import pytest
 
@@ -13,7 +13,7 @@ pytestmark = [pytest.mark.usefixtures("migrated_pg_url"), pytest.mark.skipif(pla
     reason="Native macOS context gate; Linux delivery is deferred.")]
 
 
-@pytest.mark.parametrize("input_case", ["complete", "unbound", "revoked", "first_task", "first_task_unbound", "first_task_revoked", "first_task_refined", "first_task_delivery", "first_task_parent_model", "first_task_refined_native", "first_task_native_creation", "first_task_fresh_employee", "first_task_saved_reopen"])
+@pytest.mark.parametrize("input_case", ["complete", "unbound", "revoked", "first_task", "first_task_unbound", "first_task_revoked", "first_task_refined", "first_task_delivery", "first_task_parent_model", "first_task_refined_native", "first_task_native_creation", "first_task_fresh_employee", "first_task_saved_reopen", "first_task_question"])
 async def test_governed_delegation_preserves_its_parent_instruction_origin(
     owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, input_case,
 ):
@@ -33,10 +33,10 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
 
     first_task = input_case.startswith("first_task")
     saved_reopen = input_case == "first_task_saved_reopen"
-    native_creation = input_case in {"first_task_native_creation", "first_task_fresh_employee", "first_task_saved_reopen"}
-    parent_model_case = input_case in {"first_task_parent_model", "first_task_refined_native", "first_task_native_creation", "first_task_fresh_employee", "first_task_saved_reopen"}
+    native_creation = input_case in {"first_task_native_creation", "first_task_fresh_employee", "first_task_saved_reopen", "first_task_question"}
+    parent_model_case = input_case in {"first_task_parent_model", "first_task_refined_native", "first_task_native_creation", "first_task_fresh_employee", "first_task_saved_reopen", "first_task_question"}
     delivery_case = input_case == "first_task_delivery" or parent_model_case
-    native_refined = input_case in {"first_task_refined_native", "first_task_native_creation", "first_task_fresh_employee", "first_task_saved_reopen"}
+    native_refined = input_case in {"first_task_refined_native", "first_task_native_creation", "first_task_fresh_employee", "first_task_saved_reopen", "first_task_question"}
     refined_input = input_case == "first_task_refined"
     unbound_input = input_case in {"unbound", "first_task_unbound"}
     revoked_input = input_case in {"revoked", "first_task_revoked"}
@@ -99,7 +99,7 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
     if first_task:
         from app.models.chat_session import ChatSession
         from app.models.runtime_task import RuntimeTask
-        from app.models.session_v2 import SessionCommand, SessionTurnInput
+        from app.models.session_v2 import SessionCommand, SessionTurnInput, SessionInputAdmission
         from app.models.user import User
         from app.services.session_input_admission import run_user_prompt_admission
         from app.services.session_input_dispatch import _start_input_runtime
@@ -123,6 +123,8 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
             started = await _start_input_runtime(db, row=row, command=await db.get(SessionCommand, row.command_id),
                 agent=await db.get(Agent, seed["agent_id"]), user=user,
                 session=await db.get(ChatSession, seed["session_id"]), successor=False)
+            admission = await db.get(SessionInputAdmission, uuid5(row.command_id, "input-admission:revision:1"))
+            admission.dispatch_state, admission.dispatch_receipt_json = "dispatched", started
             from uuid import UUID
 
             seed["run_id"], seed["turn_id"] = UUID(started["run_id"]), started["turn_id"]
@@ -325,6 +327,115 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
         return result
     monkeypatch.setattr(content_input_receipts, "record_native_workspace_receipts", observe_writer)
     monkeypatch.setattr(invoker, "create_llm_client", lambda **_kwargs: client)
+    if input_case == "first_task_question":
+        from app.models.chat_transcript_event import ChatTranscriptEvent
+
+        client = ScriptedLLMClient([{"tool_calls": [{"id": "child-question", "type": "function", "function": {
+            "name": "ask_user_question", "arguments": json.dumps({"questions": [{"question": "Which audience?",
+                "header": "Audience", "options": [{"label": "Team"}, {"label": "Personal"}]}]})}}],
+            "finish_reason": "tool_calls"}])
+        token = set_runtime_task_fence(task_id=task_id, worker_id="origin-worker", claim_version=1)
+        try:
+            assert await orchestrator.dispatch_persisted_async_delegation(task_id.hex, wait_for_completion=True)
+        finally:
+            reset_runtime_task_fence(token)
+        async with app_user_sessionmaker() as db:
+            await pin_rls_tenant_context(db, seed["tenant_id"])
+            child = await db.get(RuntimeTask, task_id)
+            questions = list(await db.scalars(select(ChatTranscriptEvent).where(
+                ChatTranscriptEvent.run_id == task_id, ChatTranscriptEvent.item_kind == "user_question")))
+            assert len(questions) == 1 and questions[0].lifecycle == "waiting"
+            assert child.status == "suspended", (child.status, child.result_summary, child.metadata_json)
+            assert child.completed_at is None
+            assert len(client.requests) == 1
+            question_id = questions[0].item_id
+            question_provider_id = (await db.get(SessionModelResult, questions[0].result_id)).provider_request_id
+        from fastapi import FastAPI
+        from httpx import ASGITransport, AsyncClient
+        from app.api.chat_sessions import router
+        from app.core.security import get_current_user
+        from app.database import get_db
+
+        async def answer_db():
+            async with app_user_sessionmaker() as db:
+                await pin_rls_tenant_context(db, seed["tenant_id"])
+                yield db
+        app = FastAPI()
+        app.include_router(router, prefix="/api")
+        app.dependency_overrides[get_db] = answer_db
+        app.dependency_overrides[get_current_user] = lambda: user
+        answer_id = uuid4()
+        body = {"kind": "answer_request", "input_id": str(answer_id), "idempotency_key": str(answer_id),
+            "request_item_id": str(question_id), "content_parts": [{"type": "text", "text": "Audience: Team"}]}
+        async def dispatch_answer(response, revision=1):
+            from app.services.session_input_dispatch import recover_admitted_session_inputs_once
+
+            assert response.status_code == 200 and response.json()["admission_state"] == "admitted", response.text
+            async with app_user_sessionmaker() as db:
+                await pin_rls_tenant_context(db, seed["tenant_id"])
+                await recover_admitted_session_inputs_once(db, worker_id="answer-dispatch", tenant_id=seed["tenant_id"],
+                    admission_ids=(uuid5(UUID(response.json()["command_id"]), f"input-admission:revision:{revision}"),))
+                assert (await db.get(SessionTurnInput, answer_id)).status == "queued"
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://question.local") as browser:
+            ordinary = await browser.post(f"/api/agents/{receiver}/sessions/{request.session_id}/inputs", json={
+                "kind": "start_turn", "input_id": str(uuid4()), "idempotency_key": str(uuid4()),
+                "content_parts": [{"type": "text", "text": "Unrelated work"}]})
+            assert ordinary.status_code == 409 and ordinary.json()["detail"]["code"] == "session_read_only"
+            response = await browser.post(f"/api/agents/{receiver}/sessions/{request.session_id}/inputs", json=body)
+            await dispatch_answer(response)
+            replay = await browser.post(f"/api/agents/{receiver}/sessions/{request.session_id}/inputs", json=body)
+            assert replay.status_code == 200 and replay.json()["replayed"] is True, replay.text
+            revised = await browser.patch(f"/api/agents/{receiver}/sessions/{request.session_id}/inputs/{answer_id}",
+                json={"content_parts": [{"type": "text", "text": "Audience: Personal"}]}, headers={"If-Match": "1"})
+            await dispatch_answer(revised, revision=2)
+            cancelled = await browser.delete(f"/api/agents/{receiver}/sessions/{request.session_id}/inputs/{answer_id}",
+                headers={"If-Match": "2"})
+            assert cancelled.status_code == 200 and cancelled.json()["status"] == "cancelled", cancelled.text
+            async with app_user_sessionmaker() as db:
+                await pin_rls_tenant_context(db, seed["tenant_id"])
+                child = await db.get(RuntimeTask, task_id)
+                assert child.status == "suspended" and len(client.requests) == 1
+                question_id = UUID(child.metadata_json["delegation_waiting_question_item_id"])
+            answer_id = uuid4()
+            body.update(input_id=str(answer_id), idempotency_key=str(answer_id), request_item_id=str(question_id))
+            response = await browser.post(f"/api/agents/{receiver}/sessions/{request.session_id}/inputs", json=body)
+            await dispatch_answer(response)
+        async with owner_sessionmaker() as db:
+            child = await db.get(RuntimeTask, task_id)
+            assert child.status == "pending" and child.completed_at is None
+            child.status, child.claimed_by, child.claim_version, child.attempt_count = "running", "answer-worker", 2, 2
+            child.claim_expires_at = datetime.now(timezone.utc) + timedelta(minutes=10)
+            await db.commit()
+        from app.services.delegation_session_runtime import suspend_delegation_for_question
+
+        token = set_runtime_task_fence(task_id=task_id, worker_id="answer-worker", claim_version=2)
+        try:
+            await suspend_delegation_for_question(request, provider_request_id=question_provider_id)
+        finally:
+            reset_runtime_task_fence(token)
+        async with owner_sessionmaker() as db:
+            child = await db.get(RuntimeTask, task_id)
+            assert child.status == "pending" and child.completed_at is None
+            child.status, child.claimed_by, child.claim_version, child.attempt_count = "running", "answer-worker", 3, 3
+            child.claim_expires_at = datetime.now(timezone.utc) + timedelta(minutes=10)
+            await db.commit()
+        client.script.append({"content": "Report prepared for Team.", "finish_reason": "stop"})
+        token = set_runtime_task_fence(task_id=task_id, worker_id="answer-worker", claim_version=3)
+        try:
+            assert await orchestrator.dispatch_persisted_async_delegation(task_id.hex, wait_for_completion=True)
+        finally:
+            reset_runtime_task_fence(token)
+        async with app_user_sessionmaker() as db:
+            await pin_rls_tenant_context(db, seed["tenant_id"])
+            child = await db.get(RuntimeTask, task_id)
+            assert child.status == "completed" and child.result_summary == "Report prepared for Team.", child.metadata_json
+            assert len(client.requests) == 2
+            assert any("Audience: Team" in str(message.get("content")) for message in client.requests[-1]["messages"])
+            from app.models.session_v2 import SessionToolInvocation
+            tools = list(await db.scalars(select(SessionToolInvocation).where(SessionToolInvocation.run_id == task_id)))
+            assert len(tools) == 1 and tools[0].tool_name == "ask_user_question"
+            assert (await db.get(SessionTurnInput, answer_id)).status == "applied"
+        return
     token = set_runtime_task_fence(task_id=task_id, worker_id="origin-worker", claim_version=1)
     try:
         result = await orchestrator._delegate_after_cycle_check(request, trace_id=request.trace_id or "origin-probe",

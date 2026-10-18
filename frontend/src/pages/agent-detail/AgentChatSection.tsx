@@ -1174,6 +1174,9 @@ function AgentChatSection({
   const isReadOnlySession = !!activeSession && !shouldUseWritableSessionSurface(activeSession as any, currentUser?.id);
   const isDraftSession = isDraftHumanChatSession(activeSession as any);
   const canMutateSession = Boolean(activeSession) && !isReadOnlySession;
+  const canAnswerQuestion = canMutateSession || (activeSession?.session_kind === 'delegation_run'
+    && !activeSession.operator_view && !!currentUser?.id && activeSession.user_id === currentUser.id && !agentExpired
+    && ['manage', 'use'].includes(agentPermissions?.access_level || agent?.access_level || ''));
   const baseCanUseComposer = canMutateSession && !agentExpired;
   const activeSessionId = activeSession?.id ? String(activeSession.id) : null;
   const operatorView = activeSession?.operator_view === true;
@@ -1448,7 +1451,7 @@ function AgentChatSection({
         agentName={agent?.name}
         submitted={isClarificationCardAnsweredByLaterUserMessage(visibleTimeline, index)}
         questionItemId={msg.transcriptEventId || undefined}
-        onAnswerQuestion={canMutateSession ? onAnswerQuestion : undefined}
+        onAnswerQuestion={canAnswerQuestion ? onAnswerQuestion : undefined}
         onSendMessage={canMutateSession ? onSendMessage : undefined}
         onEnterPlanMode={canMutateSession ? onEnterPlanMode : undefined}
       />

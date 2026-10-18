@@ -1134,6 +1134,7 @@ class AgentDelegationResult:
     # Caller-owned, secret-redacted projection input. It is intentionally not
     # exposed through to_dict()/to_json() to the parent Agent.
     response_complete_payload: dict[str, Any] | None = None
+    question_provider_request_id: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """P1-W3-2: structured representation for parent agents that need
@@ -1150,6 +1151,8 @@ class AgentDelegationResult:
             status = "timed_out"
         elif self.failed:
             status = "failed"
+        elif self.terminal_reason == TerminalReason.CLARIFICATION_REQUIRED.value:
+            status = "waiting"
         else:
             status = "completed"
         child_invocation = {
@@ -2201,7 +2204,8 @@ async def _delegate_after_cycle_check(
         terminal_reason_value = (
             terminal_reason.value if getattr(terminal_reason, "value", None) else str(terminal_reason or "") or None
         )
-        terminal_failed = terminal_reason_value not in {None, TerminalReason.TURN_STOP.value}
+        terminal_failed = terminal_reason_value not in {None, TerminalReason.TURN_STOP.value} and not (
+            canonical_runtime is not None and terminal_reason_value == TerminalReason.CLARIFICATION_REQUIRED.value)
         if terminal_failed:
             _delegation_status = "error"
         delegation_result = AgentDelegationResult(
@@ -2223,6 +2227,9 @@ async def _delegate_after_cycle_check(
             ),
             failed=terminal_failed,
             terminal_reason=terminal_reason_value,
+            question_provider_request_id=(canonical_runtime.active_provider_request_id
+                if canonical_runtime is not None and terminal_reason_value == TerminalReason.CLARIFICATION_REQUIRED.value
+                else None),
             response_complete_payload=(
                 _runtime_json_safe(getattr(result, "response_complete_payload", None))
                 if isinstance(getattr(result, "response_complete_payload", None), dict)
@@ -2275,7 +2282,9 @@ async def _delegate_after_cycle_check(
 
     canonical_final = (canonical_runtime is not None and not delegation_result.failed
         and canonical_runtime.final_content == delegation_result.content)
-    delegation_result.transcript_committed = canonical_final or await _append_child_transcript_event(
+    delegation_result.transcript_committed = canonical_final or (
+        (delegation_result.failed or delegation_result.terminal_reason != TerminalReason.CLARIFICATION_REQUIRED.value)
+        and await _append_child_transcript_event(
         actor_type="assistant",
         event_type="assistant_message",
         role="assistant",
@@ -2287,7 +2296,7 @@ async def _delegate_after_cycle_check(
             "depth_limited": delegation_result.depth_limited,
             "terminal_reason": delegation_result.terminal_reason,
         },
-    )
+    ))
 
     # Synchronous delegation has no outer RuntimeTask terminal transition. Its
     # authoritative terminal fact is the committed assistant transcript above.
@@ -2892,6 +2901,7 @@ def _spawn_async_delegation_task(
         # daemon resume paths have no request context — the request carries
         # the tenant explicitly so every session below scopes correctly.
         tenant_token = None
+        question_coordination_released = False
         if request.tenant_id:
             from app.database import reset_current_tenant, set_current_tenant
 
@@ -2945,6 +2955,16 @@ def _spawn_async_delegation_task(
                     failed=True,
                 )
             delegation_result = await _delegate(request)
+            if delegation_result.terminal_reason == TerminalReason.CLARIFICATION_REQUIRED.value:
+                from app.services.delegation_session_runtime import suspend_delegation_for_question
+
+                await _release_delegation_coordination_lease(task_id=task_id, tenant_id=request.tenant_id,
+                    task_key=request.coordination_task_key, lease_id=request.coordination_lease_id,
+                    reason="delegation_question", coordination_gateway=request.coordination_gateway)
+                question_coordination_released = True
+                await suspend_delegation_for_question(request,
+                    provider_request_id=delegation_result.question_provider_request_id)
+                return delegation_result
             transcript_commit_missing = bool(
                 not delegation_result.failed
                 and delegation_result.terminal_reason == TerminalReason.TURN_STOP.value
@@ -3116,14 +3136,15 @@ def _spawn_async_delegation_task(
                 failed=True,
             )
         finally:
-            await _release_delegation_coordination_lease(
-                task_id=task_id,
-                tenant_id=request.tenant_id,
-                task_key=request.coordination_task_key,
-                lease_id=request.coordination_lease_id,
-                reason="delegation_terminal",
-                coordination_gateway=request.coordination_gateway,
-            )
+            if not question_coordination_released:
+                await _release_delegation_coordination_lease(
+                    task_id=task_id,
+                    tenant_id=request.tenant_id,
+                    task_key=request.coordination_task_key,
+                    lease_id=request.coordination_lease_id,
+                    reason="delegation_terminal",
+                    coordination_gateway=request.coordination_gateway,
+                )
             if tenant_token is not None:
                 reset_current_tenant(tenant_token)
 

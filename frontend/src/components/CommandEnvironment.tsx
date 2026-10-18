@@ -33,11 +33,13 @@ function ResourceEditor({ agentId, scopeKey, scope }: { agentId: string; scopeKe
   const query = useQuery({ queryKey: key, enabled: open, retry: false,
     queryFn: async ({ signal }) => check(await environmentApi.read(agentId, scope, signal)) });
   async function refresh() { const result = await query.refetch(); if (!result.isError) setUnknown(false); }
-  async function control(action: 'stop' | 'resume') {
+  async function control(action: 'stop' | 'resume' | 'reconcile') {
     if (!query.data?.environment) return;
     setBusy(true);
     try {
-      const value = check(await environmentApi.control(agentId, scope, action, query.data.environment.revision));
+      const value = check(await (action === 'reconcile'
+        ? environmentApi.control(agentId, scope, action, query.data.environment.revision, query.data.environment.recovery?.lease_id)
+        : environmentApi.control(agentId, scope, action, query.data.environment.revision)));
       client.setQueryData(key, value); await refresh();
     } catch { setUnknown(true); } finally { setBusy(false); }
   }
@@ -48,9 +50,17 @@ function ResourceEditor({ agentId, scopeKey, scope }: { agentId: string; scopeKe
       case 'ready': return t('commandEnvironment.ready', 'Ready for supervised commands');
       case 'stopping': return t('commandEnvironment.stopping', 'Stopping: waiting for active commands and work settlement');
       case 'stopped': return t('commandEnvironment.stopped', 'Stopped');
-      case 'lost': return t('commandEnvironment.lost', 'Resource completion is unknown. Inspect the original work or ask an administrator before resuming.');
+      case 'lost': return t('commandEnvironment.lost', 'The previous command lease expired. Verify resource evidence before starting another command.');
       case 'failed': return t('commandEnvironment.failed', 'The command resource is unavailable. Review its configuration before retrying.');
       default: return t('commandEnvironment.notStarted', 'The first authorized command creates this private logical environment.');
+    }
+  }
+  function recoveryLabel() {
+    switch (env?.recovery?.reason_code) {
+      case 'worker_terminated_before_resource_creation': return t('commandEnvironment.recoveryUnused', 'The original worker exited before resource creation. Settle the unused lease, then resume to start a new generation.');
+      case 'worker_still_present': return t('commandEnvironment.recoveryWorkerPresent', 'The original worker process is still present. Stop commands or refresh after it settles.');
+      case 'original_worker_host_required': return t('commandEnvironment.recoveryHostRequired', 'This server cannot verify the original worker host. Ask an administrator to inspect that host.');
+      default: return t('commandEnvironment.recoveryUnconfirmed', 'Resource termination is unconfirmed. The lease remains active; expiry alone cannot release it.');
     }
   }
   return <details className="card" open={open} onToggle={(event) => setOpen(event.currentTarget.open)}>
@@ -62,7 +72,9 @@ function ResourceEditor({ agentId, scopeKey, scope }: { agentId: string; scopeKe
       {view && <>
         <p role="status">{stateLabel()}</p>
         {env && <p>{t('commandEnvironment.provider', 'Provider')}: {env.provider_key} · {t('commandEnvironment.generation', 'Generation')}: {env.generation} · {t('commandEnvironment.active', 'Active commands')}: {env.active_commands}</p>}
+        {env?.recovery && view.can_manage && <p>{recoveryLabel()}</p>}
         {env && view.can_manage && <div className="agent-settings-header-actions">
+          {env.recovery?.can_reconcile && <button type="button" className="btn btn-secondary" disabled={busy || query.isFetching} onClick={() => { void control('reconcile'); }}>{t('commandEnvironment.reconcile', 'Verify and settle unused lease')}</button>}
           <button type="button" className="btn btn-secondary" disabled={busy || query.isFetching || env.desired_state === 'stopped'} onClick={() => { void control('stop'); }}>{t('commandEnvironment.stop', 'Stop supervised commands')}</button>
           <button type="button" className="btn btn-primary" disabled={busy || query.isFetching || env.active_commands > 0 || env.observed_state === 'ready'} onClick={() => { void control('resume'); }}>{t('commandEnvironment.resume', 'Resume command environment')}</button>
         </div>}

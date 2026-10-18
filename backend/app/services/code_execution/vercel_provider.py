@@ -144,7 +144,7 @@ async def execute_vercel_sandbox_command(
     runtime: str | None = None,
     network_policy: str | None = None,
 ) -> CodeExecutionResult:
-    from app.services.execution_environments import record_environment_resource_state
+    from app.services.execution_environments import record_environment_resource_creation, record_environment_resource_state
 
     resource_cleanup = {"status": "not_created"}
     policy = (network_policy or os.environ.get("HIVE_CODE_EXEC_NETWORK_POLICY", "deny-all")).strip() or "deny-all"
@@ -172,9 +172,9 @@ async def execute_vercel_sandbox_command(
     local_home = safe_env.get("HOME")
     sandbox = None
     exec_env: dict[str, str] = {}
+    await record_environment_resource_creation("creation_unknown")
     try:
         resource_cleanup["status"] = "creation_unknown"
-        record_environment_resource_state("creation_unknown")
         sandbox = await AsyncSandbox.create(
             team_id=os.environ["VERCEL_TEAM_ID"],
             project_id=os.environ["VERCEL_PROJECT_ID"],

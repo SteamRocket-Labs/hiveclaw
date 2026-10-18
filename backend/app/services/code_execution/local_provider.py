@@ -82,13 +82,13 @@ async def execute_local_sandboxed_command(
     if sandbox.error:
         return CodeExecutionResult(error=sandbox.error, evidence=evidence)
 
-    from app.services.execution_environments import record_environment_resource_state
+    from app.services.execution_environments import record_environment_resource_creation, record_environment_resource_state
 
     try:
         if require_network_denial and isolation == "unsandboxed_dev_bypass":
             return CodeExecutionResult(error="❌ Network denial requires an enforcing OS sandbox; development bypass cannot provide it.",
                 evidence={**evidence, "status": "unsupported", "reason_code": "network_isolation_unavailable", "retryable": False})
-        record_environment_resource_state("starting")
+        await record_environment_resource_creation("starting")
         launch = asyncio.create_task(asyncio.create_subprocess_exec(
             *(sandbox.command or []),
             cwd=str(work_dir),

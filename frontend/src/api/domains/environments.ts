@@ -6,11 +6,13 @@ export interface CommandEnvironment {
   desired_state: 'ready' | 'stopped'; observed_state: 'ready' | 'stopping' | 'stopped' | 'lost' | 'failed';
   active_commands: number; next_action: string; last_used_at: string | null;
   capabilities: { persistent_compute: boolean; detached_process_control: boolean; browser: boolean };
+  recovery?: { lease_id: string; reason_code: string; can_reconcile: boolean };
 }
 export interface EnvironmentView { tenant_id: string; agent_id: string; can_manage: boolean; environment: CommandEnvironment | null }
 export const environmentApi = {
   read: (agentId: string, scope: EnvironmentScope, signal?: AbortSignal) =>
     get<EnvironmentView>(`/agents/${agentId}/environment?${new URLSearchParams({ ...scope })}`, { signal }),
-  control: (agentId: string, scope: EnvironmentScope, action: 'stop' | 'resume', expectedRevision: number) =>
-    post<EnvironmentView>(`/agents/${agentId}/environment/${action}`, { ...scope, expected_revision: expectedRevision }),
+  control: (agentId: string, scope: EnvironmentScope, action: 'stop' | 'resume' | 'reconcile', expectedRevision: number, expectedLeaseId?: string) =>
+    post<EnvironmentView>(`/agents/${agentId}/environment/${action}`, { ...scope, expected_revision: expectedRevision,
+      ...(expectedLeaseId ? { expected_lease_id: expectedLeaseId } : {}) }),
 };

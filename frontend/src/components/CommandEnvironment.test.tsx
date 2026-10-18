@@ -65,3 +65,29 @@ it('drops old-company facts and a late response when the selected company change
   expect(tree.container.querySelector('details')!.open).toBe(false);
   expect(mocks.control).not.toHaveBeenCalled();
 });
+
+it('settles only the observed unused lease, then requires an explicit resume', async () => {
+  const recovery = { lease_id: 'unused-lease', reason_code: 'worker_terminated_before_resource_creation', can_reconcile: true };
+  mocks.read.mockResolvedValue({ ...view, environment: { ...env, observed_state: 'lost', recovery } });
+  mount();
+  const settle = await screen.findByRole('button', { name: 'Verify and settle unused lease' });
+  expect((screen.getByRole('button', { name: 'Resume command environment' }) as HTMLButtonElement).disabled).toBe(true);
+  const stopped = { ...view, environment: { ...env, revision: 2, active_commands: 0, desired_state: 'stopped', observed_state: 'stopped' } };
+  mocks.control.mockImplementation(async () => { mocks.read.mockResolvedValue(stopped); return stopped; });
+  fireEvent.click(settle);
+  await screen.findByText('Stopped');
+  expect(mocks.control).toHaveBeenCalledWith('employee', { expected_tenant_id: 'company', expected_user_id: 'owner' }, 'reconcile', 1, 'unused-lease');
+  expect(mocks.control).toHaveBeenCalledTimes(1);
+  expect((screen.getByRole('button', { name: 'Resume command environment' }) as HTMLButtonElement).disabled).toBe(false);
+});
+
+it('keeps an unconfirmed resource locked and does not offer settlement', async () => {
+  mocks.read.mockResolvedValue({ ...view, environment: { ...env, observed_state: 'lost', recovery: {
+    lease_id: 'unknown-lease', reason_code: 'resource_termination_unconfirmed', can_reconcile: false,
+  } } });
+  mount();
+  await screen.findByText('Resource termination is unconfirmed. The lease remains active; expiry alone cannot release it.');
+  expect(screen.queryByRole('button', { name: 'Verify and settle unused lease' })).toBeNull();
+  expect((screen.getByRole('button', { name: 'Resume command environment' }) as HTMLButtonElement).disabled).toBe(true);
+  expect(mocks.control).not.toHaveBeenCalled();
+});

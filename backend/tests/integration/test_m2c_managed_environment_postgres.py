@@ -148,7 +148,10 @@ async def test_unknown_resource_keeps_lease_and_blocks_duplicate_execution(
         lease = await db.get(EnvironmentLease, scope.lease_id)
         assert view["observed_state"] == "lost" and view["active_commands"] == 1
         assert view["next_action"] == "inspect_original_worker" and lease.status == "active"
-        assert lease.outcome == {"status": "interrupted", "resource_state": "unknown"}
+        assert lease.outcome == {
+            "status": "interrupted", "resource_state": "unknown",
+            "resource_lifecycle": {"schema": "hive.environment.resource-lifecycle.v1", "phase": "unconfirmed", "worker": scope.worker_witness},
+        }
         with pytest.raises(EnvironmentError, match="environment_reconciliation_required"):
             await control_environment(
                 db,
@@ -172,6 +175,12 @@ async def test_unknown_resource_keeps_lease_and_blocks_duplicate_execution(
 
 async def test_real_worker_command_environment_stop_resume_and_saved_files(
     owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path
+):
+    await _exercise_real_worker_environment(owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path)
+
+
+async def _exercise_real_worker_environment(
+    owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, *, recovery=None
 ):
     from app.api.environments import router
     import app.database as database
@@ -359,6 +368,8 @@ async def test_real_worker_command_environment_stop_resume_and_saved_files(
         current = (await client.get(url, params=scope)).json()["environment"]
         assert current["generation"] == 1 and current["active_commands"] == 0
         assert current["capabilities"]["persistent_compute"] is False
+        if recovery is not None:
+            current = await recovery(seed, client, url, scope, current)
         stopped = await client.post(url + "/stop", json={**scope, "expected_revision": current["revision"]})
         assert stopped.status_code == 200 and stopped.json()["environment"]["observed_state"] == "stopped"
         denied = await run(f"{python} -I -c \"open('must-not-run','w').write('blocked')\"")
@@ -371,7 +382,7 @@ async def test_real_worker_command_environment_stop_resume_and_saved_files(
         )
         assert resumed.status_code == 200
         ready = resumed.json()["environment"]
-        assert ready["id"] == current["id"] and ready["generation"] == 2
+        assert ready["id"] == current["id"] and ready["generation"] == current["generation"] + 1
         script = await run(
             f"{python} -I -c \"print(open('saved.txt').read()); open('saved.txt','a').write('_CONTINUED')\""
         )
@@ -472,7 +483,9 @@ async def test_real_worker_command_environment_stop_resume_and_saved_files(
             leases = list(
                 await db.scalars(select(EnvironmentLease).where(EnvironmentLease.environment_id == UUID(current["id"])))
             )
-            assert len(leases) == 3 and all(lease.status == "released" for lease in leases)
+            command_leases = [lease for lease in leases if lease.invocation_key != "crashed-before-resource"]
+            assert len(leases) == 3 + int(recovery is not None)
+            assert len(command_leases) == 3 and all(lease.status == "released" for lease in leases)
             assert any(
                 lease.outcome.get("status") == "cancelled" and lease.outcome.get("resource_state") == "stopped"
                 for lease in leases

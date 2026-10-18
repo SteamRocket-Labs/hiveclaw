@@ -18,6 +18,7 @@ from app.models.runtime_task import RuntimeTask
 from app.models.user import User
 from app.services.code_execution.contracts import CodeExecutionResult
 from app.services.runtime_task_fence import assert_runtime_task_fence
+from app.services.environment_worker_witness import capture_worker_witness, observe_prelaunch_worker
 
 
 class EnvironmentError(RuntimeError):
@@ -63,7 +64,7 @@ async def active_leases(db, environment_id):
     )
 
 
-async def project_environment(db, *, tenant_id, agent_id):
+async def project_environment(db, *, tenant_id, agent_id, include_recovery=False):
     env = await db.scalar(
         select(ExecutionEnvironment).where(
             ExecutionEnvironment.tenant_id == tenant_id, ExecutionEnvironment.agent_id == agent_id
@@ -74,6 +75,11 @@ async def project_environment(db, *, tenant_id, agent_id):
     leases = await active_leases(db, env.id)
     lost = any(lease.expires_at <= datetime.now(UTC) for lease in leases)
     state = "lost" if lost else env.observed_state
+    recovery = None
+    if lost and include_recovery:
+        lease = leases[0]
+        reason, allowed = observe_prelaunch_worker((lease.outcome or {}).get("resource_lifecycle"))
+        recovery = {"lease_id": str(lease.id), "reason_code": reason, "can_reconcile": allowed}
     return {
         "id": str(env.id),
         "provider_key": env.provider_key,
@@ -84,7 +90,8 @@ async def project_environment(db, *, tenant_id, agent_id):
         "active_commands": len(leases),
         "capabilities": capabilities(env.provider_key),
         "last_used_at": env.last_used_at,
-        "next_action": "inspect_original_worker"
+        **({"recovery": recovery} if recovery else {}),
+        "next_action": "reconcile" if recovery and recovery["can_reconcile"] else "inspect_original_worker"
         if lost
         else "refresh"
         if state == "stopping"
@@ -94,7 +101,7 @@ async def project_environment(db, *, tenant_id, agent_id):
     }
 
 
-async def control_environment(db, *, tenant_id, agent_id, action, expected_revision):
+async def control_environment(db, *, tenant_id, agent_id, action, expected_revision, expected_lease_id=None):
     await lock_environment(db, tenant_id, agent_id)
     env = await db.scalar(
         select(ExecutionEnvironment)
@@ -120,11 +127,29 @@ async def control_environment(db, *, tenant_id, agent_id, action, expected_revis
         if env.desired_state != "ready" or env.observed_state != "ready":
             env.generation += 1
         env.desired_state = env.observed_state = "ready"
+    elif action == "reconcile":
+        if len(leases) != 1 or expected_lease_id is None or leases[0].id != expected_lease_id:
+            raise EnvironmentError("environment_lease_conflict")
+        lease = leases[0]
+        if lease.expires_at > datetime.now(UTC):
+            raise EnvironmentError("environment_commands_active")
+        reason, allowed = observe_prelaunch_worker((lease.outcome or {}).get("resource_lifecycle"))
+        if not allowed:
+            raise EnvironmentError(reason)
+        lease.status = "released"
+        lease.released_at = datetime.now(UTC)
+        lease.outcome = {
+            **(lease.outcome or {}),
+            "status": "interrupted",
+            "resource_state": "not_created",
+            "reconciliation": {"reason_code": reason, "observed_at": lease.released_at.isoformat()},
+        }
+        env.desired_state = env.observed_state = "stopped"
     else:
         raise EnvironmentError("environment_action_unsupported", 422)
     env.revision += 1
     await db.flush()
-    return await project_environment(db, tenant_id=tenant_id, agent_id=agent_id)
+    return await project_environment(db, tenant_id=tenant_id, agent_id=agent_id, include_recovery=True)
 
 
 @dataclass
@@ -142,6 +167,7 @@ class EnvironmentCommandScope:
     resource_state: str = "not_created"
     selected_provider: str | None = None
     source_binding: Any = field(default=None, repr=False)
+    worker_witness: dict | None = field(default=None, init=False, repr=False)
 
     async def _authority(self, db, *, before_command=False):
         from app.models.tenant import Tenant
@@ -183,6 +209,7 @@ class EnvironmentCommandScope:
                 assert_runtime_task_fence(task)
 
     async def _acquire(self, provider, timeout):
+        self.worker_witness = capture_worker_witness()
         async with tenant_scoped_session(
             self.tenant_id, require_tenant=True, source="environment_command_attach"
         ) as db:
@@ -222,11 +249,39 @@ class EnvironmentCommandScope:
                 generation=env.generation,
                 fence_version=env.fence_counter,
                 expires_at=datetime.now(UTC) + timedelta(seconds=max(timeout, 1) + 60),
+                outcome={"resource_lifecycle": {
+                    "schema": "hive.environment.resource-lifecycle.v1",
+                    "phase": "not_created", "worker": self.worker_witness,
+                }},
             )
             db.add(lease)
             await db.flush()
             values = (lease.id, env.id, env.generation, lease.fence_version)
         self.lease_id, self.environment_id, self.generation, self.fence_version = values
+
+    async def record_creation_intent(self):
+        # Commit before provider creation; a crash or lost commit acknowledgement stays unknown.
+        try:
+            async with tenant_scoped_session(
+                self.tenant_id, require_tenant=True, source="environment_resource_creation_intent"
+            ) as db:
+                await self._authority(db)
+                await lock_environment(db, self.tenant_id, self.agent_id)
+                env = await db.get(ExecutionEnvironment, self.environment_id, with_for_update=True)
+                lease = await db.get(EnvironmentLease, self.lease_id, with_for_update=True)
+                lifecycle = (lease.outcome or {}).get("resource_lifecycle") if lease else None
+                if (
+                    env is None or lease is None or lease.status != "active"
+                    or lease.environment_id != env.id or env.generation != self.generation
+                    or lease.generation != self.generation or lease.fence_version != self.fence_version
+                    or env.desired_state != "ready" or lease.expires_at <= datetime.now(UTC)
+                    or not isinstance(lifecycle, dict) or lifecycle.get("schema") != "hive.environment.resource-lifecycle.v1"
+                    or lifecycle.get("worker") != self.worker_witness
+                ):
+                    raise EnvironmentError("environment_lease_unavailable")
+                lease.outcome = {**lease.outcome, "resource_lifecycle": {**lifecycle, "phase": "creation_started"}}
+        except SQLAlchemyError as exc:
+            raise EnvironmentError("environment_state_unavailable", 503) from exc
 
     async def _check(self):
         async with tenant_scoped_session(
@@ -281,7 +336,11 @@ class EnvironmentCommandScope:
             except Exception as exc:
                 raise EnvironmentError("environment_state_unavailable", 503) from exc
             self.resource_state = "not_created"
-            task = asyncio.create_task(operation())
+            scope_token = _COMMAND_SCOPE.set(self)
+            try:
+                task = asyncio.create_task(operation())
+            finally:
+                _COMMAND_SCOPE.reset(scope_token)
             while not task.done():
                 done, _pending = await asyncio.wait({task}, timeout=0.5)
                 if not done:
@@ -358,7 +417,11 @@ class EnvironmentCommandScope:
             env = await db.get(ExecutionEnvironment, self.environment_id, with_for_update=True)
             if lease is None or env is None or lease.fence_version != self.fence_version:
                 raise EnvironmentError("environment_release_unknown", 503)
+            lifecycle = (lease.outcome or {}).get("resource_lifecycle")
+            if isinstance(lifecycle, dict) and self.resource_state != "not_created" and lifecycle.get("phase") == "not_created":
+                lifecycle = {**lifecycle, "phase": "unconfirmed"}
             lease.outcome = {
+                **({"resource_lifecycle": lifecycle} if lifecycle is not None else {}),
                 **(self.outcome or {"status": "interrupted"}),
                 "resource_state": self.resource_state,
                 **({"source": self.source_binding.receipt()} if self.source_binding is not None else {}),
@@ -444,6 +507,13 @@ def record_environment_resource_state(state):
     scope = current_environment_scope()
     if scope is not None:
         scope.resource_state = state
+
+
+async def record_environment_resource_creation(state):
+    scope = current_environment_scope()
+    if scope is not None:
+        await scope.record_creation_intent()
+    record_environment_resource_state(state)
 
 
 @asynccontextmanager

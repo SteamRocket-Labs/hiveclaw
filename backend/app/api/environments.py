@@ -23,6 +23,7 @@ class EnvironmentControl(BaseModel):
     expected_revision: int
     expected_user_id: uuid.UUID
     expected_tenant_id: uuid.UUID
+    expected_lease_id: uuid.UUID | None = None
 
 
 async def _scope(db, user, expected_user_id, expected_tenant_id):
@@ -46,7 +47,7 @@ async def read_environment(
         raise HTTPException(404)
     response.headers["Cache-Control"] = "no-store"
     try:
-        environment = await project_environment(db, tenant_id=tenant_id, agent_id=agent_id)
+        environment = await project_environment(db, tenant_id=tenant_id, agent_id=agent_id, include_recovery=access == "manage")
     except SQLAlchemyError as exc:
         raise HTTPException(
             503, detail={"code": "environment_state_unavailable"}, headers={"Cache-Control": "no-store"}
@@ -69,7 +70,8 @@ async def change_environment(
         raise HTTPException(404)
     try:
         result = await control_environment(
-            db, tenant_id=tenant_id, agent_id=agent_id, action=action, expected_revision=body.expected_revision
+            db, tenant_id=tenant_id, agent_id=agent_id, action=action, expected_revision=body.expected_revision,
+            expected_lease_id=body.expected_lease_id,
         )
     except EnvironmentError as exc:
         raise HTTPException(exc.status, detail={"code": exc.code}) from exc
@@ -87,6 +89,8 @@ async def change_environment(
                 "environment_id": result["id"],
                 "generation": result["generation"],
                 "revision": result["revision"],
+                **({"lease_id": str(body.expected_lease_id), "reason_code": "worker_terminated_before_resource_creation"}
+                   if action == "reconcile" else {}),
             },
         )
     )

@@ -17,6 +17,7 @@ import {
   reduceSessionCompatibilityEvent,
   reduceSessionEvent,
   sessionPayloadContent,
+  sourceAccessHold,
   type SessionCompatibilityEvent,
   type SessionEventStore,
   type SessionItemV2,
@@ -295,6 +296,13 @@ function projectCanonicalItem(
   toolResultByCall: ReadonlyMap<string, SessionItemV2>,
   questionsByInvocation: ReadonlyMap<string, SessionItemV2>,
 ): AgentChatMessage | null {
+  const sourceAccess = sourceAccessHold(item.payload);
+  if (sourceAccess) {
+    return { role: 'event', id: item.id, transcriptEventId: item.id, timestamp: item.occurredAt,
+      content: 'Some source content is not available to this reader.', eventTitle: 'Source access',
+      eventType: 'runtime_action_blocked', eventStatus: String(sourceAccess.status),
+      eventReason: String(sourceAccess.code), eventRetryable: sourceAccess.retryable === true, sessionItem: item };
+  }
   if (item.kind === 'user_question') {
     const legacyId = item.payload.legacy_event_id;
     if (item.invocationId || typeof legacyId !== 'string' || questionsByInvocation.get(`legacy:${legacyId}`)?.id !== item.id) return null;
@@ -913,6 +921,12 @@ function transitionApplicationOf(
 export function compatibilityProjectionEvent(event: SessionCompatibilityEvent): ChatTranscriptEventPayload {
   const envelope = event as unknown as Record<string, unknown>;
   const payload = recordValue(envelope.payload) || {};
+  const sourceAccess = sourceAccessHold(payload);
+  if (sourceAccess) {
+    return { id: event.event_id, sequence: event.sequence, event_type: 'runtime_action_blocked',
+      content: 'Some source content is not available to this reader.',
+      metadata: { status: sourceAccess.status, code: sourceAccess.code, retryable: sourceAccess.retryable } };
+  }
   const occurredAt = typeof envelope.occurred_at === 'string' && envelope.occurred_at.trim()
     ? envelope.occurred_at.trim()
     : typeof envelope.created_at === 'string' && envelope.created_at.trim()

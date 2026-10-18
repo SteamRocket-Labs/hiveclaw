@@ -2486,16 +2486,16 @@ async def get_session_transcript(
         if operator_view is True
         else check_agent_access(db, current_user, agent_id)
     )
-    authority_source = await _authorize_loaded_session(
-        db=db,
-        session=session,
-        agent=agent,
-        access_level=access_level,
-        current_user=current_user,
-        action="read_transcript",
-        operator_view=operator_view is True,
-        operator_reason=operator_reason,
-    )
+    group_history = getattr(session, "audience_kind", None) == "group"
+    if group_history and operator_view is not True:
+        from app.services.shared_group_history import authorize_group_history_reader
+
+        authority_source = await authorize_group_history_reader(db, session=session, user=current_user)
+    else:
+        authority_source = await _authorize_loaded_session(
+            db=db, session=session, agent=agent, access_level=access_level, current_user=current_user,
+            action="read_transcript", operator_view=operator_view is True, operator_reason=operator_reason,
+        )
 
     audience = "operator" if authority_source == "operator_inspect_grant" else "user"
     limit = max(1, min(limit, 1000))
@@ -2521,9 +2521,15 @@ async def get_session_transcript(
                 direction="backward" if direction == "backward" or before_sequence is not None else "forward",
                 limit=limit,
             )
+            if group_history:
+                from app.services.shared_group_history import group_event_access, project_source_hold
+
+                access = await group_event_access(db, session=session,
+                    events=[event for event, _sequence in rows_with_delivery], user=current_user)
             payload = [
                 project_session_event_for_delivery(
-                    serialize_session_event(event, audience=audience),
+                    project_source_hold(serialize_session_event(event, audience=audience), access[event.id])
+                    if group_history and access[event.id] is not None else serialize_session_event(event, audience=audience),
                     cursor=delivery_cursor,
                     storage_sequence=int(event.sequence),
                     delivery_sequence=delivery_sequence,
@@ -2557,7 +2563,19 @@ async def get_session_transcript(
                 .limit(limit)
             )
             rows = list(events_result.scalars().all())
-        payload = [_serialize_transcript_event(event, audience=audience) for event in rows]
+        if group_history:
+            from app.services.shared_group_history import group_event_access, legacy_source_hold
+
+            access = await group_event_access(db, session=session, events=rows, user=current_user)
+            payload = [legacy_source_hold(event, access[event.id]) if access[event.id] is not None
+                else _serialize_transcript_event(event, audience=audience) for event in rows]
+        else:
+            payload = [_serialize_transcript_event(event, audience=audience) for event in rows]
+    if group_history:
+        from app.services.shared_group_history import mark_reader_projection
+
+        ids = [event.id for event, _sequence in rows_with_delivery] if schema_version == 2 else [event.id for event in rows]
+        payload = [mark_reader_projection(envelope, access[event_id], current_user) for envelope, event_id in zip(payload, ids)]
     await db.commit()
     return payload
 
@@ -2740,6 +2758,12 @@ async def get_session_messages(
     session = result.scalar_one_or_none()
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
+
+    if getattr(session, "audience_kind", None) == "group":
+        # The group fallback uses the same immutable history and source reader, never raw read-model rows.
+        return await get_session_transcript(agent_id=agent_id, session_id=session_id, after_sequence=0,
+            before_sequence=None, direction="forward", limit=1000, schema_version=2,
+            operator_view=operator_view is True, operator_reason=operator_reason, current_user=current_user, db=db)
 
     agent, access_level = await (
         check_agent_operator_reachability(db, current_user, agent_id)

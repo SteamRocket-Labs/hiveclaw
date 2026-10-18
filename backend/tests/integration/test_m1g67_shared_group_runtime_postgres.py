@@ -444,3 +444,98 @@ async def test_shared_work_runs_with_its_original_sender_and_real_tool_sources(
                     await db.commit()
                     visible, _ = await read_current_sources()
                     assert private_canary in json.dumps([message.content for message in visible])
+            from fastapi import FastAPI
+            from httpx import ASGITransport, AsyncClient
+            from app.api import chat_sessions
+            from app.core.security import get_current_user
+
+            async def reader_user():
+                async with app_user_sessionmaker() as db:
+                    await pin_rls_tenant_context(db, seed["tenant_id"])
+                    return await db.get(User, seed["user_id"])
+
+            async def reader_db():
+                async with app_user_sessionmaker() as db:
+                    await pin_rls_tenant_context(db, seed["tenant_id"])
+                    yield db
+
+            web = FastAPI()
+            web.include_router(chat_sessions.router)
+            web.dependency_overrides[get_current_user] = reader_user
+            web.dependency_overrides[database.get_db] = reader_db
+            async with AsyncClient(transport=ASGITransport(app=web), base_url="http://group.fixture") as browser:
+                url = f"/agents/{seed['agent_id']}/sessions/{shared_id}"
+                response = await browser.get(url + "/transcript", params={"schema_version": 2, "limit": 1000})
+                (tmp_path / "browser-transcript.json").write_text(response.text)
+                assert response.status_code == 200, response.text
+                content = json.dumps(response.json())
+                assert "The independent report is ready." in content
+                assert (private_canary in content) == (mutation == "shared_context")
+                stored = await browser.get(url + "/messages")
+                (tmp_path / "browser-messages.json").write_text(stored.text)
+                assert stored.status_code == 200, stored.text
+                assert (private_canary in stored.text) == (mutation == "shared_context")
+                if mutation == "private_context":
+                    pages, after = [], 0
+                    while True:
+                        page = await browser.get(url + "/transcript", params={"schema_version": 2, "limit": 31, "after_sequence": after})
+                        assert page.status_code == 200, page.text
+                        rows = page.json()
+                        if not rows:
+                            break
+                        assert rows[0]["sequence"] > after
+                        pages.extend(rows)
+                        after = rows[-1]["sequence"]
+                    assert [row["event_id"] for row in pages] == [row["event_id"] for row in response.json()]
+                    assert private_canary not in json.dumps(pages)
+                    newest = await browser.get(url + "/transcript", params={"schema_version": 2, "limit": 31, "direction": "backward"})
+                    assert newest.status_code == 200
+                    assert [row["event_id"] for row in newest.json()] == [row["event_id"] for row in response.json()][-31:]
+                    assert any(row["source_access_receipt"]["status"] == "denied" for row in pages)
+                else:
+                    async with app_user_sessionmaker() as db:
+                        await pin_rls_tenant_context(db, seed["tenant_id"])
+                        (await db.get(ResourcePermission, note_grant_id)).actions = []
+                        await db.commit()
+                    for endpoint, params in (("/transcript", {"schema_version": 2, "limit": 1000}), ("/messages", {})):
+                        revoked = await browser.get(url + endpoint, params=params)
+                        (tmp_path / ("browser-revoked" + endpoint.replace("/", "-") + ".json")).write_text(revoked.text)
+                        assert revoked.status_code == 200 and private_canary not in revoked.text, revoked.text
+                        assert "OTHER_REQUESTER_ONLY" in revoked.text
+                    async with app_user_sessionmaker() as db:
+                        await pin_rls_tenant_context(db, seed["tenant_id"])
+                        (await db.get(ResourcePermission, note_grant_id)).actions = ["read"]
+                        await db.commit()
+                    restored = await browser.get(url + "/transcript", params={"schema_version": 2, "limit": 1000})
+                    (tmp_path / "browser-restored.json").write_text(restored.text)
+                    assert restored.status_code == 200 and private_canary in restored.text
+
+                if mutation == "private_context":
+                    from app.services.session_v2_persistence import SessionEventDraft, append_session_events
+
+                    async with app_user_sessionmaker() as db:
+                        await pin_rls_tenant_context(db, seed["tenant_id"])
+                        public_model = await db.get(SessionModelResult, next_results[0].id)
+                        await _validate_input_dependencies(db, seed["tenant_id"],
+                            public_model.model_request_snapshot_json["input_bindings"]["dependencies"],
+                            user=await db.get(User, seed["user_id"]))
+                        committed = await db.get(ChatTranscriptEvent, public_model.round_committed_event_id)
+                        await append_session_events(db, tenant_id=seed["tenant_id"], agent_id=seed["agent_id"], session_id=shared_id,
+                            drafts=[SessionEventDraft(item_id=uuid4(), item_kind="hook", lifecycle="completed",
+                                scope=committed.scope_json, actor={"type": "runtime"}, result_id=public_model.id,
+                                payload={"boundary": "PreToolUse", "stdout": (seed["agent_root"] / "workspace/private-notes.md").read_text()})])
+                        await db.commit()
+                    hook = await browser.get(url + "/transcript", params={"schema_version": 2, "limit": 1000})
+                    (tmp_path / "browser-unbound-hook.json").write_text(hook.text)
+                    assert hook.status_code == 200 and private_canary not in hook.text, hook.text
+
+                async def without_reader(*_args, **_kwargs):
+                    return {"ou_group_requester"}
+                monkeypatch.setattr(FeishuService, "get_chat_member_open_ids", without_reader)
+                assert (await browser.get(url + "/transcript", params={"schema_version": 2})).status_code == 403
+                assert (await browser.get(url + "/messages")).status_code == 403
+                async def membership_offline(*_args, **_kwargs):
+                    raise RuntimeError("Synthetic membership service unavailable")
+                monkeypatch.setattr(FeishuService, "get_chat_member_open_ids", membership_offline)
+                offline = await browser.get(url + "/transcript", params={"schema_version": 2})
+                assert offline.status_code == 503 and offline.json()["detail"]["code"] == "group_membership_unavailable"

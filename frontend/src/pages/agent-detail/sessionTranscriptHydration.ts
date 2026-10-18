@@ -4,12 +4,21 @@ import {
   type AgentChatMessage,
   type ChatTranscriptEventPayload,
 } from './chatRuntime';
-import { mergeTranscriptBackfill } from './chatTransportRecovery';
+import { latestTranscriptSequence, mergeTranscriptBackfill } from './chatTransportRecovery';
 import { applySessionActiveProjection, rewindCheckpointEventIdFromSession } from './agentDetailPolicy';
 import { buildSessionVisibilityBoundary, hydrateSessionTranscriptEvents } from './sessionEventConsumer';
 import type { SessionEventStore } from '../session-workbench/sessionEventStore';
 
 export const CANONICAL_TRANSCRIPT_PAGE_SIZE = 1000;
+
+export function isCanonicalSessionHistory(events: readonly unknown[]): boolean {
+  return events.length > 0 && events.every((event) => {
+    if (!event || typeof event !== 'object') return false;
+    const value = event as { schema?: unknown; schema_version?: unknown };
+    return (value.schema === 'hive.session_event' && value.schema_version === 2)
+      || (value.schema === 'hive.session_event_compatibility' && value.schema_version === 1);
+  });
+}
 
 export type CanonicalTranscriptPageRequest = {
   beforeSequence?: number;
@@ -92,7 +101,16 @@ export function projectCanonicalTranscriptSnapshot(options: {
   session: ChatSession;
   parseMessage: (message: AgentChatMessage) => AgentChatMessage;
 }) {
-  const events = mergeTranscriptBackfill(options.existing, options.snapshot);
+  const readerReceipt = (event: ChatTranscriptEventPayload) => (event as unknown as {
+    source_access_receipt?: { schema?: string; reader_user_id?: string };
+  }).source_access_receipt;
+  const readerProjection = options.snapshot.map(readerReceipt).find((receipt) => receipt?.schema === 'hive.source_access_receipt.v1');
+  const newest = latestTranscriptSequence(options.snapshot);
+  // A fresh source-checked page must not resurrect an old cached prefix after revocation.
+  const retained = readerProjection ? options.existing.filter((event) => Number(event.sequence) > newest
+    && Boolean(readerProjection.reader_user_id)
+    && readerReceipt(event)?.reader_user_id === readerProjection.reader_user_id) : options.existing;
+  const events = mergeTranscriptBackfill(retained, options.snapshot);
   // Transcript hydration intentionally publishes the newest durable page
   // before older history has finished loading. Treat the omitted prefix as a
   // projection baseline so the latest page and subsequent live events can be

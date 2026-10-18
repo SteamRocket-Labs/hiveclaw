@@ -4,6 +4,7 @@ import type { ChatSession } from '../../api/domains/chat';
 import type { AgentChatMessage, ChatTranscriptEventPayload } from './chatRuntime';
 import {
   liveSubscriptionWatermark,
+  isCanonicalSessionHistory,
   loadCanonicalSessionTranscript,
   nextSessionBackfillNotice,
   projectCanonicalTranscriptSnapshot,
@@ -435,4 +436,47 @@ describe('loadCanonicalSessionTranscript', () => {
     // The unsafe untrimmed tail was never published.
     expect(published).toEqual([]);
   });
+});
+
+
+it('replaces a cached shared prefix after source revocation and preserves the delivery cursor', () => {
+  const privateAnswer = canonicalEvent({ sequence: 1, itemId: 'private', itemKind: 'assistant_commentary',
+    lifecycle: 'completed', content: 'PRIVATE_BROWSER_CANARY' });
+  const publicAnswer = canonicalEvent({ sequence: 2, itemId: 'public', itemKind: 'assistant_commentary',
+    lifecycle: 'completed', content: 'Authorized continuation' });
+  const receipt = { schema: 'hive.source_access_receipt.v1', status: 'denied', code: 'content_source_access_denied',
+    evidence_refs: ['event-1'], retryable: false, recovery_action: 'request_source_read_access', reader_user_id: 'reader-b' };
+  const held = { ...privateAnswer, payload: { source_access_receipt: receipt },
+    source_access_receipt: receipt };
+  const markedPublic = { ...publicAnswer, source_access_receipt: { ...receipt, status: 'allowed' } };
+  expect(isCanonicalSessionHistory([held, markedPublic])).toBe(true);
+  expect(isCanonicalSessionHistory([{ role: 'assistant', content: 'Legacy message' }])).toBe(false);
+  expect(isCanonicalSessionHistory([{ ...held, schema_version: 1 }])).toBe(false);
+  const project = (snapshot: unknown[], existing: unknown[] = [privateAnswer, publicAnswer]) => projectCanonicalTranscriptSnapshot({
+    existing: existing as ChatTranscriptEventPayload[], snapshot: snapshot as ChatTranscriptEventPayload[], session,
+    parseMessage: (message: AgentChatMessage) => message,
+  });
+  const newestPage = project([markedPublic]);
+  expect(JSON.stringify(newestPage)).not.toContain('PRIVATE_BROWSER_CANARY');
+  expect(newestPage.messages.some((message) => message.content === 'Authorized continuation')).toBe(true);
+  const foreignTail = { ...privateAnswer, event_id: 'foreign-tail', sequence: 3,
+    source_access_receipt: { ...receipt, status: 'allowed', reader_user_id: 'reader-a' } };
+  expect(JSON.stringify(project([markedPublic], [foreignTail, publicAnswer]))).not.toContain('PRIVATE_BROWSER_CANARY');
+  const ownedTail = { ...foreignTail, item_id: 'newer', payload: { phase: 'commentary', content: 'Newer authorized work' },
+    source_access_receipt: { ...receipt, status: 'allowed' } };
+  expect(project([markedPublic], [ownedTail]).messages.some((message) => message.content === 'Newer authorized work')).toBe(true);
+  const restricted = project([held, markedPublic]);
+  expect(JSON.stringify(restricted)).not.toContain('PRIVATE_BROWSER_CANARY');
+  expect(restricted.messages.some((message) => message.eventReason === 'content_source_access_denied')).toBe(true);
+  expect(liveSubscriptionWatermark(restricted.store)).toBe(2);
+  const restored = project([{ ...privateAnswer, source_access_receipt: { ...receipt, status: 'allowed' } }, markedPublic],
+    restricted.events);
+  expect(restored.messages.some((message) => message.content === 'PRIVATE_BROWSER_CANARY')).toBe(true);
+  const streaming = { ...privateAnswer, lifecycle: 'started', kind: 'assistant_commentary.started',
+    payload_schema: 'hive.session.payload.assistant_commentary.started.v2' };
+  const first = consumeSessionEnvelope(streaming as unknown as ChatTranscriptEventPayload, undefined, 0);
+  const next = consumeSessionEnvelope({ ...held, event_id: 'held-2', sequence: 2 } as unknown as ChatTranscriptEventPayload,
+    first.store, 0);
+  expect(JSON.stringify(next.store?.items)).not.toContain('PRIVATE_BROWSER_CANARY');
+  expect(next.store?.highestContiguousSequence).toBe(2);
 });

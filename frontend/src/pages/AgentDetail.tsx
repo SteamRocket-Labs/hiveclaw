@@ -80,7 +80,7 @@ import { projectSessionSocketEvent } from './agent-detail/sessionSocketEventProj
 import { applyTranscriptToSessionRuntime } from './agent-detail/sessionTranscriptApplier';
 import { buildSessionCommandStatusControl } from './agent-detail/sessionCommandPanelPresentation';
 import { AgentDetailErrorBoundary, SessionAccessErrorSurface, SessionResolvingSurface } from './agent-detail/AgentDetailErrorSurfaces';
-import { liveSubscriptionWatermark, loadCanonicalSessionTranscript, nextSessionBackfillNotice, projectCanonicalTranscriptSnapshot, realtimeSubscriptionCursor } from './agent-detail/sessionTranscriptHydration';
+import { isCanonicalSessionHistory, liveSubscriptionWatermark, loadCanonicalSessionTranscript, nextSessionBackfillNotice, projectCanonicalTranscriptSnapshot, realtimeSubscriptionCursor } from './agent-detail/sessionTranscriptHydration';
 import type { CompatibilityMessageTimeline, SessionVisibilityBoundary } from './agent-detail/sessionEventConsumer';
 import { buildSessionVisibilityBoundary, createCompatibilityMessageTimeline, installRewindVisibilityBoundary, installRewindVisibilityBoundaryFromStore, seedCompatibilityTimelineIdentities } from './agent-detail/sessionEventConsumer';
 import { createSessionEventStore, type SessionEventStore } from './session-workbench/sessionEventStore';
@@ -742,6 +742,10 @@ function AgentDetailInner() {
                 }), { signal: controller.signal });
                 if (controller.signal.aborted || loadSeq !== sessionLoadSeqRef.current) return;
                 if (!authorityIsCurrent()) return;
+                if (isCanonicalSessionHistory(msgs)) {
+                    publishCanonicalSnapshot(msgs as ChatTranscriptEventPayload[]);
+                    return;
+                }
                 const storedParsed = msgs.map((m: any) => parseChatMsg(normalizeStoredChatMessage(m)));
                 let preParsed = storedParsed;
                 transcriptReplayStateRef.current[runtimeKey] = {

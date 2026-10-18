@@ -199,6 +199,14 @@ export function sessionPayloadContent(payload: Record<string, unknown> | null | 
   return JSON.stringify(canonicalJsonValue(contentParts)) ?? '';
 }
 
+export function sourceAccessHold(payload: Record<string, unknown>): Record<string, unknown> | null {
+  const receipt = payload.source_access_receipt;
+  if (!receipt || typeof receipt !== 'object' || Array.isArray(receipt)) return null;
+  const value = receipt as Record<string, unknown>;
+  return value.schema === 'hive.source_access_receipt.v1' && (value.status === 'denied' || value.status === 'unavailable')
+    ? value : null;
+}
+
 export function createSessionEventStore(
   highestContiguousSequence = 0,
   gapBufferLimit = 10_000,
@@ -299,15 +307,17 @@ function reduceContiguous(store: SessionEventStore, event: SessionEventV2): { st
     ignoredEventIds = [...ignoredEventIds, event.event_id];
     applied = false;
   } else {
+    const sourceHeld = Boolean(sourceAccessHold(event.payload));
+    const sourceWasHeld = Boolean(prior && sourceAccessHold(prior.payload));
     const contentDelta = sessionPayloadContent(event.payload);
     // Snapshots replace, deltas append. A HumanInput revision replaces too:
     // the revised lifecycle carries the item's full new content, not a suffix.
     const replacesContent = event.lifecycle === 'snapshot'
       || (event.item_kind === 'human_input' && (event.lifecycle === 'accepted' || event.lifecycle === 'revised'));
-    const content = prior
+    const content = sourceHeld ? '' : sourceWasHeld ? contentDelta : prior
       ? replacesContent ? contentDelta : `${prior.content}${contentDelta}`
       : contentDelta;
-    const sourceBlocks = Array.isArray(event.payload.source_blocks)
+    const sourceBlocks = sourceHeld ? undefined : Array.isArray(event.payload.source_blocks)
       ? event.payload.source_blocks as SessionItemV2['source_blocks']
       : prior?.source_blocks;
     items = {
@@ -316,19 +326,19 @@ function reduceContiguous(store: SessionEventStore, event: SessionEventV2): { st
         id: event.item_id, kind: event.item_kind, scope: event.scope,
         lifecycle: event.lifecycle, terminal: isTerminal(event), revision: (prior?.revision ?? 0) + 1,
         content,
-        payload: { ...(prior?.payload || {}), ...event.payload },
+        payload: sourceHeld || sourceWasHeld ? event.payload : { ...(prior?.payload || {}), ...event.payload },
         actor: event.actor,
         visibility: event.visibility,
-        display: event.display ?? prior?.display,
+        display: sourceHeld ? undefined : event.display ?? prior?.display,
         resultId: event.result_id ?? prior?.resultId,
         invocationId: event.invocation_id ?? prior?.invocationId,
-        providerToolUseId: event.provider_tool_use_id ?? prior?.providerToolUseId,
-        messageId: event.message_id ?? prior?.messageId,
+        providerToolUseId: sourceHeld ? undefined : event.provider_tool_use_id ?? prior?.providerToolUseId,
+        messageId: sourceHeld ? undefined : event.message_id ?? prior?.messageId,
         parentItemId: event.parent_item_id ?? prior?.parentItemId,
-        renderOwnerId: typeof event.payload.render_owner_id === 'string'
+        renderOwnerId: sourceHeld ? undefined : typeof event.payload.render_owner_id === 'string'
           ? event.payload.render_owner_id
           : prior?.renderOwnerId,
-        summary: event.display?.summary ?? prior?.summary,
+        summary: sourceHeld ? undefined : event.display?.summary ?? prior?.summary,
         source_blocks: sourceBlocks,
         occurredAt: prior?.occurredAt ?? event.occurred_at,
         first_sequence: prior?.first_sequence ?? event.sequence, last_sequence: event.sequence,

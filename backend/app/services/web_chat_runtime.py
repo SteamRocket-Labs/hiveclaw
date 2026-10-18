@@ -1674,14 +1674,16 @@ async def _sealed_round_runtime_messages(
                 "role": "tool",
                 "tool_call_id": provider_tool_use_id,
                 "content": str(payload.get("content") or ""),
+                "source_ref": f"session-tool-result:{invocation.id}",
             }
         )
     assistant_message = {
         "role": "assistant",
-        "content": response.get("content") or None,
+        "content": response.get("content") or "",
         "tool_calls": tool_calls,
         "reasoning_content": response.get("reasoning_content"),
         "reasoning_signature": response.get("reasoning_signature"),
+        "source_ref": f"session-model-result:{result.id}",
     }
     return assistant_message, tool_messages
 

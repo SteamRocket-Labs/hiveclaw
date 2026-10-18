@@ -9,7 +9,7 @@ import inspect
 import json
 import logging
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Coroutine, cast
@@ -478,7 +478,13 @@ def _build_runtime_attachment_sections(
             metadata = getattr(session_context, "metadata", {}) or {}
             budget_profile = metadata.get("context_budget") if isinstance(metadata, dict) else None
             restore_budget = getattr(budget_profile, "restore_budget_chars", 20000)
-            manifest_text = recovery_result.render_restoration_text(budget_chars=restore_budget)
+            manifest = recovery_result.manifest
+            duplicate_profile = (metadata.get("session_v2_durable_tool_lifecycle") is True
+                and manifest.permission_profile == metadata.get("permission_profile")
+                and not any(getattr(manifest, field.name) for field in fields(manifest)
+                    if field.name not in {"session_id", "permission_profile"}))
+            # Native recovery already restores the current permission frame; retain every other manifest fact.
+            manifest_text = "" if duplicate_profile else recovery_result.render_restoration_text(budget_chars=restore_budget)
             if manifest_text:
                 sections.append(f"### Recovery Manifest\n{manifest_text}")
         elif recovery_result is not None:

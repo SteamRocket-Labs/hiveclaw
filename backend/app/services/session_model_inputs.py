@@ -358,6 +358,20 @@ async def _origin_dependencies(db, *, tenant_id, agent_id, ref):
     # The call's own audience remains a source, including empty searches and private query arguments.
     dependencies = [*dependencies, {"source_kind": "session_tool_invocation", "source_id": str(invocation.id),
         "source_version": payload["content_hash"]}]
+    if invocation.tool_name == "ask_user_question":
+        question = await db.scalar(select(ChatTranscriptEvent).where(
+            ChatTranscriptEvent.tenant_id == tenant_id, ChatTranscriptEvent.session_id == invocation.session_id,
+            ChatTranscriptEvent.run_id == invocation.run_id, ChatTranscriptEvent.invocation_id == invocation.id,
+            ChatTranscriptEvent.result_id == model.id, ChatTranscriptEvent.item_kind == "user_question",
+            ChatTranscriptEvent.item_id == uuid.uuid5(invocation.id, "user-question"),
+            ChatTranscriptEvent.lifecycle == "waiting").order_by(ChatTranscriptEvent.sequence).limit(1)) if model else None
+        question_payload = dict((question.metadata_json or {}).get("v2_payload") or {}) if question else {}
+        question_payload.pop("requested_by_user_id", None)
+        try:
+            complete = invocation.effect_state == "effect_committed" and bool(question) and question_payload == json.loads(content)
+        except (ValueError, TypeError):
+            complete = False
+        return _unique_dependencies(dependencies), inherited_complete and complete
     if invocation.tool_name == "create_employee_from_request":
         from app.services.employee_creation_sources import creation_tool_result_bound
 

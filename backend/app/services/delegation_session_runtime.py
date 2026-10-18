@@ -102,7 +102,8 @@ class DelegationSessionRuntime:
         invocation.messages.extend(history)
         invocation.initial_round_index = round_index
         invocation.initial_turn_tokens_used = tokens
-        invocation.session_context.metadata.update(turn_id=turn_id, session_restart_resume=receipt)
+        invocation.session_context.metadata.update(turn_id=turn_id, session_restart_resume=receipt,
+            session_v2_durable_tool_lifecycle=True)
         invocation.round_input_bind = runtime.bind
         invocation.model_request_prepare = runtime.prepare
         invocation.model_response_commit = runtime.commit

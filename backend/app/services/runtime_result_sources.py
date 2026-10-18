@@ -12,12 +12,12 @@ from app.models.hr_creation import HrCreationDraft
 from app.models.invocation_span import InvocationSpan
 from app.models.organization_identity import ContentInputReceipt
 from app.models.runtime_task import RuntimeTask
-from app.models.session_v2 import SessionModelResult, SessionToolInvocation
+from app.models.session_v2 import SessionCommand, SessionModelResult, SessionToolInvocation, SessionTurnInput
 from app.services.content_input_receipts import ContentInputReceiptError, _runtime_input_actor, _validate_input_dependencies
 from app.services.session_model_inputs import _model_dependencies, _stored_dependencies
 
 
-async def _published_first_task_seed(db, dependency, task):
+async def _published_first_task_input(db, dependency, task):
     kind, source_id = dependency["source_kind"], dependency["source_id"]
     if kind in {"agent_identity", "agent_context_resource", "agent_resident_memory", "agent_platform_skill_file", "owner_action_policy"}:
         try:
@@ -35,7 +35,34 @@ async def _published_first_task_seed(db, dependency, task):
         except ValueError:
             return False
         return (row is not None and row.tenant_id == task.tenant_id and row.run_id == task.id
-            and row.session_id == uuid.UUID(task.child_session_id) and row.tool_name in {"write_file", "fs_write"})
+            and row.session_id == uuid.UUID(task.child_session_id) and row.tool_name in {"write_file", "fs_write", "ask_user_question"})
+    if kind == "session_command":
+        from app.models.chat_transcript_event import ChatTranscriptEvent
+
+        try:
+            command_id = uuid.UUID(source_id)
+        except ValueError:
+            return False
+        pair = (await db.execute(select(SessionTurnInput, SessionCommand).join(
+            SessionCommand, SessionCommand.id == SessionTurnInput.command_id).where(
+            SessionCommand.id == command_id, SessionCommand.tenant_id == task.tenant_id,
+            SessionCommand.session_id == uuid.UUID(task.child_session_id), SessionCommand.namespace == "human_input",
+            SessionCommand.command_kind == "answer_request", SessionCommand.principal_type == "user",
+            SessionCommand.principal_id == task.root_user_id, SessionTurnInput.tenant_id == task.tenant_id,
+            SessionTurnInput.session_id == SessionCommand.session_id, SessionTurnInput.intent == "answer_request",
+            SessionTurnInput.target_run_id == task.id, SessionTurnInput.status == "applied"))).first()
+        if pair is None:
+            return False
+        answer, command = pair
+        question = await db.scalar(select(ChatTranscriptEvent).where(
+            ChatTranscriptEvent.tenant_id == task.tenant_id, ChatTranscriptEvent.session_id == answer.session_id,
+            ChatTranscriptEvent.run_id == task.id, ChatTranscriptEvent.item_kind == "user_question",
+            ChatTranscriptEvent.item_id == answer.request_item_id, ChatTranscriptEvent.input_id == answer.id,
+            ChatTranscriptEvent.lifecycle == "completed").order_by(ChatTranscriptEvent.sequence.desc()).limit(1))
+        payload = (question.metadata_json or {}).get("v2_payload") or {} if question else {}
+        return (payload.get("requested_by_user_id") == str(task.root_user_id)
+            and payload.get("answer_input_revision") == answer.revision
+            and (command.target_json or {}).get("request_item_id") == str(answer.request_item_id))
     if kind in {"session_actor_identity", "delegation_context"}:
         try:
             row = await db.get(InvocationSpan, uuid.UUID(source_id), populate_existing=True)
@@ -134,11 +161,10 @@ async def validate_runtime_result_sources(db, request, result_object, *, user=No
             or not evidence or task.prompt != evidence["first_task"]
             or task.root_runtime_task_id != uuid.UUID(evidence["source_run_id"])):
             raise ContentInputReceiptError("runtime_result_sources_unbound", "The original first-task publication is unavailable.", 503)
-        # The authenticated creation request publishes this employee's seed facts only to its original work.
-        # Recheck all creating-model inputs with the receiving native identity before using that scoped publication.
+        # Recheck creating-model inputs before the original work consumes seed facts or its user's bound answers.
         await _validate_input_dependencies(db, task.tenant_id, original[0], user=user, runtime_request=request)
     for dependency in dependencies:
-        published = first_task and await _published_first_task_seed(db, dependency, task)
+        published = first_task and await _published_first_task_input(db, dependency, task)
         await _validate_input_dependencies(db, task.tenant_id, [dependency],
             user=requester if published else user, runtime_request=None if published else request,
             active_workspace_receipts=frozenset(receipt_ids))

@@ -1800,6 +1800,26 @@ def test_runtime_attachment_sections_include_persisted_recovery_manifest(tmp_pat
     assert "call-running" in joined
 
 
+@pytest.mark.parametrize("native,pending,changed", [(True, False, False), (True, True, False),
+    (False, False, False), (True, False, True)])
+def test_native_recovery_omits_only_the_duplicate_permission_profile(native, pending, changed):
+    from app.kernel.engine import _build_runtime_attachment_sections
+    from app.runtime.session import SessionContext
+
+    profile = {"mode": "default", "writable_roots": ["workspace/"]}
+    session = SessionContext(session_id="session-recover")
+    session.metadata.update(session_v2_durable_tool_lifecycle=native,
+        permission_profile={**profile, "mode": "strict"} if changed else profile)
+    payload = {"session_id": session.session_id, "permission_profile": profile,
+        "pending_items": ["Keep the unfinished comparison"] if pending else []}
+    result = _loaded_recovery_result(payload)
+    text = "\n\n".join(_build_runtime_attachment_sections(uuid4(), session, result))
+    assert bool(text) is (not native or pending or changed)
+    assert result.manifest.permission_profile == profile
+    if pending:
+        assert "Keep the unfinished comparison" in text
+
+
 def test_runtime_attachment_sections_reject_another_sessions_recovery_manifest(
     tmp_path: Path,
     monkeypatch,

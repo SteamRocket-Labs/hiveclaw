@@ -435,6 +435,84 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
             tools = list(await db.scalars(select(SessionToolInvocation).where(SessionToolInvocation.run_id == task_id)))
             assert len(tools) == 1 and tools[0].tool_name == "ask_user_question"
             assert (await db.get(SessionTurnInput, answer_id)).status == "applied"
+        from app.services.direct_invocation_terminal_boundary_processor import DirectInvocationTerminalBoundaryProcessor
+        from app.services.runtime_terminal_boundary_outbox import RuntimeTerminalBoundaryOutboxService
+        from app.services.runtime_notification_outbox import RuntimeNotificationOutboxService
+        from app.models.runtime_notification_outbox import RuntimeNotificationOutbox
+        from app.services.web_chat_runtime import execute_web_chat_run
+
+        processor = DirectInvocationTerminalBoundaryProcessor(session_factory=app_user_sessionmaker, data_root=seed["data_root"])
+        drained = await RuntimeTerminalBoundaryOutboxService(session_factory=app_user_sessionmaker).drain_once(
+            tenant_id=seed["tenant_id"], worker_id="question-result-terminal", canonical_validator=processor.validate,
+            process_callback=processor, task_types=("delegation",))
+        assert drained["delivered"] == 1, drained
+        service = RuntimeNotificationOutboxService(session_factory=app_user_sessionmaker)
+        claimed = await service.claim_batch(worker_id="question-result-return", limit=100)
+        pages = await service.prepare_integration_pages(worker_id="question-result-return",
+            claimed=[item for item in claimed if item.tenant_id == seed["tenant_id"]])
+        assert len(pages) == 1
+        delivered = await service._deliver_page(pages[0])
+        assert delivered.get("ok") is True, delivered
+        async with app_user_sessionmaker() as db:
+            await pin_rls_tenant_context(db, seed["tenant_id"])
+            notification = await db.scalar(select(RuntimeNotificationOutbox).where(
+                RuntimeNotificationOutbox.source_run_id == str(task_id), RuntimeNotificationOutbox.source_kind == "a2a_delegation"))
+            continuation = await db.scalar(select(RuntimeTask).where(RuntimeTask.parent_agent_id == seed["agent_id"],
+                RuntimeTask.metadata_json["integration_page_id"].astext == str(pages[0].id)))
+            assert continuation is not None and continuation.parent_session_id == str(seed["session_id"])
+            return_id, result_ref = continuation.id, notification.result_ref
+            from app.models.runtime_result import RuntimeResultObject
+            from app.services.runtime_result_sources import load_canonical_result_sources
+
+            result_object = await db.get(RuntimeResultObject, UUID(result_ref.split("/")[2]))
+            canonical_sources = await load_canonical_result_sources(db, result_object)
+            assert canonical_sources
+        from app.services import runtime_result_sources
+        validate_sources = runtime_result_sources._validate_input_dependencies
+        async def observe_return_sources(*args, **kwargs):
+            if kwargs.get("runtime_request") is not None:
+                observed["return_request"] = kwargs["runtime_request"]
+            return await validate_sources(*args, **kwargs)
+        monkeypatch.setattr(runtime_result_sources, "_validate_input_dependencies", observe_return_sources)
+        parent_client = ScriptedLLMClient([
+            {"tool_calls": [{"id": "read-answered-result", "type": "function", "function": {"name": "read_runtime_result",
+                "arguments": json.dumps({"result_ref": result_ref})}}], "finish_reason": "tool_calls"},
+            {"content": "Reviewed the report prepared for Team.", "finish_reason": "stop"},
+        ])
+        monkeypatch.setattr(invoker, "create_llm_client", lambda **_kwargs: parent_client)
+        async with owner_sessionmaker() as db:
+            continuation = await db.get(RuntimeTask, return_id)
+            continuation.status, continuation.claimed_by, continuation.claim_version = "running", "question-return-worker", 1
+            continuation.claim_expires_at = datetime.now(timezone.utc) + timedelta(minutes=10)
+            await db.commit()
+        token = set_runtime_task_fence(task_id=return_id, worker_id="question-return-worker", claim_version=1)
+        try:
+            await execute_web_chat_run(return_id)
+        finally:
+            reset_runtime_task_fence(token)
+        (tmp_path / "answered-parent-model-requests.json").write_text(json.dumps(parent_client.requests, default=str, indent=2))
+        assert len(parent_client.requests) == 2
+        returned = json.loads(next(message["content"] for message in parent_client.requests[1]["messages"]
+            if message.get("tool_call_id") == "read-answered-result"))
+        assert returned["status"] == "ok" and "Report prepared for Team." in returned["content"], returned
+        assert returned["dependency_coverage"]["complete"] is True
+        async with app_user_sessionmaker() as db:
+            await pin_rls_tenant_context(db, seed["tenant_id"])
+            assert (await db.get(RuntimeTask, return_id)).status == "completed"
+            models = list(await db.scalars(select(SessionModelResult).where(SessionModelResult.run_id == return_id)))
+            assert len(models) == 2 and all(model.model_request_snapshot_json["input_bindings"]["dependency_coverage"]["complete"]
+                for model in models)
+            from app.services.content_input_receipts import ContentInputReceiptError, validate_runtime_input_dependencies
+            private = [ref for ref in canonical_sources[1] if ref["source_kind"] == "session_tool_invocation"
+                and ref["source_id"] == str(tools[0].id)]
+            answer = await db.get(SessionTurnInput, answer_id)
+            private.extend(ref for ref in canonical_sources[1] if ref["source_kind"] == "session_command"
+                and ref["source_id"] == str(answer.command_id))
+            assert len(private) == 2
+            for dependency in private:
+                with pytest.raises(ContentInputReceiptError) as denied:
+                    await validate_runtime_input_dependencies(db, observed["return_request"], [dependency])
+                assert denied.value.code == "content_source_access_denied"
         return
     token = set_runtime_task_fence(task_id=task_id, worker_id="origin-worker", claim_version=1)
     try:

@@ -25,6 +25,7 @@ from app.services.session_v2_persistence import (
     HumanInputReceipt,
     IdempotencyConflict,
     SESSION_COMMAND_AUTHORITY_STAMP_KEY,
+    SHARED_GROUP_INGRESS_STAMP_SCHEMA,
     accept_human_input,
     a2a_delegation_peer_command_stamp,
     resolve_a2a_delegation_peer_authority,
@@ -86,6 +87,7 @@ async def _resolve_live_intent(
     *,
     agent: Agent,
     session: ChatSession,
+    authority,
     requested_kind: str,
     expected_turn_id: str | None,
     expected_run_id: uuid.UUID | str | None,
@@ -109,6 +111,11 @@ async def _resolve_live_intent(
     turn_id = active.get("turn_id")
     if not run_id or not turn_id:
         raise RuntimeError("active_run_missing_session_v2_target")
+    if session.audience_kind == "group":
+        from app.services.shared_group_authority import shared_group_input_matches_run
+
+        if not await shared_group_input_matches_run(db, session=session, authority=authority, run_id=run_id):
+            return "queue_next_turn", None, None
     return "steer_current_turn", str(turn_id), uuid.UUID(str(run_id))
 
 
@@ -247,6 +254,13 @@ async def submit_live_human_input(
             session_id=session.id,
             action="answer_session_question" if requested_kind == "answer_request" else "mutate_session_input",
         )
+    if authority.authority_source == "shared_group_ingress":
+        from app.services.channel_ingress_context import current_channel_ingress_context
+
+        ingress = current_channel_ingress_context()
+        if ingress is None or ingress.event_id != input_uuid:
+            raise ValueError("shared_group_input_origin_mismatch")
+        command_authority_stamp = {"schema": SHARED_GROUP_INGRESS_STAMP_SCHEMA, "ingress_event_id": str(input_uuid)}
     if requested_kind == "answer_request":
         from fastapi import HTTPException
         from app.services.chat_transcript import lock_transcript_session
@@ -313,6 +327,7 @@ async def submit_live_human_input(
             db,
             agent=agent,
             session=session,
+            authority=authority,
             requested_kind=requested_kind,
             expected_turn_id=expected_turn_id,
             expected_run_id=expected_run_id,

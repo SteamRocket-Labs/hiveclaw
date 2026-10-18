@@ -279,35 +279,34 @@ async def _load_event_views(
     return views, branch_receipt
 
 
-async def _current_run_input_ids(
+async def _excluded_input_ids(
     db: AsyncSession,
     *,
     tenant_id: uuid.UUID,
     session_id: uuid.UUID,
     run_id: uuid.UUID | None,
-) -> set[uuid.UUID]:
-    if run_id is None:
-        # Non-run consumers (session commands such as compact) have no current
-        # run, so every admitted checkpoint is prior context by definition.
-        return set()
-    return set(
-        (
-            await db.execute(
-                select(SessionTurnInput.id).where(
-                    SessionTurnInput.tenant_id == tenant_id,
-                    SessionTurnInput.session_id == session_id,
-                    SessionTurnInput.target_run_id == run_id,
-                )
+) -> tuple[set[uuid.UUID], set[uuid.UUID]]:
+    exclusions = [and_(SessionTurnInput.intent == "queue_next_turn", SessionTurnInput.status != "applied")]
+    if run_id is not None:
+        exclusions.append(SessionTurnInput.target_run_id == run_id)
+    rows = (
+        await db.execute(
+            select(SessionTurnInput.id, SessionTurnInput.target_run_id).where(
+                SessionTurnInput.tenant_id == tenant_id,
+                SessionTurnInput.session_id == session_id,
+                or_(*exclusions),
             )
-        ).scalars()
-    )
+        )
+    ).all()
+    current = {row.id for row in rows if run_id is not None and row.target_run_id == run_id}
+    return current, {row.id for row in rows} - current
 
 
 def _user_messages(
     views: list[_EventView],
     *,
     current_run_id: uuid.UUID | None,
-    current_input_ids: set[uuid.UUID],
+    excluded_input_ids: set[uuid.UUID],
 ) -> list[SessionSemanticMessage]:
     latest_by_input: dict[uuid.UUID, _EventView] = {}
     for view in views:
@@ -315,7 +314,7 @@ def _user_messages(
         if not is_human_input_checkpoint(source):
             continue
         input_id = _source_input_id(source)
-        if input_id is None or input_id in current_input_ids:
+        if input_id is None or input_id in excluded_input_ids:
             continue
         # Session-scoped checkpoints carry no run id; only a real current run
         # can own and therefore exclude them.
@@ -703,8 +702,9 @@ async def load_session_semantic_history(
 
     ``current_run_id=None`` serves non-run consumers (session commands such
     as compact): no run-scoped exclusion applies, so every admitted user
-    checkpoint and every committed provider round is prior context. Authority
-    and seal checks are identical to the provider-turn path."""
+    checkpoint and every committed provider round is prior context, except
+    unapplied successor inputs which remain queued work. Authority and seal
+    checks are identical to the provider-turn path."""
 
     try:
         views, branch_receipt = await _load_event_views(
@@ -714,7 +714,7 @@ async def load_session_semantic_history(
             session_id=session_id,
             run_id=current_run_id,
         )
-        current_input_ids = await _current_run_input_ids(
+        current_input_ids, queued_input_ids = await _excluded_input_ids(
             db,
             tenant_id=tenant_id,
             session_id=session_id,
@@ -723,7 +723,7 @@ async def load_session_semantic_history(
         users = _user_messages(
             views,
             current_run_id=current_run_id,
-            current_input_ids=current_input_ids,
+            excluded_input_ids=current_input_ids | queued_input_ids,
         )
         rounds, held_items, ignored_continuations = await _committed_round_messages(
             db,
@@ -779,6 +779,7 @@ async def load_session_semantic_history(
             "ignored_physical_continuation_results": ignored_continuations,
         },
         "excluded_current_run_input_ids": sorted(str(value) for value in current_input_ids),
+        "excluded_queued_input_ids": sorted(str(value) for value in queued_input_ids),
         "held_items": held_items,
         "branch_prefix": branch_receipt,
     }

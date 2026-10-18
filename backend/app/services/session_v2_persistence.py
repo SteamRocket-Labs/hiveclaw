@@ -1015,6 +1015,15 @@ async def register_session_command(
             raise IdempotencyConflict(command=existing)
         return RegisteredCommand(existing, True)
 
+    if (locked_session.audience_kind == "group" and namespace == "human_input"
+        and clean_kind in {"steer_current_turn", "answer_request"}):
+        from fastapi import HTTPException
+        from app.services.shared_group_authority import shared_group_input_matches_run
+
+        if not await shared_group_input_matches_run(db, session=locked_session, authority=authority,
+            run_id=target_json.get("expected_run_id")):
+            raise HTTPException(409, detail={"code": "shared_group_requester_conflict", "next_action": "queue_next_turn"})
+
     command_uuid = _uuid(command_id, "command_id") if command_id is not None else uuid.uuid4()
     command_id_owner = await db.get(SessionCommand, command_uuid)
     if command_id_owner is not None:

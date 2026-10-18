@@ -790,7 +790,8 @@ def test_unified_session_input_accepts_admits_then_queues_explicit_intent(monkey
         return session, agent, "session_owner"
 
     async def fake_resolve(*_args, **_kwargs):
-        return SimpleNamespace(tenant_id=tenant_id, agent_id=agent_id, principal_id=user_id, session_id=session_id)
+        return SimpleNamespace(tenant_id=tenant_id, agent_id=agent_id, principal_id=user_id, session_id=session_id,
+            authority_source="session_owner")
 
     async def fake_accept(*_args, **_kwargs):
         order.append("accept")
@@ -886,7 +887,8 @@ def test_unified_session_input_blocked_hook_never_dispatches_runtime(monkeypatch
         return session, agent, "session_owner"
 
     async def fake_resolve(*_args, **_kwargs):
-        return SimpleNamespace(tenant_id=tenant_id, agent_id=agent_id, principal_id=user_id, session_id=session_id)
+        return SimpleNamespace(tenant_id=tenant_id, agent_id=agent_id, principal_id=user_id, session_id=session_id,
+            authority_source="session_owner")
 
     async def fake_accept(*_args, **_kwargs):
         return HumanInputReceipt(
@@ -981,7 +983,8 @@ def test_unified_replacement_persists_requested_saga_for_durable_worker_progress
         return session, agent, "session_owner"
 
     async def fake_resolve(*_args, **_kwargs):
-        return SimpleNamespace(tenant_id=tenant_id, agent_id=agent_id, principal_id=user_id, session_id=session_id)
+        return SimpleNamespace(tenant_id=tenant_id, agent_id=agent_id, principal_id=user_id, session_id=session_id,
+            authority_source="session_owner")
 
     async def fake_accept(*_args, **_kwargs):
         order.append("accept_input")
@@ -1110,7 +1113,8 @@ def test_unified_fork_dispatches_real_branch_service_receipt_instead_of_pending_
         return session, agent, "session_owner"
 
     async def fake_resolve(*_args, **_kwargs):
-        return SimpleNamespace(tenant_id=tenant_id, agent_id=agent_id, principal_id=user_id, session_id=session_id)
+        return SimpleNamespace(tenant_id=tenant_id, agent_id=agent_id, principal_id=user_id, session_id=session_id,
+            authority_source="session_owner")
 
     async def fake_accept(*_args, **_kwargs):
         return HumanInputReceipt(

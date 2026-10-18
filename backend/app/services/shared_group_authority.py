@@ -101,8 +101,17 @@ async def resolve_shared_group_input_authority(db, *, actor, session, ingress_ev
 
 
 async def load_shared_group_runtime_actor(db, *, task, session):
-    """Rebuild an active shared turn from its canonical input, never from its root-user claim alone."""
+    """Require a live execution claim as well as the canonical requester."""
     from datetime import datetime, timezone
+
+    if (task is None or task.status not in {"pending", "running"} or task.claimed_by is None
+        or task.claim_expires_at is None or task.claim_expires_at <= datetime.now(timezone.utc)):
+        raise PermissionError("shared_group_runtime_origin_mismatch")
+    return await _load_shared_group_task_actor(db, task=task, session=session)
+
+
+async def _load_shared_group_task_actor(db, *, task, session):
+    """Rebuild request identity from immutable inputs, independently of a worker claim."""
     from app.models.session_v2 import SessionCommand, SessionTurnInput
     from app.services.session_model_inputs import _hash
     from app.services.session_v2_persistence import resolve_session_command_authority
@@ -120,8 +129,7 @@ async def load_shared_group_runtime_actor(db, *, task, session):
     command = await db.get(SessionCommand, command_id)
     if (session.audience_kind != "group" or task.tenant_id != session.tenant_id
         or task.parent_agent_id != session.agent_id or task.parent_session_id != str(session.id)
-        or task.task_type not in EXECUTABLE_CHAT_TASK_TYPES or task.status not in {"pending", "running"}
-        or task.claimed_by is None or task.claim_expires_at is None or task.claim_expires_at <= datetime.now(timezone.utc)
+        or task.task_type not in EXECUTABLE_CHAT_TASK_TYPES
         or row is None or command is None or row.target_run_id not in {None, task.id}
         or task.id not in {uuid.uuid5(input_id, "session-v2-runtime-run"), uuid.uuid5(input_id, "session-v2-successor-run")}
         or command.request_hash != _hash({"command_kind": command.command_kind, "request": command.request_json})
@@ -133,6 +141,34 @@ async def load_shared_group_runtime_actor(db, *, task, session):
         or str(metadata.get("external_principal_id") or "") != str(actor.external_principal_id)):
         raise PermissionError("shared_group_runtime_actor_mismatch")
     return actor
+
+
+async def shared_group_input_matches_run(db, *, session, authority, run_id):
+    from app.models.runtime_task import RuntimeTask
+    from app.services.external_principal_service import load_external_runtime_actor
+
+    if (authority.tenant_id != session.tenant_id or authority.agent_id != session.agent_id
+        or authority.session_id != session.id or run_id is None):
+        return False
+    try:
+        task = await db.get(RuntimeTask, uuid.UUID(str(run_id)))
+        if task is None:
+            return False
+        original = await _load_shared_group_task_actor(db, task=task, session=session)
+        if authority.principal_type == "user":
+            return original.id is not None and original.id == authority.principal_id
+        principal = await db.scalar(select(ExternalPrincipal).where(ExternalPrincipal.id == authority.principal_id,
+            ExternalPrincipal.tenant_id == session.tenant_id, ExternalPrincipal.installation_ref == session.group_installation_ref,
+            ExternalPrincipal.status == "active").execution_options(populate_existing=True))
+        if principal is None:
+            return False
+        incoming = await load_external_runtime_actor(db, tenant_id=session.tenant_id, principal_id=principal.id,
+            expected_user_id=principal.linked_user_id)
+        if original.id is not None:
+            return original.id == incoming.id
+        return incoming.id is None and original.external_principal_id == incoming.external_principal_id
+    except (HTTPException, PermissionError, ValueError, RuntimeError, LookupError):
+        return False
 
 
 async def validate_shared_group_model_inputs(db, *, tenant_id, agent_id, session_id, run_id, input_bindings):

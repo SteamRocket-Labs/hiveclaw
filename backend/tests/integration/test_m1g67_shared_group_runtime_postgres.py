@@ -16,7 +16,7 @@ pytestmark = [pytest.mark.usefixtures("migrated_pg_url"), pytest.mark.skipif(pla
     reason="Native macOS context gate; Linux delivery is deferred.")]
 
 
-@pytest.mark.parametrize("mutation", [None, "forged_actor", "unlinked", "private_source", "private_recipient", "unknown_recipient"])
+@pytest.mark.parametrize("mutation", [None, "forged_actor", "unlinked", "private_source", "private_recipient", "unknown_recipient", "queued_member", "same_sender", "explicit_other"])
 async def test_shared_work_runs_with_its_original_sender_and_real_tool_sources(
     owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, mutation,
 ):
@@ -94,8 +94,8 @@ async def test_shared_work_runs_with_its_original_sender_and_real_tool_sources(
         bound = await bind_authenticated_self_channel_principal(db, tenant_id=seed["tenant_id"], config=config,
             provider_subject_id="ou_group_requester", user_id=member.id, actor_user_id=member.id)
         actor = bound.actor
-        if mutation == "private_recipient":
-            await bind_authenticated_self_channel_principal(db, tenant_id=seed["tenant_id"], config=config,
+        if mutation in {"private_recipient", "queued_member", "explicit_other"}:
+            other = await bind_authenticated_self_channel_principal(db, tenant_id=seed["tenant_id"], config=config,
                 provider_subject_id="ou_group_creator", user_id=seed["user_id"], actor_user_id=seed["user_id"])
         grant.actions = ["read", "execute"]
         shared = await find_or_create_shared_group_session(db, tenant_id=seed["tenant_id"], agent_id=agent.id,
@@ -105,8 +105,8 @@ async def test_shared_work_runs_with_its_original_sender_and_real_tool_sources(
 
     async def members(_self, *_args, **_kwargs):
         subjects = {"ou_group_requester"}
-        if mutation in {"private_recipient", "unknown_recipient"}:
-            subjects.add("ou_group_creator" if mutation == "private_recipient" else "ou_group_unknown")
+        if mutation in {"private_recipient", "unknown_recipient", "queued_member", "explicit_other"}:
+            subjects.add("ou_group_unknown" if mutation == "unknown_recipient" else "ou_group_creator")
         return subjects
     monkeypatch.setattr(FeishuService, "get_chat_member_open_ids", members)
     async def no_wakeup(**_kwargs):
@@ -119,31 +119,35 @@ async def test_shared_work_runs_with_its_original_sender_and_real_tool_sources(
             pass
     monkeypatch.setattr("app.services.llm_client.create_llm_client_from_config", lambda *_args: MemoryTransport())
     prompt = "Write workspace/shared-report.md with GROUP_REPORT, read it back, and report."
-    body = {"event": {"sender": {"sender_id": {"open_id": "ou_group_requester"}}, "message": {
-        "chat_type": "group", "chat_id": "oc_native_group", "message_type": "text", "content": json.dumps({"text": prompt})}}}
-    async with app_user_sessionmaker() as db:
-        await pin_rls_tenant_context(db, seed["tenant_id"])
-        event = await accept_authenticated_channel_event(db, tenant_id=seed["tenant_id"], agent_id=seed["agent_id"],
-            provider="feishu", installation_ref=installation, provider_event_id="native-shared-work",
-            handler_key="feishu.event", body=body)
-    assert any(item.id == event.event_id for item in await ChannelIngressInboxService(
-        session_factory=app_user_sessionmaker).claim_batch(worker_id="shared-ingress"))
-    with use_channel_ingress_context(event_id=event.event_id, tenant_id=seed["tenant_id"], agent_id=seed["agent_id"],
-        provider="feishu", installation_ref=installation):
-        bind_channel_ingress_external_principal(actor.external_principal_id)
+    async def submit(sender, subject, content, key, **intent):
+        body = {"event": {"sender": {"sender_id": {"open_id": subject}}, "message": {
+            "chat_type": "group", "chat_id": "oc_native_group", "message_type": "text", "content": json.dumps({"text": content})}}}
         async with app_user_sessionmaker() as db:
             await pin_rls_tenant_context(db, seed["tenant_id"])
-            session = await db.get(ChatSession, shared_id)
-            db.add(ChatMessage(tenant_id=seed["tenant_id"], agent_id=seed["agent_id"], user_id=member.id,
-                external_principal_id=actor.external_principal_id, conversation_id=str(shared_id), role="user", content=prompt))
-            await db.flush()
-            accepted = await submit_live_human_input(db=db, agent=await db.get(Agent, seed["agent_id"]), user=actor,
-                session=session, source="feishu", content=prompt, input_id=event.event_id, idempotency_key="native-shared-work",
-                runtime_metadata={"source": "feishu", "channel": "feishu"})
-            command_id = UUID(accepted["command_id"])
-            ingress = await db.get(ChannelIngressEvent, event.event_id)
-            ingress.status, ingress.external_principal_id = "processed", actor.external_principal_id
-            await db.commit()
+            event = await accept_authenticated_channel_event(db, tenant_id=seed["tenant_id"], agent_id=seed["agent_id"],
+                provider="feishu", installation_ref=installation, provider_event_id=key,
+                handler_key="feishu.event", body=body)
+        assert any(item.id == event.event_id for item in await ChannelIngressInboxService(
+            session_factory=app_user_sessionmaker).claim_batch(worker_id="shared-ingress"))
+        with use_channel_ingress_context(event_id=event.event_id, tenant_id=seed["tenant_id"], agent_id=seed["agent_id"],
+            provider="feishu", installation_ref=installation):
+            bind_channel_ingress_external_principal(sender.external_principal_id)
+            async with app_user_sessionmaker() as db:
+                await pin_rls_tenant_context(db, seed["tenant_id"])
+                session = await db.get(ChatSession, shared_id)
+                db.add(ChatMessage(tenant_id=seed["tenant_id"], agent_id=seed["agent_id"], user_id=sender.id,
+                    external_principal_id=sender.external_principal_id, conversation_id=str(shared_id), role="user", content=content))
+                await db.flush()
+                accepted = await submit_live_human_input(db=db, agent=await db.get(Agent, seed["agent_id"]), user=sender,
+                    session=session, source="feishu", content=content, input_id=event.event_id, idempotency_key=key,
+                    runtime_metadata={"source": "feishu", "channel": "feishu"}, **intent)
+                ingress = await db.get(ChannelIngressEvent, event.event_id)
+                ingress.status, ingress.external_principal_id = "processed", sender.external_principal_id
+                await db.commit()
+        return event, accepted
+
+    event, accepted = await submit(actor, "ou_group_requester", prompt, "native-shared-work")
+    command_id = UUID(accepted["command_id"])
     async with app_user_sessionmaker() as db:
         await pin_rls_tenant_context(db, seed["tenant_id"])
         await recover_admitted_session_inputs_once(db, worker_id="shared-dispatch", tenant_id=seed["tenant_id"],
@@ -153,8 +157,9 @@ async def test_shared_work_runs_with_its_original_sender_and_real_tool_sources(
         run_id = task.id
         assert task.root_user_id == member.id != seed["user_id"]
         assert (await db.get(SessionCommand, command_id)).principal_id == actor.external_principal_id
-        task.status, task.claimed_by, task.claim_version, task.attempt_count = "running", "shared-worker", 1, 1
-        task.claim_expires_at = datetime.now(timezone.utc) + timedelta(minutes=10)
+        if mutation not in {"queued_member", "same_sender", "explicit_other"}:
+            task.status, task.claimed_by, task.claim_version, task.attempt_count = "running", "shared-worker", 1, 1
+            task.claim_expires_at = datetime.now(timezone.utc) + timedelta(minutes=10)
         if mutation == "forged_actor":
             task.root_user_id = seed["user_id"]
             task.metadata_json = {**task.metadata_json, "user_id": str(seed["user_id"])}
@@ -173,6 +178,43 @@ async def test_shared_work_runs_with_its_original_sender_and_real_tool_sources(
                 return manifest
             monkeypatch.setattr(model_inputs, "build_model_input_bindings", with_private_source)
         await db.commit()
+    second_event = second_command_id = None
+    if mutation in {"queued_member", "same_sender", "explicit_other"}:
+        from fastapi import HTTPException
+        sender = actor if mutation == "same_sender" else other.actor
+        subject = "ou_group_requester" if mutation == "same_sender" else "ou_group_creator"
+        if mutation == "explicit_other":
+            with pytest.raises(HTTPException) as conflict:
+                await submit(sender, subject, "OTHER_REQUESTER_ONLY", "native-shared-second",
+                    requested_kind="steer_current_turn", expected_run_id=run_id,
+                    expected_turn_id=task.metadata_json["turn_id"])
+            assert conflict.value.status_code == 409 and conflict.value.detail["code"] == "shared_group_requester_conflict"
+        else:
+            second_event, second = await submit(sender, subject,
+                "SAME_REQUESTER_UPDATE" if mutation == "same_sender" else "OTHER_REQUESTER_ONLY", "native-shared-second")
+            second_command_id = UUID(second["command_id"])
+        async with app_user_sessionmaker() as db:
+            await pin_rls_tenant_context(db, seed["tenant_id"])
+            if second_command_id is not None:
+                await recover_admitted_session_inputs_once(db, worker_id="shared-second-dispatch", tenant_id=seed["tenant_id"],
+                    admission_ids=(uuid5(second_command_id, "input-admission:revision:1"),))
+            task = await db.get(RuntimeTask, run_id)
+            assert task.status == "pending" and task.root_user_id == member.id
+            if second_event is not None:
+                incoming = await db.get(SessionTurnInput, second_event.event_id)
+                assert incoming.intent == ("steer_current_turn" if mutation == "same_sender" else "queue_next_turn")
+                assert incoming.target_run_id == (run_id if mutation == "same_sender" else None)
+                assert (await db.get(SessionCommand, second_command_id)).principal_id == sender.external_principal_id
+                if mutation == "queued_member":
+                    from app.services.session_semantic_history import load_session_semantic_history
+                    prior = await load_session_semantic_history(db, tenant_id=seed["tenant_id"], agent_id=seed["agent_id"], session_id=shared_id)
+                    assert "OTHER_REQUESTER_ONLY" not in json.dumps([message.content for message in prior.messages])
+            else:
+                assert await db.scalar(select(SessionCommand.id).where(SessionCommand.session_id == shared_id,
+                    SessionCommand.idempotency_key == "native-shared-second")) is None
+            task.status, task.claimed_by, task.claim_version, task.attempt_count = "running", "shared-worker", 1, 1
+            task.claim_expires_at = datetime.now(timezone.utc) + timedelta(minutes=10)
+            await db.commit()
     client = ScriptedLLMClient([
         {"tool_calls": [{"id": "shared-write", "type": "function", "function": {"name": "write_file",
             "arguments": json.dumps({"path": "workspace/shared-report.md", "content": "GROUP_REPORT"})}}], "finish_reason": "tool_calls"},
@@ -200,6 +242,10 @@ async def test_shared_work_runs_with_its_original_sender_and_real_tool_sources(
             assert not (seed["agent_root"] / "workspace/shared-report.md").exists()
             return
         assert task.status == "completed", (task.status, task.result_summary, task.metadata_json)
+        if mutation == "queued_member":
+            assert "OTHER_REQUESTER_ONLY" not in json.dumps(client.requests)
+        if mutation == "same_sender":
+            assert "SAME_REQUESTER_UPDATE" in json.dumps(client.requests)
         assert len(client.requests) == 3 and "GROUP_REPORT" in json.dumps(client.requests[-1]["messages"])
         reads = [message for message in client.requests[-1]["messages"]
             if message.get("role") == "tool" and message.get("tool_call_id") == "shared-read"]
@@ -214,7 +260,7 @@ async def test_shared_work_runs_with_its_original_sender_and_real_tool_sources(
             if source["source_kind"] == "session_tool_invocation"]
         assert dependencies
         await _validate_input_dependencies(db, seed["tenant_id"], dependencies, user=await db.get(User, member.id))
-        if mutation == "private_recipient":
+        if mutation in {"private_recipient", "queued_member", "explicit_other"}:
             with pytest.raises(ContentInputReceiptError) as private:
                 await _validate_input_dependencies(db, seed["tenant_id"], dependencies, user=await db.get(User, seed["user_id"]))
             assert private.value.status_code == 403
@@ -233,7 +279,7 @@ async def test_shared_work_runs_with_its_original_sender_and_real_tool_sources(
     async with app_user_sessionmaker() as db:
         await pin_rls_tenant_context(db, seed["tenant_id"])
         delivery = await db.get(ChannelDeliveryOutbox, outbox[0].id)
-        if mutation == "private_recipient":
+        if mutation in {"private_recipient", "queued_member", "explicit_other"}:
             assert outcome["dead_lettered"] == 1 and sends == [], outcome
             assert delivery.status == "dead_letter" and "shared_group_output_unavailable" in delivery.last_error
         elif mutation == "unknown_recipient":
@@ -243,3 +289,37 @@ async def test_shared_work_runs_with_its_original_sender_and_real_tool_sources(
             assert outcome["delivered"] == 1 and len(sends) == 1, outcome
             assert sends[0]["reply_target"]["receive_id"] == "oc_native_group"
             assert delivery.status == "delivered"
+    if mutation == "queued_member":
+        with use_channel_ingress_context(event_id=second_event.event_id, tenant_id=seed["tenant_id"],
+            agent_id=seed["agent_id"], provider="feishu", installation_ref=installation):
+            bind_channel_ingress_external_principal(other.actor.external_principal_id)
+            async with app_user_sessionmaker() as db:
+                await pin_rls_tenant_context(db, seed["tenant_id"])
+                replay = await submit_live_human_input(db=db, agent=await db.get(Agent, seed["agent_id"]),
+                    user=other.actor, session=await db.get(ChatSession, shared_id), source="feishu",
+                    content="OTHER_REQUESTER_ONLY", input_id=second_event.event_id, idempotency_key="native-shared-second",
+                    runtime_metadata={"source": "feishu", "channel": "feishu"})
+                assert replay["command_id"] == str(second_command_id)
+                await db.commit()
+        from app.services.runtime_terminal_boundary_outbox import RuntimeTerminalBoundaryOutboxService
+        from app.services.web_terminal_boundary_processor import WebTerminalBoundaryProcessor
+        processor = WebTerminalBoundaryProcessor(session_factory=app_user_sessionmaker, data_root=seed["data_root"])
+        boundary = await RuntimeTerminalBoundaryOutboxService(session_factory=app_user_sessionmaker).drain_once(
+            tenant_id=seed["tenant_id"], worker_id="group-terminal-boundary", canonical_validator=processor.validate,
+            process_callback=processor, task_types=("web_chat_turn",))
+        assert boundary["delivered"] == 1, boundary
+        async with app_user_sessionmaker() as db:
+            await pin_rls_tenant_context(db, seed["tenant_id"])
+            await recover_admitted_session_inputs_once(db, worker_id="group-next-requester", tenant_id=seed["tenant_id"],
+                admission_ids=(uuid5(second_command_id, "input-admission:revision:1"),))
+            successor = await db.scalar(select(RuntimeTask).where(RuntimeTask.id == uuid5(second_event.event_id, "session-v2-successor-run")))
+            assert successor is not None and successor.root_user_id == seed["user_id"] != member.id
+            assert successor.metadata_json["external_principal_id"] == str(other.actor.external_principal_id)
+            assert (await db.get(SessionTurnInput, second_event.event_id)).target_run_id == successor.id
+            successor.status, successor.claimed_by = "running", "group-next-requester"
+            successor.claim_version, successor.attempt_count = 1, 1
+            successor.claim_expires_at = datetime.now(timezone.utc) + timedelta(minutes=10)
+            from app.services.shared_group_authority import load_shared_group_runtime_actor
+            restored = await load_shared_group_runtime_actor(db, task=successor, session=await db.get(ChatSession, shared_id))
+            assert restored.id == seed["user_id"] and restored.external_principal_id == other.actor.external_principal_id
+            await db.commit()

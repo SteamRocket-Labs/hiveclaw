@@ -58,7 +58,7 @@ Open [localhost:3008](http://localhost:3008). In source mode, the backend listen
 
 1. Register an account. The first registered user becomes the platform administrator.
 2. In the admin settings, configure a model provider and make a model available. Bring your own provider credentials; model usage may incur charges.
-3. Choose **New digital employee** and follow the HR creation flow to define its role and model.
+3. Ask **My Assistant** to create an employee, or choose **New digital employee**. Approved defaults can be used directly; review any missing configuration or authorization the work requires.
 4. Open the employee's conversation, give it a small task, and add tools or knowledge access as needed.
 
 A good first task is a short brief from a file you provide. Start with limited permissions and review any requested approvals before connecting systems that can send messages or change external data.
@@ -66,6 +66,8 @@ A good first task is a short brief from a file you provide. Start with limited p
 ### Containers and production
 
 The repository includes a [Docker Compose configuration](docker-compose.yml). Before using it, review secrets, storage, network exposure, and the Docker socket mount. It is a deployment starting point, not a hardened production configuration.
+
+For the isolated first-run candidate with generated credentials and a separate schema owner, see the [self-hosted profile](deploy/self-hosted/README.md). Container and production acceptance remain separate.
 
 See [deployment notes](ENGINEERING.md#14-development-commands) for local container setup and the [Railway production runbook](docs/railway-production-runbook.md) for Railway operations. Supported tools and sandbox behavior depend on the host and configured services.
 

@@ -405,13 +405,14 @@ async def lifespan(app: FastAPI):
                 from app.db_bootstrap import prepare_runtime_schema
 
                 schema_created = await conn.run_sync(lambda sync_conn: prepare_runtime_schema(sync_conn, Base.metadata))
-                # Add enum values to channel_type_enum if they don't exist yet (idempotent)
-                for _ch_val in ("telegram",):
-                    await conn.execute(
-                        __import__("sqlalchemy").text(
-                            f"ALTER TYPE channel_type_enum ADD VALUE IF NOT EXISTS '{_ch_val}'"
+                # Versioned installs leave DDL to owner-run migrations, not the runtime role.
+                if schema_created:
+                    for _ch_val in ("telegram",):
+                        await conn.execute(
+                            __import__("sqlalchemy").text(
+                                f"ALTER TYPE channel_type_enum ADD VALUE IF NOT EXISTS '{_ch_val}'"
+                            )
                         )
-                    )
             if schema_created:
                 logger.info("[startup] Unversioned database schema created")
             else:
@@ -795,6 +796,8 @@ async def lifespan(app: FastAPI):
         await aclose_all_backends()
     except Exception as exc:
         logger.warning(f"Memory backend shutdown failed: {exc}")
+    logger.info("[shutdown] application lifespan cleanup completed")
+    await logger.complete()
 
 
 app = FastAPI(

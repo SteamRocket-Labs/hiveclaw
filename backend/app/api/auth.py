@@ -4,7 +4,7 @@ import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from loguru import logger
-from sqlalchemy import func, select
+from sqlalchemy import text, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -121,6 +121,11 @@ async def register(data: UserRegister, db: AsyncSession = Depends(get_db)):
         # Check if this is the first user (→ platform admin + default company org_admin)
         user_count = await db.execute(select(func.count()).select_from(User))
         is_first_user = user_count.scalar() == 0
+        if is_first_user:
+            # Only cold bootstrap serializes; a committed account ends this privilege window.
+            await db.execute(text("SELECT pg_advisory_xact_lock(hashtextextended('hive.auth.first_admin.v1', 0))"))
+            user_count = await db.execute(select(func.count()).select_from(User))
+            is_first_user = user_count.scalar() == 0
 
         if is_first_user:
             from app.models.tenant import Tenant

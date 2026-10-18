@@ -58,7 +58,7 @@ class _FakeDB:
     async def execute(self, stmt):
         statement = str(stmt)
         self.executed_statements.append(statement)
-        if "SET LOCAL app.current_tenant_id" in statement:
+        if "SET LOCAL app.current_tenant_id" in statement or "pg_advisory_xact_lock" in statement:
             return _FakeResult(None)
         return _FakeResult(self._results.pop(0))
 
@@ -138,7 +138,7 @@ def test_register_first_user_pins_bootstrap_tenant_before_user_insert(monkeypatc
     monkeypatch.setattr("app.services.agent_seeder.seed_default_agents", noop_seed_default_agents)
     monkeypatch.setattr(auth_api, "hash_password", lambda _password: "hash")
     monkeypatch.setattr(auth_api, "create_access_token", lambda *_args, **_kwargs: "jwt-stub")
-    db = _FakeDB([None, None, 0, None])
+    db = _FakeDB([None, None, 0, 0, None])
     client = _make_client(db)
 
     resp = client.post("/api/auth/register", json=_PAYLOAD)

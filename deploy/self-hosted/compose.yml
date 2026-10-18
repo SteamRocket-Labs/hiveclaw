@@ -1,0 +1,104 @@
+name: ${HIVE_INSTALL_ID:?Initialize a private installation profile first}
+
+x-application: &application
+  image: ${HIVE_INSTALL_ID}-backend:local
+  build:
+    context: ${HIVE_INSTALL_SOURCE_ROOT:?Source checkout is required}
+    dockerfile: Dockerfile
+  restart: unless-stopped
+  user: hive
+  entrypoint: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+  environment: &runtime-environment
+    DATABASE_URL: postgresql+asyncpg://app_rls:${HIVE_INSTALL_RUNTIME_PASSWORD:?Runtime password is required}@postgres:5432/hive
+    REDIS_URL: redis://:${HIVE_INSTALL_REDIS_PASSWORD:?Redis password is required}@redis:6379/0
+    SECRET_KEY: ${HIVE_INSTALL_SECRET_KEY:?Application secret is required}
+    JWT_SECRET_KEY: ${HIVE_INSTALL_JWT_SECRET_KEY:?JWT secret is required}
+    SECRETS_MASTER_KEY: ${HIVE_INSTALL_SECRETS_MASTER_KEY:?Credential encryption key is required}
+    DEBUG: "false"
+    RLS_RUNTIME_ROLE_ENFORCEMENT: strict
+    CORS_ORIGINS: ${HIVE_INSTALL_CORS_ORIGINS:?Public origin is required}
+    AGENT_DATA_DIR: /data/agents
+    AGENT_TEMPLATE_DIR: /app/agent_template
+  volumes:
+    - agents:/data/agents
+  depends_on:
+    prepare:
+      condition: service_completed_successfully
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: hive_schema
+      POSTGRES_PASSWORD: ${HIVE_INSTALL_SCHEMA_PASSWORD:?Schema password is required}
+      POSTGRES_DB: hive
+    volumes:
+      - postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U hive_schema -d hive"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--requirepass", "${HIVE_INSTALL_REDIS_PASSWORD:?Redis password is required}"]
+    environment:
+      REDISCLI_AUTH: ${HIVE_INSTALL_REDIS_PASSWORD:?Redis password is required}
+    volumes:
+      - redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  prepare:
+    <<: *application
+    restart: "no"
+    user: root
+    entrypoint: ["python", "-m", "app.scripts.prepare_self_hosted"]
+    environment:
+      <<: *runtime-environment
+      SCHEMA_DATABASE_URL: postgresql+asyncpg://hive_schema:${HIVE_INSTALL_SCHEMA_PASSWORD:?Schema password is required}@postgres:5432/hive
+      RLS_APP_PASSWORD: ${HIVE_INSTALL_RUNTIME_PASSWORD:?Runtime password is required}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      disable: true
+
+  backend-api:
+    <<: *application
+    environment:
+      <<: *runtime-environment
+      HIVE_PROCESS_ROLE: api
+
+  backend:
+    <<: *application
+    environment:
+      <<: *runtime-environment
+      HIVE_PROCESS_ROLE: runtime
+
+  frontend:
+    image: ${HIVE_INSTALL_ID}-frontend:local
+    build:
+      context: ${HIVE_INSTALL_SOURCE_ROOT}/frontend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${HIVE_INSTALL_FRONTEND_PORT:-3008}:80"
+    depends_on:
+      backend-api:
+        condition: service_healthy
+      backend:
+        condition: service_healthy
+
+volumes:
+  agents:
+  postgres:
+  redis:

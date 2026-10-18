@@ -1,4 +1,47 @@
-import { get, patch, post } from '../core';
+import { del, get, patch, post } from '../core';
+
+export type BudgetLimitName = 'max_tokens' | 'max_cache_miss_tokens' | 'max_subagents' | 'max_team_sessions'
+  | 'max_delegations' | 'max_background_tasks' | 'max_continuation_wakes' | 'max_provider_calls';
+
+export interface BudgetIncreaseRequest {
+  id: string;
+  approval_episode_id: string;
+  business_team_id: string;
+  requester_user_id: string;
+  requester_name?: string | null;
+  limits: Partial<Record<BudgetLimitName, number>>;
+  reason: string;
+  status: 'pending' | 'approved' | 'rejected' | 'withdrawn' | 'superseded';
+  created_at: string;
+  can_withdraw?: boolean;
+}
+
+export interface TeamBudgetRun {
+  id: string;
+  agent_id: string;
+  agent_name: string;
+  status: string;
+  user_status: string;
+  approval_episode_id: string | null;
+  created_at: string;
+  limits: Record<BudgetLimitName, number | null>;
+  usage: Record<string, { used: number; reserved: number }>;
+  increase_requests: BudgetIncreaseRequest[];
+}
+
+export interface TeamBudgetRuns {
+  tenant_id: string;
+  business_team_id: string;
+  runs: TeamBudgetRun[];
+  next_offset: number | null;
+}
+
+export interface BudgetIncreaseInput {
+  request_id: string;
+  approval_episode_id: string;
+  limits: Partial<Record<BudgetLimitName, number>>;
+  reason: string;
+}
 
 export interface RuntimeBudgetPolicy {
   id: string;
@@ -67,6 +110,7 @@ export interface RuntimeBudgetRun {
   created_at: string | null;
   expires_at: string | null;
   completed_at: string | null;
+  increase_requests?: BudgetIncreaseRequest[];
 }
 
 export interface RuntimeBudgetEvent {
@@ -102,6 +146,14 @@ export interface BudgetTransitionDelivery {
 }
 
 export const runtimeBudgetApi = {
+  listTeamRuns: (teamId: string, offset = 0, limit = 10) =>
+    get<TeamBudgetRuns>(`/business-teams/${teamId}/runtime-budget-runs?offset=${offset}&limit=${limit}`),
+  getTeamRun: (teamId: string, runId: string) =>
+    get<TeamBudgetRun>(`/business-teams/${teamId}/runtime-budget-runs/${runId}`),
+  requestIncrease: (teamId: string, runId: string, body: BudgetIncreaseInput) =>
+    post<BudgetIncreaseRequest>(`/business-teams/${teamId}/runtime-budget-runs/${runId}/increase-requests`, body),
+  withdrawIncrease: (teamId: string, runId: string, requestId: string) =>
+    del<BudgetIncreaseRequest>(`/business-teams/${teamId}/runtime-budget-runs/${runId}/increase-requests/${requestId}`),
   listPolicies: () => get<RuntimeBudgetPolicy[]>('/runtime-budgets/policies'),
   createPolicy: (payload: RuntimeBudgetPolicyWrite) =>
     post<RuntimeBudgetPolicy>('/runtime-budgets/policies', payload),
@@ -123,15 +175,20 @@ export const runtimeBudgetApi = {
     runId: string,
     payload: {
       approval_episode_id: string;
+      increase_request_id?: string;
       reason: string;
       enforcement_mode?: 'observe' | 'enforce' | string;
       max_subagents?: number | null;
       max_team_sessions?: number | null;
       max_cache_miss_tokens?: number | null;
       max_tokens?: number | null;
+      max_delegations?: number | null;
+      max_background_tasks?: number | null;
+      max_continuation_wakes?: number | null;
+      max_provider_calls?: number | null;
     },
   ) => post<RuntimeBudgetRun>(`/runtime-budgets/runs/${runId}/approve-overrun`, payload),
-  rejectOverrun: (runId: string, payload: { approval_episode_id: string; reason: string }) =>
+  rejectOverrun: (runId: string, payload: { approval_episode_id: string; increase_request_id?: string; reason: string }) =>
     post<RuntimeBudgetRun>(`/runtime-budgets/runs/${runId}/reject-overrun`, payload),
   listTransitionDeliveries: (params: { runId?: string; status?: string; limit?: number } = {}) => {
     const query = new URLSearchParams();

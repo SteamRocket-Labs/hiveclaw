@@ -110,6 +110,7 @@ class RuntimeBudgetRunOut(BaseModel):
     created_at: datetime | None = None
     expires_at: datetime | None = None
     completed_at: datetime | None = None
+    increase_requests: list[dict] = Field(default_factory=list)
 
     model_config = {"from_attributes": True}
 
@@ -144,6 +145,7 @@ class RuntimeBudgetCancelOut(BaseModel):
 
 class RuntimeBudgetApproveOverrunRequest(BaseModel):
     approval_episode_id: uuid.UUID
+    increase_request_id: uuid.UUID | None = None
     reason: str = Field(default="admin approved runtime overrun", min_length=1, max_length=1000)
     enforcement_mode: str = "enforce"
     max_tokens: int | None = Field(default=None, ge=0)
@@ -158,6 +160,7 @@ class RuntimeBudgetApproveOverrunRequest(BaseModel):
 
 class RuntimeBudgetRejectOverrunRequest(BaseModel):
     approval_episode_id: uuid.UUID
+    increase_request_id: uuid.UUID | None = None
     reason: str = Field(default="admin rejected runtime overrun", min_length=1, max_length=1000)
 
 
@@ -342,7 +345,8 @@ async def list_runtime_budget_runs(
     service: RuntimeBudgetService = Depends(get_runtime_budget_service),
 ):
     tenant_id = _require_tenant(current_user)
-    runs = await service.list_runs(tenant_id=tenant_id, status=status_filter, agent_id=agent_id, limit=limit)
+    runs = await service.list_runs(tenant_id=tenant_id, status=status_filter, agent_id=agent_id, limit=limit,
+        include_increase_requests=True)
     return [_run_out(run) for run in runs]
 
 
@@ -353,7 +357,7 @@ async def get_runtime_budget_run(
     service: RuntimeBudgetService = Depends(get_runtime_budget_service),
 ):
     tenant_id = _require_tenant(current_user)
-    run = await service.get_run(tenant_id=tenant_id, budget_run_id=budget_run_id)
+    run = await service.get_run(tenant_id=tenant_id, budget_run_id=budget_run_id, include_increase_requests=True)
     if run is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="runtime budget run not found")
     return _run_out(run)
@@ -458,6 +462,7 @@ async def approve_runtime_budget_overrun(
             max_background_tasks=body.max_background_tasks,
             max_continuation_wakes=body.max_continuation_wakes,
             max_provider_calls=body.max_provider_calls,
+            **({"increase_request_id": body.increase_request_id} if body.increase_request_id else {}),
         )
     except RuntimeBudgetStateConflict as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
@@ -481,6 +486,7 @@ async def reject_runtime_budget_overrun(
             reason=body.reason,
             approval_episode_id=body.approval_episode_id,
             actor_user_id=current_user.id,
+            **({"increase_request_id": body.increase_request_id} if body.increase_request_id else {}),
         )
     except RuntimeBudgetStateConflict as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc

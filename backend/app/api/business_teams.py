@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import uuid
-from typing import Literal
+from typing import Annotated, Literal
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -248,3 +248,66 @@ async def delete_business_team_agent(
         return await revoke_affiliation(db, current_user, team_id, agent_id)
     except BusinessTeamError as exc:
         raise _http(exc) from exc
+
+
+class TeamBudgetIncreaseIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    request_id: uuid.UUID
+    approval_episode_id: uuid.UUID
+    limits: dict[str, Annotated[int, Field(strict=True, ge=0)]] = Field(min_length=1, max_length=8)
+    reason: str = Field(min_length=1, max_length=1000)
+
+
+@router.get("/business-teams/{team_id}/runtime-budget-runs")
+async def get_team_runtime_budgets(team_id: uuid.UUID, limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0), current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    from app.services.team_runtime_budgets import list_team_budget_runs
+
+    await _bind(db, current_user)
+    try:
+        return await list_team_budget_runs(db, user=current_user, team_id=team_id, limit=limit, offset=offset)
+    except BusinessTeamError as exc:
+        raise _http(exc) from exc
+
+
+@router.get("/business-teams/{team_id}/runtime-budget-runs/{run_id}")
+async def get_team_runtime_budget(team_id: uuid.UUID, run_id: uuid.UUID,
+    current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    from app.services.team_runtime_budgets import load_team_budget_run, team_budget_projection
+
+    await _bind(db, current_user)
+    try:
+        actor, team, run = await load_team_budget_run(db, user=current_user, team_id=team_id, run_id=run_id)
+        return await team_budget_projection(db, run=run, actor=actor, team_id=team.id)
+    except BusinessTeamError as exc:
+        raise _http(exc) from exc
+
+
+@router.post("/business-teams/{team_id}/runtime-budget-runs/{run_id}/increase-requests", status_code=201)
+async def post_team_budget_increase(team_id: uuid.UUID, run_id: uuid.UUID, body: TeamBudgetIncreaseIn,
+    current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    from app.services.team_runtime_budgets import request_budget_increase
+    from app.services.runtime_budget_service import RuntimeBudgetStateConflict
+
+    await _bind(db, current_user)
+    try:
+        return await request_budget_increase(db, user=current_user, team_id=team_id, run_id=run_id, body=body)
+    except BusinessTeamError as exc:
+        raise _http(exc) from exc
+    except RuntimeBudgetStateConflict as exc:
+        raise HTTPException(409, detail=str(exc)) from exc
+
+
+@router.delete("/business-teams/{team_id}/runtime-budget-runs/{run_id}/increase-requests/{request_id}")
+async def delete_team_budget_increase(team_id: uuid.UUID, run_id: uuid.UUID, request_id: uuid.UUID,
+    current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    from app.services.team_runtime_budgets import withdraw_budget_increase
+    from app.services.runtime_budget_service import RuntimeBudgetStateConflict
+
+    await _bind(db, current_user)
+    try:
+        return await withdraw_budget_increase(db, user=current_user, team_id=team_id, run_id=run_id, request_id=request_id)
+    except BusinessTeamError as exc:
+        raise _http(exc) from exc
+    except RuntimeBudgetStateConflict as exc:
+        raise HTTPException(409, detail=str(exc)) from exc

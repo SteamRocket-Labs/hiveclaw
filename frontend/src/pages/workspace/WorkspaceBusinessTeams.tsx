@@ -7,6 +7,7 @@ import { ApiError } from '../../api/core/errors';
 import type { Agent } from '../../types';
 import { useAuthStore } from '../../stores';
 import WorkspaceApprovalsSection from './WorkspaceApprovalsSection';
+import TeamRuntimeBudgets from './TeamRuntimeBudgets';
 
 type SignedInUser = {
   id?: string;
@@ -125,6 +126,7 @@ export function WorkspaceBusinessTeams({ agents }: { agents: Agent[] }) {
   });
   const [detail, setDetail] = useState<BusinessTeamDetail | null>(null);
   const [approvalTeamId, setApprovalTeamId] = useState<string | null>(null);
+  const [budgetTeamId, setBudgetTeamId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
   const [stale, setStale] = useState(false);
@@ -412,6 +414,12 @@ export function WorkspaceBusinessTeams({ agents }: { agents: Agent[] }) {
                 </button>
                 {approvalTeamId === detail.id && <WorkspaceApprovalsSection key={`${scopeKey}:${detail.id}`}
                   selectedTenantId={detail.tenant_id} businessTeamId={detail.id} />}
+                <button type="button" className="btn btn-ghost" aria-expanded={budgetTeamId === detail.id}
+                  onClick={() => setBudgetTeamId(budgetTeamId === detail.id ? null : detail.id)}>
+                  {t('teamBudgets.title', 'Team runtime budgets')}
+                </button>
+                {budgetTeamId === detail.id && <TeamRuntimeBudgets key={`${scopeKey}:${detail.id}`}
+                  teamId={detail.id} tenantId={detail.tenant_id} />}
               </div>
             )}
             {detail.can_manage && (

@@ -1,9 +1,11 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { IconAlertTriangle, IconPlayerPause, IconShieldCheck, IconShieldOff } from '@tabler/icons-react';
 
-import { runtimeBudgetApi, type RuntimeBudgetPolicy, type RuntimeBudgetRun } from '../../api/domains/runtimeBudgets';
+import { runtimeBudgetApi, type BudgetIncreaseRequest, type RuntimeBudgetPolicy, type RuntimeBudgetRun } from '../../api/domains/runtimeBudgets';
+import BudgetIncreaseRequestSummary from '../../components/BudgetIncreaseRequestSummary';
+import { useAuthStore } from '../../stores';
 import './WorkspaceRuntimeBudgetsSection.css';
 
 type RuntimeControlProfile = 'interactive' | 'scheduled' | 'workflow' | 'agent_team';
@@ -156,6 +158,15 @@ type Props = {
 export default function WorkspaceRuntimeBudgetsSection({ agentId }: Props) {
   const { t } = useTranslation();
   const qc = useQueryClient();
+  const userId = useAuthStore((state) => state.user?.id);
+  const [tenantId, setTenantId] = useState(() => typeof localStorage === 'undefined' ? '' : localStorage.getItem('current_tenant_id') || '');
+  useEffect(() => {
+    const changed = (event: StorageEvent) => {
+      if (event.key === 'current_tenant_id') setTenantId(event.newValue || '');
+    };
+    window.addEventListener('storage', changed);
+    return () => window.removeEventListener('storage', changed);
+  }, []);
   const [profile, setProfile] = useState<RuntimeControlProfile>('scheduled');
   const profileDefault = PROFILE_DEFAULTS[profile];
   const [draft, setDraft] = useState({
@@ -173,15 +184,15 @@ export default function WorkspaceRuntimeBudgetsSection({ agentId }: Props) {
   });
 
   const policiesQuery = useQuery({
-    queryKey: ['runtime-budget-policies'],
+    queryKey: ['runtime-budget-policies', tenantId, userId],
     queryFn: runtimeBudgetApi.listPolicies,
   });
   const runsQuery = useQuery({
-    queryKey: ['runtime-budget-runs', agentId || 'tenant'],
+    queryKey: ['runtime-budget-runs', tenantId, userId, agentId || 'tenant'],
     queryFn: () => runtimeBudgetApi.listRuns({ agentId, limit: agentId ? 10 : 50 }),
   });
   const deliveryIssuesQuery = useQuery({
-    queryKey: ['runtime-budget-transition-deliveries'],
+    queryKey: ['runtime-budget-transition-deliveries', tenantId, userId],
     queryFn: async () => {
       const [ambiguous, deadLetters] = await Promise.all([
         runtimeBudgetApi.listTransitionDeliveries({ status: 'needs_reconciliation', limit: 50 }),
@@ -191,8 +202,8 @@ export default function WorkspaceRuntimeBudgetsSection({ agentId }: Props) {
     },
   });
 
-  const policies = policiesQuery.data || [];
-  const runs = runsQuery.data || [];
+  const policies = policiesQuery.isError ? [] : policiesQuery.data || [];
+  const runs = runsQuery.isError ? [] : runsQuery.data || [];
   const activePolicy = useMemo(
     () =>
       policies.find(
@@ -222,7 +233,7 @@ export default function WorkspaceRuntimeBudgetsSection({ agentId }: Props) {
   );
   const visibleRuns = protectedRuns.length > 0 ? protectedRuns : runs.slice(0, 5);
   const showingProtectedRuns = protectedRuns.length > 0;
-  const deliveryIssues = deliveryIssuesQuery.data || [];
+  const deliveryIssues = deliveryIssuesQuery.isError ? [] : deliveryIssuesQuery.data || [];
 
   const invalidate = () => {
     qc.invalidateQueries({ queryKey: ['runtime-budget-policies'] });
@@ -303,6 +314,17 @@ export default function WorkspaceRuntimeBudgetsSection({ agentId }: Props) {
     },
     onSuccess: invalidate,
   });
+  const decideIncrease = useMutation({
+    mutationFn: ({ run, request, action }: { run: RuntimeBudgetRun; request: BudgetIncreaseRequest; action: 'approve' | 'reject' }) => {
+      if (!run.approval_episode_id) throw new Error('runtime budget approval episode is unavailable');
+      const body = { approval_episode_id: run.approval_episode_id, increase_request_id: request.id,
+        reason: 'operator reviewed the exact team budget increase request' };
+      return action === 'approve' ? runtimeBudgetApi.approveOverrun(run.id, { ...body, ...request.limits })
+        : runtimeBudgetApi.rejectOverrun(run.id, body);
+    },
+    onSuccess: invalidate,
+    onError: invalidate,
+  });
   const resolveDelivery = useMutation({
     mutationFn: ({ id, action }: { id: string; action: 'retry' | 'mark_delivered' }) =>
       runtimeBudgetApi.resolveTransitionDelivery(id, {
@@ -317,6 +339,12 @@ export default function WorkspaceRuntimeBudgetsSection({ agentId }: Props) {
 
   return (
     <div className="workspace-runtime-budgets">
+      {(decideIncrease.isError || policiesQuery.isError || runsQuery.isError || deliveryIssuesQuery.isError) && <div role="alert">
+        <p>{t('teamBudgets.confirmError', 'Could not confirm the change. Refresh to check the current run.')}</p>
+        <button type="button" className="btn btn-ghost" onClick={() => { decideIncrease.reset(); invalidate(); }}>
+          {t('common.refresh', 'Refresh')}
+        </button>
+      </div>}
       <section className="workspace-runtime-band">
         <div>
           <div className="workspace-runtime-eyebrow">
@@ -474,12 +502,27 @@ export default function WorkspaceRuntimeBudgetsSection({ agentId }: Props) {
                   <div className="workspace-runtime-run-reason">{run.user_reason}</div>
                   <div className="workspace-runtime-run-next">{run.user_next_action}</div>
                   <div className="workspace-runtime-run-meta">{formatDate(run.created_at)} · {run.source || run.root_run_kind}</div>
+                  {run.increase_requests?.map((request) => <div key={request.id}>
+                    <BudgetIncreaseRequestSummary request={request} />
+                    {request.status === 'pending' && run.status === 'waiting_budget_approval' && <div>
+                      <button type="button" className="btn btn-secondary" disabled={decideIncrease.isPending}
+                        onClick={() => decideIncrease.mutate({ run, request, action: 'approve' })}>
+                        {t('teamBudgets.approve', 'Approve requested increase')}
+                      </button>
+                      <button type="button" className="btn btn-secondary" disabled={decideIncrease.isPending}
+                        onClick={() => decideIncrease.mutate({ run, request, action: 'reject' })}>
+                        {t('teamBudgets.reject', 'Reject request and stop waiting work')}
+                      </button>
+                    </div>}
+                  </div>)}
                 </div>
                 <div className="workspace-runtime-run-actions">
                   {run.status === 'waiting_budget_approval' && run.approval_episode_id && (
                     <>
                       <button className="btn btn-secondary" onClick={() => approveRun.mutate(run)} disabled={approveRun.isPending}>
-                        {t('runtimeBudgets.approveContinue', 'Approve')}
+                        {run.increase_requests?.some((request) => request.status === 'pending')
+                          ? t('teamBudgets.approveMinimum', 'Approve only the required capacity')
+                          : t('runtimeBudgets.approveContinue', 'Approve')}
                       </button>
                       <button className="btn btn-secondary" onClick={() => rejectRun.mutate(run)} disabled={rejectRun.isPending}>
                         {t('runtimeBudgets.rejectContinue', 'Reject')}

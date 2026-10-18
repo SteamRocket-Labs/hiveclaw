@@ -4,6 +4,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import WorkspaceRuntimeBudgetsSection from './WorkspaceRuntimeBudgetsSection';
 
+vi.mock('../../stores', () => ({ useAuthStore: (select: (state: unknown) => unknown) => select({ user: { id: 'admin' } }) }));
+
 const scheduledPolicy = {
   id: 'policy-1',
   tenant_id: 'tenant-1',

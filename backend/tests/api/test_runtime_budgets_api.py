@@ -70,7 +70,7 @@ class _FakeRuntimeBudgetService:
             setattr(base, key, value)
         return base
 
-    async def list_runs(self, *, tenant_id, status=None, agent_id=None, limit=50):
+    async def list_runs(self, *, tenant_id, status=None, agent_id=None, limit=50, include_increase_requests=False):
         return [
             SimpleNamespace(
                 id=self.run_id,
@@ -89,7 +89,7 @@ class _FakeRuntimeBudgetService:
             )
         ]
 
-    async def get_run(self, *, tenant_id, budget_run_id):
+    async def get_run(self, *, tenant_id, budget_run_id, include_increase_requests=False):
         return (await self.list_runs(tenant_id=tenant_id))[0]
 
     async def list_events(self, *, tenant_id, budget_run_id, limit=100):

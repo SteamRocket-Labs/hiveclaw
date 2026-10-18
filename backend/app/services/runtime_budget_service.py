@@ -1251,6 +1251,7 @@ class RuntimeBudgetService:
         status: str | None = None,
         agent_id: uuid.UUID | None = None,
         limit: int = 50,
+        include_increase_requests: bool = False,
     ) -> list[RuntimeBudgetRun]:
         stmt = select(RuntimeBudgetRun).where(RuntimeBudgetRun.tenant_id == tenant_id)
         if status:
@@ -1262,9 +1263,14 @@ class RuntimeBudgetService:
             runs = list(result.scalars().all())
             for run in runs:
                 await self._resolve_approval_episode_id(db, run)
+                if include_increase_requests:
+                    from app.services.team_runtime_budgets import budget_increase_requests
+
+                    run.increase_requests = await budget_increase_requests(db, run=run)
             return runs
 
-    async def get_run(self, *, tenant_id: uuid.UUID | None, budget_run_id: uuid.UUID) -> RuntimeBudgetRun | None:
+    async def get_run(self, *, tenant_id: uuid.UUID | None, budget_run_id: uuid.UUID,
+        include_increase_requests: bool = False) -> RuntimeBudgetRun | None:
         async with self._budget_session("get_run") as db:
             result = await db.execute(
                 select(RuntimeBudgetRun).where(
@@ -1275,6 +1281,10 @@ class RuntimeBudgetService:
             run = result.scalar_one_or_none()
             if run is not None:
                 await self._resolve_approval_episode_id(db, run)
+                if include_increase_requests:
+                    from app.services.team_runtime_budgets import budget_increase_requests
+
+                    run.increase_requests = await budget_increase_requests(db, run=run)
             return run
 
     async def list_events(
@@ -1416,6 +1426,7 @@ class RuntimeBudgetService:
         reason: str,
         approval_episode_id: uuid.UUID,
         actor_user_id: uuid.UUID | None = None,
+        increase_request_id: uuid.UUID | None = None,
         enforcement_mode: str = "enforce",
         max_tokens: int | None = None,
         max_cache_miss_tokens: int | None = None,
@@ -1478,6 +1489,7 @@ class RuntimeBudgetService:
                             and previous_metadata.get("enforcement_mode") == enforcement_mode
                             and dict(previous_metadata.get("approved_limits") or {}) == requested_limits
                             and previous_metadata.get("approval_episode_id") == str(approval_episode_id)
+                            and previous_metadata.get("increase_request_id") == (str(increase_request_id) if increase_request_id else None)
                         )
                 if not exact_replay:
                     raise RuntimeBudgetStateConflict(
@@ -1486,6 +1498,11 @@ class RuntimeBudgetService:
                 await db.commit()
                 await db.refresh(run)
                 return run
+            if increase_request_id is not None:
+                from app.services.team_runtime_budgets import validate_budget_increase_decision
+
+                await validate_budget_increase_decision(db, run=run, request_id=increase_request_id,
+                    episode_id=approval_episode_id, limits=requested_limits)
             for field, value in requested_limits.items():
                 setattr(run, field, value)
             waiting_tasks = list(
@@ -1542,6 +1559,8 @@ class RuntimeBudgetService:
                         + amount
                     )
                     if current_max is not None and int(current_max) < required_max:
+                        if increase_request_id is not None:
+                            raise RuntimeBudgetStateConflict("Requested limits do not cover the current waiting work; review a new request")
                         setattr(run, f"max_{dimension}", required_max)
                 task = waiting_tasks_by_key.get(reservation_key)
                 if task is None and denial.runtime_task_id is not None:
@@ -1625,6 +1644,7 @@ class RuntimeBudgetService:
                     "approval_episode_id": str(approval_episode_id),
                     "enforcement_mode": enforcement_mode,
                     "approved_limits": requested_limits,
+                    **({"increase_request_id": str(increase_request_id)} if increase_request_id else {}),
                     "transition": ["waiting_budget_approval", "approved", "resuming", "active"],
                     "target_status": "approved",
                     "resumed_runtime_task_ids": [str(task_id) for task_id in resumed_task_ids],
@@ -1690,6 +1710,7 @@ class RuntimeBudgetService:
         reason: str,
         approval_episode_id: uuid.UUID,
         actor_user_id: uuid.UUID | None = None,
+        increase_request_id: uuid.UUID | None = None,
     ) -> RuntimeBudgetRun | None:
         current = datetime.now(UTC)
         async with self._budget_session("reject_overrun") as db:
@@ -1728,6 +1749,7 @@ class RuntimeBudgetService:
                             and previous_metadata.get("actor_user_id")
                             == (str(actor_user_id) if actor_user_id else None)
                             and previous_metadata.get("approval_episode_id") == str(approval_episode_id)
+                            and previous_metadata.get("increase_request_id") == (str(increase_request_id) if increase_request_id else None)
                         )
                 if not exact_replay:
                     raise RuntimeBudgetStateConflict(
@@ -1736,6 +1758,11 @@ class RuntimeBudgetService:
                 await db.commit()
                 await db.refresh(run)
                 return run
+            if increase_request_id is not None:
+                from app.services.team_runtime_budgets import validate_budget_increase_decision
+
+                await validate_budget_increase_decision(db, run=run, request_id=increase_request_id,
+                    episode_id=approval_episode_id)
             run.status = "stopped"
             run.terminal_reason = "runtime_budget_approval_rejected"
             run.completed_at = current
@@ -1780,6 +1807,7 @@ class RuntimeBudgetService:
                     "actor_user_id": str(actor_user_id) if actor_user_id else None,
                     "approval_episode_id": str(approval_episode_id),
                     "target_status": "rejected",
+                    **({"increase_request_id": str(increase_request_id)} if increase_request_id else {}),
                 },
             )
             db.add(event)

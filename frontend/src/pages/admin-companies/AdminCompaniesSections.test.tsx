@@ -6,6 +6,8 @@ import { describe, expect, it, vi } from 'vitest';
 import AdminCompaniesSection from './AdminCompaniesSection';
 import AdminPlatformSection from './AdminPlatformSection';
 
+vi.mock('../../stores', () => ({ useAuthStore: (select: (state: unknown) => unknown) => select({ user: { id: 'admin' } }) }));
+
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
     t: (key: string, fallback?: string) => fallback || key.split('.').pop() || key,

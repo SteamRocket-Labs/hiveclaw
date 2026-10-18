@@ -72,7 +72,13 @@ try {
   await page.screenshot({ path: fixture.completedScreenshot, fullPage: true });
   process.stdout.write(JSON.stringify({ event: 'permission_recorded' }) + String.fromCharCode(10));
   assert.equal(JSON.parse((await control.next()).value).event, 'work_returned');
-  await page.reload();
+  let finalContext = approver;
+  if (fixture.editSaved) {
+    await approver.close();
+    finalContext = await openWork(fixture.readerToken);
+  } else {
+    await page.reload();
+  }
   await expect(page.getByText('The approved report is ready.', { exact: true })).toBeVisible({ timeout: 30000 });
   await expect(page.getByText('Runtime result integration page.', { exact: false })).toHaveCount(0);
   const previewResponse = page.waitForResponse(response => response.url().includes('/files/artifacts/') && response.url().endsWith('/content'));
@@ -82,9 +88,27 @@ try {
   const downloaded = page.waitForEvent('download');
   await page.getByTestId('session-artifact-preview-inspector').getByRole('button', { name: 'Download shared-report.md', exact: true }).click();
   assert.equal(await readFile(await (await downloaded).path(), 'utf8'), 'GROUP_REPORT');
+  if (fixture.editSaved) {
+    const inspector = page.getByTestId('session-artifact-preview-inspector');
+    const current = page.waitForResponse(response => response.url().includes('/files/content') && response.request().method() === 'GET');
+    await inspector.getByRole('button', { name: 'Open current file', exact: true }).click();
+    assert.equal((await current).status(), 200);
+    await inspector.getByRole('button', { name: 'Edit', exact: true }).click();
+    await inspector.getByRole('textbox').fill('USER_EDITED_SAVED_REPORT');
+    const saved = page.waitForResponse(response => response.url().includes('/files/content') && response.request().method() === 'PUT');
+    await inspector.getByRole('button', { name: 'Save', exact: true }).click();
+    assert.equal((await saved).status(), 200);
+    await expect(inspector).toContainText('USER_EDITED_SAVED_REPORT');
+    await inspector.getByRole('button', { name: 'Back to delivery', exact: true }).click();
+    await expect(inspector.getByText('GROUP_REPORT', { exact: true })).toBeVisible();
+    await page.reload();
+    await page.getByTestId('chat-artifact-row-open').filter({ hasText: 'shared-report.md' }).last().click();
+    await inspector.getByRole('button', { name: 'Open current file', exact: true }).click();
+    await expect(inspector).toContainText('USER_EDITED_SAVED_REPORT');
+  }
   await page.screenshot({ path: fixture.completedScreenshot, fullPage: true });
   assert.deepEqual(errors, []);
-  await approver.close();
+  await finalContext.close();
 } catch (error) {
   await writeFile(fixture.errorPath, JSON.stringify({ error: String(error), errors, body: page ? await page.locator('body').innerText() : null }, null, 2));
   if (page && !page.isClosed()) await page.screenshot({ path: fixture.errorScreenshot, fullPage: true });

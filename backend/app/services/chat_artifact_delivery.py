@@ -1262,7 +1262,7 @@ async def materialize_declared_read_artifacts(db, *, task, model_result_id, path
 
     model = await db.get(SessionModelResult, model_result_id)
     dependencies, complete = _model_dependencies(model) if model else ([], False)
-    if not complete or (model.tenant_id, model.session_id, model.run_id) != (
+    if model is None or (model.tenant_id, model.session_id, model.run_id) != (
         task.tenant_id, uuid.UUID(task.parent_session_id), task.id):
         return []
     read_ids = []
@@ -1284,6 +1284,8 @@ async def materialize_declared_read_artifacts(db, *, task, model_result_id, path
         path = _safe_workspace_relative_path(str(arguments.get("path") or ""))
         if path is None or path.as_posix() not in paths:
             continue
+        if not complete:
+            raise TerminalReadArtifactSelectionNeedsReconciliation("the file's selecting model has incomplete input sources")
         path = path.as_posix()
         attempted_paths.add(path)
         sources, bound = await _origin_dependencies(db, tenant_id=task.tenant_id, agent_id=task.parent_agent_id,

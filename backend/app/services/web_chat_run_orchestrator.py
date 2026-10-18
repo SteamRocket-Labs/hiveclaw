@@ -930,6 +930,12 @@ async def _invoke_model(state: _WebChatRunState, callbacks: _WebChatCallbacks, s
                     from app.services.delegation_context_sources import bind_native_recovery_context
 
                     await bind_native_recovery_context(db, task=state.runtime_task, session=invocation.session_context)
+            elif (getattr(state.runtime_task, "metadata_json", None) or {}).get("session_v2_command_id"):
+                from app.services.delegation_context_sources import bind_private_session_permission_source
+
+                async with state.ports.runtime.tenant_scoped_session(state.agent.tenant_id) as db:
+                    await bind_private_session_permission_source(db, task=state.runtime_task, session=state.session,
+                        invocation=invocation)
             return await state.ports.runtime.invoke_agent(invocation)
         except state.ports.events.terminal_signal_type as signal:
             state.interactive_pause_summary = signal.summary

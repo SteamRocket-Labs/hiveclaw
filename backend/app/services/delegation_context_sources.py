@@ -40,6 +40,51 @@ class PermissionContextSource:
 DelegationContextSource = PermissionContextSource
 
 
+async def bind_private_session_permission_source(db, *, task, session, invocation):
+    from fastapi import HTTPException
+    from app.models.session_v2 import SessionCommand, SessionTurnInput
+    from app.services.runtime_task_fence import assert_runtime_task_fence
+    from app.services.session_v2_persistence import resolve_session_command_authority
+
+    metadata = invocation.session_context.metadata
+    metadata.pop("_session_permission_context_source", None)
+    if getattr(session, "audience_kind", None) not in {None, "private"}:
+        return
+    try:
+        task = await db.get(RuntimeTask, task.id, populate_existing=True)
+        stored = task.metadata_json or {}
+        command_id = uuid.UUID(stored["session_v2_command_id"])
+        input_id = uuid.UUID(stored.get("session_v2_input_id") or stored["session_v2_rolled_over_input_id"])
+        assert_runtime_task_fence(task)
+        if (task.tenant_id != session.tenant_id or task.parent_agent_id != session.agent_id
+            or task.parent_session_id != str(session.id) or task.root_user_id != session.user_id
+            or invocation.tenant_id != session.tenant_id or invocation.agent_id != session.agent_id
+            or invocation.user_id != task.root_user_id or invocation.session_context.session_id != str(session.id)):
+            return
+        row = await db.get(SessionTurnInput, input_id)
+        command = await db.get(SessionCommand, command_id)
+        if (row is None or command is None or row.tenant_id != session.tenant_id or row.session_id != session.id
+            or row.command_id != command.id or row.target_run_id not in {None, task.id}
+            or command.tenant_id != session.tenant_id or command.session_id != session.id
+            or command.request_hash != _hash({"command_kind": command.command_kind, "request": command.request_json})
+            or command.target_hash != _hash(command.target_json)):
+            return
+        authority = await resolve_session_command_authority(db, command=command, session=session, action="mutate_session_input")
+        if authority.actor.id != task.root_user_id:
+            return
+    except (AttributeError, KeyError, ValueError, PermissionError, HTTPException):
+        return
+    frame = dict((command.target_json or {}).get("runtime_metadata") or {})
+    profile = frame.get("permission_profile") or {}
+    exact = (profile.get("capability_policy_snapshot") or {}).get("session_exact_scope") is True
+    source = PermissionContextSource(
+        reference={"source_kind": "session_command", "source_id": str(command.id), "source_version": command.request_hash},
+        permission_inputs=_permission_inputs(frame),
+        allowed_tool_names=tuple(profile.get("allowed_tools") or ()) if exact else ())
+    if source.matches(metadata, invocation.allowed_tool_names):
+        metadata["_session_permission_context_source"] = source
+
+
 @dataclass(frozen=True)
 class NativeRecoveryContextSource:
     checkpoint: dict

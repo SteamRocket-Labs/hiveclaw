@@ -17,7 +17,7 @@ pytestmark = [pytest.mark.usefixtures("migrated_pg_url"), pytest.mark.skipif(pla
     reason="Native macOS context gate; Linux delivery is deferred.")]
 
 
-@pytest.mark.parametrize("mutation", [None, "forged_actor", "unlinked", "private_source", "private_recipient", "unknown_recipient", "queued_member", "same_sender", "explicit_other", "private_context", "shared_context", "web_member", "web_socket", "web_browser", "web_question", "web_question_browser", "web_cancel", "web_cancel_recovery", "web_cancel_unknown", "web_cancel_browser", "web_permission", "web_permission_session", "web_permission_deny", "web_permission_browser", "web_enterprise", "web_enterprise_reject", "web_enterprise_revoked", "web_enterprise_browser", "web_enterprise_private_source", "web_enterprise_source_revoked", "web_enterprise_private_selection", "web_enterprise_recovery", "web_enterprise_recovery_revoked", "web_enterprise_selection_reentry"])
+@pytest.mark.parametrize("mutation", [None, "forged_actor", "unlinked", "private_source", "private_recipient", "unknown_recipient", "queued_member", "same_sender", "explicit_other", "private_context", "shared_context", "web_member", "web_socket", "web_browser", "web_question", "web_question_browser", "web_cancel", "web_cancel_recovery", "web_cancel_unknown", "web_cancel_browser", "web_permission", "web_permission_session", "web_permission_deny", "web_permission_browser", "web_enterprise", "web_enterprise_reject", "web_enterprise_revoked", "web_enterprise_browser", "web_enterprise_saved_browser", "web_enterprise_saved_unbound", "web_enterprise_private_source", "web_enterprise_source_revoked", "web_enterprise_private_selection", "web_enterprise_recovery", "web_enterprise_recovery_revoked", "web_enterprise_selection_reentry"])
 async def test_shared_work_runs_with_its_original_sender_and_real_tool_sources(
     owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, mutation,
 ):
@@ -56,7 +56,7 @@ async def test_shared_work_runs_with_its_original_sender_and_real_tool_sources(
     from app.services.web_chat_runtime import execute_web_chat_run
 
     enterprise_case = mutation
-    web_enterprise = mutation in {"web_enterprise", "web_enterprise_reject", "web_enterprise_revoked", "web_enterprise_browser", "web_enterprise_private_source", "web_enterprise_source_revoked", "web_enterprise_private_selection", "web_enterprise_recovery", "web_enterprise_recovery_revoked", "web_enterprise_selection_reentry"}
+    web_enterprise = mutation in {"web_enterprise", "web_enterprise_reject", "web_enterprise_revoked", "web_enterprise_browser", "web_enterprise_saved_browser", "web_enterprise_saved_unbound", "web_enterprise_private_source", "web_enterprise_source_revoked", "web_enterprise_private_selection", "web_enterprise_recovery", "web_enterprise_recovery_revoked", "web_enterprise_selection_reentry"}
     permission_decision = {"web_permission": "allow_once", "web_permission_session": "allow_session", "web_permission_deny": "deny", "web_permission_browser": "allow_once"}.get(mutation)
     permission_browser = mutation == "web_permission_browser"
     web_permission = permission_decision is not None
@@ -1575,7 +1575,7 @@ async def _exercise_group_permission(seed, session_id, run_id, requester_id, ses
 
 @asynccontextmanager
 async def _group_permission_browser(web, seed, session_id, permission_id, requester_id, monkeypatch, tmp_path, requester_ready,
-    script="group-permission-native.mjs", reverse_roles=False, await_completion=False):
+    script="group-permission-native.mjs", reverse_roles=False, await_completion=False, completion_ready=None, edit_saved=False):
     import asyncio
     import socket
     from pathlib import Path
@@ -1618,7 +1618,7 @@ async def _group_permission_browser(web, seed, session_id, permission_id, reques
         fixture_path = tmp_path / "permission-browser-fixture.json"
         fixture_path.write_text(json.dumps({"origin": f"http://127.0.0.1:{port}", "tenantId": str(seed["tenant_id"]),
             "agentId": str(seed["agent_id"]), "sessionId": str(session_id), "permissionId": str(permission_id),
-            "readerToken": create_access_token(str(requester_id if reverse_roles else seed["user_id"]), "user", str(seed["tenant_id"])),
+            "editSaved": edit_saved, "readerToken": create_access_token(str(requester_id if reverse_roles else seed["user_id"]), "user", str(seed["tenant_id"])),
             "requesterToken": create_access_token(str(seed["user_id"] if reverse_roles else requester_id), "user", str(seed["tenant_id"])),
             **{key: str(tmp_path / name) for key, name in {"readonlyScreenshot": "permission-readonly.png",
                 "unconfirmedScreenshot": "permission-unconfirmed.png", "completedScreenshot": "permission-applied.png",
@@ -1635,6 +1635,8 @@ async def _group_permission_browser(web, seed, session_id, permission_id, reques
         assert line and json.loads(line)["event"] == "permission_recorded", line
         yield json.loads((tmp_path / "permission-browser-receipt.json").read_text())
         if await_completion:
+            if completion_ready is not None:
+                await completion_ready()
             process.stdin.write(json.dumps({"event": "work_returned"}).encode() + bytes([10]))
             await process.stdin.drain()
         stdout, stderr = await asyncio.wait_for(process.communicate(), 60)
@@ -1649,6 +1651,7 @@ async def _group_permission_browser(web, seed, session_id, permission_id, reques
 
 
 async def _exercise_group_enterprise(seed, session_id, run_id, requester_id, sessionmaker, monkeypatch, tmp_path, model_client, enterprise_case, *, report_content, submit, other_actor):
+    saved_browser = enterprise_case in {"web_enterprise_saved_browser", "web_enterprise_saved_unbound"}
     async with AsyncExitStack() as browsers:
         from fastapi import FastAPI
         from httpx import ASGITransport, AsyncClient
@@ -1735,12 +1738,16 @@ async def _exercise_group_enterprise(seed, session_id, run_id, requester_id, ses
             assert response.status_code == 200, response.text
             assert response.json()["can_resolve"] is True and response.json()["status"] == "pending"
             assert response.json()["details"]["path"] == "workspace/shared-report.md" and "args" not in response.json()["details"]
-            if enterprise_case == "web_enterprise_browser":
+            if enterprise_case == "web_enterprise_browser" or saved_browser:
                 reader["id"] = requester_id
                 async def approver_ready():
                     reader["id"] = seed["user_id"]
+                async def editor_ready():
+                    reader["id"] = requester_id
                 recorded = await browsers.enter_async_context(_group_permission_browser(web, seed, session_id, ticket_id, requester_id, monkeypatch,
-                    tmp_path, approver_ready, script="group-enterprise-native.mjs", reverse_roles=True, await_completion=True))
+                    tmp_path, approver_ready, script="group-enterprise-native.mjs", reverse_roles=True, await_completion=True,
+                    completion_ready=editor_ready if saved_browser else None,
+                    edit_saved=saved_browser))
                 assert recorded["status"] == "approved" and recorded["execution_status"] == "queued", recorded
             else:
                 response = await client.post(url + "/resolve", json={"action": action})
@@ -2014,7 +2021,13 @@ async def _exercise_group_enterprise(seed, session_id, run_id, requester_id, ses
             assert sends[0]["reply_target"]["receive_id"] == "oc_native_group" and expected in sends[0]["text"]
             if action == "approve":
                 assert sends[1]["file_path"].read_text() == report_content and sends[1]["artifact_id"] is not None
-        if enterprise_case in {"web_enterprise", "web_enterprise_selection_reentry"}:
+        if saved_browser:
+            await browsers.aclose()
+            assert (seed["agent_root"] / "workspace/shared-report.md").read_text() == "USER_EDITED_SAVED_REPORT"
+            async with AsyncClient(transport=ASGITransport(app=web), base_url="http://group.fixture") as client:
+                original = await client.get(f"/agents/{seed['agent_id']}/files/artifacts/{artifact_id}/content")
+                assert original.status_code == 200 and original.json()["content"] == report_content, original.text
+        if enterprise_case in {"web_enterprise", "web_enterprise_selection_reentry", "web_enterprise_saved_browser", "web_enterprise_saved_unbound"}:
             settled = await RuntimeTerminalBoundaryOutboxService(session_factory=sessionmaker).drain_once(
                 tenant_id=seed["tenant_id"], worker_id="enterprise-return-boundary", canonical_validator=processor.validate,
                 process_callback=processor, task_types=("web_chat_turn",))
@@ -2033,6 +2046,10 @@ async def _exercise_group_enterprise(seed, session_id, run_id, requester_id, ses
             model_client.script = [{"tool_calls": [{"id": "other-company-result", "type": "function", "function": {
                 "name": "read_runtime_result", "arguments": json.dumps({"result_ref": result_ref})}}], "finish_reason": "tool_calls"},
                 {"content": "The other authorized member read the same result."}]
+            if saved_browser:
+                model_client.script.insert(1, {"tool_calls": [{"id": "other-saved-file", "type": "function", "function": {
+                    "name": "read_file", "arguments": json.dumps({"path": "workspace/shared-report.md"})}}], "finish_reason": "tool_calls"})
+                model_client.script[-1]["content"] += "\n\nDELIVERABLE: workspace/shared-report.md"
             if enterprise_case == "web_enterprise_selection_reentry":
                 import app.services.web_chat_run_orchestrator as orchestrator
                 from app.models.chat_artifact import ChatArtifact
@@ -2065,4 +2082,109 @@ async def _exercise_group_enterprise(seed, session_id, run_id, requester_id, ses
             observed = [message for request in model_client.requests for message in request["messages"]
                 if message.get("role") == "tool" and message.get("tool_call_id") == "other-company-result"]
             assert observed and json.loads(observed[-1]["content"])["status"] == "ok", observed
+            if saved_browser:
+                reads = [message for request in model_client.requests for message in request["messages"]
+                    if message.get("role") == "tool" and message.get("tool_call_id") == "other-saved-file"]
+                assert reads and "USER_EDITED_SAVED_REPORT" in reads[-1]["content"], reads
+                async with sessionmaker() as db:
+                    await pin_rls_tenant_context(db, seed["tenant_id"])
+                    current = await db.get(RuntimeTask, other_run.id)
+                    assert current.status == "completed", (current.status, current.metadata_json)
+                    saved_artifact_id = current.metadata_json["artifact_ids"][0]
+                reader["id"] = seed["user_id"]
+                async with AsyncClient(transport=ASGITransport(app=web), base_url="http://group.fixture") as client:
+                    saved = await client.get(f"/agents/{seed['agent_id']}/files/artifacts/{saved_artifact_id}/content")
+                    assert saved.status_code == 200 and saved.json()["content"] == "USER_EDITED_SAVED_REPORT", saved.text
+                    fresh = await client.post(f"/agents/{seed['agent_id']}/sessions", json={"title": "Reopen saved group report"})
+                    assert fresh.status_code == 201, fresh.text
+                    fresh_session_id, fresh_input_id = UUID(fresh.json()["id"]), uuid4()
+                    accepted = await client.post(f"/agents/{seed['agent_id']}/sessions/{fresh_session_id}/inputs", json={
+                        "kind": "start_turn", "input_id": str(fresh_input_id), "idempotency_key": str(fresh_input_id),
+                        "content_parts": [{"type": "text", "text": "Read the saved workspace/shared-report.md in this new session."}]})
+                    assert accepted.status_code == 200, accepted.text
+                from app.models.session_v2 import SessionTurnInput
+                async with sessionmaker() as db:
+                    await pin_rls_tenant_context(db, seed["tenant_id"])
+                    row = await db.get(SessionTurnInput, fresh_input_id)
+                    await recover_admitted_session_inputs_once(db, worker_id="saved-reopen-dispatch", tenant_id=seed["tenant_id"],
+                        admission_ids=(uuid5(row.command_id, "input-admission:revision:1"),))
+                    fresh_run = await db.scalar(select(RuntimeTask).where(RuntimeTask.tenant_id == seed["tenant_id"],
+                        RuntimeTask.metadata_json["session_v2_input_id"].astext == str(fresh_input_id)))
+                    assert fresh_run is not None and fresh_run.parent_session_id == str(fresh_session_id) != str(session_id)
+                    claims = await RuntimeTaskClaimService(db=db, worker_id="saved-reopen-reader").claim_available()
+                    fresh_claim = next(row for row in claims if row.id == fresh_run.id)
+                    fresh_run_id = fresh_run.id
+                from copy import deepcopy
+                from app.models.chat_session import ChatSession
+                from app.models.session_v2 import SessionCommand
+                from app.services.delegation_context_sources import bind_private_session_permission_source
+                from app.services.runtime_task_fence import set_runtime_task_fence, reset_runtime_task_fence
+
+                fence = set_runtime_task_fence(task_id=fresh_run_id, worker_id="saved-reopen-reader", claim_version=fresh_claim.claim_version)
+                try:
+                    async with sessionmaker() as db:
+                        await pin_rls_tenant_context(db, seed["tenant_id"])
+                        task = await db.get(RuntimeTask, fresh_run_id)
+                        command = await db.get(SessionCommand, UUID(task.metadata_json["session_v2_command_id"]))
+                        session = await db.get(ChatSession, fresh_session_id)
+                        frame = deepcopy(command.target_json["runtime_metadata"])
+                        invocation = SimpleNamespace(agent_id=seed["agent_id"], tenant_id=seed["tenant_id"], user_id=seed["user_id"],
+                            allowed_tool_names=(), session_context=SimpleNamespace(session_id=str(fresh_session_id), metadata=frame))
+                        await bind_private_session_permission_source(db, task=task, session=session, invocation=invocation)
+                        assert frame["_session_permission_context_source"].reference == {
+                            "source_kind": "session_command", "source_id": str(command.id), "source_version": command.request_hash}
+                        frame["writable_roots"] = ["workspace/forged"]
+                        await bind_private_session_permission_source(db, task=task, session=session, invocation=invocation)
+                        assert "_session_permission_context_source" not in frame
+                        frame.clear()
+                        frame.update(deepcopy(command.target_json["runtime_metadata"]))
+                        invocation.user_id = requester_id
+                        await bind_private_session_permission_source(db, task=task, session=session, invocation=invocation)
+                        assert "_session_permission_context_source" not in frame
+                        invocation.user_id = seed["user_id"]
+                        invocation.session_context.session_id = str(session_id)
+                        await bind_private_session_permission_source(db, task=task, session=session, invocation=invocation)
+                        assert "_session_permission_context_source" not in frame
+                finally:
+                    reset_runtime_task_fence(fence)
+                model_client.script = [{"tool_calls": [{"id": "fresh-saved-file", "type": "function", "function": {
+                    "name": "read_file", "arguments": json.dumps({"path": "workspace/shared-report.md"})}}], "finish_reason": "tool_calls"},
+                    {"content": "Saved group report reopened.\n\nDELIVERABLE: workspace/shared-report.md"}]
+                if enterprise_case == "web_enterprise_saved_unbound":
+                    async def missing_permission_source(_db, *, task, session, invocation):
+                        invocation.session_context.metadata.pop("_session_permission_context_source", None)
+                    monkeypatch.setattr("app.services.delegation_context_sources.bind_private_session_permission_source", missing_permission_source)
+                await run_claimed_runtime_task(execute_web_chat_run(fresh_run_id), task_id=fresh_run_id,
+                    claim_version=fresh_claim.claim_version, worker_id="saved-reopen-reader", lease_seconds=600)
+                reads = [message for request in model_client.requests for message in request["messages"]
+                    if message.get("role") == "tool" and message.get("tool_call_id") == "fresh-saved-file"]
+                assert reads and "USER_EDITED_SAVED_REPORT" in reads[-1]["content"], reads
+                from app.models.external_principal import ExternalPrincipal
+                async with sessionmaker() as db:
+                    await pin_rls_tenant_context(db, seed["tenant_id"])
+                    fresh_run = await db.get(RuntimeTask, fresh_run_id)
+                    if enterprise_case == "web_enterprise_saved_unbound":
+                        assert fresh_run.status == "needs_reconciliation", (fresh_run.status, fresh_run.metadata_json)
+                        assert fresh_run.metadata_json["session_v2_reconciliation"]["reason"] == "terminal_artifact_selection"
+                        assert not fresh_run.metadata_json.get("artifact_ids")
+                        assert (seed["agent_root"] / "workspace/shared-report.md").read_text() == "USER_EDITED_SAVED_REPORT"
+                        return
+                    assert fresh_run.status == "completed", (fresh_run.status, fresh_run.metadata_json)
+                    assert fresh_run.metadata_json.get("artifact_ids"), fresh_run.metadata_json
+                    reopened_id = fresh_run.metadata_json["artifact_ids"][0]
+                    principal = await db.scalar(select(ExternalPrincipal).where(ExternalPrincipal.tenant_id == seed["tenant_id"],
+                        ExternalPrincipal.linked_user_id == seed["user_id"], ExternalPrincipal.subject_id == "ou_group_creator"))
+                    assert principal is not None
+                    principal_id = principal.id
+                    principal.status = "revoked"
+                    await db.commit()
+                async with AsyncClient(transport=ASGITransport(app=web), base_url="http://group.fixture") as client:
+                    denied = await client.get(f"/agents/{seed['agent_id']}/files/artifacts/{reopened_id}/content")
+                    assert denied.status_code == 403 and "USER_EDITED_SAVED_REPORT" not in denied.text, denied.text
+                    async with sessionmaker() as db:
+                        await pin_rls_tenant_context(db, seed["tenant_id"])
+                        (await db.get(ExternalPrincipal, principal_id)).status = "active"
+                        await db.commit()
+                    reopened = await client.get(f"/agents/{seed['agent_id']}/files/artifacts/{reopened_id}/content")
+                    assert reopened.status_code == 200 and reopened.json()["content"] == "USER_EDITED_SAVED_REPORT", reopened.text
         reader["id"] = seed["user_id"]

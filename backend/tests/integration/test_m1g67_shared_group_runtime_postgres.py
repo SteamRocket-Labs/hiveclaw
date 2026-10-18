@@ -16,7 +16,7 @@ pytestmark = [pytest.mark.usefixtures("migrated_pg_url"), pytest.mark.skipif(pla
     reason="Native macOS context gate; Linux delivery is deferred.")]
 
 
-@pytest.mark.parametrize("mutation", [None, "forged_actor", "unlinked", "private_source", "private_recipient", "unknown_recipient", "queued_member", "same_sender", "explicit_other"])
+@pytest.mark.parametrize("mutation", [None, "forged_actor", "unlinked", "private_source", "private_recipient", "unknown_recipient", "queued_member", "same_sender", "explicit_other", "private_context", "shared_context"])
 async def test_shared_work_runs_with_its_original_sender_and_real_tool_sources(
     owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, mutation,
 ):
@@ -54,6 +54,7 @@ async def test_shared_work_runs_with_its_original_sender_and_real_tool_sources(
     from app.services.session_input_dispatch import recover_admitted_session_inputs_once
     from app.services.web_chat_runtime import execute_web_chat_run
 
+    private_canary = "PRIVATE_GROUP_NOTE_CANARY"
     seed = await _seed_run(owner_sessionmaker, tmp_path, prompt="PRIVATE_GROUP_SOURCE_CANARY")
     factory = database.async_session
     for module in list(sys.modules.values()):
@@ -94,18 +95,38 @@ async def test_shared_work_runs_with_its_original_sender_and_real_tool_sources(
         bound = await bind_authenticated_self_channel_principal(db, tenant_id=seed["tenant_id"], config=config,
             provider_subject_id="ou_group_requester", user_id=member.id, actor_user_id=member.id)
         actor = bound.actor
-        if mutation in {"private_recipient", "queued_member", "explicit_other"}:
+        if mutation in {"private_recipient", "queued_member", "explicit_other", "private_context", "shared_context"}:
             other = await bind_authenticated_self_channel_principal(db, tenant_id=seed["tenant_id"], config=config,
                 provider_subject_id="ou_group_creator", user_id=seed["user_id"], actor_user_id=seed["user_id"])
         grant.actions = ["read", "execute"]
         shared = await find_or_create_shared_group_session(db, tenant_id=seed["tenant_id"], agent_id=agent.id,
             installation_ref=str(config.id), chat_id="oc_native_group", first_message_title="Shared report")
         shared_id, installation = shared.id, str(config.id)
+        if mutation in {"private_context", "shared_context"}:
+            import hashlib
+            from app.services.workspace_resource_authority import register_workspace_path
+            notes = seed["agent_root"] / "workspace/private-notes.md"
+            notes.write_text(private_canary)
+            await register_workspace_path(db, tenant_id=seed["tenant_id"], agent_id=agent.id,
+                path="workspace/private-notes.md", owner_user_id=member.id, root_session_id=shared_id,
+                source="test_private_input", content_hash=hashlib.sha256(notes.read_bytes()).hexdigest())
+            from app.services.content_input_receipts import record_workspace_receipt
+            record_workspace_receipt(db, seed["tenant_id"], agent.id, "workspace/private-notes.md",
+                hashlib.sha256(notes.read_bytes()).hexdigest(), None)
+            if mutation == "shared_context":
+                from app.core.resource_authority import workspace_resource_id
+                for path in ("workspace/private-notes.md", "workspace/shared-report.md"):
+                    permission = ResourcePermission(id=uuid4(), tenant_id=seed["tenant_id"], principal_type="user",
+                        principal_id=seed["user_id"], resource_type="workspace_file",
+                        resource_id=workspace_resource_id(agent.id, path), actions=["read"], effect="allow", conditions={})
+                    db.add(permission)
+                    if path == "workspace/private-notes.md":
+                        note_grant_id = permission.id
         await db.commit()
 
     async def members(_self, *_args, **_kwargs):
         subjects = {"ou_group_requester"}
-        if mutation in {"private_recipient", "unknown_recipient", "queued_member", "explicit_other"}:
+        if mutation in {"private_recipient", "unknown_recipient", "queued_member", "explicit_other", "private_context", "shared_context"}:
             subjects.add("ou_group_unknown" if mutation == "unknown_recipient" else "ou_group_creator")
         return subjects
     monkeypatch.setattr(FeishuService, "get_chat_member_open_ids", members)
@@ -118,7 +139,9 @@ async def test_shared_work_runs_with_its_original_sender_and_real_tool_sources(
         async def close(self):
             pass
     monkeypatch.setattr("app.services.llm_client.create_llm_client_from_config", lambda *_args: MemoryTransport())
-    prompt = "Write workspace/shared-report.md with GROUP_REPORT, read it back, and report."
+    report_content = private_canary if mutation in {"private_context", "shared_context"} else "GROUP_REPORT"
+    prompt = ("Read my private workspace/private-notes.md, write workspace/shared-report.md from it, and read it back."
+        if mutation in {"private_context", "shared_context"} else "Write workspace/shared-report.md with GROUP_REPORT, read it back, and report.")
     async def submit(sender, subject, content, key, **intent):
         body = {"event": {"sender": {"sender_id": {"open_id": subject}}, "message": {
             "chat_type": "group", "chat_id": "oc_native_group", "message_type": "text", "content": json.dumps({"text": content})}}}
@@ -157,7 +180,7 @@ async def test_shared_work_runs_with_its_original_sender_and_real_tool_sources(
         run_id = task.id
         assert task.root_user_id == member.id != seed["user_id"]
         assert (await db.get(SessionCommand, command_id)).principal_id == actor.external_principal_id
-        if mutation not in {"queued_member", "same_sender", "explicit_other"}:
+        if mutation not in {"queued_member", "same_sender", "explicit_other", "private_context", "shared_context"}:
             task.status, task.claimed_by, task.claim_version, task.attempt_count = "running", "shared-worker", 1, 1
             task.claim_expires_at = datetime.now(timezone.utc) + timedelta(minutes=10)
         if mutation == "forged_actor":
@@ -179,7 +202,10 @@ async def test_shared_work_runs_with_its_original_sender_and_real_tool_sources(
             monkeypatch.setattr(model_inputs, "build_model_input_bindings", with_private_source)
         await db.commit()
     second_event = second_command_id = None
-    if mutation in {"queued_member", "same_sender", "explicit_other"}:
+    other_content = ("OTHER_REQUESTER_ONLY: continue the authorized earlier report into workspace/next-report.md and read it back."
+        if mutation == "shared_context" else "OTHER_REQUESTER_ONLY: write workspace/next-report.md with NEXT_GROUP_REPORT, read it back, and report."
+        if mutation == "private_context" else "OTHER_REQUESTER_ONLY")
+    if mutation in {"queued_member", "same_sender", "explicit_other", "private_context", "shared_context"}:
         from fastapi import HTTPException
         sender = actor if mutation == "same_sender" else other.actor
         subject = "ou_group_requester" if mutation == "same_sender" else "ou_group_creator"
@@ -191,7 +217,7 @@ async def test_shared_work_runs_with_its_original_sender_and_real_tool_sources(
             assert conflict.value.status_code == 409 and conflict.value.detail["code"] == "shared_group_requester_conflict"
         else:
             second_event, second = await submit(sender, subject,
-                "SAME_REQUESTER_UPDATE" if mutation == "same_sender" else "OTHER_REQUESTER_ONLY", "native-shared-second")
+                "SAME_REQUESTER_UPDATE" if mutation == "same_sender" else other_content, "native-shared-second")
             second_command_id = UUID(second["command_id"])
         async with app_user_sessionmaker() as db:
             await pin_rls_tenant_context(db, seed["tenant_id"])
@@ -205,7 +231,7 @@ async def test_shared_work_runs_with_its_original_sender_and_real_tool_sources(
                 assert incoming.intent == ("steer_current_turn" if mutation == "same_sender" else "queue_next_turn")
                 assert incoming.target_run_id == (run_id if mutation == "same_sender" else None)
                 assert (await db.get(SessionCommand, second_command_id)).principal_id == sender.external_principal_id
-                if mutation == "queued_member":
+                if mutation in {"queued_member", "private_context", "shared_context"}:
                     from app.services.session_semantic_history import load_session_semantic_history
                     prior = await load_session_semantic_history(db, tenant_id=seed["tenant_id"], agent_id=seed["agent_id"], session_id=shared_id)
                     assert "OTHER_REQUESTER_ONLY" not in json.dumps([message.content for message in prior.messages])
@@ -215,13 +241,18 @@ async def test_shared_work_runs_with_its_original_sender_and_real_tool_sources(
             task.status, task.claimed_by, task.claim_version, task.attempt_count = "running", "shared-worker", 1, 1
             task.claim_expires_at = datetime.now(timezone.utc) + timedelta(minutes=10)
             await db.commit()
-    client = ScriptedLLMClient([
+    responses = [
         {"tool_calls": [{"id": "shared-write", "type": "function", "function": {"name": "write_file",
-            "arguments": json.dumps({"path": "workspace/shared-report.md", "content": "GROUP_REPORT"})}}], "finish_reason": "tool_calls"},
+            "arguments": json.dumps({"path": "workspace/shared-report.md", "content": report_content})}}], "finish_reason": "tool_calls"},
         {"tool_calls": [{"id": "shared-read", "type": "function", "function": {"name": "read_file",
             "arguments": json.dumps({"path": "workspace/shared-report.md"})}}], "finish_reason": "tool_calls"},
         {"content": "The shared report is ready.", "finish_reason": "stop"},
-    ])
+    ]
+    if mutation in {"private_context", "shared_context"}:
+        responses.insert(0, {"tool_calls": [{"id": "private-read", "type": "function", "function": {"name": "read_file",
+            "arguments": json.dumps({"path": "workspace/private-notes.md"})}}], "finish_reason": "tool_calls"})
+        responses[-1]["content"] = f"The private report says {private_canary}."
+    client = ScriptedLLMClient(responses)
     monkeypatch.setattr(invoker, "create_llm_client", lambda **_kwargs: client)
     fence = set_runtime_task_fence(task_id=run_id, worker_id="shared-worker", claim_version=1)
     try:
@@ -242,17 +273,17 @@ async def test_shared_work_runs_with_its_original_sender_and_real_tool_sources(
             assert not (seed["agent_root"] / "workspace/shared-report.md").exists()
             return
         assert task.status == "completed", (task.status, task.result_summary, task.metadata_json)
-        if mutation == "queued_member":
+        if mutation in {"queued_member", "private_context", "shared_context"}:
             assert "OTHER_REQUESTER_ONLY" not in json.dumps(client.requests)
         if mutation == "same_sender":
             assert "SAME_REQUESTER_UPDATE" in json.dumps(client.requests)
-        assert len(client.requests) == 3 and "GROUP_REPORT" in json.dumps(client.requests[-1]["messages"])
+        assert len(client.requests) == (4 if mutation in {"private_context", "shared_context"} else 3) and report_content in json.dumps(client.requests[-1]["messages"])
         reads = [message for message in client.requests[-1]["messages"]
             if message.get("role") == "tool" and message.get("tool_call_id") == "shared-read"]
-        assert len(reads) == 1 and "GROUP_REPORT" in str(reads[0]["content"]), reads
+        assert len(reads) == 1 and report_content in str(reads[0]["content"]), reads
         assert all(row.model_request_snapshot_json["input_bindings"]["dependency_coverage"]["complete"] for row in results)
         assert (await db.get(SessionTurnInput, event.event_id)).status == "applied"
-        assert (seed["agent_root"] / "workspace/shared-report.md").read_text() == "GROUP_REPORT"
+        assert (seed["agent_root"] / "workspace/shared-report.md").read_text() == report_content
         spans = list(await db.scalars(select(InvocationSpan).where(InvocationSpan.runtime_task_id == run_id,
             InvocationSpan.span_type == "kernel_context")))
         assert spans and all(span.user_id == member.id for span in spans)
@@ -260,7 +291,7 @@ async def test_shared_work_runs_with_its_original_sender_and_real_tool_sources(
             if source["source_kind"] == "session_tool_invocation"]
         assert dependencies
         await _validate_input_dependencies(db, seed["tenant_id"], dependencies, user=await db.get(User, member.id))
-        if mutation in {"private_recipient", "queued_member", "explicit_other"}:
+        if mutation in {"private_recipient", "queued_member", "explicit_other", "private_context"}:
             with pytest.raises(ContentInputReceiptError) as private:
                 await _validate_input_dependencies(db, seed["tenant_id"], dependencies, user=await db.get(User, seed["user_id"]))
             assert private.value.status_code == 403
@@ -279,7 +310,7 @@ async def test_shared_work_runs_with_its_original_sender_and_real_tool_sources(
     async with app_user_sessionmaker() as db:
         await pin_rls_tenant_context(db, seed["tenant_id"])
         delivery = await db.get(ChannelDeliveryOutbox, outbox[0].id)
-        if mutation in {"private_recipient", "queued_member", "explicit_other"}:
+        if mutation in {"private_recipient", "queued_member", "explicit_other", "private_context"}:
             assert outcome["dead_lettered"] == 1 and sends == [], outcome
             assert delivery.status == "dead_letter" and "shared_group_output_unavailable" in delivery.last_error
         elif mutation == "unknown_recipient":
@@ -289,7 +320,7 @@ async def test_shared_work_runs_with_its_original_sender_and_real_tool_sources(
             assert outcome["delivered"] == 1 and len(sends) == 1, outcome
             assert sends[0]["reply_target"]["receive_id"] == "oc_native_group"
             assert delivery.status == "delivered"
-    if mutation == "queued_member":
+    if mutation in {"queued_member", "private_context", "shared_context"}:
         with use_channel_ingress_context(event_id=second_event.event_id, tenant_id=seed["tenant_id"],
             agent_id=seed["agent_id"], provider="feishu", installation_ref=installation):
             bind_channel_ingress_external_principal(other.actor.external_principal_id)
@@ -297,7 +328,7 @@ async def test_shared_work_runs_with_its_original_sender_and_real_tool_sources(
                 await pin_rls_tenant_context(db, seed["tenant_id"])
                 replay = await submit_live_human_input(db=db, agent=await db.get(Agent, seed["agent_id"]),
                     user=other.actor, session=await db.get(ChatSession, shared_id), source="feishu",
-                    content="OTHER_REQUESTER_ONLY", input_id=second_event.event_id, idempotency_key="native-shared-second",
+                    content=other_content, input_id=second_event.event_id, idempotency_key="native-shared-second",
                     runtime_metadata={"source": "feishu", "channel": "feishu"})
                 assert replay["command_id"] == str(second_command_id)
                 await db.commit()
@@ -323,3 +354,60 @@ async def test_shared_work_runs_with_its_original_sender_and_real_tool_sources(
             restored = await load_shared_group_runtime_actor(db, task=successor, session=await db.get(ChatSession, shared_id))
             assert restored.id == seed["user_id"] and restored.external_principal_id == other.actor.external_principal_id
             await db.commit()
+        if mutation in {"private_context", "shared_context"}:
+            assert private_canary not in json.dumps(client.requests[0])
+            next_content = f"{private_canary} continued" if mutation == "shared_context" else "NEXT_GROUP_REPORT"
+            next_client = ScriptedLLMClient([
+                {"tool_calls": [{"id": "next-write", "type": "function", "function": {"name": "write_file",
+                    "arguments": json.dumps({"path": "workspace/next-report.md", "content": next_content})}}], "finish_reason": "tool_calls"},
+                {"tool_calls": [{"id": "next-read", "type": "function", "function": {"name": "read_file",
+                    "arguments": json.dumps({"path": "workspace/next-report.md"})}}], "finish_reason": "tool_calls"},
+                {"content": "The independent report is ready.", "finish_reason": "stop"},
+            ])
+            monkeypatch.setattr(invoker, "create_llm_client", lambda **_kwargs: next_client)
+            fence = set_runtime_task_fence(task_id=successor.id, worker_id="group-next-requester", claim_version=1)
+            try:
+                await execute_web_chat_run(successor.id)
+            finally:
+                reset_runtime_task_fence(fence)
+            (tmp_path / "next-model-requests.json").write_text(json.dumps(next_client.requests, default=str, indent=2))
+            async with app_user_sessionmaker() as db:
+                await pin_rls_tenant_context(db, seed["tenant_id"])
+                next_task = await db.get(RuntimeTask, successor.id)
+                assert next_task.status == "completed", (next_task.status, next_task.result_summary, next_task.metadata_json)
+                assert len(next_client.requests) == 3
+                if mutation == "private_context":
+                    assert private_canary not in json.dumps(next_client.requests)
+                    holds = next_task.metadata_json["session_semantic_history"]["held_items"]
+                    assert any(item["kind"] == "source_access_denied" and item["evidence_refs"] for item in holds)
+                    assert private_canary not in json.dumps(holds)
+                else:
+                    previous_reads = [message for message in next_client.requests[0]["messages"]
+                        if message.get("role") == "tool" and message.get("tool_call_id") == "private-read"]
+                    assert len(previous_reads) == 1 and private_canary in str(previous_reads[0]["content"])
+                assert (seed["agent_root"] / "workspace/next-report.md").read_text() == next_content
+                next_results = list(await db.scalars(select(SessionModelResult).where(SessionModelResult.run_id == successor.id)))
+                assert next_results and all(row.model_request_snapshot_json["input_bindings"]["dependency_coverage"]["complete"] for row in next_results)
+                originals = list(await db.scalars(select(SessionModelResult).where(SessionModelResult.run_id == run_id)
+                    .execution_options(populate_existing=True)))
+                assert any(private_canary in str(row.seal_json["response"].get("content") or "") for row in originals)
+            if mutation == "shared_context":
+                from app.services.shared_group_authority import read_shared_group_history
+                from app.services.session_semantic_history import load_session_semantic_history
+                async with app_user_sessionmaker() as db:
+                    await pin_rls_tenant_context(db, seed["tenant_id"])
+                    history = await load_session_semantic_history(db, tenant_id=seed["tenant_id"], agent_id=seed["agent_id"], session_id=shared_id)
+                    async def read_current_sources():
+                        return await read_shared_group_history(db, session=await db.get(ChatSession, shared_id),
+                            messages=history.messages, user=await db.get(User, seed["user_id"]))
+                    visible, _ = await read_current_sources()
+                    assert private_canary in json.dumps([message.content for message in visible])
+                    (await db.get(ResourcePermission, note_grant_id)).actions = []
+                    await db.commit()
+                    visible, holds = await read_current_sources()
+                    assert private_canary not in json.dumps([message.content for message in visible])
+                    assert any(item["kind"] == "source_access_denied" for item in holds)
+                    (await db.get(ResourcePermission, note_grant_id)).actions = ["read"]
+                    await db.commit()
+                    visible, _ = await read_current_sources()
+                    assert private_canary in json.dumps([message.content for message in visible])

@@ -190,6 +190,51 @@ async def validate_shared_group_model_inputs(db, *, tenant_id, agent_id, session
     await _validate_input_dependencies(db, tenant_id, input_bindings.get("dependencies"), user=None, runtime_request=principal)
 
 
+async def read_shared_group_history(db, *, session, messages, user=None, run_id=None):
+    """Keep immutable protocol groups only when this reader can use their full sources."""
+    from app.models.runtime_task import RuntimeTask
+    from app.services.content_input_receipts import ContentInputReceiptError, _validate_input_dependencies
+    from app.services.personal_knowledge_access import AgentRuntimePrincipal
+    from app.services.session_model_inputs import _origin_dependencies, _unique_dependencies
+
+    principal = None
+    if run_id is not None:
+        actor = await load_shared_group_runtime_actor(db, task=await db.get(RuntimeTask, run_id), session=session)
+        principal = AgentRuntimePrincipal(agent_id=session.agent_id, requester_user_id=actor.id,
+            session_id=str(session.id), runtime_task_id=str(run_id))
+    else:
+        from app.core.permissions import check_agent_access, is_scoped_business_admin
+
+        if user is None:
+            raise HTTPException(403, detail={"code": "group_reader_required"})
+        await check_agent_access(db, user, session.agent_id)
+        if not is_scoped_business_admin(user, resource_tenant_id=session.tenant_id):
+            await require_current_group_member(db, session=session, user=user)
+    groups = {}
+    for message in messages:
+        groups.setdefault(message.group_id, []).append(message)
+    allowed, held = set(), []
+    for group_id, group in groups.items():
+        dependencies, complete = [], True
+        for message in group:
+            sources, bound = await _origin_dependencies(db, tenant_id=session.tenant_id, agent_id=session.agent_id, ref=message.id)
+            dependencies.extend(sources)
+            complete = complete and bound
+        try:
+            if not complete:
+                raise ContentInputReceiptError("group_history_sources_unavailable", "The prior source inventory is incomplete.", 503)
+            await _validate_input_dependencies(db, session.tenant_id, _unique_dependencies(dependencies),
+                user=user, runtime_request=principal)
+        except (ContentInputReceiptError, HTTPException) as exc:
+            denied = exc.status_code == 403
+            held.append({"kind": "source_access_denied" if denied else "source_unavailable",
+                "code": getattr(exc, "code", "group_history_sources_unavailable"), "retryable": not denied,
+                "evidence_refs": [message.id for message in group]})
+            continue
+        allowed.add(group_id)
+    return [message for message in messages if message.group_id in allowed], held
+
+
 async def validate_shared_group_delivery(db, *, item, session):
     """Release canonical output only to current recipients who can read every source."""
     from app.models.session_v2 import SessionModelResult

@@ -92,6 +92,7 @@ class RuntimeReminderInjection:
     source: str
     ttl: str = "current_round"
     priority: int = 50
+    unbound: tuple[str, ...] = ("context_sources_unbound",)
 
 
 class ReminderScheduler:
@@ -123,10 +124,11 @@ class ReminderScheduler:
         source: str = "queued_runtime_reminder",
         ttl: str = "next_collect",
         priority: int = 90,
+        unbound: tuple[str, ...] = ("context_sources_unbound",),
     ) -> None:
         """Event-driven channel (loop guard): inject on the next collect()."""
         if text:
-            self._queue.append(RuntimeReminderInjection(text=text, source=source, ttl=ttl, priority=priority))
+            self._queue.append(RuntimeReminderInjection(text=text, source=source, ttl=ttl, priority=priority, unbound=unbound))
 
     def collect_with_metadata(self, session_context: Any, round_state: RoundState) -> list[RuntimeReminderInjection]:
         """Texts to inject into THIS round's LLM request (transient)."""

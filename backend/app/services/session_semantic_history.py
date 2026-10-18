@@ -21,6 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.audit import ChatMessage
 from app.models.chat_transcript_event import ChatTranscriptEvent
+from app.models.chat_session import ChatSession
 from app.models.session_v2 import SessionModelResult, SessionToolInvocation, SessionTurnInput
 from app.services.session_user_checkpoint import (
     event_lifecycle,
@@ -761,6 +762,18 @@ async def load_session_semantic_history(
             message.id,
         )
     )
+    if current_run_id is not None:
+        session = await db.scalar(select(ChatSession).where(ChatSession.id == session_id,
+            ChatSession.tenant_id == tenant_id, ChatSession.agent_id == agent_id))
+        if session is not None and session.audience_kind == "group":
+            from app.services.shared_group_authority import read_shared_group_history
+
+            messages, source_holds = await read_shared_group_history(db, session=session, messages=messages, run_id=current_run_id)
+            held_items.extend(source_holds)
+            visible = {message.id for message in messages}
+            users = [message for message in users if message.id in visible]
+            rounds = [message for message in rounds if message.id in visible]
+            legacy = [message for message in legacy if message.id in visible]
     status = "degraded" if held_items else ("complete" if messages else "empty")
     receipt = {
         "schema": "hive.session_semantic_history_receipt.v1",

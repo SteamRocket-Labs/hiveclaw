@@ -531,3 +531,14 @@ async def test_kernel_ledger_reminder_reads_persisted_session_snapshot(tmp_path,
     ]
     assert reminder_messages, "ledger reminder never carried the persisted snapshot"
     assert any("[in_progress] Collect Q3 revenue figures" in text for text in reminder_messages)
+
+
+def test_queued_reminder_source_label_cannot_claim_complete_origin():
+    from app.kernel.reminder_scheduler import ReminderScheduler
+
+    scheduler = ReminderScheduler(())
+    scheduler.enqueue("Fixture private data", source="loop_guard")
+    scheduler.enqueue("Trusted policy text", source="loop_guard", unbound=())
+    messages = scheduler.collect_with_metadata(None, {})
+    assert messages[0].unbound == ("context_sources_unbound",)
+    assert messages[1].unbound == ()

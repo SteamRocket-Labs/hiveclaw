@@ -1581,7 +1581,9 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
             # self-correction chance (CC §12.2 soft-constraints-first).
             # T-G1: queued on the scheduler — injected transiently into the
             # next round's request, never persisted into api_messages.
-            reminder_scheduler.enqueue(decision.message, source="loop_guard", ttl="next_collect", priority=95)
+            # Cost pressure uses fixed policy text and counters, never tool output.
+            reminder_scheduler.enqueue(decision.message, source="loop_guard", ttl="next_collect", priority=95,
+                unbound=() if decision.reason == "provider_call_cost_pressure" else ("context_sources_unbound",))
             await _emit_event(
                 {
                     "type": "loop_guard",
@@ -1999,7 +2001,8 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                     stream_messages = _clone_api_messages(api_messages)
                     if _transient_reminders:
                         stream_messages = stream_messages + [
-                            _context_message(role="system", content=text, kind="runtime_reminder") for text in _transient_reminders
+                            _context_message(role="system", content=item.text, kind="runtime_reminder", unbound=item.unbound)
+                            for item in _transient_reminder_injections
                         ]
                     dynamic_notice = _dynamic_suffix_notice(dynamic_prompt_suffix, sections=dynamic_context_section_ledger,
                         sources=_dynamic_source_refs(), unbound=_dynamic_source_unbound())

@@ -9,6 +9,7 @@ from uuid import UUID
 
 from loguru import logger
 from sqlalchemy import select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.events import get_redis
@@ -144,6 +145,7 @@ async def publish_session_lifecycle_hook(
     messages: list[dict[str, Any]] | None = None,
     source: str,
     metadata: dict[str, Any] | None = None,
+    origin: Any | None = None,
 ) -> None:
     event_value = event.value if isinstance(event, HookEvent) else str(event)
     clean_metadata = dict(metadata or {})
@@ -157,6 +159,7 @@ async def publish_session_lifecycle_hook(
             "session_id": str(session_id) if session_id is not None else None,
             "source": source,
             "metadata": clean_metadata,
+            **({"origin": origin.reference()} if origin is not None else {}),
         }
     )
 
@@ -174,43 +177,19 @@ async def _load_session_lifecycle_messages(
     *,
     agent_id: str | Any | None,
     session_id: str | Any | None,
+    origin: Any,
     limit: int = SESSION_LIFECYCLE_MESSAGE_LIMIT,
 ) -> list[dict[str, Any]]:
-    if not session_id:
-        return []
-
     from app.database import async_session, tenant_scoped_session
-    from app.models.audit import ChatMessage
-    from app.services.tenant_resolver import resolve_tenant_for_chat_session
-
-    tenant_id = await resolve_tenant_for_chat_session(
-        session_id,
-        session_factory=async_session,
-    )
-    if tenant_id is None:
-        return []
-
-    filters = [
-        ChatMessage.tenant_id == tenant_id,
-        ChatMessage.conversation_id == str(session_id),
-    ]
-    agent_uuid = _uuid_or_none(agent_id)
-    if agent_uuid is not None:
-        filters.append(ChatMessage.agent_id == agent_uuid)
+    from app.services.session_lifecycle_environment import SessionLifecycleBinding
 
     async with tenant_scoped_session(
-        tenant_id,
+        origin.tenant_id,
         session_factory=async_session,
         require_tenant=True,
         source="runtime_control_bus.lifecycle_messages",
     ) as db:
-        result = await db.execute(
-            select(ChatMessage).where(*filters).order_by(ChatMessage.created_at.desc()).limit(max(1, limit))
-        )
-        rows = list(result.scalars().all())
-
-    rows.reverse()
-    return [{"role": row.role, "content": row.content} for row in rows if row.content is not None]
+        return await SessionLifecycleBinding(origin).messages(db, limit=limit)
 
 
 async def _unprojected_predecessor_transcript_event_ids(
@@ -747,21 +726,46 @@ async def handle_runtime_control_message(message: dict[str, Any]) -> bool:
         )
 
     if event_type == "session_lifecycle_hook":
-        hook_event = HookEvent(str(message.get("event") or ""))
-        messages = message.get("messages")
-        if not isinstance(messages, list):
+        from app.services.execution_environments import EnvironmentError, command_environment_context
+        from app.services.session_lifecycle_environment import SessionLifecycleBinding, SessionLifecycleOrigin
+
+        try:
+            origin = SessionLifecycleOrigin.from_reference(message.get("origin"))
+            if (
+                origin.agent_id != _uuid_or_none(message.get("agent_id"))
+                or origin.session_id != _uuid_or_none(message.get("session_id"))
+                or origin.event.value != str(message.get("event") or "")
+            ):
+                raise EnvironmentError("lifecycle_origin_mismatch", 403)
             messages = await _maybe_await(
-                _load_session_lifecycle_messages(agent_id=message.get("agent_id"), session_id=message.get("session_id"))
+                _load_session_lifecycle_messages(agent_id=origin.agent_id, session_id=origin.session_id, origin=origin)
             )
-        await emit_hook(
-            hook_event,
-            evidence_mode="independent",
-            agent_id=message.get("agent_id"),
-            session_id=message.get("session_id"),
-            messages=messages,
-            source=str(message.get("source") or "runtime_control"),
-            metadata=message.get("metadata") if isinstance(message.get("metadata"), dict) else {},
+        except EnvironmentError as exc:
+            _STATE["last_error"] = exc.code
+            return False
+        except SQLAlchemyError:
+            _STATE["last_error"] = "lifecycle_source_unavailable"
+            return False
+        metadata = dict(message.get("metadata") or {}) if isinstance(message.get("metadata"), dict) else {}
+        metadata.update(
+            {
+                "tenant_id": str(origin.tenant_id),
+                "user_id": str(origin.user_id),
+                "agent_id": str(origin.agent_id),
+                "session_id": str(origin.session_id),
+            }
         )
+        metadata.pop("runtime_task_id", None)
+        with command_environment_context(SessionLifecycleBinding(origin).frame()):
+            await emit_hook(
+                origin.event,
+                evidence_mode="independent",
+                agent_id=origin.agent_id,
+                session_id=str(origin.session_id),
+                messages=messages,
+                source=str(message.get("source") or "runtime_control"),
+                metadata=metadata,
+            )
         return True
 
     return False

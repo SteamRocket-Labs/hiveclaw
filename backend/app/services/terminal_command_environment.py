@@ -6,30 +6,17 @@ from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 
 from fastapi import HTTPException
-from sqlalchemy import select
 
 from app.models.chat_session import ChatSession
 from app.models.runtime_task import RuntimeTask
 from app.models.runtime_terminal_boundary_outbox import RuntimeTerminalBoundaryOutbox
-from app.models.user import User
 from app.services.execution_environments import EnvironmentCommandFrame, EnvironmentError
 from app.services.runtime_task_authority import runtime_task_requester_user_id
+from app.services.runtime_user_identity import load_runtime_user
 from app.services.runtime_terminal_boundary_outbox import (
     RuntimeTerminalBoundaryOutboxService,
     normalize_terminal_boundary_binding,
 )
-
-
-async def _load_requester(db, user_id):
-    actor = await db.get(User, user_id, populate_existing=True)
-    if actor is not None:
-        return actor
-    from app.database import enter_rls_bypass
-
-    # Only the canonical task requester may be recovered, and only a live
-    # platform administrator can act outside their home company's RLS scope.
-    async with enter_rls_bypass(db, reason="terminal command exact requester recovery lookup", actor_id=str(user_id)):
-        return await db.scalar(select(User).where(User.id == user_id, User.role == "platform_admin"))
 
 
 @dataclass(frozen=True)
@@ -145,7 +132,7 @@ class TerminalCommandBinding:
                     audit=False,
                 )
             return actor
-        return self._actor(await _load_requester(db, self.user_id))
+        return self._actor(await load_runtime_user(db, self.user_id))
 
     async def _validate(self, db, scope, *, before_command):
         try:

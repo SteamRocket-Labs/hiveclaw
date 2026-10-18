@@ -91,10 +91,13 @@ async def test_emit_ws_session_lifecycle_hook_api_role_publishes_runtime_control
     monkeypatch.setattr("app.services.runtime_control_bus.publish_session_lifecycle_hook", fake_publish)
     monkeypatch.setattr("app.runtime.hooks.emit_hook", fake_emit_hook)
 
+    tenant_id, requester_id, session_id = uuid4(), uuid4(), uuid4()
     await websocket_api._emit_ws_session_lifecycle_hook(
         "session_idle",
         agent_id=uuid4(),
-        session_id="session-1",
+        session_id=str(session_id),
+        requester_user_id=requester_id,
+        tenant_id=tenant_id,
         messages=[{"role": "user", "content": "hi"}],
         source="websocket",
         metadata={"idle_seconds": 180},
@@ -104,6 +107,8 @@ async def test_emit_ws_session_lifecycle_hook_api_role_publishes_runtime_control
     assert published[0]["event"] == "session_idle"
     assert "messages" not in published[0]
     assert published[0]["metadata"]["message_count"] == 1
+    assert published[0]["origin"].user_id == requester_id
+    assert published[0]["origin"].tenant_id == tenant_id
     assert emitted == []
 
 

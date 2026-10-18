@@ -50,7 +50,21 @@ async def _emit_ws_session_lifecycle_hook(
     messages: list[dict[str, Any]],
     source: str,
     metadata: dict[str, Any] | None = None,
+    requester_user_id: uuid.UUID | str | None = None,
+    tenant_id: uuid.UUID | str | None = None,
 ) -> None:
+    from app.services.session_lifecycle_environment import ORIGIN_SCHEMA, SessionLifecycleOrigin
+
+    origin = SessionLifecycleOrigin.from_reference(
+        {
+            "schema": ORIGIN_SCHEMA,
+            "tenant_id": str(tenant_id),
+            "agent_id": str(agent_id),
+            "session_id": str(session_id),
+            "user_id": str(requester_user_id),
+            "event": event.value if hasattr(event, "value") else str(event),
+        }
+    )
     if _process_role() == "api":
         from app.services.runtime_control_bus import publish_session_lifecycle_hook
 
@@ -62,20 +76,23 @@ async def _emit_ws_session_lifecycle_hook(
             session_id=session_id,
             source=source,
             metadata=lifecycle_metadata,
+            origin=origin,
         )
         return
 
-    from app.runtime.hooks import HookEvent, emit_hook
+    from app.services.runtime_control_bus import RUNTIME_CONTROL_SCHEMA, handle_runtime_control_message
 
-    hook_event = HookEvent(event) if isinstance(event, str) else event
-    await emit_hook(
-        hook_event,
-        evidence_mode="independent",
-        agent_id=agent_id,
-        session_id=session_id,
-        messages=messages,
-        source=source,
-        metadata=metadata or {},
+    await handle_runtime_control_message(
+        {
+            "schema": RUNTIME_CONTROL_SCHEMA,
+            "type": "session_lifecycle_hook",
+            "event": origin.event.value,
+            "agent_id": str(origin.agent_id),
+            "session_id": str(origin.session_id),
+            "source": source,
+            "metadata": {**(metadata or {}), "message_count": len(messages)},
+            "origin": origin.reference(),
+        }
     )
 
 
@@ -268,11 +285,23 @@ async def websocket_chat(
 
         ws_tenant_id = await resolve_tenant_for_agent(agent_id)
         async with tenant_scoped_session(ws_tenant_id) as db:
-            user = await db.scalar(select(User).where(User.id == user_id))
-            if user is None:
-                raise SessionSubscriptionError("auth_failed")
+            from app.core.security import authenticate_request_user
+
+            try:
+                user = await authenticate_request_user(
+                    db, jwt_token=token, requested_tenant=str(ws_tenant_id), request=websocket
+                )
+            except HTTPException as error:
+                if error.status_code >= 500:
+                    raise SessionSubscriptionError("event_store_retryable", retryable=True) from error
+                raise SessionSubscriptionError("auth_failed") from error
             set_delegated_user_identity(user.id, user.display_name or user.username, channel="web")
-            agent, _access_level = await check_agent_access(db, user, agent_id)
+            try:
+                agent, _access_level = await check_agent_access(db, user, agent_id)
+            except HTTPException as error:
+                if error.status_code >= 500:
+                    raise SessionSubscriptionError("event_store_retryable", retryable=True) from error
+                raise SessionSubscriptionError("session_forbidden") from error
             if is_agent_expired(agent):
                 raise SessionSubscriptionError("session_forbidden")
             active_session = await db.scalar(
@@ -436,6 +465,8 @@ async def websocket_chat(
                                 session_id=conv_id,
                                 messages=conversation,
                                 source="websocket",
+                                requester_user_id=user_id,
+                                tenant_id=ws_tenant_id,
                                 metadata={
                                     "idle_seconds": _DREAM_IDLE_SECONDS,
                                     "tenant_id": str(agent.tenant_id) if agent.tenant_id else None,
@@ -463,7 +494,7 @@ async def websocket_chat(
                                     await _save_session_summary(conv_id, _idle_summary, agent.tenant_id)
                             except Exception as _sum_err:
                                 logger.debug("[WS] Session summary on idle failed (non-fatal): {}", _sum_err)
-                        logger.info("[WS] SESSION_IDLE completed for {}", agent_name)
+                        logger.info("[WS] SESSION_IDLE dispatched for {}", agent_name)
                     except Exception as _dream_err:
                         logger.debug("[WS] SESSION_IDLE failed (non-fatal): {}", _dream_err)
                     continue  # Back to waiting for user messages
@@ -479,6 +510,8 @@ async def websocket_chat(
                             session_id=conv_id,
                             messages=conversation,
                             source="websocket",
+                            requester_user_id=user_id,
+                            tenant_id=ws_tenant_id,
                             metadata={"reason": "idle_timeout"},
                         )
                     except Exception as _close_err:

@@ -862,10 +862,10 @@ def _grant(
 
 RLS_BYPASS_ALLOWLIST = (
     _grant(
-        "app/services/terminal_command_environment.py",
-        "_load_requester",
-        "'terminal command exact requester recovery lookup'",
-        ("select:User",),
+        "app/services/runtime_user_identity.py",
+        "load_runtime_user",
+        "'runtime exact user recovery lookup'",
+        ("select:User,Tenant.is_active",),
     ),
     _grant(*("app/api/admin.py", "_load_platform_admin_agent_and_pin", "reason", ("select:Agent",))),
     _grant(

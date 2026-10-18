@@ -142,6 +142,7 @@ async def test_runtime_control_publish_is_bounded_so_db_transactions_can_recover
 @pytest.mark.asyncio
 async def test_publish_session_lifecycle_hook_uses_reference_payload(monkeypatch):
     import app.services.runtime_control_bus as bus
+    from app.services.session_lifecycle_environment import SessionLifecycleOrigin
 
     redis = _FakeRedis()
 
@@ -150,10 +151,12 @@ async def test_publish_session_lifecycle_hook_uses_reference_payload(monkeypatch
 
     monkeypatch.setattr(bus, "get_redis", fake_get_redis)
 
+    origin = SessionLifecycleOrigin(uuid4(), uuid4(), uuid4(), uuid4(), bus.HookEvent.SESSION_IDLE)
     await bus.publish_session_lifecycle_hook(
         event="session_idle",
-        agent_id=uuid4(),
-        session_id="session-1",
+        agent_id=origin.agent_id,
+        session_id=str(origin.session_id),
+        origin=origin,
         messages=[{"role": "user", "content": "large payload that must not ride redis"}],
         source="websocket",
         metadata={"idle_seconds": 180},
@@ -164,6 +167,7 @@ async def test_publish_session_lifecycle_hook_uses_reference_payload(monkeypatch
     assert "messages" not in payload
     assert payload["metadata"]["idle_seconds"] == 180
     assert payload["metadata"]["message_count"] == 1
+    assert payload["origin"] == origin.reference()
 
 
 @pytest.mark.asyncio
@@ -265,22 +269,61 @@ async def test_runtime_control_session_lifecycle_emits_hook(monkeypatch):
         "_load_session_lifecycle_messages",
         lambda **_kwargs: [{"role": "user", "content": "loaded from db"}],
     )
+    agent_id, session_id, tenant_id, requester_id = (uuid4() for _ in range(4))
     await bus.handle_runtime_control_message(
         {
             "schema": bus.RUNTIME_CONTROL_SCHEMA,
             "type": "session_lifecycle_hook",
             "event": "session_idle",
-            "agent_id": str(uuid4()),
-            "session_id": "session-1",
+            "agent_id": str(agent_id),
+            "session_id": str(session_id),
             "source": "websocket",
             "metadata": {"idle_seconds": 180},
+            "messages": [{"role": "user", "content": "untrusted inline copy"}],
+            "origin": {
+                "schema": "hive.session.lifecycle-origin.v1",
+                "agent_id": str(agent_id),
+                "session_id": str(session_id),
+                "tenant_id": str(tenant_id),
+                "user_id": str(requester_id),
+                "event": "session_idle",
+            },
         }
     )
 
     assert calls
     assert str(calls[0][0]) == "session_idle"
-    assert calls[0][1]["session_id"] == "session-1"
+    assert calls[0][1]["session_id"] == str(session_id)
     assert calls[0][1]["messages"] == [{"role": "user", "content": "loaded from db"}]
+    assert calls[0][1]["metadata"]["user_id"] == str(requester_id)
+
+
+@pytest.mark.asyncio
+async def test_lifecycle_source_outage_is_typed_without_private_database_text(monkeypatch):
+    import app.services.runtime_control_bus as bus
+    from sqlalchemy.exc import SQLAlchemyError
+    from app.services.session_lifecycle_environment import SessionLifecycleOrigin
+
+    async def unavailable(**_kwargs):
+        raise SQLAlchemyError("synthetic-private-database-detail")
+
+    async def forbidden(*_args, **_kwargs):
+        raise AssertionError("An unavailable source cannot reach a Hook")
+
+    monkeypatch.setattr(bus, "_load_session_lifecycle_messages", unavailable)
+    monkeypatch.setattr(bus, "emit_hook", forbidden)
+    origin = SessionLifecycleOrigin(uuid4(), uuid4(), uuid4(), uuid4(), bus.HookEvent.SESSION_IDLE)
+    assert not await bus.handle_runtime_control_message(
+        {
+            "schema": bus.RUNTIME_CONTROL_SCHEMA,
+            "type": "session_lifecycle_hook",
+            "event": origin.event.value,
+            "agent_id": str(origin.agent_id),
+            "session_id": str(origin.session_id),
+            "origin": origin.reference(),
+        }
+    )
+    assert bus.runtime_control_bus_snapshot()["last_error"] == "lifecycle_source_unavailable"
 
 
 @pytest.mark.asyncio

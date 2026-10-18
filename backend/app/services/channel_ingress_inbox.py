@@ -72,11 +72,16 @@ def channel_installation_ref(config: Any, *, fallback: str) -> str:
 
     from app.models.tenant_channel_config import TenantChannelConfig
 
-    if isinstance(config, TenantChannelConfig):
+    if isinstance(config, TenantChannelConfig) and config.channel_type == "feishu":
         # An app replacement cannot reuse an old app-scoped sender or reply.
         import hashlib
+        from app.services.feishu_platform import resolve_feishu_platform
 
-        return f"tenant:{config.id}:" + hashlib.sha256(str(config.app_id or "").encode()).hexdigest()[:32]
+        platform = resolve_feishu_platform(config.extra_config)
+        identity = str(config.app_id or "")
+        if platform.region != "feishu_cn":
+            identity += f"\n{platform.region}\n{platform.open_api_domain}"
+        return f"tenant:{config.id}:" + hashlib.sha256(identity.encode()).hexdigest()[:32]
     return str(getattr(config, "id", None) or fallback)
 
 

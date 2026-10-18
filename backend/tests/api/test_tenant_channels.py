@@ -98,7 +98,7 @@ class _FakeDB:
         if "SET LOCAL app.current_tenant_id" in stmt_str:
             return _SingleScalar(None)
         # List query (scalars().all())
-        if "tenant_channel_configs" in stmt_str and self._call_idx == 1 and self._configs:
+        if "tenant_channel_configs" in stmt_str and "channel_type =" not in stmt_str and self._configs:
             return _ListScalars(self._configs)
         # Single config lookup
         if "tenant_channel_configs" in stmt_str:
@@ -117,6 +117,9 @@ class _FakeDB:
         self.added.append(obj)
 
     async def flush(self):
+        pass
+
+    async def refresh(self, _instance):
         pass
 
     async def delete(self, obj):
@@ -190,7 +193,10 @@ def test_upsert_creates_new_config():
     )
     assert resp.status_code == 200
     assert resp.json()["app_id"] == "cli_new"
-    assert len(fake_db.added) == 1
+    from app.models.tenant_channel_config import TenantChannelConfig
+    from app.models.audit import AuditLog
+    assert len([row for row in fake_db.added if isinstance(row, TenantChannelConfig)]) == 1
+    assert len([row for row in fake_db.added if isinstance(row, AuditLog)]) == 1
 
 
 def test_upsert_updates_existing_config():
@@ -200,6 +206,7 @@ def test_upsert_updates_existing_config():
         json={
             "app_id": "cli_updated",
             "app_secret": "new_secret",
+            "verification_token": "new_callback_token",
         },
     )
     assert resp.status_code == 200

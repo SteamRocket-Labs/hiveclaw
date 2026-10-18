@@ -15,10 +15,11 @@ import AppSidebar, {
     isCompactSidebarViewport,
 } from './layout/AppSidebar';
 import NotificationCenter from './layout/NotificationCenter';
+import { TenantFeishuIdentity } from '../components/TenantFeishuSettings';
 import './Layout.css';
 
 /* ────── Account Settings Modal ────── */
-function AccountSettingsModal({ user, onClose }: { user: any; onClose: () => void }) {
+export function AccountSettingsModal({ user, onClose }: { user: any; onClose: () => void }) {
     const { t } = useTranslation();
     const { setUser } = useAuthStore();
     const [username, setUsername] = useState(user?.username || '');
@@ -32,6 +33,7 @@ function AccountSettingsModal({ user, onClose }: { user: any; onClose: () => voi
     const [msgType, setMsgType] = useState<'success' | 'error'>('success');
     const [feishuBinding, setFeishuBinding] = useState(false);
     const feishuPollRef = useRef(false);
+    useEffect(() => () => { feishuPollRef.current = false; }, []);
 
     const showMsg = (text: string, type: 'success' | 'error' = 'success') => {
         setMsg(text); setMsgType(type); setTimeout(() => setMsg(''), 3000);
@@ -101,7 +103,7 @@ function AccountSettingsModal({ user, onClose }: { user: any; onClose: () => voi
                             <div className="app-layout-account-feishu-id">{user.feishu_user_id || user.feishu_open_id}</div>
                         </div>
                     </div>
-                ) : (
+                ) : null}
                     <div>
                         <p className="app-layout-account-feishu-desc">
                             {t('account.feishuBindDesc', 'Link your Feishu account to enable Feishu login and seamless identity matching.')}
@@ -111,19 +113,22 @@ function AccountSettingsModal({ user, onClose }: { user: any; onClose: () => voi
                             disabled={feishuBinding}
                             onClick={async () => {
                                 setFeishuBinding(true);
+                                feishuPollRef.current = true;
                                 try {
                                     const { session_id, authorize_url } = await authApi.feishuBindInit();
+                                    if (!feishuPollRef.current) return;
                                     const popup = window.open(authorize_url, 'feishu_bind', 'width=600,height=700,popup=yes');
-                                    feishuPollRef.current = true;
                                     let attempts = 0;
                                     while (feishuPollRef.current && attempts < 120) {
                                         await new Promise(r => setTimeout(r, 1500));
                                         if (!feishuPollRef.current) break;
                                         try {
                                             const res = await authApi.feishuSsoPoll(session_id);
+                                            if (!feishuPollRef.current) break;
                                             if (res.status === 'completed') {
                                                 popup?.close();
                                                 const updated = await authApi.getMe();
+                                                if (!feishuPollRef.current) break;
                                                 setUser(updated);
                                                 showMsg(t('account.feishuBindSuccess', 'Feishu account linked successfully'));
                                                 break;
@@ -151,7 +156,7 @@ function AccountSettingsModal({ user, onClose }: { user: any; onClose: () => voi
                             {t('account.feishuBindBtn', 'Link Feishu Account')}
                         </button>
                     </div>
-                )}
+                <TenantFeishuIdentity onNavigate={onClose} />
             </div>
         </div>
     );
@@ -411,6 +416,7 @@ export default function Layout() {
 
             {showAccountSettings && (
                 <AccountSettingsModal
+                    key={`${user?.id}:${user?.role}:${currentTenant}`}
                     user={user}
                     onClose={() => setShowAccountSettings(false)}
                 />

@@ -1,0 +1,18 @@
+.tenant-feishu-settings {
+  margin-block: var(--space-4);
+  overflow-wrap: anywhere;
+}
+.tenant-feishu-settings p { margin-block: var(--space-3); }
+.tenant-feishu-fields {
+  border: 0;
+  padding: 0;
+  margin: var(--space-4) 0;
+  display: grid;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.tenant-feishu-settings .form-input { width: 100%; box-sizing: border-box; min-width: 0; }
+.tenant-feishu-secret { display: grid; gap: var(--space-2); margin-block: var(--space-2); }
+.tenant-feishu-check, .tenant-feishu-actions { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; }
+.tenant-feishu-webhook { display: grid; gap: var(--space-2); margin-block: var(--space-3); }
+.tenant-feishu-identity-row { margin-block: var(--space-3); }

@@ -12,6 +12,14 @@ from app.models.identity import ExternalIdentity, IdentityProvider
 from app.models.tenant_channel_config import TenantChannelConfig
 from app.models.user import User
 from app.models.user_assistant_binding import UserAssistantBinding
+from app.services.feishu_platform import resolve_feishu_platform
+
+
+def _same_application(provider, config):
+    identity = resolve_feishu_platform(provider.config)
+    bot = resolve_feishu_platform(config.extra_config)
+    return ((provider.config or {}).get("app_id") == config.app_id
+        and (identity.region, identity.open_api_domain) == (bot.region, bot.open_api_domain))
 
 
 async def resolve_tenant_feishu_identity(db, *, config, sender):
@@ -24,7 +32,7 @@ async def resolve_tenant_feishu_identity(db, *, config, sender):
         .where(User.tenant_id == config.tenant_id, User.is_active.is_(True),
             IdentityProvider.tenant_id == config.tenant_id, IdentityProvider.provider_type == "feishu",
             IdentityProvider.is_active.is_(True), ExternalIdentity.provider_open_id == sender["open_id"]))).one_or_none()
-    if row is None or not config.app_id or (row[2].config or {}).get("app_id") != config.app_id:
+    if row is None or not config.app_id or not _same_application(row[2], config):
         return None
     if any(sender.get(key) and getattr(row[1], column) and sender[key] != getattr(row[1], column)
         for key, column in (("user_id", "provider_user_id"), ("union_id", "provider_union_id"))):
@@ -39,16 +47,17 @@ async def resolve_tenant_feishu_identity(db, *, config, sender):
 
 
 async def tenant_feishu_assistant(db, *, config, sender):
+    proof = await resolve_tenant_feishu_identity(db, config=config, sender=sender)
+    return await _tenant_member_assistant(db, tenant_id=config.tenant_id, user=proof[0]) if proof else None
+
+
+async def _tenant_member_assistant(db, *, tenant_id, user):
     from app.core.permissions import check_agent_access, reject_non_executing_agent_access
     from app.services.agent_identity_lifecycle import get_agent_lifecycle_block_reason
 
-    proof = await resolve_tenant_feishu_identity(db, config=config, sender=sender)
-    if proof is None:
-        return None
-    user, _identity = proof
     agent = await db.scalar(select(Agent).join(UserAssistantBinding, UserAssistantBinding.agent_id == Agent.id)
-        .where(UserAssistantBinding.tenant_id == config.tenant_id, UserAssistantBinding.user_id == user.id,
-            UserAssistantBinding.status == "active", Agent.tenant_id == config.tenant_id))
+        .where(UserAssistantBinding.tenant_id == tenant_id, UserAssistantBinding.user_id == user.id,
+            UserAssistantBinding.status == "active", Agent.tenant_id == tenant_id))
     if agent is None or get_agent_lifecycle_block_reason(agent) is not None:
         return None
     try:
@@ -126,6 +135,80 @@ async def reconnect_tenant_feishu_principal(db, *, principal_id, user):
     if (proof is None or proof[0].id != user.id or principal.linked_user_id not in (None, user.id)
         or principal.installation_ref != channel_installation_ref(config, fallback="")):
         raise ExternalPrincipalAuthorityError("Current app-scoped identity does not prove this member")
+    if not await _binding_history_matches_user(db, principal=principal, user_id=user.id):
+        raise ExternalPrincipalAuthorityError("This identity's prior account requires scoped administrator reconciliation")
     return await _link_verified_external_principal(db, tenant_id=user.tenant_id, principal_id=principal.id,
         user_id=user.id, actor_user_id=user.id, binding_method="feishu_tenant_identity",
         reason="Authenticated member explicitly reconnected the enterprise bot")
+
+
+async def _binding_history_matches_user(db, *, principal, user_id):
+    rows = list((await db.execute(select(ExternalPrincipalBindingEvent.previous_user_id, ExternalPrincipalBindingEvent.new_user_id)
+        .where(ExternalPrincipalBindingEvent.external_principal_id == principal.id,
+            ExternalPrincipalBindingEvent.tenant_id == principal.tenant_id))).all())
+    owners = {value for row in rows for value in row if value is not None}
+    # A live directory remap and an employee grant cannot transfer old private work.
+    return not rows or owners == {user_id}
+
+
+async def current_member_feishu_status(db, *, user):
+    from app.models.external_principal import ExternalPrincipal
+    from app.services.channel_ingress_inbox import channel_installation_ref
+    from app.services.external_principal_service import load_external_runtime_actor
+
+    result = {"user_id": user.id, "tenant_id": user.tenant_id, "state": "company_bot_unconfigured",
+        "principal_id": None, "entries": [], "disconnectable": []}
+    config = await db.scalar(select(TenantChannelConfig).where(TenantChannelConfig.tenant_id == user.tenant_id,
+        TenantChannelConfig.channel_type == "feishu"))
+    if config is None:
+        return result
+    saved_links = await db.scalars(select(ExternalPrincipal).where(ExternalPrincipal.tenant_id == user.tenant_id,
+        ExternalPrincipal.provider == "feishu", ExternalPrincipal.tenant_channel_config_id == config.id,
+        ExternalPrincipal.linked_user_id == user.id, ExternalPrincipal.status == "active"))
+    result["disconnectable"] = [{"principal_id": row.id, "subject_id": row.subject_id} for row in saved_links]
+    if not config.is_active:
+        return {**result, "state": "company_bot_paused"}
+    if not config.app_id or not config.app_secret or not (config.encrypt_key or config.verification_token):
+        return {**result, "state": "company_bot_setup_required"}
+    provider = await db.scalar(select(IdentityProvider).where(IdentityProvider.tenant_id == user.tenant_id,
+        IdentityProvider.provider_type == "feishu"))
+    if provider is None or not provider.is_active:
+        return {**result, "state": "identity_provider_required"}
+    if not _same_application(provider, config):
+        return {**result, "state": "identity_app_mismatch"}
+    identities = list(await db.scalars(select(ExternalIdentity).where(ExternalIdentity.provider_id == provider.id,
+        ExternalIdentity.user_id == user.id).order_by(ExternalIdentity.id)))
+    if not identities:
+        return {**result, "state": "identity_required"}
+    for identity in identities:
+        if not identity.provider_open_id:
+            continue
+        proof = await resolve_tenant_feishu_identity(db, config=config, sender={"open_id": identity.provider_open_id})
+        entry = {"subject_id": identity.provider_open_id, "principal_id": None, "state": "identity_conflict"}
+        if proof is not None and proof[0].id == user.id:
+            principal = await db.scalar(select(ExternalPrincipal).where(ExternalPrincipal.tenant_id == user.tenant_id,
+                ExternalPrincipal.provider == "feishu", ExternalPrincipal.tenant_channel_config_id == config.id,
+                ExternalPrincipal.installation_ref == channel_installation_ref(config, fallback=""),
+                ExternalPrincipal.subject_id == identity.provider_open_id))
+            if principal is None:
+                entry["state"] = "awaiting_first_message"
+            elif (principal.linked_user_id in (None, user.id)
+                and await _binding_history_matches_user(db, principal=principal, user_id=user.id)):
+                entry["principal_id"] = principal.id
+                if principal.status != "active":
+                    entry["state"] = "installation_revoked"
+                else:
+                    actor = await load_external_runtime_actor(db, tenant_id=user.tenant_id,
+                        principal_id=principal.id, expected_user_id=user.id)
+                    entry["state"] = "bound" if actor.authority_bound else "reconnect_required"
+        result["entries"].append(entry)
+    if not result["entries"]:
+        return {**result, "state": "identity_required"}
+    result["state"] = result["entries"][0]["state"] if len(result["entries"]) == 1 else "multiple_identities"
+    if len(result["entries"]) == 1:
+        result["principal_id"] = result["entries"][0]["principal_id"]
+    if await _tenant_member_assistant(db, tenant_id=user.tenant_id, user=user) is None:
+        result["assistant_required"] = True
+        if result["state"] == "awaiting_first_message":
+            result["state"] = "assistant_required"
+    return result

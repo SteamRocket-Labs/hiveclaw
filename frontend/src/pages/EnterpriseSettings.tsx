@@ -25,6 +25,7 @@ import WorkspaceHrAgentSection from './workspace/WorkspaceHrAgentSection';
 import WorkspaceGuardPolicySection from './workspace/WorkspaceGuardPolicySection';
 import WorkspaceMemorySection from './workspace/WorkspaceMemorySection';
 import WorkspaceUsersSection from './workspace/WorkspaceUsersSection';
+import TenantFeishuSettings from '../components/TenantFeishuSettings';
 import type { WorkspaceSettingsSectionTab } from '../surfaces/workspace/sections';
 import './EnterpriseSettings.css';
 
@@ -726,7 +727,7 @@ export default function EnterpriseSettings({ forcedTab, hideTabs = false, chrome
                 )}
 
                 {/* ── Org Structure ── */}
-                {activeTab === 'org' && <WorkspaceOrgSection selectedTenantId={selectedTenantId} />}
+                {activeTab === 'org' && <><TenantFeishuSettings selectedTenantId={selectedTenantId} /><WorkspaceOrgSection selectedTenantId={selectedTenantId} /></>}
 
                 {/* ── Approvals ── */}
                 {activeTab === 'approvals' && <WorkspaceApprovalsSection selectedTenantId={selectedTenantId} />}

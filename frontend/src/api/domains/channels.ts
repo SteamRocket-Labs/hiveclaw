@@ -58,6 +58,26 @@ export interface FeishuSharedGroupEntry {
   chat_ids: string[];
 }
 
+export interface TenantChannelScope { expected_tenant_id: string; expected_user_id: string }
+export interface TenantChannelConfig {
+  id: string; tenant_id: string; channel_type: string; app_id: string | null; is_active: boolean;
+  revision: string; has_app_secret: boolean; has_encrypt_key: boolean; has_verification_token: boolean;
+  extra_config: Record<string, unknown>;
+}
+export interface TenantChannelUpdate extends TenantChannelScope {
+  app_id: string; expected_revision: string; is_active: boolean; platform_region?: FeishuPlatformRegion;
+  app_secret?: string; encrypt_key?: string; verification_token?: string;
+}
+export type TenantFeishuIdentityState = 'company_bot_unconfigured' | 'company_bot_paused' | 'company_bot_setup_required'
+  | 'identity_provider_required' | 'identity_app_mismatch' | 'identity_required' | 'identity_conflict'
+  | 'installation_revoked' | 'awaiting_first_message' | 'reconnect_required' | 'bound' | 'assistant_required' | 'multiple_identities';
+export interface TenantFeishuIdentityEntry { subject_id: string; principal_id: string | null; state: TenantFeishuIdentityState }
+export interface TenantFeishuIdentity {
+  user_id: string; tenant_id: string; state: TenantFeishuIdentityState; principal_id: string | null;
+  assistant_required?: boolean; entries: TenantFeishuIdentityEntry[];
+  disconnectable?: Array<{ principal_id: string; subject_id: string }>;
+}
+
 export interface WeChatPersonalStatus {
   connected: boolean;
   account_id?: string;
@@ -68,6 +88,15 @@ export interface WeChatPersonalStatus {
 }
 
 export const channelApi = {
+  tenantChannels: (scope: TenantChannelScope, signal?: AbortSignal) =>
+    get<TenantChannelConfig[]>(`/tenant-channels?${new URLSearchParams({ ...scope })}`, { signal }),
+  saveTenantFeishu: (data: TenantChannelUpdate) => put<TenantChannelConfig>('/tenant-channels/feishu', data),
+  tenantFeishuWebhook: (scope: TenantChannelScope, signal?: AbortSignal) =>
+    get<{ webhook_url: string; tenant_id: string }>(`/tenant-channels/feishu/webhook-url?${new URLSearchParams({ ...scope })}`, { signal }),
+  tenantFeishuIdentity: (scope: TenantChannelScope, signal?: AbortSignal) =>
+    get<TenantFeishuIdentity>(`/tenant-channels/feishu/identity?${new URLSearchParams({ ...scope })}`, { signal }),
+  tenantFeishuIdentityAction: (action: 'disconnect' | 'reconnect', principalId: string, scope: TenantChannelScope) =>
+    post<{ principal_id: string; authority_bound: boolean }>(`/tenant-channels/feishu/identity/${action}`, { principal_id: principalId, ...scope }),
   feishuSharedGroups: (agentId: string) => get<FeishuSharedGroupEntry>(`/agents/${agentId}/channel/shared-groups`),
   saveFeishuSharedGroups: (agentId: string, expectedRevision: string, chatIds: string[]) =>
     put<FeishuSharedGroupEntry>(`/agents/${agentId}/channel/shared-groups`, { expected_revision: expectedRevision, chat_ids: chatIds }),

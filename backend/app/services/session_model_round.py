@@ -613,6 +613,10 @@ async def prepare_model_request(
         run_id=run_id, result_id=result_id, messages=messages)
     input_bindings = await build_model_input_bindings(db, tenant_id=tenant_id, agent_id=agent_id,
         session_id=session_id, messages=messages, wire_messages=list(canonical_wire_request.get("messages") or []))
+    from app.services.shared_group_authority import validate_shared_group_model_inputs
+
+    await validate_shared_group_model_inputs(db, tenant_id=tenant_id, agent_id=agent_id, session_id=session_id,
+        run_id=run_id, input_bindings=input_bindings)
     snapshot = {
         "provider": provider,
         "model": model,

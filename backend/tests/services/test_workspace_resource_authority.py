@@ -200,7 +200,8 @@ async def test_scoped_admin_binds_employee_session_root_without_reassigning_owne
     root_session_id = uuid4()
     admin = SimpleNamespace(id=admin_id, tenant_id=tenant_id, role="org_admin", department_id=None)
     agent = SimpleNamespace(id=agent_id, tenant_id=tenant_id)
-    employee_session = SimpleNamespace(id=session_id, agent_id=agent_id, user_id=employee_id, root_session_id=None)
+    employee_session = SimpleNamespace(id=session_id, agent_id=agent_id, user_id=employee_id, root_session_id=None,
+        audience_kind="private")
     manifest = SimpleNamespace(
         agent_id=agent_id,
         path="workspace/report.md",
@@ -267,7 +268,8 @@ async def test_member_write_through_someone_elses_session_still_fails(monkeypatc
     session_id = uuid4()
     member = SimpleNamespace(id=member_id, tenant_id=tenant_id, role="member", department_id=None)
     agent = SimpleNamespace(id=agent_id, tenant_id=tenant_id)
-    employee_session = SimpleNamespace(id=session_id, agent_id=agent_id, user_id=employee_id, root_session_id=None)
+    employee_session = SimpleNamespace(id=session_id, agent_id=agent_id, user_id=employee_id, root_session_id=None,
+        audience_kind="private")
 
     async def fake_access(_db, _user, _agent_id):
         return agent, "manage"

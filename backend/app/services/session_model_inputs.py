@@ -43,6 +43,14 @@ async def capture_context_message_origins(db, *, tenant_id, agent_id, session_id
     owner_id = await db.scalar(select(ChatSession.user_id).where(ChatSession.id == session_id,
         ChatSession.tenant_id == tenant_id, ChatSession.agent_id == agent_id))
     if owner_id is None:
+        from app.models.runtime_task import RuntimeTask
+        from app.services.shared_group_authority import load_shared_group_runtime_actor
+
+        session = await db.get(ChatSession, session_id)
+        task = await db.get(RuntimeTask, run_id)
+        if session is not None and session.audience_kind == "group" and task is not None:
+            owner_id = (await load_shared_group_runtime_actor(db, task=task, session=session)).id
+    if owner_id is None:
         return
     for index, message in enumerate(messages):
         origin = message.context_origin if isinstance(message, LLMMessage) else None

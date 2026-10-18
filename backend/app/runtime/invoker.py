@@ -1027,6 +1027,7 @@ async def _resolve_runtime_metadata_context(
 
     budget_profile = _resolve_context_budget(request)
     current_user_name = await _resolve_current_user_name(request.user_id) if request.user_id else None
+    metadata = _session_metadata(request.session_context)
     _runtime_kwargs = {"current_user_name": current_user_name}
     _runtime_sig = inspect.signature(build_agent_runtime_context).parameters
     source_refs, source_unbound = [], ["runtime_metadata_source_inventory_missing"]
@@ -1057,7 +1058,8 @@ async def _resolve_runtime_metadata_context(
         async with tenant_scoped_session(tenant_id, require_tenant=True) as db:
             actor_ref, actor = await record_session_actor_identity(db, tenant_id=tenant_id, agent_id=request.agent_id,
                 session_id=request.session_context.session_id if request.session_context is not None else None,
-                user_id=request.user_id, display_name=current_user_name, timezone_name=runtime_facts.get("timezone"))
+                user_id=request.user_id, display_name=current_user_name, timezone_name=runtime_facts.get("timezone"),
+                runtime_task_id=metadata.get("runtime_task_id") or metadata.get("task_id"))
         source_refs.append(actor_ref)
         channel = request.session_context.channel if request.session_context is not None else ""
         if channel and channel != actor["channel"]:

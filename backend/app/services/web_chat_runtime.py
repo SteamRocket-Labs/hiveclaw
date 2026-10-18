@@ -5576,7 +5576,11 @@ async def _load_runtime_context(
             runtime_task.metadata_json = metadata
         user_id = _uuid_or_none(metadata.get("user_id"))
         external_principal_id = _uuid_or_none(metadata.get("external_principal_id"))
-        if external_principal_id is not None:
+        if session is not None and session.audience_kind == "group":
+            from app.services.shared_group_authority import load_shared_group_runtime_actor
+
+            user = await load_shared_group_runtime_actor(db, task=runtime_task, session=session)
+        elif external_principal_id is not None:
             from app.services.external_principal_service import load_external_runtime_actor
 
             user = await load_external_runtime_actor(

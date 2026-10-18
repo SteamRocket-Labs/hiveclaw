@@ -2,12 +2,15 @@
 
 import hashlib
 import uuid
+from contextvars import ContextVar
 from pathlib import Path
 
-from sqlalchemy import select, text
+from sqlalchemy import or_, select, text
 
 from app.models.organization_identity import ContentInputReceipt
 from app.services.team_memory import _safe_component, _slugify
+
+_ACTIVE_GROUP_TOOL_SOURCES = ContextVar("active_group_tool_sources", default=frozenset())
 
 
 class ContentInputReceiptError(ValueError):
@@ -92,7 +95,8 @@ async def _validate_input_dependencies(db, tenant_id: uuid.UUID, dependencies: l
             await validate_delegation_context_source(db, tenant_id, dependency, user=user, runtime_request=runtime_request)
             continue
         if dependency["source_kind"] in {"session_command", "session_tool_invocation"}:
-            await _validate_session_dependency(db, tenant_id, dependency, user=user, runtime_request=runtime_request)
+            await _validate_session_dependency(db, tenant_id, dependency, user=user, runtime_request=runtime_request,
+                active_workspace_receipts=active_workspace_receipts)
             continue
         if dependency["source_kind"] in {"runtime_result", "runtime_result_page", "runtime_team_context"}:
             from app.services.runtime_result_sources import validate_runtime_return_dependency
@@ -274,7 +278,8 @@ async def _validate_agent_context_dependency(db, tenant_id, dependency, *, user,
         _validate_source_bytes(Path(get_settings().AGENT_DATA_DIR) / str(agent_id) / "soul.md", soul["content_sha256"])
 
 
-async def record_session_actor_identity(db, *, tenant_id, agent_id, session_id, user_id, display_name, timezone_name=None):
+async def record_session_actor_identity(db, *, tenant_id, agent_id, session_id, user_id, display_name, timezone_name=None,
+    runtime_task_id=None):
     """Witness only the SQL actor/session facts used by the runtime header."""
     from datetime import datetime, timezone
     from sqlalchemy.dialects.postgresql import insert
@@ -286,7 +291,7 @@ async def record_session_actor_identity(db, *, tenant_id, agent_id, session_id, 
     from app.services.session_model_inputs import _hash
 
     session_id = uuid.UUID(str(session_id))
-    row = (await db.execute(select(User, ChatSession).join(ChatSession, ChatSession.user_id == User.id)
+    row = (await db.execute(select(User, ChatSession).join(ChatSession, or_(ChatSession.user_id == User.id, ChatSession.audience_kind == "group"))
         .join(Agent, Agent.id == ChatSession.agent_id).where(
         User.id == user_id, User.tenant_id == tenant_id, User.is_active.is_(True),
         ChatSession.id == session_id, ChatSession.agent_id == agent_id, ChatSession.tenant_id == tenant_id,
@@ -295,6 +300,13 @@ async def record_session_actor_identity(db, *, tenant_id, agent_id, session_id, 
     if row is None or (display_name is not None and display_name != (row[0].display_name or row[0].username)):
         raise ContentInputReceiptError("context_actor_identity_unavailable", "The observed actor does not match the current session.", 403)
     actor, session = row
+    if session.audience_kind == "group":
+        from app.models.runtime_task import RuntimeTask
+        from app.services.shared_group_authority import load_shared_group_runtime_actor
+
+        task = await db.get(RuntimeTask, uuid.UUID(str(runtime_task_id))) if runtime_task_id is not None else None
+        if task is None or (await load_shared_group_runtime_actor(db, task=task, session=session)).id != actor.id:
+            raise ContentInputReceiptError("context_actor_identity_unavailable", "The shared actor lacks its canonical turn.", 403)
     if timezone_name is not None:
         zones = (await db.execute(select(Agent.timezone, Tenant.timezone).join(Tenant, Tenant.id == Agent.tenant_id)
             .where(Agent.id == agent_id, Agent.tenant_id == tenant_id))).one()
@@ -353,7 +365,7 @@ async def _validate_session_actor_identity(db, tenant_id, dependency, *, user, r
     await _authorize_session_input_source(db, tenant_id, session, user=user, runtime_request=runtime_request)
 
 
-async def _validate_session_dependency(db, tenant_id, dependency, *, user, runtime_request):
+async def _validate_session_dependency(db, tenant_id, dependency, *, user, runtime_request, active_workspace_receipts=None):
     from app.models.chat_session import ChatSession
     from app.models.chat_transcript_event import ChatTranscriptEvent
     from app.models.session_v2 import SessionCommand, SessionToolInvocation
@@ -372,7 +384,7 @@ async def _validate_session_dependency(db, tenant_id, dependency, *, user, runti
     if row is None:
         raise ContentInputReceiptError("content_source_changed", "The exact session source is unavailable.", 403)
     source, session = row
-    if session.audience_kind == "group" and (model is not SessionCommand or source.namespace != "human_input"):
+    if session.audience_kind == "group" and model is SessionCommand and source.namespace != "human_input":
         raise ContentInputReceiptError("content_source_unavailable",
             "Derived group output requires its live source-disclosure reader.", 503)
     if model is SessionCommand:
@@ -397,6 +409,29 @@ async def _validate_session_dependency(db, tenant_id, dependency, *, user, runti
             and source.principal_type == "user" and isinstance(context, ToolExecutionContext)
             and source.principal_id == context.user_id
             and SESSION_COMMAND_AUTHORITY_STAMP_KEY not in (source.target_json or {})))
+    if session.audience_kind == "group" and model is SessionToolInvocation:
+        from app.services.session_model_inputs import _origin_dependencies
+
+        if runtime_request is None:
+            raise ContentInputReceiptError("content_source_unavailable", "Group tool output requires its disclosed reader.", 503)
+        principal, _ = await _runtime_input_actor(db, tenant_id, runtime_request)
+        if (principal.agent_id != session.agent_id or str(principal.session_id) != str(session.id)
+            or str(principal.runtime_task_id) != str(source.run_id)):
+            raise ContentInputReceiptError("content_source_access_denied", "This is not the current requester's tool output.", 403)
+        key = (dependency["source_id"], dependency["source_version"])
+        active = _ACTIVE_GROUP_TOOL_SOURCES.get()
+        if key in active:
+            raise ContentInputReceiptError("content_source_unavailable", "The group tool source has a cyclic dependency.", 503)
+        token = _ACTIVE_GROUP_TOOL_SOURCES.set(active | {key})
+        try:
+            sources, complete = await _origin_dependencies(db, tenant_id=tenant_id, agent_id=session.agent_id,
+                ref=f"session-tool-result:{source.id}")
+            if not complete:
+                raise ContentInputReceiptError("content_source_unavailable", "The group tool source lacks its complete receipt.", 503)
+            await _validate_input_dependencies(db, tenant_id, [item for item in sources if item != dependency], user=user,
+                runtime_request=runtime_request, active_workspace_receipts=active_workspace_receipts)
+        finally:
+            _ACTIVE_GROUP_TOOL_SOURCES.reset(token)
 
 
 async def _authorize_session_input_source(db, tenant_id, session, *, user, runtime_request, delegated_user_command=False):
@@ -478,10 +513,20 @@ async def _runtime_input_actor(db, tenant_id, request):
             User.tenant_id == tenant_id, User.is_active.is_(True)).execution_options(populate_existing=True))
         if requester is None:
             raise ValueError("runtime_requester_unavailable")
-        current_session = await db.scalar(select(ChatSession.id).where(
+        current_session = await db.scalar(select(ChatSession).where(
             ChatSession.id == uuid.UUID(str(principal.session_id)), ChatSession.tenant_id == tenant_id,
-            ChatSession.agent_id == principal.agent_id, ChatSession.user_id == requester.id))
+            ChatSession.agent_id == principal.agent_id))
         if current_session is None:
+            raise ValueError("runtime_session_actor_mismatch")
+        if current_session.audience_kind == "group":
+            from app.models.runtime_task import RuntimeTask
+            from app.services.shared_group_authority import load_shared_group_runtime_actor
+
+            task = await db.get(RuntimeTask, uuid.UUID(str(principal.runtime_task_id)))
+            actor = await load_shared_group_runtime_actor(db, task=task, session=current_session) if task is not None else None
+            if actor is None or actor.id != requester.id:
+                raise ValueError("runtime_session_actor_mismatch")
+        elif current_session.user_id != requester.id:
             raise ValueError("runtime_session_actor_mismatch")
         # Refresh the current employee owner before the shared Agent access check.
         agent = await db.scalar(select(Agent).where(Agent.id == principal.agent_id, Agent.tenant_id == tenant_id)
@@ -490,7 +535,7 @@ async def _runtime_input_actor(db, tenant_id, request):
             raise ValueError("runtime_agent_tenant_mismatch")
         await check_agent_access(db, requester, principal.agent_id)
         return principal, requester
-    except (HTTPException, ValueError) as exc:
+    except (HTTPException, ValueError, PermissionError) as exc:
         raise ContentInputReceiptError("content_source_access_denied", "The runtime source reader is no longer authorized.", 403) from exc
 
 

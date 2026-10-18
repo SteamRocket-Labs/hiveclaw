@@ -487,6 +487,12 @@ class ChannelDeliveryOutboxService:
                     and principal.linked_user_id != item.user_id):
                     raise ChannelDeliveryPermanentError("first-task requester channel binding changed")
 
+            session = await db.scalar(select(ChatSession).where(ChatSession.id == item.session_id,
+                ChatSession.tenant_id == item.tenant_id, ChatSession.agent_id == item.agent_id))
+            if session is not None and session.audience_kind == "group":
+                from app.services.shared_group_authority import validate_shared_group_delivery
+
+                await validate_shared_group_delivery(db, item=item, session=session)
             if not item.artifact_ids:
                 return []
             artifacts = list(

@@ -584,8 +584,15 @@ async def _canonical_root_session(
             )
         )
     ).scalar_one_or_none()
+    shared_member = False
+    if session is not None and session.audience_kind == "group":
+        from app.services.shared_group_authority import require_current_group_member
+
+        await require_current_group_member(db, session=session, user=user)
+        shared_member = True
     if session is None or (
         str(session.user_id) != str(user.id)
+        and not shared_member
         and not is_scoped_business_admin(user, resource_tenant_id=resource_tenant_id)
     ):
         raise WorkspaceAuthorityError(

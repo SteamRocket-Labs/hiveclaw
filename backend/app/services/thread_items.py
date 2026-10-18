@@ -107,6 +107,7 @@ EVENT_THREAD_ITEM_TYPES: dict[str, str] = {
     "runtime_failure": "error",
     "runtime_action_failed": "error",
     "runtime_action_blocked": "error",
+    "source_access_notice": "warning",
     "memory_context_degraded": "warning",
     "memory_context_unavailable": "error",
 }
@@ -546,6 +547,8 @@ def classify_thread_item(
 def classify_thread_item_status(*, item_type: str, event_type: str, metadata: dict[str, Any]) -> ThreadItemStatus:
     raw = str(metadata.get("status") or metadata.get("phase") or "").strip().lower()
     normalized_event = str(event_type or "").strip().lower()
+    if normalized_event == "source_access_notice":
+        return "waiting_user"
     if item_type == "approval_request" and raw in {"", *_RUNNING_STATUSES, *_WAITING_STATUSES}:
         return "waiting_user"
     if (
@@ -733,6 +736,8 @@ def _user_summary(
     data: dict[str, Any],
     content: str,
 ) -> str:
+    if event_type == "source_access_notice":
+        return "Some source content is not available to this reader."
     tool = _display_name(data.get("tool_display_name") or data.get("tool_name") or data.get("name"), "Tool")
     if item_type in {"user_message", "agent_message"}:
         return content
@@ -794,9 +799,12 @@ def _user_summary(
 def _user_action(
     *,
     item_type: str,
+    event_type: str,
     item_status: ThreadItemStatus,
     data: dict[str, Any],
 ) -> dict[str, Any] | None:
+    if event_type == "source_access_notice":
+        return None
     if item_type == "approval_request":
         destructive = bool(data.get("destructive"))
         return {
@@ -912,7 +920,8 @@ def _project_for_audience(
         data=merged,
         content=str(raw["content"]),
     )
-    action = _user_action(item_type=str(raw["item_type"]), item_status=raw["item_status"], data=merged)
+    action = _user_action(item_type=str(raw["item_type"]), event_type=str(raw["event_type"]),
+        item_status=raw["item_status"], data=merged)
     raw["audience"] = audience
     raw["user_summary"] = summary
     raw["user_action"] = action

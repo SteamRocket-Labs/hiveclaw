@@ -7,6 +7,23 @@ from types import SimpleNamespace
 import pytest
 
 
+def test_source_hold_is_an_access_notice_without_a_task_retry_action():
+    from app.services.shared_group_history import legacy_source_hold, project_source_hold, source_hold
+
+    event = _event(event_type="provider_call_ledger", agent_id=uuid.UUID("44444444-4444-4444-4444-444444444444"))
+    receipt = source_hold(event.id)
+    held = legacy_source_hold(event, receipt)
+    assert (held["event_type"], held["item_type"], held["item_status"]) == (
+        "source_access_notice", "warning", "waiting_user")
+    assert held.get("user_action") is None
+    envelope = {"schema": "hive.session_event_compatibility", "event_id": str(event.id),
+        "sequence": 7, "legacy_event_type": "provider_call_ledger", "payload": {"content": "PRIVATE_CANARY"}}
+    safe = project_source_hold(envelope, receipt)
+    assert safe["legacy_event_type"] == "provider_call_ledger"
+    assert "PRIVATE_CANARY" not in json.dumps(safe)
+    assert "legacy_event_type" not in project_source_hold({**envelope, "legacy_event_type": "PRIVATE_CANARY"}, receipt)
+
+
 def _event(**overrides):
     values = {
         "id": uuid.UUID("11111111-1111-1111-1111-111111111111"),

@@ -181,13 +181,18 @@ export function ThreadItemRenderer({
   actions,
 }: ThreadItemRendererProps) {
   const { t } = useTranslation();
-  const details = detailsFor(item, t).filter((detail) => detail.value !== null && detail.value !== undefined && detail.value !== '');
-  const title = t(`sessionWorkbench.threadItem.type.${item.item_type}`, TITLES[item.item_type]);
-  const status = t(`sessionWorkbench.threadItem.status.${item.item_status}`, item.item_status);
+  const sourceNotice = item.event_type === 'source_access_notice';
+  const details = sourceNotice ? [] : detailsFor(item, t).filter((detail) => detail.value !== null && detail.value !== undefined && detail.value !== '');
+  const title = sourceNotice ? t('agent.chat.sourceAccess', 'Source access')
+    : t(`sessionWorkbench.threadItem.type.${item.item_type}`, TITLES[item.item_type]);
+  const status = sourceNotice ? t('agent.chat.sourceUnavailable', 'Unavailable')
+    : t(`sessionWorkbench.threadItem.status.${item.item_status}`, item.item_status);
   const runtimeFailure = item.item_type === 'error' && item.event_type === 'runtime_failure'
     ? runtimeFailurePresentation(item.item_data.code, item.item_data.retryable === true)
     : null;
-  const visibleContent = runtimeFailure
+  const visibleContent = sourceNotice
+    ? t('agent.chat.groupSourcesUnavailable', 'Some source content is unavailable to you. Request access or refresh this conversation.')
+    : runtimeFailure
     ? translateRuntimeFailure(t, runtimeFailure)
     : item.user_summary || (item.item_type === 'approval_request'
       ? t(

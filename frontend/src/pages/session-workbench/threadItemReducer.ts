@@ -118,6 +118,7 @@ function legacyItemType(eventType: string, role: string, data: Record<string, un
 }
 
 function legacyItemStatus(itemType: ThreadItemType, eventType: string, data: Record<string, unknown>): ThreadItemStatus {
+  if (eventType === 'source_access_notice') return 'waiting_user';
   const status = String(data.status || data.eventStatus || data.phase || '').trim().toLowerCase();
   if (itemType === 'approval_request' && (!status || RUNNING_STATUSES.has(status) || WAITING_STATUSES.has(status))) {
     return 'waiting_user';
@@ -297,9 +298,12 @@ export function normalizeThreadItemPayload(value: unknown): ThreadItem | null {
   const sequence = finiteNumber(payload.sequence) || 0;
   const id = text(payload.id || payload.transcript_event_id)
     || `legacy:${text(payload.session_id) || 'session'}:${sequence}:${eventType}`;
-  const visibleContent = text(payload.content || payload.message || payload.summary || eventPart(parts).text) || '';
+  const visibleContent = eventType === 'source_access_notice'
+    ? 'Some source content is not available to this reader.'
+    : text(payload.content || payload.message || payload.summary || eventPart(parts).text) || '';
   const audience = payload.audience === 'operator' ? 'operator' : 'user';
-  const userSummary = text(payload.user_summary) || legacyUserSummary(itemType, data, visibleContent);
+  const userSummary = eventType === 'source_access_notice'
+    ? visibleContent : text(payload.user_summary) || legacyUserSummary(itemType, data, visibleContent);
   const itemStatus = legacyItemStatus(itemType, eventType, data);
 
   return {

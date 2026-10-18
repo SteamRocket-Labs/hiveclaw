@@ -19,6 +19,16 @@ describe('chat API adapter', () => {
     vi.restoreAllMocks();
   });
 
+  it('loads current group membership separately from owned private sessions', async () => {
+    vi.doMock('../core', async () => ({
+      ...await vi.importActual<typeof import('../core')>('../core'), get: vi.fn().mockResolvedValue([]),
+    }));
+    const { chatApi } = await import('./chat');
+    const { get } = await import('../core');
+    await chatApi.listSessions('agent-1', 'groups');
+    expect(get).toHaveBeenCalledWith('/agents/agent-1/sessions?scope=groups');
+  });
+
   it('builds branch and lineage URLs with transcript event anchors', async () => {
     vi.doMock('../core', async () => {
       const actual = await vi.importActual<typeof import('../core')>('../core');

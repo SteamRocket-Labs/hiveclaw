@@ -1392,3 +1392,21 @@ describe('session socket projector terminal run-identity safety (Codex REQUEST_C
     expect(harness.messages().some((message) => message.content === 'RUN-2 FINAL')).toBe(true);
   });
 });
+
+
+describe('source read revocation', () => {
+  it('clears the denied work through the same path as an HTTP denial', () => {
+    const harness = makeHarness({ type: 'session.error', error: { code: 'session_forbidden', retryable: false } });
+    harness.dependencies.denySessionRead = vi.fn();
+    projectSessionSocketEvent(harness.context, harness.dependencies);
+    expect(harness.dependencies.denySessionRead).toHaveBeenCalledWith('agent-1', 'session-1');
+    expect(harness.dependencies.setActiveRunState).not.toHaveBeenCalled();
+  });
+
+  it('shows an opaque source notice without consuming unbound body bytes', () => {
+    const harness = makeHarness({ type: 'session.source_access', source_access_receipt: { status: 'unavailable' } });
+    projectSessionSocketEvent(harness.context, harness.dependencies);
+    expect(harness.dependencies.setTransportNotice).toHaveBeenCalledWith('agent.chat.groupSourcesUnavailable');
+    expect(harness.dependencies.applyTranscriptToSession).not.toHaveBeenCalled();
+  });
+});

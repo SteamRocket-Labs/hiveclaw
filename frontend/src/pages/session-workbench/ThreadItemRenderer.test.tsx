@@ -86,6 +86,15 @@ function item(itemType: ThreadItemType): ThreadItem {
 }
 
 describe('ThreadItemRenderer', () => {
+  it('presents source access without claiming the task failed or rendering runtime bytes', () => {
+    const notice = { ...item('warning'), event_type: 'source_access_notice', item_status: 'waiting_user',
+      audience: 'user', content: 'PRIVATE_CANARY', user_summary: 'PRIVATE_CANARY' } as ThreadItem;
+    expect(shouldRenderThreadItemInConversation(notice, false)).toBe(true);
+    const markup = renderToStaticMarkup(<ThreadItemRenderer item={notice} />);
+    expect(markup).toContain('Source access');
+    expect(markup).toContain('refresh this conversation');
+    expect(markup).not.toMatch(/Runtime error|Runtime warning|task stopped|PRIVATE_CANARY|retryable/);
+  });
   it('renders every discriminated variant with an explicit technical-details control', () => {
     for (const itemType of Object.keys(DATA_BY_TYPE) as ThreadItemType[]) {
       const markup = renderToStaticMarkup(<ThreadItemRenderer item={item(itemType)} onSelect={() => undefined} />);

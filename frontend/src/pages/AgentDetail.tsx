@@ -56,12 +56,12 @@ import {
     type ChatMessagesUpdater,
 } from './agent-detail/sessionMessageStore';
 import { normalizeToolCallResult } from './agent-detail/toolResultEnvelope';
-import { sessionRunStateFromPayload } from './agent-detail/runtimeBudgetState';
+import { sessionRunStateFromPayload, submittedSessionRunState } from './agent-detail/runtimeBudgetState';
 import { agentApi, type AgentCapabilityInstall, type AgentChannelCapability } from '../api/domains/agents';
 import { enterpriseApi } from '../api/domains/enterprise';
 import { triggerApi } from '../api/domains/triggers';
 import { autonomyApi } from '../api/domains/autonomy';
-import { chatApi, type ChatSession, type ConversationBranchMode, type SessionRun, type StartSessionRunInput } from '../api/domains/chat';
+import { chatApi, type ChatSession, type ConversationBranchMode, type SessionRun, type SessionStartResponse, type StartSessionRunInput } from '../api/domains/chat';
 import { ccParityApi } from '../api/domains/ccParity';
 import { ApiError } from '../api/core';
 import { uploadFileWithProgress } from '../api/core/upload-progress';
@@ -303,6 +303,7 @@ function AgentDetailInner() {
     };
     const [historyMessagesSessionId, setHistoryMessagesSessionId] = useState<string | null>(null);
     const [sessionsLoading, setSessionsLoading] = useState(false);
+    const [groupDiscoveryUnavailable, setGroupDiscoveryUnavailable] = useState(false);
     const [allSessionsLoading, setAllSessionsLoading] = useState(false);
     const [agentExpired, setAgentExpired] = useState(false);
     const [sessionAccessError, setSessionAccessError] = useState<{ sessionId: string; status: 403 | 404 } | null>(null);
@@ -419,6 +420,14 @@ function AgentDetailInner() {
         setActiveRunStateBySession(next.activeRuns);
     };
 
+    const applySubmittedRun = (key: SessionRuntimeKey, payload: SessionStartResponse) => {
+        const run = submittedSessionRunState(payload);
+        if (run) setActiveRunState(key, run);
+        else if (key === buildSessionRuntimeKey(currentAgentIdRef.current || '', activeSessionIdRef.current || '')) {
+            setTransportNotice(t('agent.chat.inputRecorded', 'Your input is recorded. Follow its application status in this work.'));
+        }
+    };
+
     const observeActiveRunState = (key: SessionRuntimeKey, run: SessionRunState) => {
         runtimeActivityAtRef.current[key] = Date.now();
         const next = applySessionActiveRunObservedState(activeRunStateRef.current, sessionUiStateRef.current, key, run);
@@ -509,6 +518,33 @@ function AgentDetailInner() {
         parseChatMsg,
     }, agentId, sessionId, event, isActiveRuntime);
 
+    const denySessionRead = (agentId: string, sessionId: string, status: 403 | 404 = 403) => {
+        const runtimeKey = buildSessionRuntimeKey(agentId, sessionId);
+        transcriptEventsRef.current[runtimeKey] = [];
+        delete transcriptReplayStateRef.current[runtimeKey];
+        delete sessionCompatibilityTimelinesRef.current[runtimeKey];
+        delete sessionVisibilityBoundariesRef.current[runtimeKey];
+        delete sessionEventStoresRef.current[runtimeKey];
+        delete pendingUserMessagesRef.current[runtimeKey];
+        setActiveRunState(runtimeKey, null);
+        delete transcriptBackfillInFlightRef.current[runtimeKey];
+        sessionEventFullHydrationKeysRef.current.delete(runtimeKey);
+        if (currentAgentIdRef.current !== agentId || activeSessionIdRef.current !== sessionId) return;
+        sessionLoadSeqRef.current += 1;
+        sessionMsgAbortRef.current?.abort();
+        sessionTranscriptLoadRef.current = null;
+        setSessionAccessError({ sessionId, status });
+        setTransportNotice(null);
+        setChatMessagesAfterQueuedForSession(sessionId, () => []);
+        setChatMessagesSessionId(null);
+        setHistoryMessagesSessionId(null);
+        updateHistoryMsgs([]);
+        setBranchLineage([]);
+        setIsWaiting(false);
+        setIsStreaming(false);
+        syncActivePhase('idle');
+    };
+
     const backfillSessionTranscript = async (sess: any, agentId: string) => {
         const sessionId = String(sess?.id || '');
         if (!sessionId) return;
@@ -528,7 +564,8 @@ function AgentDetailInner() {
         const inFlight = transcriptBackfillInFlightRef.current[key];
         if (inFlight) return liveSubscriptionWatermark(sessionEventStoresRef.current[key]) ?? inFlight;
 
-        const task = (async () => {
+        const task: Promise<number | void> = Promise.resolve().then(async () => {
+            if (transcriptBackfillInFlightRef.current[key] !== task) return;
             if (sessionEventStoresRef.current[key]?.recoveryRequired === 'full_hydration') {
                 delete sessionEventStoresRef.current[key];
                 sessionEventFullHydrationKeysRef.current.add(key);
@@ -545,7 +582,7 @@ function AgentDetailInner() {
                     schemaVersion: 2,
                     ...operatorSessionRequestOptions(Boolean(sess?.operator_view), normalizedOperatorReason),
                 }) as ChatTranscriptEventPayload[];
-                if (!authorityIsCurrent()) return;
+                if (!authorityIsCurrent() || transcriptBackfillInFlightRef.current[key] !== task) return;
                 pageSize = events.length;
                 if (pageSize === 0) break;
                 const isActiveRuntime = currentAgentIdRef.current === agentId
@@ -557,11 +594,12 @@ function AgentDetailInner() {
             } while (pageSize === 1000);
             if (authorityIsCurrent()) invalidateSessionRuntimeQueries(agentId, sessionId);
             return sessionEventStoresRef.current[key]?.highestContiguousSequence ?? afterSequence;
-        })().catch((error) => {
+        }).catch((error) => {
             if (sess?.operator_view) denyOperatorAuthority(error);
             console.warn(`[WS] Durable transcript backfill failed for ${key}:`, error);
             throw error;
         }).finally(() => {
+            if (transcriptBackfillInFlightRef.current[key] !== task) return;
             sessionEventFullHydrationKeysRef.current.delete(key);
             delete transcriptBackfillInFlightRef.current[key];
         });
@@ -582,7 +620,15 @@ function AgentDetailInner() {
         }
         if (!silent && currentAgentIdRef.current === agentId) setSessionsLoading(true);
         try {
-            const data = filterSessionsForAgent(await chatApi.listSessions(agentId, 'mine'), agentId);
+            const [owned, groups] = await Promise.allSettled([
+                chatApi.listSessions(agentId, 'mine'),
+                chatApi.listSessions(agentId, 'groups'),
+            ]);
+            if (currentAgentIdRef.current === agentId) setGroupDiscoveryUnavailable(groups.status === 'rejected');
+            if (owned.status === 'rejected') throw owned.reason;
+            const data = filterSessionsForAgent([
+                ...owned.value, ...(groups.status === 'fulfilled' ? groups.value : []),
+            ], agentId).sort((a, b) => Date.parse(b.last_message_at || b.created_at) - Date.parse(a.last_message_at || a.created_at));
             if (isOperatorOnlyRef.current && currentAgentIdRef.current === agentId) return [];
             if (currentAgentIdRef.current === agentId) {
                 setSessions((prev: any[]) => {
@@ -796,23 +842,7 @@ function AgentDetailInner() {
             if (!authorityIsCurrent()) return;
             if (sess?.operator_view && denyOperatorAuthority(err)) return;
             if (err instanceof ApiError && (err.status === 403 || err.status === 404)) {
-                setSessionAccessError({ sessionId, status: err.status });
-                setTransportNotice(null);
-                setChatMessagesAfterQueuedForSession(sessionId, () => []);
-                setChatMessagesSessionId(null);
-                setHistoryMessagesSessionId(null);
-                updateHistoryMsgs([]);
-                setBranchLineage([]);
-                transcriptEventsRef.current[runtimeKey] = [];
-                delete transcriptReplayStateRef.current[runtimeKey];
-                delete sessionCompatibilityTimelinesRef.current[runtimeKey];
-                delete sessionVisibilityBoundariesRef.current[runtimeKey];
-                delete sessionEventStoresRef.current[runtimeKey];
-                delete pendingUserMessagesRef.current[runtimeKey];
-                setActiveRunState(runtimeKey, null);
-                setIsWaiting(false);
-                setIsStreaming(false);
-                syncActivePhase('idle');
+                denySessionRead(targetAgentId, sessionId, err.status);
                 return;
             }
             if (publishedCanonicalSnapshot) {
@@ -1211,7 +1241,7 @@ function AgentDetailInner() {
         return replaceDraftActiveSession(draftId, created);
     };
 
-    const startRunForActiveSession = async (input: StartSessionRunInput): Promise<{ session: ChatSession; run: SessionRun } | null> => {
+    const startRunForActiveSession = async (input: StartSessionRunInput): Promise<{ session: ChatSession; run: SessionStartResponse } | null> => {
         if (!id || !activeSession?.id) return null;
         if (!isDraftHumanChatSession(activeSession)) {
             const run = await chatApi.startSessionRun(id, String(activeSession.id), input);
@@ -1706,6 +1736,7 @@ function AgentDetailInner() {
             applyTranscriptToSession,
             selectSession,
             fetchMySessions,
+            denySessionRead,
             setSessionPhase,
             sessionPhaseOf,
             syncActivePhase,
@@ -1867,9 +1898,11 @@ function AgentDetailInner() {
                 if (!commandSession?.id) return;
                 const commandSessionId = String(commandSession.id);
                 const activeRuntimeKey = buildSessionRuntimeKey(id, commandSessionId);
-                syncActivePhase('queued');
+                if (!activeRunStateRef.current[activeRuntimeKey]?.runId) {
+                    syncActivePhase('queued');
+                    setSessionPhase(activeRuntimeKey, 'queued');
+                }
                 setTransportNotice(null);
-                setSessionPhase(activeRuntimeKey, 'queued');
                 setChatMessagesSessionId(commandSessionId);
                 const commandMessageId = `session-command:${globalThis.crypto.randomUUID()}`;
                 setChatMessagesAfterQueued(prev => [...prev, parseChatMsg({
@@ -1906,7 +1939,7 @@ function AgentDetailInner() {
                         });
                         commandStartedRun = true;
                         setPlanModeRequested(false);
-                        setActiveRunState(activeRuntimeKey, sessionRunStateFromPayload(run));
+                        applySubmittedRun(activeRuntimeKey, run);
                         invalidateSessionRuntimeQueries(id, commandSessionId);
                         return;
                     }
@@ -1973,7 +2006,7 @@ function AgentDetailInner() {
         let completedGoalRequestId: string | null = null;
         let acceptedInputId: string = globalThis.crypto.randomUUID();
         try {
-            let started: { session: ChatSession; run: SessionRun } | null;
+            let started: { session: ChatSession; run: SessionStartResponse } | null;
             if (goalModeRequested) {
                 const goalSession = await ensureDurableActiveSession();
                 if (!goalSession?.id) return;
@@ -2017,9 +2050,11 @@ function AgentDetailInner() {
             if (!started?.session?.id) return;
             const runSessionId = String(started.session.id);
             const activeRuntimeKey = buildSessionRuntimeKey(id, runSessionId);
-            syncActivePhase('queued');
+            if (!activeRunStateRef.current[activeRuntimeKey]?.runId) {
+                syncActivePhase('queued');
+                setSessionPhase(activeRuntimeKey, 'queued');
+            }
             setTransportNotice(null);
-            setSessionPhase(activeRuntimeKey, 'queued');
             setChatMessagesSessionId(runSessionId);
             appendOptimisticUserMessage(activeRuntimeKey, runSessionId, {
                 role: 'user',
@@ -2033,7 +2068,7 @@ function AgentDetailInner() {
             setAttachedFiles([]);
             setPlanModeRequested(false);
             setGoalModeRequested(false);
-            setActiveRunState(activeRuntimeKey, sessionRunStateFromPayload(started.run));
+            applySubmittedRun(activeRuntimeKey, started.run);
             invalidateSessionRuntimeQueries(id, runSessionId);
             if (completedGoalRequestId && goalStartRequestRef.current?.requestId === completedGoalRequestId) {
                 goalStartRequestRef.current = null;
@@ -2070,9 +2105,11 @@ function AgentDetailInner() {
             if (!started?.session?.id) return;
             const runSessionId = String(started.session.id);
             const activeRuntimeKey = buildSessionRuntimeKey(id, runSessionId);
-            syncActivePhase('queued');
+            if (!activeRunStateRef.current[activeRuntimeKey]?.runId) {
+                syncActivePhase('queued');
+                setSessionPhase(activeRuntimeKey, 'queued');
+            }
             setTransportNotice(null);
-            setSessionPhase(activeRuntimeKey, 'queued');
             setChatMessagesSessionId(runSessionId);
             appendOptimisticUserMessage(activeRuntimeKey, runSessionId, {
                 role: 'user',
@@ -2080,7 +2117,7 @@ function AgentDetailInner() {
                 content: userMsg,
                 timestamp: new Date().toISOString(),
             });
-            setActiveRunState(activeRuntimeKey, sessionRunStateFromPayload(started.run));
+            applySubmittedRun(activeRuntimeKey, started.run);
             invalidateSessionRuntimeQueries(id, runSessionId);
         } catch (err: any) {
             setIsWaiting(false);
@@ -2678,7 +2715,10 @@ function AgentDetailInner() {
                             chatMessagesSessionId={activeOperatorSessionAuthorized ? chatMessagesSessionId : null}
                             runtimeSummary={activeOperatorSessionAuthorized ? runtimeSummary : null}
                             agentPermissions={permData ?? null}
-                            transportNotice={transportNotice}
+                            transportNotice={transportNotice === 'agent.chat.groupSourcesUnavailable'
+                                ? t('agent.chat.groupSourcesUnavailable', 'Some source content is unavailable to you. Request access or refresh this conversation.')
+                                : transportNotice || (groupDiscoveryUnavailable
+                                    ? t('agent.chat.groupDiscoveryUnavailable', 'Shared group conversations are unavailable. Try refreshing.') : null)}
                             isWaiting={isWaiting}
                             runtimePhase={activePhase}
                             activeRunStatus={currentActiveRunState?.status || null}

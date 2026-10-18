@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 
 import { RuntimeBudgetNotice } from './RuntimeBudgetNotice';
 import { SessionTransportStatus } from './SessionTransportStatus';
-import { sessionRunStateFromPayload } from './runtimeBudgetState';
+import { sessionRunStateFromPayload, submittedSessionRunState } from './runtimeBudgetState';
 
 describe('runtime budget degraded state', () => {
   it('projects typed backend state into the active run without exposing internal ids', () => {
@@ -64,5 +64,20 @@ describe('runtime budget degraded state', () => {
     />);
 
     expect(markup).toContain('当前回复仍会继续');
+  });
+});
+
+
+describe('session input admission', () => {
+  it('leaves the active work intact when a receipt has no new run', () => {
+    expect(submittedSessionRunState({ schema: 'hive.human_input_receipt', schema_version: 2,
+      intent: 'queue_next_turn', status: 'accepted', input_id: 'input-2', run: null })).toBeNull();
+  });
+
+  it('consumes a real run directly or inside the admission receipt', () => {
+    const run = { run_id: 'run-2', status: 'pending' };
+    expect(submittedSessionRunState(run)).toEqual({ runId: 'run-2', status: 'pending' });
+    expect(submittedSessionRunState({ schema: 'hive.human_input_receipt', schema_version: 2, run }))
+      .toEqual({ runId: 'run-2', status: 'pending' });
   });
 });

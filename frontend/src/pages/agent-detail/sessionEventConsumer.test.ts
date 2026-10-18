@@ -13,6 +13,7 @@ import {
   buildSessionVisibilityBoundary,
   composeSessionVisibilityBoundary,
   composeMixedPlaneSessionMessages,
+  compatibilityProjectionEvent,
   consumeSessionEnvelope,
   createCompatibilityMessageTimeline,
   hydrateSessionTranscriptEvents,
@@ -77,6 +78,24 @@ function replay(events: SessionEventV2[]): SessionEventStore {
 }
 
 describe('canonical Session event consumer', () => {
+  it('retains held protocol state while showing source notices only for content', () => {
+    const payload = { source_access_receipt: { schema: 'hive.source_access_receipt.v1', status: 'denied',
+      code: 'content_source_access_denied', retryable: false } };
+    const held = { ...event(1, 'completed'), payload };
+    const run = { ...held, event_id: 'run-event', sequence: 2, item_id: 'run-1', item_kind: 'run',
+      kind: 'run.completed', payload_schema: 'hive.session.payload.run.completed.v2', ordinal: undefined,
+      scope: { level: 'run' as const, session_id: 'session-1', thread_id: 'session-1', turn_id: 'turn-1', run_id: 'run-1' } };
+    const store = replay([held, run]);
+    expect(store.highestContiguousSequence).toBe(2);
+    expect(store.items['run-1'].lifecycle).toBe('completed');
+    expect(projectSessionEventStoreToMessages(store).map((m) => m.eventType)).toEqual(['source_access_notice']);
+    const compatibility: SessionCompatibilityEvent = { schema: 'hive.session_event_compatibility', schema_version: 1,
+      compatibility_status: 'needs_reconciliation', reason: 'content_source_access_denied',
+      event_id: 'compat', sequence: 3, legacy_event_type: 'provider_call_ledger', payload };
+    expect(compatibilityProjectionEvent(compatibility).event_type).toBe('provider_call_ledger');
+    expect(compatibilityProjectionEvent({ ...compatibility, legacy_event_type: 'assistant_message' })
+      .event_type).toBe('source_access_notice');
+  });
   it('replaces a cancelled legacy local permission with the real enterprise ticket on live replay and reload', () => {
     const call: SessionEventV2 = { ...event(1, 'started'), ordinal: undefined, invocation_id: 'inv', item_id: 'call',
       item_kind: 'tool_call', kind: 'tool_call.started', payload_schema: 'hive.session.payload.tool_call.started.v2',

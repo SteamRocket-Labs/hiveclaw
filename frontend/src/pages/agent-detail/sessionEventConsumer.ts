@@ -298,9 +298,10 @@ function projectCanonicalItem(
 ): AgentChatMessage | null {
   const sourceAccess = sourceAccessHold(item.payload);
   if (sourceAccess) {
+    if (['run', 'turn', 'run_outcome', 'result_commit', 'input_admission', 'hook'].includes(item.kind)) return null;
     return { role: 'event', id: item.id, transcriptEventId: item.id, timestamp: item.occurredAt,
       content: 'Some source content is not available to this reader.', eventTitle: 'Source access',
-      eventType: 'runtime_action_blocked', eventStatus: String(sourceAccess.status),
+      eventType: 'source_access_notice', eventStatus: String(sourceAccess.status),
       eventReason: String(sourceAccess.code), eventRetryable: sourceAccess.retryable === true, sessionItem: item };
   }
   if (item.kind === 'user_question') {
@@ -923,7 +924,10 @@ export function compatibilityProjectionEvent(event: SessionCompatibilityEvent): 
   const payload = recordValue(envelope.payload) || {};
   const sourceAccess = sourceAccessHold(payload);
   if (sourceAccess) {
-    return { id: event.event_id, sequence: event.sequence, event_type: 'runtime_action_blocked',
+    const operational = ['compaction_skipped', 'model_route', 'context_window_status', 'provider_call_ledger']
+      .includes(String(envelope.legacy_event_type));
+    return { id: event.event_id, sequence: event.sequence,
+      event_type: operational ? String(envelope.legacy_event_type) : 'source_access_notice',
       content: 'Some source content is not available to this reader.',
       metadata: { status: sourceAccess.status, code: sourceAccess.code, retryable: sourceAccess.retryable } };
   }

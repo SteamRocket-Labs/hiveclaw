@@ -235,8 +235,12 @@ async def websocket_chat(
         session_subscription_error_frame,
     )
 
+    async def send_json(frame):
+        sender = getattr(websocket, "send_control_json", websocket.send_json)
+        await sender(frame)
+
     async def close_subscription(error: SessionSubscriptionError) -> None:
-        await websocket.send_json(session_subscription_error_frame(error))
+        await send_json(session_subscription_error_frame(error))
         await websocket.close(code=SESSION_SUBSCRIPTION_CLOSE_CODES[error.code], reason=error.code)
 
     # Decode before accept when possible; once accepted, every failure is typed.
@@ -282,15 +286,22 @@ async def websocket_chat(
             if active_session.source_channel == "agent" or active_session.session_kind == "agent_chat":
                 raise SessionSubscriptionError("session_forbidden")
             try:
-                authority_source = await authorize_loaded_session_access(
-                    db,
-                    user,
-                    agent=agent,
-                    session=active_session,
-                    access_level=_access_level,
-                    action="chat_session:subscribe",
-                    require_writable=True,
-                )
+                if active_session.audience_kind == "group":
+                    from app.services.shared_group_history import authorize_group_history_reader, SharedGroupReaderSocket
+
+                    authority_source = await authorize_group_history_reader(db, session=active_session, user=user)
+                    websocket = SharedGroupReaderSocket(websocket, tenant_id=ws_tenant_id,
+                        session_id=active_session.id, user_id=user.id)
+                else:
+                    authority_source = await authorize_loaded_session_access(
+                        db,
+                        user,
+                        agent=agent,
+                        session=active_session,
+                        access_level=_access_level,
+                        action="chat_session:subscribe",
+                        require_writable=True,
+                    )
             except HTTPException as error:
                 if error.status_code not in {403, 409}:
                     raise
@@ -324,7 +335,7 @@ async def websocket_chat(
                 active_run=active_run,
                 sequence_projection=catchup.cursor.mode,
             )
-            await websocket.send_json(ready)
+            await send_json(ready)
             if subscription.cursor_mode == "resume":
                 async for event in iter_session_catchup_events(
                     db,
@@ -334,22 +345,24 @@ async def websocket_chat(
                     cursor=catchup.cursor,
                     audience="user",
                 ):
-                    await websocket.send_json(event)
+                    await send_json(event)
             await manager.activate_session_subscription(
                 websocket,
                 delivered_through_sequence=catchup.last_committed_storage_sequence,
                 delivered_through_delivery_sequence=catchup.last_committed_sequence,
             )
 
-            history_result = await db.execute(
-                select(ChatMessage)
-                .where(
-                    ChatMessage.agent_id == agent_id,
-                    ChatMessage.conversation_id == str(active_session.id),
+            history_messages = []
+            if active_session.audience_kind != "group":
+                history_result = await db.execute(
+                    select(ChatMessage)
+                    .where(
+                        ChatMessage.agent_id == agent_id,
+                        ChatMessage.conversation_id == str(active_session.id),
+                    )
+                    .order_by(ChatMessage.created_at.asc())
                 )
-                .order_by(ChatMessage.created_at.asc())
-            )
-            history_messages = list(history_result.scalars().all())
+                history_messages = list(history_result.scalars().all())
     except WebSocketDisconnect:
         if subscription_registered:
             await manager.disconnect(str(agent_id), websocket)
@@ -374,7 +387,7 @@ async def websocket_chat(
     logger.info("[WS] Session ready agent={} session={}", agent_name, conv_id)
 
     async def send_control_error(code: str, *, retryable: bool) -> None:
-        await websocket.send_json(
+        await send_json(
             {
                 "type": "session.error",
                 "error": {
@@ -407,7 +420,7 @@ async def websocket_chat(
                 data = await _aio_idle.wait_for(websocket.receive_json(), timeout=_wait_timeout)
             except _aio_idle.TimeoutError:
                 if await _has_active_web_chat_run(agent_id, conv_id):
-                    await websocket.send_json({"type": "pong"})
+                    await send_json({"type": "pong"})
                     continue
                 if not _idle_dreamed and _DREAM_IDLE_SECONDS > 0 and len(conversation) > 1:
                     # Phase 1: SESSION_IDLE — extract memories while user is away
@@ -470,7 +483,7 @@ async def websocket_chat(
                         )
                     except Exception as _close_err:
                         logger.debug("[WS] SESSION_CLOSE hook failed (non-fatal): {}", _close_err)
-                    await websocket.send_json(
+                    await send_json(
                         {"type": "info", "content": "Connection closed due to inactivity. Reconnect to continue."}
                     )
                     await websocket.close(code=1000)
@@ -505,7 +518,7 @@ async def websocket_chat(
                                 idempotency_key=data.get("idempotency_key"),
                                 control_id=data.get("control_id"),
                             )
-                            await websocket.send_json(
+                            await send_json(
                                 {
                                     "type": "session.control_receipt",
                                     "kind": "cancel",
@@ -516,7 +529,7 @@ async def websocket_chat(
                     logger.warning("[WS] Failed to cancel web chat run: {}", abort_err)
                     await send_control_error("control_input_retryable", retryable=True)
                 continue
-            logger.info(f"[WS] Received: {content[:50]}")
+            logger.info("[WS] Received input for session {}", conv_id)
 
             if not content:
                 continue
@@ -560,7 +573,7 @@ async def websocket_chat(
                         attachments=data.get("attachments") if isinstance(data.get("attachments"), list) else None,
                         parts=data.get("parts") if isinstance(data.get("parts"), list) else None,
                     )
-                await websocket.send_json(
+                await send_json(
                     {
                         "type": "session.control_receipt",
                         "kind": "human_input",

@@ -108,6 +108,7 @@ export interface SessionSocketProjectionDependencies {
   activeRunIdOf: (key: string) => string | null;
   selectSession: (session: any) => void | Promise<unknown>;
   fetchMySessions: (silent: boolean, agentId: string) => void | Promise<unknown>;
+  denySessionRead?: (agentId: string, sessionId: string) => void;
   setSessionPhase: (key: string, phase: RuntimePhase) => void;
   sessionPhaseOf: (key: string) => RuntimePhase;
   syncActivePhase: (phase: RuntimePhase) => void;
@@ -423,9 +424,18 @@ export function projectSessionSocketEvent(
     return;
   }
 
+  if (d?.type === 'session.source_access') {
+    if (context.isActiveRuntime) dependencies.setTransportNotice('agent.chat.groupSourcesUnavailable');
+    return;
+  }
+
   if (d?.type === 'session.error') {
     const error = d.error && typeof d.error === 'object' ? d.error : {};
     const code = typeof error.code === 'string' ? error.code : 'event_store_retryable';
+    if (code === 'session_forbidden' || code === 'session_not_found') {
+      dependencies.denySessionRead?.(agentId, sessionId);
+      return;
+    }
     dependencies.setTransportNotice(
       typeof error.message_key === 'string' ? error.message_key : `session.${code}`,
     );

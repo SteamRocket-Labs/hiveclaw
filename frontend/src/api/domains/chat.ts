@@ -27,6 +27,8 @@ export interface ChatSession {
   actor_type?: string | null;
   runtime_source?: string | null;
   visibility_scope?: string | null;
+  audience_kind?: string | null;
+  last_message_at?: string | null;
   listed_surface?: string | null;
   permission_mode?: string | null;
   is_current_user_session?: boolean;
@@ -177,6 +179,18 @@ export interface CreateSessionRunResponse {
   run: SessionRun;
 }
 
+export interface SessionHumanInputReceipt {
+  schema: 'hive.human_input_receipt';
+  schema_version: 2;
+  command_id: string;
+  input_id: string;
+  intent: string;
+  status: string;
+  run?: SessionRun | null;
+}
+
+export type SessionStartResponse = SessionRun | SessionHumanInputReceipt;
+
 export interface UpdateSessionPermissionProfileInput {
   permission_mode: 'auto' | 'default' | 'bypassPermissions';
 }
@@ -291,7 +305,7 @@ export const chatApi = {
     upload<UploadedChatFile>('/chat/upload', file, agentId ? { agent_id: agentId } : undefined),
 
   /** Session management */
-  listSessions: (agentId: string, scope: 'mine' | 'all' = 'mine', options?: SessionOperatorOptions) => {
+  listSessions: (agentId: string, scope: 'mine' | 'groups' | 'all' = 'mine', options?: SessionOperatorOptions) => {
     const params = new URLSearchParams({ scope });
     // PDEC-013: a scoped business administrator lists `scope=all` as a normal
     // audited business actor — no operator reason is fabricated. Only a true
@@ -351,7 +365,7 @@ export const chatApi = {
   createSessionRun: (agentId: string, input: CreateSessionRunInput) =>
     post<CreateSessionRunResponse>(`/agents/${agentId}/sessions/runs`, input),
   startSessionRun: (agentId: string, sessionId: string, input: StartSessionRunInput) =>
-    post<SessionRun>(`/agents/${agentId}/sessions/${sessionId}/runs`, input),
+    post<SessionStartResponse>(`/agents/${agentId}/sessions/${sessionId}/runs`, input),
   branchSession: (agentId: string, sessionId: string, input: BranchSessionInput) =>
     post<BranchSessionResponse>(`/agents/${agentId}/sessions/${sessionId}/branches`, input),
   recordSessionFeedback: (agentId: string, sessionId: string, input: RecordSessionFeedbackInput) =>

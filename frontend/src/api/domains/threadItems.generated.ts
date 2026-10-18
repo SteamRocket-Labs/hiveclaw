@@ -323,6 +323,7 @@ export const LEGACY_THREAD_ITEM_TYPE_MAP: Readonly<Record<string, ThreadItemType
   "session_permission_request": "approval_request",
   "session_rewind": "boundary",
   "session_workspace_rewind": "boundary",
+  "source_access_notice": "warning",
   "subagent": "subagent_activity",
   "subagent_task_completed": "subagent_activity",
   "subagent_task_failed": "subagent_activity",

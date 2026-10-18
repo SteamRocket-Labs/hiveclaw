@@ -2555,6 +2555,11 @@
       "operatorView": "Operator View",
       "operatorViewDesc": "Audited, read-only access to another user’s session.",
       "session": "Session",
+      "groupDiscoveryUnavailable": "Shared group conversations are unavailable. Try refreshing.",
+      "sourceAccess": "Source access",
+      "sourceUnavailable": "Unavailable",
+      "groupSourcesUnavailable": "Some source content is unavailable to you. Request access or refresh this conversation.",
+      "inputRecorded": "Your input is recorded. Follow its application status in this work.",
       "sessionBackfillIncomplete": "Latest activity is visible, but older session evidence is still recovering.",
       "sessionCreateFailed": "Failed to create session",
       "transport": {

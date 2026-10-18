@@ -1398,6 +1398,7 @@ function AgentChatSection({
         />
       ) : null;
       const retryAnchor = !toolEffectRecovery.blocked
+        && item.event_type !== 'source_access_notice'
         && (item.item_type === 'warning' || item.item_type === 'error') && item.item_data.retryable
         ? findRetryAnchorMessage(visibleTimeline, index)
         : null;

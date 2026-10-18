@@ -1019,6 +1019,11 @@ async def _get_run_session_and_agent(
     )
     if require_execution:
         reject_non_executing_agent_access(access_level)
+    if getattr(session, "audience_kind", None) == "group" and action == "read_active_run":
+        from app.services.shared_group_history import authorize_group_history_reader
+
+        authority_source = await authorize_group_history_reader(db, session=session, user=current_user)
+        return session, agent, authority_source
     if getattr(session, "audience_kind", None) == "group" and action == "start_session_run":
         from app.services.shared_group_authority import resolve_shared_group_web_authority
 
@@ -2041,7 +2046,7 @@ async def get_active_session_run(
     db: AsyncSession = Depends(get_db),
 ):
     """Return the active durable web chat run for a session, if one exists."""
-    await _get_run_session_and_agent(
+    session, _agent, _authority_source = await _get_run_session_and_agent(
         db=db,
         agent_id=agent_id,
         session_id=session_id,
@@ -2050,7 +2055,13 @@ async def get_active_session_run(
         operator_view=operator_view is True,
         operator_reason=operator_reason,
     )
-    return await get_active_web_chat_run(db=db, agent_id=agent_id, session_id=session_id)
+    run = await get_active_web_chat_run(db=db, agent_id=agent_id, session_id=session_id)
+    if run is not None and getattr(session, "audience_kind", None) == "group":
+        run = {key: run[key] for key in ("run_id", "turn_id", "status", "created_at", "started_at", "completed_at", "runtime_budget")
+            if key in run}
+    if getattr(session, "audience_kind", None) == "group":
+        await db.commit()
+    return run
 
 
 def _session_input_runtime_content(content_parts: list[dict[str, Any]]) -> str:

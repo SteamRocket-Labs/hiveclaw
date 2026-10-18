@@ -41,3 +41,10 @@ export function sessionRunStateFromPayload(value: unknown): ProjectedSessionRunS
     ...(runtimeBudget ? { runtimeBudget } : {}),
   };
 }
+
+export function submittedSessionRunState(value: unknown): ProjectedSessionRunState | null {
+  let record = asRecord(value);
+  if (record?.schema === 'hive.human_input_receipt') record = asRecord(record.run);
+  return record && typeof record.run_id === 'string' && record.run_id.trim()
+    ? sessionRunStateFromPayload(record) : null;
+}

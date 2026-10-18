@@ -41,6 +41,13 @@ function canonical(overrides: Partial<ThreadItem> = {}): ThreadItem {
 }
 
 describe('typed ThreadItem reducer', () => {
+  it('keeps source access distinct from task failure and discards untrusted notice prose', () => {
+    const item = normalizeThreadItemPayload({ type: 'source_access_notice', status: 'denied',
+      retryable: true, content: 'PRIVATE_CANARY', user_summary: 'PRIVATE_CANARY' });
+    expect(item).toMatchObject({ item_type: 'warning', item_status: 'waiting_user',
+      user_summary: 'Some source content is not available to this reader.' });
+    expect(item?.content).not.toContain('PRIVATE_CANARY');
+  });
   it('keeps the backend discriminated union exhaustive', () => {
     expect(THREAD_ITEM_TYPES).toEqual([
       'user_message',

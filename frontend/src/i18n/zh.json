@@ -2555,6 +2555,11 @@
       "operatorView": "运营视图",
       "operatorViewDesc": "对其他用户会话的只读审计访问。",
       "session": "会话",
+      "groupDiscoveryUnavailable": "群会话暂不可用，请稍后刷新重试。",
+      "sourceAccess": "来源访问",
+      "sourceUnavailable": "暂不可见",
+      "groupSourcesUnavailable": "部分来源内容暂不可见。可申请来源权限，或刷新当前会话。",
+      "inputRecorded": "补充已入账，请在原工作查看应用状态。",
       "sessionBackfillIncomplete": "最新活动已可见，较早的会话证据仍在恢复。",
       "sessionCreateFailed": "创建会话失败",
       "transport": {

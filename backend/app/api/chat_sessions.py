@@ -2383,7 +2383,7 @@ async def get_session_approval(
     if approval is None:
         raise HTTPException(status_code=404, detail="Approval not found in this work")
     await authorize_session_approval_reader(db, session=session, approval=approval, user=current_user)
-    return session_approval_projection(approval, agent=agent, user=current_user)
+    return await session_approval_projection(approval, db=db, agent=agent, user=current_user)
 
 
 @router.post("/{agent_id}/sessions/{session_id}/approvals/{approval_id}/resolve")
@@ -2391,7 +2391,7 @@ async def resolve_session_approval(
     agent_id: uuid.UUID, session_id: uuid.UUID, approval_id: uuid.UUID, body: ResolveSessionApprovalIn,
     current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db),
 ):
-    from app.services.approval_service import _can_resolve_agent_approval, approval_service
+    from app.services.approval_service import can_resolve_approval, approval_service
     from app.services.session_approval import authorize_session_approval_reader, load_session_approval, session_approval_projection
 
     session, agent, _authority = await _get_run_session_and_agent(
@@ -2402,7 +2402,7 @@ async def resolve_session_approval(
     if approval is None:
         raise HTTPException(status_code=404, detail="Approval not found in this work")
     await authorize_session_approval_reader(db, session=session, approval=approval, user=current_user)
-    if not _can_resolve_agent_approval(agent, current_user):
+    if not await can_resolve_approval(db, agent=agent, user=current_user, approval=approval):
         raise HTTPException(status_code=403, detail="Only the responsible approver can decide this action")
     if approval.status != "pending":
         expected = "approved" if body.action == "approve" else "rejected"
@@ -2414,7 +2414,7 @@ async def resolve_session_approval(
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
     await db.commit()
-    return session_approval_projection(approval, agent=agent, user=current_user)
+    return await session_approval_projection(approval, db=db, agent=agent, user=current_user)
 
 
 @router.post("/{agent_id}/sessions/{session_id}/permissions/{permission_request_id}/resolve")

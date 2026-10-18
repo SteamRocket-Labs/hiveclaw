@@ -805,6 +805,10 @@
     "unknown": "状态不可用"
   },
   "approvalRequest": {
+    "reviewer": "团队审批人",
+    "chooseReviewer": "选择一位团队负责人",
+    "authorizeReviewer": "授权处理本次审批",
+    "revokeReviewer": "撤销 {{name}} 的审批授权",
     "actions": {
       "writeFile": "写入工作区文件",
       "commandEscalation": "运行一次工作区命令",

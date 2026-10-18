@@ -641,6 +641,7 @@ async def update_enterprise_info(
 async def list_approvals(
     tenant_id: str | None = None,
     status_filter: str | None = None,
+    business_team_id: uuid.UUID | None = None,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -649,14 +650,25 @@ async def list_approvals(
     # Scope by tenant: only show approvals for agents belonging to this tenant
     target_tenant_id = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
     tenant_agent_ids = select(Agent.id).where(Agent.tenant_id == target_tenant_id)
+    if business_team_id is not None:
+        tenant_agent_ids = tenant_agent_ids.where(Agent.home_business_team_id == business_team_id)
     query = query.where(ApprovalRequest.agent_id.in_(tenant_agent_ids))
     query = query.where(enterprise_visible_approval_filter(ApprovalRequest))
     # Scoped business administrators (PDEC-013) list every pending approval of
     # Agents in their selected/company tenant; everyone else is further
     # restricted to their own agents.
     if not is_scoped_business_admin(current_user, resource_tenant_id=target_tenant_id):
+        from app.models.organization_identity import BusinessTeam, BusinessTeamMembership
+
+        lead_teams = select(BusinessTeam.id).join(BusinessTeamMembership,
+            BusinessTeamMembership.business_team_id == BusinessTeam.id).join(User,
+            User.id == BusinessTeamMembership.user_id).where(BusinessTeam.tenant_id == target_tenant_id,
+                BusinessTeam.status == "active", BusinessTeamMembership.tenant_id == target_tenant_id,
+                BusinessTeamMembership.user_id == current_user.id, BusinessTeamMembership.status == "active",
+                BusinessTeamMembership.role == "lead", User.tenant_id == target_tenant_id, User.is_active.is_(True))
         query = query.where(
-            ApprovalRequest.agent_id.in_(select(Agent.id).where(agent_owned_by_clause(current_user.id)))
+            ApprovalRequest.agent_id.in_(select(Agent.id).where(or_(agent_owned_by_clause(current_user.id),
+                Agent.home_business_team_id.in_(lead_teams))))
         )
     if status_filter:
         query = query.where(ApprovalRequest.status == status_filter)
@@ -674,10 +686,114 @@ async def list_approvals(
 
     out = []
     for a in approvals:
-        d = ApprovalRequestOut.model_validate(a)
+        from app.services.approval_service import _can_resolve_agent_approval, can_resolve_approval
+        from app.services.session_approval import session_approval_projection
+
+        agent = await db.get(Agent, a.agent_id, populate_existing=True)
+        if agent is None:
+            continue
+        if _can_resolve_agent_approval(agent, current_user):
+            d = ApprovalRequestOut.model_validate(a)
+            from app.services.approval_service import approval_team_reviewers
+
+            d.team_reviewers = await approval_team_reviewers(db, agent=agent, approval=a, user=current_user)
+        elif await can_resolve_approval(db, agent=agent, user=current_user, approval=a):
+            d = ApprovalRequestOut.model_validate(await session_approval_projection(a, db=db, agent=agent, user=current_user))
+        else:
+            continue
         d.agent_name = agent_names.get(a.agent_id)
         out.append(d)
     return out
+
+
+class ApprovalReviewerGrantIn(BaseModel):
+    model_config = {"extra": "forbid"}
+    request_id: uuid.UUID
+    user_id: uuid.UUID
+
+
+async def _managed_approval(db, user, approval_id):
+    from app.services.approval_service import _can_resolve_agent_approval
+    from app.services.enterprise_approval_visibility import is_session_tool_approval
+
+    await resolve_and_pin_tenant_scope(db, user, None)
+    approval = await db.get(ApprovalRequest, approval_id, with_for_update=True)
+    agent = await db.get(Agent, approval.agent_id, populate_existing=True, with_for_update=True) if approval else None
+    if approval is None or agent is None or is_session_tool_approval(approval):
+        raise HTTPException(404, detail="Approval not found")
+    if not _can_resolve_agent_approval(agent, user):
+        raise HTTPException(403, detail="Only the employee owner or a scoped administrator can authorize reviewers")
+    return approval, agent
+
+
+@router.post("/approvals/{approval_id}/reviewers", status_code=201)
+async def grant_approval_reviewer(approval_id: uuid.UUID, data: ApprovalReviewerGrantIn,
+    current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    from datetime import datetime, timedelta, timezone
+    from sqlalchemy.exc import IntegrityError
+    from app.core.policy import write_audit_event
+    from app.models.security_audit import ResourcePermission
+    from app.services.approval_service import approval_team_reviewers, approval_reviewer_scope
+
+    approval, agent = await _managed_approval(db, current_user, approval_id)
+    if approval.status != "pending" or approval.consumed_at is not None:
+        raise HTTPException(409, detail="Only a pending approval can receive a reviewer")
+    candidates = await approval_team_reviewers(db, agent=agent, approval=approval, user=current_user)
+    scope = await approval_reviewer_scope(db, agent=agent, approval=approval)
+    candidate = next((row for row in candidates if row["user_id"] == str(data.user_id)), None)
+    if candidate is None:
+        raise HTTPException(403, detail="Choose an active lead of this employee's home team")
+    existing = await db.get(ResourcePermission, data.request_id)
+    if existing is not None:
+        if (existing.tenant_id != agent.tenant_id or existing.principal_type != "user"
+            or existing.principal_id != data.user_id or existing.resource_type != "agent"
+            or existing.resource_id != agent.id or existing.actions != [approval.action_type]
+            or existing.effect != "allow" or existing.conditions != scope):
+            raise HTTPException(409, detail="Reviewer request conflicts with an existing grant")
+        return {"id": str(existing.id), "revoked": existing.revoked_at is not None}
+    if candidate["grant_id"]:
+        return {"id": candidate["grant_id"], "revoked": False}
+    expires_at = approval.expires_at or datetime.now(timezone.utc) + timedelta(days=7)
+    if expires_at <= datetime.now(timezone.utc):
+        raise HTTPException(409, detail="Approval expired before reviewer authorization")
+    grant = ResourcePermission(id=data.request_id, tenant_id=agent.tenant_id, principal_type="user",
+        principal_id=data.user_id, resource_type="agent", resource_id=agent.id, actions=[approval.action_type],
+        conditions=scope, effect="allow", expires_at=expires_at,
+        created_by_user_id=current_user.id)
+    db.add(grant)
+    try:
+        await db.flush()
+    except IntegrityError as exc:
+        await db.rollback()
+        raise HTTPException(409, detail="Reviewer request conflicts with an existing grant") from exc
+    await write_audit_event(db, event_type="approval.reviewer_granted", severity="info", actor_type="user",
+        actor_id=current_user.id, tenant_id=agent.tenant_id, action=approval.action_type, resource_type="approval",
+        resource_id=approval.id, details={"grant_id": str(grant.id), "reviewer_id": str(data.user_id)})
+    await db.commit()
+    await approval_service._notify_pending_approval(db, agent, approval)
+    return {"id": str(grant.id), "revoked": False}
+
+
+@router.delete("/approvals/{approval_id}/reviewers/{grant_id}")
+async def revoke_approval_reviewer(approval_id: uuid.UUID, grant_id: uuid.UUID,
+    current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    from datetime import datetime, timezone
+    from app.core.policy import write_audit_event
+    from app.models.security_audit import ResourcePermission
+
+    approval, agent = await _managed_approval(db, current_user, approval_id)
+    grant = await db.get(ResourcePermission, grant_id, with_for_update=True)
+    if (grant is None or grant.tenant_id != agent.tenant_id or grant.resource_type != "agent"
+        or grant.resource_id != agent.id or (grant.conditions or {}).get("approval_id") != str(approval.id)
+        or set(grant.conditions or {}) != {"approval_id", "approval_owner_scope"}):
+        raise HTTPException(404, detail="Reviewer authorization not found")
+    if grant.revoked_at is None:
+        grant.revoked_at, grant.revoked_by_user_id = datetime.now(timezone.utc), current_user.id
+        await write_audit_event(db, event_type="approval.reviewer_revoked", severity="info", actor_type="user",
+            actor_id=current_user.id, tenant_id=agent.tenant_id, action=approval.action_type, resource_type="approval",
+            resource_id=approval.id, details={"grant_id": str(grant.id)})
+        await db.commit()
+    return {"id": str(grant.id), "revoked": True}
 
 
 @router.post("/approvals/{approval_id}/resolve", response_model=ApprovalRequestOut)
@@ -690,6 +806,12 @@ async def resolve_approval(
     """Approve or reject a pending approval request."""
     try:
         approval = await approval_service.resolve_approval(db, approval_id, current_user, data.action)
+        from app.services.approval_service import _can_resolve_agent_approval
+        from app.services.session_approval import session_approval_projection
+
+        agent = await db.get(Agent, approval.agent_id)
+        if not _can_resolve_agent_approval(agent, current_user):
+            return ApprovalRequestOut.model_validate(await session_approval_projection(approval, db=db, agent=agent, user=current_user))
         return ApprovalRequestOut.model_validate(approval)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

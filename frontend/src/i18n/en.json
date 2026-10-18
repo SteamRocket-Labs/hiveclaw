@@ -830,6 +830,10 @@
     "unknown": "Status unavailable"
   },
   "approvalRequest": {
+    "reviewer": "Team reviewer",
+    "chooseReviewer": "Choose a team lead",
+    "authorizeReviewer": "Authorize for this approval",
+    "revokeReviewer": "Remove authorization for {{name}}",
     "actions": {
       "writeFile": "Write a workspace file",
       "commandEscalation": "Run one workspace command",

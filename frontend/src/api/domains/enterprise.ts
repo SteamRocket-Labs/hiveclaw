@@ -477,7 +477,16 @@ export const enterpriseApi = {
     ),
 
   /** Approvals */
-  listApprovals: (tenantId?: string) => get<unknown[]>(`/enterprise/approvals${tenantId ? `?tenant_id=${tenantId}` : ''}`),
+  listApprovals: (tenantId?: string, businessTeamId?: string) => {
+    const query = new URLSearchParams();
+    if (tenantId) query.set('tenant_id', tenantId);
+    if (businessTeamId) query.set('business_team_id', businessTeamId);
+    return get<unknown[]>(`/enterprise/approvals${query.size ? `?${query}` : ''}`);
+  },
+  grantApprovalReviewer: (id: string, body: { request_id: string; user_id: string }) =>
+    post<{ id: string; revoked: boolean }>(`/enterprise/approvals/${id}/reviewers`, body),
+  revokeApprovalReviewer: (id: string, grantId: string) =>
+    del<{ id: string; revoked: boolean }>(`/enterprise/approvals/${id}/reviewers/${grantId}`),
   resolveApproval: (id: string, data: { action: string }) =>
     post<unknown>(`/enterprise/approvals/${id}/resolve`, data),
 };

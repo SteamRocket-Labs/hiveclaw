@@ -275,6 +275,9 @@ def _evaluate_conditions(conditions: dict, context: dict) -> bool:
                 return False
             if not any(request_ip in network for network in networks):
                 return False
+        elif key in {"approval_id", "approval_owner_scope"}:
+            if not isinstance(value, str) or context.get(key) != value:
+                return False
         else:
             return False
     return True

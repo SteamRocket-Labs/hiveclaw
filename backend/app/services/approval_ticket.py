@@ -541,7 +541,7 @@ async def consume_approval_ticket(
             raise ApprovalTicketError(f"approval ticket is not approved: {approval.status}")
         from app.models.agent import Agent
         from app.models.user import User
-        from app.services.approval_service import _can_resolve_agent_approval
+        from app.services.approval_service import can_resolve_approval
 
         agent = await db.get(Agent, approval.agent_id, populate_existing=True)
         approver = await db.get(User, approval.resolved_by, populate_existing=True) if approval.resolved_by else None
@@ -550,7 +550,7 @@ async def consume_approval_ticket(
 
             # The exact ticket locator reads identity facts only; company scope remains pinned here.
             approver = SimpleNamespace(id=approver_id, role=approver_role, tenant_id=approver_tenant_id, is_active=approver_active)
-        if agent is None or approver is None or not _can_resolve_agent_approval(agent, approver):
+        if agent is None or approver is None or not await can_resolve_approval(db, agent=agent, user=approver, approval=approval):
             raise ApprovalTicketError("approval ticket approver is no longer responsible")
         now = datetime.now(timezone.utc)
         if approval.expires_at is None or approval.expires_at <= now:

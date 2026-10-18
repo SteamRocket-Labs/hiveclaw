@@ -7,7 +7,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 
 from loguru import logger
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.agent import Agent
@@ -50,6 +50,74 @@ def _can_resolve_agent_approval(agent: Agent, user: User) -> bool:
     if _same_uuid(owner_user_id, user_id):
         return True
     return is_scoped_business_admin(user, resource_tenant_id=getattr(agent, "tenant_id", None))
+
+
+async def can_resolve_approval(db: AsyncSession, *, agent: Agent, user: User, approval: ApprovalRequest) -> bool:
+    from app.core.permissions import effective_agent_owner_id, load_effective_business_team_ids
+    from app.core.policy import check_permission
+    from app.models.organization_identity import BusinessTeam, BusinessTeamMembership
+
+    if (is_session_tool_approval(approval) or approval.agent_id != agent.id
+        or approval.tenant_id not in {None, agent.tenant_id}):
+        return False
+    if _can_resolve_agent_approval(agent, user):
+        return True
+    team_id = getattr(agent, "home_business_team_id", None)
+    if team_id is None or user.tenant_id != agent.tenant_id:
+        return False
+    actor = await db.get(User, user.id, populate_existing=True)
+    owner_id = effective_agent_owner_id(agent)
+    owner = await db.get(User, owner_id, populate_existing=True) if owner_id else None
+    if actor is None or not actor.is_active or owner is None or not owner.is_active:
+        return False
+    membership = await db.scalar(select(BusinessTeamMembership.id).join(
+        BusinessTeam, BusinessTeam.id == BusinessTeamMembership.business_team_id).where(
+            BusinessTeamMembership.business_team_id == team_id, BusinessTeamMembership.tenant_id == agent.tenant_id,
+            BusinessTeamMembership.user_id == actor.id, BusinessTeamMembership.status == "active",
+            BusinessTeamMembership.role == "lead", BusinessTeam.id == team_id,
+            BusinessTeam.tenant_id == agent.tenant_id, BusinessTeam.status == "active"))
+    if membership is None or actor.tenant_id != agent.tenant_id:
+        return False
+    principals = [("business_team", team) for team in await load_effective_business_team_ids(db, actor, agent.tenant_id)]
+    if actor.department_id:
+        principals.append(("department", actor.department_id))
+    scope = await approval_reviewer_scope(db, agent=agent, approval=approval)
+    return await check_permission(db, principal_type="user", principal_id=actor.id,
+        additional_principals=principals, resource_type="agent", resource_id=agent.id, action=approval.action_type,
+        context={"tenant_id": str(agent.tenant_id), "user_id": str(actor.id), "agent_id": str(agent.id),
+            **scope})
+
+
+async def approval_reviewer_scope(db, *, agent, approval):
+    from app.core.permissions import effective_agent_owner_id
+
+    # Canonical handovers are append-only, so transfer-back cannot revive a prior scope.
+    handovers = await db.scalar(select(func.count(AuditLog.id)).where(AuditLog.tenant_id == agent.tenant_id,
+        AuditLog.agent_id == agent.id, AuditLog.action == "agent:handover"))
+    return {"approval_id": str(approval.id), "approval_owner_scope": f"{effective_agent_owner_id(agent)}:{handovers}"}
+
+
+async def approval_team_reviewers(db, *, agent, approval, user):
+    from app.core.policy import permission_effect_applies
+    from app.models.organization_identity import BusinessTeam, BusinessTeamMembership
+    from app.models.security_audit import ResourcePermission
+
+    if not _can_resolve_agent_approval(agent, user) or is_session_tool_approval(approval):
+        return []
+    leads = (await db.scalars(select(User).join(BusinessTeamMembership, BusinessTeamMembership.user_id == User.id)
+        .join(BusinessTeam, BusinessTeam.id == BusinessTeamMembership.business_team_id).where(
+            BusinessTeam.id == agent.home_business_team_id, BusinessTeam.tenant_id == agent.tenant_id,
+            BusinessTeam.status == "active", BusinessTeamMembership.tenant_id == agent.tenant_id,
+            BusinessTeamMembership.status == "active", BusinessTeamMembership.role == "lead",
+            User.tenant_id == agent.tenant_id, User.is_active.is_(True)))).all()
+    grants = (await db.scalars(select(ResourcePermission).where(ResourcePermission.tenant_id == agent.tenant_id,
+        ResourcePermission.resource_type == "agent", ResourcePermission.resource_id == agent.id,
+        ResourcePermission.principal_type == "user", ResourcePermission.effect == "allow",
+        ResourcePermission.conditions["approval_id"].as_string() == str(approval.id)))).all()
+    context = await approval_reviewer_scope(db, agent=agent, approval=approval)
+    return [{"user_id": str(lead.id), "name": lead.display_name or lead.username,
+        "grant_id": next((str(grant.id) for grant in grants if grant.principal_id == lead.id
+            and permission_effect_applies(grant, action=approval.action_type, context=context)), None)} for lead in leads]
 
 
 def approval_notification_user_ids(
@@ -104,6 +172,7 @@ async def _load_approval_recipients(
     *,
     requester_id: uuid.UUID | None = None,
     include_requester: bool = False,
+    approval: ApprovalRequest | None = None,
 ) -> list[User]:
     from app.core.permissions import effective_agent_owner_id
 
@@ -140,6 +209,17 @@ async def _load_approval_recipients(
     for user in [owner, requester, *admins]:
         if user is not None and getattr(user, "id", None) is not None:
             by_id[str(user.id)] = user
+    if approval is not None and owner is not None and owner.is_active and getattr(agent, "home_business_team_id", None):
+        from app.models.organization_identity import BusinessTeamMembership
+
+        leads = (await db.scalars(select(User).join(BusinessTeamMembership, BusinessTeamMembership.user_id == User.id).where(
+            BusinessTeamMembership.business_team_id == agent.home_business_team_id,
+            BusinessTeamMembership.tenant_id == agent.tenant_id, BusinessTeamMembership.status == "active",
+            BusinessTeamMembership.role == "lead", User.tenant_id == agent.tenant_id, User.is_active.is_(True)))).all()
+        for lead in leads:
+            if lead.id not in recipient_ids and await can_resolve_approval(db, agent=agent, user=lead, approval=approval):
+                recipient_ids.append(lead.id)
+                by_id[str(lead.id)] = lead
     return [by_id[str(user_id)] for user_id in recipient_ids if str(user_id) in by_id]
 
 
@@ -264,8 +344,8 @@ class ApprovalService:
             approval.tenant_id = agent.tenant_id
         # The Agent reference is the only authority anchor for this decision:
         # a missing Agent row must fail closed instead of skipping the check.
-        if not agent or not _can_resolve_agent_approval(agent, user):
-            raise ValueError("Only the current Agent owner or tenant organization admin can resolve approvals")
+        if not agent or not await can_resolve_approval(db, agent=agent, user=user, approval=approval):
+            raise ValueError("Only the current Agent owner or tenant organization admin, or an authorized team lead, can resolve approvals")
 
         local_agent_resolution = None
 
@@ -424,7 +504,7 @@ class ApprovalService:
                     requester_id = uuid.UUID(str(requested_by))
                 except (ValueError, AttributeError) as notify_err:
                     logger.debug("Could not parse approval requester %s: %s", requested_by, notify_err)
-            approvers = await _load_approval_recipients(db, agent)
+            approvers = await _load_approval_recipients(db, agent, approval=approval)
             approver_ids = {str(user.id) for user in approvers}
             for recipient in approvers:
                 await send_notification(
@@ -432,8 +512,8 @@ class ApprovalService:
                     user_id=recipient.id,
                     type="approval_resolved",
                     title=f"[{agent.name}] {approval.action_type} — {status_label}",
-                    body=body_text,
-                    link=f"/agents/{agent.id}#approvals",
+                    body=body_text if _can_resolve_agent_approval(agent, recipient) else "Review the authorized team action in team approvals.",
+                    link=f"/agents/{agent.id}#approvals" if _can_resolve_agent_approval(agent, recipient) else "/team",
                     ref_id=approval.id,
                 )
             if requester_id is not None and str(requester_id) not in approver_ids:
@@ -442,6 +522,7 @@ class ApprovalService:
                     agent,
                     requester_id=requester_id,
                     include_requester=True,
+                    approval=approval,
                 )
                 for recipient in requester_recipients:
                     if str(recipient.id) in approver_ids:
@@ -463,7 +544,7 @@ class ApprovalService:
         """Send pending approval notification via web and Feishu when available."""
         from app.services.notification_service import send_notification
 
-        recipients = await _load_approval_recipients(db, agent)
+        recipients = await _load_approval_recipients(db, agent, approval=approval)
         body = json.dumps(approval.details, ensure_ascii=False)[:200]
         for recipient in recipients:
             await send_notification(
@@ -471,8 +552,8 @@ class ApprovalService:
                 user_id=recipient.id,
                 type="approval_pending",
                 title=f"[{agent.name}] approval required: {approval.action_type}",
-                body=body,
-                link=f"/agents/{agent.id}#approvals",
+                body=body if _can_resolve_agent_approval(agent, recipient) else "Review the authorized team action in team approvals.",
+                link=f"/agents/{agent.id}#approvals" if _can_resolve_agent_approval(agent, recipient) else "/team",
                 ref_id=approval.id,
             )
 
@@ -492,7 +573,7 @@ class ApprovalService:
                     id_type,
                     agent.name,
                     approval.action_type,
-                    card_body,
+                    card_body if _can_resolve_agent_approval(agent, recipient) else "Review the authorized team action in team approvals.",
                     str(approval.id),
                     extra_config=channel.extra_config,
                 )

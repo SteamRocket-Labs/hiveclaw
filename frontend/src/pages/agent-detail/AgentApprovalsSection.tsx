@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next';
 
 import { agentApi } from '../../api/domains/agents';
 import ApprovalRequestSummary from '../../components/ApprovalRequestSummary';
+import ApprovalReviewerControls, { type ApprovalReviewerState } from '../../components/ApprovalReviewerControls';
 import {
   approvalContinuationPresentation,
   approvalExecutionPresentation,
@@ -16,7 +17,7 @@ type AgentApprovalsSectionProps = {
   agentId: string;
 };
 
-type AgentApproval = ApprovalExecutionLike & ApprovalRequestLike & {
+type AgentApproval = ApprovalExecutionLike & ApprovalRequestLike & ApprovalReviewerState & {
   id: string;
   status: string;
   created_at?: string | null;
@@ -74,6 +75,7 @@ export default function AgentApprovalsSection({ agentId }: AgentApprovalsSection
                 </span>
               </div>
               <ApprovalRequestSummary approval={approval} showDetails showTitle={false} />
+              <ApprovalReviewerControls approval={approval} onChanged={() => { void refetchApprovals(); }} />
               <div className="agent-approvals-actions">
                 <button
                   className="btn btn-primary"

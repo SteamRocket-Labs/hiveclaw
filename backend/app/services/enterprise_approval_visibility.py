@@ -10,7 +10,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
-from sqlalchemy import and_, not_
+from sqlalchemy import and_
 from sqlalchemy.sql.elements import ColumnElement
 
 SESSION_TOOL_APPROVAL_ORIGIN_TYPES = frozenset({"agent_session", "approval_request"})
@@ -41,4 +41,4 @@ def enterprise_visible_approval_filter(model: Any) -> ColumnElement[bool]:
 
     tool_name = model.details["tool"].as_string()
     origin_type = model.details["origin"]["type"].as_string()
-    return not_(and_(tool_name.is_not(None), origin_type.in_(SESSION_TOOL_APPROVAL_ORIGIN_TYPES)))
+    return and_(tool_name.is_not(None), tool_name != "", origin_type.in_(SESSION_TOOL_APPROVAL_ORIGIN_TYPES)).is_not(True)

@@ -40,8 +40,8 @@ async def load_session_approval(db, *, session, approval_id, for_update=False):
     return approval
 
 
-def session_approval_projection(approval, *, agent, user):
-    from app.services.approval_service import _can_resolve_agent_approval
+async def session_approval_projection(approval, *, db, agent, user):
+    from app.services.approval_service import can_resolve_approval
 
     details = {key: value for key, value in (approval.details or {}).items()
         if key in {"reason", "summary", "command", "attachment_count"}}
@@ -51,10 +51,12 @@ def session_approval_projection(approval, *, agent, user):
             details["path"] = path
     return {
         "id": str(approval.id), "status": approval.status, "action_type": approval.action_type,
+        "agent_id": str(agent.id), "agent_name": agent.name, "created_at": approval.created_at,
+        "resolved_at": approval.resolved_at, "resolved_by": approval.resolved_by,
         "tool_name": approval.tool_name, "execution_status": approval.execution_status,
         "details": details,
         "execution_receipt": {"continuation_status": (approval.execution_receipt or {}).get("continuation_status")},
-        "can_resolve": approval.status == "pending" and _can_resolve_agent_approval(agent, user),
+        "can_resolve": approval.status == "pending" and await can_resolve_approval(db, agent=agent, user=user, approval=approval),
     }
 
 

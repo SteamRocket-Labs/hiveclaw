@@ -12,6 +12,8 @@ const create = vi.fn();
 const share = vi.fn();
 const createSession = vi.fn();
 const updateMember = vi.fn();
+const listApprovals = vi.fn();
+const resolveApproval = vi.fn();
 let signedIn: {
   id: string;
   role: string;
@@ -61,6 +63,10 @@ vi.mock('../../api/domains/businessTeams', () => ({
 vi.mock('../../api/domains/chat', () => ({
   chatApi: { createSession: (...args: unknown[]) => createSession(...args) },
 }));
+vi.mock('../../api/domains/enterprise', () => ({ enterpriseApi: {
+  listApprovals: (...args: unknown[]) => listApprovals(...args),
+  resolveApproval: (...args: unknown[]) => resolveApproval(...args),
+} }));
 
 const analyst: Agent = {
   id: 'agent-1',
@@ -125,6 +131,23 @@ describe('WorkspaceBusinessTeams', () => {
     signedIn = { id: 'user-1', role: 'member', tenant_id: 'tenant-1', department_id: 'dept-1', display_name: 'Avery' };
     localStorage.clear();
     vi.clearAllMocks();
+  });
+
+  it('opens the selected team approval queue without entering an owner private conversation', async () => {
+    list.mockResolvedValue({ tenant_id: 'tenant-1', caller: { can_create: true }, teams: [team()] });
+    read.mockResolvedValue(team());
+    listApprovals.mockResolvedValue([{ id: 'approval-1', agent_id: 'agent-1', agent_name: 'Analyst',
+      action_type: 'workspace.write', tool_name: 'write_file', details: { path: 'report.md' },
+      status: 'pending', created_at: '2026-10-18T00:00:00Z' }]);
+    resolveApproval.mockResolvedValue({ status: 'approved', execution_status: 'queued' });
+    renderTeams();
+    fireEvent.click(await screen.findByRole('button', { name: /Delivery/ }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Approvals' }));
+    expect(await screen.findByText('report.md')).toBeTruthy();
+    expect(listApprovals).toHaveBeenCalledWith('tenant-1', 'team-1');
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm' }));
+    await waitFor(() => expect(resolveApproval).toHaveBeenCalledWith('approval-1', { action: 'approve' }));
+    expect(createSession).not.toHaveBeenCalled();
   });
 
   it('keeps session links private and refuses read-only entry', () => {

@@ -6,6 +6,7 @@ import { chatApi } from '../../api/domains/chat';
 import { ApiError } from '../../api/core/errors';
 import type { Agent } from '../../types';
 import { useAuthStore } from '../../stores';
+import WorkspaceApprovalsSection from './WorkspaceApprovalsSection';
 
 type SignedInUser = {
   id?: string;
@@ -123,6 +124,7 @@ export function WorkspaceBusinessTeams({ agents }: { agents: Agent[] }) {
     enabled: user?.role === 'org_admin' || user?.role === 'platform_admin',
   });
   const [detail, setDetail] = useState<BusinessTeamDetail | null>(null);
+  const [approvalTeamId, setApprovalTeamId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
   const [stale, setStale] = useState(false);
@@ -402,6 +404,16 @@ export function WorkspaceBusinessTeams({ agents }: { agents: Agent[] }) {
               {' · '}
               {t('featureHub.businessTeams.createdBy', 'Created by {{name}}', { name: detail.created_by_display_name })}
             </p>
+            {detail.can_manage && (
+              <div>
+                <button type="button" className="btn btn-ghost" aria-expanded={approvalTeamId === detail.id}
+                  onClick={() => setApprovalTeamId(approvalTeamId === detail.id ? null : detail.id)}>
+                  {t('agent.tabs.approvals', 'Approvals')}
+                </button>
+                {approvalTeamId === detail.id && <WorkspaceApprovalsSection key={`${scopeKey}:${detail.id}`}
+                  selectedTenantId={detail.tenant_id} businessTeamId={detail.id} />}
+              </div>
+            )}
             {detail.can_manage && (
               <form className="business-team-form" onSubmit={(event) => {
                 event.preventDefault();

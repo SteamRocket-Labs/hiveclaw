@@ -2070,9 +2070,10 @@ async def list_agent_approvals(
     db: AsyncSession = Depends(get_db),
 ):
     """List approval requests for a specific agent. Only creator or admin can view."""
-    await require_agent_manage_access(db, current_user, agent_id)
+    agent = await require_agent_manage_access(db, current_user, agent_id)
 
     from app.models.audit import ApprovalRequest
+    from app.services.approval_service import approval_team_reviewers
 
     query = select(ApprovalRequest).where(ApprovalRequest.agent_id == agent_id)
     query = query.where(enterprise_visible_approval_filter(ApprovalRequest))
@@ -2101,6 +2102,7 @@ async def list_agent_approvals(
             "consumed_at": a.consumed_at.isoformat() if a.consumed_at else None,
             "execution_status": a.execution_status,
             "execution_receipt": a.execution_receipt,
+            "team_reviewers": await approval_team_reviewers(db, agent=agent, approval=a, user=current_user),
         }
         for a in approvals
     ]

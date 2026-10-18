@@ -504,6 +504,7 @@ class ApprovalRequestOut(BaseModel):
     execution_task_id: uuid.UUID | None = None
     execution_result: str | None = None
     execution_receipt: dict | None = None
+    team_reviewers: list[dict] | None = None
 
     model_config = {"from_attributes": True}
 

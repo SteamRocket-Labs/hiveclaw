@@ -25,6 +25,17 @@ export interface JoinResult {
   access_token: string;
 }
 
+export interface CompanyOnboardingStatus {
+  tenant_id: string;
+  tenant_name: string;
+  authenticated_user_id: string;
+  configuration_only: true;
+  employees: Array<{ id: string; name: string; agent_type: string }>;
+  items: Array<{ key: 'sso' | 'llm' | 'agent' | 'channel' | 'org'; title: string; completed: boolean; required: boolean; link: string | null }>;
+  completed: number;
+  total: number;
+}
+
 export interface DeleteTenantResult {
   fallback_tenant_id: string | null;
   needs_company_setup: boolean;
@@ -46,5 +57,5 @@ export const systemApi = {
   getRegistrationConfig: () => get<{ invitation_code_required: boolean }>('/tenants/registration-config'),
 
   /** Onboarding */
-  getOnboardingStatus: () => get<Record<string, unknown>>('/onboarding-status'),
+  getOnboardingStatus: (tenantId?: string) => get<CompanyOnboardingStatus>(`/enterprise/onboarding-status${tenantId ? `?tenant_id=${encodeURIComponent(tenantId)}` : ''}`),
 };

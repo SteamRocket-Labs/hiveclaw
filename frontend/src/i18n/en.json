@@ -5328,5 +5328,24 @@
     "retry": "Retry this check request",
     "run": "Run a new check",
     "cancel": "Cancel my check"
+  },
+  "companyOpening": {
+    "models": "Models for native employees",
+    "employee": "Create a digital employee",
+    "channel": "Employee channel configuration",
+    "directory": "Company directory",
+    "sso": "OIDC sign-in configuration",
+    "configured": "Configured",
+    "missing": "Not configured",
+    "title": "Get started with your company",
+    "unavailable": "Could not confirm this company’s setup. Refresh to retry; previous company details are hidden.",
+    "loading": "Reading the current company setup…",
+    "signedIn": "You are signed in to this company. Configuration below does not prove that a provider, worker or connected application can complete a task.",
+    "runtimeChoice": "Native employees use an approved company model. Connected employees use their own runtime. Check the employee you intend to work with; a computer, SSO, channel or directory sync is not required for every task.",
+    "selectEmployee": "Employee to check",
+    "chooseEmployee": "Choose an employee",
+    "openEmployee": "Open employee work",
+    "optional": "Optional company integrations",
+    "optionalBoundary": "These are saved configuration records. Sign-in, channel delivery and directory sync require their own real checks."
   }
 }

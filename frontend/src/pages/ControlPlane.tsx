@@ -26,6 +26,7 @@ import {
   type WorkspaceSettingsSectionTab,
 } from '../surfaces/workspace/sections';
 import EnterpriseSettings from './EnterpriseSettings';
+import CompanyOpeningGuide from './workspace/CompanyOpeningGuide';
 
 type ControlPlaneTab = WorkspaceSettingsSectionTab;
 
@@ -248,6 +249,8 @@ export default function ControlPlane({ tab }: ControlPlaneProps) {
           <IconChartBar size={22} stroke={1.7} />
         </span>
       </div>
+
+      <CompanyOpeningGuide />
 
       <div className="workbench-metrics">
         {isScopedAdmin && (

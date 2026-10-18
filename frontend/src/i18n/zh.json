@@ -5328,5 +5328,24 @@
     "retry": "重试本次检查请求",
     "run": "运行新的检查",
     "cancel": "取消我的检查"
+  },
+  "companyOpening": {
+    "models": "原生员工使用的模型",
+    "employee": "创建数字员工",
+    "channel": "员工渠道配置",
+    "directory": "公司目录",
+    "sso": "OIDC 登录配置",
+    "configured": "已配置",
+    "missing": "未配置",
+    "title": "开始使用公司工作空间",
+    "unavailable": "暂时无法确认当前公司的配置。请刷新重试，已隐藏此前的公司详情。",
+    "loading": "正在读取当前公司的配置…",
+    "signedIn": "你已登录当前公司。以下配置记录不代表模型提供方、执行进程或已连接应用能够完成任务。",
+    "runtimeChoice": "原生员工使用公司批准的模型，已连接员工使用自己的运行环境。请选择准备使用的员工进行检查；并非每项工作都需要电脑、SSO、渠道或目录同步。",
+    "selectEmployee": "要检查的员工",
+    "chooseEmployee": "选择员工",
+    "openEmployee": "进入员工工作",
+    "optional": "可选的公司集成",
+    "optionalBoundary": "这里只显示已保存的配置记录。登录、渠道投递和目录同步仍需各自的实际检查。"
   }
 }

@@ -152,6 +152,7 @@ def authorized_execution_workspace(canonical_workspace: Path, authority_scope):
     canonical_work = canonical_workspace / "workspace"
     mutated = False
     try:
+        copied_inputs: dict[str, dict[str, Any]] = {}
         readable_paths = set(authority_scope.allowed_paths)
         if authority_scope.operator_view and canonical_work.exists():
             readable_paths.update(path.relative_to(canonical_workspace).as_posix()
@@ -170,12 +171,16 @@ def authorized_execution_workspace(canonical_workspace: Path, authority_scope):
                     _copy_workspace_resource(canonical_workspace, isolated, allowed_path)
                 else:
                     _copy_workspace_resource(canonical_workspace, isolated, allowed_path, input_read=read)
+                copied_inputs[allowed_path] = {"path": allowed_path,
+                    "sha256": read.observed_sha256 if read is not None else None}
             except WorkspaceAuthorityError as exc:
                 if read is None or exc.code != "workspace_content_unverified":
                     raise
                 # The rejected bytes never become available to the process.
                 delete_workspace_path(isolated, allowed_path)
         before = _workspace_file_state(isolated_work)
+        if authority_scope.execution_inputs is not None:
+            authority_scope.execution_inputs.observe(copied_inputs, authority_scope)
         yield isolated
         after = _workspace_file_state(isolated_work)
         changed = {rel: state for rel, state in after.items() if _workspace_state_changed(before.get(rel), state)}

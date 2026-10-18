@@ -376,6 +376,30 @@ class WorkspaceOutputWrite:
             raise WorkspaceAuthorityError("workspace_predecessor_changed", "The bytes used by the edit changed after preflight. Read the current file and revise the edit.")
 
 
+@dataclass
+class WorkspaceExecutionInputs:
+    sources: list[dict[str, str]] = field(default_factory=list)
+    unbound: list[str] = field(default_factory=list)
+    observed: bool = False
+
+    def observe(self, states: dict[str, dict], scope) -> None:
+        for state in states.values():
+            path, digest = state["path"], state.get("sha256")
+            read = scope.input_read(path)
+            if read is None or not digest or read.observed_sha256 != digest or read.content_sha256 != digest:
+                self.unbound.append(path)
+            else:
+                self.sources.append({"source_kind": "workspace_artifact", "source_id": str(read.receipt_id),
+                    "source_version": digest})
+        self.observed = True
+
+    def snapshot(self) -> dict:
+        sources = sorted({(row["source_kind"], row["source_id"], row["source_version"]) for row in self.sources})
+        return {"schema": "hive.workspace_execution_inputs.v1", "observed": self.observed,
+            "sources": [dict(zip(("source_kind", "source_id", "source_version"), row)) for row in sources],
+            "unbound": sorted(set(self.unbound))}
+
+
 @dataclass(frozen=True)
 class WorkspaceAuthorityScope:
     agent_id: uuid.UUID
@@ -391,6 +415,7 @@ class WorkspaceAuthorityScope:
     output_writes: tuple[WorkspaceOutputWrite, ...] = ()
     session_source_ids: frozenset[str] | None = None
     skill_inputs: Any | None = field(default=None, repr=False)
+    execution_inputs: WorkspaceExecutionInputs | None = field(default=None, repr=False)
 
     def can_read_session_source(self, path: str) -> bool | None:
         if self.session_source_ids is None:

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useCallback, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { IconDownload, IconExternalLink, IconFileText, IconX } from '@tabler/icons-react';
 
@@ -9,6 +9,9 @@ import { saveBlob } from '../../utils/authenticatedResource';
 import { showAppToast } from '../../components/AppDialogs';
 import type { ChatArtifactPart } from './chatRuntime';
 import AgentWorkspaceSection from './AgentWorkspaceSection';
+import ArtifactContinuation, { type ArtifactContinuationContext } from './ArtifactContinuation';
+import type { FileEditorState } from '../../components/FileBrowser';
+import './ArtifactContinuation.css';
 
 type Translate = ReturnType<typeof useTranslation>['t'];
 
@@ -160,6 +163,7 @@ export function ArtifactPreviewPanel({
   onClose,
   onRetry,
   onDownload,
+  continuation,
   t,
 }: {
   preview: ArtifactPreviewState;
@@ -169,6 +173,7 @@ export function ArtifactPreviewPanel({
   onClose: () => void;
   onRetry?: () => void;
   onDownload?: () => void;
+  continuation?: ArtifactContinuationContext;
   t: Translate;
 }) {
   const previewKind = getEffectiveArtifactPreviewKind(preview.artifact);
@@ -178,6 +183,10 @@ export function ArtifactPreviewPanel({
   const [showCurrent, setShowCurrent] = useState(false);
   const currentFileOpen = openedFile === fileIdentity && showCurrent;
   const canOpenCurrent = workspaceAgentId && preview.artifact.path.startsWith('workspace/') && ['markdown', 'text'].includes(previewKind);
+  const [editor, setEditor] = useState<{ identity: string; state: FileEditorState } | null>(null);
+  const editorChanged = useCallback((state: FileEditorState) => setEditor({ identity: fileIdentity, state }), [fileIdentity]);
+  const currentEditor = editor?.identity === fileIdentity ? editor.state : null;
+  const continuationBlocked = Boolean(currentEditor && (currentEditor.dirty || currentEditor.busy || currentEditor.unavailable));
   const showPendingEmptyPreview = isPendingEmptyArtifactPreview(
     preview.artifact,
     preview.content,
@@ -315,7 +324,8 @@ export function ArtifactPreviewPanel({
             <div hidden={!currentFileOpen}>
               <AgentWorkspaceSection agentId={workspaceAgentId} singleFile={preview.artifact.path}
                 canUseOperatorView={Boolean(workspaceAuthority?.operatorView)} operatorOnly={Boolean(workspaceAuthority?.operatorView)}
-                operatorReason={workspaceAuthority?.reason} onOperatorAuthorityDenied={onWorkspaceAuthorityDenied} />
+                operatorReason={workspaceAuthority?.reason} onOperatorAuthorityDenied={onWorkspaceAuthorityDenied}
+                onEditorStateChange={editorChanged} />
             </div>
           )}
           <div hidden={currentFileOpen}>
@@ -375,6 +385,11 @@ export function ArtifactPreviewPanel({
           )}
           </div>
         </div>
+        {continuation && workspaceAgentId && preview.artifact.path.startsWith('workspace/') && !workspaceAuthority?.operatorView && (
+          <ArtifactContinuation key={`${fileIdentity}:${continuation.sessionId}`} artifact={preview.artifact}
+            workspaceAgentId={workspaceAgentId} context={continuation} blocked={continuationBlocked}
+            lastSavedHash={currentEditor?.lastSavedHash} />
+        )}
       </section>
     </div>
   );

@@ -2054,6 +2054,31 @@ def test_runtime_attachment_sections_report_tool_refresh_and_external_file_chang
     assert 'read_file("workspace/report.md")' in text
 
 
+@pytest.mark.parametrize("tracked", [False, True])
+def test_file_change_notice_keeps_its_observed_tool_source_and_never_copies_new_bytes(tmp_path, monkeypatch, tracked):
+    from app.kernel.engine import _build_runtime_attachment_sections, _snapshot_session_file
+    from app.runtime.context import ensure_runtime_assembly_state
+    from app.runtime.session import SessionContext
+
+    agent_id = uuid4()
+    report = tmp_path / str(agent_id) / "workspace/report.md"
+    report.parent.mkdir(parents=True)
+    report.write_text("Original bytes")
+    monkeypatch.setattr("app.config.get_settings", lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)))
+    source = {"source_kind": "session_tool_invocation", "source_id": str(uuid4()), "source_version": "a" * 64}
+    session = SessionContext()
+    session.track_file_write("workspace/report.md", snapshot=_snapshot_session_file(agent_id, "workspace/report.md"),
+        tracking_source=source if tracked else None)
+    session.begin_turn()
+    report.write_text("Human saved bytes must only be read through authorized tools")
+    section = _build_runtime_attachment_sections(agent_id, session)[0]
+    assert "Runtime File Change Notice" in section
+    assert "Human saved bytes" not in section
+    state = ensure_runtime_assembly_state(session)
+    assert state.context_unbound_for(agent_id=agent_id, content=section) == (() if tracked else ("context_source_inventory_missing",))
+    assert list(state.context_sources_for(agent_id=agent_id, content=section)) == ([source] if tracked else [])
+
+
 def test_build_persisted_memory_messages_includes_runtime_events():
     from app.kernel.contracts import InvocationRequest
     from app.kernel.engine import _build_persisted_memory_messages

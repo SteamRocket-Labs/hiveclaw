@@ -105,6 +105,7 @@ import {
   isUserFacingDeliveryArtifact,
 } from './ArtifactSurface';
 import { useArtifactPreview } from './useArtifactPreview';
+import type { SessionMessageOptions } from './ArtifactContinuation';
 import {
   ActiveTailStatusLine,
   isRuntimeRecord,
@@ -342,6 +343,7 @@ interface AgentChatSectionProps {
   agentId?: string | null;
   agent: any;
   currentUser: any;
+  principalScopeKey?: string;
   isAdmin: boolean;
   operatorReason?: string;
   onOperatorAuthorityDenied?: (error: unknown) => void;
@@ -404,7 +406,7 @@ interface AgentChatSectionProps {
   onSendChatMsg: () => void;
   onBranchMessage?: (message: AgentChatMessage, mode: ConversationBranchMode, content?: string) => void | Promise<unknown>;
   /** Sends an explicit message (not from the composer) — used by inline cards. */
-  onSendMessage?: (text: string) => void | Promise<unknown>;
+  onSendMessage?: (text: string, options?: SessionMessageOptions) => void | Promise<unknown>;
   onAnswerQuestion?: (itemId: string, text: string) => Promise<unknown>;
   /**
    * Approves a Plan Mode entry request: sends the given reason as a message
@@ -1107,6 +1109,7 @@ function AgentChatSection({
   agentId,
   agent,
   currentUser,
+  principalScopeKey = '',
   isAdmin,
   operatorReason = '',
   onOperatorAuthorityDenied,
@@ -1260,9 +1263,9 @@ function AgentChatSection({
   const gitScrollFrameRef = React.useRef<number | null>(null);
   const childAuthorityIdentity = operatorView
     ? (operatorReadEnabled
-        ? `operator:${effectiveAgentId ?? ''}:${activeSessionId ?? ''}:${normalizedOperatorReason}`
+        ? `operator:${principalScopeKey}:${currentUser?.id ?? ''}:${currentUser?.role ?? ''}:${effectiveAgentId ?? ''}:${activeSessionId ?? ''}:${normalizedOperatorReason}`
         : 'operator:unavailable')
-    : `owner:${effectiveAgentId ?? ''}:${activeSessionId ?? ''}`;
+    : `owner:${principalScopeKey}:${currentUser?.id ?? ''}:${currentUser?.role ?? ''}:${effectiveAgentId ?? ''}:${activeSessionId ?? ''}`;
   const { artifactPreview, closeArtifactPreview, downloadArtifactFile, openArtifact } = useArtifactPreview({
     authorityIdentity: childAuthorityIdentity,
     effectiveAgentId,
@@ -2169,6 +2172,7 @@ function AgentChatSection({
             </div>
             {operatorReadEnabled && artifactPreview && (
               <ArtifactPreviewPanel
+                key={childAuthorityIdentity}
                 preview={artifactPreview}
                 agentId={effectiveAgentId || undefined}
                 workspaceAuthority={resourceOperatorOptions}
@@ -2176,6 +2180,8 @@ function AgentChatSection({
                 onClose={closeArtifactPreview}
                 onRetry={() => void openArtifact(artifactPreview.artifact)}
                 onDownload={() => void downloadArtifactFile(artifactPreview.artifact)}
+                continuation={canUseComposer && !operatorView && !isDraftSession && activeSessionId && onSendMessage
+                  ? { sessionId: activeSessionId, send: onSendMessage } : undefined}
                 t={t}
               />
             )}
@@ -2335,6 +2341,7 @@ function AgentChatSection({
               )}
               {operatorReadEnabled && artifactPreview && (
                 <ArtifactPreviewPanel
+                  key={childAuthorityIdentity}
                   preview={artifactPreview}
                   agentId={effectiveAgentId || undefined}
                   workspaceAuthority={resourceOperatorOptions}
@@ -2342,6 +2349,8 @@ function AgentChatSection({
                   onClose={closeArtifactPreview}
                   onRetry={() => void openArtifact(artifactPreview.artifact)}
                   onDownload={() => void downloadArtifactFile(artifactPreview.artifact)}
+                  continuation={canUseComposer && !operatorView && !isDraftSession && activeSessionId && onSendMessage
+                    ? { sessionId: activeSessionId, send: onSendMessage } : undefined}
                   t={t}
                 />
               )}

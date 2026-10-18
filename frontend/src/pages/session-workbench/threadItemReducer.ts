@@ -91,6 +91,7 @@ function isCanonicalThreadItem(value: unknown): value is ThreadItem {
 }
 
 function legacyItemType(eventType: string, role: string, data: Record<string, unknown>): ThreadItemType {
+  if (eventType === 'runtime_action_unconfirmed') return 'warning';
   const markers = [
     data.action_kind,
     data.interaction_type,
@@ -118,6 +119,7 @@ function legacyItemType(eventType: string, role: string, data: Record<string, un
 }
 
 function legacyItemStatus(itemType: ThreadItemType, eventType: string, data: Record<string, unknown>): ThreadItemStatus {
+  if (eventType === 'runtime_action_unconfirmed') return 'waiting_user';
   if (eventType === 'source_access_notice') return 'waiting_user';
   const status = String(data.status || data.eventStatus || data.phase || '').trim().toLowerCase();
   if (itemType === 'approval_request' && (!status || RUNNING_STATUSES.has(status) || WAITING_STATUSES.has(status))) {
@@ -530,7 +532,7 @@ export function threadItemToAgentChatMessage(item: ThreadItem): AgentChatMessage
     case 'warning':
       return {
         ...base,
-        eventStatus: 'degraded',
+        eventStatus: item.event_type === 'runtime_action_unconfirmed' ? 'input_outcome_unknown' : 'degraded',
         eventReason: item.item_data.reason || undefined,
         eventRetryable: item.item_data.retryable,
         eventRetryReason: item.item_data.retry_reason || undefined,

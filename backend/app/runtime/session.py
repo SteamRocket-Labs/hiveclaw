@@ -147,6 +147,7 @@ class SessionContext:
     # compares these against live stat data before later rounds so external
     # file edits can be surfaced as runtime attachments.
     file_snapshots: dict[str, dict[str, Any]] = field(default_factory=dict)
+    file_snapshot_sources: dict[str, dict[str, str]] = field(default_factory=dict)
     # P1-W2-7: per-skill bookkeeping (refcount + last_used_at_ts) parallel
     # to active_skills. The list is the public read surface (kept as
     # `list[str]` for backwards compat); this dict drives unload + prune.
@@ -172,13 +173,17 @@ class SessionContext:
         elif self.discovered_tools:
             self.metadata["discovered_tools"] = list(self.discovered_tools)
 
-    def track_file_read(self, path: str, *, snapshot: dict[str, Any] | None = None) -> None:
+    def track_file_read(self, path: str, *, snapshot: dict[str, Any] | None = None,
+        tracking_source: dict[str, str] | None = None) -> None:
         """Record a file read for durable post-compact restoration."""
         if path in self.recent_files:
             self.recent_files.remove(path)
         self.recent_files.append(path)
         if snapshot is not None:
             self.file_snapshots[path] = dict(snapshot)
+            self.file_snapshot_sources.pop(path, None)
+            if isinstance(tracking_source, dict):
+                self.file_snapshot_sources[path] = dict(tracking_source)
 
     def track_skill_loaded(self, skill_name: str, *, now: float | None = None) -> None:
         """Record a skill activation. Bumps refcount and refreshes last_used_at."""
@@ -254,6 +259,7 @@ class SessionContext:
         *,
         snapshot: dict[str, Any] | None = None,
         lineage: dict[str, Any] | None = None,
+        tracking_source: dict[str, str] | None = None,
     ) -> None:
         """Record a file write for durable post-compact restoration."""
         if path in self.recent_writes:
@@ -265,6 +271,9 @@ class SessionContext:
         if snapshot is not None:
             self.file_snapshots[path] = dict(snapshot)
             self.current_turn_write_snapshots[path] = dict(snapshot)
+            self.file_snapshot_sources.pop(path, None)
+            if isinstance(tracking_source, dict):
+                self.file_snapshot_sources[path] = dict(tracking_source)
         if isinstance(lineage, dict):
             self.current_turn_write_lineage.append(dict(lineage))
         # Keep the complete active-turn manifest. It is cleared by begin_turn;

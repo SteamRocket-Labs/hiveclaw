@@ -25,6 +25,9 @@ const mocks = vi.hoisted(() => ({
   agentError: null as unknown,
   userRole: 'platform_admin' as string,
   projectActiveTimeline: false,
+  startSessionRun: vi.fn(),
+  createSessionRun: vi.fn(),
+  chatProps: null as any,
 }));
 
 vi.mock('react-i18next', () => ({
@@ -106,6 +109,8 @@ vi.mock('../api/domains/chat', () => ({
     getSessionTranscript: mocks.getSessionTranscript,
     getSessionMessages: mocks.getSessionMessages,
     getSessionLineage: mocks.getSessionLineage,
+    startSessionRun: mocks.startSessionRun,
+    createSessionRun: mocks.createSessionRun,
   },
 }));
 
@@ -147,14 +152,17 @@ vi.mock('./agent-detail/LocalAgentChatSection', () => ({
   default: () => <div data-testid="local-agent-chat">Local mutable chat</div>,
 }));
 vi.mock('./agent-detail/AgentChatSection', () => ({
-  default: ({ activeSession, chatMessages, historyMsgs, allSessions, chatMessagesSessionId, historyMessagesSessionId }: {
+  default: ({ activeSession, chatMessages, historyMsgs, allSessions, chatMessagesSessionId, historyMessagesSessionId, onSendMessage }: {
     activeSession?: any;
     chatMessages?: Array<{ content?: string }>;
     historyMsgs?: Array<{ content?: string }>;
     allSessions?: Array<{ id?: string; title?: string }>;
     chatMessagesSessionId?: string | null;
     historyMessagesSessionId?: string | null;
-  }) => (
+    onSendMessage?: (text: string, options?: any) => unknown;
+  }) => {
+    mocks.chatProps = { activeSession, onSendMessage, chatMessages };
+    return (
     <div data-testid="fabricated-session-shell">
       {activeSession?.operator_view ? <strong>Operator View</strong> : activeSession?.read_only ? 'Read-only · User' : null}
       {(!mocks.projectActiveTimeline || (!activeSession?.read_only && chatMessagesSessionId === activeSession?.id) ? chatMessages || [] : [])
@@ -163,7 +171,8 @@ vi.mock('./agent-detail/AgentChatSection', () => ({
         .map((message, index) => <span key={index}>{message.content}</span>)}
       {(allSessions || []).map((session) => <span key={session.id}>{session.title}</span>)}
     </div>
-  ),
+    );
+  },
 }));
 
 import AgentDetail from './AgentDetail';
@@ -198,9 +207,48 @@ beforeEach(() => {
   mocks.listSessions.mockResolvedValue([]);
   mocks.getSessionMessages.mockResolvedValue([]);
   mocks.getSessionLineage.mockResolvedValue([]);
+  mocks.chatProps = null;
+  mocks.startSessionRun.mockReset();
+  mocks.createSessionRun.mockReset();
 });
 
 afterEach(cleanup);
+
+async function mountOwnedArtifactWork() {
+  mocks.sessionId = 'owned-artifact-work';
+  mocks.listSessions.mockResolvedValue([{ id: mocks.sessionId, agent_id: 'agent-1', user_id: 'platform-admin-1',
+    title: 'Saved artifact work', session_kind: 'human_chat', read_only: false, operator_view: false }]);
+  mocks.getSessionTranscript.mockResolvedValue([]);
+  render(<AgentDetail />);
+  await waitFor(() => expect(mocks.chatProps?.activeSession?.id).toBe(mocks.sessionId));
+  return mocks.chatProps.onSendMessage as (text: string, options: { expectedSessionId: string; inputId: string; displayContent?: string }) => Promise<unknown>;
+}
+
+it('retries an artifact input in the exact original work with the same durable identity', async () => {
+  const send = await mountOwnedArtifactWork();
+  mocks.startSessionRun.mockRejectedValueOnce(new ApiError(503, 'Acknowledgement unavailable'))
+    .mockResolvedValue({ schema: 'hive.human_input_receipt', schema_version: 2, status: 'accepted' });
+  const options = { expectedSessionId: 'owned-artifact-work', inputId: globalThis.crypto.randomUUID(), displayContent: 'report.md\nRevise saved file' };
+  await act(async () => { await expect(send('Selected saved file reference', options)).rejects.toThrow('Acknowledgement unavailable'); });
+  expect(mocks.chatProps.chatMessages.at(-1)).toMatchObject({ eventStatus: 'input_outcome_unknown' });
+  expect(mocks.chatProps.chatMessages.at(-1).threadItem).toMatchObject({ item_type: 'warning', item_status: 'waiting_user' });
+  await act(async () => { await send('Selected saved file reference', options); });
+  expect(mocks.startSessionRun).toHaveBeenCalledTimes(2);
+  expect(mocks.startSessionRun.mock.calls[1]).toEqual(mocks.startSessionRun.mock.calls[0]);
+  expect(mocks.startSessionRun.mock.calls[0].slice(0, 2)).toEqual(['agent-1', 'owned-artifact-work']);
+  expect(mocks.startSessionRun.mock.calls[0][2]).toMatchObject({ input_id: options.inputId,
+    idempotency_key: `session-input:${options.inputId}`, display_content: options.displayContent });
+  expect(mocks.createSessionRun).not.toHaveBeenCalled();
+});
+
+it('refuses an artifact callback after its original work or account changes', async () => {
+  const send = await mountOwnedArtifactWork();
+  await expect(send('Private artifact follow-up', { expectedSessionId: 'different-work', inputId: globalThis.crypto.randomUUID() })).rejects.toThrow('original work');
+  mocks.userRole = 'member';
+  await expect(send('Private artifact follow-up', { expectedSessionId: 'owned-artifact-work', inputId: globalThis.crypto.randomUUID() })).rejects.toThrow('original work');
+  expect(mocks.startSessionRun).not.toHaveBeenCalled();
+  expect(mocks.createSessionRun).not.toHaveBeenCalled();
+});
 
 describe('AgentDetail direct-session authority presentation', () => {
   it.each([

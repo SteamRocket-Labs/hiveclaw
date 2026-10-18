@@ -180,7 +180,8 @@ async def test_real_worker_command_environment_stop_resume_and_saved_files(
 
 
 async def _exercise_real_worker_environment(
-    owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, *, recovery=None
+    owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, *, recovery=None,
+    initial_delivery=False, recovery_invocation_key="crashed-before-resource",
 ):
     from app.api.environments import router
     import app.database as database
@@ -327,7 +328,8 @@ async def _exercise_real_worker_environment(
                     ],
                     "finish_reason": "tool_calls",
                 },
-                {"content": "The command outcome is recorded in this work.", "finish_reason": "stop"},
+                {"content": "The command outcome is recorded in this work."
+                 + ("\nDELIVERABLE: workspace/saved.txt" if initial_delivery and first else ""), "finish_reason": "stop"},
             ]
         )
         monkeypatch.setattr(invoker, "create_llm_client", lambda **_kwargs: script)
@@ -483,7 +485,7 @@ async def _exercise_real_worker_environment(
             leases = list(
                 await db.scalars(select(EnvironmentLease).where(EnvironmentLease.environment_id == UUID(current["id"])))
             )
-            command_leases = [lease for lease in leases if lease.invocation_key != "crashed-before-resource"]
+            command_leases = [lease for lease in leases if lease.invocation_key != recovery_invocation_key]
             assert len(leases) == 3 + int(recovery is not None)
             assert len(command_leases) == 3 and all(lease.status == "released" for lease in leases)
             assert any(

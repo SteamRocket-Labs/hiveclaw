@@ -262,6 +262,7 @@ const SESSION_NATIVE_DISCLOSURE_EVENTS = new Set([
   'runtime_action_completed',
   'runtime_action_blocked',
   'runtime_action_failed',
+  'runtime_action_unconfirmed',
   'memory_context_degraded',
   'memory_context_unavailable',
 ]);

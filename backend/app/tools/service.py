@@ -1353,7 +1353,10 @@ class ToolRuntimeService:
 
                 scope = context.workspace_authority_scope
                 if isinstance(scope, WorkspaceAuthorityScope):
-                    context.workspace_authority_scope = replace(scope, output_writes=(), skill_inputs=None)
+                    from app.services.workspace_resource_authority import WorkspaceExecutionInputs
+
+                    context.workspace_authority_scope = replace(scope, output_writes=(), skill_inputs=None,
+                        execution_inputs=WorkspaceExecutionInputs() if tool_name in {"run_command", "execute_code"} else None)
                     text_write = tool_name in {"write_file", "edit_file"} or (
                         tool_name == "fs_write" and str(arguments.get("mode") or "write").strip().lower() in {"write", "edit"})
                     if text_write:

@@ -928,6 +928,11 @@ async def persist_workspace_execution_evidence(*, context, tool_name, tool_call_
                 "tool_result_hash": _sha256(str(result)), "states": states, "lineage": lineage, "errors": errors}
             if descriptor_writes is not None:
                 proof["descriptor_writes"] = descriptor_writes
+            from app.services.workspace_resource_authority import WorkspaceExecutionInputs
+
+            execution_inputs = getattr(context.workspace_authority_scope, "execution_inputs", None)
+            if isinstance(execution_inputs, WorkspaceExecutionInputs):
+                proof["execution_inputs"] = execution_inputs.snapshot()
             channel, metadata_key = "workspace-output", "workspace_execution_evidence"
             if input_read is not None:
                 proof.pop("states")
@@ -968,7 +973,9 @@ async def persist_workspace_execution_evidence(*, context, tool_name, tool_call_
                     model=model, arguments=arguments, content_hash=proof["tool_result_hash"])
                 existing.metadata_json = {**existing.metadata_json, "native_content_receipts": status}
             await db.commit()
-            return {"status": "captured", "receipt_ref": f"{channel}:{evidence_id}"}
+            return {"status": "captured", "receipt_ref": f"{channel}:{evidence_id}",
+                "tracking_source": {"source_kind": "session_tool_invocation", "source_id": str(invocation.id),
+                    "source_version": proof["tool_result_hash"]}}
     except ContentInputReceiptError as exc:
         return {"status": "unavailable", "reason_code": exc.code}
     except Exception as exc:
@@ -990,7 +997,7 @@ async def record_native_workspace_receipts(db, *, context, invocation, model, ar
     dependencies, complete = _model_dependencies(model)
     if not complete:
         return {"status": "unavailable", "reason_code": "model_input_inventory_incomplete", "receipts": {}}
-    if invocation.tool_name not in {"write_file", "fs_write", "run_skill_tool"}:
+    if invocation.tool_name not in {"write_file", "fs_write", "run_skill_tool", "run_command", "execute_code"}:
         return {"status": "unavailable", "reason_code": "runtime_output_producer_unavailable", "receipts": {}}
     request = ToolExecutionRequest(tool_name=invocation.tool_name, arguments=arguments, context=context)
     try:
@@ -1018,6 +1025,8 @@ async def record_native_workspace_receipts(db, *, context, invocation, model, ar
         _ref, outputs = await load_workspace_execution_evidence(db, agent_id=context.agent_id, invocation=invocation,
             model_result=model, arguments=arguments, content_hash=content_hash)
         proof = retained.metadata_json["workspace_execution_evidence"]
+        if invocation.tool_name in {"run_command", "execute_code"}:
+            dependencies = _unique_dependencies([*dependencies, *_workspace_execution_input_sources(proof)])
     except ContentInputReceiptError as exc:
         return {"status": "denied" if exc.status_code == 403 else "unavailable", "reason_code": exc.code, "receipts": {}}
     if not outputs:
@@ -1189,6 +1198,27 @@ async def load_workspace_input_evidence(db, *, agent_id, invocation, model_resul
         raise ContentInputReceiptError("workspace_input_evidence_invalid", "The exact input receipt has changed or is unavailable.")
     return {"status": "verified", "evidence_ref": f"workspace-input:{evidence_id}",
         "content_input_receipt_id": str(receipt.id), "revision": receipt.revision}
+
+
+def _workspace_execution_input_sources(proof):
+    from app.services.session_model_inputs import _stored_dependencies
+
+    inputs = proof.get("execution_inputs")
+    sources = _stored_dependencies(inputs.get("sources")) if isinstance(inputs, dict) else None
+    if (not isinstance(inputs, dict) or inputs.get("schema") != "hive.workspace_execution_inputs.v1"
+        or inputs.get("observed") is not True or inputs.get("unbound") != [] or sources is None
+        or any(row["source_kind"] != "workspace_artifact" for row in sources)):
+        raise ContentInputReceiptError("workspace_execution_inputs_unverified", "The copied execution inputs lack complete source receipts.")
+    return sources
+
+
+async def load_workspace_execution_input_evidence(db, *, agent_id, invocation, model_result, arguments, content_hash):
+    from app.models.invocation_span import InvocationSpan
+
+    ref, _hashes = await load_workspace_execution_evidence(db, agent_id=agent_id, invocation=invocation,
+        model_result=model_result, arguments=arguments, content_hash=content_hash)
+    retained = await db.get(InvocationSpan, uuid.uuid5(invocation.id, "workspace-output-evidence"))
+    return ref, _workspace_execution_input_sources(retained.metadata_json["workspace_execution_evidence"])
 
 
 async def load_workspace_execution_evidence(db, *, agent_id, invocation, model_result, arguments, content_hash):

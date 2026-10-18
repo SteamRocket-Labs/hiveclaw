@@ -1,4 +1,5 @@
 import { parseUserAttachment } from './agent-detail/chatAttachments';
+import type { SessionMessageOptions } from './agent-detail/ArtifactContinuation';
 import React, { useState, useEffect, useRef, lazy, Suspense } from 'react';
 import { useParams, useLocation, useNavigate } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
@@ -2101,20 +2102,39 @@ function AgentDetailInner() {
     // queues it as a mid-run user message. When `planMode` is true the message carries
     // plan_mode_requested=true so the existing Plan Mode entry path activates
     // Plan Mode (used by the plan-mode-request approval card).
-    const sendChatMessageText = async (text: string, options?: { planMode?: boolean }) => {
+    const sendChatMessageText = async (text: string, options?: SessionMessageOptions) => {
         const userMsg = text.trim();
-        if (!id || !activeSession?.id || !userMsg) return;
-        const acceptedInputId = globalThis.crypto.randomUUID();
+        const expectedSessionId = options?.expectedSessionId;
+        const currentSubject = () => {
+            const subject = useAuthStore.getState().user;
+            return `${localStorage.getItem('current_tenant_id') || subject?.tenant_id || ''}:${subject?.id || ''}:${subject?.role || ''}`;
+        };
+        const originalSubject = `${readinessScopeKey}:${currentUser?.role || ''}`;
+        const stillOriginalWork = () => !expectedSessionId || (
+            activeSessionIdRef.current === expectedSessionId && currentSubject() === originalSubject
+        );
+        if (!id || !activeSession?.id || !userMsg || expectedSessionId && (
+            String(activeSession.id) !== expectedSessionId || isDraftHumanChatSession(activeSession) || !stillOriginalWork()
+        )) {
+            if (expectedSessionId) throw new Error(t('agent.chat.artifacts.originalWorkUnavailable', 'The original work or account changed. Reopen the file in the current work.'));
+            return;
+        }
+        const acceptedInputId = options?.inputId || globalThis.crypto.randomUUID();
+        const displayContent = options?.displayContent || userMsg;
         try {
-            const started = await startRunForActiveSession({
+            const input = {
                 content: userMsg,
-                display_content: userMsg,
+                display_content: displayContent,
                 ...(options?.planMode ? { plan_mode_requested: true } : {}),
                 permission_mode: sessionPermissionMode,
                 input_id: acceptedInputId,
                 idempotency_key: `session-input:${acceptedInputId}`,
-            });
+            };
+            const started = expectedSessionId
+                ? { session: activeSession, run: await chatApi.startSessionRun(id, expectedSessionId, input) }
+                : await startRunForActiveSession(input);
             if (!started?.session?.id) return;
+            if (!stillOriginalWork()) return;
             const runSessionId = String(started.session.id);
             const activeRuntimeKey = buildSessionRuntimeKey(id, runSessionId);
             if (!activeRunStateRef.current[activeRuntimeKey]?.runId) {
@@ -2126,17 +2146,22 @@ function AgentDetailInner() {
             appendOptimisticUserMessage(activeRuntimeKey, runSessionId, {
                 role: 'user',
                 id: acceptedInputId,
-                content: userMsg,
+                content: displayContent,
                 timestamp: new Date().toISOString(),
             });
             applySubmittedRun(activeRuntimeKey, started.run);
             invalidateSessionRuntimeQueries(id, runSessionId);
         } catch (err: any) {
+            if (!stillOriginalWork()) throw err;
             setIsWaiting(false);
             setIsStreaming(false);
             const msg = err?.message || t('agent.chat.runStartFailed', 'Failed to start run');
+            const unconfirmed = Boolean(expectedSessionId && !(err instanceof ApiError && err.status >= 400
+                && err.status < 500 && err.status !== 408));
             setChatMessagesSessionId(String(activeSession.id));
-            setChatMessagesAfterQueued(prev => [...prev, parseChatMsg({ role: 'event', content: msg, eventType: 'runtime_action_failed', eventStatus: 'run_start_failed' })]);
+            setChatMessagesAfterQueued(prev => [...prev, parseChatMsg({ role: 'event', content: msg,
+                eventType: unconfirmed ? 'runtime_action_unconfirmed' : 'runtime_action_failed',
+                eventStatus: unconfirmed ? 'input_outcome_unknown' : 'run_start_failed' })]);
             throw err;
         }
     };
@@ -2700,6 +2725,7 @@ function AgentDetailInner() {
                             agentId={id}
                             agent={agent}
                             currentUser={currentUser}
+                            principalScopeKey={readinessScopeKey}
                             isAdmin={isSystemHr ? false : Boolean((canOperatorInspect && normalizedOperatorReason) || scopedAdminSessionAccess)}
                             operatorReason={normalizedOperatorReason}
                             onOperatorAuthorityDenied={denyOperatorAuthority}

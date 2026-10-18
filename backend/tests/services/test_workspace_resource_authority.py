@@ -7,6 +7,36 @@ import pytest
 from fastapi import HTTPException
 
 
+@pytest.mark.parametrize("source", ["empty", "receipted", "legacy", "tampered"])
+@pytest.mark.parametrize("path", ["workspace/source.txt", "workspace/.hive/source.txt"])
+def test_execution_inventory_binds_all_copied_bytes_without_authorizing_legacy_sources(tmp_path, source, path):
+    import hashlib
+    from app.services.agent_tool_domains.code_exec import authorized_execution_workspace
+    from app.services.workspace_resource_authority import (
+        WorkspaceAuthorityScope, WorkspaceExecutionInputs, WorkspaceInputRead,
+    )
+
+    digest = hashlib.sha256(b"Authorized input").hexdigest()
+    receipt_id = uuid4()
+    reads = () if source in {"empty", "legacy"} else (
+        WorkspaceInputRead(path, receipt_id, 1, digest, "synthetic-dependencies"),)
+    if source != "empty":
+        (tmp_path / path).parent.mkdir(parents=True)
+        (tmp_path / path).write_text("Changed input" if source == "tampered" else "Authorized input")
+    capture = WorkspaceExecutionInputs()
+    assert capture.snapshot()["observed"] is False
+    scope = WorkspaceAuthorityScope(agent_id=uuid4(), user_id=uuid4(), root_session_id=None,
+        allowed_paths=frozenset() if source == "empty" else frozenset({path}),
+        operator_view=False, authority_source="resource_owner", input_reads=reads, execution_inputs=capture)
+    with authorized_execution_workspace(tmp_path, scope) as private:
+        assert (private / path).exists() is (source in {"receipted", "legacy"})
+    observed = capture.snapshot()
+    assert observed["observed"] is True
+    assert observed["unbound"] == ([path] if source == "legacy" else [])
+    assert observed["sources"] == ([{"source_kind": "workspace_artifact", "source_id": str(receipt_id),
+        "source_version": digest}] if source == "receipted" else [])
+
+
 @pytest.mark.parametrize("operator_view", [False, True])
 def test_read_scope_labels_and_inspection_do_not_create_effect_authority(operator_view):
     from app.services.workspace_resource_authority import WorkspaceAuthorityScope

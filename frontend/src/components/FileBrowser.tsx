@@ -65,6 +65,15 @@ export interface FileBrowserProps {
     title?: string;
     readOnly?: boolean;
     onRefresh?: () => void;
+    onEditorStateChange?: (state: FileEditorState) => void;
+}
+
+export interface FileEditorState {
+    path: string | null;
+    dirty: boolean;
+    busy: boolean;
+    unavailable: boolean;
+    lastSavedHash?: string | null;
 }
 
 // ─── Text file detection ───────────────────────────────
@@ -97,6 +106,7 @@ export default function FileBrowser({
     title,
     readOnly = false,
     onRefresh,
+    onEditorStateChange,
 }: FileBrowserProps) {
     const { t } = useTranslation();
     const {
@@ -119,6 +129,7 @@ export default function FileBrowser({
     const [viewRevision, setViewRevision] = useState(0);
     const [content, setContent] = useState('');
     const [contentHash, setContentHash] = useState<string | null>(null);
+    const [lastSavedHash, setLastSavedHash] = useState<string | null>(null);
     const [readError, setReadError] = useState(false);
     const [editing, setEditing] = useState(false);
     const [editContent, setEditContent] = useState('');
@@ -138,6 +149,13 @@ export default function FileBrowser({
     const [uploadProgress, setUploadProgress] = useState<{ fileName: string; percent: number } | null>(null);
     const [imagePreviewUrl, setImagePreviewUrl] = useState<string | null>(null);
     const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+    const dirty = editing && editContent !== content;
+    const editorBusy = saving || loadingCurrent;
+    const editorUnavailable = !contentLoaded || readError || conflict || saveUnknown;
+    useEffect(() => {
+        onEditorStateChange?.({ path: singleFile || viewing, dirty, busy: editorBusy, unavailable: editorUnavailable, lastSavedHash });
+    }, [singleFile, viewing, dirty, editorBusy, editorUnavailable, lastSavedHash, onEditorStateChange]);
 
     // Auto-resize textarea to match content height
     useEffect(() => {
@@ -186,6 +204,7 @@ export default function FileBrowser({
         setReadError(false);
         setContent('');
         setContentHash(null);
+        setLastSavedHash(null);
         setEditing(false);
         setConflict(false);
         setSaveUnknown(false);
@@ -307,6 +326,7 @@ export default function FileBrowser({
             if (request !== contentRequest.current) return;
             setContent(submitted);
             setContentHash(result?.content_hash ?? null);
+            setLastSavedHash(result?.content_hash ?? null);
             setEditBaseHash(result?.content_hash ?? null);
             setCurrentVersion(null);
             setEditing(draftRef.current !== submitted);

@@ -549,6 +549,7 @@ def _build_runtime_attachment_sections(
             if path and path not in recent_paths:
                 recent_paths.append(path)
         changed: list[str] = []
+        changed_paths: list[str] = []
         for path in recent_paths:
             before = snapshots.get(path)
             if not isinstance(before, dict):
@@ -562,10 +563,18 @@ def _build_runtime_attachment_sections(
                     f'- {readable} {condition}; re-read with read_file("{readable}") '
                     "before relying on cached contents."
                 )
+                changed_paths.append(path)
         if changed:
             section = "## Runtime File Change Notice\n" + "\n".join(changed)
             sections.append(section)
-            _bind_recovery_attachment_source(agent_id, session_context, recovery_result, section)
+            tracked_sources = getattr(session_context, "file_snapshot_sources", {})
+            if all(path in tracked_sources for path in changed_paths):
+                from app.runtime.context import ensure_runtime_assembly_state
+
+                ensure_runtime_assembly_state(session_context).record_context_sources(agent_id=agent_id, content=section,
+                    sources=[tracked_sources[path] for path in changed_paths], unbound=())
+            else:
+                _bind_recovery_attachment_source(agent_id, session_context, recovery_result, section)
 
     return sections
 
@@ -2512,7 +2521,8 @@ async def _execute_tool_with_hooks(
             _path = _args_dict.get("path", "")
             if _path:
                 _snapshot = _snapshot_session_file(request.agent_id, _path) if request.agent_id else None
-                _session.track_file_read(_path, snapshot=_snapshot)
+                _session.track_file_read(_path, snapshot=_snapshot,
+                    tracking_source=(trace_metadata_sink.get("workspace_input_evidence") or {}).get("tracking_source"))
                 _activate_conditional_skills_for_paths(request, [_path])
         elif tool_name == "fs_list":
             _path = _args_dict.get("path", "")
@@ -2545,7 +2555,8 @@ async def _execute_tool_with_hooks(
                     ),
                     None,
                 )
-                _session.track_file_write(_path, snapshot=_snapshot, lineage=lineage_record)
+                _session.track_file_write(_path, snapshot=_snapshot, lineage=lineage_record,
+                    tracking_source=(trace_metadata_sink.get("workspace_execution_evidence") or {}).get("tracking_source"))
                 _activate_conditional_skills_for_paths(request, [_path])
                 _session.track_tool_outcome(tool_name, "Wrote " + _path)
                 if _is_frozen_prompt_workspace_path(_path):

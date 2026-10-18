@@ -464,6 +464,16 @@ async def _origin_dependencies(db, *, tenant_id, agent_id, ref):
             return _unique_dependencies(dependencies), inherited_complete and arguments.get("path") in hashes
         except (ContentInputReceiptError, ValueError, TypeError):
             return _unique_dependencies(dependencies), False
+    if invocation.tool_name in {"run_command", "execute_code"}:
+        from app.services.content_input_receipts import load_workspace_execution_input_evidence
+
+        try:
+            _ref, sources = await load_workspace_execution_input_evidence(db, agent_id=agent_id, invocation=invocation,
+                model_result=model, arguments=invocation.effective_arguments_json or invocation.provider_arguments_json,
+                content_hash=payload["content_hash"])
+            return _unique_dependencies([*dependencies, *sources]), inherited_complete
+        except (ContentInputReceiptError, ValueError, TypeError):
+            return _unique_dependencies(dependencies), False
     metadata = payload.get("metadata")
     if not isinstance(metadata, dict):
         return _unique_dependencies(dependencies), False

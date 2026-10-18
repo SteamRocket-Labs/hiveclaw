@@ -45,6 +45,7 @@ export type RuntimeEventType =
   | 'runtime_action_completed'
   | 'runtime_action_blocked'
   | 'runtime_action_failed'
+  | 'runtime_action_unconfirmed'
   | 'memory_context_degraded'
   | 'memory_context_unavailable';
 
@@ -1531,6 +1532,7 @@ const RUNTIME_EVENT_TYPES = new Set<RuntimeEventType>([
   'runtime_action_completed',
   'runtime_action_blocked',
   'runtime_action_failed',
+  'runtime_action_unconfirmed',
   'memory_context_degraded',
   'memory_context_unavailable',
 ]);

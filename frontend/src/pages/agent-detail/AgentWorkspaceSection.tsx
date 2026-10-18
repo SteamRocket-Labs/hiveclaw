@@ -1,7 +1,7 @@
 import React from 'react';
 import { useTranslation } from 'react-i18next';
 
-import FileBrowser, { type FileBrowserApi } from '../../components/FileBrowser';
+import FileBrowser, { type FileBrowserApi, type FileEditorState } from '../../components/FileBrowser';
 import { fileApi } from '../../api/domains/files';
 import './AgentWorkspaceSection.css';
 
@@ -12,6 +12,7 @@ type AgentWorkspaceSectionProps = {
   operatorOnly?: boolean;
   operatorReason?: string;
   onOperatorAuthorityDenied?: (error: unknown) => void;
+  onEditorStateChange?: (state: FileEditorState) => void;
 };
 
 function isForbiddenOperatorResponse(error: unknown): boolean {
@@ -26,6 +27,7 @@ export default function AgentWorkspaceSection({
   operatorOnly = false,
   operatorReason,
   onOperatorAuthorityDenied,
+  onEditorStateChange,
 }: AgentWorkspaceSectionProps) {
   const { t } = useTranslation();
   const normalizedOperatorReason = operatorReason?.trim() ?? '';
@@ -123,6 +125,7 @@ export default function AgentWorkspaceSection({
         rootPath="workspace"
         singleFile={singleFile}
         readOnly={operatorView}
+        onEditorStateChange={onEditorStateChange}
         features={{
           upload: !operatorView,
           newFile: !operatorView,

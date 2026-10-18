@@ -59,6 +59,8 @@ COMPANY_KNOWLEDGE_TENANT_TABLES: tuple[str, ...] = (
 # migration is immutable, so the bootstrap path keeps its own copy; keep the
 # two lists in sync when adding tenant tables.
 RLS_TENANT_TABLES: tuple[str, ...] = (
+    "workbench_projects",
+    "workbench_project_entries",
     "execution_environments",
     "environment_leases",
     "agents",
@@ -248,6 +250,8 @@ _ADDITIONAL_FORCED_TENANT_TABLES: tuple[str, ...] = (
 # operator-nullable tables retain NULL only for pre-tenant/system records and
 # ordinary tenant sessions never see those rows.
 STRICT_TENANT_RLS_TABLES: tuple[str, ...] = (
+    "workbench_projects",
+    "workbench_project_entries",
     *COMPANY_KNOWLEDGE_TENANT_TABLES,
     "agent_activity_logs",
     "agent_capability_installs",

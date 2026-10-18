@@ -56,6 +56,7 @@ const workspaceNavItems: SidebarNavItem[] = [
   { to: '/plaza', labelKey: 'nav.plaza', fallback: 'Agent Circle', icon: <IconSitemap size={15} stroke={1.6} /> },
   { to: '/automations', labelKey: 'nav.tasksAutomation', fallback: 'Automation', icon: <IconCheckbox size={15} stroke={1.6} /> },
   { to: '/knowledge', labelKey: 'nav.knowledge', fallback: 'Knowledge', icon: <IconDatabase size={15} stroke={1.6} /> },
+  { to: '/projects', labelKey: 'projects.title', fallback: 'Projects', icon: <IconFolder size={15} stroke={1.6} /> },
   { to: '/local-agents', labelKey: 'nav.bridge', fallback: 'Local connection', icon: <IconDeviceDesktop size={15} stroke={1.6} /> },
 ];
 

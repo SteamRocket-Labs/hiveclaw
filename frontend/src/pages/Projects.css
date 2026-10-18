@@ -1,0 +1,13 @@
+.project-workbench { padding: 24px; display: grid; gap: 20px; }
+.project-workbench-grid { display: grid; grid-template-columns: minmax(200px, 280px) minmax(0, 1fr); gap: 20px; align-items: start; }
+.project-workbench .card { padding: 20px; display: grid; gap: 16px; }
+.project-workbench form, .project-source-picker { display: grid; gap: 10px; }
+.project-workbench label { display: grid; gap: 5px; }
+.project-workbench label:has(input[type="checkbox"]) { display: flex; gap: 8px; }
+.project-workbench nav { display: grid; gap: 8px; }
+.project-workbench nav [aria-current="page"] { font-weight: 700; }
+.project-workbench-entries { padding: 0; list-style: none; display: grid; gap: 16px; }
+.project-workbench-entries > li { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.project-workbench-entries input { max-width: 200px; }
+.project-workbench button { justify-self: start; }
+@media (max-width: 700px) { .project-workbench { padding: 16px; } .project-workbench-grid { grid-template-columns: 1fr; } }

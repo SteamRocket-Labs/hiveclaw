@@ -63,6 +63,7 @@ from app.api.notification import router as notification_router
 from app.api.oidc import router as oidc_router
 from app.api.onboarding import router as onboarding_router
 from app.api.office import router as office_router
+from app.api.projects import router as projects_router
 from app.api.mcp_servers import router as mcp_servers_router
 from app.api.mcp_oauth import router as mcp_oauth_router
 from app.api.plugins import router as plugins_router
@@ -904,6 +905,7 @@ _api_routers = [
     plugins_router,
     plans_router,
     office_router,
+    projects_router,
     autonomy_router,
     llm_proxy_router,
     desktop_auth_router,

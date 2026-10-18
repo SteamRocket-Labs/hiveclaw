@@ -412,12 +412,6 @@ async def _validate_session_dependency(db, tenant_id, dependency, *, user, runti
     if session.audience_kind == "group" and model is SessionToolInvocation:
         from app.services.session_model_inputs import _origin_dependencies
 
-        if runtime_request is None:
-            raise ContentInputReceiptError("content_source_unavailable", "Group tool output requires its disclosed reader.", 503)
-        principal, _ = await _runtime_input_actor(db, tenant_id, runtime_request)
-        if (principal.agent_id != session.agent_id or str(principal.session_id) != str(session.id)
-            or str(principal.runtime_task_id) != str(source.run_id)):
-            raise ContentInputReceiptError("content_source_access_denied", "This is not the current requester's tool output.", 403)
         key = (dependency["source_id"], dependency["source_version"])
         active = _ACTIVE_GROUP_TOOL_SOURCES.get()
         if key in active:

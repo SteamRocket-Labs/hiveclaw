@@ -16,7 +16,7 @@ pytestmark = [pytest.mark.usefixtures("migrated_pg_url"), pytest.mark.skipif(pla
     reason="Native macOS context gate; Linux delivery is deferred.")]
 
 
-@pytest.mark.parametrize("mutation", [None, "forged_actor", "unlinked", "private_source"])
+@pytest.mark.parametrize("mutation", [None, "forged_actor", "unlinked", "private_source", "private_recipient", "unknown_recipient"])
 async def test_shared_work_runs_with_its_original_sender_and_real_tool_sources(
     owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, mutation,
 ):
@@ -43,6 +43,8 @@ async def test_shared_work_runs_with_its_original_sender_and_real_tool_sources(
     from app.services.channel_ingress_context import use_channel_ingress_context, bind_channel_ingress_external_principal
     from app.services.channel_ingress_inbox import accept_authenticated_channel_event, ChannelIngressInboxService
     from app.services.channel_delivery_outbox import ChannelDeliveryOutboxService
+    from app.services.channel_delivery_service import DeliveryResult
+    from app.services.content_input_receipts import ContentInputReceiptError, _validate_input_dependencies
     from app.services.channel_session import find_or_create_shared_group_session
     from app.services.external_principal_service import bind_authenticated_self_channel_principal
     from app.services.feishu_service import FeishuService
@@ -92,6 +94,9 @@ async def test_shared_work_runs_with_its_original_sender_and_real_tool_sources(
         bound = await bind_authenticated_self_channel_principal(db, tenant_id=seed["tenant_id"], config=config,
             provider_subject_id="ou_group_requester", user_id=member.id, actor_user_id=member.id)
         actor = bound.actor
+        if mutation == "private_recipient":
+            await bind_authenticated_self_channel_principal(db, tenant_id=seed["tenant_id"], config=config,
+                provider_subject_id="ou_group_creator", user_id=seed["user_id"], actor_user_id=seed["user_id"])
         grant.actions = ["read", "execute"]
         shared = await find_or_create_shared_group_session(db, tenant_id=seed["tenant_id"], agent_id=agent.id,
             installation_ref=str(config.id), chat_id="oc_native_group", first_message_title="Shared report")
@@ -99,7 +104,10 @@ async def test_shared_work_runs_with_its_original_sender_and_real_tool_sources(
         await db.commit()
 
     async def members(_self, *_args, **_kwargs):
-        return {"ou_group_requester"}
+        subjects = {"ou_group_requester"}
+        if mutation in {"private_recipient", "unknown_recipient"}:
+            subjects.add("ou_group_creator" if mutation == "private_recipient" else "ou_group_unknown")
+        return subjects
     monkeypatch.setattr(FeishuService, "get_chat_member_open_ids", members)
     async def no_wakeup(**_kwargs):
         return None
@@ -186,7 +194,7 @@ async def test_shared_work_runs_with_its_original_sender_and_real_tool_sources(
         (tmp_path / "shared-model-bindings.json").write_text(json.dumps([row.model_request_snapshot_json for row in results], default=str, indent=2))
         shared = await db.get(ChatSession, shared_id)
         assert shared.user_id is None and shared.external_principal_id is None
-        if mutation is not None:
+        if mutation in {"forged_actor", "unlinked", "private_source"}:
             assert task.status != "completed", (task.status, task.result_summary)
             assert client.requests == []
             assert not (seed["agent_root"] / "workspace/shared-report.md").exists()
@@ -202,6 +210,14 @@ async def test_shared_work_runs_with_its_original_sender_and_real_tool_sources(
         spans = list(await db.scalars(select(InvocationSpan).where(InvocationSpan.runtime_task_id == run_id,
             InvocationSpan.span_type == "kernel_context")))
         assert spans and all(span.user_id == member.id for span in spans)
+        dependencies = [source for result in results for source in result.model_request_snapshot_json["input_bindings"]["dependencies"]
+            if source["source_kind"] == "session_tool_invocation"]
+        assert dependencies
+        await _validate_input_dependencies(db, seed["tenant_id"], dependencies, user=await db.get(User, member.id))
+        if mutation == "private_recipient":
+            with pytest.raises(ContentInputReceiptError) as private:
+                await _validate_input_dependencies(db, seed["tenant_id"], dependencies, user=await db.get(User, seed["user_id"]))
+            assert private.value.status_code == 403
         outbox = list(await db.scalars(select(ChannelDeliveryOutbox).where(ChannelDeliveryOutbox.runtime_task_id == run_id)))
         assert len(outbox) == 1
         # Prioritize this fixture without claiming unrelated session-scoped test rows.
@@ -210,12 +226,20 @@ async def test_shared_work_runs_with_its_original_sender_and_real_tool_sources(
     sends = []
     async def send(**kwargs):
         sends.append(kwargs)
-        return {"synthetic": True}
+        return DeliveryResult(ok=True, status="delivered", channel="feishu", message="Synthetic provider receipt.")
     outcome = await ChannelDeliveryOutboxService(session_factory=app_user_sessionmaker,
         text_sender=send, file_sender=send).drain_once(worker_id="shared-delivery", limit=1)
-    assert outcome["claimed"] == 1 and outcome["retried"] == 1, outcome
-    assert sends == []
+    assert outcome["claimed"] == 1, outcome
     async with app_user_sessionmaker() as db:
         await pin_rls_tenant_context(db, seed["tenant_id"])
         delivery = await db.get(ChannelDeliveryOutbox, outbox[0].id)
-        assert delivery.status == "pending" and "shared_group_output_unavailable" in delivery.last_error
+        if mutation == "private_recipient":
+            assert outcome["dead_lettered"] == 1 and sends == [], outcome
+            assert delivery.status == "dead_letter" and "shared_group_output_unavailable" in delivery.last_error
+        elif mutation == "unknown_recipient":
+            assert outcome["retried"] == 1 and sends == [], outcome
+            assert delivery.status == "pending" and "group_recipient_identity_unavailable" in delivery.last_error
+        else:
+            assert outcome["delivered"] == 1 and len(sends) == 1, outcome
+            assert sends[0]["reply_target"]["receive_id"] == "oc_native_group"
+            assert delivery.status == "delivered"

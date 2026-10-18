@@ -5406,5 +5406,17 @@
     "disconnect": "Disconnect this identity",
     "reconnect": "Reconnect this identity",
     "disconnectEffect": "Disconnecting stops this identity from acting as your Hive account. Earlier work is retained."
+  },
+  "tenantFeishuGroups": {
+      "title": "Company shared group work",
+      "description": "Choose one employee for each group. Each sender still needs verified company identity, current group membership and permission to use that employee. Private messages keep using My Assistant.",
+      "review": "Could not confirm these routes. Refresh, compare the saved routes with your draft, then save again if needed.",
+      "savedRoutes": "Saved routes",
+      "groupId": "Group ID",
+      "employee": "Employee",
+      "choose": "Choose an employee",
+      "add": "Add a group route",
+      "save": "Save group routes",
+      "confirmed": "Company group routes saved."
   }
 }

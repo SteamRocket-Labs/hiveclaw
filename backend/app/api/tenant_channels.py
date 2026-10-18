@@ -13,7 +13,7 @@ from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from loguru import logger
-from pydantic import BaseModel, field_serializer
+from pydantic import BaseModel, field_serializer, field_validator
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -290,6 +290,72 @@ async def get_tenant_webhook_url(
     return {"webhook_url": f"{base}/api/channel/{channel_type}/tenant/{current_user.tenant_id}/webhook", "tenant_id": current_user.tenant_id}
 
 
+class TenantFeishuGroupRoute(BaseModel):
+    chat_id: str
+    agent_id: uuid.UUID
+
+    @field_validator("chat_id")
+    @classmethod
+    def valid_chat_id(cls, value):
+        if not value or len(value) > 200 or any(char.isspace() or ord(char) < 32 for char in value):
+            raise ValueError("Group IDs must contain no whitespace and be at most 200 characters")
+        return value
+
+
+class TenantFeishuGroupRoutes(BaseModel):
+    expected_revision: str
+    expected_tenant_id: uuid.UUID
+    expected_user_id: uuid.UUID
+    routes: list[TenantFeishuGroupRoute]
+
+    @field_validator("routes")
+    @classmethod
+    def unique_groups(cls, values):
+        if len({row.chat_id for row in values}) != len(values):
+            raise ValueError("Choose exactly one employee per group")
+        return values
+
+
+async def _tenant_feishu_config(db, user, *, lock=False):
+    query = select(TenantChannelConfig).where(TenantChannelConfig.tenant_id == user.tenant_id,
+        TenantChannelConfig.channel_type == "feishu")
+    if lock:
+        query = query.with_for_update().execution_options(populate_existing=True)
+    config = await db.scalar(query)
+    if config is None or not config.is_configured:
+        raise HTTPException(409, detail={"code": "company_bot_setup_required"})
+    return config
+
+
+@router.get("/tenant-channels/feishu/shared-groups")
+async def get_tenant_feishu_group_routes(response: Response, expected_tenant_id: uuid.UUID, expected_user_id: uuid.UUID,
+    current_user: User = Depends(get_current_admin), db: AsyncSession = Depends(get_db)):
+    from app.services.feishu_group_entry import group_entry_settings
+
+    await _pin_requested_scope(db, current_user, expected_tenant_id, expected_user_id)
+    config = await _tenant_feishu_config(db, current_user)
+    response.headers["Cache-Control"] = "no-store"
+    return {"tenant_id": current_user.tenant_id, **group_entry_settings(config)}
+
+
+@router.put("/tenant-channels/feishu/shared-groups")
+async def update_tenant_feishu_group_routes(body: TenantFeishuGroupRoutes, response: Response,
+    current_user: User = Depends(get_current_admin), db: AsyncSession = Depends(get_db)):
+    from app.models.audit import AuditLog
+    from app.services.feishu_group_entry import save_tenant_group_routes
+
+    await _pin_requested_scope(db, current_user, body.expected_tenant_id, body.expected_user_id)
+    await _lock_config(db, current_user.tenant_id, "feishu")
+    config = await _tenant_feishu_config(db, current_user, lock=True)
+    result = await save_tenant_group_routes(db, config=config, expected_revision=body.expected_revision,
+        routes=[row.model_dump(mode="json") for row in body.routes], user=current_user)
+    db.add(AuditLog(tenant_id=current_user.tenant_id, user_id=current_user.id, action="tenant_channel.group_routes_updated",
+        details={"configuration_id": str(config.id), "previous_revision": body.expected_revision,
+            "revision": result["revision"], "group_count": len(body.routes)}))
+    response.headers["Cache-Control"] = "no-store"
+    return {"tenant_id": current_user.tenant_id, **result}
+
+
 # ─── Enterprise Feishu Webhook ──────────────────────────
 
 
@@ -342,9 +408,9 @@ async def feishu_tenant_webhook(
     sender_open_id = sender.get("open_id", "")
 
     # Route: sender → User → Main Agent
-    from app.services.tenant_feishu import tenant_feishu_assistant
+    from app.services.tenant_feishu import tenant_feishu_target
 
-    target_agent_id = await tenant_feishu_assistant(db, config=config, sender=sender)
+    target_agent_id = await tenant_feishu_target(db, config=config, sender=sender, message=event.get("message") or {})
     if not target_agent_id:
         logger.info(f"[tenant-webhook] No Main Agent for sender user_id={sender_user_id} open_id={sender_open_id}")
         # Optionally reply with "not registered" message

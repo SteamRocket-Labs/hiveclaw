@@ -6,13 +6,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ApiError } from '../api/core';
 import TenantFeishuSettings, { TenantFeishuIdentity } from './TenantFeishuSettings';
 
-const mocks = vi.hoisted(() => ({ list: vi.fn(), webhook: vi.fn(), save: vi.fn(), identity: vi.fn(), action: vi.fn(),
+const mocks = vi.hoisted(() => ({ list: vi.fn(), webhook: vi.fn(), save: vi.fn(), identity: vi.fn(), action: vi.fn(), groups: vi.fn(), employees: vi.fn(),
   auth: { user: { id: 'owner', tenant_id: 'company', role: 'org_admin' } } }));
 vi.mock('../stores', () => ({ useAuthStore: (selector: (state: typeof mocks.auth) => unknown) => selector(mocks.auth) }));
 vi.mock('../api/domains/channels', () => ({ channelApi: {
   tenantChannels: mocks.list, tenantFeishuWebhook: mocks.webhook, saveTenantFeishu: mocks.save,
+  tenantFeishuGroupRoutes: mocks.groups,
   tenantFeishuIdentity: mocks.identity, tenantFeishuIdentityAction: mocks.action,
 } }));
+vi.mock('../api/domains/agents', () => ({ agentApi: { list: mocks.employees } }));
 vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: (key: string, value?: string | { defaultValue?: string; field?: string }) =>
   typeof value === 'string' ? value : value?.defaultValue?.replace('{{field}}', value.field || '') || key }) }));
 
@@ -62,6 +64,23 @@ describe('company Feishu settings', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
     await screen.findByText(/Check the application credentials/);
     expect(mocks.save.mock.calls.at(-1)?.[0].expected_revision).toBe('version-2');
+  });
+  it('drops old application group drafts when the company bot application changes', async () => {
+    mocks.groups.mockResolvedValue({ tenant_id: 'company', installation_ref: 'old-app', revision: 'g1', routes: [{ chat_id: 'OLD_APP_ROUTE', agent_id: 'employee' }] });
+    mocks.employees.mockResolvedValue([{ id: 'employee', tenant_id: 'company', name: 'Research employee' }]);
+    const view = render(wrap(<TenantFeishuSettings selectedTenantId="company" />, client()));
+    await waitFor(() => expect((screen.getByLabelText('App ID') as HTMLInputElement).value).toBe('cli_company'));
+    const details = view.container.querySelector('details')!;
+    details.open = true; fireEvent(details, new Event('toggle'));
+    await screen.findByDisplayValue('OLD_APP_ROUTE');
+    fireEvent.change(screen.getByLabelText('App ID'), { target: { value: 'cli_replacement' } });
+    fireEvent.change(screen.getByLabelText('App secret'), { target: { value: 'replacement-secret' } });
+    const next = { ...config, app_id: 'cli_replacement', revision: 'version-2' };
+    mocks.save.mockImplementation(async () => { mocks.list.mockResolvedValue([next]); return next; });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await screen.findByText('Company bot settings saved.');
+    expect(screen.queryByDisplayValue('OLD_APP_ROUTE')).toBeNull();
+    expect(view.container.querySelector('details')!.open).toBe(false);
   });
   it('does not reset a previously configured custom platform on unrelated saves', async () => {
     mocks.list.mockResolvedValue([{ ...config, extra_config: { platform_region: 'custom', open_api_domain: 'https://approved.example' } }]);

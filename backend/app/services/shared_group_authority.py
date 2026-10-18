@@ -8,6 +8,7 @@ from fastapi import HTTPException
 from sqlalchemy import select
 
 from app.models.channel_config import ChannelConfig
+from app.models.tenant_channel_config import TenantChannelConfig
 from app.models.external_principal import ExternalPrincipal
 from app.services.channel_ingress_inbox import channel_installation_ref
 from app.services.feishu_service import FeishuService
@@ -30,9 +31,18 @@ async def load_current_group_members(db, *, session):
         or not session.group_installation_ref or not session.group_subject_id
         or session.user_id is not None or session.external_principal_id is not None):
         raise HTTPException(403, detail={"code": "shared_group_identity_mismatch"})
-    config = await db.scalar(select(ChannelConfig).where(
-        ChannelConfig.tenant_id == session.tenant_id, ChannelConfig.agent_id == session.agent_id,
-        ChannelConfig.channel_type == "feishu", ChannelConfig.is_configured.is_(True)))
+    if session.group_installation_ref.startswith("tenant:"):
+        try:
+            config_id = uuid.UUID(session.group_installation_ref.split(":")[1])
+        except (ValueError, IndexError):
+            raise HTTPException(403, detail={"code": "shared_group_installation_unavailable"})
+        config = await db.scalar(select(TenantChannelConfig).where(TenantChannelConfig.id == config_id,
+            TenantChannelConfig.tenant_id == session.tenant_id, TenantChannelConfig.channel_type == "feishu",
+            TenantChannelConfig.is_active.is_(True)).execution_options(populate_existing=True))
+    else:
+        config = await db.scalar(select(ChannelConfig).where(
+            ChannelConfig.tenant_id == session.tenant_id, ChannelConfig.agent_id == session.agent_id,
+            ChannelConfig.channel_type == "feishu", ChannelConfig.is_configured.is_(True)))
     if config is None or channel_installation_ref(config, fallback=f"feishu:{session.agent_id}") != session.group_installation_ref:
         raise HTTPException(403, detail={"code": "shared_group_installation_unavailable"})
     try:
@@ -43,23 +53,41 @@ async def load_current_group_members(db, *, session):
     return config, members
 
 
+def _principal_installation(config):
+    return (ExternalPrincipal.tenant_channel_config_id if isinstance(config, TenantChannelConfig)
+        else ExternalPrincipal.channel_config_id) == config.id
+
+
+def _principal_binding_method(config):
+    return "feishu_tenant_identity" if isinstance(config, TenantChannelConfig) else "feishu_qr"
+
+
 async def require_current_group_member(db, *, session, user=None, principal=None):
     config, members = await load_current_group_members(db, session=session)
     query = select(ExternalPrincipal).where(
         ExternalPrincipal.tenant_id == session.tenant_id, ExternalPrincipal.provider == "feishu",
-        ExternalPrincipal.channel_config_id == config.id, ExternalPrincipal.installation_ref == session.group_installation_ref,
+        _principal_installation(config), ExternalPrincipal.installation_ref == session.group_installation_ref,
         ExternalPrincipal.status == "active")
     if principal is not None:
         query = query.where(ExternalPrincipal.id == principal.id)
     elif user is not None and user.is_active and user.tenant_id == session.tenant_id:
         query = query.where(ExternalPrincipal.linked_user_id == user.id,
-            ExternalPrincipal.binding_method == "feishu_qr", ExternalPrincipal.binding_verified_at.is_not(None))
+            ExternalPrincipal.binding_method == _principal_binding_method(config), ExternalPrincipal.binding_verified_at.is_not(None))
     else:
         raise HTTPException(403, detail={"code": "group_membership_required"})
     principals = list(await db.scalars(query))
-    if not any(row.subject_id in members for row in principals):
-        raise HTTPException(403, detail={"code": "group_membership_required"})
-    return config
+    for row in principals:
+        if row.subject_id not in members:
+            continue
+        if isinstance(config, TenantChannelConfig):
+            from app.services.external_principal_service import load_external_runtime_actor
+
+            actor = await load_external_runtime_actor(db, tenant_id=session.tenant_id,
+                principal_id=row.id, expected_user_id=row.linked_user_id)
+            if not actor.authority_bound:
+                continue
+        return config
+    raise HTTPException(403, detail={"code": "group_membership_required"})
 
 
 async def resolve_shared_group_web_authority(db, *, session, user, action, audit=True):
@@ -500,12 +528,20 @@ async def validate_shared_group_delivery(db, *, item, session):
             raise HTTPException(503, detail={"code": "group_membership_unavailable"})
         principals = list(await db.scalars(select(ExternalPrincipal).where(
             ExternalPrincipal.tenant_id == session.tenant_id, ExternalPrincipal.provider == "feishu",
-            ExternalPrincipal.installation_ref == session.group_installation_ref, ExternalPrincipal.channel_config_id == config.id,
+            ExternalPrincipal.installation_ref == session.group_installation_ref, _principal_installation(config),
             ExternalPrincipal.subject_id.in_(members), ExternalPrincipal.status == "active",
-            ExternalPrincipal.linked_user_id.is_not(None), ExternalPrincipal.binding_method == "feishu_qr",
+            ExternalPrincipal.linked_user_id.is_not(None), ExternalPrincipal.binding_method == _principal_binding_method(config),
             ExternalPrincipal.binding_verified_at.is_not(None))))
         if {row.subject_id for row in principals} != members:
             raise HTTPException(503, detail={"code": "group_recipient_identity_unavailable"})
+        if isinstance(config, TenantChannelConfig):
+            from app.services.external_principal_service import load_external_runtime_actor
+
+            for principal in principals:
+                actor = await load_external_runtime_actor(db, tenant_id=session.tenant_id,
+                    principal_id=principal.id, expected_user_id=principal.linked_user_id)
+                if not actor.authority_bound:
+                    raise HTTPException(403, detail={"code": "group_recipient_identity_changed"})
         result = await db.scalar(select(SessionModelResult).join(ChatTranscriptEvent,
             ChatTranscriptEvent.id == SessionModelResult.round_committed_event_id).where(
             SessionModelResult.tenant_id == session.tenant_id, ChatTranscriptEvent.tenant_id == session.tenant_id,

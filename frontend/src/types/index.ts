@@ -17,6 +17,7 @@ export interface User {
 }
 
 export interface Agent {
+    tenant_id?: string | null;
     id: string;
     name: string;
     avatar_url?: string;

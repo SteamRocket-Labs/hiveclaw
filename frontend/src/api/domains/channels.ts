@@ -58,6 +58,9 @@ export interface FeishuSharedGroupEntry {
   chat_ids: string[];
 }
 
+export interface TenantFeishuGroupRoute { chat_id: string; agent_id: string }
+export interface TenantFeishuGroupRoutes { tenant_id: string; installation_ref: string; revision: string; routes: TenantFeishuGroupRoute[] }
+
 export interface TenantChannelScope { expected_tenant_id: string; expected_user_id: string }
 export interface TenantChannelConfig {
   id: string; tenant_id: string; channel_type: string; app_id: string | null; is_active: boolean;
@@ -88,6 +91,10 @@ export interface WeChatPersonalStatus {
 }
 
 export const channelApi = {
+  tenantFeishuGroupRoutes: (scope: TenantChannelScope, signal?: AbortSignal) =>
+    get<TenantFeishuGroupRoutes>(`/tenant-channels/feishu/shared-groups?${new URLSearchParams({ ...scope })}`, { signal }),
+  saveTenantFeishuGroupRoutes: (scope: TenantChannelScope, revision: string, routes: TenantFeishuGroupRoute[]) =>
+    put<TenantFeishuGroupRoutes>('/tenant-channels/feishu/shared-groups', { ...scope, expected_revision: revision, routes }),
   tenantChannels: (scope: TenantChannelScope, signal?: AbortSignal) =>
     get<TenantChannelConfig[]>(`/tenant-channels?${new URLSearchParams({ ...scope })}`, { signal }),
   saveTenantFeishu: (data: TenantChannelUpdate) => put<TenantChannelConfig>('/tenant-channels/feishu', data),

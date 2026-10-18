@@ -15,7 +15,7 @@ async def load_tenant_channel_for_target(db, *, agent_id, channel, target, expec
 
     try:
         config_id = uuid.UUID(str(target["tenant_channel_config_id"]))
-        principal_id = uuid.UUID(str(target["external_principal_id"]))
+        principal_id = uuid.UUID(str(target["external_principal_id"])) if target.get("external_principal_id") else None
     except (KeyError, TypeError, ValueError):
         return None
     if channel != "feishu" or expected_config_id is not None and config_id != expected_config_id:
@@ -23,6 +23,22 @@ async def load_tenant_channel_for_target(db, *, agent_id, channel, target, expec
     config = await db.scalar(select(TenantChannelConfig).join(Agent, Agent.tenant_id == TenantChannelConfig.tenant_id)
         .where(Agent.id == agent_id, TenantChannelConfig.id == config_id, TenantChannelConfig.channel_type == channel,
             TenantChannelConfig.is_active.is_(True)).execution_options(populate_existing=True))
+    if config is not None and target.get("chat_type") == "group" and principal_id is None:
+        from app.models.chat_session import ChatSession
+
+        try:
+            session_id = uuid.UUID(str(target["session_id"]))
+        except (KeyError, ValueError, TypeError):
+            return None
+        session = await db.get(ChatSession, session_id)
+        return config if (session is not None and session.tenant_id == config.tenant_id and session.agent_id == agent_id
+            and session.audience_kind == "group" and session.source_channel == "feishu" and session.user_id is None
+            and session.external_principal_id is None and session.group_installation_ref == target.get("installation_ref")
+            and session.group_installation_ref == channel_installation_ref(config, fallback="")
+            and target.get("receive_id_type") == "chat_id" and target.get("receive_id") == session.group_subject_id
+            and target.get("chat_id") == session.group_subject_id) else None
+    if principal_id is None:
+        return None
     principal = await db.get(ExternalPrincipal, principal_id, populate_existing=True)
     if (config is None or principal is None or principal.status != "active" or principal.provider != channel
         or principal.tenant_id != config.tenant_id or principal.tenant_channel_config_id != config.id

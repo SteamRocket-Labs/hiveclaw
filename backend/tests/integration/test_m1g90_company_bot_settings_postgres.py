@@ -176,7 +176,7 @@ async def test_company_settings_and_member_disconnect_reconnect_keep_scope_and_s
         assert calls == [("cli_settings", "synthetic-dom-company-secret", "ou_settings")]
 
 
-async def _exercise_dom_bridge(web, seed, tmp_path):
+async def _exercise_dom_bridge(web, seed, tmp_path, *, entry_file="e2e/tenant-feishu-settings-native.tsx"):
     import asyncio
     import json
     import socket
@@ -186,7 +186,7 @@ async def _exercise_dom_bridge(web, seed, tmp_path):
     root = Path(__file__).resolve().parents[3] / "frontend"
     config = tmp_path / "dom-vitest.config.mjs"
     config.write_text("export default " + json.dumps({"root": str(root), "envDir": str(tmp_path),
-        "esbuild": {"jsx": "automatic"}, "test": {"include": ["e2e/tenant-feishu-settings-native.tsx"],
+        "esbuild": {"jsx": "automatic"}, "test": {"include": [entry_file],
             "environment": "jsdom", "fileParallelism": False, "maxWorkers": 1, "minWorkers": 1,
             "testTimeout": 20000, "cache": False}}) + ";\n")
     listener = socket.socket()

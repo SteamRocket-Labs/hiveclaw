@@ -295,7 +295,7 @@ def test_webhook_routes_to_main_agent(monkeypatch):
         }
     )
     fake_db = _FakeDB(config=token_config, user=fake_user, agent_id=_MAIN_AGENT_ID)
-    monkeypatch.setattr("app.services.tenant_feishu.tenant_feishu_assistant", AsyncMock(return_value=_MAIN_AGENT_ID))
+    monkeypatch.setattr("app.services.tenant_feishu.tenant_feishu_target", AsyncMock(return_value=_MAIN_AGENT_ID))
 
     async def override_db():
         yield fake_db
@@ -332,7 +332,7 @@ def test_webhook_unknown_sender_not_routed(monkeypatch):
     app = FastAPI()
     app.include_router(router)
     fake_db = _FakeDB(config=_EXISTING_CONFIG, user=None, agent_id=None)
-    monkeypatch.setattr("app.services.tenant_feishu.tenant_feishu_assistant", AsyncMock(return_value=None))
+    monkeypatch.setattr("app.services.tenant_feishu.tenant_feishu_target", AsyncMock(return_value=None))
 
     async def override_db():
         yield fake_db

@@ -5406,5 +5406,17 @@
     "disconnect": "断开此身份",
     "reconnect": "重新连接此身份",
     "disconnectEffect": "断开后，此身份不能再代表你的 Hive 账号工作。之前的工作会保留。"
+  },
+  "tenantFeishuGroups": {
+      "title": "企业共享群工作",
+      "description": "为每个群明确指定一名员工。发送者仍需通过企业身份验证、是当前群成员，并拥有该员工的使用权限。私聊继续使用“我的助理”。",
+      "review": "无法确认本次群路由。请刷新并比较已保存路由与草稿，再按需保存。",
+      "savedRoutes": "已保存路由",
+      "groupId": "群 ID",
+      "employee": "员工",
+      "choose": "选择员工",
+      "add": "添加群路由",
+      "save": "保存群路由",
+      "confirmed": "企业群路由已保存。"
   }
 }

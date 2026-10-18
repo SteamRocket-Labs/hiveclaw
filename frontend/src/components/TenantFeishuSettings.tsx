@@ -7,6 +7,7 @@ import { ApiError } from '../api/core';
 import { channelApi, type TenantChannelConfig, type TenantChannelScope, type FeishuPlatformRegion, type TenantFeishuIdentityState } from '../api/domains/channels';
 import { useAuthStore } from '../stores';
 import './TenantFeishuSettings.css';
+import TenantFeishuGroupRoutes from './TenantFeishuGroupRoutes';
 
 function useBotScope(selectedTenant?: string) {
   const user = useAuthStore((state) => state.user);
@@ -76,6 +77,7 @@ function CompanyBotEditor({ scope, scopeKey }: { scope: TenantChannelScope; scop
     } finally { setBusy(false); }
   }
   const saved = !query.isError ? query.data?.config : undefined;
+  const groupScopeKey = JSON.stringify([scopeKey, saved?.id, saved?.app_id, saved?.extra_config.platform_region, saved?.extra_config.open_api_domain]);
   const changedElsewhere = base !== undefined && query.data && (base?.revision || 'unconfigured') !== (query.data.config?.revision || 'unconfigured');
   const appChanged = Boolean(base && (base.app_id !== appId.trim() || region !== 'keep' && region !== (base.extra_config.platform_region || 'feishu_cn')));
   const secretFields = [
@@ -120,6 +122,7 @@ function CompanyBotEditor({ scope, scopeKey }: { scope: TenantChannelScope; scop
       <button type="button" className="btn btn-primary" onClick={() => { void save(); }} disabled={busy || base === undefined || query.isError || query.isFetching || Boolean(changedElsewhere) || !appId.trim()}>{t('common.save', 'Save')}</button>
     </div>
     {outcome === 'saved' && <p role="status">{t('tenantFeishu.saved', 'Company bot settings saved.')}</p>}
+    {saved?.is_active && <TenantFeishuGroupRoutes key={groupScopeKey} scope={scope} scopeKey={groupScopeKey} />}
   </section>;
 }
 

@@ -51,6 +51,41 @@ async def tenant_feishu_assistant(db, *, config, sender):
     return await _tenant_member_assistant(db, tenant_id=config.tenant_id, user=proof[0]) if proof else None
 
 
+async def tenant_feishu_target(db, *, config, sender, message, accepted_event=None):
+    from app.core.permissions import check_agent_access, reject_non_executing_agent_access
+    from app.services.feishu_group_entry import group_entry_settings
+
+    proof = await resolve_tenant_feishu_identity(db, config=config, sender=sender)
+    if proof is None:
+        return None
+    target_id = None
+    if accepted_event is not None and accepted_event.result_session_id:
+        from app.models.chat_session import ChatSession
+        from app.services.channel_ingress_inbox import channel_installation_ref
+
+        session = await db.get(ChatSession, accepted_event.result_session_id)
+        if (session is None or session.tenant_id != config.tenant_id or session.agent_id != accepted_event.agent_id
+            or accepted_event.installation_ref != channel_installation_ref(config, fallback="")
+            or (session.audience_kind == "group" and (session.group_installation_ref != accepted_event.installation_ref
+                or session.group_subject_id != message.get("chat_id") or message.get("chat_type") != "group"))
+            or (session.audience_kind != "group" and (session.user_id != proof[0].id
+                or session.external_principal_id != accepted_event.external_principal_id))):
+            raise PermissionError("tenant_feishu_accepted_work_mismatch")
+        target_id = session.agent_id
+    else:
+        routes = group_entry_settings(config)["routes"] if message.get("chat_type") == "group" else []
+        route = next((row for row in routes if row["chat_id"] == message.get("chat_id")), None)
+        if route is None:
+            return await _tenant_member_assistant(db, tenant_id=config.tenant_id, user=proof[0])
+        target_id = route["agent_id"]
+    try:
+        agent, access = await check_agent_access(db, proof[0], target_id)
+        reject_non_executing_agent_access(access)
+        return agent.id if agent.tenant_id == config.tenant_id else None
+    except HTTPException:
+        return None
+
+
 async def _tenant_member_assistant(db, *, tenant_id, user):
     from app.core.permissions import check_agent_access, reject_non_executing_agent_access
     from app.services.agent_identity_lifecycle import get_agent_lifecycle_block_reason
@@ -92,7 +127,7 @@ async def resolve_feishu_channel_principal(db, *, config, agent_id, tenant_id, s
         config = await db.get(TenantChannelConfig, config.id, populate_existing=True)
         proof = await resolve_tenant_feishu_identity(db, config=config, sender=sender)
         if (proof is None or sender.get("open_id") != subject_id
-            or await tenant_feishu_assistant(db, config=config, sender=sender) != agent_id):
+            or await tenant_feishu_target(db, config=config, sender=sender, message=body.get("event", {}).get("message", {}), accepted_event=event) != agent_id):
             raise PermissionError("tenant_feishu_identity_or_assistant_changed")
     result = await resolve_or_create_external_principal(db, tenant_id=tenant_id, provider="feishu",
         installation_ref=channel_installation_ref(config, fallback=f"feishu:{agent_id}"),

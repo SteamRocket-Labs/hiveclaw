@@ -1087,6 +1087,41 @@ def _decrypt_feishu_payload(encrypt_key: str, encrypted_text: str) -> dict:
     return json.loads(plaintext.decode("utf-8"))
 
 
+def authenticate_feishu_webhook(config, *, headers, body_str):
+    """Authenticate both callback formats before challenges or durable admission."""
+    import hmac
+
+    try:
+        body = json.loads(body_str)
+        if not isinstance(body, dict):
+            raise ValueError("callback must be an object")
+        if not isinstance(body.get("header", {}), dict):
+            raise ValueError("callback header must be an object")
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(400, "Invalid callback payload") from exc
+    if config.encrypt_key:
+        if not _verify_feishu_signature(config.encrypt_key, headers.get("X-Lark-Request-Timestamp", ""),
+            headers.get("X-Lark-Request-Nonce", ""), body_str, headers.get("X-Lark-Signature", "")):
+            raise HTTPException(403, "Invalid signature")
+        if "encrypt" in body:
+            try:
+                body = _decrypt_feishu_payload(config.encrypt_key, body["encrypt"])
+            except Exception as exc:
+                raise HTTPException(400, "Invalid encrypted payload") from exc
+    elif config.verification_token:
+        token = (body.get("header") or {}).get("token") or body.get("token")
+        if not isinstance(token, str) or not hmac.compare_digest(token, config.verification_token):
+            raise HTTPException(403, "Invalid verification token")
+    else:
+        raise HTTPException(403, "Channel callback authentication is not configured")
+    if not isinstance(body, dict) or not isinstance(body.get("header", {}), dict):
+        raise HTTPException(400, "Invalid callback payload")
+    header = body.get("header") or {}
+    if header.get("app_id") and header["app_id"] != config.app_id:
+        raise HTTPException(403, "Callback application mismatch")
+    return body
+
+
 @router.post("/channel/feishu/{agent_id}/webhook")
 async def feishu_event_webhook(
     agent_id: uuid.UUID,
@@ -1096,30 +1131,10 @@ async def feishu_event_webhook(
     """Handle Feishu event callback for a specific agent's bot."""
     body_bytes = await request.body()
     body_str = body_bytes.decode("utf-8")
-    import json as _json_wb
-
-    body = _json_wb.loads(body_str)
-
     config = await load_public_agent_channel_config(db, agent_id=agent_id, channel_type="feishu")
     if config is None:
         raise HTTPException(status_code=404, detail="Channel not found")
-    if config and config.encrypt_key:
-        sig = request.headers.get("X-Lark-Signature", "")
-        ts = request.headers.get("X-Lark-Request-Timestamp", "")
-        nonce = request.headers.get("X-Lark-Request-Nonce", "")
-        if not sig or not _verify_feishu_signature(config.encrypt_key, ts, nonce, body_str, sig):
-            logger.warning(f"[Feishu] Invalid signature for agent {agent_id}")
-            raise HTTPException(status_code=403, detail="Invalid signature")
-        if "encrypt" in body:
-            try:
-                body = _decrypt_feishu_payload(config.encrypt_key, body["encrypt"])
-            except Exception as exc:
-                logger.warning(f"[Feishu] Failed to decrypt webhook for agent {agent_id}: {exc}")
-                raise HTTPException(status_code=400, detail="Invalid encrypted payload") from exc
-    elif config and config.verification_token:
-        if body.get("token") != config.verification_token:
-            logger.warning(f"[Feishu] Verification token mismatch for agent {agent_id}")
-            raise HTTPException(status_code=403, detail="Invalid verification token")
+    body = authenticate_feishu_webhook(config, headers=request.headers, body_str=body_str)
 
     # Handle verification challenge after signature / token verification
     if "challenge" in body:
@@ -1507,15 +1522,13 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
                     logger.opt(exception=True).error(f"[Feishu] Failed to deliver sender identity error: {send_error}")
                 return {"code": 0, "msg": "sender identity unavailable"}
 
-            from app.services.channel_ingress_inbox import channel_installation_ref
-            from app.services.external_principal_service import resolve_or_create_external_principal
+            from app.services.tenant_feishu import resolve_feishu_channel_principal
 
-            principal_resolution = await resolve_or_create_external_principal(
+            principal_resolution = await resolve_feishu_channel_principal(
                 db,
+                config=config,
+                agent_id=agent_id,
                 tenant_id=agent_tenant_id,
-                provider="feishu",
-                installation_ref=channel_installation_ref(config, fallback=f"feishu:{agent_id}"),
-                channel_config_id=getattr(config, "id", None),
                 subject_id=sender_subject_id,
                 display_name=sender_name or f"Feishu {sender_open_id[:8]}",
                 profile=sender_profile,
@@ -1524,6 +1537,15 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
             platform_user_id = runtime_actor.id
             external_principal_id = principal_resolution.principal.id
             delivery_target["external_principal_id"] = str(external_principal_id)
+            from app.models.tenant_channel_config import TenantChannelConfig
+
+            if isinstance(config, TenantChannelConfig):
+                from app.services.channel_ingress_inbox import channel_installation_ref
+
+                delivery_target.update(tenant_channel_config_id=str(config.id),
+                    installation_ref=channel_installation_ref(config, fallback=""))
+                conv_id = f"feishu_tenant_{uuid.uuid5(uuid.NAMESPACE_URL, delivery_target['installation_ref']).hex}_{conv_id}"
+                legacy_conv_ids = []
             delivery_target["user_label"] = runtime_actor.display_name or sender_name or sender_open_id[:8]
 
             from app.services.feishu_group_entry import select_shared_feishu_session
@@ -2253,15 +2275,13 @@ async def _handle_feishu_file(
             logger.warning(f"[Feishu] Rejecting file without a verified sender identifier: agent_id={agent_id}")
             return
 
-        from app.services.channel_ingress_inbox import channel_installation_ref
-        from app.services.external_principal_service import resolve_or_create_external_principal
+        from app.services.tenant_feishu import resolve_feishu_channel_principal
 
-        principal_resolution = await resolve_or_create_external_principal(
+        principal_resolution = await resolve_feishu_channel_principal(
             db,
+            config=config,
+            agent_id=agent_id,
             tenant_id=agent_obj.tenant_id if agent_obj else _feishu_tenant_id,
-            provider="feishu",
-            installation_ref=channel_installation_ref(config, fallback=f"feishu:{agent_id}"),
-            channel_config_id=getattr(config, "id", None),
             subject_id=sender_subject_id,
             display_name=sender_profile.get("name") or f"Feishu {sender_open_id[:8]}",
             profile=sender_profile,
@@ -2302,6 +2322,14 @@ async def _handle_feishu_file(
             "user_label": runtime_actor.display_name or sender_open_id[:8],
             "external_principal_id": str(external_principal_id),
         }
+        from app.models.tenant_channel_config import TenantChannelConfig
+        if isinstance(config, TenantChannelConfig):
+            from app.services.channel_ingress_inbox import channel_installation_ref
+
+            delivery_target.update(tenant_channel_config_id=str(config.id),
+                installation_ref=channel_installation_ref(config, fallback=""))
+            conv_id = f"feishu_tenant_{uuid.uuid5(uuid.NAMESPACE_URL, delivery_target['installation_ref']).hex}_{conv_id}"
+            legacy_conv_ids = []
 
         from app.services.feishu_group_entry import select_shared_feishu_session
 

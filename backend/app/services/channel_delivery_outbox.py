@@ -239,15 +239,7 @@ async def enqueue_terminal_delivery_for_task(
     if not text_content.strip():
         return None
     channel = str(normalized_target["channel"])
-    channel_config = (
-        await db.execute(
-            select(ChannelConfig).where(
-                ChannelConfig.agent_id == agent_id,
-                ChannelConfig.tenant_id == tenant_id,
-                ChannelConfig.channel_type == channel,
-            )
-        )
-    ).scalar_one_or_none()
+    channel_config = await ChannelDeliveryService._load_target_config(db, agent_id, channel, normalized_target)
     artifact_ids = [
         _uuid(part.get("artifact_id"), field="artifact_id")
         for part in (artifact_parts or [])
@@ -452,7 +444,15 @@ class ChannelDeliveryOutboxService:
             source="channel_delivery_outbox_authority",
         ) as db:
             config = None
-            if item.channel_config_id is not None:
+            tenant_installation = bool(item.delivery_target.get("tenant_channel_config_id"))
+            if tenant_installation:
+                from app.services.channel_installation import load_tenant_channel_for_target
+
+                config = await load_tenant_channel_for_target(db, agent_id=item.agent_id, channel=item.channel,
+                    target=item.delivery_target, expected_config_id=item.channel_config_id)
+                if config is None:
+                    raise ChannelDeliveryPermanentError("enterprise channel installation or identity changed")
+            elif item.channel_config_id is not None:
                 config = (
                     await db.execute(
                         select(ChannelConfig).where(
@@ -481,7 +481,8 @@ class ChannelDeliveryOutboxService:
                 ).scalar_one_or_none()
                 if principal is None or principal.status != "active":
                     raise ChannelDeliveryPermanentError("external channel target was revoked")
-                if item.channel_config_id is not None and principal.channel_config_id != item.channel_config_id:
+                config_id = principal.tenant_channel_config_id if tenant_installation else principal.channel_config_id
+                if item.channel_config_id is not None and config_id != item.channel_config_id:
                     raise ChannelDeliveryPermanentError("external channel target installation changed")
                 if (item.metadata.get("source") == "employee_first_task_question"
                     and principal.linked_user_id != item.user_id):

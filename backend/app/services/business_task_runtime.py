@@ -569,18 +569,11 @@ async def _enqueue_business_task_channel_delivery(
     if runtime_task.tenant_id is None or runtime_task.parent_agent_id is None:
         raise BusinessTaskInvariantError("business task channel delivery has no tenant or Agent")
 
-    from app.models.channel_config import ChannelConfig
     from app.services.channel_delivery_outbox import ChannelDeliveryIntent, enqueue_channel_delivery
+    from app.services.channel_delivery_service import ChannelDeliveryService
 
-    config = (
-        await db.execute(
-            select(ChannelConfig).where(
-                ChannelConfig.tenant_id == runtime_task.tenant_id,
-                ChannelConfig.agent_id == runtime_task.parent_agent_id,
-                ChannelConfig.channel_type == ("microsoft_teams" if channel == "teams" else channel),
-            )
-        )
-    ).scalar_one_or_none()
+    config = await ChannelDeliveryService._load_target_config(db, runtime_task.parent_agent_id,
+        "microsoft_teams" if channel == "teams" else channel, target)
     text = outcome.summary
     if outcome.result and outcome.result.strip() != outcome.summary.strip():
         text = f"{outcome.summary}\n\n{outcome.result}"

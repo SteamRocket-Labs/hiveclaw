@@ -40,6 +40,7 @@ class ExternalPrincipalOut(BaseModel):
     provider: str
     installation_ref: str
     channel_config_id: uuid.UUID | None
+    tenant_channel_config_id: uuid.UUID | None = None
     subject_id: str
     display_name: str
     linked_user_id: uuid.UUID | None

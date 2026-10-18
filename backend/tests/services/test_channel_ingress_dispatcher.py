@@ -59,6 +59,7 @@ async def test_materialized_message_recovery_reuses_original_canonical_input_ide
         tenant_id=tenant_id,
         agent_id=agent_id,
         user_id=user_id,
+        external_principal_id=None,
         conversation_id=str(session_id),
         content="recover these exact bytes",
     )
@@ -79,6 +80,12 @@ async def test_materialized_message_recovery_reuses_original_canonical_input_ide
             return self.value
 
     class _DB:
+        async def get(self, model, identifier):
+            from app.models.session_v2 import SessionTurnInput
+
+            assert model is SessionTurnInput and identifier == event_id
+            return None
+
         async def execute(self, statement):
             sql = str(statement)
             if "FROM chat_messages" in sql:
@@ -108,6 +115,7 @@ async def test_materialized_message_recovery_reuses_original_canonical_input_ide
 
     assert result is not None and result["input_id"] == str(event_id)
     assert captured["input_id"] == event_id
+    assert captured["content"] == "recover these exact bytes"
     assert captured["idempotency_key"] == f"channel:feishu:ingress:{event_id}"
     assert captured["runtime_metadata"] == {
         "source": "feishu",

@@ -286,6 +286,14 @@ class ChannelDeliveryService:
         return result.scalar_one_or_none()
 
     @staticmethod
+    async def _load_target_config(db, agent_id, channel, target):
+        if target.get("tenant_channel_config_id"):
+            from app.services.channel_installation import load_tenant_channel_for_target
+
+            return await load_tenant_channel_for_target(db, agent_id=agent_id, channel=channel, target=target)
+        return await ChannelDeliveryService._load_config(db, agent_id, channel)
+
+    @staticmethod
     async def _log_result(
         agent_id: uuid.UUID,
         result: DeliveryResult,
@@ -427,7 +435,7 @@ class ChannelDeliveryService:
 
         channel = target["channel"]
 
-        config = None if channel == "web" else await ChannelDeliveryService._load_config(db, agent_id, channel)
+        config = None if channel == "web" else await ChannelDeliveryService._load_target_config(db, agent_id, channel, target)
         exact_secret_boundary = ExactSecretBoundary.combine(
             boundary_from_reply_target(target),
             boundary_from_channel_config(
@@ -792,7 +800,7 @@ class ChannelDeliveryService:
             return result
 
         channel = target["channel"]
-        config = await ChannelDeliveryService._load_config(db, agent_id, channel)
+        config = await ChannelDeliveryService._load_target_config(db, agent_id, channel, target)
         exact_secret_boundary = ExactSecretBoundary.combine(
             boundary_from_reply_target(target),
             boundary_from_channel_config(

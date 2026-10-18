@@ -29,10 +29,12 @@ class ExternalPrincipal(Base):
             "linked_user_id IS NULL OR ("
             "linked_at IS NOT NULL AND "
             "((provider = 'wechat_personal' AND binding_method = 'wechat_qr') OR "
-            "(provider = 'feishu' AND binding_method = 'feishu_qr')) AND "
+            "(provider = 'feishu' AND binding_method IN ('feishu_qr','feishu_tenant_identity'))) AND "
             "binding_verified_at IS NOT NULL)",
             name="ck_external_principals_verified_binding",
         ),
+        CheckConstraint("channel_config_id IS NULL OR tenant_channel_config_id IS NULL",
+            name="ck_external_principals_installation_kind"),
         Index("ix_external_principals_tenant_provider_status", "tenant_id", "provider", "status"),
     )
 
@@ -44,6 +46,10 @@ class ExternalPrincipal(Base):
     installation_ref: Mapped[str] = mapped_column(String(200), nullable=False)
     channel_config_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("channel_configs.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    tenant_channel_config_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("tenant_channel_configs.id", name="fk_external_principals_tenant_channel", ondelete="SET NULL"),
+        nullable=True, index=True
     )
     subject_id: Mapped[str] = mapped_column(String(512), nullable=False)
     display_name: Mapped[str] = mapped_column(String(200), nullable=False, default="External user")

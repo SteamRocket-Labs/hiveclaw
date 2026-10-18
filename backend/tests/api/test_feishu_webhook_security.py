@@ -256,17 +256,17 @@ async def test_tenant_feishu_webhook_decrypts_payload_before_processing(monkeypa
 
     captured: dict[str, object] = {}
 
-    async def fake_resolve_sender_agent(db, tenant_id, feishu_user_id, feishu_open_id):
-        assert tenant_id
-        assert feishu_user_id == "u_123"
-        assert feishu_open_id == "ou_123"
+    async def fake_resolve_sender_agent(db, *, config, sender):
+        assert config.tenant_id
+        assert sender["user_id"] == "u_123"
+        assert sender["open_id"] == "ou_123"
         return uuid4()
 
     async def fake_accept(_db, **kwargs):
         captured.update(kwargs)
         return SimpleNamespace(event_id=uuid4())
 
-    monkeypatch.setattr(tenant_channels, "_resolve_sender_agent", fake_resolve_sender_agent)
+    monkeypatch.setattr("app.services.tenant_feishu.tenant_feishu_assistant", fake_resolve_sender_agent)
     monkeypatch.setattr("app.services.channel_ingress_inbox.accept_authenticated_channel_event", fake_accept)
 
     tenant_id = uuid4()

@@ -187,14 +187,24 @@ async def _resolve_external_session_mutation_authority(
     if session.external_principal_id != principal.id:
         raise PermissionError("external_principal_session_mismatch")
 
-    config = await db.get(ChannelConfig, principal.channel_config_id) if principal.channel_config_id else None
+    tenant_installation = principal.tenant_channel_config_id is not None
+    if tenant_installation:
+        from app.services.channel_installation import load_tenant_channel_for_target
+
+        target = dict(session.delivery_target_json or {})
+        if str(target.get("external_principal_id")) != str(principal.id):
+            raise PermissionError("external_principal_reply_target_mismatch")
+        config = await load_tenant_channel_for_target(db, agent_id=agent.id, channel=session.source_channel,
+            target=target, expected_config_id=principal.tenant_channel_config_id)
+    else:
+        config = await db.get(ChannelConfig, principal.channel_config_id) if principal.channel_config_id else None
     expected_channel_type = _EXTERNAL_PROVIDER_CHANNELS.get(principal.provider)
     if (
         config is None
         or expected_channel_type is None
-        or config.id != principal.channel_config_id
+        or config.id != (principal.tenant_channel_config_id if tenant_installation else principal.channel_config_id)
         or config.tenant_id != principal.tenant_id
-        or config.agent_id != agent.id
+        or not tenant_installation and config.agent_id != agent.id
         or config.channel_type != expected_channel_type
         or not config.is_configured
         or str(session.source_channel or "").strip().lower() != expected_channel_type

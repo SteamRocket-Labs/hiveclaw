@@ -156,7 +156,7 @@ async def enqueue_budget_transition(
         target = {"channel": "web"}
     config_id: uuid.UUID | None = None
     if channel != "web":
-        config_id = _uuid(target.get("channel_config_id"))
+        config_id = _uuid(target.get("tenant_channel_config_id") or target.get("channel_config_id"))
         if config_id is None:
             config_id = (
                 await db.execute(
@@ -371,16 +371,23 @@ class BudgetTransitionOutboxService:
         ) as db:
             if item.channel_config_id is None:
                 raise BudgetTransitionPermanentError("external channel target has no configuration snapshot")
-            config = (
-                await db.execute(
-                    select(ChannelConfig).where(
-                        ChannelConfig.id == item.channel_config_id,
-                        ChannelConfig.tenant_id == item.tenant_id,
-                        ChannelConfig.agent_id == item.agent_id,
-                        ChannelConfig.channel_type == item.channel,
+            tenant_installation = bool(item.delivery_target.get("tenant_channel_config_id"))
+            if tenant_installation:
+                from app.services.channel_installation import load_tenant_channel_for_target
+
+                config = await load_tenant_channel_for_target(db, agent_id=item.agent_id, channel=item.channel,
+                    target=item.delivery_target, expected_config_id=item.channel_config_id)
+            else:
+                config = (
+                    await db.execute(
+                        select(ChannelConfig).where(
+                            ChannelConfig.id == item.channel_config_id,
+                            ChannelConfig.tenant_id == item.tenant_id,
+                            ChannelConfig.agent_id == item.agent_id,
+                            ChannelConfig.channel_type == item.channel,
+                        )
                     )
-                )
-            ).scalar_one_or_none()
+                ).scalar_one_or_none()
             # is_configured is the durable send authority; is_connected is a
             # transient connectivity observation (normal channel setup leaves
             # it false) and must not permanently reject the transition.
@@ -397,7 +404,8 @@ class BudgetTransitionOutboxService:
                 ).scalar_one_or_none()
                 if principal is None or principal.status != "active":
                     raise BudgetTransitionPermanentError("external principal was revoked")
-                if principal.channel_config_id != item.channel_config_id:
+                config_id = principal.tenant_channel_config_id if tenant_installation else principal.channel_config_id
+                if config_id != item.channel_config_id:
                     raise BudgetTransitionPermanentError("external principal installation changed")
 
     async def _write_channel_receipt(

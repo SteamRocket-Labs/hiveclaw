@@ -249,7 +249,7 @@ def test_webhook_challenge_response():
         app_id="cli_company",
         app_secret="secret",
         encrypt_key=None,
-        verification_token=None,
+        verification_token="synthetic-challenge-token",
         extra_config={},
         is_active=True,
     )
@@ -265,6 +265,7 @@ def test_webhook_challenge_response():
         f"/channel/feishu/tenant/{_TENANT_ID}/webhook",
         json={
             "challenge": "test_challenge_token",
+            "token": "synthetic-challenge-token",
         },
     )
     assert resp.status_code == 200
@@ -273,20 +274,21 @@ def test_webhook_challenge_response():
     assert any(f"SET LOCAL app.current_tenant_id = '{_TENANT_ID}'" in stmt for stmt in fake_db.statements)
 
 
-def test_webhook_routes_to_main_agent():
+def test_webhook_routes_to_main_agent(monkeypatch):
     """Valid sender with Main Agent must be routed correctly."""
     fake_user = SimpleNamespace(id=_USER_ID, feishu_user_id="fu_123", tenant_id=_TENANT_ID)
 
     app = FastAPI()
     app.include_router(router)
-    unsigned_config = SimpleNamespace(
+    token_config = SimpleNamespace(
         **{
             **vars(_EXISTING_CONFIG),
             "encrypt_key": None,
-            "verification_token": None,
+            "verification_token": "synthetic-callback-token",
         }
     )
-    fake_db = _FakeDB(config=unsigned_config, user=fake_user, agent_id=_MAIN_AGENT_ID)
+    fake_db = _FakeDB(config=token_config, user=fake_user, agent_id=_MAIN_AGENT_ID)
+    monkeypatch.setattr("app.services.tenant_feishu.tenant_feishu_assistant", AsyncMock(return_value=_MAIN_AGENT_ID))
 
     async def override_db():
         yield fake_db
@@ -294,7 +296,7 @@ def test_webhook_routes_to_main_agent():
     app.dependency_overrides[get_db] = override_db
 
     feishu_event = {
-        "header": {"event_type": "im.message.receive_v1", "event_id": "ev_test"},
+        "header": {"event_type": "im.message.receive_v1", "event_id": "ev_test", "token": "synthetic-callback-token"},
         "event": {
             "sender": {"sender_id": {"user_id": "fu_123", "open_id": "ou_123"}},
             "message": {"message_type": "text", "content": '{"text":"hello"}'},
@@ -318,11 +320,12 @@ def test_webhook_routes_to_main_agent():
     assert call_kwargs["handler_key"] == "feishu.event"
 
 
-def test_webhook_unknown_sender_not_routed():
+def test_webhook_unknown_sender_not_routed(monkeypatch):
     """Sender with no User/Agent returns routed=False."""
     app = FastAPI()
     app.include_router(router)
     fake_db = _FakeDB(config=_EXISTING_CONFIG, user=None, agent_id=None)
+    monkeypatch.setattr("app.services.tenant_feishu.tenant_feishu_assistant", AsyncMock(return_value=None))
 
     async def override_db():
         yield fake_db

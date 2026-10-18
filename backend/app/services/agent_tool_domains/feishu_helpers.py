@@ -38,6 +38,13 @@ async def load_feishu_channel_configuration(db, *, agent_id):
     from app.models.agent import Agent
     from app.models.channel_config import ChannelConfig
     from app.models.tenant_channel_config import TenantChannelConfig
+    from app.services.channel_delivery_service import channel_delivery_target
+
+    target = channel_delivery_target.get() or {}
+    if target.get("tenant_channel_config_id"):
+        from app.services.channel_installation import load_tenant_channel_for_target
+
+        return await load_tenant_channel_for_target(db, agent_id=agent_id, channel="feishu", target=target)
 
     result = await db.execute(
         select(ChannelConfig).where(

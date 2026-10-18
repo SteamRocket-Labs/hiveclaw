@@ -14,13 +14,11 @@ from pydantic import BaseModel, field_serializer
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.permissions import agent_owned_by_clause
-from app.core.security import get_current_admin
+from app.core.security import get_current_admin, get_current_user
+from app.core.tenant_scope import resolve_and_pin_tenant_scope
 from app.database import get_db, pin_rls_tenant_context
-from app.models.agent import Agent
 from app.models.tenant_channel_config import TenantChannelConfig
 from app.models.user import User
-from app.services.channel_user_service import channel_user_service
 from app.services.channel_secret_storage import redact_channel_extra_config
 
 router = APIRouter(tags=["tenant-channels"])
@@ -50,6 +48,26 @@ class TenantChannelConfigUpsert(BaseModel):
     encrypt_key: str | None = None
     verification_token: str | None = None
     extra_config: dict = {}
+
+
+class TenantChannelReconnect(BaseModel):
+    principal_id: uuid.UUID
+
+
+@router.post("/tenant-channels/feishu/identity/reconnect")
+async def reconnect_tenant_feishu_identity(
+    body: TenantChannelReconnect, current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db),
+):
+    from app.services.external_principal_service import ExternalPrincipalAuthorityError, ExternalPrincipalRevokedError
+    from app.services.tenant_feishu import reconnect_tenant_feishu_principal
+
+    await resolve_and_pin_tenant_scope(db, current_user)
+    try:
+        result = await reconnect_tenant_feishu_principal(db, principal_id=body.principal_id, user=current_user)
+    except (ExternalPrincipalAuthorityError, ExternalPrincipalRevokedError) as exc:
+        raise HTTPException(409, detail=str(exc)) from exc
+    await db.flush()
+    return {"principal_id": result.principal.id, "linked_user_id": result.actor.id, "authority_bound": result.actor.authority_bound}
 
 
 # ─── Admin CRUD ─────────────────────────────────────────
@@ -168,10 +186,6 @@ async def feishu_tenant_webhook(
     """
     body_bytes = await request.body()
     body_str = body_bytes.decode("utf-8")
-    import json as _json_tw
-
-    body = _json_tw.loads(body_str)
-
     await pin_rls_tenant_context(db, tenant_id)
 
     # Load tenant channel config
@@ -186,29 +200,9 @@ async def feishu_tenant_webhook(
     if not config:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tenant Feishu config not found")
 
-    # Security: verify signature → decrypt → then handle challenge/events
-    if config.encrypt_key:
-        from app.api.feishu import _verify_feishu_signature, _decrypt_feishu_payload
+    from app.api.feishu import authenticate_feishu_webhook
 
-        sig = request.headers.get("X-Lark-Signature", "")
-        ts = request.headers.get("X-Lark-Request-Timestamp", "")
-        nonce = request.headers.get("X-Lark-Request-Nonce", "")
-        if not sig or not _verify_feishu_signature(config.encrypt_key, ts, nonce, body_str, sig):
-            logger.warning(f"[tenant-webhook] Feishu signature mismatch for tenant {tenant_id}")
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid signature")
-
-        if "encrypt" in body:
-            try:
-                body = _decrypt_feishu_payload(config.encrypt_key, body["encrypt"])
-            except Exception as exc:
-                logger.warning(f"[tenant-webhook] Failed to decrypt for tenant {tenant_id}: {exc}")
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid encrypted payload"
-                ) from exc
-    elif config.verification_token:
-        if body.get("token") != config.verification_token:
-            logger.warning(f"[tenant-webhook] Verification token mismatch for tenant {tenant_id}")
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid verification token")
+    body = authenticate_feishu_webhook(config, headers=request.headers, body_str=body_str)
 
     # Handle challenge AFTER security verification
     if "challenge" in body:
@@ -228,7 +222,9 @@ async def feishu_tenant_webhook(
     sender_open_id = sender.get("open_id", "")
 
     # Route: sender → User → Main Agent
-    target_agent_id = await _resolve_sender_agent(db, tenant_id, sender_user_id, sender_open_id)
+    from app.services.tenant_feishu import tenant_feishu_assistant
+
+    target_agent_id = await tenant_feishu_assistant(db, config=config, sender=sender)
     if not target_agent_id:
         logger.info(f"[tenant-webhook] No Main Agent for sender user_id={sender_user_id} open_id={sender_open_id}")
         # Optionally reply with "not registered" message
@@ -252,36 +248,3 @@ async def feishu_tenant_webhook(
     )
 
     return {"ok": True, "routed": True}
-
-
-async def _resolve_sender_agent(
-    db: AsyncSession,
-    tenant_id: uuid.UUID,
-    feishu_user_id: str,
-    feishu_open_id: str,
-) -> uuid.UUID | None:
-    """Resolve a Feishu sender to their agent within the tenant.
-
-    Lookup chain: feishu_user_id → User → owned Agent
-    Fallback: feishu_open_id → User → owned Agent
-    """
-    user = await channel_user_service.resolve_feishu_user(
-        db,
-        tenant_id=tenant_id,
-        provider_user_id=feishu_user_id or None,
-        provider_open_id=feishu_open_id or None,
-    )
-
-    if not user:
-        return None
-
-    # Find user's owned agent
-    result = await db.execute(
-        select(Agent.id)
-        .where(
-            agent_owned_by_clause(user.id),
-            Agent.tenant_id == tenant_id,
-        )
-        .limit(1)
-    )
-    return result.scalar_one_or_none()

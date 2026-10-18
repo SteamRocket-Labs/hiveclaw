@@ -21,6 +21,10 @@ class TenantChannelConfig(Base):
 
     __tablename__ = "tenant_channel_configs"
 
+    @property
+    def is_configured(self) -> bool:
+        return bool(self.is_active and self.app_id and self.app_secret)
+
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     tenant_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),

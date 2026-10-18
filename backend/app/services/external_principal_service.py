@@ -132,9 +132,18 @@ async def _runtime_actor(
     bound = bool(
         user is not None
         and principal.status == "active"
-        and principal.binding_method in {"wechat_qr", "feishu_qr"}
+        and principal.binding_method in {"wechat_qr", "feishu_qr", "feishu_tenant_identity"}
         and principal.binding_verified_at is not None
     )
+    if bound and principal.binding_method == "feishu_tenant_identity":
+        from app.models.tenant_channel_config import TenantChannelConfig
+        from app.services.channel_ingress_inbox import channel_installation_ref
+        from app.services.tenant_feishu import resolve_tenant_feishu_identity
+
+        config = await db.get(TenantChannelConfig, principal.tenant_channel_config_id) if principal.tenant_channel_config_id else None
+        proof = await resolve_tenant_feishu_identity(db, config=config, sender={"open_id": principal.subject_id})
+        bound = bool(config is not None and principal.installation_ref == channel_installation_ref(config, fallback="")
+            and proof is not None and proof[0].id == user.id)
     return ChannelRuntimeActor(
         id=user.id if bound else None,
         external_principal_id=principal.id,
@@ -159,6 +168,7 @@ async def resolve_or_create_external_principal(
     display_name: str,
     profile: dict[str, Any] | None = None,
     channel_config_id: uuid.UUID | str | None = None,
+    tenant_channel_config_id: uuid.UUID | str | None = None,
 ) -> ExternalPrincipalResolution:
     """Resolve one provider subject without manufacturing a platform User."""
 
@@ -169,6 +179,9 @@ async def resolve_or_create_external_principal(
         subject_id=subject_id,
     )
     config_uuid = _uuid(channel_config_id, field="channel_config_id") if channel_config_id else None
+    tenant_config_uuid = _uuid(tenant_channel_config_id, field="tenant_channel_config_id") if tenant_channel_config_id else None
+    if config_uuid and tenant_config_uuid:
+        raise ExternalPrincipalAuthorityError("external principal has two installation kinds")
     await db.execute(
         insert(ExternalPrincipal)
         .values(
@@ -177,6 +190,7 @@ async def resolve_or_create_external_principal(
             provider=provider_value,
             installation_ref=installation_value,
             channel_config_id=config_uuid,
+            tenant_channel_config_id=tenant_config_uuid,
             subject_id=subject_value,
             display_name=str(display_name or "External user")[:200],
             profile_json=dict(profile or {}),
@@ -203,6 +217,10 @@ async def resolve_or_create_external_principal(
     if config_uuid and principal.channel_config_id not in (None, config_uuid):
         raise ExternalPrincipalAuthorityError("external principal channel configuration drifted")
     principal.channel_config_id = principal.channel_config_id or config_uuid
+    if (tenant_config_uuid and principal.tenant_channel_config_id not in (None, tenant_config_uuid)
+        or config_uuid and principal.tenant_channel_config_id or tenant_config_uuid and principal.channel_config_id):
+        raise ExternalPrincipalAuthorityError("external principal installation kind drifted")
+    principal.tenant_channel_config_id = principal.tenant_channel_config_id or tenant_config_uuid
     principal.display_name = str(display_name or principal.display_name or "External user")[:200]
     principal.profile_json = {**dict(principal.profile_json or {}), **dict(profile or {})}
     principal.last_seen_at = datetime.now(UTC)
@@ -333,6 +351,17 @@ async def _link_verified_external_principal(
     if principal.status != "active":
         raise ExternalPrincipalRevokedError("external principal is revoked")
     expected_method = {"wechat_personal": "wechat_qr", "feishu": "feishu_qr"}.get(principal.provider)
+    if getattr(principal, "tenant_channel_config_id", None) is not None and principal.provider == "feishu":
+        from app.models.tenant_channel_config import TenantChannelConfig
+        from app.services.channel_ingress_inbox import channel_installation_ref
+        from app.services.tenant_feishu import resolve_tenant_feishu_identity
+
+        config = await db.get(TenantChannelConfig, principal.tenant_channel_config_id)
+        proof = await resolve_tenant_feishu_identity(db, config=config, sender={"open_id": principal.subject_id})
+        if (proof is None or proof[0].id != user_uuid
+            or principal.installation_ref != channel_installation_ref(config, fallback="")):
+            raise ExternalPrincipalAuthorityError("enterprise binding lacks current app-scoped identity proof")
+        expected_method = "feishu_tenant_identity"
     if expected_method is None or binding_method != expected_method:
         raise ExternalPrincipalAuthorityError("external identity binding lacks matching provider proof")
     if actor_uuid != user_uuid:

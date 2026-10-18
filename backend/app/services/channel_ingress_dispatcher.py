@@ -91,26 +91,46 @@ async def _resume_materialized_user_message(
     user = (
         await db.execute(select(User).where(User.id == message.user_id, User.tenant_id == item.tenant_id))
     ).scalar_one_or_none()
+    if message.external_principal_id is not None:
+        from app.services.channel_ingress_context import bind_channel_ingress_external_principal
+        from app.services.external_principal_service import load_external_runtime_actor
+
+        user = await load_external_runtime_actor(db, tenant_id=item.tenant_id,
+            principal_id=message.external_principal_id, expected_user_id=message.user_id)
+        if message.user_id is not None and not user.authority_bound:
+            raise PermissionError("materialized channel sender binding changed")
+        bind_channel_ingress_external_principal(message.external_principal_id)
     if session is None or agent is None or user is None:
         raise RuntimeError("materialized channel ingress authority cannot be restored")
 
     from app.services.session_live_input import submit_live_human_input
+    from app.models.session_v2 import SessionCommand, SessionTurnInput
+
+    accepted = await db.get(SessionTurnInput, item.id)
+    command = await db.get(SessionCommand, accepted.command_id) if accepted else None
+    source = session.source_channel or item.provider
+    metadata = {"source": source, "channel": source, "channel_ingress_event_id": str(item.id), "budget_interactive": False}
+    replay_parts = None
+    if command is not None:
+        if (command.tenant_id != item.tenant_id or command.session_id != session.id
+            or command.principal_id != (message.external_principal_id or message.user_id)):
+            raise PermissionError("materialized channel command authority changed")
+        # Sender labels, attachments and ingress redaction already belong to this accepted command.
+        replay_parts = list(command.request_json["content_parts"])
+        metadata = dict((command.target_json or {}).get("runtime_metadata") or {})
+        source = metadata.get("source") or source
 
     receipt = await submit_live_human_input(
         db=db,
         agent=agent,
         user=user,
         session=session,
-        content=message.content,
-        source=session.source_channel or item.provider,
+        content="" if replay_parts is not None else message.content,
+        parts=replay_parts,
+        source=source,
         input_id=item.id,
         idempotency_key=f"channel:{item.provider}:ingress:{item.id}",
-        runtime_metadata={
-            "source": session.source_channel or item.provider,
-            "channel": session.source_channel or item.provider,
-            "channel_ingress_event_id": str(item.id),
-            "budget_interactive": False,
-        },
+        runtime_metadata=metadata,
     )
     run = dict(receipt.get("run") or {})
     return {
@@ -144,11 +164,17 @@ async def _dispatch_verified_payload(db, item: ClaimedChannelIngressEvent) -> di
                     select(TenantChannelConfig).where(
                         TenantChannelConfig.id == uuid.UUID(str(tenant_config_id)),
                         TenantChannelConfig.tenant_id == item.tenant_id,
+                        TenantChannelConfig.channel_type == "feishu",
+                        TenantChannelConfig.is_active.is_(True),
                     )
                 )
             ).scalar_one_or_none()
             if tenant_channel_config is None:
                 raise RuntimeError("Feishu tenant installation no longer exists")
+            from app.services.channel_ingress_inbox import channel_installation_ref
+
+            if channel_installation_ref(tenant_channel_config, fallback="") != item.installation_ref:
+                raise PermissionError("Feishu tenant installation was replaced")
         result = await process_feishu_event(
             item.agent_id,
             body,

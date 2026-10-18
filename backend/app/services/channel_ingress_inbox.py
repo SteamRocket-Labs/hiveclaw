@@ -70,6 +70,13 @@ def canonical_channel_payload(payload: dict[str, Any]) -> tuple[dict[str, Any], 
 def channel_installation_ref(config: Any, *, fallback: str) -> str:
     """Prefer the durable config id; keep legacy/unversioned fixtures deterministic."""
 
+    from app.models.tenant_channel_config import TenantChannelConfig
+
+    if isinstance(config, TenantChannelConfig):
+        # An app replacement cannot reuse an old app-scoped sender or reply.
+        import hashlib
+
+        return f"tenant:{config.id}:" + hashlib.sha256(str(config.app_id or "").encode()).hexdigest()[:32]
     return str(getattr(config, "id", None) or fallback)
 
 

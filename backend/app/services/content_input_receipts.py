@@ -2,6 +2,7 @@
 
 import hashlib
 import uuid
+from contextlib import contextmanager
 from contextvars import ContextVar
 from pathlib import Path
 
@@ -11,6 +12,17 @@ from app.models.organization_identity import ContentInputReceipt
 from app.services.team_memory import _safe_component, _slugify
 
 _ACTIVE_GROUP_TOOL_SOURCES = ContextVar("active_group_tool_sources", default=frozenset())
+_DISCLOSURE_SOURCE_VALIDATIONS = ContextVar("disclosure_source_validations", default=None)
+
+
+@contextmanager
+def group_source_read():
+    """Reuse successful exact source checks only inside one reader disclosure."""
+    token = _DISCLOSURE_SOURCE_VALIDATIONS.set(set())
+    try:
+        yield
+    finally:
+        _DISCLOSURE_SOURCE_VALIDATIONS.reset(token)
 
 
 class ContentInputReceiptError(ValueError):
@@ -54,6 +66,24 @@ async def validate_runtime_input_dependencies(db, request, dependencies: list) -
 
 
 async def _validate_input_dependencies(db, tenant_id: uuid.UUID, dependencies: list, *, user=None, runtime_request=None,
+    active_workspace_receipts: frozenset[uuid.UUID] = frozenset()) -> None:
+    verified = _DISCLOSURE_SOURCE_VALIDATIONS.get()
+    context = {"user": user, "runtime_request": runtime_request, "active_workspace_receipts": active_workspace_receipts}
+    if verified is None or not isinstance(dependencies, list) or any(
+        not isinstance(row, dict) or set(row) != {"source_kind", "source_id", "source_version"}
+        or any(not isinstance(value, str) or not value for value in row.values()) for row in dependencies
+    ):
+        return await _validate_input_dependency_batch(db, tenant_id, dependencies, **context)
+    for dependency in dependencies:
+        source_key = (dependency["source_kind"], dependency["source_id"], dependency["source_version"])
+        reader_key = (id(db), tenant_id, id(user), id(runtime_request), active_workspace_receipts, source_key)
+        if (reader_key not in verified or (source_key[0] == "session_tool_invocation"
+            and source_key[1:] in _ACTIVE_GROUP_TOOL_SOURCES.get())):
+            await _validate_input_dependency_batch(db, tenant_id, [dependency], **context)
+            verified.add(reader_key)
+
+
+async def _validate_input_dependency_batch(db, tenant_id: uuid.UUID, dependencies: list, *, user=None, runtime_request=None,
     active_workspace_receipts: frozenset[uuid.UUID] = frozenset()) -> None:
     from app.models.knowledge import KnowledgeDocument
     from app.services.personal_knowledge_access import HumanBrowserPrincipal
@@ -280,7 +310,7 @@ async def _validate_agent_context_dependency(db, tenant_id, dependency, *, user,
 
 async def record_session_actor_identity(db, *, tenant_id, agent_id, session_id, user_id, display_name, timezone_name=None,
     runtime_task_id=None):
-    """Witness only the SQL actor/session facts used by the runtime header."""
+    """Witness SQL actor and work/input channel facts used by the runtime header."""
     from datetime import datetime, timezone
     from sqlalchemy.dialects.postgresql import insert
     from app.models.chat_session import ChatSession
@@ -300,13 +330,17 @@ async def record_session_actor_identity(db, *, tenant_id, agent_id, session_id, 
     if row is None or (display_name is not None and display_name != (row[0].display_name or row[0].username)):
         raise ContentInputReceiptError("context_actor_identity_unavailable", "The observed actor does not match the current session.", 403)
     actor, session = row
+    channel = str(session.source_channel or "")
     if session.audience_kind == "group":
         from app.models.runtime_task import RuntimeTask
-        from app.services.shared_group_authority import load_shared_group_runtime_actor
+        from app.models.session_v2 import SessionCommand
+        from app.services.shared_group_authority import load_shared_group_runtime_actor, shared_group_command_channel
 
         task = await db.get(RuntimeTask, uuid.UUID(str(runtime_task_id))) if runtime_task_id is not None else None
         if task is None or (await load_shared_group_runtime_actor(db, task=task, session=session)).id != actor.id:
             raise ContentInputReceiptError("context_actor_identity_unavailable", "The shared actor lacks its canonical turn.", 403)
+        command = await db.get(SessionCommand, uuid.UUID((task.metadata_json or {})["session_v2_command_id"]))
+        channel = shared_group_command_channel(command, session=session)
     if timezone_name is not None:
         zones = (await db.execute(select(Agent.timezone, Tenant.timezone).join(Tenant, Tenant.id == Agent.tenant_id)
             .where(Agent.id == agent_id, Agent.tenant_id == tenant_id))).one()
@@ -314,7 +348,7 @@ async def record_session_actor_identity(db, *, tenant_id, agent_id, session_id, 
             raise ContentInputReceiptError("context_timezone_changed", "The observed timezone changed before capture.", 409)
     payload = {"schema": "hive.session_actor_identity.v1", "tenant_id": str(tenant_id), "agent_id": str(agent_id),
         "session_id": str(session.id), "user_id": str(actor.id), "display_name": display_name,
-        "channel": str(session.source_channel or ""), "timezone": timezone_name}
+        "channel": channel, "timezone": timezone_name}
     version = _hash(payload)
     source_id = uuid.uuid5(session.id, f"session-actor:{version}")
     await db.execute(insert(InvocationSpan).values(id=source_id, tenant_id=tenant_id, agent_id=agent_id,

@@ -313,6 +313,7 @@ function projectCanonicalItem(
       toolResult: normalized.displayResult, toolRawResult: normalized.raw,
       toolMeta: normalized.toolMeta?.kind === 'user_clarification' ? { ...normalized.toolMeta,
         requestItemId: item.id, answered: item.lifecycle === 'completed',
+        requestedByUserId: typeof item.payload.requested_by_user_id === 'string' ? item.payload.requested_by_user_id : undefined,
         answerText: typeof item.payload.answer_text === 'string' ? item.payload.answer_text : null } : normalized.toolMeta };
   }
   if (item.kind === 'tool_permission') {
@@ -404,6 +405,7 @@ function projectCanonicalItem(
     const question = item.invocationId ? questionsByInvocation.get(item.invocationId) : undefined;
     if (normalized.toolMeta?.kind === 'user_clarification' && question) {
       normalized.toolMeta = { ...normalized.toolMeta, requestItemId: question.id,
+        requestedByUserId: typeof question.payload.requested_by_user_id === 'string' ? question.payload.requested_by_user_id : undefined,
         answered: question.lifecycle === 'completed',
         answerText: typeof question.payload.answer_text === 'string' ? question.payload.answer_text : null };
     }

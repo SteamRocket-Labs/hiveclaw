@@ -1435,7 +1435,10 @@ function AgentChatSection({
     [activeSession?.operator_view, canMutateSession, onBranchMessage, onResolveSessionPermission, selectThreadItem, selectedThreadItemId, t, toolEffectRecovery.blocked, visibleTimeline],
   );
 
-  const renderInlinePlanToolCall = (msg: AgentChatMessage, index: number) => (
+  const renderInlinePlanToolCall = (msg: AgentChatMessage, index: number) => {
+    const questionForAnotherReader = activeSession?.audience_kind === 'group'
+      && msg.toolMeta?.kind === 'user_clarification' && msg.toolMeta.requestedByUserId !== currentUser?.id;
+    return (
     <div
       key={`tool-inline-${getChatMessageKey(msg, index, 'tool')}`}
       className="session-tui-render-cell"
@@ -1447,12 +1450,12 @@ function AgentChatSection({
         toolMeta={msg.toolMeta}
         toolResult={msg.toolResult}
         toolRawResult={msg.toolRawResult}
-        agentId={canMutateSession ? effectiveAgentId ?? undefined : undefined}
+        agentId={canMutateSession && !questionForAnotherReader ? effectiveAgentId ?? undefined : undefined}
         sessionId={activeSession?.id}
         agentName={agent?.name}
         submitted={isClarificationCardAnsweredByLaterUserMessage(visibleTimeline, index)}
         questionItemId={msg.transcriptEventId || undefined}
-        onAnswerQuestion={canAnswerQuestion ? onAnswerQuestion : undefined}
+        onAnswerQuestion={canAnswerQuestion && !questionForAnotherReader ? onAnswerQuestion : undefined}
         onSendMessage={canMutateSession ? onSendMessage : undefined}
         onEnterPlanMode={canMutateSession ? onEnterPlanMode : undefined}
       />
@@ -1471,7 +1474,8 @@ function AgentChatSection({
         operatorView={operatorView} operatorReason={normalizedOperatorReason}
       />
     </div>
-  );
+    );
+  };
 	  const renderConversationMessage = (
     message: AgentChatMessage,
     index: number,

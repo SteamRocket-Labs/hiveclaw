@@ -129,15 +129,18 @@ describe('canonical Session event consumer', () => {
       payload: { content: JSON.stringify({ status: 'awaiting_user_clarification', blocking: true,
         questions: [{ question: 'Which audience?', options: [{ label: 'Team' }] }] }) } };
     const question: SessionEventV2 = { ...event(3, 'started'), item_id: 'question', item_kind: 'user_question', kind: 'user_question.waiting',
-      lifecycle: 'waiting', ordinal: undefined, invocation_id: 'inv', payload_schema: 'hive.session.payload.user_question.waiting.v2', payload: {} };
+      lifecycle: 'waiting', ordinal: undefined, invocation_id: 'inv', payload_schema: 'hive.session.payload.user_question.waiting.v2',
+      payload: { requested_by_user_id: 'requester-1' } };
     expect(projectSessionEventStoreToMessages(replay([tool, result, question]))[0].toolMeta).toMatchObject({
       kind: 'user_clarification', requestItemId: 'question', answered: false,
     });
     const answered: SessionEventV2 = { ...question, sequence: 4, event_id: 'answer-event', kind: 'user_question.completed',
-      lifecycle: 'completed', payload_schema: 'hive.session.payload.user_question.completed.v2', payload: { answer_text: 'Audience: Team' } };
+      lifecycle: 'completed', payload_schema: 'hive.session.payload.user_question.completed.v2',
+      payload: { ...question.payload, answer_text: 'Audience: Team' } };
     const restored = projectSessionEventStoreToMessages(replay([tool, result, question, answered]));
     expect(restored).toHaveLength(1);
-    expect(restored[0].toolMeta).toMatchObject({ requestItemId: 'question', answered: true, answerText: 'Audience: Team' });
+    expect(restored[0].toolMeta).toMatchObject({ requestItemId: 'question', requestedByUserId: 'requester-1',
+      answered: true, answerText: 'Audience: Team' });
     const reopened = { ...question, sequence: 5, event_id: 'reopened-event', item_id: 'reopened-question' };
     expect(projectSessionEventStoreToMessages(replay([tool, result, question, answered, reopened]))[0].toolMeta)
       .toMatchObject({ requestItemId: 'reopened-question', answered: false });

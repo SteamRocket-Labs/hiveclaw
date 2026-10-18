@@ -271,6 +271,18 @@ async def submit_live_human_input(
         if question is None:
             raise HTTPException(status_code=409, detail={"code": "user_question_not_found",
                 "message": "The requested question is unavailable in this work."})
+        if session.audience_kind == "group":
+            scope = dict(question.scope_json or {})
+            try:
+                question_run_id = uuid.UUID(str(scope["run_id"]))
+                question_turn_id = scope["turn_id"]
+            except (KeyError, TypeError, ValueError) as exc:
+                raise HTTPException(409, detail={"code": "user_question_scope_unavailable"}) from exc
+            if (question_run_id != question.run_id or not isinstance(question_turn_id, str) or not question_turn_id
+                or (expected_run_id is not None and str(expected_run_id) != str(question_run_id))
+                or (expected_turn_id is not None and expected_turn_id != question_turn_id)):
+                raise HTTPException(409, detail={"code": "user_question_scope_mismatch"})
+            expected_run_id, expected_turn_id = question_run_id, question_turn_id
         request_item_id = question.item_id
         from app.services.session_user_question import validate_configuration_answer
 

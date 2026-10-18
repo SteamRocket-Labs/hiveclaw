@@ -31,10 +31,12 @@ def source_hold(event_id, exc=None):
 
 async def group_event_access(db, *, session, events, user):
     from app.database import tenant_scoped_session
+    from app.services.content_input_receipts import group_source_read
 
     # Source checks must not inherit an administrator's ambient RLS bypass.
     async with tenant_scoped_session(session.tenant_id) as source_db:
-        return await _group_event_access(source_db, session=session, events=events, user=user)
+        with group_source_read():
+            return await _group_event_access(source_db, session=session, events=events, user=user)
 
 
 async def _group_event_access(db, *, session, events, user):

@@ -1568,7 +1568,11 @@ function AgentDetailInner() {
             ...msg,
             toolResult: normalized.displayResult,
             toolRawResult: normalized.raw,
-            toolMeta: normalized.toolMeta ?? msg.toolMeta ?? null,
+            toolMeta: msg.sessionItem && msg.toolMeta?.kind === 'user_clarification' && normalized.toolMeta?.kind === 'user_clarification'
+                ? { ...normalized.toolMeta, requestItemId: msg.toolMeta.requestItemId,
+                    requestedByUserId: msg.toolMeta.requestedByUserId, answered: msg.toolMeta.answered,
+                    answerText: msg.toolMeta.answerText }
+                : normalized.toolMeta ?? msg.toolMeta ?? null,
         };
     };
     const parseChatMsg = (msg: AgentChatMessage): AgentChatMessage => {

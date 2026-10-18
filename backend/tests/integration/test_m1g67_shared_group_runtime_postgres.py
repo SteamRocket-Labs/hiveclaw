@@ -16,7 +16,7 @@ pytestmark = [pytest.mark.usefixtures("migrated_pg_url"), pytest.mark.skipif(pla
     reason="Native macOS context gate; Linux delivery is deferred.")]
 
 
-@pytest.mark.parametrize("mutation", [None, "forged_actor", "unlinked", "private_source", "private_recipient", "unknown_recipient", "queued_member", "same_sender", "explicit_other", "private_context", "shared_context", "web_member", "web_socket", "web_browser"])
+@pytest.mark.parametrize("mutation", [None, "forged_actor", "unlinked", "private_source", "private_recipient", "unknown_recipient", "queued_member", "same_sender", "explicit_other", "private_context", "shared_context", "web_member", "web_socket", "web_browser", "web_question", "web_question_browser"])
 async def test_shared_work_runs_with_its_original_sender_and_real_tool_sources(
     owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, mutation,
 ):
@@ -55,6 +55,10 @@ async def test_shared_work_runs_with_its_original_sender_and_real_tool_sources(
     from app.services.web_chat_runtime import execute_web_chat_run
 
     web_requester = mutation == "web_member"
+    question_browser = mutation == "web_question_browser"
+    web_question = mutation in {"web_question", "web_question_browser"}
+    if web_question:
+        mutation = None
     web_browser = mutation == "web_browser"
     web_socket = mutation in {"web_socket", "web_browser"}
     if web_requester or web_socket:
@@ -100,7 +104,7 @@ async def test_shared_work_runs_with_its_original_sender_and_real_tool_sources(
         bound = await bind_authenticated_self_channel_principal(db, tenant_id=seed["tenant_id"], config=config,
             provider_subject_id="ou_group_requester", user_id=member.id, actor_user_id=member.id)
         actor = bound.actor
-        if mutation in {"private_recipient", "queued_member", "explicit_other", "private_context", "shared_context"}:
+        if web_question or mutation in {"private_recipient", "queued_member", "explicit_other", "private_context", "shared_context"}:
             other = await bind_authenticated_self_channel_principal(db, tenant_id=seed["tenant_id"], config=config,
                 provider_subject_id="ou_group_creator", user_id=seed["user_id"], actor_user_id=seed["user_id"])
         grant.actions = ["read", "execute"]
@@ -131,7 +135,7 @@ async def test_shared_work_runs_with_its_original_sender_and_real_tool_sources(
 
     async def members(_self, *_args, **_kwargs):
         subjects = {"ou_group_requester"}
-        if mutation in {"private_recipient", "unknown_recipient", "queued_member", "explicit_other", "private_context", "shared_context"}:
+        if web_question or mutation in {"private_recipient", "unknown_recipient", "queued_member", "explicit_other", "private_context", "shared_context"}:
             subjects.add("ou_group_unknown" if mutation == "unknown_recipient" else "ou_group_creator")
         return subjects
     monkeypatch.setattr(FeishuService, "get_chat_member_open_ids", members)
@@ -340,6 +344,11 @@ async def test_shared_work_runs_with_its_original_sender_and_real_tool_sources(
             "arguments": json.dumps({"path": "workspace/shared-report.md"})}}], "finish_reason": "tool_calls"},
         {"content": "The shared report is ready.", "finish_reason": "stop"},
     ]
+    if web_question:
+        responses[-1] = {"tool_calls": [{"id": "group-question", "type": "function", "function": {
+            "name": "ask_user_question", "arguments": json.dumps({"questions": [{"question": "Which audience?",
+                "header": "Audience", "options": [{"label": "Team"}, {"label": "Personal"}]}]})}}],
+            "finish_reason": "tool_calls"}
     if mutation in {"private_context", "shared_context"}:
         responses.insert(0, {"tool_calls": [{"id": "private-read", "type": "function", "function": {"name": "read_file",
             "arguments": json.dumps({"path": "workspace/private-notes.md"})}}], "finish_reason": "tool_calls"})
@@ -420,6 +429,10 @@ async def test_shared_work_runs_with_its_original_sender_and_real_tool_sources(
         assert all(row.model_request_snapshot_json["input_bindings"]["dependency_coverage"]["complete"] for row in results)
         assert (await db.get(SessionTurnInput, event.event_id)).status == "applied"
         assert (seed["agent_root"] / "workspace/shared-report.md").read_text() == report_content
+        if web_question:
+            await _exercise_group_question(seed, shared_id, run_id, member.id, app_user_sessionmaker, monkeypatch, tmp_path,
+                browser_question=question_browser)
+            return
         from app.models.chat_artifact import ChatArtifact
         from app.models.chat_transcript_event import ChatTranscriptEvent
         from app.services.chat_artifact_delivery import captured_chat_artifact_file
@@ -891,3 +904,220 @@ async def test_shared_work_runs_with_its_original_sender_and_real_tool_sources(
             assert command.principal_type == "user" and command.principal_id == seed["user_id"]
             assert audits[0].details["authority_source"] == "scoped_business_admin"
             assert (await db.get(ChatSession, shared_id)).user_id is None
+
+
+async def _exercise_group_question(seed, session_id, run_id, user_id, sessionmaker, monkeypatch, tmp_path, *, browser_question=False):
+    from fastapi import FastAPI
+    from httpx import ASGITransport, AsyncClient
+    from app import database
+    from app.api import chat_sessions
+    from app.core.security import get_current_user
+    from app.database import pin_rls_tenant_context
+    from app.models.chat_transcript_event import ChatTranscriptEvent
+    from app.models.chat_session import ChatSession
+    from app.models.session_v2 import SessionCommand, SessionTurnInput
+    from app.models.runtime_task import RuntimeTask
+    from app.models.security_audit import ResourcePermission
+    from app.core.resource_authority import workspace_resource_id
+    from app.services.feishu_service import FeishuService
+    from app.services.session_input_dispatch import recover_admitted_session_inputs_once
+    from app.services.runtime_task_fence import reset_runtime_task_fence, set_runtime_task_fence
+    from app.services.web_chat_runtime import execute_web_chat_run
+    import app.runtime.invoker as invoker
+
+    reader_id = user_id
+    from app.models.user import User
+
+    async def current_user():
+        async with sessionmaker() as db:
+            await pin_rls_tenant_context(db, seed["tenant_id"])
+            return await db.get(User, reader_id)
+
+    async def scoped_db():
+        async with sessionmaker() as db:
+            await pin_rls_tenant_context(db, seed["tenant_id"])
+            yield db
+
+    async with sessionmaker() as db:
+        await pin_rls_tenant_context(db, seed["tenant_id"])
+        questions = list(await db.scalars(select(ChatTranscriptEvent).where(
+            ChatTranscriptEvent.run_id == run_id, ChatTranscriptEvent.item_kind == "user_question")))
+        assert len(questions) == 1 and questions[0].lifecycle == "waiting"
+        question = questions[0]
+        assert question.invocation_id is not None
+    web = FastAPI()
+    web.include_router(chat_sessions.router)
+    web.dependency_overrides[get_current_user] = current_user
+    web.dependency_overrides[database.get_db] = scoped_db
+    input_id = uuid4()
+    url = f"/agents/{seed['agent_id']}/sessions/{session_id}"
+    body = {"kind": "answer_request", "input_id": str(input_id), "idempotency_key": f"question-answer:{input_id}",
+        "request_item_id": str(question.item_id), "content_parts": [{"type": "text", "text": "Audience: Team"}],
+        "terminal_fallback": "queue_next_turn"}
+    server = server_task = listener = process = None
+    try:
+        async with AsyncClient(transport=ASGITransport(app=web), base_url="http://group.fixture") as client:
+            transcript = await client.get(url + "/transcript", params={"schema_version": 2, "limit": 1000})
+            assert transcript.status_code == 200 and "Which audience?" in transcript.text, transcript.text
+            reader_id = seed["user_id"]
+            restricted = await client.get(url + "/transcript", params={"schema_version": 2, "limit": 1000})
+            assert restricted.status_code == 200 and "Which audience?" not in restricted.text, restricted.text
+            denied = await client.post(url + "/inputs", json=body)
+            assert denied.status_code == 403 and denied.json()["detail"]["source_access_receipt"]["status"] == "denied", denied.text
+            async with sessionmaker() as db:
+                await pin_rls_tenant_context(db, seed["tenant_id"])
+                db.add(ResourcePermission(id=uuid4(), tenant_id=seed["tenant_id"], principal_type="user",
+                    principal_id=seed["user_id"], resource_type="workspace_file",
+                    resource_id=workspace_resource_id(seed["agent_id"], "workspace/shared-report.md"),
+                    actions=["read"], effect="allow", conditions={}))
+                await db.commit()
+            shared_question = await client.get(url + "/transcript", params={"schema_version": 2, "limit": 1000})
+            assert shared_question.status_code == 200 and "Which audience?" in shared_question.text, shared_question.text
+            other_reader = await client.post(url + "/inputs", json=body)
+            assert other_reader.status_code == 409 and other_reader.json()["detail"]["code"] == "shared_group_requester_conflict", other_reader.text
+            reader_id = user_id
+            for status, members in [(403, set()), (503, None)]:
+                async def unavailable_members(*_args, **_kwargs):
+                    if members is None:
+                        raise RuntimeError("Synthetic membership unavailable")
+                    return members
+                with monkeypatch.context() as patch:
+                    patch.setattr(FeishuService, "get_chat_member_open_ids", unavailable_members)
+                    unavailable = await client.post(url + "/inputs", json=body)
+                    assert unavailable.status_code == status, unavailable.text
+            async with sessionmaker() as db:
+                await pin_rls_tenant_context(db, seed["tenant_id"])
+                assert await db.get(SessionTurnInput, input_id) is None
+            if browser_question:
+                import asyncio
+                import socket as sockets
+                from pathlib import Path
+                import uvicorn
+                from fastapi.responses import FileResponse, JSONResponse
+                from fastapi.staticfiles import StaticFiles
+                from app.api import agents, auth, websocket as socket_api
+                from app.core.security import create_access_token
+                from app.services.web_chat_broker import WebChatBroker
+                import app.services.web_chat_runtime as runtime
+
+                frontend = Path(__file__).resolve().parents[3] / "frontend"
+                assert (frontend / "dist/index.html").is_file()
+                broker = WebChatBroker()
+                monkeypatch.setattr(runtime, "web_chat_broker", broker)
+                monkeypatch.setattr(socket_api, "manager", broker)
+                web.include_router(chat_sessions.router, prefix="/api")
+                web.include_router(agents.router, prefix="/api")
+                web.include_router(auth.router, prefix="/api")
+                web.include_router(socket_api.router)
+                web.mount("/assets", StaticFiles(directory=frontend / "dist/assets"), name="assets")
+                @web.get("/api/{path:path}")
+                async def unavailable_fixture_api(path: str):
+                    return JSONResponse(status_code=404, content={"detail": "Unsupported fixture endpoint"})
+                @web.get("/{path:path}")
+                async def built_frontend(path: str):
+                    return FileResponse(frontend / "dist/index.html")
+                listener = sockets.socket()
+                listener.bind(("127.0.0.1", 0))
+                port = listener.getsockname()[1]
+                server = uvicorn.Server(uvicorn.Config(web, host="127.0.0.1", port=port, lifespan="off", access_log=False, log_level="warning"))
+                server_task = asyncio.create_task(server.serve(sockets=[listener]))
+                for _ in range(500):
+                    if server.started:
+                        break
+                    assert not server_task.done()
+                    await asyncio.sleep(0.01)
+                assert server.started
+                fixture_path = tmp_path / "question-browser-fixture.json"
+                fixture_path.write_text(json.dumps({"origin": f"http://127.0.0.1:{port}", "tenantId": str(seed["tenant_id"]),
+                    "agentId": str(seed["agent_id"]), "sessionId": str(session_id), "questionId": str(question.item_id),
+                    "readerToken": create_access_token(str(seed["user_id"]), "user", str(seed["tenant_id"])),
+                    "requesterToken": create_access_token(str(user_id), "user", str(seed["tenant_id"])),
+                    **{key: str(tmp_path / name) for key, name in {"readonlyScreenshot": "question-readonly.png",
+                        "completedScreenshot": "question-completed.png", "answerPath": "question-browser-answer.json",
+                        "framesPath": "question-browser-frames.json", "errorPath": "question-browser-error.json",
+                        "errorScreenshot": "question-browser-error.png"}.items()}}))
+                reader_id = seed["user_id"]
+                process = await asyncio.create_subprocess_exec("node", str(frontend / "e2e/group-question-native.mjs"), str(fixture_path),
+                    cwd=frontend, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+                line = await asyncio.wait_for(process.stdout.readline(), 60)
+                assert line and json.loads(line)["event"] == "readonly_checked", (line, await process.stderr.read())
+                reader_id = user_id
+                process.stdin.write(b'{"event":"requester_ready"}\n')
+                await process.stdin.drain()
+                line = await asyncio.wait_for(process.stdout.readline(), 60)
+                assert line and json.loads(line)["event"] == "answer_recorded", (line, await process.stderr.read())
+                recorded = json.loads((tmp_path / "question-browser-answer.json").read_text())
+                body, receipt = recorded["body"], recorded["receipt"]
+                input_id = UUID(body["input_id"])
+                assert body["content_parts"] == [{"type": "text", "text": "Audience: Team"}]
+            else:
+                response = await client.post(url + "/inputs", json=body)
+                receipt = response.json()
+                assert response.status_code == 200, response.text
+            (tmp_path / "group-answer-response.json").write_text(json.dumps(receipt))
+            assert receipt["admission_state"] == "admitted", receipt
+            replay = await client.post(url + "/inputs", json=body)
+            assert replay.status_code == 200 and replay.json()["command_id"] == receipt["command_id"], replay.text
+            command_id = UUID(receipt["command_id"])
+        from app.services.runtime_terminal_boundary_outbox import RuntimeTerminalBoundaryOutboxService
+        from app.services.web_terminal_boundary_processor import WebTerminalBoundaryProcessor
+
+        processor = WebTerminalBoundaryProcessor(session_factory=sessionmaker, data_root=seed["data_root"])
+        terminal = await RuntimeTerminalBoundaryOutboxService(session_factory=sessionmaker).drain_once(
+            tenant_id=seed["tenant_id"], worker_id="group-question-terminal", canonical_validator=processor.validate,
+            process_callback=processor, task_types=("web_chat_turn",))
+        assert terminal["delivered"] == 1, terminal
+        async with sessionmaker() as db:
+            await pin_rls_tenant_context(db, seed["tenant_id"])
+            answer = await db.get(SessionTurnInput, input_id)
+            assert answer is not None and answer.request_item_id == question.item_id and answer.session_id == session_id
+            command = await db.get(SessionCommand, command_id)
+            assert command.principal_type == "user" and command.principal_id == user_id
+            assert command.target_json["expected_run_id"] == str(run_id)
+            await recover_admitted_session_inputs_once(db, worker_id="group-answer-dispatch", tenant_id=seed["tenant_id"],
+                admission_ids=(uuid5(command_id, "input-admission:revision:1"),))
+            successor = await db.get(RuntimeTask, uuid5(input_id, "session-v2-successor-run"))
+            assert successor is not None and successor.root_user_id == user_id and successor.parent_session_id == str(session_id)
+            completed_question = await db.scalar(select(ChatTranscriptEvent).where(ChatTranscriptEvent.item_id == question.item_id,
+                ChatTranscriptEvent.input_id == input_id, ChatTranscriptEvent.lifecycle == "completed"))
+            assert completed_question is not None and completed_question.run_id == run_id
+            successor.status, successor.claimed_by, successor.claim_version, successor.attempt_count = "running", "group-answer-worker", 1, 1
+            successor.claim_expires_at = datetime.now(timezone.utc) + timedelta(minutes=10)
+            await db.commit()
+        model = ScriptedLLMClient([
+            {"tool_calls": [{"id": "answer-read", "type": "function", "function": {"name": "read_file",
+                "arguments": json.dumps({"path": "workspace/shared-report.md"})}}], "finish_reason": "tool_calls"},
+            {"content": "The Team report is ready.", "finish_reason": "stop"},
+        ])
+        monkeypatch.setattr(invoker, "create_llm_client", lambda **_kwargs: model)
+        fence = set_runtime_task_fence(task_id=successor.id, worker_id="group-answer-worker", claim_version=1)
+        try:
+            await execute_web_chat_run(successor.id)
+        finally:
+            reset_runtime_task_fence(fence)
+        (tmp_path / "group-answer-model-requests.json").write_text(json.dumps(model.requests, default=str, indent=2))
+        async with sessionmaker() as db:
+            await pin_rls_tenant_context(db, seed["tenant_id"])
+            settled = await db.get(RuntimeTask, successor.id)
+            assert settled.status == "completed", (settled.status, settled.result_summary, settled.metadata_json)
+            assert len(model.requests) == 2 and "Audience: Team" in json.dumps(model.requests[0]["messages"])
+            assert "GROUP_REPORT" in json.dumps(model.requests[1]["messages"])
+            assert settled.metadata_json["channel"] == "web"
+            work = await db.get(ChatSession, session_id)
+            assert work.source_channel == "feishu" and work.delivery_target_json["receive_id"] == "oc_native_group"
+        if browser_question:
+            line = await asyncio.wait_for(process.stdout.readline(), 60)
+            assert line and json.loads(line)["event"] == "work_completed", (line, await process.stderr.read())
+            assert await asyncio.wait_for(process.wait(), 10) == 0, await process.stderr.read()
+    finally:
+        if process is not None and process.returncode is None:
+            process.terminate()
+            await asyncio.wait_for(process.wait(), 10)
+        if server is not None:
+            server.should_exit = True
+        try:
+            if server_task is not None:
+                await asyncio.wait_for(server_task, 10)
+        finally:
+            if listener is not None:
+                listener.close()

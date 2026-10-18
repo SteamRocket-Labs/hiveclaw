@@ -5577,9 +5577,13 @@ async def _load_runtime_context(
         user_id = _uuid_or_none(metadata.get("user_id"))
         external_principal_id = _uuid_or_none(metadata.get("external_principal_id"))
         if session is not None and session.audience_kind == "group":
-            from app.services.shared_group_authority import load_shared_group_runtime_actor
+            from app.models.session_v2 import SessionCommand
+            from app.services.shared_group_authority import load_shared_group_runtime_actor, shared_group_command_channel
 
             user = await load_shared_group_runtime_actor(db, task=runtime_task, session=session)
+            command = await db.get(SessionCommand, uuid.UUID(metadata["session_v2_command_id"]))
+            metadata["channel"] = shared_group_command_channel(command, session=session)
+            runtime_task.metadata_json = metadata
         elif external_principal_id is not None:
             from app.services.external_principal_service import load_external_runtime_actor
 

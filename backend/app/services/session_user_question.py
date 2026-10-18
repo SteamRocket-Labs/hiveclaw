@@ -17,6 +17,26 @@ def question_payload(event):
     return dict((event.metadata_json or {}).get("v2_payload") or {})
 
 
+async def _authorize_question_source(db, *, authority, question):
+    from fastapi import HTTPException
+    from app.models.chat_session import ChatSession
+    from app.models.user import User
+    from app.services.shared_group_history import authorize_group_history_reader, group_event_access
+
+    session = await db.get(ChatSession, authority.session_id)
+    if session is None or session.audience_kind != "group":
+        return
+    user = await db.scalar(select(User).where(User.id == authority.principal_id,
+        User.tenant_id == session.tenant_id).execution_options(populate_existing=True)) if authority.principal_type == "user" else None
+    if user is None or not user.is_active:
+        raise HTTPException(403, detail={"code": "group_question_requester_required"})
+    await authorize_group_history_reader(db, session=session, user=user, audit=False)
+    receipt = (await group_event_access(db, session=session, events=[question], user=user))[question.id]
+    if receipt is not None:
+        raise HTTPException(403 if receipt["status"] == "denied" else 503,
+            detail={"code": receipt["code"], "source_access_receipt": receipt})
+
+
 async def load_configuration_question(db, *, authority, item_id):
     from fastapi import HTTPException
 
@@ -94,6 +114,7 @@ async def load_answer_question(db, *, authority, item_id):
         ChatTranscriptEvent.item_kind == "user_question",
     ).order_by(ChatTranscriptEvent.sequence.desc()).limit(1))
     if question is not None:
+        await _authorize_question_source(db, authority=authority, question=question)
         return question
     # Old links identify a real tool transcript event, not an inferred prose question.
     invocation = await db.scalar(select(SessionToolInvocation).where(
@@ -106,6 +127,7 @@ async def load_answer_question(db, *, authority, item_id):
             ChatTranscriptEvent.invocation_id == invocation.id, ChatTranscriptEvent.item_kind == "user_question",
         ).order_by(ChatTranscriptEvent.sequence.desc()).limit(1))
         if existing is not None:
+            await _authorize_question_source(db, authority=authority, question=existing)
             return existing
     legacy = await db.scalar(select(ChatTranscriptEvent).where(
         ChatTranscriptEvent.id == (invocation.result_event_id if invocation else item_id),
@@ -115,6 +137,7 @@ async def load_answer_question(db, *, authority, item_id):
     ))
     if legacy is None or (legacy.metadata_json or {}).get("answered") is True or legacy.run_id is None:
         return None
+    await _authorize_question_source(db, authority=authority, question=legacy)
     try:
         envelope = question_payload(legacy) if legacy.item_kind == "tool_result" else json.loads(legacy.content)
         payload = envelope.get("result", envelope.get("content", envelope))

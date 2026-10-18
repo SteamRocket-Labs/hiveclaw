@@ -120,6 +120,19 @@ async def resolve_shared_group_input_authority(db, *, actor, session, ingress_ev
         authority_source="shared_group_ingress", action="mutate_session_input", _seal=_AUTHORITY_SEAL)
 
 
+def shared_group_command_channel(command, *, session):
+    """Use the accepted input's entry facts, independently of a cached socket."""
+    if (command is None or command.tenant_id != session.tenant_id or command.session_id != session.id
+        or command.namespace != "human_input"):
+        raise PermissionError("shared_group_channel_origin_mismatch")
+    admitted = dict((command.target_json or {}).get("runtime_metadata") or {})
+    channel = "web" if admitted.get("source") in {"web", "session_input_api"} else (
+        admitted.get("channel") or session.source_channel)
+    if not isinstance(channel, str) or not channel.strip():
+        raise PermissionError("shared_group_channel_unavailable")
+    return channel
+
+
 async def load_shared_group_runtime_actor(db, *, task, session):
     """Require a live execution claim as well as the canonical requester."""
     from datetime import datetime, timezone

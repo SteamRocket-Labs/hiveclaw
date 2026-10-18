@@ -300,6 +300,10 @@ async def _start_input_runtime(
     run_id = uuid.uuid5(row.id, "session-v2-successor-run" if successor else "session-v2-runtime-run")
     turn_id = row.target_turn_id or f"turn-{uuid.uuid5(row.id, 'session-v2-turn').hex}"
     metadata = _runtime_metadata(command)
+    if session.audience_kind == "group":
+        from app.services.shared_group_authority import shared_group_command_channel
+
+        metadata["channel"] = shared_group_command_channel(command, session=session)
     runtime_task_type = str(metadata.pop("runtime_task_type", "web_chat_turn") or "web_chat_turn")
     budget_interactive = bool(metadata.pop("budget_interactive", True))
     plan_mode_requested = bool(metadata.pop("plan_mode_requested", False))

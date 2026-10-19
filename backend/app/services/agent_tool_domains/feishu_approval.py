@@ -8,24 +8,18 @@ import uuid
 
 from app.services.agent_tool_domains.feishu_helpers import FeishuToolAuth, _get_feishu_tool_auth
 from app.services.feishu_service import feishu_service
-from app.tools.result_envelope import render_tool_error
-from app.services.feishu_platform import FeishuMutationUnknown
+from app.tools.result_envelope import render_tool_error, ToolContentEnvelope
+from app.services.feishu_platform import FeishuMutationUnknown, FeishuAPIError, feishu_tool_error
 from app.services.feishu_read_receipts import attest_feishu_action_result, feishu_action_unknown
 
 _ALIAS_STRIP_CHARS = " \t\r\n`'\"“”‘’.,，。:：;；!！?？、()（）[]【】<>《》"
 
 
-def _approval_not_configured(tool_name: str) -> str:
-    return render_tool_error(
-        tool_name=tool_name,
-        error_class="not_configured",
-        message="Feishu approval auth is not configured for this agent.",
-        provider="feishu_openapi",
-        actionable_hint="Configure Feishu bot credentials for the agent or tenant first.",
-    )
+def _approval_not_configured(tool_name: str):
+    return feishu_tool_error(tool_name, error_class="not_configured",
+        message="Feishu approval auth is not configured for this agent.")
 
-
-async def _get_approval_credentials(agent_id: uuid.UUID, tool_name: str) -> FeishuToolAuth | str:
+async def _get_approval_credentials(agent_id: uuid.UUID, tool_name: str) -> FeishuToolAuth | ToolContentEnvelope:
     creds = await _get_feishu_tool_auth(agent_id)
     if not creds:
         return _approval_not_configured(tool_name)
@@ -187,6 +181,8 @@ async def _prepare_approval_form(app_id: str, app_secret: str, approval_code: st
     except Exception as exc:
         if isinstance(form_value, list):
             return json.dumps(form_value, ensure_ascii=False) if not isinstance(form, str) else form
+        if isinstance(exc, FeishuAPIError):
+            return exc.tool_result("feishu_approval_create")
         return None, f"读取飞书审批定义失败，无法把字段名映射成控件 ID：{exc}"
 
     normalized, error = _normalize_approval_form_with_definition(form_value, definition)
@@ -216,17 +212,19 @@ async def _feishu_approval_create(agent_id: uuid.UUID, arguments: dict) -> str:
     user_id = str(arguments.get("user_id") or "").strip()
     form = arguments.get("form")
     if not approval_code:
-        return "❌ Missing required argument 'approval_code'"
+        return feishu_tool_error("feishu_approval_create", message="Missing required argument 'approval_code'", error_class="invalid_arguments")
     if not user_id:
-        return "❌ Missing required argument 'user_id'"
+        return feishu_tool_error("feishu_approval_create", message="Missing required argument 'user_id'", error_class="invalid_arguments")
     if form is None:
-        return "❌ Missing required argument 'form'"
+        return feishu_tool_error("feishu_approval_create", message="Missing required argument 'form'", error_class="invalid_arguments")
 
     creds = await _get_approval_credentials(agent_id, "feishu_approval_create")
-    if isinstance(creds, str):
+    if isinstance(creds, (str, ToolContentEnvelope)):
         return creds
     app_id, app_secret = creds.app_id, creds.app_secret
     prepared_form = await _prepare_approval_form(app_id, app_secret, approval_code, form, extra_config=creds.extra_config)
+    if isinstance(prepared_form, ToolContentEnvelope):
+        return prepared_form
     if isinstance(prepared_form, tuple):
         return render_tool_error(
             tool_name="feishu_approval_create",
@@ -240,6 +238,8 @@ async def _feishu_approval_create(agent_id: uuid.UUID, arguments: dict) -> str:
             prepared_form, extra_config=creds.extra_config)
     except FeishuMutationUnknown:
         return feishu_action_unknown("feishu_approval_create")
+    except FeishuAPIError as exc:
+        return exc.tool_result("feishu_approval_create")
     instance = (
         payload.get("instance_code")
         or payload.get("instance_id")
@@ -260,14 +260,17 @@ async def _feishu_approval_query(agent_id: uuid.UUID, arguments: dict, *, tenant
     approval_code = str(arguments.get("approval_code") or "").strip()
     status = str(arguments.get("status") or "").strip() or None
     if not approval_code:
-        return "❌ Missing required argument 'approval_code'"
+        return feishu_tool_error("feishu_approval_query", message="Missing required argument 'approval_code'", error_class="invalid_arguments")
 
     creds = await _get_approval_credentials(agent_id, "feishu_approval_query")
-    if isinstance(creds, str):
+    if isinstance(creds, (str, ToolContentEnvelope)):
         return creds
     app_id, app_secret = creds.app_id, creds.app_secret
-    payload = await feishu_service.query_approval_instances(app_id, app_secret, approval_code, status=status,
-        extra_config=creds.extra_config)
+    try:
+        payload = await feishu_service.query_approval_instances(app_id, app_secret, approval_code, status=status,
+            extra_config=creds.extra_config)
+    except FeishuAPIError as exc:
+        return exc.tool_result("feishu_approval_query")
     instances = (
         payload.get("instance_code_list") or payload.get("instance_id_list") or payload.get("instance_list") or []
     )
@@ -291,13 +294,16 @@ async def _feishu_approval_query(agent_id: uuid.UUID, arguments: dict, *, tenant
 async def _feishu_approval_definition(agent_id: uuid.UUID, arguments: dict, *, tenant_id=None, current_user_id=None) -> str:
     approval_code = str(arguments.get("approval_code") or "").strip()
     if not approval_code:
-        return "❌ Missing required argument 'approval_code'"
+        return feishu_tool_error("feishu_approval_definition", message="Missing required argument 'approval_code'", error_class="invalid_arguments")
 
     creds = await _get_approval_credentials(agent_id, "feishu_approval_definition")
-    if isinstance(creds, str):
+    if isinstance(creds, (str, ToolContentEnvelope)):
         return creds
     app_id, app_secret = creds.app_id, creds.app_secret
-    payload = await feishu_service.get_approval_definition(app_id, app_secret, approval_code, extra_config=creds.extra_config)
+    try:
+        payload = await feishu_service.get_approval_definition(app_id, app_secret, approval_code, extra_config=creds.extra_config)
+    except FeishuAPIError as exc:
+        return exc.tool_result("feishu_approval_definition")
     from app.services.agent_tool_domains.feishu_acl import with_feishu_read_authority
     from app.services.feishu_read_receipts import attest_feishu_api_read
 
@@ -309,13 +315,16 @@ async def _feishu_approval_definition(agent_id: uuid.UUID, arguments: dict, *, t
 async def _feishu_approval_get(agent_id: uuid.UUID, arguments: dict, *, tenant_id=None, current_user_id=None) -> str:
     instance_id = str(arguments.get("instance_id") or "").strip()
     if not instance_id:
-        return "❌ Missing required argument 'instance_id'"
+        return feishu_tool_error("feishu_approval_get", message="Missing required argument 'instance_id'", error_class="invalid_arguments")
 
     creds = await _get_approval_credentials(agent_id, "feishu_approval_get")
-    if isinstance(creds, str):
+    if isinstance(creds, (str, ToolContentEnvelope)):
         return creds
     app_id, app_secret = creds.app_id, creds.app_secret
-    payload = await feishu_service.get_approval_instance(app_id, app_secret, instance_id, extra_config=creds.extra_config)
+    try:
+        payload = await feishu_service.get_approval_instance(app_id, app_secret, instance_id, extra_config=creds.extra_config)
+    except FeishuAPIError as exc:
+        return exc.tool_result("feishu_approval_get")
     from app.services.agent_tool_domains.feishu_acl import with_feishu_read_authority
     from app.services.feishu_read_receipts import attest_feishu_api_read
 

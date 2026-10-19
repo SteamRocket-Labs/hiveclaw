@@ -17,9 +17,9 @@ async def test_document_result_uses_matching_metadata_and_preserves_uncertain_ef
     from app.services.agent_tool_domains import feishu_docs
 
     platform = resolve_feishu_platform({"platform_region": "lark_global"})
-    async def credentials(_agent):
+    async def credentials(_agent, _tool_name):
         return "synthetic-app", FeishuAccessToken("synthetic-token", platform)
-    monkeypatch.setattr(feishu_docs, "_get_feishu_token", credentials)
+    monkeypatch.setattr(feishu_docs, "_get_feishu_office_token", credentials)
     posts = []
     def provider(request):
         assert request.url.host == "open.larksuite.com"

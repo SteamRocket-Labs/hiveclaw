@@ -39,17 +39,24 @@ class FeishuService:
         stage: str,
         message_id: str | None = None,
     ) -> dict:
+        from app.services.feishu_platform import FeishuAPIError
+
         try:
             data = resp.json()
         except Exception as exc:
-            raise RuntimeError(f"Feishu {stage} returned invalid JSON") from exc
+            raise FeishuAPIError(f"Feishu {stage} returned invalid JSON", http_status=resp.status_code) from exc
+
+        if not isinstance(data, dict):
+            raise FeishuAPIError(f"Feishu {stage} returned invalid JSON", http_status=resp.status_code)
 
         if resp.status_code >= 400:
-            raise RuntimeError(f"Feishu {stage} HTTP {resp.status_code}")
+            raise FeishuAPIError(f"Feishu {stage} HTTP {resp.status_code}: code={data.get('code')}, msg={data.get('msg', '')}",
+                http_status=resp.status_code, code=data.get("code"))
 
         if data.get("code") not in (None, 0):
-            raise RuntimeError(
-                f"Feishu {stage} failed: code={data.get('code')}, msg={data.get('msg', '')}, message_id={message_id}"
+            raise FeishuAPIError(
+                f"Feishu {stage} failed: code={data.get('code')}, msg={data.get('msg', '')}, message_id={message_id}",
+                http_status=resp.status_code, code=data.get("code"),
             )
 
         return data
@@ -83,6 +90,11 @@ class FeishuService:
             )
             data = self._parse_api_response(resp, stage="get_tenant_access_token")
         token = data.get("tenant_access_token") or data.get("app_access_token", "")
+        if not isinstance(token, str) or not token:
+            from app.services.feishu_platform import FeishuAPIError
+
+            raise FeishuAPIError("Feishu get_tenant_access_token returned no token",
+                http_status=resp.status_code, code=data.get("code"))
         if app_id is None:
             self._app_access_token = token
         return token

@@ -11,7 +11,7 @@ from app.services.agent_tool_domains.feishu_cli import (
     _feishu_cli_available,
 )
 from app.services.agent_tool_domains.feishu_acl import with_feishu_alias_for_verified_result
-from app.services.agent_tool_domains.feishu_helpers import _get_feishu_token, _feishu_api_url, _feishu_token_platform
+from app.services.agent_tool_domains.feishu_helpers import _get_feishu_token, _get_feishu_office_token, _feishu_api_url, _feishu_token_platform
 from app.services.agent_tool_domains.feishu_wiki import _feishu_wiki_get_node, _feishu_wiki_get_node_via_cli
 from app.services.connector_acl import (
     CONNECTOR_SOURCE_ITEMS_METADATA_KEY,
@@ -20,7 +20,8 @@ from app.services.connector_acl import (
     with_connector_source_items,
 )
 from app.tools.result_envelope import render_tool_error, render_tool_fallback
-from app.services.feishu_platform import FeishuMutationUnknown, post_feishu_mutation
+from app.services.feishu_platform import FeishuMutationUnknown, post_feishu_mutation, feishu_tool_error
+from app.tools.result_envelope import ToolContentEnvelope
 from app.services.feishu_read_receipts import attest_feishu_action_result, feishu_action_unknown
 
 logger = logging.getLogger(__name__)
@@ -176,7 +177,7 @@ async def _feishu_doc_read_via_openapi(
 
     document_token = arguments.get("document_token", "").strip()
     if not document_token:
-        return "❌ Missing required argument 'document_token'"
+        return feishu_tool_error("feishu_doc_read", message="Missing required argument 'document_token'", error_class="invalid_arguments")
     from app.services.agent_tool_domains.feishu_drive import _max_chars, _parse_feishu_url
 
     parsed_target = _parse_feishu_url(document_token)
@@ -184,9 +185,9 @@ async def _feishu_doc_read_via_openapi(
         document_token = parsed_target.token
     max_chars = _max_chars(arguments)
 
-    creds = await _get_feishu_token(agent_id)
-    if not creds:
-        return "❌ Agent has no Feishu channel configured."
+    creds = await _get_feishu_office_token(agent_id, "feishu_doc_read")
+    if isinstance(creds, ToolContentEnvelope):
+        return creds
     _, token = creds
 
     # Auto-detect wiki node tokens: try get_node first and use obj_token for reading
@@ -224,8 +225,9 @@ async def _feishu_doc_read_via_openapi(
         )
 
     data = _safe_feishu_json(resp, "doc_read")
-    if data.get("code") != 0:
-        return f"❌ Failed to read document: {data.get('msg')} (code {data.get('code')})"
+    if resp.status_code >= 400 or data.get("code") != 0:
+        return feishu_tool_error("feishu_doc_read", message=f"Failed to read document: {data.get('msg')}",
+            http_status=resp.status_code, code=data.get("code"))
 
     content = data.get("data", {}).get("content", "")
     if not content:
@@ -267,7 +269,7 @@ async def _feishu_doc_read(
 ) -> str:
     document_token = arguments.get("document_token", "").strip()
     if not document_token:
-        return "❌ Missing required argument 'document_token'"
+        return feishu_tool_error("feishu_doc_read", message="Missing required argument 'document_token'", error_class="invalid_arguments")
     from app.services.agent_tool_domains.feishu_drive import _max_chars, _parse_feishu_url
 
     parsed_target = _parse_feishu_url(document_token)
@@ -358,6 +360,10 @@ async def _feishu_doc_read(
                 tenant_id=tenant_id,
                 current_user_id=current_user_id,
             )
+        if isinstance(fallback_result, ToolContentEnvelope) and fallback_result.metadata.get("feishu_failure"):
+            from dataclasses import replace
+
+            return replace(fallback_result, metadata={**fallback_result.metadata, "fallback_provider": "lark-cli"})
         fallback_source_items = []
         fallback_metadata = getattr(fallback_result, "metadata", None)
         if isinstance(fallback_metadata, dict):
@@ -405,11 +411,11 @@ async def _feishu_doc_create(agent_id: uuid.UUID, arguments: dict) -> str:
 
     title = arguments.get("title", "").strip()
     if not title:
-        return "❌ Missing required argument 'title'"
+        return feishu_tool_error("feishu_doc_create", message="Missing required argument 'title'", error_class="invalid_arguments")
 
-    creds = await _get_feishu_token(agent_id)
-    if not creds:
-        return "❌ Agent has no Feishu channel configured."
+    creds = await _get_feishu_office_token(agent_id, "feishu_doc_create")
+    if isinstance(creds, ToolContentEnvelope):
+        return creds
     _, token = creds
     headers = {"Authorization": f"Bearer {token}"}
 
@@ -426,7 +432,8 @@ async def _feishu_doc_create(agent_id: uuid.UUID, arguments: dict) -> str:
 
     data = _safe_feishu_json(resp, "doc_create")
     if resp.status_code >= 400 or data.get("code") != 0:
-        return f"❌ Failed to create document: {data.get('msg')} (code {data.get('code')})"
+        return feishu_tool_error("feishu_doc_create", message=f"Failed to create document: {data.get('msg')}",
+            http_status=resp.status_code, code=data.get("code"))
 
     doc_token = data.get("data", {}).get("document", {}).get("document_id", "")
     if not isinstance(doc_token, str) or not doc_token:
@@ -648,18 +655,18 @@ async def _feishu_doc_append(agent_id: uuid.UUID, arguments: dict) -> str:
     document_token = arguments.get("document_token", "").strip()
     content = arguments.get("content", "").strip()
     if not document_token:
-        return "❌ Missing required argument 'document_token'"
+        return feishu_tool_error("feishu_doc_append", message="Missing required argument 'document_token'", error_class="invalid_arguments")
     if not content:
-        return "❌ Missing required argument 'content'"
+        return feishu_tool_error("feishu_doc_append", message="Missing required argument 'content'", error_class="invalid_arguments")
     from app.services.agent_tool_domains.feishu_drive import _parse_feishu_url
 
     target = _parse_feishu_url(document_token)
     if target and target.kind in {"doc", "docx", "wiki"}:
         document_token = target.token
 
-    creds = await _get_feishu_token(agent_id)
-    if not creds:
-        return "❌ Agent has no Feishu channel configured."
+    creds = await _get_feishu_office_token(agent_id, "feishu_doc_append")
+    if isinstance(creds, ToolContentEnvelope):
+        return creds
     _, token = creds
     headers = {"Authorization": f"Bearer {token}"}
 
@@ -673,8 +680,9 @@ async def _feishu_doc_append(agent_id: uuid.UUID, arguments: dict) -> str:
             headers=headers,
         )
         meta = _safe_feishu_json(meta_resp, "doc_append_meta")
-        if meta.get("code") != 0:
-            return f"❌ Cannot access document: {meta.get('msg')}"
+        if meta_resp.status_code >= 400 or meta.get("code") != 0:
+            return feishu_tool_error("feishu_doc_append", message=f"Cannot access document: {meta.get('msg')}",
+                http_status=meta_resp.status_code, code=meta.get("code"))
 
         body_block_id = meta.get("data", {}).get("document", {}).get("body", {}).get("block_id") or docx_token
 
@@ -689,7 +697,8 @@ async def _feishu_doc_append(agent_id: uuid.UUID, arguments: dict) -> str:
         result = _safe_feishu_json(append_resp, "doc_append")
 
     if append_resp.status_code >= 400 or result.get("code") != 0:
-        return f"❌ Failed to append: {result.get('msg')} (code {result.get('code')})"
+        return feishu_tool_error("feishu_doc_append", message=f"Failed to append: {result.get('msg')}",
+            http_status=append_resp.status_code, code=result.get("code"))
 
     link_note = await _document_link_note(token, docx_token)
     return attest_feishu_action_result(f"✅ 已写入 {len(children)} 个段落到文档。\nToken：{docx_token}\n{link_note}",

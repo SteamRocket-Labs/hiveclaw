@@ -1413,6 +1413,9 @@ class ToolRuntimeService:
                     proof = value.metadata.get("feishu_approved_result")
                     if isinstance(proof, dict):
                         trace_metadata_sink["feishu_approved_result"] = dict(proof)
+                    failure = value.metadata.get("feishu_failure")
+                    if isinstance(failure, dict) and failure.get("tool_name") == tool_name:
+                        trace_metadata_sink["feishu_failure"] = dict(failure)
                 if input_read is not None:
                     receipt_block, input_evidence = await settle_workspace_receipt_read(
                         request=request, read=input_read, tool_call_id=tool_call_id, result=value)

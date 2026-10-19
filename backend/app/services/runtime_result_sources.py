@@ -173,7 +173,7 @@ async def _load_company_result_sources(db, result):
         task = await db.get(RuntimeTask, approval.execution_task_id) if approval.execution_task_id else origin
         expected_summary = str(approval.execution_result or (task.result_summary if task else None) or "")
         if payload["metadata"].get("result_semantics") == "approval_status":
-            expected_summary = approval_notification_summary(approval.execution_status, expected_summary)
+            expected_summary = approval_notification_summary(approval.execution_status, expected_summary, approval.execution_receipt)
         if (not complete or task is None or task.root_user_id != approval.requested_by
             or task.parent_session_id != str(session.id) or task.parent_agent_id != session.agent_id
             or approval.execution_status not in {"succeeded", "failed", "needs_reapproval", "needs_reconciliation", "rejected"}

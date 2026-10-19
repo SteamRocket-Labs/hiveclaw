@@ -23,6 +23,37 @@ class FeishuMutationUnknown(RuntimeError):
     """A dispatched mutation lacks a reliable response and must be reconciled."""
 
 
+def feishu_tool_error(tool_name, *, message, http_status=None, code=None, error_class=None):
+    """Project an actual protocol failure without interpreting its prose."""
+    from app.tools.result_envelope import ToolContentEnvelope, classify_http_status, render_tool_error
+
+    classification, retryable = classify_http_status(http_status) if isinstance(http_status, int) else ("provider_error", False)
+    classification = error_class or classification
+    next_action = ("configure_connection" if classification == "not_configured" else
+        "review_request" if classification in {"invalid_arguments", "invalid_approval_form"} else
+        "reconnect" if http_status == 401 else "review_permissions" if http_status == 403 else
+        "retry_later" if retryable else "review_provider_error")
+    facts = {"schema": "hive.feishu_failure.v1", "tool_name": tool_name, "error_class": classification,
+        "http_status": http_status, "provider_code": code if type(code) is int else None,
+        "retryable": retryable, "next_action": next_action}
+    text = render_tool_error(tool_name=tool_name, error_class=classification, message=message,
+        provider="feishu_openapi", http_status=http_status, retryable=retryable,
+        actionable_hint="Review the current connection and provider response before requesting this action again.",
+        extra={"provider_code": facts["provider_code"], "next_action": next_action})
+    return ToolContentEnvelope(text=text, metadata={"feishu_failure": facts})
+
+
+class FeishuAPIError(RuntimeError):
+    """Keep the exact API response facts across the service/office-tool boundary."""
+
+    def __init__(self, message, *, http_status=None, code=None):
+        super().__init__(message)
+        self.http_status, self.code = http_status, code
+
+    def tool_result(self, tool_name):
+        return feishu_tool_error(tool_name, message=str(self), http_status=self.http_status, code=self.code)
+
+
 async def post_feishu_mutation(client, url, **kwargs):
     """Never turn an ambiguous mutating transport response into a retryable failure."""
     import httpx

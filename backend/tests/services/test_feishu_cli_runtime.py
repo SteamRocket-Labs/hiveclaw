@@ -107,7 +107,7 @@ async def test_feishu_doc_openapi_read_binds_authenticated_runtime_principal(
 
     from app.services.agent_tool_domains import feishu_docs
 
-    async def fake_get_feishu_token(_agent_id):
+    async def fake_get_feishu_token(_agent_id, _tool_name):
         return ("app-id", "tenant-token")
 
     async def fake_wiki_get_node(_document_token: str, _tenant_access_token: str):
@@ -126,7 +126,7 @@ async def test_feishu_doc_openapi_read_binds_authenticated_runtime_principal(
             assert params == {"lang": 0}
             return httpx.Response(200, json={"code": 0, "data": {"content": "OpenAPI document body"}})
 
-    monkeypatch.setattr(feishu_docs, "_get_feishu_token", fake_get_feishu_token)
+    monkeypatch.setattr(feishu_docs, "_get_feishu_office_token", fake_get_feishu_token)
     monkeypatch.setattr(feishu_docs, "_feishu_wiki_get_node", fake_wiki_get_node)
     monkeypatch.setattr(httpx, "AsyncClient", lambda **_kwargs: FakeAsyncClient())
 

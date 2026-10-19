@@ -19,6 +19,8 @@ DOCUMENT_URL = "https://company.feishu.cn/docx/approved_document"
 @pytest.mark.parametrize(("tool_name", "outcome"), [
     ("feishu_doc_create", "confirmed"), ("feishu_doc_create", "unknown"),
     ("feishu_approval_definition", "confirmed"),
+    ("feishu_doc_create", "denied"), ("feishu_doc_create", "auth_failed"),
+    ("feishu_approval_definition", "denied"),
 ])
 async def test_approved_office_job_is_consumed_in_original_private_work(
     ordinary_work, owner_sessionmaker, app_user_sessionmaker, monkeypatch, tool_name, outcome,  # noqa: F811
@@ -49,6 +51,10 @@ async def test_approved_office_job_is_consumed_in_original_private_work(
     seed = ordinary_work
     arguments = {"title": "Approved report"} if tool_name == "feishu_doc_create" else {"approval_code": "approved_definition"}
     expected_content = DOCUMENT_URL if tool_name == "feishu_doc_create" else "APPROVED_DEFINITION_RESULT"
+    failure = outcome in {"denied", "auth_failed"}
+    provider_code = 90032 if outcome == "auth_failed" else 90031 if tool_name == "feishu_doc_create" else 90033
+    if failure:
+        expected_content = str(provider_code)
     approver = uuid4()
     async with owner_sessionmaker() as db:
         db.add(GuardPolicy(tenant_id=seed["tenant_id"], zone_guard={"tool_rules": [
@@ -70,15 +76,21 @@ async def test_approved_office_job_is_consumed_in_original_private_work(
         def provider(request):
             assert request.url.host == "open.feishu.cn", request.url
             if "/auth/v3/" in request.url.path:
+                if outcome == "auth_failed":
+                    return httpx.Response(401, json={"code": provider_code, "msg": "Fixture credential rejected"})
                 return httpx.Response(200, json={"code": 0, "tenant_access_token": "synthetic-approved-token"})
             assert request.headers["Authorization"] == "Bearer synthetic-approved-token"
             if request.url.path.endswith("/approvals/approved_definition"):
                 mutations.append(request)
+                if failure:
+                    return httpx.Response(403, json={"code": provider_code, "msg": "Fixture permission denied"})
                 return httpx.Response(200, json={"code": 0, "data": {"form": json.dumps([
                     {"id": "widget", "type": "input", "name": expected_content}])}})
             if request.url.path == "/open-apis/docx/v1/documents":
                 mutations.append(request)
                 assert json.loads(request.content) == {"title": "Approved report"}
+                if failure:
+                    return httpx.Response(403, json={"code": provider_code, "msg": "Fixture permission denied"})
                 if outcome == "unknown":
                     raise httpx.ReadTimeout("Response lost after dispatch", request=request)
                 return httpx.Response(200, json={"code": 0, "data": {"document": {"document_id": "approved_document"}}})
@@ -88,7 +100,7 @@ async def test_approved_office_job_is_consumed_in_original_private_work(
         monkeypatch.setattr(httpx, "AsyncClient", lambda **kw: client(**{**kw, "transport": httpx.MockTransport(provider)}))
         source_run, _ = await _successor(seed=seed, client=client, app=app, app_user_sessionmaker=app_user_sessionmaker,
             monkeypatch=monkeypatch, script=[_call(tool_name, arguments),
-                {"content": "The document request is waiting for company approval.", "finish_reason": "stop"}])
+                {"content": "The office request is waiting for company approval.", "finish_reason": "stop"}])
         assert mutations == []
         async with owner_sessionmaker() as db:
             ticket = await db.scalar(select(ApprovalRequest).where(ApprovalRequest.tenant_id == seed["tenant_id"],
@@ -114,11 +126,12 @@ async def test_approved_office_job_is_consumed_in_original_private_work(
             assert [row.id for row in claims] == [job]
             version = claims[0].claim_version
             await db.commit()
-        expected = "succeeded" if outcome == "confirmed" else "needs_reconciliation"
+        expected = "failed" if failure else "succeeded" if outcome == "confirmed" else "needs_reconciliation"
         assert await run_claimed_runtime_task(execute_claimed_approval_execution(job), task_id=job,
             claim_version=version, worker_id="approved-office", lease_seconds=600) == expected
         assert await execute_claimed_approval_execution(job) == expected
-        assert len(mutations) == 1
+        expected_calls = 0 if outcome == "auth_failed" else 1
+        assert len(mutations) == expected_calls
         async with owner_sessionmaker() as db:
             ticket = await db.get(ApprovalRequest, approval_id)
             task = await db.get(RuntimeTask, job)
@@ -127,6 +140,9 @@ async def test_approved_office_job_is_consumed_in_original_private_work(
             assert ticket.execution_status == expected
             if outcome == "confirmed":
                 assert expected_content in ticket.execution_result
+            elif failure:
+                assert task.status == "failed" and ticket.execution_receipt["error"]["provider_code"] == provider_code
+                assert ticket.execution_receipt["error"]["error_class"] == "auth_or_permission"
             else:
                 assert task.status == "needs_reconciliation" and ticket.consumed_at is not None
                 assert ticket.execution_receipt["side_effect_state"] == "unknown"
@@ -178,18 +194,22 @@ async def test_approved_office_job_is_consumed_in_original_private_work(
                 await validate_runtime_result_sources(db, None, result, user=await db.get(User, approver), session=session)
             ticket = await db.get(ApprovalRequest, approval_id)
             proof = await load_approved_feishu_result(db, approval=ticket)
-            assert proof is not None and proof["requester_id"] == str(seed["user_id"])
-            assert proof["connection"]["id"] == str(seed["config_id"])
-            receipt = ticket.execution_receipt
-            ticket.execution_receipt = {**receipt, "runtime_evidence": {}}
-            assert await load_approved_feishu_result(db, approval=ticket) is None
-            ticket.execution_receipt = receipt
+            if not failure:
+                assert proof is not None and proof["requester_id"] == str(seed["user_id"])
+                assert proof["connection"]["id"] == str(seed["config_id"])
+                receipt = ticket.execution_receipt
+                ticket.execution_receipt = {**receipt, "runtime_evidence": {}}
+                assert await load_approved_feishu_result(db, approval=ticket) is None
+                ticket.execution_receipt = receipt
+            else:
+                assert proof is None
             config = await db.get(TenantChannelConfig, seed["config_id"])
             config.is_active = False
             await db.flush()
             await validate_runtime_return_dependency(db, seed["tenant_id"], dependency, user=user, runtime_request=None)
-            with pytest.raises(ContentInputReceiptError, match="original company approval result"):
-                await validate_runtime_return_dependency(db, seed["tenant_id"], result_dependency, user=user, runtime_request=None)
+            if not failure:
+                with pytest.raises(ContentInputReceiptError, match="original company approval result"):
+                    await validate_runtime_return_dependency(db, seed["tenant_id"], result_dependency, user=user, runtime_request=None)
             await db.rollback()
         async with app_user_sessionmaker() as db:
             await pin_rls_tenant_context(db, seed["tenant_id"])
@@ -203,12 +223,17 @@ async def test_approved_office_job_is_consumed_in_original_private_work(
             await db.commit()
         model = ScriptedLLMClient([_call("read_runtime_result", {"result_ref": result_ref}),
             _call("write_file", {"path": "workspace/approved-office.md", "content": expected_content}),
-            {"content": "The approved document is ready.\nDELIVERABLE: workspace/approved-office.md", "finish_reason": "stop"}])
+            {"content": ("The provider response needs review." if failure else "The approved document is ready.")
+                + "\nDELIVERABLE: workspace/approved-office.md", "finish_reason": "stop"}])
         monkeypatch.setattr(invoker, "create_llm_client", lambda **_kw: model)
         assert await run_claimed_runtime_task(execute_web_chat_run(continuation_id), task_id=continuation_id,
             claim_version=version, worker_id="approved-consumer", lease_seconds=600) is None
         assert expected_content in json.dumps(model.requests[1]["messages"])
         assert expected_content not in json.dumps(model.requests[0]["messages"])
+        if failure:
+            returned = json.dumps(model.requests[1]["messages"])
+            assert ("reconnect" if outcome == "auth_failed" else "review_permissions") in returned
+            assert "Fixture permission denied" not in returned and "Fixture credential rejected" not in returned
         await RuntimeTerminalBoundaryOutboxService(session_factory=app_user_sessionmaker).drain_once(
             tenant_id=seed["tenant_id"], worker_id="approved-consumer-boundary", canonical_validator=processor.validate,
             process_callback=processor, task_types=("web_chat_turn",))
@@ -220,7 +245,7 @@ async def test_approved_office_job_is_consumed_in_original_private_work(
         async with client(transport=httpx.ASGITransport(app=app), base_url="http://approved-work") as api:
             read = await api.get(f"/agents/{seed['agent_id']}/files/artifacts/{artifact.id}/content")
             assert read.status_code == 200 and read.json()["content"] == expected_content, read.text
-        assert len(mutations) == 1
+        assert len(mutations) == expected_calls
 
     await _exercise_ordinary_office_work(seed, owner_sessionmaker, app_user_sessionmaker, monkeypatch,
         follow_up=approved_work)

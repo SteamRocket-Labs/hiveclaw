@@ -154,7 +154,9 @@ async def feishu_doc_read(
     execution_context=None,
 ) -> str:
     if not await _check_feishu_office_access(agent_id):
-        return _FEISHU_NOT_CONFIGURED_MSG
+        from app.services.feishu_platform import feishu_tool_error
+
+        return feishu_tool_error("feishu_doc_read", message=_FEISHU_NOT_CONFIGURED_MSG, error_class="not_configured")
     from app.services.agent_tools import _feishu_doc_read
 
     from app.services.feishu_read_receipts import capture_feishu_read, settle_feishu_read
@@ -1428,7 +1430,9 @@ async def feishu_doc_share(agent_id: uuid.UUID, arguments: dict) -> str:
 )
 async def feishu_approval_create(agent_id: uuid.UUID, arguments: dict, *, execution_context=None) -> str:
     if not await _check_feishu_configured(agent_id):
-        return _FEISHU_NOT_CONFIGURED_MSG
+        from app.services.feishu_platform import feishu_tool_error
+
+        return feishu_tool_error("feishu_approval_create", message=_FEISHU_NOT_CONFIGURED_MSG, error_class="not_configured")
     from app.services.agent_tools import _feishu_approval_create
 
     from app.services.feishu_read_receipts import capture_feishu_result, settle_feishu_result
@@ -1463,7 +1467,9 @@ async def feishu_approval_create(agent_id: uuid.UUID, arguments: dict, *, execut
 )
 async def feishu_approval_definition(agent_id: uuid.UUID, arguments: dict, tenant_id=None, *, user_id=None, execution_context=None) -> str:
     if not await _check_feishu_configured(agent_id):
-        return _FEISHU_NOT_CONFIGURED_MSG
+        from app.services.feishu_platform import feishu_tool_error
+
+        return feishu_tool_error("feishu_approval_definition", message=_FEISHU_NOT_CONFIGURED_MSG, error_class="not_configured")
     from app.services.agent_tools import _feishu_approval_definition
 
     from app.services.feishu_read_receipts import capture_feishu_result, settle_feishu_result
@@ -1502,7 +1508,9 @@ async def feishu_approval_definition(agent_id: uuid.UUID, arguments: dict, tenan
 )
 async def feishu_approval_query(agent_id: uuid.UUID, arguments: dict, tenant_id=None, *, user_id=None, execution_context=None) -> str:
     if not await _check_feishu_configured(agent_id):
-        return _FEISHU_NOT_CONFIGURED_MSG
+        from app.services.feishu_platform import feishu_tool_error
+
+        return feishu_tool_error("feishu_approval_query", message=_FEISHU_NOT_CONFIGURED_MSG, error_class="not_configured")
     from app.services.agent_tools import _feishu_approval_query
 
     from app.services.feishu_read_receipts import capture_feishu_read, settle_feishu_read
@@ -1540,7 +1548,9 @@ async def feishu_approval_query(agent_id: uuid.UUID, arguments: dict, tenant_id=
 )
 async def feishu_approval_get(agent_id: uuid.UUID, arguments: dict, tenant_id=None, *, user_id=None, execution_context=None) -> str:
     if not await _check_feishu_configured(agent_id):
-        return _FEISHU_NOT_CONFIGURED_MSG
+        from app.services.feishu_platform import feishu_tool_error
+
+        return feishu_tool_error("feishu_approval_get", message=_FEISHU_NOT_CONFIGURED_MSG, error_class="not_configured")
     from app.services.agent_tools import _feishu_approval_get
 
     from app.services.feishu_read_receipts import capture_feishu_result, settle_feishu_result

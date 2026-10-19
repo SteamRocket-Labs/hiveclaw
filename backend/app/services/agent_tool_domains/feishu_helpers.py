@@ -151,6 +151,18 @@ async def _get_feishu_token_status(agent_id: uuid.UUID) -> dict:
         }
 
 
+async def _get_feishu_office_token(agent_id, tool_name):
+    """Probe once and retain configured authentication failures as failures."""
+    from app.services.feishu_platform import feishu_tool_error
+
+    status = await _get_feishu_token_status(agent_id)
+    if status.get("ok") and status.get("app_id") and status.get("token"):
+        return status["app_id"], status["token"]
+    return feishu_tool_error(tool_name, message=_format_feishu_token_error(status),
+        http_status=status.get("http_status"), code=status.get("code"),
+        error_class="not_configured" if not status.get("configured") else None)
+
+
 async def _request_feishu_tenant_access_token(app_id: str, app_secret: str, *, platform: FeishuPlatform | None = None) -> dict:
     """Call Feishu token API and normalize success/failure details."""
     import httpx
@@ -173,8 +185,11 @@ async def _request_feishu_tenant_access_token(app_id: str, app_secret: str, *, p
             "message": f"Invalid Feishu token response: {type(exc).__name__}",
         }
 
+    if not isinstance(data, dict):
+        return {"configured": True, "ok": False, "app_id": app_id, "http_status": resp.status_code,
+            "message": "Invalid Feishu token response: expected an object"}
     token = data.get("tenant_access_token", "")
-    if token:
+    if 200 <= resp.status_code < 300 and data.get("code") in (None, 0) and isinstance(token, str) and token:
         return {
             "configured": True,
             "ok": True,

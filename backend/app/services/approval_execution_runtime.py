@@ -31,7 +31,7 @@ _TERMINAL_EXECUTION_STATES = {"succeeded", "failed", "needs_reapproval", "needs_
 _MAX_SAFE_DISPATCH_ATTEMPTS = 3
 
 
-def approval_notification_summary(status: str, result: str) -> str:
+def approval_notification_summary(status: str, result: str, receipt=None) -> str:
     """Only a confirmed execution carries returned business bytes into a continuation."""
     summaries = {
         "needs_reconciliation": "The approved action may have taken effect. Verify its outcome before retrying.",
@@ -39,7 +39,28 @@ def approval_notification_summary(status: str, result: str) -> str:
         "rejected": "The action was rejected and was not executed.",
         "failed": "The approved action did not finish successfully. Review its receipt before retrying.",
     }
-    return summaries.get(status, result)
+    summary = summaries.get(status, result)
+    # Only executor-authored machine facts cross the failed-result boundary;
+    # a provider's unverified body remains in its original scoped receipt.
+    receipt = receipt or {}
+    evidence = receipt.get("runtime_evidence") or {}
+    facts = evidence.get("feishu_failure")
+    frame = evidence.get("tool_execution_frame") or {}
+    error = receipt.get("error") or {}
+    if (status == "failed" and receipt.get("status") == status and isinstance(facts, dict)
+        and set(facts) == {"schema", "tool_name", "error_class", "http_status", "provider_code", "retryable", "next_action"}
+        and facts["schema"] == "hive.feishu_failure.v1"
+        and facts["tool_name"] == receipt.get("tool_name") == frame.get("tool_name")
+        and frame.get("status") == "failed"
+        and frame.get("output_hash") == hashlib.sha256(json.dumps(result, ensure_ascii=False).encode()).hexdigest()
+        and facts["error_class"] in {"not_configured", "invalid_arguments", "invalid_approval_form", "provider_bad_request", "auth_or_permission", "quota_or_billing",
+            "not_found", "timeout", "rate_limited", "provider_unavailable", "provider_error"}
+        and facts["next_action"] in {"configure_connection", "review_request", "reconnect", "review_permissions", "retry_later", "review_provider_error"}
+        and type(facts["retryable"]) is bool
+        and all(facts[k] is None or type(facts[k]) is int for k in ("http_status", "provider_code"))
+        and all(facts[k] == error.get(k) for k in ("tool_name", "error_class", "http_status", "provider_code", "retryable", "next_action"))):
+        summary += "\n" + json.dumps(facts, ensure_ascii=False, sort_keys=True)
+    return summary
 
 
 def _utcnow() -> datetime:
@@ -229,7 +250,7 @@ async def _enqueue_origin_continuation(
         tool_name in FEISHU_RESULT_TOOLS and approval_status != "succeeded")
     result_text = str(execution_result or (task.result_summary if task else None) or "")
     if status_only:
-        result_text = approval_notification_summary(approval_status, result_text)
+        result_text = approval_notification_summary(approval_status, result_text, approval.execution_receipt)
     model_context = (
         "[Approval tool result]\n"
         f"Approval: {approval.id}\n"

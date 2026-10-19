@@ -5713,6 +5713,7 @@
     "unknown": "The request could not be confirmed. Read saved state or retry the exact request; it will not create a new dispatch.",
     "read": "Read saved state",
     "retry": "Retry exact request",
+    "retryUnstarted": "Retry saved operation after access repair",
     "unavailable": "A current, discovered connection is required for new remote requests. Existing receipts remain readable.",
     "message": "Remote request or reply",
     "effects": "I authorize this exact remote request with unverified internal effect controls.",

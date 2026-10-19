@@ -173,7 +173,7 @@ async def test_remote_runtime_selection_requires_current_explicit_administrator_
         assert len(remote.requests) == 1
 
 
-@pytest.mark.parametrize("flow", ["completed", "unknown", "cancel", "source_changed", "grant_changed", "budget_denied", "budget_stopped", "budget_orphan", "budget_race", "recipient_denied", "recipient_granted", "recipient_revoked", "source_hex_session", "source_principal_lost", "executor_mismatch", "unselected_remote"])
+@pytest.mark.parametrize("flow", ["completed", "unknown", "cancel", "source_changed", "grant_changed", "budget_denied", "budget_stopped", "budget_orphan", "budget_race", "recipient_denied", "recipient_granted", "recipient_revoked", "recipient_retry", "recipient_retry_revoked", "recipient_retry_budget", "recipient_retry_runtime", "source_hex_session", "source_principal_lost", "executor_mismatch", "unselected_remote"])
 async def test_governed_employee_delegation_uses_real_remote_worker_and_original_work(
     owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, flow
 ):
@@ -384,14 +384,66 @@ async def test_governed_employee_delegation_uses_real_remote_worker_and_original
             page = await tool("read_runtime_result", {"result_ref": checked["result_refs"][0]})
             assert page["status"] in {"source_access_denied", "source_unavailable"} and "content" not in page, page
             return
-        assert checked["status"] == ("needs_reconciliation" if flow in {"unknown", "grant_changed", "recipient_denied", "recipient_revoked"}
+        assert checked["status"] == ("needs_reconciliation" if (flow in {"unknown", "grant_changed", "recipient_denied", "recipient_revoked"} or flow.startswith("recipient_retry"))
             else "suspended" if flow in {"cancel", "budget_stopped"} else "completed"), checked
         page = await tool("read_runtime_result", {"result_ref": checked["result_refs"][0], "limit": 12000})
         assert page["status"] == "ok" and page["dependency_coverage"]["complete"] is True, page
         assert page["remote_internal_source_coverage"] == "unknown" and page["remote_business_acceptance"] == "unverified"
-        if flow in {"unknown", "grant_changed", "recipient_denied", "recipient_revoked"}:
+        if (flow in {"unknown", "grant_changed", "recipient_denied", "recipient_revoked"} or flow.startswith("recipient_retry")):
             assert page["status"] == "ok" and checked["status"] == "needs_reconciliation"
             assert len(remote.requests) == (2 if flow == "unknown" else 1)
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://local",
+                headers={"Authorization": "Bearer " + create_access_token(str(source["user_id"]), "org_admin", str(source["tenant_id"]))}) as api:
+                retry = {"expected_user_id": str(source["user_id"]), "expected_tenant_id": str(source["tenant_id"]),
+                    "expected_version": 1, "operation_id": str(uuid4()), "action": "retry"}
+                retry_path = path + "/tasks/" + returned["task_id"] + "/operations"
+                if flow == "unknown":
+                    assert "retry" not in checked["recovery_actions"]
+                    refused = await api.post(retry_path, json=retry)
+                    assert refused.status_code == 409, refused.text
+                    assert len(remote.requests) == 2
+                if flow.startswith("recipient_retry"):
+                    assert "retry" in checked["recovery_actions"]
+                    async with tenant_scoped_session(source["tenant_id"], session_factory=app_user_sessionmaker) as db:
+                        task = await db.get(RuntimeTask, UUID(returned["task_id"]))
+                        child_session_id = task.child_session_id
+                        grant = KnowledgeGrant(tenant_id=source["tenant_id"], scope_type="person", scope_id=source["user_id"],
+                            resource_type="document", resource_id=document_id, document_id=document_id,
+                            grantee_type="agent", grantee_id=target_id, permission="read", requester_user_id=source["user_id"],
+                            session_id=child_session_id, purpose="a2a_delegation", delegation_id=str(task.id),
+                            sensitivity_ceiling="PL2_pii", created_by_user_id=source["user_id"],
+                            expires_at=datetime.now(timezone.utc) + timedelta(hours=1))
+                        db.add(grant)
+                        await db.commit()
+                        grant_id = grant.id
+                    if flow == "recipient_retry_budget":
+                        await budget_service.cancel_run(tenant_id=source["tenant_id"], budget_run_id=budget.id,
+                            reason="Stop before retry", actor_user_id=source["user_id"])
+                    if flow == "recipient_retry_runtime":
+                        async with tenant_scoped_session(source["tenant_id"], session_factory=app_user_sessionmaker) as db:
+                            (await db.get(Agent, target_id)).agent_type = "native"
+                            await db.commit()
+                    queued = await api.post(retry_path, json=retry)
+                    if flow in {"recipient_retry_budget", "recipient_retry_runtime"}:
+                        assert queued.status_code == 409 and len(remote.requests) == 1, queued.text
+                        return
+                    assert queued.status_code == 200 and queued.json()["id"] == returned["task_id"], queued.text
+                    assert queued.json()["child_session_id"] == child_session_id
+                    assert (await api.post(retry_path, json=retry)).json()["status"] == "pending"
+                    if flow == "recipient_retry_revoked":
+                        async with tenant_scoped_session(source["tenant_id"], session_factory=app_user_sessionmaker) as db:
+                            (await db.get(KnowledgeGrant, grant_id)).revoked_at = datetime.now(timezone.utc)
+                            await db.commit()
+                    await original.execute(seed, returned["task_id"], app_user_sessionmaker)
+                    repaired = await tool("check_async_task", {"task_id": returned["task_id"]})
+                    assert repaired["status"] == ("needs_reconciliation" if flow == "recipient_retry_revoked" else "completed"), repaired
+                    assert len(remote.requests) == (1 if flow == "recipient_retry_revoked" else 2)
+                    if flow == "recipient_retry":
+                        assert remote.requests[-1][3]["params"]["message"]["parts"][0]["text"] == arguments["message"]
+                        await budget_service.reconcile_orphaned_reservations()
+                        async with tenant_scoped_session(source["tenant_id"], session_factory=app_user_sessionmaker) as db:
+                            used = await db.get(RuntimeBudgetRun, budget.id)
+                            assert used.used_delegations == used.used_background_tasks == 1
             return
         if private_source:
             assert remote.requests[-1][3]["params"]["message"]["parts"][0]["text"] == arguments["message"]

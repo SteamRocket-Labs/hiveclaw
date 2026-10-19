@@ -66,6 +66,15 @@ it('sends and reads a complete remote result in the actual original work', async
     const barrier = await original(new URL('/__remote-test/wait', base));
     expect(barrier.status).toBe(200);
     fireEvent.click(controls.getByText('Read saved state'));
+    if (process.env.HIVE_M3R_RETRY === '1') {
+      await controls.findByText('Retry saved operation after access repair');
+      const repair = await original(new URL('/__remote-test/repair', base), { method: 'POST' });
+      expect(repair.status).toBe(200);
+      fireEvent.change(controls.getByLabelText('Remote request or reply'), { target: { value: 'Must not replace saved bytes.' } });
+      fireEvent.click(controls.getByText('Retry saved operation after access repair'));
+      expect((await original(new URL('/__remote-test/wait', base))).status).toBe(200);
+      fireEvent.click(controls.getByText('Read saved state'));
+    }
     const saved = await controls.findByText(/NATIVE_REMOTE_FULL_RESULT/);
     const observation = JSON.parse(saved.textContent || '{}');
     expect(observation.task.artifacts[0].parts[0].text).toBe('NATIVE_REMOTE_FULL_RESULT\n'.repeat(4000));

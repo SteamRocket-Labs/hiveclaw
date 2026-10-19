@@ -112,7 +112,8 @@ function Work({ agentId, sessionId, actorId, tenantId }: { agentId: string; sess
     if (!selected || pending.current) return;
     const params = action === 'send_message' ? { message: { messageId: crypto.randomUUID(), role: 'ROLE_USER',
       taskId: selected.remote_task_id, contextId: selected.remote_context_id, parts: [{ text }] } } : {};
-    void submit({ taskId: selected.id, body: { ...frame(), operation_id: crypto.randomUUID(), action, params } });
+    void submit({ taskId: selected.id, body: { ...frame(), expected_version: selected.configuration_version,
+      operation_id: crypto.randomUUID(), action, params } });
   }
   function status(task: RemoteA2ATask) {
     if (task.status === 'suspended' && task.remote_state === 'TASK_STATE_INPUT_REQUIRED' && !task.error_code) return t('remoteWork.inputRequired', 'Remote reply needed');
@@ -157,6 +158,7 @@ function Work({ agentId, sessionId, actorId, tenantId }: { agentId: string; sess
       {selected.error_code && <p role="alert"><code>{selected.error_code}</code></p>}
       <div>
         <button type="button" className="btn-secondary" disabled={busy} onClick={() => { void recoverFiles(); }}>{t('remoteWork.recoverFiles', 'Recover files from saved replies')}</button>
+        {selected.recovery_actions.includes('retry') && <button type="button" className="btn-primary" disabled={busy || unknown} onClick={() => operate('retry')}>{t('remoteWork.retryUnstarted', 'Retry saved operation after access repair')}</button>}
         {selected.recovery_actions.includes('refresh') && <button type="button" className="btn-secondary" disabled={busy || unknown} onClick={() => operate('refresh')}>{t('remoteWork.refresh', 'Check remote task')}</button>}
         {selected.recovery_actions.includes('send_message') && <button type="button" className="btn-primary" disabled={busy || unknown || !text.trim()} onClick={() => operate('send_message')}>{t('remoteWork.reply', 'Reply to this remote task')}</button>}
         {selected.recovery_actions.includes('cancel') && <button type="button" className="btn-secondary" disabled={busy || unknown} onClick={() => operate('cancel')}>{t('remoteWork.cancel', 'Request remote cancellation')}</button>}

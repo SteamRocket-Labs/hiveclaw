@@ -38,12 +38,22 @@ def _digest(value):
     return hashlib.sha256(encoded.encode()).hexdigest()
 
 
+def _locally_unstarted(task, state):
+    # Only this exact worker-local denial proves HTTP was never attempted.
+    # Transport errors, expired dispatches and observed remote states do not.
+    return (task.status == "needs_reconciliation"
+        and state.get("error_code") == "remote_a2a_authority_unavailable"
+        and state["operations"][-1].get("phase") == "not_started")
+
+
 def _view(task):
     state = task.metadata_json["remote_a2a"]
     observation = state.get("observation")
     actions = ["read"]
     if task.status not in TERMINAL and task.status not in {"pending", "running"}:
         actions.append("abandon")
+        if _locally_unstarted(task, state):
+            actions.append("retry")
         if state.get("remote_task_id"):
             actions.extend(["refresh", "cancel"])
             if not state.get("error_code"):
@@ -53,6 +63,7 @@ def _view(task):
         "request_id": state["operations"][0]["id"],
         "latest_operation_id": state["operations"][-1]["id"],
         "agent_id": str(task.child_agent_id),
+        "configuration_version": state["configuration_version"],
         "source_session_id": task.parent_session_id,
         "child_session_id": task.child_session_id,
         "status": task.status,
@@ -373,22 +384,33 @@ async def operate_task(
         task.metadata_json = {**task.metadata_json, "remote_a2a": state}
         await db.commit()
         return await read_task_view(db, task)
-    method = {"refresh": "GetTask", "cancel": "CancelTask", "send_message": "SendMessage"}[action]
-    if method != "SendMessage":
+    if action == "retry":
         if params:
             raise HTTPException(422, detail={"code": "remote_a2a_invalid_request"})
-        params = {"id": state.get("remote_task_id")}
+        digest = _digest({"action": action, "version": expected_version})
     else:
-        _message(params, task_id=state.get("remote_task_id"), context_id=state.get("remote_context_id"))
-    digest = _digest({"method": method, "params": params})
+        previous = None
+        method = {"refresh": "GetTask", "cancel": "CancelTask", "send_message": "SendMessage"}[action]
+        if method != "SendMessage":
+            if params:
+                raise HTTPException(422, detail={"code": "remote_a2a_invalid_request"})
+            params = {"id": state.get("remote_task_id")}
+        else:
+            _message(params, task_id=state.get("remote_task_id"), context_id=state.get("remote_context_id"))
+        digest = _digest({"method": method, "params": params})
     for operation in state["operations"]:
         if operation["id"] == str(operation_id):
             if operation.get("control_hash") != digest:
                 raise HTTPException(409, detail={"code": "remote_a2a_request_conflict"})
             return await read_task_view(db, task)
+    if action == "retry":
+        if not _locally_unstarted(task, state):
+            raise HTTPException(409, detail={"code": "remote_a2a_reconciliation_required"})
+        previous = state["operations"][-1]
+        method, params = previous["method"], deepcopy(previous["params"])
     if task.status in {"pending", "running"} or task.status in TERMINAL:
         raise HTTPException(409, detail={"code": "remote_a2a_operation_in_progress"})
-    if not state.get("remote_task_id") or (method == "SendMessage" and state.get("error_code")):
+    if action != "retry" and (not state.get("remote_task_id") or (method == "SendMessage" and state.get("error_code"))):
         raise HTTPException(409, detail={"code": "remote_a2a_reconciliation_required"})
     if expected_version != state["configuration_version"]:
         raise HTTPException(409, detail={"code": "remote_a2a_version_conflict"})
@@ -399,6 +421,9 @@ async def operate_task(
         db, actor=actor, session_id=uuid.UUID(task.parent_session_id), target=agent, new_effect=method == "SendMessage"
     )
     endpoint, _scope = await _endpoint(db, agent=agent, version=expected_version, owner_scope=state["owner_scope"])
+    if action == "retry":
+        await _employee_send_authority(db, task=task, state=state, agent=agent,
+            operation=previous, recipient=False)
     if endpoint.redact_payload(params) != params:
         raise HTTPException(422, detail={"code": "remote_a2a_credential_in_request"})
     state["operations"].append(
@@ -409,6 +434,7 @@ async def operate_task(
             "phase": "pending",
             "request_hash": _digest(params),
             "control_hash": digest,
+            **({"retry_of": previous["id"]} if previous is not None else {}),
         }
     )
     state.pop("error_code", None)
@@ -567,7 +593,7 @@ async def execute_claimed_task(task_id):
         await _record(db, task, state)
 
 
-async def _employee_send_authority(db, *, task, state, agent, operation):
+async def _employee_send_authority(db, *, task, state, agent, operation, recipient=True):
     if state.get("dispatch_kind") != "employee" or operation["method"] != "SendMessage":
         return
     from app.services.remote_a2a_delegation import validate_instruction_sources
@@ -575,7 +601,7 @@ async def _employee_send_authority(db, *, task, state, agent, operation):
 
     await require_runtime_authorization(db, agent=agent, expected_hash=state["runtime_authorization_hash"])
     await _active_employee_budget(db, task)
-    await validate_instruction_sources(db, task=task, state=state, recipient=True)
+    await validate_instruction_sources(db, task=task, state=state, recipient=recipient)
 
 
 async def _active_employee_budget(db, task):

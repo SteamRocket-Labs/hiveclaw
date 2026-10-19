@@ -44,6 +44,7 @@ export interface RemoteA2AFileReturn {
 
 export interface RemoteA2ATask {
   id: string; agent_id: string; source_session_id: string; request_id: string; latest_operation_id: string;
+  configuration_version: number;
   status: string; remote_task_id: string | null; remote_context_id: string | null; remote_state: string | null;
   error_code: string | null; observation?: Record<string, unknown> | null; operations?: Record<string, unknown>[];
   cost_metering: 'unknown'; effect_control: 'unverified'; local_abandoned: boolean; recovery_actions: string[];
@@ -57,5 +58,5 @@ export interface RemoteA2ATaskInput extends RemoteA2AFrame {
   uncontrolled_effects_acknowledged: boolean; unknown_cost_acknowledged: boolean;
 }
 export interface RemoteA2ATaskOperation extends RemoteA2AFrame {
-  operation_id: string; action: 'refresh' | 'cancel' | 'send_message' | 'abandon'; params?: Record<string, unknown>;
+  operation_id: string; action: 'refresh' | 'cancel' | 'send_message' | 'abandon' | 'retry'; params?: Record<string, unknown>;
 }

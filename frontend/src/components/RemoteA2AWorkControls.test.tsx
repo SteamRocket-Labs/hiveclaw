@@ -13,6 +13,7 @@ const page = (): RemoteA2ATasks => ({ agent_id: 'employee', source_session_id: '
   connection: { ready: true, version: 1 }, items: [] });
 const task = (overrides: Partial<RemoteA2ATask> = {}): RemoteA2ATask => ({ id: 'transport-task', agent_id: 'employee',
   source_session_id: 'original-work', request_id: 'request', latest_operation_id: 'request', status: 'suspended',
+  configuration_version: 1,
   remote_task_id: 'remote-task', remote_context_id: 'remote-context', remote_state: 'TASK_STATE_INPUT_REQUIRED',
   error_code: null, cost_metering: 'unknown', effect_control: 'unverified', local_abandoned: false,
   recovery_actions: ['read', 'refresh', 'send_message', 'cancel', 'abandon'], ...overrides });
@@ -117,4 +118,34 @@ it('rejects file receipts returned for another original work', async () => {
   fireEvent.click(screen.getByText('Recover files from saved replies'));
   await screen.findByRole('alert');
   expect(screen.queryByText(/Files returned to this work/)).toBeNull();
+});
+
+it('retries a locally unstarted operation in the same work with no replacement message and preserves a lost retry nonce', async () => {
+  const denied = task({ status: 'needs_reconciliation', remote_task_id: null, remote_context_id: null,
+    remote_state: null, error_code: 'remote_a2a_authority_unavailable', recovery_actions: ['read', 'retry', 'abandon'] });
+  vi.mocked(remoteA2AApi.tasks).mockResolvedValue({ ...page(), connection: { ready: false, version: null }, items: [denied] });
+  vi.mocked(remoteA2AApi.task).mockResolvedValue(denied);
+  const operate = vi.spyOn(remoteA2AApi, 'operateTask').mockRejectedValueOnce(new Error('Retry reply lost'))
+    .mockResolvedValue(task({ status: 'pending', recovery_actions: ['read'] }));
+  await mount();fireEvent.click(await screen.findByText('transport-task'));
+  await screen.findByLabelText('Saved remote receipt');
+  fireEvent.change(screen.getByLabelText('Remote request or reply'), { target: { value: 'Must not replace the saved request.' } });
+  fireEvent.click(screen.getByText('Retry saved operation after access repair'));
+  await screen.findByText('Retry exact request');
+  const first = operate.mock.calls[0][2];
+  expect(first).toMatchObject({ action: 'retry', params: {}, expected_user_id: 'owner', expected_tenant_id: 'company', expected_version: 1 });
+  expect(operate.mock.calls[0].slice(0, 2)).toEqual(['employee', 'transport-task']);
+  fireEvent.click(screen.getByText('Retry exact request'));
+  await waitFor(() => expect(operate).toHaveBeenCalledTimes(2));
+  expect(operate.mock.calls[1][2]).toEqual(first);
+});
+
+it('does not offer a saved-operation retry for an unknown external outcome', async () => {
+  const unknown = task({ status: 'needs_reconciliation', error_code: 'remote_a2a_response_lost',
+    recovery_actions: ['read', 'refresh', 'cancel', 'abandon'] });
+  vi.mocked(remoteA2AApi.tasks).mockResolvedValue({ ...page(), items: [unknown] });
+  vi.mocked(remoteA2AApi.task).mockResolvedValue(unknown);
+  await mount();fireEvent.click(await screen.findByText('transport-task'));
+  await screen.findByLabelText('Saved remote receipt');
+  expect(screen.queryByText('Retry saved operation after access repair')).toBeNull();
 });

@@ -201,6 +201,7 @@ def _bind_system_prompt_suffix_sections(
     session_ctx: Any,
     attachment_builder: Any,
     source_maps: tuple[dict, dict] | None = None,
+    tool_schema_provider: Any = None,
 ) -> Any:
     def build() -> list[str]:
         sections = [
@@ -209,6 +210,7 @@ def _bind_system_prompt_suffix_sections(
                 request.agent_id,
                 session_ctx,
                 request.recovery_manifest_result,
+                **({"tools_for_llm": tool_schema_provider()} if tool_schema_provider is not None else {}),
             ),
         ]
         if source_maps is not None:
@@ -1231,12 +1233,38 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
             [get_coordinator_prompt(dispatcher_only=_is_strict_dispatcher)] if _is_coordinator else []
         )
 
+        tools_for_llm = request.initial_tools
+        if tools_for_llm is None:
+            if request.agent_id:
+                tools_for_llm = await _maybe_await(self._deps.get_tools(request.agent_id, request.core_tools_only))
+            else:
+                tools_for_llm = []
+
+        # B-01/B-04 fix: Coordinator mode — filter tools (prompt already in budget via suffix)
+        if _is_coordinator:
+            tools_for_llm = filter_tools_for_coordinator(
+                tools_for_llm,
+                dispatcher_only=_is_strict_dispatcher,
+            )
+            logger.info(
+                "[Kernel] Coordinator mode active for agent %s (dispatcher_only=%s)",
+                request.agent_id,
+                _is_strict_dispatcher,
+            )
+
+        tools_for_llm = await _restore_recovered_deferred_tool_schemas(
+            request=request,
+            tools_for_llm=tools_for_llm,
+            resolve_tool_expansion=self._deps.resolve_tool_expansion,
+        )
+
         _system_prompt_suffix_sections = _bind_system_prompt_suffix_sections(
             _protected_system_prompt_suffixes,
             request,
             session_ctx,
             _build_runtime_attachment_sections,
             (dynamic_sources, dynamic_unbound),
+            tool_schema_provider=lambda: tools_for_llm,
         )
 
         # P0.4 Observability: prompt cache hit/miss
@@ -1321,31 +1349,6 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                 budget_profile=budget_profile,
             )
             system_prompt, dynamic_prompt_suffix = _split_system_prompt_for_api(combined_prompt)
-
-        tools_for_llm = request.initial_tools
-        if tools_for_llm is None:
-            if request.agent_id:
-                tools_for_llm = await _maybe_await(self._deps.get_tools(request.agent_id, request.core_tools_only))
-            else:
-                tools_for_llm = []
-
-        # B-01/B-04 fix: Coordinator mode — filter tools (prompt already in budget via suffix)
-        if _is_coordinator:
-            tools_for_llm = filter_tools_for_coordinator(
-                tools_for_llm,
-                dispatcher_only=_is_strict_dispatcher,
-            )
-            logger.info(
-                "[Kernel] Coordinator mode active for agent %s (dispatcher_only=%s)",
-                request.agent_id,
-                _is_strict_dispatcher,
-            )
-
-        tools_for_llm = await _restore_recovered_deferred_tool_schemas(
-            request=request,
-            tools_for_llm=tools_for_llm,
-            resolve_tool_expansion=self._deps.resolve_tool_expansion,
-        )
 
         if session_ctx is not None:
             from app.runtime.context import ensure_runtime_assembly_state
@@ -2719,6 +2722,14 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                                 )
                             if isinstance(expansion_payload, ToolExpansionResult):
                                 full_toolset = expansion_payload.tools
+                            elif isinstance(expansion_payload, list):
+                                full_toolset = expansion_payload
+                            if full_toolset is not None:
+                                tools_for_llm = (
+                                    filter_tools_for_coordinator(full_toolset, dispatcher_only=_is_strict_dispatcher)
+                                    if _is_coordinator else full_toolset
+                                )
+                            if isinstance(expansion_payload, ToolExpansionResult):
                                 session_context = request.session_context
                                 if session_context is None:
                                     session_context = request.session_context = SessionContext()
@@ -2797,6 +2808,7 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                                         session_context._memory_hash = hashlib.sha256(
                                             resolved_memory_context.encode("utf-8")
                                         ).hexdigest()[:16]
+                                    dynamic_context_section_ledger.clear()
                                     combined_prompt = assemble_runtime_prompt(
                                         prompt_prefix,
                                         build_dynamic_prompt_suffix(
@@ -2815,6 +2827,7 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                                             channel=session_context.channel,
                                             source=getattr(session_context, "source", "") or "",
                                             agent_name=request.agent_name,
+                                            context_section_ledger=dynamic_context_section_ledger,
                                         ),
                                         context_window_tokens=_ctx_window,
                                         budget_profile=budget_profile,
@@ -2822,18 +2835,6 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                                     system_prompt, dynamic_prompt_suffix = _split_system_prompt_for_api(combined_prompt)
                                     api_messages[0] = _context_message(role="system", content=system_prompt, kind="frozen_prompt",
                                         sources=_frozen_source_refs, unbound=_frozen_source_unbound)
-                            elif isinstance(expansion_payload, list):
-                                full_toolset = expansion_payload
-                            if full_toolset is not None:
-                                # B-04 fix: re-filter expanded tools if coordinator mode active
-                                tools_for_llm = (
-                                    filter_tools_for_coordinator(
-                                        full_toolset,
-                                        dispatcher_only=_is_strict_dispatcher,
-                                    )
-                                    if _is_coordinator
-                                    else full_toolset
-                                )
 
                 _round_side_effect_messages: list[dict[str, Any]] = []
                 _session_permission_pause_pending = False

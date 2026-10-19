@@ -6,7 +6,7 @@ from uuid import uuid4
 import pytest
 
 
-@pytest.mark.parametrize("failure", ["unattested", "ambiguous_connection", "wrong_reader", "changed_body"])
+@pytest.mark.parametrize("failure", ["unattested", "ambiguous_connection", "wrong_reader", "changed_body", "another_platform"])
 async def test_feishu_capture_rejects_unwitnessed_or_mismatched_results(monkeypatch, failure):
     from app.services.feishu_read_receipts import capture_feishu_read, attest_feishu_api_read, settle_feishu_read
     from app.services.agent_tool_domains.feishu_acl import with_feishu_read_authority
@@ -23,6 +23,8 @@ async def test_feishu_capture_rejects_unwitnessed_or_mismatched_results(monkeypa
             tenant_id=context.tenant_id, current_user_id=uuid4() if failure == "wrong_reader" else context.user_id)
     with capture_feishu_read(context, "feishu_doc_read", {"document_token": "company"}) as capture:
         capture.connections.append({"id": "observed-connection"})
+        if failure == "another_platform":
+            capture.connections[0].update(platform_region="lark_global", open_api_domain="https://open.larksuite.com")
         value = result("Company source")
         if failure != "unattested":
             attest_feishu_api_read(value)

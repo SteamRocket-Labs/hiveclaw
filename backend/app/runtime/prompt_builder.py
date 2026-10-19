@@ -630,6 +630,8 @@ def build_dynamic_prompt_suffix(
     )
 
     tool_groups_section = _render_active_tool_groups(active_tool_groups or [], budget_chars=tool_groups_budget)
+    from app.runtime.prompt_sections.active_tool_groups import active_tool_groups_are_platform_constants
+
     add_candidate(
         candidate_id="dynamic:tools:active_tool_groups",
         kind="tools",
@@ -637,6 +639,7 @@ def build_dynamic_prompt_suffix(
         content=tool_groups_section,
         budget_key="active_tool_groups_budget_chars",
         budget_chars=tool_groups_budget,
+        platform_constant=active_tool_groups_are_platform_constants(active_tool_groups or []),
     )
 
     deferred_tools_section = ""

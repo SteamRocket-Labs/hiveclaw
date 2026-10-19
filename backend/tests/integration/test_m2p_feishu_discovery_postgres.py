@@ -112,8 +112,8 @@ async def test_foreign_company_connection_does_not_create_discovery_access(
     assert await _discovered(seed["agent_id"]) == set()
 
 
-async def test_ordinary_worker_discovers_company_tools_and_consumes_results_in_original_work(
-    ordinary_work, owner_sessionmaker, app_user_sessionmaker, monkeypatch,
+async def _exercise_ordinary_office_work(
+    ordinary_work, owner_sessionmaker, app_user_sessionmaker, monkeypatch, *, follow_up=None,
 ):
     from app.runtime import invoker
     from app.models.capability_policy import CapabilityPolicy
@@ -146,11 +146,12 @@ async def test_ordinary_worker_discovers_company_tools_and_consumes_results_in_o
         await db.commit()
 
     requests = []
+    provider_state = {"secret": "synthetic-company-work-secret"}
     def provider(request):
         assert request.url.host == "open.feishu.cn", request.url
         requests.append((request.method, request.url.path))
         if "/auth/v3/" in request.url.path:
-            assert json.loads(request.content) == {"app_id": "cli_company_work", "app_secret": "synthetic-company-work-secret"}
+            assert json.loads(request.content) == {"app_id": "cli_company_work", "app_secret": provider_state["secret"]}
             return httpx.Response(200, json={"code": 0, "tenant_access_token": "synthetic-company-work-token"})
         assert request.headers["Authorization"] == "Bearer synthetic-company-work-token"
         if request.url.path.endswith("/spaces/get_node"):
@@ -261,6 +262,9 @@ async def test_ordinary_worker_discovers_company_tools_and_consumes_results_in_o
         read = await api.get(f"/agents/{seed['agent_id']}/files/artifacts/{report.id}/content")
         assert read.status_code == 200, read.text
         assert read.json()["content"] == "COMPANY_DOCUMENT_RESULT\nCOMPANY_APPROVAL_RESULT"
+    if follow_up is not None:
+        await follow_up(seed=seed, app=app, client=client, report=report, processor=processor,
+            provider_state=provider_state, requests=requests)
     # Retained tool definitions do not bypass a subsequently disabled connection.
     async with owner_sessionmaker() as db:
         (await db.get(TenantChannelConfig, seed["config_id"])).is_active = False
@@ -276,3 +280,9 @@ async def test_ordinary_worker_discovers_company_tools_and_consumes_results_in_o
         revoked = await api.get(f"/agents/{seed['agent_id']}/files/artifacts/{report.id}/content")
         assert revoked.status_code == 403, revoked.text
     assert requests == before
+
+
+async def test_ordinary_worker_discovers_company_tools_and_consumes_results_in_original_work(
+    ordinary_work, owner_sessionmaker, app_user_sessionmaker, monkeypatch,
+):
+    await _exercise_ordinary_office_work(ordinary_work, owner_sessionmaker, app_user_sessionmaker, monkeypatch)

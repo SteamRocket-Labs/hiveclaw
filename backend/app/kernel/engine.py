@@ -488,6 +488,7 @@ def _build_runtime_attachment_sections(
     agent_id: Any,
     session_context: Any | None,
     recovery_result: Any | None = None,
+    *, tools_for_llm: list[dict[str, Any]] | None = None,
 ) -> list[str]:
     if session_context is None:
         return []
@@ -531,13 +532,24 @@ def _build_runtime_attachment_sections(
     discovered_tools = [
         str(name).strip() for name in getattr(session_context, "discovered_tools", []) if str(name).strip()
     ]
+    if tools_for_llm is not None:
+        callable_names = _openai_tool_names(tools_for_llm)
+        discovered_tools = [name for name in discovered_tools if name in callable_names]
     if discovered_tools:
-        sections.append(
+        section = (
             "## Runtime Tool Refresh\n"
             "The following deferred tool schemas are now callable in this session: "
             f"{', '.join(discovered_tools)}. Use them directly when relevant; "
             "do not assume the earlier tool list is complete."
         )
+        sections.append(section)
+        if tools_for_llm is not None:
+            from app.runtime.context import ensure_runtime_assembly_state
+
+            # This repeats only names in the current authorized schema frame;
+            # cached names and summaries cannot create a callable capability.
+            ensure_runtime_assembly_state(session_context).record_context_sources(
+                agent_id=agent_id, content=section, sources=(), unbound=())
 
     snapshots = getattr(session_context, "file_snapshots", {}) or {}
     if snapshots:

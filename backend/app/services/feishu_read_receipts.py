@@ -15,6 +15,7 @@ from sqlalchemy import select
 
 from app.models.channel_config import ChannelConfig
 from app.models.tenant_channel_config import TenantChannelConfig
+from app.services.feishu_platform import FEISHU_REGION_CN, FEISHU_CN_OPEN_API_DOMAIN, resolve_feishu_platform
 
 logger = logging.getLogger(__name__)
 FEISHU_READ_TOOLS = frozenset({"feishu_doc_read", "feishu_approval_query"})
@@ -22,10 +23,21 @@ _active_read: ContextVar = ContextVar("feishu_source_read", default=None)
 
 
 def _connection_snapshot(config):
+    platform = resolve_feishu_platform(getattr(config, "extra_config", None))
     return {"id": str(config.id), "tenant_id": str(config.tenant_id),
         "scope": "company" if isinstance(config, TenantChannelConfig) else "employee",
         "agent_id": str(config.agent_id) if isinstance(config, ChannelConfig) else None,
-        "app_id": config.app_id, "updated_at": config.updated_at.astimezone(timezone.utc).isoformat()}
+        "app_id": config.app_id, "updated_at": config.updated_at.astimezone(timezone.utc).isoformat(),
+        "platform_region": platform.region, "open_api_domain": platform.open_api_domain}
+
+
+def _connection_subject(snapshot):
+    # Settings/credential revisions are observations, not a new app identity.
+    # Legacy v1 reads used the fixed Feishu CN OpenAPI transport.
+    return tuple(snapshot.get(key) for key in ("id", "tenant_id", "scope", "agent_id", "app_id")) + (
+        snapshot.get("platform_region", FEISHU_REGION_CN),
+        snapshot.get("open_api_domain", FEISHU_CN_OPEN_API_DOMAIN),
+    )
 
 
 @dataclass
@@ -77,6 +89,10 @@ async def settle_feishu_read(capture, result):
     if context is None or capture.tool_name not in FEISHU_READ_TOOLS or not all((
         context.user_id, context.tenant_id, context.session_id, context.runtime_task_id, context.tool_call_id,
     )) or len(capture.connections) != 1 or _hash(str(result)) not in capture.result_hashes:
+        return result
+    # These concrete read adapters currently attest CN OpenAPI results only.
+    # Another configured platform cannot borrow that transport's witness.
+    if _connection_subject(capture.connections[0])[-2:] != (FEISHU_REGION_CN, FEISHU_CN_OPEN_API_DOMAIN):
         return result
     sources = extract_connector_source_items(result)
     if not sources or any(
@@ -158,6 +174,11 @@ async def load_feishu_read(db, *, tenant_id, agent_id, invocation, content_hash,
     if (not isinstance(connection, dict) or connection.get("tenant_id") != str(tenant_id)
         or connection.get("scope") not in {"company", "employee"} or not isinstance(sources, list) or not sources):
         return None
+    try:
+        if datetime.fromisoformat(connection["updated_at"]).tzinfo is None:
+            return None
+    except (KeyError, ValueError, TypeError):
+        return None
     if any(not isinstance(item, dict) or item.get("metadata", {}).get("connector") != "feishu"
         or item.get("metadata", {}).get("acl_authority") != "connector_verified"
         or item.get("metadata", {}).get("accessing_agent_id") != str(agent_id)
@@ -174,6 +195,6 @@ async def load_feishu_read(db, *, tenant_id, agent_id, invocation, content_hash,
         if (config is None or config.channel_type != "feishu" or not config.is_configured
             or not config.app_id or not config.app_secret or config.tenant_id != tenant_id
             or isinstance(config, ChannelConfig) and config.agent_id != agent_id
-            or _connection_snapshot(config) != connection):
+            or _connection_subject(_connection_snapshot(config)) != _connection_subject(connection)):
             return None
     return proof

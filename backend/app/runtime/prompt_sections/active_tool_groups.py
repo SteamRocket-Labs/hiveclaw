@@ -55,3 +55,17 @@ def build_active_tool_groups_section(
             lines.append(f"  Tools: {tools_inline}")
 
     return "\n".join(lines)
+
+
+def active_tool_groups_are_platform_constants(groups: list[dict[str, Any]]) -> bool:
+    """Recognize only exact rendered metadata from the code-owned taxonomy."""
+    from app.services.governance_capability_taxonomy import capability_descriptor_for_name
+
+    canonical = []
+    for group in groups:
+        descriptor = capability_descriptor_for_name(group.get("name", ""))
+        if descriptor is None or not descriptor.l2_visible:
+            return False
+        canonical.append({"name": descriptor.name, "summary": descriptor.notes or descriptor.name,
+            "tools": list(descriptor.tools)})
+    return build_active_tool_groups_section(groups) == build_active_tool_groups_section(canonical)

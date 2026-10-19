@@ -1405,6 +1405,8 @@ async def _enqueue_a2a_source_delivery(
             "The Local Agent delegation failed without a result payload."
             if terminal_status == "failed"
             else "The Local Agent delegation completed without a result payload."
+            if terminal_status == "completed"
+            else f"The Local Agent reported {terminal_status} without a result payload."
         )
     notification = CompletionNotification(
         tenant_id=message.tenant_id,
@@ -1533,12 +1535,13 @@ async def retry_channel_source_return(
         request_hash=request_hash,
     )
     disposition = await _find_work_disposition(db, message)
+    unresolved_report = _unresolved_report_fact(message, await _dispatch_origin(db, message))
     if not _a2a_local_delegation(message.metadata_json) or (
-        not disposition and message.status not in {"completed", "failed", "cancelled", "rejected"}
+        not disposition and not unresolved_report and message.status not in {"completed", "failed", "cancelled", "rejected"}
     ):
         raise HTTPException(409, detail={"code": "local_agent_source_return_not_ready"})
     terminal_status = (
-        message.status if message.status in {"completed", "failed", "cancelled", "rejected"} else "abandoned"
+        message.status if unresolved_report or message.status in {"completed", "failed", "cancelled", "rejected"} else "abandoned"
     )
     report = dict((message.metadata_json or {}).get("report") or {})
     output = (
@@ -1551,7 +1554,7 @@ async def retry_channel_source_return(
         message=message,
         terminal_status=terminal_status,
         output=output,
-        artifacts=list(report.get("artifacts") or []) if message.status in {"completed", "failed"} else [],
+        artifacts=list(report.get("artifacts") or []) if unresolved_report or message.status in {"completed", "failed"} else [],
     )
     db.add(
         AuditLog(
@@ -1619,9 +1622,11 @@ async def get_a2a_channel_message_status(
         return None
 
     metadata = dict(message.metadata_json or {})
+    origin = await _dispatch_origin(db, message)
+    unresolved_report = _unresolved_report_fact(message, origin)
     report = dict(metadata.get("report") or {})
     artifacts = report.get("artifacts")
-    if not isinstance(artifacts, list):
+    if not isinstance(artifacts, list) or (not unresolved_report and message.status not in {"completed", "failed"}):
         artifacts = []
     stored_delivery = dict(metadata.get("source_delivery") or {})
     notification_id: uuid.UUID | None = None
@@ -1679,14 +1684,14 @@ async def get_a2a_channel_message_status(
             if disposition
             else {}
         ),
-        "execution_state": _execution_state(message, await _dispatch_origin(db, message)),
+        "execution_state": _execution_state(message, origin),
         "approval": await _approval_decision(db, message),
         "terminal": terminal,
         "target_agent_id": str(message.source_agent_id),
         "target_agent": metadata.get("target_agent_name"),
         "parent_session_id": str(parent_session.id),
         "artifacts": artifacts,
-        "receipt": _receipt_for_message(message),
+        "receipt": dict(origin.metadata_json["execution_receipt"]) if unresolved_report else _receipt_for_message(message),
         "source_delivery": source_delivery,
         "retryable": not disposition
         and message.status not in {"completed", "failed", "cancelled", "rejected", "needs_reconciliation"},
@@ -2279,6 +2284,22 @@ async def _approval_decision(db: AsyncSession, message: LocalAgentChannelMessage
     }
 
 
+def _unresolved_report_fact(message, origin) -> dict | None:
+    """Only a canonical platform receipt can attest an unresolved worker report."""
+    if message.status != "needs_reconciliation" or not _origin_matches(message, origin):
+        return None
+    metadata = dict(origin.metadata_json or {})
+    fact, receipt = metadata.get("unresolved_result_report"), metadata.get("execution_receipt")
+    report = (message.metadata_json or {}).get("report")
+    if (not isinstance(fact, dict) or not isinstance(receipt, dict) or not isinstance(report, dict)
+        or fact.get("schema") != "hive.local_unresolved_report.v1"
+        or fact.get("request_hash") != message.request_hash or receipt.get("status") != "needs_reconciliation"
+        or not isinstance(report.get("reported_status"), str)):
+        return None
+    expected = _canonical_hash({"status": report["reported_status"], "output": str(message.result or ""), "report": report})
+    return fact if fact.get("report_hash") == expected else None
+
+
 def _source_delivery_fact(message, origin) -> dict | None:
     metadata = origin.metadata_json if origin is not None and isinstance(origin.metadata_json, dict) else {}
     fact = metadata.get("source_delivery_receipt")
@@ -2495,7 +2516,8 @@ async def list_channel_requests(
                 "source_delivery": source_delivery,
                 "decision_reason": row.result if row.status in {"rejected", "needs_reconciliation"} else None,
                 "can_retry_source_return": _a2a_local_delegation(row.metadata_json)
-                and (bool(disposition) or row.status in {"completed", "failed", "cancelled", "rejected"})
+                and (bool(disposition) or _unresolved_report_fact(row, origin)
+                    or row.status in {"completed", "failed", "cancelled", "rejected"})
                 and actor_user_id in {row.sender_user_id, row.owner_user_id}
                 and (source_delivery is None or source_delivery["status"] == "needs_reconciliation"),
                 "preview": row.content[:240],
@@ -3420,7 +3442,23 @@ async def record_channel_result(
             "source_delivery": source_delivery,
             "idempotent_replay": True,
         }
-    normalized_status = "failed" if result_status == "failed" else "completed"
+    unresolved = result_status not in {"completed", "failed"}
+    normalized_status = "needs_reconciliation" if unresolved else result_status
+    reported = {"reported_status": result_status} if unresolved else {}
+    persisted_report = {**dict(metadata or {}), "artifacts": list(artifacts or []), **reported}
+    report_hash = _canonical_hash({"status": result_status, "output": output, "report": persisted_report}) if unresolved else None
+    if unresolved and isinstance(db, AsyncSession):
+        origin = await _dispatch_origin(db, message)
+        origin_metadata = dict(origin.metadata_json or {}) if _origin_matches(message, origin) else {}
+        previous = _unresolved_report_fact(message, origin)
+        if previous and previous.get("report_hash") == report_hash:
+            source_delivery = await _settle_a2a_source_delivery(db, message=message,
+                terminal_status=normalized_status, output=output, artifacts=list(artifacts or []))
+            await db.flush()
+            await db.commit()
+            return {"status": normalized_status, "event": None, "message": _message_payload(message),
+                "receipt": origin_metadata["execution_receipt"], "source_delivery": source_delivery,
+                "idempotent_replay": True}
     message.status = normalized_status
     message.result = output
     result_refs = _result_refs(artifacts)
@@ -3431,14 +3469,14 @@ async def record_channel_result(
     )
     message.metadata_json = {
         **dict(message.metadata_json or {}),
-        "report": {**dict(metadata or {}), "artifacts": list(artifacts or [])},
+        "report": persisted_report,
         **(
             {"execution_receipt": receipt}
             if receipt is not None
             else {"receipt_unavailable_reason": "legacy_message_without_capability_snapshot"}
         ),
     }
-    message.completed_at = utcnow()
+    message.completed_at = None if unresolved else utcnow()
     message.delivery_lease_expires_at = None
     event = LocalAgentChannelEvent(
         sequence=await _allocate_event_sequence(db, session_id=session.id),
@@ -3451,6 +3489,7 @@ async def record_channel_result(
         event_type="result",
         payload_json={
             "status": normalized_status,
+            **reported,
             "output": output,
             "artifacts": list(artifacts or []),
             "metadata": dict(metadata or {}),
@@ -3474,7 +3513,11 @@ async def record_channel_result(
         db,
         message=message,
         receipt=receipt,
-        failed=normalized_status == "failed",
+        failed=normalized_status != "completed",
+        error=f"Unresolved Local Agent result status: {result_status!r}" if unresolved else None,
+        terminal_metadata={"unresolved_result_report": {"schema": "hive.local_unresolved_report.v1",
+            "request_hash": message.request_hash, "report_hash": report_hash,
+            "reported_status": result_status}} if unresolved else None,
     )
     source_delivery = await _settle_a2a_source_delivery(
         db,

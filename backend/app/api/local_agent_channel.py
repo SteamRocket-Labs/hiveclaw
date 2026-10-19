@@ -1266,7 +1266,7 @@ async def local_agent_channel_ws(
                         context=context,
                         session_id=_coerce_uuid(data.get("session_id")),
                         message_id=message_id,
-                        result_status=str(data.get("status") or "completed"),
+                        result_status=str(data.get("status", "completed")),
                         output=str(data.get("output") or ""),
                         artifacts=list(data.get("artifacts") or []),
                         metadata=dict(data.get("metadata") or {}),

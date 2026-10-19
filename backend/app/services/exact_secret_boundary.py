@@ -322,6 +322,7 @@ def boundary_from_reply_target(target: Any) -> ExactSecretBoundary:
         "dingtalk": ("session_webhook",),
         "discord": ("interaction_token",),
         "wechat_personal": ("context_token",),
+        "wecom": ("response_url",),
     }.get(channel, ())
     return ExactSecretBoundary.from_pairs(
         (

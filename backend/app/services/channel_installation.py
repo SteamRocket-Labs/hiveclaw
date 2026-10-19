@@ -52,6 +52,12 @@ async def load_tenant_channel_for_target(db, *, agent_id, channel, target, expec
         recipient = target.get("user_id") if channel == "wecom" else target.get("sender_staff_id")
         if not company_channel_ready(config) or recipient != principal.subject_id:
             return None
+        if channel == 'wecom':
+            transport = (config.extra_config or {}).get('wecom_transport', 'app')
+            if target.get('wecom_transport', 'app') != transport:
+                return None
+            if transport == 'smart_bot' and target.get('bot_id') != config.extra_config.get('wecom_bot_id'):
+                return None
         if channel == "dingtalk" and target.get("conversation_type") != "1":
             return None
     return config if actor.authority_bound else None

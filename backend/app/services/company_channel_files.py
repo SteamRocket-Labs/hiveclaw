@@ -1,6 +1,8 @@
 """Provider resource capabilities stay behind authenticated company file ingress."""
 
 from urllib.parse import urlsplit
+from email.message import Message
+import base64
 import mimetypes
 
 import httpx
@@ -28,11 +30,52 @@ async def _dingtalk_json(client, path, **kwargs):
 
 async def materialize_company_attachment(db, *, config, actor, session, attachment, event_id):
     provider = config.channel_type
-    allowed = {'file'} if provider == 'dingtalk' else {'image', 'voice', 'video'} if provider == 'wecom' else set()
+    smartbot = provider == 'wecom' and (config.extra_config or {}).get('wecom_transport') == 'smart_bot'
+    allowed = {'file'} if provider == 'dingtalk' else {'file', 'image', 'video'} if smartbot else {'image', 'voice', 'video'} if provider == 'wecom' else set()
     if (not isinstance(attachment, dict) or attachment.get('kind') not in allowed
         or not isinstance(attachment.get('resource_key'), str) or not attachment['resource_key']):
         raise HTTPException(422, {'code': 'company_file_invalid', 'message': 'The authenticated file resource is incomplete.'})
     code = attachment['resource_key']
+    params = None
+    token = ''
+    if smartbot:
+        url = code
+    else:
+        url, params, token = await _company_download(config, provider, code)
+    if not isinstance(url, str) or urlsplit(url).scheme != 'https':
+        raise HTTPException(503, {'code': 'company_file_download_unavailable', 'message': 'The provider did not issue a secure file download.'})
+    try:
+        limit = COMPANY_FILE_MAX_BYTES + (32 if smartbot else 0)
+        response = await request_governed_http('GET', url, params=params, secret_values=(token, code),
+            limits=EgressLimits(max_wire_bytes=limit, max_decoded_bytes=limit))
+    except (GovernedEgressError, httpx.HTTPError, TimeoutError) as exc:
+        code = exc.code if isinstance(exc, GovernedEgressError) else 'company_file_download_unavailable'
+        raise HTTPException(503, {'code': code, 'message': 'The file download was refused or exceeded its resource limit. Retry or attach a new file in the original Web work.'}) from None
+    content_type = response.headers.get('content-type', 'application/octet-stream').split(';', 1)[0].strip().lower()
+    if response.status_code != 200 or provider == 'wecom' and content_type == 'application/json':
+        raise HTTPException(409, {'code': 'company_file_expired', 'message': 'The file is unavailable. Upload a new message or attach it in the original Web work.'})
+    content = response.content
+    filename = attachment.get('filename') if provider == 'dingtalk' else attachment['kind'] + (mimetypes.guess_extension(content_type) or '.bin')
+    if smartbot:
+        from Crypto.Cipher import AES
+        from app.api.wecom import _unpad
+
+        try:
+            key = base64.b64decode(config.encrypt_key + '=', validate=True)
+            content = _unpad(AES.new(key, AES.MODE_CBC, key[:16]).decrypt(content))
+        except ValueError:
+            raise HTTPException(409, {'code': 'company_file_decryption_failed', 'message': 'The Bot file could not be decrypted. Upload a new message.'}) from None
+        header = Message()
+        header['Content-Disposition'] = response.headers.get('content-disposition', '')
+        filename = header.get_filename() or filename
+        if len(content) > COMPANY_FILE_MAX_BYTES:
+            raise HTTPException(413, {'code': 'company_file_too_large', 'message': 'Company files support at most 20 MiB.'})
+    path = await save_channel_upload(db, actor=actor, session=session, provider=config.channel_type,
+        message_id=str(event_id), resource_key=attachment['resource_key'], filename=filename, content=content)
+    return {'path': path, 'name': path.rsplit('/', 1)[-1], 'size': len(content), 'content_type': content_type}
+
+
+async def _company_download(config, provider, code):
     params = None
     async with httpx.AsyncClient(timeout=20) as client:
         try:
@@ -47,19 +90,4 @@ async def materialize_company_attachment(db, *, config, actor, session, attachme
         else:
             url = 'https://qyapi.weixin.qq.com/cgi-bin/media/get'
             params = {'access_token': token, 'media_id': code}
-    if not isinstance(url, str) or urlsplit(url).scheme != 'https':
-        raise HTTPException(503, {'code': 'company_file_download_unavailable', 'message': 'The provider did not issue a secure file download.'})
-    try:
-        response = await request_governed_http('GET', url, params=params, secret_values=(token, code),
-            limits=EgressLimits(max_wire_bytes=COMPANY_FILE_MAX_BYTES, max_decoded_bytes=COMPANY_FILE_MAX_BYTES))
-    except (GovernedEgressError, httpx.HTTPError, TimeoutError) as exc:
-        code = exc.code if isinstance(exc, GovernedEgressError) else 'company_file_download_unavailable'
-        raise HTTPException(503, {'code': code, 'message': 'The file download was refused or exceeded its resource limit. Retry or attach a new file in the original Web work.'}) from None
-    content_type = response.headers.get('content-type', 'application/octet-stream').split(';', 1)[0].strip().lower()
-    if response.status_code != 200 or provider == 'wecom' and content_type == 'application/json':
-        raise HTTPException(409, {'code': 'company_file_expired', 'message': 'The file is unavailable. Upload a new message or attach it in the original Web work.'})
-    filename = attachment.get('filename') if provider == 'dingtalk' else attachment['kind'] + (mimetypes.guess_extension(content_type) or '.bin')
-    path = await save_channel_upload(db, actor=actor, session=session, provider=config.channel_type,
-        message_id=str(event_id), resource_key=attachment['resource_key'], filename=filename, content=response.content)
-    return {'path': path, 'name': path.rsplit('/', 1)[-1], 'size': len(response.content),
-        'content_type': content_type}
+    return url, params, token

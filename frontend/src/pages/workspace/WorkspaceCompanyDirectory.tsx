@@ -41,6 +41,9 @@ function DirectoryEditor({ scope, provider }: { scope: TenantChannelScope; provi
   const [namespace, setNamespace] = useState('');
   const [token, setToken] = useState('');
   const [encodingKey, setEncodingKey] = useState('');
+  const [wecomTransport, setWecomTransport] = useState('app');
+  const [botId, setBotId] = useState('');
+  const [botSubjectMode, setBotSubjectMode] = useState('encrypted');
   const namespaceKey = provider === 'wecom' ? 'wecom_agent_id' : 'corp_id';
 
   const [active, setActive] = useState(true);
@@ -58,6 +61,9 @@ function DirectoryEditor({ scope, provider }: { scope: TenantChannelScope; provi
       setBase(query.data); setAppId(query.data?.app_id || ''); setActive(query.data?.is_active ?? true);
       setMessaging(query.data?.extra_config.messaging_enabled === true);
       setNamespace(String(query.data?.extra_config[namespaceKey] || ''));
+      setWecomTransport(String(query.data?.extra_config.wecom_transport || 'app'));
+      setBotId(String(query.data?.extra_config.wecom_bot_id || ''));
+      setBotSubjectMode(String(query.data?.extra_config.wecom_bot_userid_mode || 'encrypted'));
     }
   }, [query.data, base, namespaceKey]);
   async function refresh() {
@@ -70,8 +76,9 @@ function DirectoryEditor({ scope, provider }: { scope: TenantChannelScope; provi
     try {
       const saved = await channelApi.saveTenantDirectory(provider, { ...scope, app_id: appId, is_active: active,
         expected_revision: base?.revision || 'unconfigured', ...(secret ? { app_secret: secret } : {}),
-        ...(messaging !== (base?.extra_config.messaging_enabled === true) || namespace !== String(base?.extra_config[namespaceKey] || '')
-          ? { extra_config: { ...base?.extra_config, messaging_enabled: messaging, [namespaceKey]: namespace.trim() } } : {}),
+        ...(messaging !== (base?.extra_config.messaging_enabled === true) || namespace !== String(base?.extra_config[namespaceKey] || '') || botChanged
+          ? { extra_config: { ...base?.extra_config, messaging_enabled: messaging, [namespaceKey]: namespace.trim(),
+            ...(provider === 'wecom' ? { wecom_transport: wecomTransport, wecom_bot_id: botId.trim(), wecom_bot_userid_mode: botSubjectMode } : {}) } } : {}),
         ...(token ? { verification_token: token } : {}), ...(encodingKey ? { encrypt_key: encodingKey } : {}) });
       if (!live.current) return;
       if (saved.tenant_id !== scope.expected_tenant_id || saved.channel_type !== provider) throw new Error('Company scope changed');
@@ -109,8 +116,11 @@ function DirectoryEditor({ scope, provider }: { scope: TenantChannelScope; provi
   const changedElsewhere = base !== undefined && query.data !== undefined
     && (base?.revision || 'unconfigured') !== (query.data?.revision || 'unconfigured');
   const appChanged = Boolean(base && (appId.trim() !== base.app_id || provider === 'wecom' && namespace !== String(base.extra_config.wecom_agent_id || '')));
+  const botChanged = provider === 'wecom' && (wecomTransport !== (base?.extra_config.wecom_transport || 'app')
+    || botId.trim() !== String(base?.extra_config.wecom_bot_id || '')
+    || botSubjectMode !== (base?.extra_config.wecom_bot_userid_mode || 'encrypted'));
   const dirty = appId.trim() !== (base?.app_id || '') || active !== (base?.is_active ?? true) || Boolean(secret || token || encodingKey)
-    || messaging !== (base?.extra_config.messaging_enabled === true) || namespace !== String(base?.extra_config[namespaceKey] || '');
+    || messaging !== (base?.extra_config.messaging_enabled === true) || namespace !== String(base?.extra_config[namespaceKey] || '') || botChanged;
   return <>
     <p>{t('companyDirectory.coverage')}</p>
     {query.isError && <p role="alert">{t('companyDirectory.readFailed')}</p>}
@@ -134,14 +144,29 @@ function DirectoryEditor({ scope, provider }: { scope: TenantChannelScope; provi
       <label htmlFor={`${id}-namespace`}>{provider === 'wecom' ? 'AgentID' : 'Corp ID'}</label>
       <input id={`${id}-namespace`} className="input" value={namespace} onChange={(event) => setNamespace(event.target.value)} />
       {provider === 'wecom' && <>
+        <label htmlFor={`${id}-transport`}>{t('companyMessaging.wecomTransport')}</label>
+        <select id={`${id}-transport`} className="input" value={wecomTransport} onChange={(event) => setWecomTransport(event.target.value)}>
+          <option value="app">{t('companyMessaging.wecomApp')}</option>
+          <option value="smart_bot">{t('companyMessaging.wecomSmartBot')}</option>
+        </select>
+        {wecomTransport === 'smart_bot' && <>
+          <label htmlFor={`${id}-bot-id`}>Bot ID</label>
+          <input id={`${id}-bot-id`} className="input" value={botId} onChange={(event) => setBotId(event.target.value)} />
+          <label htmlFor={`${id}-bot-subject`}>{t('companyMessaging.botSubjectMode')}</label>
+          <select id={`${id}-bot-subject`} className="input" value={botSubjectMode} onChange={(event) => setBotSubjectMode(event.target.value)}>
+            <option value="encrypted">{t('companyMessaging.botEncrypted')}</option>
+            <option value="plaintext">{t('companyMessaging.botPlaintext')}</option>
+          </select>
+          <p>{t('companyMessaging.smartBotHelp')}</p>
+        </>}
         <label htmlFor={`${id}-callback-token`}>{t('tenantFeishu.verificationToken')}</label>
         <input id={`${id}-callback-token`} className="input" type="password" autoComplete="new-password" value={token} onChange={(event) => setToken(event.target.value)}
-          placeholder={base?.has_verification_token && !appChanged ? t('companyDirectory.secretSaved') : ''} />
+          placeholder={base?.has_verification_token && !appChanged && !botChanged ? t('companyDirectory.secretSaved') : ''} />
         <label htmlFor={`${id}-encoding-key`}>{t('companyMessaging.encodingKey')}</label>
         <input id={`${id}-encoding-key`} className="input" type="password" autoComplete="new-password" value={encodingKey} onChange={(event) => setEncodingKey(event.target.value)}
-          placeholder={base?.has_encrypt_key && !appChanged ? t('companyDirectory.secretSaved') : ''} />
+          placeholder={base?.has_encrypt_key && !appChanged && !botChanged ? t('companyDirectory.secretSaved') : ''} />
       </>}
-      <p>{provider === 'wecom' ? t('companyMessaging.wecomSetup') : t('companyMessaging.dingtalkSetup')}</p>
+      <p>{provider === 'wecom' ? t(wecomTransport === 'smart_bot' ? 'companyMessaging.smartBotSetup' : 'companyMessaging.wecomSetup') : t('companyMessaging.dingtalkSetup')}</p>
       <p>{t('companyMessaging.coverage')}</p>
       {query.data?.messaging_status?.state === 'receiving' && <p role="status">{t('companyMessaging.receiving')} {query.data.messaging_status.last_received_at && <time dateTime={query.data.messaging_status.last_received_at}>{new Date(query.data.messaging_status.last_received_at).toLocaleString()}</time>}</p>}
       {query.data?.messaging_status?.state === 'starting' && <p role="status">{t('companyMessaging.starting')}</p>}

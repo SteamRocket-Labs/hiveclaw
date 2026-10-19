@@ -269,6 +269,10 @@ async def upsert_tenant_channel(
     if body.platform_region is not None:
         extra["platform_region"] = body.platform_region
     before_platform, after_platform = resolve_feishu_platform(existing_extra), resolve_feishu_platform(extra)
+    replacing_transport = channel_type == 'wecom' and config is not None and (
+        existing_extra.get('wecom_transport', 'app') != extra.get('wecom_transport', 'app')
+        or extra.get('wecom_transport') == 'smart_bot' and any(existing_extra.get(key) != extra.get(key)
+            for key in ('wecom_bot_id', 'wecom_bot_userid_mode')))
     replacing_app = config is not None and (config.app_id != app_id or
         (channel_type == "wecom" and str(existing_extra.get("wecom_agent_id") or "") != str(extra.get("wecom_agent_id") or "")) or
         (before_platform.region, before_platform.open_api_domain) != (after_platform.region, after_platform.open_api_domain))
@@ -276,7 +280,7 @@ async def upsert_tenant_channel(
         raise HTTPException(422, "A new application requires its own app_secret")
     secrets = {}
     for name in ("app_secret", "encrypt_key", "verification_token"):
-        old = getattr(config, name, None) if not replacing_app else None
+        old = getattr(config, name, None) if not replacing_app and not (replacing_transport and name != 'app_secret') else None
         value = getattr(body, name)
         if is_masked_secret(value) and not old:
             raise HTTPException(422, "A saved-secret placeholder cannot configure a new secret")
@@ -306,7 +310,14 @@ async def upsert_tenant_channel(
                 except ValueError:
                     valid_key = False
                 agent_id = str(extra.get("wecom_agent_id") or "")
-                if not (secrets["verification_token"] and valid_key and agent_id.isascii() and agent_id.isdecimal() and int(agent_id) > 0):
+                transport = extra.get('wecom_transport', 'app')
+                if transport not in {'app', 'smart_bot'}:
+                    raise HTTPException(422, 'Choose App or Smart Bot transport')
+                if transport == 'smart_bot' and (not isinstance(extra.get('wecom_bot_id'), str)
+                    or not extra['wecom_bot_id'].strip() or extra.get('wecom_bot_userid_mode') not in {'plaintext', 'encrypted'}):
+                    raise HTTPException(422, 'Smart Bot requires a Bot ID and its creator-dependent user ID mode')
+                valid_recipient = transport == 'smart_bot' or agent_id.isascii() and agent_id.isdecimal() and int(agent_id) > 0
+                if not (secrets["verification_token"] and valid_key and valid_recipient):
                     raise HTTPException(422, "The company bot requires a callback token, encoding key and AgentID")
     if body.extra_config and any(key in body.extra_config for key in ("_settings_revision", "shared_group_entry")):
         raise HTTPException(422, "Managed channel settings use their dedicated endpoint")
@@ -567,7 +578,8 @@ async def verify_company_wecom_webhook(tenant_id: uuid.UUID, msg_signature: str 
     config = await current_company_config(db, tenant_id, 'wecom', lock=True)
     if not company_channel_ready(config):
         raise HTTPException(404, 'Company WeCom callback is not configured')
-    content = authenticate_wecom_callback(config, signature=msg_signature, timestamp=timestamp, nonce=nonce, encrypted=echostr)
+    content = authenticate_wecom_callback(config, signature=msg_signature, timestamp=timestamp, nonce=nonce, encrypted=echostr,
+        expected_recipient='' if (config.extra_config or {}).get('wecom_transport') == 'smart_bot' else None)
     return Response(content=content, media_type='text/plain')
 
 
@@ -583,6 +595,13 @@ async def receive_company_wecom_webhook(tenant_id: uuid.UUID, request: Request, 
     config = await current_company_config(db, tenant_id, 'wecom', lock=True)
     if not company_channel_ready(config):
         raise HTTPException(404, 'Company WeCom callback is not configured')
+    if (config.extra_config or {}).get('wecom_transport') == 'smart_bot':
+        from app.services.company_wecom_smartbot import accept_smartbot_callback
+
+        await accept_smartbot_callback(db, config=config, raw=await request.body(), signature=msg_signature,
+            timestamp=timestamp, nonce=nonce)
+        await db.commit()
+        return Response(content='', media_type='text/plain')
     try:
         root = ET.fromstring(await request.body())
     except ET.ParseError:

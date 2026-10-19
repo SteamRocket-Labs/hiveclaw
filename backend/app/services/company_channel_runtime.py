@@ -101,6 +101,11 @@ async def process_company_message(db, item, body):
         'installation_ref': item.installation_ref, 'external_principal_id': str(principal.id)}
     if item.provider == 'wecom':
         delivery_target['user_id'] = principal.subject_id
+        if (config.extra_config or {}).get('wecom_transport') == 'smart_bot':
+            if raw_target.get('wecom_transport') != 'smart_bot' or raw_target.get('bot_id') != config.extra_config['wecom_bot_id']:
+                raise PermissionError('company_channel_transport_changed')
+            delivery_target.update(wecom_transport='smart_bot', bot_id=raw_target['bot_id'],
+                response_url=raw_target.get('response_url'), source_event_id=str(item.id))
     else:
         delivery_target.update(sender_staff_id=principal.subject_id,
             conversation_id=str(raw_target.get('conversation_id') or ''), conversation_type='1',

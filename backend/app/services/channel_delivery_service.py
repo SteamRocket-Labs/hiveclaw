@@ -111,6 +111,9 @@ class ChannelDeliveryService:
                 }
             )
             base["limitations"].append("WeCom file replies support nonempty files up to 20 MiB. App callbacks do not accept file input; attach files in the original Web work.")
+            if (getattr(connected_config, 'extra_config', None) or {}).get('wecom_transport') == 'smart_bot':
+                base['capabilities'].update(inbound_file=True, outbound_file=False, deferred_file=False)
+                base['limitations'] = ['Smart Bot accepts encrypted private files up to 20 MiB. Each HTTP reply capability is usable once within one hour; results return through an authenticated original-work link.']
         elif channel == "slack":
             base["official_api"] = True
             base["capabilities"].update(
@@ -648,6 +651,15 @@ class ChannelDeliveryService:
                     channel, "WeChat personal message delivered.", to_user_id=to_user_id
                 )
             elif channel == "wecom":
+                if target.get('wecom_transport') == 'smart_bot':
+                    from app.services.company_wecom_smartbot import send_smartbot_text
+
+                    receipt = await send_smartbot_text(db, config=config, target=target, text=text,
+                        outbox_id=(extra_detail or {}).get('channel_delivery_outbox_id'))
+                    result = ChannelDeliveryService._success(channel, 'Smart Bot work reply delivered.', **receipt)
+                    await ChannelDeliveryService._log_result(agent_id, result, delivery_mode=delivery_mode,
+                        reply_target=target, extra_detail=extra_detail, secret_boundary=exact_secret_boundary)
+                    return result
                 from app.api.wecom import _send_wecom_text_message
 
                 to_user = str(target.get("user_id") or "").strip()
@@ -1003,6 +1015,8 @@ class ChannelDeliveryService:
                 )
                 result = ChannelDeliveryService._success(channel, "Feishu file delivered.", file_name=path.name)
             elif channel == "wecom":
+                if target.get('wecom_transport') == 'smart_bot':
+                    raise ProviderReceiptError('Smart Bot HTTP delivers artifacts through the original authenticated Web work', status='unavailable')
                 from app.services.channel_provider_receipts import send_wecom_file
 
                 await send_wecom_file(corp_id=config.app_id, corp_secret=config.app_secret,

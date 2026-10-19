@@ -590,6 +590,16 @@ class ChannelDeliveryOutboxService:
         if self._has_ambiguous_part(item):
             raise ChannelDeliveryAmbiguousError("a provider call has no committed receipt; automatic replay is unsafe")
         artifact_paths = await self._load_delivery_authority_and_artifacts(item)
+        text = item.text
+        smartbot = item.channel == 'wecom' and item.delivery_target.get('wecom_transport') == 'smart_bot'
+        if smartbot:
+            from urllib.parse import urlsplit
+
+            base = (get_settings().PUBLIC_BASE_URL or get_settings().BASE_URL).rstrip('/')
+            parsed = urlsplit(base)
+            if parsed.scheme != 'https' or not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment:
+                raise ChannelDeliveryPermanentError('Smart Bot requires a configured HTTPS Web work URL')
+            text += f'\n\n[在原工作中查看、答复或编辑成果]({base}/agents/{item.agent_id}/sessions/{item.session_id})'
         common = {
             "agent_id": item.agent_id,
             "reply_target": item.delivery_target,
@@ -614,11 +624,14 @@ class ChannelDeliveryOutboxService:
                 sender_kwargs={
                     "db": db,
                     "tenant_id": item.tenant_id,
-                    "text": item.text,
+                    "text": text,
                     "content_sensitivity": knowledge_content_sensitivity(item.metadata),
                     **common,
                 },
             )
+            if smartbot:
+                return {'status': 'delivered', 'channel': item.channel, 'artifact_delivery': 'authenticated_work_link',
+                    'artifact_ids': [str(value) for value in item.artifact_ids]}
             for artifact_id, file_path, file_name in artifact_paths:
                 await self._send_part(
                     item=item,

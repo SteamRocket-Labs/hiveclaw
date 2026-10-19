@@ -74,18 +74,18 @@ def _decrypt_msg(encrypt_key: str, encrypted_text: str) -> tuple[str, str]:
     iv = aes_key[:16]
     cipher = AES.new(aes_key, AES.MODE_CBC, iv)
     decrypted = _unpad(cipher.decrypt(base64.b64decode(encrypted_text, validate=True)))
-    if len(decrypted) < 21:
+    if len(decrypted) < 20:
         raise ValueError("Invalid WeCom message frame")
     # Skip 16 random bytes, then 4 bytes msg_length (network order)
     msg_len = struct.unpack("!I", decrypted[16:20])[0]
-    if msg_len > len(decrypted) - 21:
+    if msg_len > len(decrypted) - 20:
         raise ValueError("Invalid WeCom message frame")
     msg_content = decrypted[20 : 20 + msg_len].decode("utf-8")
     corp_id = decrypted[20 + msg_len :].decode("utf-8")
     return msg_content, corp_id
 
 
-def authenticate_wecom_callback(config, *, signature, timestamp, nonce, encrypted):
+def authenticate_wecom_callback(config, *, signature, timestamp, nonce, encrypted, expected_recipient=None):
     """Authenticate both the encrypted transport and its configured recipient."""
     import hmac
     if not config.verification_token or not config.encrypt_key or not timestamp or not nonce or not encrypted:
@@ -97,7 +97,7 @@ def authenticate_wecom_callback(config, *, signature, timestamp, nonce, encrypte
         message, recipient = _decrypt_msg(config.encrypt_key, encrypted)
     except (ValueError, UnicodeError, struct.error):
         raise HTTPException(403, "WeCom callback frame rejected") from None
-    if not hmac.compare_digest(recipient, str(config.app_id or "")):
+    if not hmac.compare_digest(recipient, str(config.app_id or "") if expected_recipient is None else expected_recipient):
         raise HTTPException(403, "WeCom callback recipient rejected")
     return message
 

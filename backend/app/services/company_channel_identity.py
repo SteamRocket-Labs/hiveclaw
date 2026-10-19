@@ -30,7 +30,11 @@ def company_channel_ready(config):
             valid_key = len(key) == 43 and len(base64.b64decode(key + '=', validate=True)) == 32
         except ValueError:
             valid_key = False
-        return bool(config.verification_token and valid_key and agent_id.isascii() and agent_id.isdecimal() and int(agent_id) > 0)
+        if extra.get('wecom_transport', 'app') == 'smart_bot':
+            return bool(config.verification_token and valid_key and str(extra.get('wecom_bot_id') or '').strip()
+                and extra.get('wecom_bot_userid_mode') in {'plaintext', 'encrypted'})
+        return bool(extra.get('wecom_transport', 'app') == 'app' and config.verification_token and valid_key
+            and agent_id.isascii() and agent_id.isdecimal() and int(agent_id) > 0)
     return config.channel_type == 'dingtalk' and bool(str(extra.get('corp_id') or '').strip())
 
 

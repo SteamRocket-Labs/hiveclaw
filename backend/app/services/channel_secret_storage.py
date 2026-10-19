@@ -37,6 +37,7 @@ DELIVERY_TARGET_SECRET_FIELDS = {
     "dingtalk": frozenset({"session_webhook"}),
     "discord": frozenset({"interaction_token"}),
     "wechat_personal": frozenset({"context_token"}),
+    "wecom": frozenset({"response_url"}),
 }
 CHANNEL_INGRESS_PROVIDER_FIELD = "_channel_ingress_provider"
 CHANNEL_INGRESS_SECRET_PATHS = {
@@ -46,7 +47,7 @@ CHANNEL_INGRESS_SECRET_PATHS = {
     "feishu": (("body", "token"),),
     "slack": (("body", "token"),),
     "wechat_personal": (("body", "delivery_target", "context_token"),),
-    "wecom": (("body", "attachment", "resource_key"),),
+    "wecom": (("body", "attachment", "resource_key"), ("body", "delivery_target", "response_url")),
 }
 DELIVERY_TARGET_SECRET_TABLES = (
     ("chat_sessions.delivery_target_json", "chat_sessions", "delivery_target_json", "JSONB"),

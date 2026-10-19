@@ -81,6 +81,9 @@ def channel_installation_ref(config: Any, *, fallback: str) -> str:
         identity = str(config.app_id or "")
         if config.channel_type == "wecom":
             identity += "\n" + str((config.extra_config or {}).get("wecom_agent_id") or "")
+            if (config.extra_config or {}).get("wecom_transport") == "smart_bot":
+                identity += "\nsmart_bot\n" + str(config.extra_config.get("wecom_bot_id") or "")
+                identity += "\n" + str(config.extra_config.get("wecom_bot_userid_mode") or "")
         elif config.channel_type == "dingtalk":
             identity += "\n" + str((config.extra_config or {}).get("corp_id") or "")
         elif platform.region != "feishu_cn":

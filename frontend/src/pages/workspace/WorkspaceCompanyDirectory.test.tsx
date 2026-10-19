@@ -6,9 +6,9 @@ import { I18nextProvider } from 'react-i18next';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import en from '../../i18n/en.json';
 
-const mocks = vi.hoisted(() => ({ user: { id: 'admin', tenant_id: 'company-a', role: 'org_admin' }, read: vi.fn(), save: vi.fn(), sync: vi.fn() }));
+const mocks = vi.hoisted(() => ({ user: { id: 'admin', tenant_id: 'company-a', role: 'org_admin' }, read: vi.fn(), save: vi.fn(), sync: vi.fn(), webhook: vi.fn() }));
 vi.mock('../../stores', () => ({ useAuthStore: (select: (state: { user: typeof mocks.user }) => unknown) => select({ user: mocks.user }) }));
-vi.mock('../../api/domains/channels', () => ({ channelApi: { tenantChannels: mocks.read, saveTenantDirectory: mocks.save } }));
+vi.mock('../../api/domains/channels', () => ({ channelApi: { tenantChannels: mocks.read, saveTenantDirectory: mocks.save, tenantCompanyWebhook: mocks.webhook } }));
 vi.mock('../../api/domains/enterprise', () => ({ enterpriseApi: { syncOrg: mocks.sync } }));
 import WorkspaceCompanyDirectory from './WorkspaceCompanyDirectory';
 
@@ -20,6 +20,7 @@ beforeEach(async () => {
   vi.clearAllMocks(); mocks.user = { id: 'admin', tenant_id: 'company-a', role: 'org_admin' };
   mocks.read.mockImplementation(async (value) => [config('dingtalk', value.expected_tenant_id), config('wecom', value.expected_tenant_id)]);
   mocks.sync.mockImplementation(async (tenant, provider) => ({ tenant_id: tenant, provider, status: 'complete', departments: 2, members: 3 }));
+  mocks.webhook.mockImplementation(async (_provider, value) => ({ tenant_id: value.expected_tenant_id, webhook_url: 'https://company.fixture.test/api/channel/wecom/tenant/company-a/webhook' }));
   instance = createInstance(); await instance.init({ lng: 'en', resources: { en: { translation: en } }, interpolation: { escapeValue: false } });
 });
 afterEach(cleanup);
@@ -104,5 +105,33 @@ it('enables company messaging with exact company credentials and no directory or
   await screen.findByText(en.companyDirectory.saved);
   expect(mocks.save).toHaveBeenLastCalledWith('dingtalk', { ...scope, app_id: 'dingtalk-app', is_active: true,
     expected_revision: 'one', extra_config: { messaging_enabled: true, corp_id: 'synthetic-company-corp' } });
+  expect(mocks.sync).not.toHaveBeenCalled();
+});
+
+it('configures the actual Smart Bot transport and creator-dependent identity mode without inferring a member binding', async () => {
+  mocks.save.mockImplementationOnce(async (_provider, value) => {
+    const saved = { ...config('wecom'), revision: 'two', has_verification_token: true, has_encrypt_key: true, extra_config: value.extra_config };
+    mocks.read.mockResolvedValue([saved]);
+    return saved;
+  });
+  mount();
+  await screen.findByDisplayValue('dingtalk-app');
+  fireEvent.change(screen.getByLabelText(en.companyDirectory.provider), { target: { value: 'wecom' } });
+  await screen.findByDisplayValue('wecom-app');
+  fireEvent.click(screen.getByLabelText(en.companyMessaging.enable));
+  fireEvent.change(screen.getByLabelText(en.companyMessaging.wecomTransport), { target: { value: 'smart_bot' } });
+  fireEvent.change(screen.getByLabelText('Bot ID'), { target: { value: 'company-bot' } });
+  expect((screen.getByLabelText(en.companyMessaging.botSubjectMode) as HTMLSelectElement).value).toBe('encrypted');
+  expect(screen.getByText(en.companyMessaging.smartBotSetup)).toBeTruthy();
+  fireEvent.change(screen.getByLabelText(en.tenantFeishu.verificationToken), { target: { value: 'synthetic-bot-token' } });
+  fireEvent.change(screen.getByLabelText(en.companyMessaging.encodingKey), { target: { value: 'synthetic-bot-key' } });
+  fireEvent.click(screen.getByRole('button', { name: en.companyDirectory.save }));
+  await screen.findByText(en.companyDirectory.saved);
+  expect(mocks.save).toHaveBeenLastCalledWith('wecom', { ...scope, app_id: 'wecom-app', is_active: true, expected_revision: 'one',
+    verification_token: 'synthetic-bot-token', encrypt_key: 'synthetic-bot-key', extra_config: { messaging_enabled: true,
+      wecom_agent_id: '', wecom_transport: 'smart_bot', wecom_bot_id: 'company-bot', wecom_bot_userid_mode: 'encrypted' } });
+  expect((screen.getByLabelText(en.tenantFeishu.verificationToken) as HTMLInputElement).value).toBe('');
+  expect((screen.getByLabelText(en.companyMessaging.encodingKey) as HTMLInputElement).value).toBe('');
+  expect((await screen.findByDisplayValue('https://company.fixture.test/api/channel/wecom/tenant/company-a/webhook'))).toBeTruthy();
   expect(mocks.sync).not.toHaveBeenCalled();
 });

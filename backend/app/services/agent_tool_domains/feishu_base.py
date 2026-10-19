@@ -14,12 +14,11 @@ import httpx
 from app.config import get_settings
 from app.services.agent_tool_domains.feishu_cli import FeishuCliError, _feishu_cli_available, _run_feishu_cli_command
 from app.services.agent_tool_domains.feishu_acl import with_feishu_read_authority
-from app.services.agent_tool_domains.feishu_helpers import _get_feishu_token
+from app.services.agent_tool_domains.feishu_helpers import _get_feishu_token, _feishu_api_url
 from app.tools.result_envelope import render_tool_error
 
 logger = logging.getLogger(__name__)
 
-FEISHU_API = "https://open.feishu.cn/open-apis"
 
 
 def _with_base_read_authority(
@@ -526,7 +525,7 @@ async def _base_api_get(token: str, path: str, params: dict | None = None) -> di
     """GET request to Feishu Bitable API with standard error handling."""
     async with httpx.AsyncClient(timeout=20) as client:
         resp = await client.get(
-            f"{FEISHU_API}{path}",
+            _feishu_api_url(token, path),
             headers={"Authorization": f"Bearer {token}"},
             params=params,
         )
@@ -540,7 +539,7 @@ async def _base_api_post(token: str, path: str, body: dict) -> dict:
     """POST request to Feishu Bitable API."""
     async with httpx.AsyncClient(timeout=20) as client:
         resp = await client.post(
-            f"{FEISHU_API}{path}",
+            _feishu_api_url(token, path),
             headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json; charset=utf-8"},
             json=body,
         )
@@ -554,7 +553,7 @@ async def _base_api_put(token: str, path: str, body: dict) -> dict:
     """PUT request to Feishu Bitable API."""
     async with httpx.AsyncClient(timeout=20) as client:
         resp = await client.put(
-            f"{FEISHU_API}{path}",
+            _feishu_api_url(token, path),
             headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json; charset=utf-8"},
             json=body,
         )
@@ -568,7 +567,7 @@ async def _base_api_delete(token: str, path: str) -> dict:
     """DELETE request to Feishu Bitable API."""
     async with httpx.AsyncClient(timeout=20) as client:
         resp = await client.delete(
-            f"{FEISHU_API}{path}",
+            _feishu_api_url(token, path),
             headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json; charset=utf-8"},
         )
     data = resp.json()
@@ -1167,7 +1166,7 @@ async def _feishu_base_record_upload_attachment(agent_id, arguments: dict) -> st
             mime_type = mimetypes.guess_type(str(absolute_file))[0] or "application/octet-stream"
             async with httpx.AsyncClient(timeout=60) as client:
                 resp = await client.post(
-                    f"{FEISHU_API}/drive/v1/medias/upload_all",
+                    _feishu_api_url(token, "/drive/v1/medias/upload_all"),
                     headers={"Authorization": f"Bearer {token}"},
                     data={
                         "file_name": display_name,

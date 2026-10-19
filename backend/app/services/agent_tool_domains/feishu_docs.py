@@ -11,7 +11,7 @@ from app.services.agent_tool_domains.feishu_cli import (
     _feishu_cli_available,
 )
 from app.services.agent_tool_domains.feishu_acl import with_feishu_alias_for_verified_result
-from app.services.agent_tool_domains.feishu_helpers import _get_feishu_token
+from app.services.agent_tool_domains.feishu_helpers import _get_feishu_token, _feishu_api_url, _feishu_token_platform
 from app.services.agent_tool_domains.feishu_wiki import _feishu_wiki_get_node, _feishu_wiki_get_node_via_cli
 from app.services.connector_acl import (
     CONNECTOR_SOURCE_ITEMS_METADATA_KEY,
@@ -216,7 +216,7 @@ async def _feishu_doc_read_via_openapi(
 
     async with httpx.AsyncClient(timeout=20) as client:
         resp = await client.get(
-            f"https://open.feishu.cn/open-apis/docx/v1/documents/{read_token}/raw_content",
+            _feishu_api_url(token, f"/docx/v1/documents/{read_token}/raw_content"),
             headers={"Authorization": f"Bearer {token}"},
             params={"lang": 0},
         )
@@ -236,7 +236,7 @@ async def _feishu_doc_read_via_openapi(
                 tenant_id=tenant_id,
                 current_user_id=current_user_id,
             ),
-        ))
+        ), platform=_feishu_token_platform(token))
 
     truncated = ""
     if max_chars is not None and len(content) > max_chars:
@@ -253,7 +253,7 @@ async def _feishu_doc_read_via_openapi(
             current_user_id=current_user_id,
             protected_text=content,
         ),
-    ))
+    ), platform=_feishu_token_platform(token))
 
 
 async def _feishu_doc_read(
@@ -394,7 +394,7 @@ async def _feishu_doc_create(agent_id: uuid.UUID, arguments: dict) -> str:
 
     async with httpx.AsyncClient(timeout=20) as client:
         resp = await client.post(
-            "https://open.feishu.cn/open-apis/docx/v1/documents",
+            _feishu_api_url(token, "/docx/v1/documents"),
             json=body,
             headers=headers,
         )
@@ -413,7 +413,7 @@ async def _feishu_doc_create(agent_id: uuid.UUID, arguments: dict) -> str:
         if sender_open_id and doc_token:
             async with httpx.AsyncClient(timeout=10) as client:
                 share_resp = await client.post(
-                    f"https://open.feishu.cn/open-apis/drive/v1/permissions/{doc_token}/members",
+                    _feishu_api_url(token, f"/drive/v1/permissions/{doc_token}/members"),
                     params={"type": "docx", "need_notification": "false"},
                     json={
                         "member_type": "openid",
@@ -637,7 +637,7 @@ async def _feishu_doc_append(agent_id: uuid.UUID, arguments: dict) -> str:
 
     async with httpx.AsyncClient(timeout=20) as client:
         meta_resp = await client.get(
-            f"https://open.feishu.cn/open-apis/docx/v1/documents/{docx_token}",
+            _feishu_api_url(token, f"/docx/v1/documents/{docx_token}"),
             headers=headers,
         )
         meta = _safe_feishu_json(meta_resp, "doc_append_meta")
@@ -649,7 +649,7 @@ async def _feishu_doc_append(agent_id: uuid.UUID, arguments: dict) -> str:
         children = _markdown_to_feishu_blocks(content)
 
         append_resp = await client.post(
-            f"https://open.feishu.cn/open-apis/docx/v1/documents/{docx_token}/blocks/{body_block_id}/children",
+            _feishu_api_url(token, f"/docx/v1/documents/{docx_token}/blocks/{body_block_id}/children"),
             json={"children": children, "index": -1},
             headers=headers,
         )
@@ -680,7 +680,7 @@ async def _feishu_doc_delete(agent_id: uuid.UUID, arguments: dict) -> str:
     _, token = creds
     async with httpx.AsyncClient(timeout=20) as client:
         resp = await client.delete(
-            f"https://open.feishu.cn/open-apis/drive/v1/files/{document_token}",
+            _feishu_api_url(token, f"/drive/v1/files/{document_token}"),
             params={"type": "docx"},
             headers={"Authorization": f"Bearer {token}"},
         )

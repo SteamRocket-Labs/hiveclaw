@@ -5,6 +5,8 @@ from uuid import uuid4
 
 import pytest
 
+from app.services.feishu_platform import resolve_feishu_platform
+
 
 @pytest.mark.asyncio
 async def test_approval_create_maps_label_form_to_definition_widgets(monkeypatch):
@@ -14,9 +16,9 @@ async def test_approval_create_maps_label_form_to_definition_widgets(monkeypatch
 
     async def fake_get_credentials(agent_id, tool_name):
         assert tool_name == "feishu_approval_create"
-        return ("app-id", "app-secret")
+        return feishu_approval.FeishuToolAuth("app-id", "app-secret", resolve_feishu_platform())
 
-    async def fake_get_definition(app_id, app_secret, approval_code):
+    async def fake_get_definition(app_id, app_secret, approval_code, *, extra_config):
         assert (app_id, app_secret, approval_code) == ("app-id", "app-secret", "approval-code")
         return {
             "approval_code": "approval-code",
@@ -32,7 +34,7 @@ async def test_approval_create_maps_label_form_to_definition_widgets(monkeypatch
             },
         }
 
-    async def fake_create(app_id, app_secret, approval_code, user_id, form_data):
+    async def fake_create(app_id, app_secret, approval_code, user_id, form_data, *, extra_config):
         calls["payload"] = {
             "app_id": app_id,
             "app_secret": app_secret,
@@ -80,9 +82,9 @@ async def test_approval_create_repairs_label_ids_and_trailing_punctuation(monkey
     captured: dict[str, object] = {}
 
     async def fake_get_credentials(agent_id, tool_name):
-        return ("app-id", "app-secret")
+        return feishu_approval.FeishuToolAuth("app-id", "app-secret", resolve_feishu_platform())
 
-    async def fake_get_definition(app_id, app_secret, approval_code):
+    async def fake_get_definition(app_id, app_secret, approval_code, *, extra_config):
         return {
             "form": {
                 "form_content": json.dumps(
@@ -95,7 +97,7 @@ async def test_approval_create_repairs_label_ids_and_trailing_punctuation(monkey
             }
         }
 
-    async def fake_create(app_id, app_secret, approval_code, user_id, form_data):
+    async def fake_create(app_id, app_secret, approval_code, user_id, form_data, *, extra_config):
         captured["form"] = json.loads(form_data)
         return {"instance_code": "instance-2"}
 

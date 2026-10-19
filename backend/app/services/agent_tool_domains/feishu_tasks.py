@@ -10,12 +10,11 @@ import httpx
 
 from app.config import get_settings
 from app.services.agent_tool_domains.feishu_cli import FeishuCliError, _feishu_cli_available, _run_feishu_cli_command
-from app.services.agent_tool_domains.feishu_helpers import _get_feishu_token
+from app.services.agent_tool_domains.feishu_helpers import _get_feishu_token, _feishu_api_url
 from app.tools.result_envelope import render_tool_error
 
 logger = logging.getLogger(__name__)
 
-FEISHU_API = "https://open.feishu.cn/open-apis"
 
 
 # ── Render helpers (unchanged) ───────────────────────────────────────
@@ -128,7 +127,7 @@ async def _task_api_request(
     async with httpx.AsyncClient(timeout=20) as client:
         resp = await client.request(
             method,
-            f"{FEISHU_API}{path}",
+            _feishu_api_url(token, path),
             headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json; charset=utf-8"},
             json=body,
             params=params,

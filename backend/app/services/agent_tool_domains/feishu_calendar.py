@@ -5,6 +5,7 @@ import uuid
 from datetime import datetime, timezone
 
 from app.services.agent_tool_domains.feishu_helpers import (
+    _feishu_api_url,
     _format_feishu_token_error,
     _get_feishu_token,
     _get_feishu_token_status,
@@ -92,7 +93,7 @@ async def _feishu_calendar_list(agent_id: uuid.UUID, arguments: dict) -> str:
         try:
             async with httpx.AsyncClient(timeout=10) as fb_client:
                 fb_resp = await fb_client.post(
-                    "https://open.feishu.cn/open-apis/calendar/v4/freebusy/list",
+                    _feishu_api_url(token, "/calendar/v4/freebusy/list"),
                     headers={"Authorization": f"Bearer {token}"},
                     params={"user_id_type": "open_id"},
                     json={
@@ -140,7 +141,7 @@ async def _feishu_calendar_list(agent_id: uuid.UUID, arguments: dict) -> str:
 
     async with httpx.AsyncClient(timeout=20) as client:
         resp = await client.get(
-            f"https://open.feishu.cn/open-apis/calendar/v4/calendars/{agent_cal_id}/events",
+            _feishu_api_url(token, f"/calendar/v4/calendars/{agent_cal_id}/events"),
             headers={"Authorization": f"Bearer {token}"},
             params=params,
         )
@@ -230,7 +231,7 @@ async def _feishu_calendar_create(agent_id: uuid.UUID, arguments: dict) -> str:
 
     async with httpx.AsyncClient(timeout=20) as client:
         resp = await client.post(
-            f"https://open.feishu.cn/open-apis/calendar/v4/calendars/{agent_cal_id}/events",
+            _feishu_api_url(token, f"/calendar/v4/calendars/{agent_cal_id}/events"),
             json=body,
             headers={"Authorization": f"Bearer {token}"},
         )
@@ -288,7 +289,7 @@ async def _feishu_calendar_create(agent_id: uuid.UUID, arguments: dict) -> str:
         async with httpx.AsyncClient(timeout=20) as client:
             for oid in attendee_open_ids:
                 await client.post(
-                    f"https://open.feishu.cn/open-apis/calendar/v4/calendars/{agent_cal_id}/events/{event_id}/attendees",
+                    _feishu_api_url(token, f"/calendar/v4/calendars/{agent_cal_id}/events/{event_id}/attendees"),
                     json={"attendees": [{"type": "user", "is_optional": False, "user_id": oid}]},
                     headers={"Authorization": f"Bearer {token}"},
                     params={"user_id_type": "open_id"},
@@ -339,7 +340,7 @@ async def _feishu_calendar_update(agent_id: uuid.UUID, arguments: dict) -> str:
 
     async with httpx.AsyncClient(timeout=20) as client:
         resp = await client.patch(
-            f"https://open.feishu.cn/open-apis/calendar/v4/calendars/{agent_cal_id}/events/{event_id}",
+            _feishu_api_url(token, f"/calendar/v4/calendars/{agent_cal_id}/events/{event_id}"),
             json=patch,
             headers={"Authorization": f"Bearer {token}"},
         )
@@ -369,7 +370,7 @@ async def _feishu_calendar_delete(agent_id: uuid.UUID, arguments: dict) -> str:
 
     async with httpx.AsyncClient(timeout=20) as client:
         resp = await client.delete(
-            f"https://open.feishu.cn/open-apis/calendar/v4/calendars/{agent_cal_id}/events/{event_id}",
+            _feishu_api_url(token, f"/calendar/v4/calendars/{agent_cal_id}/events/{event_id}"),
             headers={"Authorization": f"Bearer {token}"},
         )
 

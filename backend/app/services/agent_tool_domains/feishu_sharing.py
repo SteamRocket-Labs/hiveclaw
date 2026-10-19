@@ -3,7 +3,7 @@
 import logging
 import uuid
 
-from app.services.agent_tool_domains.feishu_helpers import _get_feishu_token
+from app.services.agent_tool_domains.feishu_helpers import _get_feishu_token, _feishu_api_url
 from app.services.agent_tool_domains.feishu_wiki import _feishu_wiki_get_node
 
 logger = logging.getLogger(__name__)
@@ -46,7 +46,7 @@ async def _feishu_doc_share(agent_id: uuid.UUID, arguments: dict) -> str:
         use_token = obj_token if (is_wiki and obj_token) else document_token
         async with httpx.AsyncClient(timeout=15) as client:
             resp = await client.get(
-                f"https://open.feishu.cn/open-apis/drive/v1/permissions/{use_token}/members",
+                _feishu_api_url(token, f"/drive/v1/permissions/{use_token}/members"),
                 params={"type": "docx"},
                 headers=headers,
             )
@@ -112,7 +112,7 @@ async def _feishu_doc_share(agent_id: uuid.UUID, arguments: dict) -> str:
                 # ── Wiki node: use wiki space members API ──────────────────
                 if is_wiki and space_id:
                     resp = await client.post(
-                        f"https://open.feishu.cn/open-apis/wiki/v2/spaces/{space_id}/members",
+                        _feishu_api_url(token, f"/wiki/v2/spaces/{space_id}/members"),
                         json={"member_type": "openid", "member_id": oid, "member_role": wiki_role},
                         headers=headers,
                     )
@@ -136,7 +136,7 @@ async def _feishu_doc_share(agent_id: uuid.UUID, arguments: dict) -> str:
                     "perm": api_perm,
                 }
                 resp = await client.post(
-                    f"https://open.feishu.cn/open-apis/drive/v1/permissions/{document_token}/members",
+                    _feishu_api_url(token, f"/drive/v1/permissions/{document_token}/members"),
                     json=body,
                     headers=headers,
                     params={"type": "docx"},
@@ -161,7 +161,7 @@ async def _feishu_doc_share(agent_id: uuid.UUID, arguments: dict) -> str:
             elif action == "remove":
                 if is_wiki and space_id:
                     resp = await client.delete(
-                        f"https://open.feishu.cn/open-apis/wiki/v2/spaces/{space_id}/members/{oid}",
+                        _feishu_api_url(token, f"/wiki/v2/spaces/{space_id}/members/{oid}"),
                         headers=headers,
                         params={"member_type": "openid"},
                     )
@@ -173,7 +173,7 @@ async def _feishu_doc_share(agent_id: uuid.UUID, arguments: dict) -> str:
                     continue
 
                 resp = await client.delete(
-                    f"https://open.feishu.cn/open-apis/drive/v1/permissions/{document_token}/members/{oid}",
+                    _feishu_api_url(token, f"/drive/v1/permissions/{document_token}/members/{oid}"),
                     headers=headers,
                     params={"type": "docx", "member_type": "openid"},
                 )

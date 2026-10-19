@@ -6,7 +6,7 @@ import json
 from collections.abc import Iterable
 import uuid
 
-from app.services.agent_tool_domains.feishu_helpers import _get_feishu_app_credentials
+from app.services.agent_tool_domains.feishu_helpers import FeishuToolAuth, _get_feishu_tool_auth
 from app.services.feishu_service import feishu_service
 from app.tools.result_envelope import render_tool_error
 
@@ -23,8 +23,8 @@ def _approval_not_configured(tool_name: str) -> str:
     )
 
 
-async def _get_approval_credentials(agent_id: uuid.UUID, tool_name: str) -> tuple[str, str] | str:
-    creds = await _get_feishu_app_credentials(agent_id)
+async def _get_approval_credentials(agent_id: uuid.UUID, tool_name: str) -> FeishuToolAuth | str:
+    creds = await _get_feishu_tool_auth(agent_id)
     if not creds:
         return _approval_not_configured(tool_name)
     return creds
@@ -168,7 +168,7 @@ def _normalize_approval_form_with_definition(form, definition: dict) -> tuple[st
     return json.dumps(normalized, ensure_ascii=False), None
 
 
-async def _prepare_approval_form(app_id: str, app_secret: str, approval_code: str, form) -> str | tuple[None, str]:
+async def _prepare_approval_form(app_id: str, app_secret: str, approval_code: str, form, *, extra_config=None) -> str | tuple[None, str]:
     form_value = _load_json_maybe(form)
     needs_definition = isinstance(form_value, dict)
     if isinstance(form_value, list):
@@ -181,7 +181,7 @@ async def _prepare_approval_form(app_id: str, app_secret: str, approval_code: st
         return json.dumps(form_value, ensure_ascii=False) if not isinstance(form, str) else form
 
     try:
-        definition = await feishu_service.get_approval_definition(app_id, app_secret, approval_code)
+        definition = await feishu_service.get_approval_definition(app_id, app_secret, approval_code, extra_config=extra_config)
     except Exception as exc:
         if isinstance(form_value, list):
             return json.dumps(form_value, ensure_ascii=False) if not isinstance(form, str) else form
@@ -223,8 +223,8 @@ async def _feishu_approval_create(agent_id: uuid.UUID, arguments: dict) -> str:
     creds = await _get_approval_credentials(agent_id, "feishu_approval_create")
     if isinstance(creds, str):
         return creds
-    app_id, app_secret = creds
-    prepared_form = await _prepare_approval_form(app_id, app_secret, approval_code, form)
+    app_id, app_secret = creds.app_id, creds.app_secret
+    prepared_form = await _prepare_approval_form(app_id, app_secret, approval_code, form, extra_config=creds.extra_config)
     if isinstance(prepared_form, tuple):
         return render_tool_error(
             tool_name="feishu_approval_create",
@@ -239,6 +239,7 @@ async def _feishu_approval_create(agent_id: uuid.UUID, arguments: dict) -> str:
         approval_code,
         user_id,
         prepared_form,
+        extra_config=creds.extra_config,
     )
     instance = (
         payload.get("instance_code")
@@ -262,8 +263,9 @@ async def _feishu_approval_query(agent_id: uuid.UUID, arguments: dict, *, tenant
     creds = await _get_approval_credentials(agent_id, "feishu_approval_query")
     if isinstance(creds, str):
         return creds
-    app_id, app_secret = creds
-    payload = await feishu_service.query_approval_instances(app_id, app_secret, approval_code, status=status)
+    app_id, app_secret = creds.app_id, creds.app_secret
+    payload = await feishu_service.query_approval_instances(app_id, app_secret, approval_code, status=status,
+        extra_config=creds.extra_config)
     instances = (
         payload.get("instance_code_list") or payload.get("instance_id_list") or payload.get("instance_list") or []
     )
@@ -281,7 +283,7 @@ async def _feishu_approval_query(agent_id: uuid.UUID, arguments: dict, *, tenant
 
     return attest_feishu_api_read(with_feishu_read_authority("\n".join(lines),
         sources=[(f"feishu://approval/{approval_code}", "approval_query")],
-        agent_id=agent_id, tenant_id=tenant_id, current_user_id=current_user_id))
+        agent_id=agent_id, tenant_id=tenant_id, current_user_id=current_user_id), platform=creds.platform)
 
 
 async def _feishu_approval_definition(agent_id: uuid.UUID, arguments: dict) -> str:
@@ -292,8 +294,8 @@ async def _feishu_approval_definition(agent_id: uuid.UUID, arguments: dict) -> s
     creds = await _get_approval_credentials(agent_id, "feishu_approval_definition")
     if isinstance(creds, str):
         return creds
-    app_id, app_secret = creds
-    payload = await feishu_service.get_approval_definition(app_id, app_secret, approval_code)
+    app_id, app_secret = creds.app_id, creds.app_secret
+    payload = await feishu_service.get_approval_definition(app_id, app_secret, approval_code, extra_config=creds.extra_config)
     return _render_approval_definition(approval_code, payload)
 
 
@@ -305,8 +307,8 @@ async def _feishu_approval_get(agent_id: uuid.UUID, arguments: dict) -> str:
     creds = await _get_approval_credentials(agent_id, "feishu_approval_get")
     if isinstance(creds, str):
         return creds
-    app_id, app_secret = creds
-    payload = await feishu_service.get_approval_instance(app_id, app_secret, instance_id)
+    app_id, app_secret = creds.app_id, creds.app_secret
+    payload = await feishu_service.get_approval_instance(app_id, app_secret, instance_id, extra_config=creds.extra_config)
     return (
         f"📄 **Feishu approval instance** `{instance_id}`\n"
         f"```json\n{json.dumps(payload, ensure_ascii=False, indent=2)}\n```"

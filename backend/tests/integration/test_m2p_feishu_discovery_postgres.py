@@ -114,6 +114,7 @@ async def test_foreign_company_connection_does_not_create_discovery_access(
 
 async def _exercise_ordinary_office_work(
     ordinary_work, owner_sessionmaker, app_user_sessionmaker, monkeypatch, *, follow_up=None,
+    provider_origin="https://open.feishu.cn",
 ):
     from app.runtime import invoker
     from app.models.capability_policy import CapabilityPolicy
@@ -148,7 +149,7 @@ async def _exercise_ordinary_office_work(
     requests = []
     provider_state = {"secret": "synthetic-company-work-secret"}
     def provider(request):
-        assert request.url.host == "open.feishu.cn", request.url
+        assert str(request.url).startswith(provider_origin + "/open-apis/"), request.url
         requests.append((request.method, request.url.path))
         if "/auth/v3/" in request.url.path:
             assert json.loads(request.content) == {"app_id": "cli_company_work", "app_secret": provider_state["secret"]}

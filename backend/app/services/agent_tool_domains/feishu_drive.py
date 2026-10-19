@@ -12,7 +12,7 @@ import uuid
 import httpx
 
 from app.services.agent_tool_domains.feishu_acl import with_feishu_alias_for_verified_result
-from app.services.agent_tool_domains.feishu_helpers import _get_feishu_token
+from app.services.agent_tool_domains.feishu_helpers import _get_feishu_token, _feishu_api_url
 from app.services.agent_tool_domains.feishu_wiki import _feishu_wiki_get_node
 from app.services.connector_acl import authoritative_connector_source_item, with_connector_source_items
 from app.services.text_extractor import extract_text
@@ -693,7 +693,7 @@ async def _download_drive_file(
 ) -> tuple[bytes, str, dict]:
     async with httpx.AsyncClient(timeout=60) as client:
         resp = await client.get(
-            f"https://open.feishu.cn/open-apis/drive/v1/files/{file_token}/download",
+            _feishu_api_url(tenant_access_token, f"/drive/v1/files/{file_token}/download"),
             headers={"Authorization": f"Bearer {tenant_access_token}"},
         )
 
@@ -730,7 +730,7 @@ async def _export_online_document(
     headers = {"Authorization": f"Bearer {tenant_access_token}"}
     async with httpx.AsyncClient(timeout=60) as client:
         create_resp = await client.post(
-            "https://open.feishu.cn/open-apis/drive/v1/export_tasks",
+            _feishu_api_url(tenant_access_token, "/drive/v1/export_tasks"),
             headers=headers,
             json=body,
         )
@@ -752,7 +752,7 @@ async def _export_online_document(
         result: dict = {}
         for _ in range(8):
             query_resp = await client.get(
-                f"https://open.feishu.cn/open-apis/drive/v1/export_tasks/{ticket}",
+                _feishu_api_url(tenant_access_token, f"/drive/v1/export_tasks/{ticket}"),
                 headers=headers,
                 params={"token": document_token},
             )
@@ -779,7 +779,7 @@ async def _export_online_document(
             )
 
         download_resp = await client.get(
-            f"https://open.feishu.cn/open-apis/drive/v1/export_tasks/file/{file_token}/download",
+            _feishu_api_url(tenant_access_token, f"/drive/v1/export_tasks/file/{file_token}/download"),
             headers=headers,
         )
         if download_resp.status_code >= 400:

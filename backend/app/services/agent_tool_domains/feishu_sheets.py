@@ -18,7 +18,7 @@ from app.services.agent_tool_domains.feishu_acl import (
     preserve_feishu_fallback_authority,
     with_feishu_read_authority,
 )
-from app.services.agent_tool_domains.feishu_helpers import _get_feishu_token
+from app.services.agent_tool_domains.feishu_helpers import _get_feishu_token, _feishu_api_url
 from app.tools.result_envelope import render_tool_fallback
 
 _SINGLE_CELL_RE = re.compile(r"^[A-Za-z]+[1-9][0-9]*$")
@@ -115,7 +115,7 @@ async def _run_feishu_sheet_shortcut(args: list[str]) -> dict:
 async def _get_first_sheet_id_via_openapi(spreadsheet_token: str, token: str) -> str:
     async with httpx.AsyncClient(timeout=15) as client:
         response = await client.get(
-            f"https://open.feishu.cn/open-apis/sheets/v3/spreadsheets/{spreadsheet_token}/sheets/query",
+            _feishu_api_url(token, f"/sheets/v3/spreadsheets/{spreadsheet_token}/sheets/query"),
             headers={"Authorization": f"Bearer {token}"},
         )
     payload = response.json()
@@ -148,11 +148,11 @@ async def _feishu_sheet_info_via_openapi(
 
     async with httpx.AsyncClient(timeout=20) as client:
         spreadsheet_resp = await client.get(
-            f"https://open.feishu.cn/open-apis/sheets/v3/spreadsheets/{spreadsheet_token}",
+            _feishu_api_url(token, f"/sheets/v3/spreadsheets/{spreadsheet_token}"),
             headers=headers,
         )
         sheets_resp = await client.get(
-            f"https://open.feishu.cn/open-apis/sheets/v3/spreadsheets/{spreadsheet_token}/sheets/query",
+            _feishu_api_url(token, f"/sheets/v3/spreadsheets/{spreadsheet_token}/sheets/query"),
             headers=headers,
         )
 
@@ -285,7 +285,7 @@ async def _feishu_sheet_read_via_openapi(
 
     async with httpx.AsyncClient(timeout=20) as client:
         response = await client.get(
-            f"https://open.feishu.cn/open-apis/sheets/v2/spreadsheets/{spreadsheet_token}/values/{read_range}",
+            _feishu_api_url(token, f"/sheets/v2/spreadsheets/{spreadsheet_token}/values/{read_range}"),
             headers=headers,
             params=params,
         )

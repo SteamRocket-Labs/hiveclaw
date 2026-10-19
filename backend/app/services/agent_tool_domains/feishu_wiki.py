@@ -13,7 +13,7 @@ from app.services.agent_tool_domains.feishu_acl import (
     preserve_feishu_fallback_authority,
     with_feishu_read_authority,
 )
-from app.services.agent_tool_domains.feishu_helpers import _get_feishu_token
+from app.services.agent_tool_domains.feishu_helpers import _get_feishu_token, _feishu_api_url
 from app.tools.result_envelope import render_tool_fallback
 
 logger = logging.getLogger(__name__)
@@ -137,7 +137,7 @@ async def _feishu_wiki_get_node(token_str: str, auth_token: str) -> dict | None:
 
     async with httpx.AsyncClient(timeout=5) as client:
         r = await client.get(
-            "https://open.feishu.cn/open-apis/wiki/v2/spaces/get_node",
+            _feishu_api_url(auth_token, "/wiki/v2/spaces/get_node"),
             headers={"Authorization": f"Bearer {auth_token}"},
             params={"token": token_str, "obj_type": "wiki"},
         )
@@ -246,7 +246,7 @@ async def _feishu_wiki_list_via_openapi(
                 if page_token:
                     params["page_token"] = page_token
                 resp = await client.get(
-                    f"https://open.feishu.cn/open-apis/wiki/v2/spaces/{space_id}/nodes",
+                    _feishu_api_url(token, f"/wiki/v2/spaces/{space_id}/nodes"),
                     headers=headers,
                     params=params,
                 )

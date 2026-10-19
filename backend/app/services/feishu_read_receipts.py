@@ -46,7 +46,7 @@ class FeishuReadCapture:
     tool_name: str
     arguments: dict
     connections: list[dict] = field(default_factory=list)
-    result_hashes: set[str] = field(default_factory=set)
+    api_reads: dict[str, set[tuple[str, str]]] = field(default_factory=dict)
 
 
 @contextmanager
@@ -67,13 +67,14 @@ def observe_feishu_connection(config):
             capture.connections.append(snapshot)
 
 
-def attest_feishu_api_read(result):
+def attest_feishu_api_read(result, *, platform=None):
     """Witness only a successful result at the concrete OpenAPI read boundary."""
     from app.services.session_model_inputs import _hash
 
     capture = _active_read.get()
     if capture is not None:
-        capture.result_hashes.add(_hash(str(result)))
+        platform = platform or resolve_feishu_platform()
+        capture.api_reads.setdefault(_hash(str(result)), set()).add((platform.region, platform.open_api_domain))
     return result
 
 
@@ -88,11 +89,11 @@ async def settle_feishu_read(capture, result):
     context = capture.context
     if context is None or capture.tool_name not in FEISHU_READ_TOOLS or not all((
         context.user_id, context.tenant_id, context.session_id, context.runtime_task_id, context.tool_call_id,
-    )) or len(capture.connections) != 1 or _hash(str(result)) not in capture.result_hashes:
+    )) or len(capture.connections) != 1:
         return result
-    # These concrete read adapters currently attest CN OpenAPI results only.
-    # Another configured platform cannot borrow that transport's witness.
-    if _connection_subject(capture.connections[0])[-2:] != (FEISHU_REGION_CN, FEISHU_CN_OPEN_API_DOMAIN):
+    # The observed installation and concrete transport must agree; neither a
+    # CN result nor another app's response can attest the selected namespace.
+    if capture.api_reads.get(_hash(str(result))) != {_connection_subject(capture.connections[0])[-2:]}:
         return result
     sources = extract_connector_source_items(result)
     if not sources or any(

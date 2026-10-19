@@ -425,6 +425,7 @@ async def test_process_feishu_event_text_binds_execution_identity_and_session_co
 @pytest.mark.asyncio
 async def test_unbound_group_sender_starts_a_principal_scoped_session_without_llm(monkeypatch):
     import app.api.feishu as feishu_api
+    from app.models.channel_config import ChannelConfig
 
     agent_id = uuid4()
     tenant_id = uuid4()
@@ -434,7 +435,14 @@ async def test_unbound_group_sender_starts_a_principal_scoped_session_without_ll
     captured: dict[str, object] = {}
     sent_messages: list[dict] = []
 
-    db = _SequenceDB([agent])
+    config = ChannelConfig(id=uuid4(), agent_id=agent_id, tenant_id=tenant_id, channel_type="feishu",
+        app_id="app", app_secret="secret", is_configured=True, extra_config={})
+    db = _SequenceDB([config, agent])
+    async def current_installation(statement):
+        params = statement.compile().params
+        assert set(params.values()) == {config.id, agent_id, tenant_id, "feishu"}
+        return config
+    db.scalar = current_installation
 
     async def fake_resolve_sender_profile(*_args, **_kwargs):
         return {"name": "张三", "open_id": "ou_123", "user_id": "u_123"}
@@ -502,7 +510,6 @@ async def test_unbound_group_sender_starts_a_principal_scoped_session_without_ll
             },
         },
         db,
-        tenant_channel_config=SimpleNamespace(app_id="app", app_secret="secret"),
     )
 
     assert result == {"code": 0, "msg": "new session created"}

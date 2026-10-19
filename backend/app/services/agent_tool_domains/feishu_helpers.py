@@ -2,13 +2,46 @@
 
 import logging
 import uuid
+from dataclasses import dataclass
 
 from sqlalchemy import select
 
 from app.database import tenant_scoped_session
 from app.services.tenant_resolver import resolve_tenant_for_agent
+from app.services.feishu_platform import FeishuPlatform, resolve_feishu_platform
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True, repr=False)
+class FeishuToolAuth:
+    app_id: str
+    app_secret: str
+    platform: FeishuPlatform
+
+    @property
+    def extra_config(self) -> dict:
+        return {"platform_region": self.platform.region, "open_api_domain": self.platform.open_api_domain,
+            "oauth_authorize_url": self.platform.oauth_authorize_url}
+
+
+class FeishuAccessToken(str):
+    """Keep the legacy string token interface with its resolved transport."""
+
+    def __new__(cls, value: str, platform: FeishuPlatform):
+        token = super().__new__(cls, value)
+        token.platform = platform
+        return token
+
+
+def _feishu_token_platform(token: str) -> FeishuPlatform:
+    # Plain tokens retain the historical CN helper contract. Configured tools
+    # always obtain a platform-bound token from the authentication boundary.
+    return token.platform if isinstance(token, FeishuAccessToken) else resolve_feishu_platform()
+
+
+def _feishu_api_url(token: str, path: str) -> str:
+    return _feishu_token_platform(token).open_api_url(path)
 
 
 def _format_feishu_token_error(status: dict) -> str:
@@ -27,13 +60,19 @@ def _format_feishu_token_error(status: dict) -> str:
 
 async def _get_feishu_app_credentials(agent_id: uuid.UUID) -> tuple[str, str] | None:
     """Get (app_id, app_secret) from agent channel config or tenant-level bot config."""
+    auth = await _get_feishu_tool_auth(agent_id)
+    return (auth.app_id, auth.app_secret) if auth else None
+
+
+async def _get_feishu_tool_auth(agent_id: uuid.UUID) -> FeishuToolAuth | None:
+    """Resolve credentials and their platform from the same current installation."""
     tid = await resolve_tenant_for_agent(agent_id)
     async with tenant_scoped_session(tid) as db:
         config = await load_feishu_channel_configuration(db, agent_id=agent_id)
         from app.services.feishu_read_receipts import observe_feishu_connection
 
         observe_feishu_connection(config)
-        return (config.app_id, config.app_secret) if config else None
+        return FeishuToolAuth(config.app_id, config.app_secret, resolve_feishu_platform(config.extra_config)) if config else None
 
 
 async def load_feishu_channel_configuration(db, *, agent_id):
@@ -94,33 +133,32 @@ async def _get_feishu_token(agent_id: uuid.UUID) -> tuple[str, str] | None:
 
 async def _get_feishu_token_status(agent_id: uuid.UUID) -> dict:
     """Return token probe status for diagnostics, never exposing app_secret."""
-    creds = await _get_feishu_app_credentials(agent_id)
-    if not creds:
+    auth = await _get_feishu_tool_auth(agent_id)
+    if not auth:
         return {
             "configured": False,
             "ok": False,
             "message": "Agent has no Feishu channel configured.",
         }
-    app_id, app_secret = creds
-
     try:
-        return await _request_feishu_tenant_access_token(app_id, app_secret)
+        return await _request_feishu_tenant_access_token(auth.app_id, auth.app_secret, platform=auth.platform)
     except Exception as exc:
         return {
             "configured": True,
             "ok": False,
-            "app_id": app_id,
+            "app_id": auth.app_id,
             "message": f"{type(exc).__name__}: {exc}",
         }
 
 
-async def _request_feishu_tenant_access_token(app_id: str, app_secret: str) -> dict:
+async def _request_feishu_tenant_access_token(app_id: str, app_secret: str, *, platform: FeishuPlatform | None = None) -> dict:
     """Call Feishu token API and normalize success/failure details."""
     import httpx
 
+    platform = platform or resolve_feishu_platform()
     async with httpx.AsyncClient(timeout=10) as client:
         resp = await client.post(
-            "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal",
+            platform.open_api_url("/auth/v3/tenant_access_token/internal"),
             json={"app_id": app_id, "app_secret": app_secret},
         )
 
@@ -141,7 +179,7 @@ async def _request_feishu_tenant_access_token(app_id: str, app_secret: str) -> d
             "configured": True,
             "ok": True,
             "app_id": app_id,
-            "token": token,
+            "token": FeishuAccessToken(token, platform),
             "http_status": resp.status_code,
             "code": data.get("code"),
             "message": data.get("msg") or "ok",
@@ -166,7 +204,7 @@ async def _get_agent_calendar_id(token: str) -> tuple[str | None, str | None]:
 
     async with httpx.AsyncClient(timeout=10) as client:
         resp = await client.post(
-            "https://open.feishu.cn/open-apis/calendar/v4/calendars/primary",
+            _feishu_api_url(token, "/calendar/v4/calendars/primary"),
             headers={"Authorization": f"Bearer {token}"},
         )
     data = resp.json()
@@ -197,7 +235,7 @@ async def _feishu_resolve_open_id(token: str, email: str) -> str | None:
 
     async with httpx.AsyncClient(timeout=10) as client:
         resp = await client.post(
-            "https://open.feishu.cn/open-apis/contact/v3/users/batch_get_id",
+            _feishu_api_url(token, "/contact/v3/users/batch_get_id"),
             json={"emails": [email]},
             headers={"Authorization": f"Bearer {token}"},
             params={"user_id_type": "open_id"},

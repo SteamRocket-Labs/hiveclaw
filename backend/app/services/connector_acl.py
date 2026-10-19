@@ -59,6 +59,37 @@ class ConnectorPromptFilterResult:
     forbidden_sources: tuple[str, ...] = ()
 
 
+@dataclass(frozen=True, slots=True)
+class _ConnectorDiagnosticReceipt:
+    source: str
+    content_hash: str
+    tenant_id: str
+    user_id: str
+    agent_id: str
+
+
+def with_connector_diagnostic(payload, *, source, connector, tenant_id, user_id, agent_id):
+    """A trusted executor may return its private diagnostic without granting the requested resource."""
+    item = authoritative_connector_source_item(source=source, connector=connector, resource_type="execution_diagnostic",
+        tenant_id=tenant_id, current_user_id=user_id, agent_id=agent_id, protected_text=str(payload))
+    result = with_connector_source_items(payload, [item])
+    marker = _ConnectorDiagnosticReceipt(source=source, content_hash=hashlib.sha256(str(result).encode()).hexdigest(),
+        tenant_id=str(tenant_id), user_id=str(user_id), agent_id=str(agent_id))
+    return replace(result, metadata={**result.metadata, "connector_diagnostic_receipt": marker})
+
+
+def _private_diagnostic_visible(payload, source_items, *, tenant_id, current_user_id, agent_id):
+    marker = (getattr(payload, "metadata", None) or {}).get("connector_diagnostic_receipt")
+    if not isinstance(marker, _ConnectorDiagnosticReceipt) or (
+        marker.tenant_id, marker.user_id, marker.agent_id, marker.content_hash) != (
+        str(tenant_id), str(current_user_id), str(agent_id), hashlib.sha256(str(payload).encode()).hexdigest()):
+        return False
+    return any(_source_id(item) == marker.source
+        and item.get("metadata", {}).get("resource_type") == "execution_diagnostic"
+        and connector_item_visible(item, tenant_id=tenant_id, current_user_id=current_user_id, agent_id=agent_id)
+        for item in source_items if isinstance(item, dict))
+
+
 def _string(value: Any) -> str:
     if isinstance(value, uuid.UUID):
         return str(value)
@@ -726,6 +757,13 @@ def filter_connector_payload_for_prompt(
 
     if not forbidden_sources:
         return ConnectorPromptFilterResult(payload=payload, allowed_sources=tuple(allowed_sources))
+
+    if _private_diagnostic_visible(payload, source_items,
+        tenant_id=tenant_id, current_user_id=current_user_id, agent_id=agent_id):
+        # Keep argument-derived denial in the registry. Only this exact private
+        # diagnostic crosses; it is not content read from the refused resource.
+        return ConnectorPromptFilterResult(payload=payload, allowed_sources=tuple(allowed_sources),
+            forbidden_sources=tuple(forbidden_sources))
 
     denied_marker = json.dumps(
         {

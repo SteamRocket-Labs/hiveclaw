@@ -243,11 +243,13 @@ async def _enqueue_origin_continuation(
         return None
 
     from app.services.runtime_notification_outbox import CompletionNotification, enqueue_completion_notification
-    from app.services.feishu_read_receipts import FEISHU_RESULT_TOOLS
+    from app.services.feishu_read_receipts import FEISHU_RESULT_TOOLS, load_approved_feishu_result
 
     tool_name = str(approval.tool_name or approval.action_type or "approved_action")
+    verified_failure = (tool_name in FEISHU_RESULT_TOOLS and approval_status == "failed"
+        and await load_approved_feishu_result(db, approval=approval) is not None)
     status_only = approval_status == "needs_reconciliation" or (
-        tool_name in FEISHU_RESULT_TOOLS and approval_status != "succeeded")
+        tool_name in FEISHU_RESULT_TOOLS and approval_status != "succeeded" and not verified_failure)
     result_text = str(execution_result or (task.result_summary if task else None) or "")
     if status_only:
         result_text = approval_notification_summary(approval_status, result_text, approval.execution_receipt)

@@ -227,7 +227,7 @@ async def _feishu_doc_read_via_openapi(
     data = _safe_feishu_json(resp, "doc_read")
     if resp.status_code >= 400 or data.get("code") != 0:
         return feishu_tool_error("feishu_doc_read", message=f"Failed to read document: {data.get('msg')}",
-            http_status=resp.status_code, code=data.get("code"))
+            http_status=resp.status_code, code=data.get("code"), platform=_feishu_token_platform(token), protected_values=(str(token),))
 
     content = data.get("data", {}).get("content", "")
     if not content:
@@ -433,7 +433,7 @@ async def _feishu_doc_create(agent_id: uuid.UUID, arguments: dict) -> str:
     data = _safe_feishu_json(resp, "doc_create")
     if resp.status_code >= 400 or data.get("code") != 0:
         return feishu_tool_error("feishu_doc_create", message=f"Failed to create document: {data.get('msg')}",
-            http_status=resp.status_code, code=data.get("code"))
+            http_status=resp.status_code, code=data.get("code"), platform=_feishu_token_platform(token), protected_values=(str(token),))
 
     doc_token = data.get("data", {}).get("document", {}).get("document_id", "")
     if not isinstance(doc_token, str) or not doc_token:
@@ -682,7 +682,7 @@ async def _feishu_doc_append(agent_id: uuid.UUID, arguments: dict) -> str:
         meta = _safe_feishu_json(meta_resp, "doc_append_meta")
         if meta_resp.status_code >= 400 or meta.get("code") != 0:
             return feishu_tool_error("feishu_doc_append", message=f"Cannot access document: {meta.get('msg')}",
-                http_status=meta_resp.status_code, code=meta.get("code"))
+                http_status=meta_resp.status_code, code=meta.get("code"), platform=_feishu_token_platform(token), protected_values=(str(token),))
 
         body_block_id = meta.get("data", {}).get("document", {}).get("body", {}).get("block_id") or docx_token
 
@@ -698,7 +698,7 @@ async def _feishu_doc_append(agent_id: uuid.UUID, arguments: dict) -> str:
 
     if append_resp.status_code >= 400 or result.get("code") != 0:
         return feishu_tool_error("feishu_doc_append", message=f"Failed to append: {result.get('msg')}",
-            http_status=append_resp.status_code, code=result.get("code"))
+            http_status=append_resp.status_code, code=result.get("code"), platform=_feishu_token_platform(token), protected_values=(str(token),))
 
     link_note = await _document_link_note(token, docx_token)
     return attest_feishu_action_result(f"✅ 已写入 {len(children)} 个段落到文档。\nToken：{docx_token}\n{link_note}",

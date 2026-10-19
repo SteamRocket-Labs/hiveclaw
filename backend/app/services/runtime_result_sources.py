@@ -179,7 +179,7 @@ async def _load_company_result_sources(db, result):
             or approval.execution_status not in {"succeeded", "failed", "needs_reapproval", "needs_reconciliation", "rejected"}
             or payload["summary"] != expected_summary):
             raise ValueError("ticket_execution_unresolved")
-        if office and approval.execution_status == "succeeded":
+        if office and (approval.execution_status == "succeeded" or payload["metadata"].get("result_semantics") == "execution_result"):
             if await load_approved_feishu_result(db, approval=approval) is None:
                 raise ValueError("ticket_office_result_unverified")
         elif session.audience_kind != "group" and payload["metadata"].get("result_semantics") != "approval_status":

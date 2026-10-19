@@ -160,14 +160,17 @@ async def _get_feishu_office_token(agent_id, tool_name):
         return status["app_id"], status["token"]
     return feishu_tool_error(tool_name, message=_format_feishu_token_error(status),
         http_status=status.get("http_status"), code=status.get("code"),
-        error_class="not_configured" if not status.get("configured") else None)
+        error_class="not_configured" if not status.get("configured") else None,
+        platform=resolve_feishu_platform(status["platform"]) if status.get("platform") else None)
 
 
 async def _request_feishu_tenant_access_token(app_id: str, app_secret: str, *, platform: FeishuPlatform | None = None) -> dict:
     """Call Feishu token API and normalize success/failure details."""
     import httpx
+    from app.services.feishu_platform import _redact_diagnostic
 
     platform = platform or resolve_feishu_platform()
+    namespace = {"platform_region": platform.region, "open_api_domain": platform.open_api_domain}
     async with httpx.AsyncClient(timeout=10) as client:
         resp = await client.post(
             platform.open_api_url("/auth/v3/tenant_access_token/internal"),
@@ -178,7 +181,7 @@ async def _request_feishu_tenant_access_token(app_id: str, app_secret: str, *, p
         data = resp.json()
     except Exception as exc:
         return {
-            "configured": True,
+            "configured": True, "platform": namespace,
             "ok": False,
             "app_id": app_id,
             "http_status": resp.status_code,
@@ -186,12 +189,12 @@ async def _request_feishu_tenant_access_token(app_id: str, app_secret: str, *, p
         }
 
     if not isinstance(data, dict):
-        return {"configured": True, "ok": False, "app_id": app_id, "http_status": resp.status_code,
+        return {"configured": True, "platform": namespace, "ok": False, "app_id": app_id, "http_status": resp.status_code,
             "message": "Invalid Feishu token response: expected an object"}
     token = data.get("tenant_access_token", "")
     if 200 <= resp.status_code < 300 and data.get("code") in (None, 0) and isinstance(token, str) and token:
         return {
-            "configured": True,
+            "configured": True, "platform": namespace,
             "ok": True,
             "app_id": app_id,
             "token": FeishuAccessToken(token, platform),
@@ -201,12 +204,12 @@ async def _request_feishu_tenant_access_token(app_id: str, app_secret: str, *, p
         }
 
     return {
-        "configured": True,
+        "configured": True, "platform": namespace,
         "ok": False,
         "app_id": app_id,
         "http_status": resp.status_code,
         "code": data.get("code"),
-        "message": data.get("msg") or "tenant_access_token missing",
+        "message": _redact_diagnostic(data.get("msg") or "tenant_access_token missing", (app_secret,)),
     }
 
 

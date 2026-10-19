@@ -194,22 +194,32 @@ async def test_approved_office_job_is_consumed_in_original_private_work(
                 await validate_runtime_result_sources(db, None, result, user=await db.get(User, approver), session=session)
             ticket = await db.get(ApprovalRequest, approval_id)
             proof = await load_approved_feishu_result(db, approval=ticket)
-            if not failure:
-                assert proof is not None and proof["requester_id"] == str(seed["user_id"])
-                assert proof["connection"]["id"] == str(seed["config_id"])
-                receipt = ticket.execution_receipt
-                ticket.execution_receipt = {**receipt, "runtime_evidence": {}}
-                assert await load_approved_feishu_result(db, approval=ticket) is None
+            assert proof is not None and proof["requester_id"] == str(seed["user_id"])
+            assert proof["connection"]["id"] == str(seed["config_id"])
+            if failure:
+                assert proof["failure"]["provider_code"] == provider_code and proof["outcome"] == "failed"
+            receipt = ticket.execution_receipt
+            ticket.execution_receipt = {**receipt, "runtime_evidence": {}}
+            assert await load_approved_feishu_result(db, approval=ticket) is None
+            ticket.execution_receipt = receipt
+            if failure:
+                from copy import deepcopy
+                from app.services.session_model_inputs import _hash
+
+                for key, value in (("open_api_domain", "https://open.larksuite.com"), ("provider_code", provider_code + 1)):
+                    altered = deepcopy(receipt)
+                    sealed = altered["runtime_evidence"]["feishu_approved_result"]
+                    sealed["failure"][key] = value
+                    sealed["receipt_hash"] = _hash({k: v for k, v in sealed.items() if k != "receipt_hash"})
+                    ticket.execution_receipt = altered
+                    assert await load_approved_feishu_result(db, approval=ticket) is None
                 ticket.execution_receipt = receipt
-            else:
-                assert proof is None
             config = await db.get(TenantChannelConfig, seed["config_id"])
             config.is_active = False
             await db.flush()
             await validate_runtime_return_dependency(db, seed["tenant_id"], dependency, user=user, runtime_request=None)
-            if not failure:
-                with pytest.raises(ContentInputReceiptError, match="original company approval result"):
-                    await validate_runtime_return_dependency(db, seed["tenant_id"], result_dependency, user=user, runtime_request=None)
+            with pytest.raises(ContentInputReceiptError, match="original company approval result"):
+                await validate_runtime_return_dependency(db, seed["tenant_id"], result_dependency, user=user, runtime_request=None)
             await db.rollback()
         async with app_user_sessionmaker() as db:
             await pin_rls_tenant_context(db, seed["tenant_id"])
@@ -233,7 +243,7 @@ async def test_approved_office_job_is_consumed_in_original_private_work(
         if failure:
             returned = json.dumps(model.requests[1]["messages"])
             assert ("reconnect" if outcome == "auth_failed" else "review_permissions") in returned
-            assert "Fixture permission denied" not in returned and "Fixture credential rejected" not in returned
+            assert ("Fixture credential rejected" if outcome == "auth_failed" else "Fixture permission denied") in returned
         await RuntimeTerminalBoundaryOutboxService(session_factory=app_user_sessionmaker).drain_once(
             tenant_id=seed["tenant_id"], worker_id="approved-consumer-boundary", canonical_validator=processor.validate,
             process_callback=processor, task_types=("web_chat_turn",))

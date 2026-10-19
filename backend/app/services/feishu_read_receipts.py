@@ -50,6 +50,7 @@ class FeishuReadCapture:
     connections: list[dict] = field(default_factory=list)
     api_reads: dict[str, set[tuple[str, str]]] = field(default_factory=dict)
     api_actions: dict[str, dict] = field(default_factory=dict)
+    api_failures: dict[str, dict] = field(default_factory=dict)
 
 
 @contextmanager
@@ -93,6 +94,25 @@ def attest_feishu_action_result(result, *, platform, resource_type, resource_id,
     return result
 
 
+def attest_feishu_api_failure(result, *, platform):
+    """Bind a concrete HTTP rejection to its actual transport and rendered bytes."""
+    from app.services.session_model_inputs import _hash
+
+    capture = _active_read.get()
+    facts = result.metadata.get("feishu_failure")
+    if capture is not None and capture.tool_name in FEISHU_RESULT_TOOLS and isinstance(facts, dict) and (
+        facts.get("schema"), facts.get("tool_name")) == ("hive.feishu_failure.v1", capture.tool_name):
+        capture.api_failures[_hash(str(result))] = {**facts, "schema": "hive.feishu_api_failure.v1",
+            "platform_region": platform.region, "open_api_domain": platform.open_api_domain}
+    return result
+
+
+def _valid_failure(witness, tool_name, namespace):
+    return (isinstance(witness, dict) and witness.get("schema") == "hive.feishu_api_failure.v1"
+        and witness.get("tool_name") == tool_name and type(witness.get("http_status")) is int
+        and (witness.get("platform_region"), witness.get("open_api_domain")) == namespace)
+
+
 def feishu_action_unknown(tool_name, *, resource_id=None):
     """A dispatched mutation has no trustworthy terminal response; do not replay."""
     import json
@@ -121,14 +141,18 @@ async def settle_feishu_result(capture, result):
     # CN result nor another app's response can attest the selected namespace.
     action = capture.tool_name in FEISHU_ACTION_TOOLS
     witness = capture.api_actions.get(_hash(str(result))) if action else None
+    failure = capture.api_failures.get(_hash(str(result)))
     namespace = _connection_subject(capture.connections[0])[-2:]
-    if action:
+    if failure:
+        if not _valid_failure(failure, capture.tool_name, namespace):
+            return result
+    elif action:
         if not witness or (witness["platform_region"], witness["open_api_domain"]) != namespace:
             return result
     elif capture.api_reads.get(_hash(str(result))) != {namespace}:
         return result
-    sources = extract_connector_source_items(result) if not action else []
-    if not action and (not sources or any(
+    sources = extract_connector_source_items(result) if not action and not failure else []
+    if not action and not failure and (not sources or any(
         item.get("metadata", {}).get("acl_authority") != "connector_verified"
         or item.get("metadata", {}).get("connector") != "feishu"
         or item.get("metadata", {}).get("accessing_agent_id") != str(context.agent_id)
@@ -137,6 +161,11 @@ async def settle_feishu_result(capture, result):
         for item in sources
     )):
         return result
+    if failure:
+        from app.services.connector_acl import with_connector_diagnostic
+
+        result = with_connector_diagnostic(result, source=f"feishu://execution/{context.runtime_task_id}/{context.tool_call_id}",
+            connector="feishu", tenant_id=context.tenant_id, user_id=context.user_id, agent_id=context.agent_id)
     from app.services.approval_ticket import ApprovalDecisionSet
 
     decision = getattr(context, "approval_decision", None)
@@ -155,7 +184,7 @@ async def settle_feishu_result(capture, result):
             "session_id": str(context.session_id), "run_id": str(context.runtime_task_id),
             "requester_id": str(context.user_id), "approver_id": str(decision.approved_by_user_id),
             "content_hash": _hash(str(result)), "connection": capture.connections[0],
-            **({"action": witness} if action else {"sources": sources})}
+            **({"outcome": "failed", "failure": failure} if failure else {"action": witness} if action else {"sources": sources})}
         proof["receipt_hash"] = _hash(proof)
         return replace(result, metadata={**result.metadata, "feishu_approved_result": proof}) if isinstance(
             result, ToolContentEnvelope) else ToolContentEnvelope(text=str(result), metadata={"feishu_approved_result": proof})
@@ -180,7 +209,7 @@ async def settle_feishu_result(capture, result):
                 "authority_snapshot_hash": invocation.authority_snapshot_hash,
                 "effective_args_hash": args_hash, "content_hash": _hash(str(result)),
                 "connection": capture.connections[0], "reader_id": str(context.user_id),
-                **({"action": witness} if action else {"sources": sources})}
+                **({"outcome": "failed", "failure": failure} if failure else {"action": witness} if action else {"sources": sources})}
             proof["receipt_hash"] = _hash(proof)
             evidence_id = uuid.uuid5(invocation.id, "feishu-action-evidence" if action else "feishu-read-evidence")
             existing = await db.get(InvocationSpan, evidence_id)
@@ -205,7 +234,7 @@ async def load_feishu_result(db, *, tenant_id, agent_id, invocation, content_has
     from app.models.session_v2 import SessionModelResult
     from app.services.session_model_inputs import _hash
 
-    if invocation.tool_name not in FEISHU_RESULT_TOOLS or invocation.effect_state != "effect_committed":
+    if invocation.tool_name not in FEISHU_RESULT_TOOLS or invocation.effect_state not in {"effect_committed", "failed"}:
         return None
     action = invocation.tool_name in FEISHU_ACTION_TOOLS
     kind = "feishu_action" if action else "feishu_read"
@@ -229,13 +258,19 @@ async def load_feishu_result(db, *, tenant_id, agent_id, invocation, content_has
         or proof.get("content_hash") != content_hash
         or proof.get("receipt_hash") != _hash({k: v for k, v in proof.items() if k != "receipt_hash"})):
         return None
+    failed = proof.get("outcome") == "failed"
+    if invocation.effect_state != ("failed" if failed else "effect_committed"):
+        return None
     connection = proof.get("connection")
     sources = proof.get("sources")
     if (not isinstance(connection, dict) or connection.get("tenant_id") != str(tenant_id)
         or connection.get("scope") not in {"company", "employee"}
-        or not action and (not isinstance(sources, list) or not sources)):
+        or not action and not failed and (not isinstance(sources, list) or not sources)):
         return None
-    if action:
+    if failed:
+        if not _valid_failure(proof.get("failure"), invocation.tool_name, _connection_subject(connection)[-2:]):
+            return None
+    elif action:
         witness = proof.get("action")
         if not isinstance(witness, dict) or witness.get("operation") != invocation.tool_name or not all(
             isinstance(witness.get(key), str) and witness[key] for key in ("resource_type", "resource_id", "response_hash")) or (
@@ -246,7 +281,7 @@ async def load_feishu_result(db, *, tenant_id, agent_id, invocation, content_has
             return None
     except (KeyError, ValueError, TypeError):
         return None
-    if not action and any(not isinstance(item, dict) or item.get("metadata", {}).get("connector") != "feishu"
+    if not action and not failed and any(not isinstance(item, dict) or item.get("metadata", {}).get("connector") != "feishu"
         or item.get("metadata", {}).get("acl_authority") != "connector_verified"
         or item.get("metadata", {}).get("accessing_agent_id") != str(agent_id)
         or item.get("acl", {}).get("user_ids") != [proof["reader_id"]]
@@ -285,7 +320,7 @@ async def load_approved_feishu_result(db, *, approval):
 
     receipt = approval.execution_receipt or {}
     proof = (receipt.get("runtime_evidence") or {}).get("feishu_approved_result")
-    if (approval.tool_name not in FEISHU_RESULT_TOOLS or approval.execution_status != "succeeded"
+    if (approval.tool_name not in FEISHU_RESULT_TOOLS or approval.execution_status not in {"succeeded", "failed"}
         or approval.consumed_at is None or not isinstance(proof, dict)):
         return None
     try:
@@ -308,15 +343,27 @@ async def load_approved_feishu_result(db, *, approval):
         or receipt.get("execution_envelope_hash") != approval.execution_envelope_hash
         or receipt.get("input_hash") != approval.input_hash
         or receipt.get("policy_snapshot_hash") != approval.policy_snapshot_hash
+        or receipt.get("status") != approval.execution_status
         or receipt.get("decision_id") != approval.decision_id
         or receipt.get("requested_by_user_id") != str(approval.requested_by)
         or receipt.get("approved_by_user_id") != str(approval.resolved_by)):
+        return None
+    if proof.get("outcome", "succeeded") != approval.execution_status:
         return None
     connection = proof.get("connection")
     if (not isinstance(connection, dict) or connection.get("tenant_id") != str(approval.tenant_id)
         or connection.get("scope") not in {"company", "employee"}):
         return None
-    if approval.tool_name in FEISHU_ACTION_TOOLS:
+    if approval.execution_status == "failed":
+        failure = proof.get("failure")
+        frame = (receipt.get("runtime_evidence") or {}).get("tool_execution_frame") or {}
+        error = receipt.get("error") or {}
+        if (not _valid_failure(failure, approval.tool_name, _connection_subject(connection)[-2:])
+            or frame.get("status") != "failed" or frame.get("tool_name") != approval.tool_name
+            or frame.get("output_hash") != proof["content_hash"]
+            or any(failure.get(k) != error.get(k) for k in ("tool_name", "http_status", "provider_code", "error_class"))):
+            return None
+    elif approval.tool_name in FEISHU_ACTION_TOOLS:
         witness = proof.get("action")
         if not isinstance(witness, dict) or witness.get("operation") != approval.tool_name or not all(
             isinstance(witness.get(key), str) and witness[key] for key in ("resource_type", "resource_id", "response_hash")) or (

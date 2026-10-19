@@ -395,7 +395,7 @@ async def _origin_dependencies(db, *, tenant_id, agent_id, ref):
         "source_version": payload["content_hash"]}]
     from app.services.feishu_read_receipts import FEISHU_RESULT_TOOLS, load_feishu_result
 
-    if invocation.tool_name in FEISHU_RESULT_TOOLS and invocation.effect_state == "effect_committed":
+    if invocation.tool_name in FEISHU_RESULT_TOOLS and invocation.effect_state in {"effect_committed", "failed"}:
         receipt = await load_feishu_result(db, tenant_id=tenant_id, agent_id=agent_id, invocation=invocation,
             content_hash=payload["content_hash"])
         return _unique_dependencies(dependencies), inherited_complete and receipt is not None

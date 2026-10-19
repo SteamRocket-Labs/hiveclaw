@@ -38,25 +38,36 @@ class FeishuService:
         *,
         stage: str,
         message_id: str | None = None,
+        platform=None,
+        protected_values=(),
     ) -> dict:
         from app.services.feishu_platform import FeishuAPIError
 
         try:
+            authorization = resp.request.headers.get("Authorization", "")
+        except (RuntimeError, AttributeError):
+            authorization = ""
+        protected_values = (*protected_values, authorization,
+            authorization[7:] if authorization.startswith("Bearer ") else "")
+        try:
             data = resp.json()
         except Exception as exc:
-            raise FeishuAPIError(f"Feishu {stage} returned invalid JSON", http_status=resp.status_code) from exc
+            raise FeishuAPIError(f"Feishu {stage} returned invalid JSON", http_status=resp.status_code,
+                platform=platform, protected_values=protected_values) from exc
 
         if not isinstance(data, dict):
-            raise FeishuAPIError(f"Feishu {stage} returned invalid JSON", http_status=resp.status_code)
+            raise FeishuAPIError(f"Feishu {stage} returned invalid JSON", http_status=resp.status_code,
+                platform=platform, protected_values=protected_values)
 
         if resp.status_code >= 400:
             raise FeishuAPIError(f"Feishu {stage} HTTP {resp.status_code}: code={data.get('code')}, msg={data.get('msg', '')}",
-                http_status=resp.status_code, code=data.get("code"))
+                http_status=resp.status_code, code=data.get("code"), platform=platform, protected_values=protected_values)
 
         if data.get("code") not in (None, 0):
             raise FeishuAPIError(
                 f"Feishu {stage} failed: code={data.get('code')}, msg={data.get('msg', '')}, message_id={message_id}",
                 http_status=resp.status_code, code=data.get("code"),
+                platform=platform, protected_values=protected_values,
             )
 
         return data
@@ -88,13 +99,14 @@ class FeishuService:
                 platform.open_api_url("/auth/v3/app_access_token/internal"),
                 json={"app_id": target_app_id, "app_secret": target_app_secret},
             )
-            data = self._parse_api_response(resp, stage="get_tenant_access_token")
+            data = self._parse_api_response(resp, stage="get_tenant_access_token", platform=platform,
+                protected_values=(target_app_secret,))
         token = data.get("tenant_access_token") or data.get("app_access_token", "")
         if not isinstance(token, str) or not token:
             from app.services.feishu_platform import FeishuAPIError
 
             raise FeishuAPIError("Feishu get_tenant_access_token returned no token",
-                http_status=resp.status_code, code=data.get("code"))
+                http_status=resp.status_code, code=data.get("code"), platform=platform)
         if app_id is None:
             self._app_access_token = token
         return token
@@ -495,7 +507,7 @@ class FeishuService:
                 },
                 headers={"Authorization": f"Bearer {tenant_token}"},
             )
-        return self._parse_api_response(resp, stage="create_approval_instance").get("data", {})
+        return self._parse_api_response(resp, stage="create_approval_instance", platform=platform).get("data", {})
 
     async def get_approval_definition(
         self,
@@ -512,7 +524,7 @@ class FeishuService:
                 platform.open_api_url(f"/approval/v4/approvals/{approval_code}"),
                 headers={"Authorization": f"Bearer {tenant_token}"},
             )
-        return self._parse_api_response(resp, stage="get_approval_definition").get("data", {})
+        return self._parse_api_response(resp, stage="get_approval_definition", platform=platform).get("data", {})
 
     async def query_approval_instances(
         self,
@@ -534,7 +546,7 @@ class FeishuService:
                 json=body,
                 headers={"Authorization": f"Bearer {tenant_token}"},
             )
-        return self._parse_api_response(resp, stage="query_approval_instances").get("data", {})
+        return self._parse_api_response(resp, stage="query_approval_instances", platform=platform).get("data", {})
 
     async def get_approval_instance(
         self,
@@ -551,7 +563,7 @@ class FeishuService:
                 platform.open_api_url(f"/approval/v4/instances/{instance_id}"),
                 headers={"Authorization": f"Bearer {tenant_token}"},
             )
-        return self._parse_api_response(resp, stage="get_approval_instance").get("data", {})
+        return self._parse_api_response(resp, stage="get_approval_instance", platform=platform).get("data", {})
 
     def _get_lark_client(self, app_id: str, app_secret: str, *, extra_config: dict | None = None):
         if not _HAS_LARK:

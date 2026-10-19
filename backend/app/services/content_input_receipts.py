@@ -460,7 +460,7 @@ async def _validate_session_dependency(db, tenant_id, dependency, *, user, runti
     if model is SessionToolInvocation:
         from app.services.feishu_read_receipts import FEISHU_RESULT_TOOLS, load_feishu_result
 
-        if source.tool_name in FEISHU_RESULT_TOOLS and source.effect_state == "effect_committed":
+        if source.tool_name in FEISHU_RESULT_TOOLS and source.effect_state in {"effect_committed", "failed"}:
             proof = await load_feishu_result(db, tenant_id=tenant_id, agent_id=session.agent_id,
                 invocation=source, content_hash=version, current=True)
             reader = (await _runtime_input_actor(db, tenant_id, runtime_request))[1] if runtime_request is not None else user

@@ -432,6 +432,14 @@ class ExactSecretStreamRedactor:
         self._finished = True
         await self._drain(final=True)
 
+    async def end_message(self) -> None:
+        """Drain a complete model message while keeping later rounds usable."""
+
+        if self._finished:
+            raise RuntimeError("secret stream redactor is already finished")
+        await self._drain(final=True)
+        self._previous_source_char = ""
+
     async def _drain(self, *, final: bool) -> None:
         max_length = self._boundary.max_secret_length
         if max_length <= 0:

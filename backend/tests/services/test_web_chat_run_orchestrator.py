@@ -662,6 +662,7 @@ async def test_production_invocation_request_wires_session_v2_round_callbacks(mo
         session_id=str(session_id),
         run_uuid=run_id,
         runtime_task=SimpleNamespace(claimed_by="worker-1", claim_version=3, attempt_count=2),
+        stream_batcher=None,
         cancel_event=SimpleNamespace(),
         metadata={
             "turn_id": "turn-live",
@@ -781,6 +782,7 @@ async def test_committed_visible_envelope_broadcast_failure_defers_to_durable_ou
         session_id=str(session_id),
         run_uuid=run_id,
         metadata={"turn_id": "turn-outbox-recovery"},
+        stream_batcher=None,
         ports=SimpleNamespace(
             runtime=SimpleNamespace(
                 tenant_scoped_session=lambda _tenant_id: _TenantSession(),

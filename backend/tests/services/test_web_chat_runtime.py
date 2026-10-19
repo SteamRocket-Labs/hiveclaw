@@ -1451,6 +1451,7 @@ async def test_load_runtime_context_resolves_model_inside_tenant_transaction(mon
     model_id = uuid4()
 
     task = SimpleNamespace(
+        machine_credential_id=None,
         id=run_id,
         parent_agent_id=agent_id,
         parent_session_id=str(session_id),
@@ -1559,6 +1560,7 @@ async def test_load_runtime_context_uses_validated_team_member_model_override(mo
     primary_model_id = uuid4()
     team_model_id = uuid4()
     task = SimpleNamespace(
+        machine_credential_id=None,
         id=run_id,
         tenant_id=tenant_id,
         parent_agent_id=agent_id,
@@ -1730,6 +1732,7 @@ async def test_load_runtime_context_rejects_runtime_task_agent_tenant_mismatch(m
     agent_tenant_id = uuid4()
     task_tenant_id = uuid4()
     task = SimpleNamespace(
+        machine_credential_id=None,
         id=run_id,
         tenant_id=task_tenant_id,
         parent_agent_id=agent_id,
@@ -6699,6 +6702,35 @@ async def test_web_chat_stream_micro_batcher_flushes_sparse_delta_after_interval
 
 
 @pytest.mark.asyncio
+async def test_web_chat_stream_drain_preserves_an_inflight_persistence_write():
+    import app.services.web_chat_runtime as runtime
+
+    entered, release = asyncio.Event(), asyncio.Event()
+    sent = []
+    sealed = False
+
+    async def send(kind, text, *, reset=False):
+        entered.set()
+        await release.wait()
+        sent.append((kind, text, reset, sealed))
+
+    batcher = runtime._WebChatStreamMicroBatcher(send, flush_interval_seconds=0.001, max_chars=100)
+    await batcher.emit_chunk('complete trailing content')
+    await asyncio.wait_for(entered.wait(), 1)
+    async def drain_and_seal():
+        nonlocal sealed
+        await batcher.flush()
+        sealed = True
+
+    drain = asyncio.create_task(drain_and_seal())
+    await asyncio.sleep(0)
+    release.set()
+    await asyncio.wait_for(drain, 1)
+    await asyncio.sleep(0)
+    assert sent == [('chunk', 'complete trailing content', False, False)]
+
+
+@pytest.mark.asyncio
 async def test_web_chat_stream_micro_batcher_flushes_before_reset_and_preserves_order():
     import app.services.web_chat_runtime as runtime
 
@@ -6810,6 +6842,46 @@ async def test_dispatched_run_callback_retrieves_exception_and_logs_once(monkeyp
     assert task.exception() is not None
     assert len(errors) == 1
     assert run_key in errors[0]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("claimed", [False, True])
+async def test_completed_run_settlement_runs_after_worker_fence_closes(monkeypatch, claimed):
+    import app.services.web_chat_runtime as runtime
+    from app.services.runtime_task_fence import current_runtime_task_fence, finish_current_runtime_task_claim
+
+    run_id = uuid4()
+    settlement_fences = []
+
+    async def no_tenant(*_args, **_kwargs):
+        return None
+
+    async def no_ghost(*_args):
+        return False
+
+    async def finish_run(**_kwargs):
+        assert (current_runtime_task_fence() is not None) is claimed
+        finish_current_runtime_task_claim(task_id=run_id)
+
+    async def settle(_run_id):
+        assert _run_id == run_id
+        settlement_fences.append(current_runtime_task_fence())
+
+    monkeypatch.setattr(runtime, "resolve_tenant_for_runtime_task", no_tenant)
+    monkeypatch.setattr(runtime, "_reconcile_claimed_web_chat_terminal_ghost", no_ghost)
+    monkeypatch.setattr(runtime, "_web_chat_run_ports", lambda: None)
+    monkeypatch.setattr("app.services.web_chat_run_orchestrator.run_web_chat_task", finish_run)
+    monkeypatch.setattr(runtime, "_settle_completed_run_token_usage", settle)
+    if claimed:
+        assert runtime.dispatch_web_chat_run(run_id, claim_version=1, worker_id="settlement-worker")
+        try:
+            await runtime._TASKS[run_id.hex]
+        finally:
+            runtime._TASKS.pop(run_id.hex, None)
+            runtime._CANCEL_EVENTS.pop(run_id.hex, None)
+    else:
+        await runtime.execute_web_chat_run(run_id)
+    assert settlement_fences == [None]
 
 
 @pytest.mark.asyncio

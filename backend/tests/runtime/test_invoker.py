@@ -473,6 +473,50 @@ async def test_invoke_agent_redacts_only_exact_model_secret_from_stream_final_an
 
 
 @pytest.mark.asyncio
+async def test_model_commit_drains_secret_streams_before_seal_and_preserves_later_rounds(monkeypatch):
+    from app.kernel import InvocationResult
+    from app.runtime.invoker import AgentInvocationRequest, invoke_agent
+
+    secret = "sk-live-round-secret-0123456789"
+    chunks, thinking, commits = [], [], []
+
+    async def capture_commit(**payload):
+        commits.append((payload["logical_round_complete"], "".join(chunks), "".join(thinking)))
+        return {"sealed": True}
+
+    class FakeKernel:
+        async def handle(self, request):
+            # Physical continuations are streamed before their receipts are sealed.
+            await request.on_chunk(f"first::{secret[:12]}")
+            await request.on_chunk(f"{secret[12:]}::tail")
+            await request.on_thinking(f"thought::{secret}")
+            await request.model_response_commit(logical_round_complete=False, response={"content": "first"})
+            await request.model_response_commit(logical_round_complete=True, response={"content": "first"})
+            await request.on_chunk(f"second::{secret}::done")
+            await request.on_thinking("next thought")
+            await request.model_response_commit(logical_round_complete=True, response={"content": "second"})
+            return InvocationResult(content="second")
+
+    monkeypatch.setattr("app.runtime.invoker._resolve_kernel_for_request", lambda _request: FakeKernel())
+    await invoke_agent(AgentInvocationRequest(
+        model=SimpleNamespace(id=uuid4(), provider="openai", model="gpt-4.1", api_key=secret, base_url=None),
+        messages=[{"role": "user", "content": "Run both rounds."}],
+        agent_name="Agent", role_description="desc", agent_id=uuid4(), user_id=uuid4(),
+        on_chunk=chunks.append, on_thinking=thinking.append, model_response_commit=capture_commit,
+    ))
+
+    first = "first::[REDACTED_SECRET]::tail"
+    thought = "thought::[REDACTED_SECRET]"
+    assert commits == [
+        (False, first, thought),
+        (True, first, thought),
+        (True, first + "second::[REDACTED_SECRET]::done", thought + "next thought"),
+    ]
+    assert "".join(chunks) == commits[-1][1]
+    assert "".join(thinking) == commits[-1][2]
+
+
+@pytest.mark.asyncio
 async def test_invoke_agent_records_stream_only_secret_redaction(monkeypatch):
     from app.kernel import InvocationResult
     from app.runtime.invoker import AgentInvocationRequest, invoke_agent

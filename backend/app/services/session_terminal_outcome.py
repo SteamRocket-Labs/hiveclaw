@@ -34,6 +34,29 @@ class TerminalReadArtifactSelectionNeedsReconciliation(TerminalOutcomeNeedsRecon
     """A sealed file read needs current source access before artifact publication."""
 
 
+class _ActiveRuntimeTaskClaim(RuntimeError):
+    """Terminal recovery must wait for the current worker to finish or expire."""
+
+
+def _active_runtime_claim_exists(run_id: Any, tenant_id: Any, now: datetime):
+    return select(RuntimeTask.id).where(
+        RuntimeTask.id == run_id,
+        RuntimeTask.tenant_id == tenant_id,
+        RuntimeTask.status == "running",
+        RuntimeTask.claimed_by.is_not(None),
+        RuntimeTask.claimed_by != "",
+        RuntimeTask.claim_expires_at > now,
+    ).correlate_except(RuntimeTask).exists()
+
+
+def _require_inactive_worker(task: RuntimeTask) -> None:
+    expires_at = task.claim_expires_at
+    if expires_at is not None and expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+    if task.status == "running" and task.claimed_by and expires_at is not None and expires_at > datetime.now(timezone.utc):
+        raise _ActiveRuntimeTaskClaim("terminal recovery encountered an active worker lease")
+
+
 def _read_selection_retry(task: RuntimeTask, result_id: uuid.UUID) -> bool:
     hold = (task.metadata_json or {}).get("session_v2_reconciliation") or {}
     return (task.status == "needs_reconciliation" and hold.get("reason") == "terminal_artifact_selection"
@@ -254,6 +277,7 @@ async def prepare_and_seal_run_outcome(
     turn_id: str,
     run_id: uuid.UUID,
     terminal_result_id: uuid.UUID,
+    recovery: bool = False,
 ) -> SessionRunOutcome:
     """Seal one terminal candidate only after every current obligation is terminal."""
 
@@ -270,6 +294,8 @@ async def prepare_and_seal_run_outcome(
     )
     if task is None:
         raise TerminalOutcomeIneligible("runtime task not found")
+    if recovery:
+        _require_inactive_worker(task)
     outcome_uuid = _outcome_id(run_id)
     outcome = await db.scalar(
         select(SessionRunOutcome)
@@ -437,6 +463,7 @@ async def commit_terminal_outcome(
     session_id: uuid.UUID,
     run_id: uuid.UUID,
     outcome_id: uuid.UUID,
+    recovery: bool = False,
 ) -> SessionRunOutcome:
     """Atomically publish final envelope and Run/Turn terminal facts."""
 
@@ -453,6 +480,8 @@ async def commit_terminal_outcome(
     )
     if task is None:
         raise TerminalOutcomeNeedsReconciliation("runtime task missing during terminal commit")
+    if recovery:
+        _require_inactive_worker(task)
     outcome = await db.scalar(
         select(SessionRunOutcome)
         .where(
@@ -737,6 +766,7 @@ async def locate_terminal_outcome_recovery_candidates(
         select(SessionRunOutcome.tenant_id, SessionRunOutcome.id)
         .where(
             SessionRunOutcome.state.in_(("sealed", "needs_reconciliation")),
+            ~_active_runtime_claim_exists(SessionRunOutcome.run_id, SessionRunOutcome.tenant_id, current),
             (
                 SessionRunOutcome.reconciliation_lease_expires_at.is_(None)
                 | (SessionRunOutcome.reconciliation_lease_expires_at <= current)
@@ -770,7 +800,8 @@ async def locate_terminal_result_recovery_candidates(
     statement = (
         select(SessionModelResult.tenant_id, SessionModelResult.id, SessionModelResult.run_id)
         .join(ChatTranscriptEvent, ChatTranscriptEvent.id == SessionModelResult.round_committed_event_id)
-        .where(SessionModelResult.state == "round_committed", ~committed_outcome_exists)
+        .where(SessionModelResult.state == "round_committed", ~committed_outcome_exists,
+            ~_active_runtime_claim_exists(SessionModelResult.run_id, SessionModelResult.tenant_id, datetime.now(timezone.utc)))
         .order_by(ChatTranscriptEvent.sequence.desc(), SessionModelResult.id.desc())
         .limit(max(1, int(limit)) * 4)
     )
@@ -817,6 +848,7 @@ async def recover_terminal_outcomes_once(
         )
         .where(
             SessionRunOutcome.state.in_(("sealed", "needs_reconciliation")),
+            ~_active_runtime_claim_exists(SessionRunOutcome.run_id, SessionRunOutcome.tenant_id, now),
             (
                 SessionRunOutcome.reconciliation_lease_expires_at.is_(None)
                 | (SessionRunOutcome.reconciliation_lease_expires_at <= now)
@@ -856,9 +888,12 @@ async def recover_terminal_outcomes_once(
                 session_id=session_id,
                 run_id=outcome_run_id,
                 outcome_id=outcome_id,
+                recovery=True,
             )
             await db.commit()
             completed += 1
+        except _ActiveRuntimeTaskClaim:
+            await db.rollback()
         except (TerminalOutcomeIneligible, TerminalOutcomeNeedsReconciliation) as exc:
             await db.rollback()
             await _record_terminal_outcome_recovery_hold(
@@ -893,6 +928,12 @@ async def _record_terminal_outcome_recovery_hold(
     task = await db.scalar(
         select(RuntimeTask).where(RuntimeTask.id == run_id, RuntimeTask.tenant_id == tenant_id).with_for_update()
     )
+    if task is not None:
+        try:
+            _require_inactive_worker(task)
+        except _ActiveRuntimeTaskClaim:
+            await db.rollback()
+            return
     outcome = await db.scalar(
         select(SessionRunOutcome)
         .where(
@@ -956,7 +997,8 @@ async def recover_terminal_candidates_once(
                 RuntimeTask.tenant_id == SessionModelResult.tenant_id,
             ),
         )
-        .where(SessionModelResult.state == "round_committed", ~committed_outcome_exists)
+        .where(SessionModelResult.state == "round_committed", ~committed_outcome_exists,
+            ~_active_runtime_claim_exists(SessionModelResult.run_id, SessionModelResult.tenant_id, datetime.now(timezone.utc)))
         .order_by(ChatTranscriptEvent.sequence.desc(), SessionModelResult.id.desc())
         .limit(max(1, int(limit)) * 4)
     )
@@ -991,6 +1033,7 @@ async def recover_terminal_candidates_once(
                 turn_id=turn_id,
                 run_id=result_run_id,
                 terminal_result_id=result_id,
+                recovery=True,
             )
             await commit_terminal_outcome(
                 db,
@@ -999,9 +1042,12 @@ async def recover_terminal_candidates_once(
                 session_id=session_id,
                 run_id=result_run_id,
                 outcome_id=outcome.id,
+                recovery=True,
             )
             await db.commit()
             completed += 1
+        except _ActiveRuntimeTaskClaim:
+            await db.rollback()
         except TerminalReadArtifactSelectionNeedsReconciliation as exc:
             await db.rollback()
             await _record_terminal_outcome_recovery_hold(db, tenant_id=tenant_id, session_id=session_id,

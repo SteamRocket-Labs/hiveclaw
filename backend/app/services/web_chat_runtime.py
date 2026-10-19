@@ -329,6 +329,7 @@ class _WebChatStreamMicroBatcher:
         self._last_flush_at = clock()
         self._pending: list[tuple[str, str]] = []
         self._flush_task: asyncio.Task[None] | None = None
+        self._flush_lock = asyncio.Lock()
 
     def _pending_char_count(self) -> int:
         return sum(len(text) for _kind, text in self._pending)
@@ -382,20 +383,23 @@ class _WebChatStreamMicroBatcher:
         self._last_flush_at = self._clock()
 
     async def flush(self) -> None:
-        self._cancel_scheduled_flush()
-        if not self._pending:
-            return
-        pending = self._pending
-        self._pending = []
-        grouped: list[tuple[str, str]] = []
-        for kind, text in pending:
-            if grouped and grouped[-1][0] == kind:
-                grouped[-1] = (kind, f"{grouped[-1][1]}{text}")
-            else:
-                grouped.append((kind, text))
-        for kind, text in grouped:
-            await self._send(kind, text, reset=False)
-        self._last_flush_at = self._clock()
+        # A caller draining before a model seal must also await a timer's
+        # in-flight persistence, even after that timer emptied _pending.
+        async with self._flush_lock:
+            self._cancel_scheduled_flush()
+            if not self._pending:
+                return
+            pending = self._pending
+            self._pending = []
+            grouped: list[tuple[str, str]] = []
+            for kind, text in pending:
+                if grouped and grouped[-1][0] == kind:
+                    grouped[-1] = (kind, f"{grouped[-1][1]}{text}")
+                else:
+                    grouped.append((kind, text))
+            for kind, text in grouped:
+                await self._send(kind, text, reset=False)
+            self._last_flush_at = self._clock()
 
 
 class ActiveWebChatRunExists(Exception):
@@ -2350,17 +2354,26 @@ def dispatch_web_chat_run(
         return False
     cancel_event = cancel_event or asyncio.Event()
     _CANCEL_EVENTS[run_key] = cancel_event
-    work = execute_web_chat_run(run_uuid, cancel_event=cancel_event)
     if claim_version is not None:
         from app.services.runtime_task_fence import run_claimed_runtime_task
 
-        work = run_claimed_runtime_task(
-            work,
-            task_id=run_uuid,
-            claim_version=claim_version,
-            worker_id=worker_id or "unknown",
-            lease_seconds=float(get_settings().RUNTIME_TASK_CLAIM_LEASE_SECONDS),
-        )
+        async def claimed_work() -> None:
+            try:
+                await run_claimed_runtime_task(
+                    execute_web_chat_run(run_uuid, cancel_event=cancel_event),
+                    task_id=run_uuid,
+                    claim_version=claim_version,
+                    worker_id=worker_id or "unknown",
+                    lease_seconds=float(get_settings().RUNTIME_TASK_CLAIM_LEASE_SECONDS),
+                )
+            finally:
+                # The claim wrapper has reset its fence. Terminal accounting
+                # now verifies the durable result in its own transactions.
+                await _settle_completed_run_after_execution(run_uuid)
+
+        work = claimed_work()
+    else:
+        work = execute_web_chat_run(run_uuid, cancel_event=cancel_event)
     task = asyncio.create_task(work, name=f"web-chat-run-{run_key}")
     _TASKS[run_key] = task
     task.add_done_callback(lambda finished, run_id=run_key: _finish_dispatched_web_chat_run(finished, run_key=run_id))
@@ -6477,14 +6490,19 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
         # The run's own terminal state is durable here and this caller holds
         # no row lock, so the completed-run settlement (own transactions per
         # charge) can never deadlock with the lifecycle that just finished.
-        try:
-            await _settle_completed_run_token_usage(run_uuid)
-        except Exception as exc:
-            logger.warning(
-                "[WebChatRuntime] completed-run token settlement raised for run {}: {}",
-                run_uuid,
-                exc,
-            )
+        if current_runtime_task_fence() is None:
+            await _settle_completed_run_after_execution(run_uuid)
+
+
+async def _settle_completed_run_after_execution(run_uuid: uuid.UUID) -> None:
+    try:
+        await _settle_completed_run_token_usage(run_uuid)
+    except Exception as exc:
+        logger.warning(
+            "[WebChatRuntime] completed-run token settlement raised for run {}: {}",
+            run_uuid,
+            exc,
+        )
 
 
 async def _reconcile_claimed_web_chat_terminal_ghost(run_uuid: uuid.UUID) -> bool:

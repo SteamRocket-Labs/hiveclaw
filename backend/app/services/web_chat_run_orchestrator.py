@@ -1162,6 +1162,10 @@ async def _commit_session_model_response(state: _WebChatRunState, **payload: Any
         seal_model_response,
     )
 
+    # Stream deltas belong to the prepared result. Drain them before the
+    # immutable seal changes that result's state or the next request owns it.
+    if state.stream_batcher is not None:
+        await state.stream_batcher.flush()
     live_visible_envelopes: list[dict[str, Any]] = []
     async with state.ports.runtime.tenant_scoped_session(state.agent.tenant_id) as db:
         try:

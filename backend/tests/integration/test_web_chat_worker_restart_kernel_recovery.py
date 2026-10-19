@@ -412,6 +412,7 @@ async def _run_turn(
         )
     state = SimpleNamespace(
         agent=SimpleNamespace(id=seed["agent_id"], tenant_id=seed["tenant_id"]),
+        user=SimpleNamespace(id=seed["user_id"], machine_credential_id=None),
         session_id=str(seed["session_id"]),
         run_uuid=seed["run_id"],
         metadata=metadata,
@@ -421,6 +422,7 @@ async def _run_turn(
             attempt_count=_owner[2],
         ),
         active_provider_request_id=None,
+        stream_batcher=None,
         ports=SimpleNamespace(
             runtime=SimpleNamespace(tenant_scoped_session=_tenant_session),
             events=SimpleNamespace(broadcast=_broadcast),

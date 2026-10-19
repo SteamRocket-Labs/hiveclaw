@@ -1689,6 +1689,65 @@ async def test_two_recovery_workers_commit_one_terminal_candidate_without_duplic
         )
 
 
+@pytest.mark.parametrize("sealed", [False, True])
+async def test_terminal_recovery_waits_for_active_worker_lease(owner_sessionmaker, sealed) -> None:
+    from datetime import datetime, timedelta, timezone
+    from app.models.runtime_task import RuntimeTask
+    from app.services.session_model_round import commit_model_response
+    from app.services import session_terminal_outcome as outcomes
+    from app.services.runtime_task_worker import recover_session_terminal_outcomes_once
+
+    tenant_id, agent_id, session_id, run_id, turn_id = await _seed(owner_sessionmaker)
+    async with owner_sessionmaker() as db:
+        task = await db.get(RuntimeTask, run_id)
+        task.claimed_by, task.claim_version = "live-terminal-worker", 7
+        task.claim_expires_at = datetime.now(timezone.utc) + timedelta(minutes=1)
+        request_id, _ = await _prepare(db, tenant_id=tenant_id, agent_id=agent_id,
+            session_id=session_id, run_id=run_id, turn_id=turn_id)
+        result = await commit_model_response(db, tenant_id=tenant_id, agent_id=agent_id,
+            session_id=session_id, run_id=run_id, turn_id=turn_id, round_index=1,
+            provider_request_id=request_id,
+            response={"content": "complete after worker finishes", "tool_calls": [], "finish_reason": "stop", "usage": {}})
+        if sealed:
+            outcome = await outcomes.prepare_and_seal_run_outcome(db, tenant_id=tenant_id, agent_id=agent_id,
+                session_id=session_id, run_id=run_id, turn_id=turn_id, terminal_result_id=uuid.UUID(result["result_id"]))
+            outcome_id = outcome.id
+        await db.commit()
+
+    recovered = await recover_session_terminal_outcomes_once(worker_id="recovery-worker", run_id=run_id,
+        session_factory=owner_sessionmaker)
+    assert not any(recovered.values()), recovered
+    # Discovery is advisory. Even a previously located candidate must recheck
+    # the current lease under the writer's task lock.
+    async with owner_sessionmaker() as db:
+        with pytest.raises(outcomes._ActiveRuntimeTaskClaim):
+            if sealed:
+                await outcomes.commit_terminal_outcome(db, tenant_id=tenant_id, agent_id=agent_id,
+                    session_id=session_id, run_id=run_id, outcome_id=outcome_id, recovery=True)
+            else:
+                await outcomes.prepare_and_seal_run_outcome(db, tenant_id=tenant_id, agent_id=agent_id,
+                    session_id=session_id, run_id=run_id, turn_id=turn_id,
+                    terminal_result_id=uuid.UUID(result["result_id"]), recovery=True)
+        await db.rollback()
+    async with owner_sessionmaker() as db:
+        await outcomes._record_terminal_outcome_recovery_hold(db, tenant_id=tenant_id, session_id=session_id,
+            run_id=run_id, outcome_id=outcomes._outcome_id(run_id), worker_id="recovery-worker",
+            now=datetime.now(timezone.utc), reason="read_selection_retry",
+            read_selection_result_id=uuid.UUID(result["result_id"]))
+    async with owner_sessionmaker() as db:
+        task = await db.get(RuntimeTask, run_id)
+        assert task.status == "running" and task.claim_version == 7
+        task.claim_expires_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+        await db.commit()
+
+    recovered = await recover_session_terminal_outcomes_once(worker_id="recovery-worker", run_id=run_id,
+        session_factory=owner_sessionmaker)
+    assert recovered["sealed_terminal_committed" if sealed else "candidate_terminal_committed"] == 1
+    async with owner_sessionmaker() as db:
+        task = await db.get(RuntimeTask, run_id)
+        assert task.status == "completed" and task.claim_version == 8
+
+
 async def test_unresolved_obligation_blocks_terminal_outcome(owner_sessionmaker) -> None:
     from app.services.session_model_round import commit_model_response
     from app.services.session_terminal_outcome import TerminalOutcomeIneligible, prepare_and_seal_run_outcome

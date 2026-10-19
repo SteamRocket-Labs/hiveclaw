@@ -191,6 +191,12 @@ async def _assemble_invocation_state(
         safe_payload = redact_payload("model_response_commit", payload)
         if request.model_response_commit is None:
             return None
+        # The kernel streams all physical continuations before sealing their
+        # receipts. Release the protected suffix before any result is sealed;
+        # the next logical message keeps the same redaction evidence counters.
+        for redactor in (secret_stream_redactor, secret_thinking_redactor):
+            if redactor is not None:
+                await redactor.end_message()
         receipt = await ports.maybe_await(request.model_response_commit(**safe_payload))
         return redact_payload("model_response_receipt", receipt)
 

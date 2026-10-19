@@ -223,17 +223,7 @@ class DingTalkStreamManager:
     async def start_all(self):
         """Start Stream clients for all configured DingTalk agents."""
         logger.info("[DingTalk Stream] Initializing all active DingTalk channels...")
-        async with (
-            async_session() as db,
-            enter_rls_bypass(db, reason="dingtalk start_all — enumerate all configured channels across tenants"),
-        ):
-            result = await db.execute(
-                select(ChannelConfig).where(
-                    ChannelConfig.is_configured,
-                    ChannelConfig.channel_type == "dingtalk",
-                )
-            )
-            configs = result.scalars().all()
+        configs, company_configs = await self._configured_channels()
 
         logger.info(f"[DingTalk Stream] Found {len(configs)} configured DingTalk channel(s)")
 
@@ -247,6 +237,35 @@ class DingTalkStreamManager:
                 )
             else:
                 logger.warning(f"[DingTalk Stream] Skipping agent {config.agent_id}: missing credentials")
+        from app.services.company_dingtalk_stream import company_dingtalk_stream_manager
+        company_dingtalk_stream_manager.start_reconciler(self._configured_companies)
+        for config in company_configs:
+            await company_dingtalk_stream_manager.reconcile(config)
+
+    async def _configured_channels(self):
+        async with (
+            async_session() as db,
+            enter_rls_bypass(db, reason="dingtalk start_all — enumerate all configured channels across tenants"),
+        ):
+            result = await db.execute(
+                select(ChannelConfig).where(
+                    ChannelConfig.is_configured,
+                    ChannelConfig.channel_type == "dingtalk",
+                )
+            )
+            configs = result.scalars().all()
+            from app.models.tenant_channel_config import TenantChannelConfig
+            from app.models.tenant import Tenant
+            company_configs = list(await db.scalars(select(TenantChannelConfig).join(Tenant,
+                Tenant.id == TenantChannelConfig.tenant_id).where(Tenant.is_active.is_(True),
+                TenantChannelConfig.channel_type == "dingtalk", TenantChannelConfig.is_active.is_(True),
+                TenantChannelConfig.extra_config["messaging_enabled"].as_boolean().is_(True))))
+
+        return configs, company_configs
+
+    async def _configured_companies(self):
+        _, configs = await self._configured_channels()
+        return configs
 
     def status(self) -> dict:
         """Return status of all active Stream clients."""

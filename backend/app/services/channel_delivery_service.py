@@ -18,6 +18,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.channel_config import ChannelConfig
+from app.services.channel_provider_receipts import ProviderReceiptError
 from app.services.activity_logger import log_activity
 from app.services.exact_secret_boundary import (
     ExactSecretBoundary,
@@ -566,16 +567,10 @@ class ChannelDeliveryService:
                 await _send_slack_messages(str(config.app_secret or ""), channel_id, text)
                 result = ChannelDeliveryService._success(channel, "Slack message delivered.", channel_id=channel_id)
             elif channel == "dingtalk":
-                import httpx
+                from app.services.channel_provider_receipts import send_dingtalk_text
 
                 session_webhook = str(target.get("session_webhook") or "").strip()
-                if not session_webhook:
-                    raise ValueError("missing session_webhook")
-                async with httpx.AsyncClient(timeout=10) as client:
-                    await client.post(
-                        session_webhook,
-                        json={"msgtype": "markdown", "markdown": {"title": "AI Reply", "text": text}},
-                    )
+                await send_dingtalk_text(session_webhook, text)
                 result = ChannelDeliveryService._success(
                     channel,
                     "DingTalk message delivered.",
@@ -763,7 +758,8 @@ class ChannelDeliveryService:
             result = ChannelDeliveryService._failed(
                 channel,
                 error.text,
-                retryable=True,
+                status=exc.status if isinstance(exc, ProviderReceiptError) else "failed",
+                retryable=exc.retryable if isinstance(exc, ProviderReceiptError) else True,
                 secret_evidence_refs=list(error.matched_refs),
             )
 

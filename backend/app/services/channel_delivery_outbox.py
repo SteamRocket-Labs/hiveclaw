@@ -400,11 +400,11 @@ class ChannelDeliveryOutboxService:
     def _has_ambiguous_part(item: ClaimedChannelDelivery) -> bool:
         receipts = item.delivery_receipts
         text_receipt = receipts.get("text") if isinstance(receipts, dict) else None
-        if isinstance(text_receipt, dict) and text_receipt.get("state") == "sending":
+        if isinstance(text_receipt, dict) and text_receipt.get("state") in {"sending", "unknown"}:
             return True
         artifacts = receipts.get("artifacts") if isinstance(receipts, dict) else None
         return isinstance(artifacts, dict) and any(
-            isinstance(value, dict) and value.get("state") == "sending" for value in artifacts.values()
+            isinstance(value, dict) and value.get("state") in {"sending", "unknown"} for value in artifacts.values()
         )
 
     async def _update_part_receipt(
@@ -563,7 +563,7 @@ class ChannelDeliveryOutboxService:
         )
         result = await sender(idempotency_key=idempotency_key, **sender_kwargs)
         receipt = {
-            "state": "delivered" if result.ok else "failed",
+            "state": "delivered" if result.ok else "unknown" if result.status == "unknown" else "failed",
             "idempotency_key": idempotency_key,
             "provider_status": result.status,
             "message": result.message,
@@ -580,6 +580,8 @@ class ChannelDeliveryOutboxService:
         if result.ok:
             return
         error = f"{item.channel} {part_key} delivery failed: {result.message}"
+        if result.status == "unknown":
+            raise ChannelDeliveryAmbiguousError(error)
         if result.retryable:
             raise ChannelDeliveryRetryableError(error)
         raise ChannelDeliveryPermanentError(error)

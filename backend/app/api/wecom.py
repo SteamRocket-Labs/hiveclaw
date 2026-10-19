@@ -38,32 +38,10 @@ async def _send_wecom_text_message(
     text: str,
 ) -> dict:
     """Send a WeCom text message through the official webhook API."""
-    import httpx
+    from app.services.channel_provider_receipts import send_wecom_text
 
-    async with httpx.AsyncClient(timeout=10) as client:
-        tok_resp = await client.get(
-            "https://qyapi.weixin.qq.com/cgi-bin/gettoken",
-            params={"corpid": corp_id, "corpsecret": corp_secret},
-        )
-        tok_resp.raise_for_status()
-        token_payload = tok_resp.json()
-        access_token = token_payload.get("access_token", "")
-        if not access_token:
-            raise ValueError(f"failed to obtain wecom access_token: {token_payload}")
-        send_resp = await client.post(
-            f"https://qyapi.weixin.qq.com/cgi-bin/message/send?access_token={access_token}",
-            json={
-                "touser": to_user,
-                "msgtype": "text",
-                "agentid": int(agent_id),
-                "text": {"content": text},
-            },
-        )
-        send_resp.raise_for_status()
-        payload = send_resp.json()
-        if payload.get("errcode", 0) != 0:
-            raise ValueError(f"wecom send failed: {payload}")
-        return payload
+    return await send_wecom_text(corp_id=corp_id, corp_secret=corp_secret,
+        agent_id=agent_id, to_user=to_user, text=text)
 
 
 def _pad(text: bytes) -> bytes:
@@ -75,7 +53,11 @@ def _pad(text: bytes) -> bytes:
 
 def _unpad(text: bytes) -> bytes:
     """Remove PKCS7 padding."""
+    if not text:
+        raise ValueError("Invalid WeCom message padding")
     pad_len = text[-1]
+    if pad_len < 1 or pad_len > 32 or text[-pad_len:] != bytes([pad_len]) * pad_len:
+        raise ValueError("Invalid WeCom message padding")
     return text[:-pad_len]
 
 
@@ -86,15 +68,38 @@ def _decrypt_msg(encrypt_key: str, encrypted_text: str) -> tuple[str, str]:
     """
     from Crypto.Cipher import AES
 
-    aes_key = base64.b64decode(encrypt_key + "=")
+    if len(encrypt_key) != 43:
+        raise ValueError("Invalid WeCom message key")
+    aes_key = base64.b64decode(encrypt_key + "=", validate=True)
     iv = aes_key[:16]
     cipher = AES.new(aes_key, AES.MODE_CBC, iv)
-    decrypted = _unpad(cipher.decrypt(base64.b64decode(encrypted_text)))
+    decrypted = _unpad(cipher.decrypt(base64.b64decode(encrypted_text, validate=True)))
+    if len(decrypted) < 21:
+        raise ValueError("Invalid WeCom message frame")
     # Skip 16 random bytes, then 4 bytes msg_length (network order)
     msg_len = struct.unpack("!I", decrypted[16:20])[0]
+    if msg_len > len(decrypted) - 21:
+        raise ValueError("Invalid WeCom message frame")
     msg_content = decrypted[20 : 20 + msg_len].decode("utf-8")
     corp_id = decrypted[20 + msg_len :].decode("utf-8")
     return msg_content, corp_id
+
+
+def authenticate_wecom_callback(config, *, signature, timestamp, nonce, encrypted):
+    """Authenticate both the encrypted transport and its configured recipient."""
+    import hmac
+    if not config.verification_token or not config.encrypt_key or not timestamp or not nonce or not encrypted:
+        raise HTTPException(403, "WeCom callback authentication required")
+    expected = _verify_signature(config.verification_token, timestamp, nonce, encrypted)
+    if not hmac.compare_digest(expected, signature):
+        raise HTTPException(403, "WeCom callback signature rejected")
+    try:
+        message, recipient = _decrypt_msg(config.encrypt_key, encrypted)
+    except (ValueError, UnicodeError, struct.error):
+        raise HTTPException(403, "WeCom callback frame rejected") from None
+    if not hmac.compare_digest(recipient, str(config.app_id or "")):
+        raise HTTPException(403, "WeCom callback recipient rejected")
+    return message
 
 
 def _encrypt_msg(encrypt_key: str, reply_msg: str, corp_id: str) -> str:
@@ -299,22 +304,9 @@ async def wecom_verify_webhook(
     if not config:
         return Response(status_code=404)
 
-    token = config.verification_token or ""
-    encoding_aes_key = config.encrypt_key or ""
-
-    # Verify signature
-    expected_sig = _verify_signature(token, timestamp, nonce, echostr)
-    if expected_sig != msg_signature:
-        logger.warning(f"[WeCom] Signature mismatch: expected={expected_sig}, got={msg_signature}")
-        return Response(status_code=403)
-
-    # Decrypt echostr and return plaintext
-    try:
-        decrypted, _ = _decrypt_msg(encoding_aes_key, echostr)
-        return Response(content=decrypted, media_type="text/plain")
-    except Exception as e:
-        logger.error(f"[WeCom] Failed to decrypt echostr: {e}")
-        return Response(status_code=500)
+    decrypted = authenticate_wecom_callback(config, signature=msg_signature, timestamp=timestamp,
+        nonce=nonce, encrypted=echostr)
+    return Response(content=decrypted, media_type="text/plain")
 
 
 @router.post("/channel/wecom/{agent_id}/webhook")
@@ -334,29 +326,13 @@ async def wecom_event_webhook(
     if not config:
         return Response(status_code=404)
 
-    token = config.verification_token or ""
-    encoding_aes_key = config.encrypt_key or ""
-
-    # Parse encrypted XML body
     try:
         root = ET.fromstring(body_bytes)
         encrypt_text = root.findtext("Encrypt", "")
-    except Exception as e:
-        logger.error(f"[WeCom] Failed to parse XML body: {e}")
-        return Response(content="success", media_type="text/plain")
-
-    # Verify signature
-    expected_sig = _verify_signature(token, timestamp, nonce, encrypt_text)
-    if expected_sig != msg_signature:
-        logger.warning("[WeCom] Signature mismatch on POST")
-        return Response(status_code=403)
-
-    # Decrypt message
-    try:
-        decrypted_xml, recv_corp_id = _decrypt_msg(encoding_aes_key, encrypt_text)
-    except Exception as e:
-        logger.error(f"[WeCom] Failed to decrypt message: {e}")
-        return Response(content="success", media_type="text/plain")
+    except ET.ParseError:
+        raise HTTPException(400, "Invalid WeCom callback XML") from None
+    decrypted_xml = authenticate_wecom_callback(config, signature=msg_signature, timestamp=timestamp,
+        nonce=nonce, encrypted=encrypt_text)
 
     logger.info(f"[WeCom] Decrypted event for {agent_id}")
 
@@ -389,7 +365,7 @@ async def wecom_event_webhook(
             provider_event_id=str(msg_id or ""),
             handler_key="wecom.webhook",
             body={"from_user": from_user, "user_text": user_text},
-            metadata={"transport": "encrypted_webhook", "corp_id": recv_corp_id},
+            metadata={"transport": "encrypted_webhook", "corp_id": config.app_id},
         )
 
     elif msg_type in ("image", "file"):

@@ -18,7 +18,7 @@ async def load_tenant_channel_for_target(db, *, agent_id, channel, target, expec
         principal_id = uuid.UUID(str(target["external_principal_id"])) if target.get("external_principal_id") else None
     except (KeyError, TypeError, ValueError):
         return None
-    if channel != "feishu" or expected_config_id is not None and config_id != expected_config_id:
+    if channel not in {"feishu", "dingtalk", "wecom"} or expected_config_id is not None and config_id != expected_config_id:
         return None
     config = await db.scalar(select(TenantChannelConfig).join(Agent, Agent.tenant_id == TenantChannelConfig.tenant_id)
         .where(Agent.id == agent_id, TenantChannelConfig.id == config_id, TenantChannelConfig.channel_type == channel,
@@ -47,4 +47,11 @@ async def load_tenant_channel_for_target(db, *, agent_id, channel, target, expec
         return None
     actor = await load_external_runtime_actor(db, tenant_id=config.tenant_id,
         principal_id=principal.id, expected_user_id=principal.linked_user_id)
+    if channel in {"dingtalk", "wecom"}:
+        from app.services.company_channel_identity import company_channel_ready
+        recipient = target.get("user_id") if channel == "wecom" else target.get("sender_staff_id")
+        if not company_channel_ready(config) or recipient != principal.subject_id:
+            return None
+        if channel == "dingtalk" and target.get("conversation_type") != "1":
+            return None
     return config if actor.authority_bound else None

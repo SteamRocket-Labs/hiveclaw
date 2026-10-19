@@ -31,6 +31,8 @@ SUPPORTED_CHANNEL_INGRESS_HANDLERS = (
     "dingtalk.stream_message",
     "wecom.stream_message",
     "wechat_personal.stream_message",
+    "company.wecom.message",
+    "company.dingtalk.message",
 )
 
 
@@ -147,6 +149,9 @@ async def _dispatch_verified_payload(db, item: ClaimedChannelIngressEvent) -> di
     body = dict(item.payload.get("body") or item.payload)
     replay_request = ChannelIngressReplayRequest(event_id=item.id, body=body)
 
+    if key in {"company.wecom.message", "company.dingtalk.message"}:
+        from app.services.company_channel_runtime import process_company_message
+        return await process_company_message(db, item, body)
     if key == "slack.event_callback":
         from app.api.slack import slack_event_webhook
 

@@ -100,6 +100,7 @@ def test_list_external_principals_is_tenant_scoped_and_filters(monkeypatch):
             "provider": "slack",
             "installation_ref": "T1:A1",
             "channel_config_id": str(principal.channel_config_id),
+            "tenant_channel_config_id": None,
             "subject_id": "U123",
             "display_name": "External Example Owner",
             "linked_user_id": None,

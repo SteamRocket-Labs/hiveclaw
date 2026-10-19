@@ -87,3 +87,22 @@ it('reports assignment conflicts and links to the existing department repair sur
   await screen.findByText((text) => text.includes(en.companyDirectory.assignmentReview));
   expect(screen.getByRole('link', { name: en.companyDirectory.departments }).getAttribute('href')).toBe('#org-department-cutover');
 });
+
+
+it('enables company messaging with exact company credentials and no directory or identity side effect', async () => {
+  mocks.save.mockImplementationOnce(async (_provider, value) => {
+    const saved = { ...config(), revision: 'two', extra_config: value.extra_config };
+    mocks.read.mockResolvedValue([saved]);
+    return saved;
+  });
+  mount();
+  await screen.findByDisplayValue('dingtalk-app');
+  fireEvent.click(screen.getByLabelText(en.companyMessaging.enable));
+  fireEvent.change(screen.getByLabelText('Corp ID'), { target: { value: 'synthetic-company-corp' } });
+  expect((screen.getByRole('button', { name: en.enterprise.org.syncNow }) as HTMLButtonElement).disabled).toBe(true);
+  fireEvent.click(screen.getByRole('button', { name: en.companyDirectory.save }));
+  await screen.findByText(en.companyDirectory.saved);
+  expect(mocks.save).toHaveBeenLastCalledWith('dingtalk', { ...scope, app_id: 'dingtalk-app', is_active: true,
+    expected_revision: 'one', extra_config: { messaging_enabled: true, corp_id: 'synthetic-company-corp' } });
+  expect(mocks.sync).not.toHaveBeenCalled();
+});

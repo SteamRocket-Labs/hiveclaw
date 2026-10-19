@@ -132,7 +132,7 @@ async def _runtime_actor(
     bound = bool(
         user is not None
         and principal.status == "active"
-        and principal.binding_method in {"wechat_qr", "feishu_qr", "feishu_tenant_identity"}
+        and principal.binding_method in {"wechat_qr", "feishu_qr", "feishu_tenant_identity", "company_channel_challenge"}
         and principal.binding_verified_at is not None
     )
     if bound and principal.binding_method == "feishu_tenant_identity":
@@ -144,6 +144,9 @@ async def _runtime_actor(
         proof = await resolve_tenant_feishu_identity(db, config=config, sender={"open_id": principal.subject_id})
         bound = bool(config is not None and principal.installation_ref == channel_installation_ref(config, fallback="")
             and proof is not None and proof[0].id == user.id)
+    if bound and principal.binding_method == "company_channel_challenge":
+        from app.services.company_channel_identity import company_binding_proof
+        bound = await company_binding_proof(db, principal=principal, user_id=user.id) is not None
     return ChannelRuntimeActor(
         id=user.id if bound else None,
         external_principal_id=principal.id,
@@ -351,6 +354,11 @@ async def _link_verified_external_principal(
     if principal.status != "active":
         raise ExternalPrincipalRevokedError("external principal is revoked")
     expected_method = {"wechat_personal": "wechat_qr", "feishu": "feishu_qr"}.get(principal.provider)
+    if principal.provider in {"dingtalk", "wecom"} and principal.tenant_channel_config_id is not None:
+        from app.services.company_channel_identity import company_binding_proof
+        if await company_binding_proof(db, principal=principal, user_id=user_uuid) is None:
+            raise ExternalPrincipalAuthorityError("company binding lacks a current self-issued transport proof")
+        expected_method = "company_channel_challenge"
     if getattr(principal, "tenant_channel_config_id", None) is not None and principal.provider == "feishu":
         from app.models.tenant_channel_config import TenantChannelConfig
         from app.services.channel_ingress_inbox import channel_installation_ref

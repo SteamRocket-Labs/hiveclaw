@@ -20,6 +20,8 @@ def test_dispatcher_has_an_explicit_handler_for_every_external_ingress_surface()
         "dingtalk.stream_message",
         "wecom.stream_message",
         "wechat_personal.stream_message",
+        "company.wecom.message",
+        "company.dingtalk.message",
     }
 
 

@@ -16,6 +16,7 @@ from loguru import logger
 from pydantic import BaseModel, field_serializer, field_validator
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.exc import IntegrityError
 
 from app.core.security import get_current_admin, get_current_user
 from app.core.tenant_scope import resolve_and_pin_tenant_scope
@@ -42,6 +43,7 @@ class TenantChannelConfigOut(BaseModel):
     has_app_secret: bool = False
     has_encrypt_key: bool = False
     has_verification_token: bool = False
+    messaging_status: dict | None = None
 
     model_config = {"from_attributes": True}
 
@@ -58,9 +60,20 @@ def _config_revision(config):
 
 
 def _config_view(config):
+    messaging_status = None
+    if config.channel_type in {"dingtalk", "wecom"}:
+        from app.services.company_channel_identity import company_channel_ready
+        if not company_channel_ready(config):
+            messaging_status = {"state": "disabled"}
+        elif config.channel_type == "wecom":
+            messaging_status = {"state": "callback_configured"}
+        else:
+            from app.services.company_dingtalk_stream import company_dingtalk_stream_manager
+            messaging_status = company_dingtalk_stream_manager.status().get(str(config.id), {"state": "not_observed"})
     return TenantChannelConfigOut.model_validate(config).model_copy(update={
         "revision": _config_revision(config), "has_app_secret": bool(config.app_secret),
         "has_encrypt_key": bool(config.encrypt_key), "has_verification_token": bool(config.verification_token),
+        "messaging_status": messaging_status,
     })
 
 
@@ -91,6 +104,16 @@ class TenantChannelReconnect(BaseModel):
     principal_id: uuid.UUID
     expected_tenant_id: uuid.UUID | None = None
     expected_user_id: uuid.UUID | None = None
+
+
+class CompanyChannelMemberScope(BaseModel):
+    model_config = {"extra": "forbid"}
+    expected_tenant_id: uuid.UUID
+    expected_user_id: uuid.UUID
+
+
+class CompanyChannelDisconnect(CompanyChannelMemberScope):
+    principal_id: uuid.UUID
 
 
 @router.get("/tenant-channels/feishu/identity")
@@ -142,6 +165,52 @@ async def reconnect_tenant_feishu_identity(
         raise HTTPException(409, detail=str(exc)) from exc
     await db.flush()
     return {"principal_id": result.principal.id, "linked_user_id": result.actor.id, "authority_bound": result.actor.authority_bound}
+
+
+@router.get("/tenant-channels/{provider}/identity")
+async def company_channel_member_identity(provider: Literal["dingtalk", "wecom"], response: Response,
+    expected_tenant_id: uuid.UUID, expected_user_id: uuid.UUID,
+    current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    from app.services.company_channel_identity import current_company_identity
+    if current_user.tenant_id != expected_tenant_id:
+        raise HTTPException(409, detail={"code": "company_channel_member_scope_changed"})
+    await _pin_requested_scope(db, current_user, expected_tenant_id, expected_user_id)
+    response.headers["Cache-Control"] = "no-store"
+    return await current_company_identity(db, user=current_user, provider=provider)
+
+
+@router.post("/tenant-channels/{provider}/identity/challenge")
+async def company_channel_member_challenge(provider: Literal["dingtalk", "wecom"], body: CompanyChannelMemberScope,
+    response: Response, current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    from app.services.company_channel_identity import issue_company_challenge
+    if current_user.tenant_id != body.expected_tenant_id:
+        raise HTTPException(409, detail={"code": "company_channel_member_scope_changed"})
+    await _pin_requested_scope(db, current_user, body.expected_tenant_id, body.expected_user_id)
+    response.headers["Cache-Control"] = "no-store"
+    return await issue_company_challenge(db, user=current_user, provider=provider)
+
+
+@router.post("/tenant-channels/{provider}/identity/disconnect")
+async def disconnect_company_channel_identity(provider: Literal["dingtalk", "wecom"], body: CompanyChannelDisconnect,
+    current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    from app.models.external_principal import ExternalPrincipal, ExternalPrincipalBindingEvent
+    from app.services.external_principal_service import unlink_external_principal
+    if current_user.tenant_id != body.expected_tenant_id:
+        raise HTTPException(409, detail={"code": "company_channel_member_scope_changed"})
+    await _pin_requested_scope(db, current_user, body.expected_tenant_id, body.expected_user_id)
+    principal = await db.scalar(select(ExternalPrincipal).where(ExternalPrincipal.id == body.principal_id,
+        ExternalPrincipal.tenant_id == current_user.tenant_id, ExternalPrincipal.provider == provider,
+        ExternalPrincipal.tenant_channel_config_id.is_not(None),
+        (ExternalPrincipal.binding_method == "company_channel_challenge") | ExternalPrincipal.binding_method.is_(None)).with_for_update())
+    own_unlink = principal is not None and principal.linked_user_id is None and await db.scalar(
+        select(ExternalPrincipalBindingEvent.id).where(ExternalPrincipalBindingEvent.external_principal_id == principal.id,
+            ExternalPrincipalBindingEvent.actor_user_id == current_user.id, ExternalPrincipalBindingEvent.action == "unlinked",
+            ExternalPrincipalBindingEvent.previous_user_id == current_user.id).limit(1))
+    if principal is None or principal.linked_user_id != current_user.id and not own_unlink:
+        raise HTTPException(403, "Only your own company channel identity can be disconnected")
+    await unlink_external_principal(db, tenant_id=current_user.tenant_id, principal_id=principal.id,
+        actor_user_id=current_user.id, reason="Authenticated member disconnected their company channel identity")
+    return {"principal_id": str(principal.id), "authority_bound": False}
 
 
 # ─── Admin CRUD ─────────────────────────────────────────
@@ -201,6 +270,7 @@ async def upsert_tenant_channel(
         extra["platform_region"] = body.platform_region
     before_platform, after_platform = resolve_feishu_platform(existing_extra), resolve_feishu_platform(extra)
     replacing_app = config is not None and (config.app_id != app_id or
+        (channel_type == "wecom" and str(existing_extra.get("wecom_agent_id") or "") != str(extra.get("wecom_agent_id") or "")) or
         (before_platform.region, before_platform.open_api_domain) != (after_platform.region, after_platform.open_api_domain))
     if replacing_app and (not body.app_secret or is_masked_secret(body.app_secret)):
         raise HTTPException(422, "A new application requires its own app_secret")
@@ -216,6 +286,28 @@ async def upsert_tenant_channel(
     active = body.is_active if body.is_active is not None else config.is_active if config else True
     if channel_type == "feishu" and active and not (secrets["encrypt_key"] or secrets["verification_token"]):
         raise HTTPException(422, "Configure callback authentication before enabling the company bot")
+    if channel_type in {"dingtalk", "wecom"}:
+        if "messaging_enabled" in extra and not isinstance(extra["messaging_enabled"], bool):
+            raise HTTPException(422, "messaging_enabled must be a boolean")
+        if extra.get("messaging_enabled") is True and active:
+            if channel_type == "dingtalk" and not str(extra.get("corp_id") or "").strip():
+                raise HTTPException(422, "The company bot requires its Corp ID")
+            if channel_type == "dingtalk" and active:
+                from app.models.channel_config import ChannelConfig
+                employee_config = await db.scalar(select(ChannelConfig.id).where(ChannelConfig.channel_type == "dingtalk",
+                    ChannelConfig.app_id == app_id, ChannelConfig.is_configured.is_(True)))
+                if employee_config is not None:
+                    raise HTTPException(409, detail={"code": "company_dingtalk_application_in_use"})
+            if channel_type == "wecom":
+                import base64
+                try:
+                    key = secrets["encrypt_key"] or ""
+                    valid_key = len(key) == 43 and len(base64.b64decode(key + "=", validate=True)) == 32
+                except ValueError:
+                    valid_key = False
+                agent_id = str(extra.get("wecom_agent_id") or "")
+                if not (secrets["verification_token"] and valid_key and agent_id.isascii() and agent_id.isdecimal() and int(agent_id) > 0):
+                    raise HTTPException(422, "The company bot requires a callback token, encoding key and AgentID")
     if body.extra_config and any(key in body.extra_config for key in ("_settings_revision", "shared_group_entry")):
         raise HTTPException(422, "Managed channel settings use their dedicated endpoint")
     if config is not None and "shared_group_entry" in (config.extra_config or {}):
@@ -239,7 +331,12 @@ async def upsert_tenant_channel(
         )
         db.add(config)
 
-    await db.flush()
+    try:
+        await db.flush()
+    except IntegrityError as exc:
+        if "uq_company_dingtalk_messaging_app" in str(exc.orig):
+            raise HTTPException(409, detail={"code": "company_dingtalk_application_in_use"}) from None
+        raise
     await db.refresh(config)
     from app.models.audit import AuditLog
 
@@ -247,6 +344,12 @@ async def upsert_tenant_channel(
         details={"configuration_id": str(config.id), "channel_type": channel_type, "previous_revision": previous_revision,
             "revision": _config_revision(config), "app_changed": replacing_app, "is_active": config.is_active}))
     await db.flush()
+    if channel_type == "dingtalk" and (existing_extra.get("messaging_enabled") is True or extra.get("messaging_enabled") is True):
+        from app.database import schedule_after_commit
+        from app.services.company_dingtalk_stream import reconcile_company_dingtalk
+        from functools import partial
+        schedule_after_commit(db, partial(reconcile_company_dingtalk, current_user.tenant_id, config.id),
+            description="Reconcile the configured company DingTalk stream")
     return _config_view(config)
 
 
@@ -270,8 +373,26 @@ async def delete_tenant_channel(
     config = result.scalar_one_or_none()
     if not config:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Channel config not found")
+    config_id = config.id
+    if channel_type in {"dingtalk", "wecom"}:
+        from app.models.external_principal import ExternalPrincipal
+        from app.services.external_principal_service import unlink_external_principal
+        principals = list(await db.scalars(select(ExternalPrincipal).where(
+            ExternalPrincipal.tenant_id == current_user.tenant_id,
+            ExternalPrincipal.tenant_channel_config_id == config_id,
+            ExternalPrincipal.linked_user_id.is_not(None)).order_by(ExternalPrincipal.id)))
+        for principal in principals:
+            await unlink_external_principal(db, tenant_id=current_user.tenant_id, principal_id=principal.id,
+                actor_user_id=current_user.id, reason="Administrator removed the company channel configuration")
+        await db.flush()
     await db.delete(config)
     await db.flush()
+    if channel_type == "dingtalk":
+        from app.database import schedule_after_commit
+        from app.services.company_dingtalk_stream import company_dingtalk_stream_manager
+        from functools import partial
+        schedule_after_commit(db, partial(company_dingtalk_stream_manager.stop_client, config_id),
+            description="Stop the removed company DingTalk stream")
 
 
 @router.get("/tenant-channels/{channel_type}/webhook-url")
@@ -434,3 +555,54 @@ async def feishu_tenant_webhook(
     )
 
     return {"ok": True, "routed": True}
+
+
+@router.get('/channel/wecom/tenant/{tenant_id}/webhook')
+async def verify_company_wecom_webhook(tenant_id: uuid.UUID, msg_signature: str = '', timestamp: str = '',
+    nonce: str = '', echostr: str = '', db: AsyncSession = Depends(get_db)):
+    from app.api.wecom import authenticate_wecom_callback
+    from app.services.company_channel_identity import company_channel_ready, current_company_config
+
+    await pin_rls_tenant_context(db, tenant_id)
+    config = await current_company_config(db, tenant_id, 'wecom', lock=True)
+    if not company_channel_ready(config):
+        raise HTTPException(404, 'Company WeCom callback is not configured')
+    content = authenticate_wecom_callback(config, signature=msg_signature, timestamp=timestamp, nonce=nonce, encrypted=echostr)
+    return Response(content=content, media_type='text/plain')
+
+
+@router.post('/channel/wecom/tenant/{tenant_id}/webhook')
+async def receive_company_wecom_webhook(tenant_id: uuid.UUID, request: Request, msg_signature: str = '',
+    timestamp: str = '', nonce: str = '', db: AsyncSession = Depends(get_db)):
+    import xml.etree.ElementTree as ET
+    from app.api.wecom import authenticate_wecom_callback
+    from app.services.company_channel_identity import company_channel_ready, current_company_config
+    from app.services.company_channel_runtime import accept_company_message
+
+    await pin_rls_tenant_context(db, tenant_id)
+    config = await current_company_config(db, tenant_id, 'wecom', lock=True)
+    if not company_channel_ready(config):
+        raise HTTPException(404, 'Company WeCom callback is not configured')
+    try:
+        root = ET.fromstring(await request.body())
+    except ET.ParseError:
+        raise HTTPException(400, 'Invalid WeCom callback XML') from None
+    plain = authenticate_wecom_callback(config, signature=msg_signature, timestamp=timestamp, nonce=nonce,
+        encrypted=root.findtext('Encrypt', ''))
+    try:
+        message = ET.fromstring(plain)
+    except ET.ParseError:
+        raise HTTPException(400, 'Invalid WeCom message XML') from None
+    agent_id = str((config.extra_config or {}).get('wecom_agent_id') or '')
+    if (message.findtext('ToUserName', '') != config.app_id or message.findtext('AgentID', '') != agent_id
+        or root.findtext('ToUserName', config.app_id) != config.app_id
+        or root.findtext('AgentID', agent_id) != agent_id):
+        raise HTTPException(403, 'WeCom application recipient rejected')
+    if message.findtext('MsgType', '') != 'text':
+        return Response(content='success', media_type='text/plain')
+    text = message.findtext('Content', '')
+    if text:
+        await accept_company_message(db, config=config, subject_id=message.findtext('FromUserName', ''),
+            text=text, event_id=message.findtext('MsgId', ''))
+        await db.commit()
+    return Response(content='success', media_type='text/plain')

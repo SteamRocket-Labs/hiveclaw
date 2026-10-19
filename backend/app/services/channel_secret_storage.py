@@ -40,7 +40,7 @@ DELIVERY_TARGET_SECRET_FIELDS = {
 }
 CHANNEL_INGRESS_PROVIDER_FIELD = "_channel_ingress_provider"
 CHANNEL_INGRESS_SECRET_PATHS = {
-    "dingtalk": (("body", "session_webhook"),),
+    "dingtalk": (("body", "session_webhook"), ("body", "delivery_target", "session_webhook")),
     "discord": (("body", "token"),),
     "feishu": (("body", "token"),),
     "slack": (("body", "token"),),

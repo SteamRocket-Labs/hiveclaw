@@ -1220,9 +1220,9 @@ RLS_BYPASS_ALLOWLIST = (
     _grant(
         *(
             "app/services/dingtalk_stream.py",
-            "start_all",
+            "_configured_channels",
             "'dingtalk start_all — enumerate all configured channels across tenants'",
-            ("select:ChannelConfig",),
+            ("select:ChannelConfig", "select:TenantChannelConfig"),
         )
     ),
     _grant(

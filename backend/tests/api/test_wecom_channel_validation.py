@@ -74,14 +74,15 @@ async def test_wecom_verify_webhook_pins_agent_tenant_before_signature_check():
     )
     db = _FakeDB(config)
 
-    response = await wecom_verify_webhook(
-        agent_id=config.agent_id,
-        msg_signature="wrong-signature",
-        timestamp="1",
-        nonce="n",
-        echostr="encrypted",
-        db=db,
-    )
+    with pytest.raises(HTTPException) as rejected:
+        await wecom_verify_webhook(
+            agent_id=config.agent_id,
+            msg_signature="wrong-signature",
+            timestamp="1",
+            nonce="n",
+            echostr="encrypted",
+            db=db,
+        )
 
-    assert response.status_code == 403
+    assert rejected.value.status_code == 403
     assert db.sync_session.info[database._RLS_TENANT_INFO_KEY] == str(tenant_id)

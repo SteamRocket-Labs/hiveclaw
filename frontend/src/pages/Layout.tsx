@@ -16,6 +16,7 @@ import AppSidebar, {
 } from './layout/AppSidebar';
 import NotificationCenter from './layout/NotificationCenter';
 import { TenantFeishuIdentity } from '../components/TenantFeishuSettings';
+import TenantCompanyIdentity from '../components/TenantCompanyIdentity';
 import './Layout.css';
 
 /* ────── Account Settings Modal ────── */
@@ -157,6 +158,7 @@ export function AccountSettingsModal({ user, onClose }: { user: any; onClose: ()
                         </button>
                     </div>
                 <TenantFeishuIdentity onNavigate={onClose} />
+                <TenantCompanyIdentity onNavigate={onClose} />
             </div>
         </div>
     );

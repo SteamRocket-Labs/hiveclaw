@@ -220,6 +220,7 @@ class TestSendText:
             async def post(self, url, json):
                 posted["url"] = url
                 posted["json"] = json
+                return httpx.Response(200, json={"errcode": 0}, request=httpx.Request("POST", url))
 
         monkeypatch.setattr(httpx, "AsyncClient", _Client)
         config = SimpleNamespace(

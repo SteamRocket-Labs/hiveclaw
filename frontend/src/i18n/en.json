@@ -1,4 +1,31 @@
 {
+  "companyMessaging": {
+    "historyConflict": "This sender account has prior channel ownership. Contact your administrator to review the connection; earlier private work remains with its original owner.",
+    "applicationInUse": "This DingTalk application is already assigned to another bot connection. Use a dedicated application, or disconnect the previous bot before enabling company messaging.",
+    "receiving": "Last received a message from this application:",
+    "starting": "The service is starting the connection. Refresh to check its latest state.",
+    "unavailable": "The connection is unavailable. Check the application settings and refresh to retry.",
+    "memberTitle": "DingTalk / WeCom company identity",
+    "memberHelp": "Verify your own company identity before asking the bot to work as your Hive account.",
+    "identityFailed": "Could not confirm your current identity. Refresh before acting again.",
+    "setupRequired": "The company bot needs administrator setup.",
+    "directoryRequired": "Ask an administrator to link your imported directory account to your Hive account, then verify it here.",
+    "identityAmbiguous": "More than one current directory identity matches. Ask an administrator to review the account links.",
+    "revoked": "This installation identity was revoked. Contact your administrator.",
+    "bound": "Your company identity is verified. Private messages use your selected My Assistant.",
+    "verify": "Get a verification command",
+    "subject": "Directory account",
+    "sendCommand": "Send this command in a private chat with the configured company bot from the directory account shown here. Then refresh. Keep the command private.",
+    "command": "One-time verification command",
+    "expires": "Expires",
+    "coverage": "Company messaging currently supports private text. Use Web for files and group work. Saved settings and verified identity do not confirm live delivery.",
+    "setupTitle": "Company bot messaging",
+    "adminHelp": "Directory sync stays available without messaging. Enabling messaging also requires each member to verify their own sender account in Account Settings.",
+    "enable": "Enable company bot private messages",
+    "encodingKey": "Callback EncodingAESKey",
+    "wecomSetup": "Use the same application secret, AgentID, callback token and EncodingAESKey as the company application. Save, then configure its callback URL in WeCom.",
+    "dingtalkSetup": "Enable Stream mode for this application, publish the internal bot and allow member access. Corp ID must identify the bot and its senders."
+  },
   "app": {
     "name": "HiveClaw",
     "tagline": "Enterprise Digital Employee Platform"

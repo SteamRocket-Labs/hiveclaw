@@ -65,11 +65,11 @@ export interface TenantChannelScope { expected_tenant_id: string; expected_user_
 export interface TenantChannelConfig {
   id: string; tenant_id: string; channel_type: string; app_id: string | null; is_active: boolean;
   revision: string; has_app_secret: boolean; has_encrypt_key: boolean; has_verification_token: boolean;
-  extra_config: Record<string, unknown>;
+  extra_config: Record<string, unknown>; messaging_status?: { state: string; error_class?: string; last_received_at?: string };
 }
 export interface TenantChannelUpdate extends TenantChannelScope {
   app_id: string; expected_revision: string; is_active: boolean; platform_region?: FeishuPlatformRegion;
-  app_secret?: string; encrypt_key?: string; verification_token?: string;
+  app_secret?: string; encrypt_key?: string; verification_token?: string; extra_config?: Record<string, unknown>;
 }
 export type TenantFeishuIdentityState = 'company_bot_unconfigured' | 'company_bot_paused' | 'company_bot_setup_required'
   | 'identity_provider_required' | 'identity_app_mismatch' | 'identity_required' | 'identity_conflict'
@@ -79,6 +79,17 @@ export interface TenantFeishuIdentity {
   user_id: string; tenant_id: string; state: TenantFeishuIdentityState; principal_id: string | null;
   assistant_required?: boolean; entries: TenantFeishuIdentityEntry[];
   disconnectable?: Array<{ principal_id: string; subject_id: string }>;
+}
+
+export type CompanyChannelProvider = 'dingtalk' | 'wecom';
+export interface CompanyChannelIdentity {
+  tenant_id: string; user_id: string; provider: CompanyChannelProvider; principal_id: string | null; subject_id?: string;
+  state: 'setup_required' | 'identity_ambiguous' | 'directory_link_required' | 'verification_required' | 'bound'
+    | 'installation_revoked' | 'reconnect_required' | 'identity_history_conflict';
+  disconnectable: Array<{ principal_id: string; subject_id: string }>;
+}
+export interface CompanyChannelChallenge {
+  tenant_id: string; user_id: string; subject_id: string; challenge_id: string; command: string; expires_at: string;
 }
 
 export interface WeChatPersonalStatus {
@@ -91,6 +102,14 @@ export interface WeChatPersonalStatus {
 }
 
 export const channelApi = {
+  companyIdentity: (provider: CompanyChannelProvider, scope: TenantChannelScope, signal?: AbortSignal) =>
+    get<CompanyChannelIdentity>(`/tenant-channels/${provider}/identity?${new URLSearchParams({ ...scope })}`, { signal }),
+  companyIdentityChallenge: (provider: CompanyChannelProvider, scope: TenantChannelScope) =>
+    post<CompanyChannelChallenge>(`/tenant-channels/${provider}/identity/challenge`, scope),
+  companyIdentityDisconnect: (provider: CompanyChannelProvider, principalId: string, scope: TenantChannelScope) =>
+    post<{ principal_id: string; authority_bound: boolean }>(`/tenant-channels/${provider}/identity/disconnect`, { ...scope, principal_id: principalId }),
+  tenantCompanyWebhook: (provider: CompanyChannelProvider, scope: TenantChannelScope, signal?: AbortSignal) =>
+    get<{ webhook_url: string; tenant_id: string }>(`/tenant-channels/${provider}/webhook-url?${new URLSearchParams({ ...scope })}`, { signal }),
   tenantFeishuGroupRoutes: (scope: TenantChannelScope, signal?: AbortSignal) =>
     get<TenantFeishuGroupRoutes>(`/tenant-channels/feishu/shared-groups?${new URLSearchParams({ ...scope })}`, { signal }),
   saveTenantFeishuGroupRoutes: (scope: TenantChannelScope, revision: string, routes: TenantFeishuGroupRoute[]) =>

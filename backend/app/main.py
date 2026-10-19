@@ -791,6 +791,8 @@ async def lifespan(app: FastAPI):
         logger.warning(f"Workflow daemon drain request failed: {exc}")
     await feishu_app_registration_manager.shutdown()
     await wechat_personal_stream_manager.stop_all()
+    from app.services.company_dingtalk_stream import company_dingtalk_stream_manager
+    await company_dingtalk_stream_manager.stop_all()
     await close_redis()
     try:
         from app.memory.backend import aclose_all_backends

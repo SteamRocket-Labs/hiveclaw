@@ -5,27 +5,13 @@ import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
 import { ApiError } from '../api/core';
 import { channelApi, type TenantChannelConfig, type TenantChannelScope, type FeishuPlatformRegion, type TenantFeishuIdentityState } from '../api/domains/channels';
-import { useAuthStore } from '../stores';
+import { useCompanyChannelScope } from './useCompanyChannelScope';
 import './TenantFeishuSettings.css';
 import TenantFeishuGroupRoutes from './TenantFeishuGroupRoutes';
 
-function useBotScope(selectedTenant?: string) {
-  const user = useAuthStore((state) => state.user);
-  const [generation, setGeneration] = useState(0);
-  useEffect(() => {
-    const changed = (event: StorageEvent) => { if (!event.key || event.key === 'current_tenant_id') setGeneration((value) => value + 1); };
-    window.addEventListener('storage', changed);
-    return () => window.removeEventListener('storage', changed);
-  }, []);
-  let tenant = user?.tenant_id || '';
-  try { tenant = localStorage.getItem('current_tenant_id') || tenant; } catch { /* Storage is optional. */ }
-  tenant = selectedTenant ?? tenant;
-  return { user, tenant, key: `${user?.id}:${user?.role}:${tenant}:${generation}`,
-    scope: { expected_tenant_id: tenant, expected_user_id: user?.id || '' } };
-}
 
 export default function TenantFeishuSettings({ selectedTenantId }: { selectedTenantId: string }) {
-  const current = useBotScope(selectedTenantId);
+  const current = useCompanyChannelScope(selectedTenantId);
   if (!current.user || !current.tenant || !['org_admin', 'platform_admin'].includes(current.user.role)) return null;
   return <CompanyBotEditor key={current.key} scope={current.scope} scopeKey={current.key} />;
 }
@@ -145,7 +131,7 @@ function stateLabel(state: TenantFeishuIdentityState, t: TFunction): string {
 }
 
 export function TenantFeishuIdentity({ onNavigate }: { onNavigate?: () => void }) {
-  const current = useBotScope();
+  const current = useCompanyChannelScope();
   if (!current.user || !current.tenant) return null;
   return <MemberBotIdentity key={current.key} scope={current.scope} scopeKey={current.key} onNavigate={onNavigate} />;
 }

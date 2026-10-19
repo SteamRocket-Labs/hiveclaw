@@ -29,7 +29,9 @@ class ExternalPrincipal(Base):
             "linked_user_id IS NULL OR ("
             "linked_at IS NOT NULL AND "
             "((provider = 'wechat_personal' AND binding_method = 'wechat_qr') OR "
-            "(provider = 'feishu' AND binding_method IN ('feishu_qr','feishu_tenant_identity'))) AND "
+            "(provider = 'feishu' AND binding_method IN ('feishu_qr','feishu_tenant_identity')) OR "
+            "(provider IN ('dingtalk','wecom') AND tenant_channel_config_id IS NOT NULL "
+            "AND binding_method = 'company_channel_challenge')) AND "
             "binding_verified_at IS NOT NULL)",
             name="ck_external_principals_verified_binding",
         ),

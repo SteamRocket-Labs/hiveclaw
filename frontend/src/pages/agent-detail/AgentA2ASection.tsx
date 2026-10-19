@@ -13,6 +13,7 @@ import {
 } from '../../api/domains/a2a';
 import { requestAppConfirm, showAppToast } from '../../components/AppDialogs';
 import MachineIdentityControls from '../../components/MachineIdentityControls';
+import RemoteA2AControls from '../../components/RemoteA2AControls';
 import './AgentA2ASection.css';
 
 type AgentA2ASectionProps = {
@@ -620,6 +621,7 @@ export default function AgentA2ASection({ agentId, canManage = false }: AgentA2A
   return (
     <div className="card">
       {canManage && <MachineIdentityControls agentId={agentId} />}
+      {canManage && <RemoteA2AControls agentId={agentId} />}
       <AgentList
         title={t('agent.a2a.sameOwnerAgents', 'Same-owner agents')}
         description={t('agent.a2a.sameOwnerAgentsDesc', 'Agents owned by the same user can collaborate directly.')}

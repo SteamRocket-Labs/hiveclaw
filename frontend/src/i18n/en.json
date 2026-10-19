@@ -5658,5 +5658,32 @@
     "unconfirmed": "Device access revoked. Host execution remains unknown; a device stop has not been confirmed.",
     "reconcile": "Reconcile queued work",
     "revoke": "Revoke this device access"
+  },
+  "remoteA2A": {
+    "endpointCredentialRequired": "Provide a machine credential again for the changed addresses, or remove the saved credential.",
+    "credentialUnavailable": "The saved machine credential cannot be read. Replace it or disable the connection.",
+    "title": "Remote A2A connection",
+    "boundary": "Connection discovery is available. Employee dispatch is not activated; action control and complete cost metering remain unverified.",
+    "unknown": "The operation could not be confirmed. Refresh or retry the same saved request.",
+    "discoveryFailed": "Check the endpoint, credential and approved network ranges.",
+    "cardUrl": "Agent Card URL",
+    "rpcUrl": "Task interface URL",
+    "token": "Machine credential (leave blank to keep)",
+    "clearToken": "Remove stored credential",
+    "networks": "Approved private network ranges (comma separated)",
+    "maxBytes": "Maximum response size (bytes)",
+    "timeout": "Connection timeout (seconds)",
+    "retry": "Retry same save",
+    "admin": "Ask a company administrator to configure this connection.",
+    "discover": "Read Agent Card",
+    "disable": "Disable connection",
+    "states": {
+      "not_configured": "Not configured",
+      "configured": "Configured",
+      "discovered": "Agent Card read",
+      "disabled": "Disabled",
+      "needs_reauthorization": "Owner authorization required",
+      "unavailable": "Unavailable"
+    }
   }
 }

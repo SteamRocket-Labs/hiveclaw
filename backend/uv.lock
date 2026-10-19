@@ -3,8 +3,8 @@ revision = 3
 requires-python = ">=3.11"
 resolution-markers = [
     "python_full_version >= '3.14' and sys_platform == 'win32'",
-    "python_full_version == '3.13.*' and sys_platform == 'win32'",
     "python_full_version >= '3.14' and sys_platform != 'win32'",
+    "python_full_version == '3.13.*' and sys_platform == 'win32'",
     "python_full_version == '3.13.*' and sys_platform != 'win32'",
     "python_full_version == '3.12.*' and sys_platform == 'win32'",
     "python_full_version == '3.12.*' and sys_platform != 'win32'",
@@ -1479,6 +1479,7 @@ name = "hive-backend"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "a2a-sdk" },
     { name = "aiofiles" },
     { name = "alembic" },
     { name = "asyncpg" },
@@ -1520,7 +1521,6 @@ dependencies = [
 
 [package.optional-dependencies]
 dev = [
-    { name = "a2a-sdk" },
     { name = "aiosqlite" },
     { name = "httpx" },
     { name = "pytest" },
@@ -1534,7 +1534,7 @@ teams = [
 
 [package.metadata]
 requires-dist = [
-    { name = "a2a-sdk", marker = "extra == 'dev'", specifier = "==1.2.2" },
+    { name = "a2a-sdk", specifier = "==1.2.2" },
     { name = "aiofiles", specifier = ">=24.0.0" },
     { name = "aiosqlite", marker = "extra == 'dev'", specifier = ">=0.20.0" },
     { name = "alembic", specifier = ">=1.14.0" },

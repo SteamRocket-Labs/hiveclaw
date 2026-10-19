@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "Hive - Enterprise Digital Employee Platform Backend"
 requires-python = ">=3.11"
 dependencies = [
+    "a2a-sdk==1.2.2",
     "fastapi[standard]>=0.115.0",
     "uvicorn[standard]>=0.30.0",
     "sqlalchemy[asyncio]>=2.0.0",
@@ -48,7 +49,6 @@ teams = [
     "azure-identity>=1.15.0",
 ]
 dev = [
-    "a2a-sdk==1.2.2",
     "aiosqlite>=0.20.0",
     "pytest>=8.0.0",
     "pytest-asyncio>=0.24.0",

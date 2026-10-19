@@ -60,6 +60,7 @@ class EgressLimits:
     max_wire_bytes: int = 8 * 1024 * 1024
     max_decoded_bytes: int = 16 * 1024 * 1024
     total_timeout_seconds: float = 20.0
+    require_tls_for_credentials: bool = False
 
     def __post_init__(self) -> None:
         if self.max_redirects < 0:
@@ -100,6 +101,23 @@ class GovernedHTTPResponse:
 
 def _deny(reason: str, *, url: str | None = None, code: str = "network_target_denied") -> GovernedEgressError:
     return GovernedEgressError(code, reason, url=url)
+
+
+def _check_credential_transport(
+    target: ValidatedPublicTarget, headers: Mapping[str, str], policy: EgressLimits
+) -> None:
+    if not policy.require_tls_for_credentials or target.scheme == "https":
+        return
+    if any(key.lower() in _SENSITIVE_REDIRECT_HEADERS and value for key, value in headers.items()) and any(
+        ipaddress.ip_address(address).is_global for address in target.resolved_ips
+    ):
+        # Non-public addresses already require an explicit network grant at
+        # validation. Evaluate the same resolved addresses that will be pinned.
+        raise _deny(
+            "Credentials require HTTPS outside approved private networks",
+            url=target.url,
+            code="network_credential_transport_denied",
+        )
 
 
 def _embedded_ipv4(address: ipaddress.IPv6Address) -> ipaddress.IPv4Address | None:
@@ -482,6 +500,7 @@ async def request_governed_http(
     async def execute() -> GovernedHTTPResponse:
         nonlocal send_json, send_params, verb
         target = await validate_public_http_url(url, resolver=resolver, allowed_networks=allowed_networks)
+        _check_credential_transport(target, current_headers, policy)
         backend.register(target.hostname, target.port, target.resolved_ips)
         redirect_count = 0
         factory = client_factory or (
@@ -530,6 +549,7 @@ async def request_governed_http(
                             verb = "GET"
                             send_json = None
                         send_params = None
+                        _check_credential_transport(next_target, current_headers, policy)
                         backend.register(next_target.hostname, next_target.port, next_target.resolved_ips)
                         target = next_target
                         redirect_count += 1

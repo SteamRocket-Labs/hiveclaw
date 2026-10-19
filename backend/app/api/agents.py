@@ -20,6 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.machine_identities import router as machine_identity_router
 from app.api.a2a_tasks import router as a2a_tasks_router
+from app.api.remote_a2a import router as remote_a2a_router
 from app.config import get_settings
 from app.core.permissions import (
     AGENT_OPERATOR_INSPECT_ACTION,
@@ -62,6 +63,7 @@ router = APIRouter(prefix="/agents", tags=["agents"])
 
 router.include_router(machine_identity_router)
 router.include_router(a2a_tasks_router)
+router.include_router(remote_a2a_router)
 
 AGENT_LIST_ROLE_DESCRIPTION_CHARS = 320
 

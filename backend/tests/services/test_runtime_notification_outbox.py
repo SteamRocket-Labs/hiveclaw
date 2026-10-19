@@ -13,7 +13,7 @@ from app.models.chat_session import ChatSession
 from app.models.chat_transcript_event import ChatTranscriptEvent
 from app.models.runtime_notification_outbox import RuntimeNotificationOutbox
 from app.models.runtime_result import RuntimeResultIntegrationPage, RuntimeResultMailboxCursor, RuntimeResultObject
-from app.models.runtime_task import RuntimeTask
+from app.models.runtime_task import RuntimeTask, COMPLETION_OUTBOX_PENDING_SQL
 from app.models.runtime_terminal_boundary_outbox import RuntimeTerminalBoundaryOutbox
 from app.models.tenant import Tenant
 from app.models.user import User
@@ -76,6 +76,9 @@ async def _seed_parent_session(owner_sessionmaker):
 
 async def _clear_outbox(owner_sessionmaker) -> None:
     async with owner_sessionmaker() as db:
+        # Shared database tests must not revive earlier work when deleting its delivery intents.
+        await db.execute(update(RuntimeTask).where(text(COMPLETION_OUTBOX_PENDING_SQL)).values(
+            completion_outbox_settled_at=datetime.now(UTC)))
         await db.execute(delete(RuntimeNotificationOutbox))
         await db.execute(delete(RuntimeResultIntegrationPage))
         await db.execute(delete(RuntimeResultMailboxCursor))

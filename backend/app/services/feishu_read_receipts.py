@@ -137,6 +137,28 @@ async def settle_feishu_result(capture, result):
         for item in sources
     )):
         return result
+    from app.services.approval_ticket import ApprovalDecisionSet
+
+    decision = getattr(context, "approval_decision", None)
+    if isinstance(decision, ApprovalDecisionSet):
+        from dataclasses import replace
+        from app.tools.result_envelope import ToolContentEnvelope
+
+        args_hash = _hash({"tool_name": capture.tool_name, "arguments": capture.arguments})
+        if (decision.tool_name != capture.tool_name or decision.input_hash != args_hash
+            or str(decision.tenant_id) != str(context.tenant_id)
+            or decision.requested_by_user_id != context.user_id):
+            return result
+        proof = {"schema": "hive.feishu_approved_result.v1", "approval_id": str(decision.approval_id),
+            "decision_id": decision.decision_id, "envelope_hash": decision.envelope_hash,
+            "input_hash": args_hash, "tool_name": capture.tool_name, "tool_call_id": context.tool_call_id,
+            "session_id": str(context.session_id), "run_id": str(context.runtime_task_id),
+            "requester_id": str(context.user_id), "approver_id": str(decision.approved_by_user_id),
+            "content_hash": _hash(str(result)), "connection": capture.connections[0],
+            **({"action": witness} if action else {"sources": sources})}
+        proof["receipt_hash"] = _hash(proof)
+        return replace(result, metadata={**result.metadata, "feishu_approved_result": proof}) if isinstance(
+            result, ToolContentEnvelope) else ToolContentEnvelope(text=str(result), metadata={"feishu_approved_result": proof})
     try:
         tenant, session, run = (uuid.UUID(str(v)) for v in (context.tenant_id, context.session_id, context.runtime_task_id))
         async with tenant_scoped_session(tenant) as db:
@@ -254,3 +276,71 @@ async def load_feishu_read(db, *, tenant_id, agent_id, invocation, content_hash,
         return None
     return await load_feishu_result(db, tenant_id=tenant_id, agent_id=agent_id, invocation=invocation,
         content_hash=content_hash, current=current)
+
+
+async def load_approved_feishu_result(db, *, approval):
+    """Recheck the exact consumed ticket and the concrete executor's private result."""
+    from app.services.approval_ticket import restore_approval_execution_envelope
+    from app.services.session_model_inputs import _hash
+
+    receipt = approval.execution_receipt or {}
+    proof = (receipt.get("runtime_evidence") or {}).get("feishu_approved_result")
+    if (approval.tool_name not in FEISHU_RESULT_TOOLS or approval.execution_status != "succeeded"
+        or approval.consumed_at is None or not isinstance(proof, dict)):
+        return None
+    try:
+        envelope = restore_approval_execution_envelope(approval.execution_envelope,
+            expected_hash=approval.execution_envelope_hash)
+    except Exception:
+        return None
+    if (proof.get("schema") != "hive.feishu_approved_result.v1"
+        or proof.get("approval_id") != str(approval.id) or proof.get("decision_id") != approval.decision_id
+        or proof.get("envelope_hash") != approval.execution_envelope_hash
+        or proof.get("input_hash") != approval.input_hash
+        or proof.get("tool_name") != approval.tool_name or proof.get("tool_call_id") != envelope.tool_call_id
+        or proof.get("session_id") != envelope.session_id or proof.get("run_id") != envelope.runtime_task_id
+        or proof.get("requester_id") != str(approval.requested_by)
+        or proof.get("approver_id") != str(approval.resolved_by)
+        or envelope.requester_user_id != approval.requested_by or envelope.agent_id != approval.agent_id
+        or envelope.tenant_id != approval.tenant_id
+        or proof.get("content_hash") != _hash(approval.execution_result)
+        or proof.get("receipt_hash") != _hash({k: v for k, v in proof.items() if k != "receipt_hash"})
+        or receipt.get("execution_envelope_hash") != approval.execution_envelope_hash
+        or receipt.get("input_hash") != approval.input_hash
+        or receipt.get("policy_snapshot_hash") != approval.policy_snapshot_hash
+        or receipt.get("decision_id") != approval.decision_id
+        or receipt.get("requested_by_user_id") != str(approval.requested_by)
+        or receipt.get("approved_by_user_id") != str(approval.resolved_by)):
+        return None
+    connection = proof.get("connection")
+    if (not isinstance(connection, dict) or connection.get("tenant_id") != str(approval.tenant_id)
+        or connection.get("scope") not in {"company", "employee"}):
+        return None
+    if approval.tool_name in FEISHU_ACTION_TOOLS:
+        witness = proof.get("action")
+        if not isinstance(witness, dict) or witness.get("operation") != approval.tool_name or not all(
+            isinstance(witness.get(key), str) and witness[key] for key in ("resource_type", "resource_id", "response_hash")) or (
+            witness.get("platform_region"), witness.get("open_api_domain")) != _connection_subject(connection)[-2:]:
+            return None
+    else:
+        sources = proof.get("sources")
+        if not isinstance(sources, list) or not sources or any(
+            not isinstance(item, dict) or item.get("metadata", {}).get("connector") != "feishu"
+            or item.get("metadata", {}).get("accessing_agent_id") != str(approval.agent_id)
+            or item.get("metadata", {}).get("acl_authority") != "connector_verified"
+            or item.get("acl", {}).get("user_ids") != [str(approval.requested_by)]
+            or item.get("acl", {}).get("tenant_ids") != [str(approval.tenant_id)] for item in sources):
+            return None
+    try:
+        if datetime.fromisoformat(connection["updated_at"]).tzinfo is None:
+            return None
+        config_id = uuid.UUID(connection["id"])
+    except (ValueError, KeyError, TypeError):
+        return None
+    model = TenantChannelConfig if connection.get("scope") == "company" else ChannelConfig
+    config = await db.get(model, config_id, populate_existing=True)
+    if (config is None or not config.is_configured or config.channel_type != "feishu" or not config.app_secret
+        or config.tenant_id != approval.tenant_id or isinstance(config, ChannelConfig) and config.agent_id != approval.agent_id
+        or _connection_subject(_connection_snapshot(config)) != _connection_subject(connection)):
+        return None
+    return proof

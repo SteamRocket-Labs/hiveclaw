@@ -1183,7 +1183,9 @@ class ToolRuntimeService:
         result_text = str(result)
         tool_error = _extract_tool_error_payload(result_text)
         boundary_block = result if isinstance(result, ToolBoundaryBlock) else None
-        execution_status = "failed" if tool_error or boundary_block is not None else "succeeded"
+        frame = trace_metadata.get("tool_execution_frame") or {}
+        effect_unknown = frame.get("status") == "unknown"
+        execution_status = "needs_reconciliation" if effect_unknown else "failed" if tool_error or boundary_block is not None else "succeeded"
         await _maybe_await(
             self.approval_ticket_completer(
                 approval_id=ticket.approval_id,
@@ -1195,6 +1197,7 @@ class ToolRuntimeService:
                     "status": execution_status,
                     "tool_decision": trace_metadata.get("tool_decision"),
                     "runtime_evidence": trace_metadata,
+                    **({"side_effect_state": "unknown", "automatic_replay": False} if effect_unknown else {}),
                     **({"error": tool_error} if tool_error else {}),
                     **(
                         {
@@ -1406,6 +1409,10 @@ class ToolRuntimeService:
                     surface="tool_result",
                     trace_metadata_sink=trace_metadata_sink,
                 )
+                if trace_metadata_sink is not None and isinstance(value, ToolContentEnvelope):
+                    proof = value.metadata.get("feishu_approved_result")
+                    if isinstance(proof, dict):
+                        trace_metadata_sink["feishu_approved_result"] = dict(proof)
                 if input_read is not None:
                     receipt_block, input_evidence = await settle_workspace_receipt_read(
                         request=request, read=input_read, tool_call_id=tool_call_id, result=value)

@@ -31,6 +31,17 @@ _TERMINAL_EXECUTION_STATES = {"succeeded", "failed", "needs_reapproval", "needs_
 _MAX_SAFE_DISPATCH_ATTEMPTS = 3
 
 
+def approval_notification_summary(status: str, result: str) -> str:
+    """Only a confirmed execution carries returned business bytes into a continuation."""
+    summaries = {
+        "needs_reconciliation": "The approved action may have taken effect. Verify its outcome before retrying.",
+        "needs_reapproval": "The action requires a new approval before it can run.",
+        "rejected": "The action was rejected and was not executed.",
+        "failed": "The approved action did not finish successfully. Review its receipt before retrying.",
+    }
+    return summaries.get(status, result)
+
+
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -211,9 +222,14 @@ async def _enqueue_origin_continuation(
         return None
 
     from app.services.runtime_notification_outbox import CompletionNotification, enqueue_completion_notification
+    from app.services.feishu_read_receipts import FEISHU_RESULT_TOOLS
 
     tool_name = str(approval.tool_name or approval.action_type or "approved_action")
+    status_only = approval_status == "needs_reconciliation" or (
+        tool_name in FEISHU_RESULT_TOOLS and approval_status != "succeeded")
     result_text = str(execution_result or (task.result_summary if task else None) or "")
+    if status_only:
+        result_text = approval_notification_summary(approval_status, result_text)
     model_context = (
         "[Approval tool result]\n"
         f"Approval: {approval.id}\n"
@@ -242,13 +258,14 @@ async def _enqueue_origin_continuation(
             terminal_status=terminal_status,
             task_type="approval_execution" if task else "approval_decision",
             summary=result_text or f"Approval execution {approval_status}.",
-            delivery_mode="parent_continuation",
+            delivery_mode="session_projection" if approval_status == "needs_reconciliation" else "parent_continuation",
             metadata={
                 "approval_id": str(approval.id),
                 "approval_status": approval_status,
                 "tool_name": tool_name,
                 "model_context": model_context,
                 "origin_session_id": str(session.id),
+                "result_semantics": "approval_status" if status_only else "execution_result",
             },
             payload_rank=100,
         ),
@@ -349,6 +366,9 @@ async def _prepare_execution(
 
         execution_status = str(approval.execution_status or "pending")
         if execution_status in _TERMINAL_EXECUTION_STATES:
+            if execution_status == "needs_reconciliation" and not (approval.execution_receipt or {}).get("continuation_outbox_id"):
+                await _enqueue_origin_continuation(db, approval=approval, task=task,
+                    approval_status=execution_status, execution_result=approval.execution_result)
             return (
                 _set_task_terminal(
                     task,
@@ -360,12 +380,10 @@ async def _prepare_execution(
                 approval.agent_id,
             )
         if approval.consumed_at is not None or execution_status == "executing":
-            return (
-                _quarantine_unknown_execution(task, approval),
-                approval.id,
-                approval.resolved_by,
-                approval.agent_id,
-            )
+            disposition = _quarantine_unknown_execution(task, approval)
+            await _enqueue_origin_continuation(db, approval=approval, task=task,
+                approval_status=disposition, execution_result=approval.execution_result)
+            return disposition, approval.id, approval.resolved_by, approval.agent_id
         if execution_status not in _SAFE_PRE_EXECUTION_STATES:
             approval.execution_status = "needs_reapproval"
             approval.execution_result = f"Approval execution cannot start from state {execution_status}."
@@ -426,8 +444,11 @@ async def _finalize_from_ticket(task_id: uuid.UUID, tenant_id: uuid.UUID) -> tup
         if approval is None:
             return "missing", None
         status = str(approval.execution_status or "pending")
-        if status == "executing" or approval.consumed_at is not None and status not in {"succeeded", "failed"}:
-            return _quarantine_unknown_execution(task, approval), approval.execution_result
+        if status == "executing" or approval.consumed_at is not None and status not in _TERMINAL_EXECUTION_STATES:
+            disposition = _quarantine_unknown_execution(task, approval)
+            await _enqueue_origin_continuation(db, approval=approval, task=task,
+                approval_status=disposition, execution_result=approval.execution_result)
+            return disposition, approval.execution_result
         if status not in _TERMINAL_EXECUTION_STATES:
             status = "failed"
             approval.execution_status = status

@@ -262,16 +262,21 @@ async def test_terminal_approval_atomically_enqueues_one_origin_continuation(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("recovered_status", ["executing", "needs_reconciliation"])
 async def test_reclaimed_executing_approval_is_quarantined_without_side_effect_replay(
     owner_sessionmaker,
     monkeypatch,
+    recovered_status,
 ) -> None:
     import app.database as database
+    from sqlalchemy import select
     from app.models.audit import ApprovalRequest
+    from app.models.chat_session import ChatSession
+    from app.models.runtime_notification_outbox import RuntimeNotificationOutbox
     from app.models.runtime_task import RuntimeTask
-    from app.services.approval_execution_runtime import execute_claimed_approval_execution
+    from app.services.approval_execution_runtime import execute_claimed_approval_execution, _quarantine_unknown_execution
 
-    _, _, _, approval_id, task_id = await _seed_execution_job(
+    tenant_id, user_id, agent_id, approval_id, task_id = await _seed_execution_job(
         owner_sessionmaker,
         execution_status="executing",
     )
@@ -279,6 +284,15 @@ async def test_reclaimed_executing_approval_is_quarantined_without_side_effect_r
         approval = await db.get(ApprovalRequest, approval_id)
         assert approval is not None
         approval.consumed_at = datetime.now(timezone.utc) - timedelta(minutes=10)
+        session_id = uuid4()
+        db.add(ChatSession(id=session_id, tenant_id=tenant_id, agent_id=agent_id, user_id=user_id,
+            title="Interrupted approval origin", source_channel="web", session_kind="human_chat",
+            actor_type="user", runtime_source="web_chat", visibility_scope="direct_user", listed_surface="chat"))
+        approval.details = {**dict(approval.details or {}), "session_id": str(session_id)}
+        task = await db.get(RuntimeTask, task_id)
+        task.parent_session_id = str(session_id)
+        if recovered_status == "needs_reconciliation":
+            _quarantine_unknown_execution(task, approval)
         await db.commit()
 
     async def forbidden_execute(**_kwargs):
@@ -287,6 +301,7 @@ async def test_reclaimed_executing_approval_is_quarantined_without_side_effect_r
     monkeypatch.setattr("app.services.agent_tools.execute_approved_tool", forbidden_execute)
     monkeypatch.setattr(database, "async_session", owner_sessionmaker)
 
+    assert await execute_claimed_approval_execution(task_id) == "needs_reconciliation"
     assert await execute_claimed_approval_execution(task_id) == "needs_reconciliation"
 
     async with owner_sessionmaker() as db:
@@ -297,3 +312,9 @@ async def test_reclaimed_executing_approval_is_quarantined_without_side_effect_r
         assert approval.execution_receipt["automatic_replay"] is False
         assert task.status == "needs_reconciliation"
         assert task.metadata_json["reconciliation_retry_allowed"] is False
+        rows = list(await db.scalars(select(RuntimeNotificationOutbox).where(
+            RuntimeNotificationOutbox.tenant_id == tenant_id, RuntimeNotificationOutbox.source_kind == "approval",
+            RuntimeNotificationOutbox.source_run_id == str(task_id))))
+        assert len(rows) == 1 and rows[0].parent_session_id == session_id and rows[0].parent_user_id == user_id
+        assert rows[0].delivery_mode == "session_projection" and rows[0].terminal_status == "needs_reconciliation"
+        assert approval.execution_receipt["continuation_outbox_id"] == str(rows[0].id)

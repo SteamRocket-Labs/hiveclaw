@@ -13,7 +13,7 @@ import json
 import secrets
 import uuid
 from datetime import timedelta
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import HTTPException, status
 from jose import JWTError, jwt
@@ -1261,7 +1261,7 @@ async def _active_snapshot_for_context(
 ) -> tuple[LocalAgentChannel, LocalAgentCapabilitySnapshot]:
     from app.services.local_bridge_service import require_live_bridge_context
 
-    context = await require_live_bridge_context(db, context)
+    context = await require_live_bridge_context(db, context, lock_connection=True)
     channel = await _get_active_channel(db, context=context)
     if channel is None:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Local Agent channel is not ready")
@@ -1309,7 +1309,12 @@ async def _active_snapshot_for_session(
     stmt = (
         select(LocalAgentChannel, LocalAgentCapabilitySnapshot)
         .join(LocalAgentCapabilitySnapshot, LocalAgentCapabilitySnapshot.channel_id == LocalAgentChannel.id)
+        .join(LocalAgentBridgeConnection, LocalAgentBridgeConnection.id == LocalAgentChannel.connection_id)
         .where(
+            LocalAgentBridgeConnection.tenant_id == session.tenant_id,
+            LocalAgentBridgeConnection.user_id == session.owner_user_id,
+            LocalAgentBridgeConnection.status == "active",
+            LocalAgentBridgeConnection.expires_at > utcnow(),
             LocalAgentChannel.tenant_id == session.tenant_id,
             LocalAgentChannel.owner_user_id == session.owner_user_id,
             LocalAgentCapabilitySnapshot.revoked_at.is_(None),
@@ -1327,7 +1332,7 @@ async def _active_snapshot_for_session(
             stmt.order_by(
                 LocalAgentCapabilitySnapshot.issued_at.desc(),
                 LocalAgentCapabilitySnapshot.version.desc(),
-            ).limit(1)
+            ).limit(1).with_for_update(of=LocalAgentBridgeConnection)
         )
     ).all()
     if not rows:
@@ -2101,7 +2106,7 @@ async def list_channel_requests(
         for span in spans:
             if span.span_type == "remote_action":
                 origins.setdefault(span.request_id, span)
-            elif span.name == "local_agent.cancel":
+            elif span.name in {"local_agent.cancel", "local_agent.revoke_connection"}:
                 metadata = span.metadata_json if isinstance(span.metadata_json, dict) else {}
                 receipt = metadata.get("control")
                 if not isinstance(receipt, dict):
@@ -2212,6 +2217,29 @@ async def cancel_channel_message(
         if not isinstance(receipt, dict) or receipt.get("control_id") != str(control_id):
             raise HTTPException(409, detail={"code": "local_agent_control_conflict"})
         return {"receipt": receipt, "event": None}
+    result = await _withdraw_locked_message(db, message=message, actor_user_id=actor_user_id,
+        control_id=control_id, command_hash=command_hash, action="cancel")
+    await db.commit()
+    return result
+
+
+async def _withdraw_locked_message(
+    db: AsyncSession,
+    *,
+    message: LocalAgentChannelMessage,
+    actor_user_id: uuid.UUID,
+    control_id: uuid.UUID,
+    command_hash: str,
+    action: Literal["cancel", "revoke_connection"],
+    connection_id: uuid.UUID | None = None,
+) -> dict:
+    """Settle exact dispatch facts after the caller establishes control authority and locks the row."""
+    tenant_id, session_id, message_id, owner_user_id = (
+        message.tenant_id,
+        message.session_id,
+        message.id,
+        message.owner_user_id,
+    )
     origin = await db.scalar(
         select(InvocationSpan).where(
             InvocationSpan.tenant_id == tenant_id,
@@ -2238,7 +2266,9 @@ async def cancel_channel_message(
     ):
         state, execution, next_action = "cancelled", "not_dispatched", "continue_original_work"
         message.status, message.completed_at = "cancelled", now
-        message.result = "Cancelled before dispatch."
+        message.result = (
+            "Connection revoked before dispatch." if action == "revoke_connection" else "Cancelled before dispatch."
+        )
         message.delivery_lease_expires_at = None
         origin.status, origin.ended_at = "cancelled", now
         origin.duration_ms = max(0.0, (now - origin.started_at).total_seconds() * 1000)
@@ -2249,7 +2279,7 @@ async def cancel_channel_message(
     receipt = {
         "schema": "hive.local_message_control.v1",
         "control_id": str(control_id),
-        "action": "cancel",
+        "action": action,
         "message_id": str(message_id),
         "session_id": str(session_id),
         "actor_user_id": str(actor_user_id),
@@ -2257,6 +2287,7 @@ async def cancel_channel_message(
         "execution_state": execution,
         "next_action": next_action,
         "recorded_at": now.isoformat(),
+        **({"connection_id": str(connection_id)} if connection_id is not None else {}),
     }
     db.add(
         InvocationSpan(
@@ -2271,7 +2302,7 @@ async def cancel_channel_message(
             trace_id=f"local-agent:{message_id}",
             span_id=f"remote-control:{control_id}",
             span_type="remote_control",
-            name="local_agent.cancel",
+            name=f"local_agent.{action}",
             status="ok",
             started_at=now,
             ended_at=now,
@@ -2322,8 +2353,84 @@ async def cancel_channel_message(
                 artifacts=[],
             )
     await db.flush()
-    await db.commit()
     return {"receipt": receipt, "event": _event_payload(event)}
+
+
+async def withdraw_connection_requests(
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    owner_user_id: uuid.UUID,
+    connection_id: uuid.UUID,
+    actor_user_id: uuid.UUID,
+) -> dict:
+    """Withdraw only requests whose trusted recipient is the revoked credential; caller holds its row lock."""
+    recipients = (
+        select(LocalAgentCapabilitySnapshot.snapshot_hash)
+        .join(LocalAgentChannel, LocalAgentChannel.id == LocalAgentCapabilitySnapshot.channel_id)
+        .where(
+            LocalAgentCapabilitySnapshot.tenant_id == tenant_id,
+            LocalAgentChannel.tenant_id == tenant_id,
+            LocalAgentChannel.connection_id == connection_id,
+        )
+    )
+    messages = list(
+        await db.scalars(
+            select(LocalAgentChannelMessage)
+            .join(LocalAgentChannelSession, LocalAgentChannelSession.id == LocalAgentChannelMessage.session_id)
+            .where(
+                LocalAgentChannelMessage.tenant_id == tenant_id,
+                LocalAgentChannelMessage.owner_user_id == owner_user_id,
+                LocalAgentChannelMessage.direction == "hive_to_local",
+                LocalAgentChannelMessage.status.in_(
+                    ["pending", "waiting_approval", "delivered", "needs_reconciliation"]
+                ),
+                or_(
+                    LocalAgentChannelMessage.capability_snapshot_hash.in_(recipients),
+                    and_(
+                        LocalAgentChannelMessage.capability_snapshot_hash.is_(None),
+                        LocalAgentChannelSession.connection_id == connection_id,
+                    ),
+                ),
+            )
+            .order_by(LocalAgentChannelMessage.session_id, LocalAgentChannelMessage.id)
+            .with_for_update(of=LocalAgentChannelMessage)
+            .execution_options(populate_existing=True)
+        )
+    )
+    counts = {"cancelled_before_dispatch": 0, "needs_reconciliation": 0}
+    for message in messages:
+        control_id = uuid.uuid5(message.id, f"revoke_connection:{connection_id}")
+        result = await _withdraw_locked_message(
+            db,
+            message=message,
+            actor_user_id=actor_user_id,
+            control_id=control_id,
+            command_hash=_canonical_hash(
+                {
+                    "action": "revoke_connection",
+                    "connection_id": str(connection_id),
+                    "message_id": str(message.id),
+                    "request_hash": message.request_hash,
+                    "actor_user_id": str(actor_user_id),
+                }
+            ),
+            action="revoke_connection",
+            connection_id=connection_id,
+        )
+        counts[
+            "cancelled_before_dispatch" if result["receipt"]["status"] == "cancelled" else "needs_reconciliation"
+        ] += 1
+    return {
+        "schema": "hive.local_connection_control.v1",
+        "connection_id": str(connection_id),
+        "actor_user_id": str(actor_user_id),
+        "request_counts": counts,
+        "host_execution_state": "unknown",
+        "stop_confirmation": "unavailable",
+        "next_action": "inspect_original_runner",
+        "recorded_at": utcnow().isoformat(),
+    }
 
 
 async def list_channel_events(

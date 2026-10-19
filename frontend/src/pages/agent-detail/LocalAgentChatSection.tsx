@@ -1,3 +1,4 @@
+import LocalAgentDeviceControls from '../../components/LocalAgentDeviceControls';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useLocation, useNavigate, useParams } from 'react-router-dom';
@@ -597,6 +598,7 @@ export default function LocalAgentChatSection({ agentId, agent, agentPermissions
         )}
       </div>
       <LocalAgentRequestControls sessionId={channelSessionId} />
+      <LocalAgentDeviceControls agentId={agentId} />
       {error && (
         <div className="local-chat-error">
           {error}

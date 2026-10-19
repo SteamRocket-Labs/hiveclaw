@@ -161,7 +161,7 @@ class BridgeAuthContext:
     device_name: str
 
 
-async def require_live_bridge_context(db: AsyncSession, context: BridgeAuthContext) -> BridgeAuthContext:
+async def require_live_bridge_context(db: AsyncSession, context: BridgeAuthContext, *, lock_connection: bool = False) -> BridgeAuthContext:
     """Revalidate a cached channel identity before accepting another runtime frame."""
     query = select(LocalAgentBridgeConnection).join(User, User.id == LocalAgentBridgeConnection.user_id).join(
         Tenant, Tenant.id == LocalAgentBridgeConnection.tenant_id).where(
@@ -175,6 +175,8 @@ async def require_live_bridge_context(db: AsyncSession, context: BridgeAuthConte
         query = query.join(Agent, Agent.id == LocalAgentBridgeConnection.agent_id).where(
             Agent.tenant_id == context.tenant_id, Agent.deleted_at.is_(None), Agent.deactivated_at.is_(None),
             func.coalesce(Agent.owner_user_id, Agent.creator_id) == context.user_id)
+    if lock_connection:
+        query = query.with_for_update(of=LocalAgentBridgeConnection)
     connection = await db.scalar(query.execution_options(populate_existing=True))
     if connection is None:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail='Local Agent connection is no longer authorized')
@@ -909,6 +911,11 @@ def serialize_connection_for_list(
     channel: LocalAgentChannel | None = None,
 ) -> dict[str, Any]:
     presence_status = _presence_status_for(connection, channel)
+    metadata = getattr(connection, "metadata_json", None)
+    control = metadata.get("work_control") if isinstance(metadata, dict) else None
+    if not (isinstance(control, dict) and control.get("schema") == "hive.local_connection_control.v1"
+        and control.get("connection_id") == str(connection.id)):
+        control = None
     return {
         "id": str(connection.id),
         "tenant_id": str(connection.tenant_id),
@@ -917,6 +924,7 @@ def serialize_connection_for_list(
         "device_name": connection.device_name,
         "client_kind": connection.client_kind,
         "status": connection.status,
+        "work_control": control,
         "presence_status": presence_status,
         "presence_last_seen_at": channel.last_seen_at.isoformat() if channel and channel.last_seen_at else None,
         "runtime_kind": channel.runtime_kind if channel and channel.runtime_kind else None,
@@ -983,6 +991,7 @@ async def revoke_connection(
     user_id: uuid.UUID | None = None,
     tenant_id: uuid.UUID | None = None,
     agent_id: uuid.UUID | None = None,
+    actor_user_id: uuid.UUID | None = None,
 ) -> dict[str, Any]:
     stmt = select(LocalAgentBridgeConnection).where(LocalAgentBridgeConnection.id == connection_id)
     if agent_id is not None:
@@ -991,11 +1000,24 @@ async def revoke_connection(
         stmt = stmt.where(LocalAgentBridgeConnection.user_id == user_id)
     if tenant_id is not None:
         stmt = stmt.where(LocalAgentBridgeConnection.tenant_id == tenant_id)
-    result = await db.execute(stmt)
+    result = await db.execute(stmt.with_for_update().execution_options(populate_existing=True))
     connection = result.scalar_one_or_none()
     if connection is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Bridge connection not found")
+    actor_id = actor_user_id or user_id
+    if actor_id is None:
+        raise HTTPException(status_code=400, detail="An authenticated revocation actor is required")
+    metadata = dict(connection.metadata_json or {})
+    work_control = metadata.get("work_control")
+    if (connection.status == "revoked" and isinstance(work_control, dict)
+        and work_control.get("schema") == "hive.local_connection_control.v1"
+        and work_control.get("connection_id") == str(connection.id)):
+        return {"status": "revoked", "connection_id": str(connection.id), "work_control": work_control}
+    from app.services.local_agent_channel_service import withdraw_connection_requests
     connection.status = "revoked"
-    connection.revoked_at = utcnow()
+    connection.revoked_at = connection.revoked_at or utcnow()
+    work_control = await withdraw_connection_requests(db, tenant_id=connection.tenant_id,
+        owner_user_id=connection.user_id, connection_id=connection.id, actor_user_id=actor_id)
+    connection.metadata_json = {**metadata, "work_control": work_control}
     await db.commit()
-    return {"status": "revoked", "connection_id": str(connection.id)}
+    return {"status": "revoked", "connection_id": str(connection.id), "work_control": work_control}

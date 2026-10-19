@@ -270,10 +270,15 @@ async def revoke_current_user_bridge_connection(
     connection_id: uuid.UUID,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
+    expected_user_id: uuid.UUID | None = None,
+    expected_tenant_id: uuid.UUID | None = None,
 ):
     tenant_id = getattr(current_user, "tenant_id", None)
     if tenant_id is None:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Current user has no tenant")
+    if (expected_user_id is not None and expected_user_id != current_user.id) or (
+        expected_tenant_id is not None and expected_tenant_id != tenant_id):
+        raise HTTPException(status_code=409, detail="Device control account or tenant changed")
     return await bridge_service.revoke_connection(
         db,
         connection_id=connection_id,
@@ -361,11 +366,17 @@ async def revoke_agent_bridge_connection(
     connection_id: uuid.UUID,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
+    expected_user_id: uuid.UUID | None = None,
+    expected_tenant_id: uuid.UUID | None = None,
 ):
     _agent, access_level = await check_agent_access(db, current_user, agent_id)
     if access_level != "manage":
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Manage access required")
-    return await bridge_service.revoke_connection(db, agent_id=agent_id, connection_id=connection_id)
+    if (expected_user_id is not None and expected_user_id != current_user.id) or (
+        expected_tenant_id is not None and expected_tenant_id != _agent.tenant_id):
+        raise HTTPException(status_code=409, detail="Device control account or tenant changed")
+    return await bridge_service.revoke_connection(db, agent_id=agent_id, connection_id=connection_id,
+        tenant_id=_agent.tenant_id, actor_user_id=current_user.id)
 
 
 __all__: tuple[str, ...] = (

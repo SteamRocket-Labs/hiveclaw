@@ -1,5 +1,31 @@
 import { del, get, getBlob, post, upload } from '../core';
 
+export interface LocalDeviceScope {
+  expected_user_id: string;
+  expected_tenant_id: string;
+}
+
+export interface LocalDeviceControl {
+  schema: 'hive.local_connection_control.v1';
+  connection_id: string;
+  actor_user_id: string;
+  request_counts: { cancelled_before_dispatch: number; needs_reconciliation: number };
+  host_execution_state: 'unknown';
+  stop_confirmation: 'unavailable';
+  next_action: string;
+  recorded_at: string;
+}
+
+export interface LocalDeviceRevocation {
+  status: 'revoked';
+  connection_id: string;
+  work_control: LocalDeviceControl;
+}
+
+function deviceControlQuery(scope?: LocalDeviceScope) {
+  return scope ? '?' + new URLSearchParams({ ...scope }).toString() : '';
+}
+
 export interface LocalBridgeConnection {
   id: string;
   tenant_id: string;
@@ -8,6 +34,7 @@ export interface LocalBridgeConnection {
   device_name: string;
   client_kind: string;
   status: string;
+  work_control?: LocalDeviceControl | null;
   presence_status?: 'online' | 'offline' | 'unknown' | string | null;
   presence_last_seen_at?: string | null;
   runtime_kind?: string | null;
@@ -96,7 +123,7 @@ export interface LocalAgentChannelTimeline {
 export interface LocalAgentRequestControl {
   schema: 'hive.local_message_control.v1';
   control_id: string;
-  action: 'cancel';
+  action: 'cancel' | 'revoke_connection';
   message_id: string;
   session_id: string;
   actor_user_id: string;
@@ -156,8 +183,8 @@ export const localBridgeApi = {
     post<{ status: string }>(`/local-bridge/pairings/${encodeURIComponent(userCode)}/approve`),
   rejectPairing: (userCode: string) =>
     post<{ status: string }>(`/local-bridge/pairings/${encodeURIComponent(userCode)}/reject`),
-  revokeConnection: (connectionId: string) =>
-    del<{ status: string }>(`/local-bridge/connections/${connectionId}`),
+  revokeConnection: (connectionId: string, scope?: LocalDeviceScope) =>
+    del<LocalDeviceRevocation>(`/local-bridge/connections/${connectionId}${deviceControlQuery(scope)}`),
   getDefaultChannelSession: () =>
     post<LocalAgentChannelSession>('/local-agents/sessions/default'),
   getAgentDefaultChannelSession: (agentId: string) =>
@@ -251,6 +278,6 @@ export const localBridgeApi = {
     post<{ status: string }>(`/agents/${agentId}/local-bridge/pairings/${encodeURIComponent(userCode)}/approve`),
   rejectAgentPairing: (agentId: string, userCode: string) =>
     post<{ status: string }>(`/agents/${agentId}/local-bridge/pairings/${encodeURIComponent(userCode)}/reject`),
-  revokeAgentConnection: (agentId: string, connectionId: string) =>
-    del<{ status: string }>(`/agents/${agentId}/local-bridge/connections/${connectionId}`),
+  revokeAgentConnection: (agentId: string, connectionId: string, scope?: LocalDeviceScope) =>
+    del<LocalDeviceRevocation>(`/agents/${agentId}/local-bridge/connections/${connectionId}${deviceControlQuery(scope)}`),
 };

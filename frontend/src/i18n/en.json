@@ -5607,5 +5607,14 @@
     "unavailable": "The request state or control outcome could not be confirmed. Refresh before acting again.",
     "cancel": "Cancel this request",
     "older": "Load older requests"
+  },
+  "localDevices": {
+    "title": "Device access",
+    "scope": "Revocation blocks this device from new Hive requests and gateway access. Work already running on it may continue. Inspect or stop that work on the original device.",
+    "unknown": "Could not confirm device access or revocation. Refresh before acting again. Device controls require management access.",
+    "counts": "Cancelled before dispatch: {{cancelled}}. Execution needs review: {{unknown}}.",
+    "unconfirmed": "Device access revoked. Host execution remains unknown; a device stop has not been confirmed.",
+    "reconcile": "Reconcile queued work",
+    "revoke": "Revoke this device access"
   }
 }

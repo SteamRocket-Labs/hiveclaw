@@ -1,3 +1,4 @@
+import LocalAgentDeviceControls from '../components/LocalAgentDeviceControls';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
@@ -772,6 +773,7 @@ export default function LocalAgents({ agentId, agentName, embedded = false, init
               </div>
             )}
             <LocalAgentRequestControls sessionId={activeChannelSessionId} />
+            <LocalAgentDeviceControls agentId={agentId || undefined} />
             {activeChannelSessionId && (
               <div className="local-agents-transcript">
                 <div className="local-agents-section-label">

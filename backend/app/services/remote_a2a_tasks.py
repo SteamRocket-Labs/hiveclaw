@@ -196,7 +196,7 @@ async def start_task(
             raise HTTPException(409, detail={"code": "remote_a2a_request_conflict"})
         return _view(previous)
     endpoint, scope = await _endpoint(db, agent=agent, version=expected_version)
-    if endpoint._boundary().redact_payload_with_evidence(params).value != params:
+    if endpoint.redact_payload(params) != params:
         raise HTTPException(422, detail={"code": "remote_a2a_credential_in_request"})
     task = RuntimeTask(
         id=run_id,
@@ -365,7 +365,7 @@ async def operate_task(
         db, actor=actor, session_id=uuid.UUID(task.parent_session_id), target=agent, new_effect=method == "SendMessage"
     )
     endpoint, _scope = await _endpoint(db, agent=agent, version=expected_version, owner_scope=state["owner_scope"])
-    if endpoint._boundary().redact_payload_with_evidence(params).value != params:
+    if endpoint.redact_payload(params) != params:
         raise HTTPException(422, detail={"code": "remote_a2a_credential_in_request"})
     state["operations"].append(
         {

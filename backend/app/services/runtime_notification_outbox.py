@@ -1729,6 +1729,11 @@ class RuntimeNotificationOutboxService:
             elif parent_session.user_id != owner.id:
                 raise RuntimeError("runtime result page target authority no longer resolves")
 
+            if any(item.source_kind == "remote_a2a" for item in page.items):
+                from app.services.remote_a2a_artifacts import import_page_artifacts
+
+                await import_page_artifacts(db, page=page, user=owner)
+
             receipt = await continue_parent_session_with_result_page(
                 db=db,
                 agent=parent_agent,

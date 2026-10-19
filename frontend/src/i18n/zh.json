@@ -5713,6 +5713,8 @@
     "completed": "远程端报告完成",
     "reportedFailure": "远程端报告失败",
     "cancelConfirmed": "已确认远程取消",
-    "abandoned": "已在本地放弃"
+    "abandoned": "已在本地放弃",
+    "recoverFiles": "从已保存回复恢复文件",
+    "filesRecovered": "已回到本工作的文件：{{count}}。为保留现有文件另存的副本：{{conflicts}}。暂不可用的部分：{{unavailable}}。"
   }
 }

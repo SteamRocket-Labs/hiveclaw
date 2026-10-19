@@ -9,14 +9,20 @@ import AgentChatSection from '../src/pages/agent-detail/AgentChatSection';
 import en from '../src/i18n/en.json';
 import { useAuthStore } from '../src/stores';
 import type { User } from '../src/types';
+import { chatApi } from '../src/api/domains/chat';
+import { fileApi } from '../src/api/domains/files';
+import { hydrateSessionTranscriptEvents } from '../src/pages/agent-detail/sessionEventConsumer';
 
 it('sends and reads a complete remote result in the actual original work', async () => {
   const base = process.env.HIVE_G90_NATIVE_URL || '';
   expect(base.startsWith('http://127.0.0.1:')).toBe(true);
   const original = globalThis.fetch;
-  globalThis.fetch = (url, options) => {
+  globalThis.fetch = async (url, options) => {
     if (typeof url !== 'string' || !url.startsWith('/api/')) throw new Error('Only owned loopback HTTP is permitted');
-    return original(new URL(url, base), options);
+    const started = Date.now();
+    const response = await original(new URL(url, base), options);
+    if (process.env.HIVE_M3P_FILE_RETURN === '1') console.info('HIVE_REMOTE_FILE_HTTP', url, response.status, Date.now() - started);
+    return response;
   };
   Object.defineProperty(window, 'matchMedia', { configurable: true, value: () => ({ matches: false,
     addEventListener() {}, removeEventListener() {} }) });
@@ -45,7 +51,7 @@ it('sends and reads a complete remote result in the actual original work', async
     onSendChatMsg: () => { throw new Error('Remote requests must not invoke the native model composer'); },
     isStreaming: false, onAbortGeneration: noop };
   try {
-    render(<I18nextProvider i18n={language}><QueryClientProvider client={client}>
+    const mounted = render(<I18nextProvider i18n={language}><QueryClientProvider client={client}>
       <AgentChatSection {...props} />
     </QueryClientProvider></I18nextProvider>);
     const summary = await screen.findByText('Remote A2A requests in this work');
@@ -64,6 +70,27 @@ it('sends and reads a complete remote result in the actual original work', async
     const observation = JSON.parse(saved.textContent || '{}');
     expect(observation.task.artifacts[0].parts[0].text).toBe('NATIVE_REMOTE_FULL_RESULT\n'.repeat(4000));
     expect(controls.getByText('External cost: unknown. Internal action control: unverified.')).toBeTruthy();
+    if (process.env.HIVE_M3P_FILE_RETURN === '1') {
+      fireEvent.click(controls.getByText('Recover files from saved replies'));
+      await controls.findByText('Files returned to this work: 1. Separate copies preserving existing files: 0. Unavailable parts: 0.');
+      for (const schemaVersion of [undefined, 2] as const) {
+        const events = await chatApi.getSessionTranscript(agentId, sessionId, { schemaVersion });
+        const messages = hydrateSessionTranscriptEvents(events).messages;
+        const returned = messages.filter((message) => message.eventType === 'remote_a2a_artifacts');
+        expect(returned).toHaveLength(1);
+        expect(returned[0].role).toBe('event');
+        expect(returned[0].artifacts).toHaveLength(1);
+        mounted.rerender(<I18nextProvider i18n={language}><QueryClientProvider client={client}>
+          <AgentChatSection {...props} chatMessages={messages} />
+        </QueryClientProvider></I18nextProvider>);
+        fireEvent.click(await screen.findByRole('button', { name: 'Open report.txt' }));
+        const preview = await screen.findByTestId('session-artifact-preview-inspector');
+        expect(await within(preview).findByText(/NATIVE_REMOTE_FULL_RESULT/)).toBeTruthy();
+        const blob = await fileApi.downloadArtifact(agentId, returned[0].artifacts![0].id!);
+        expect(blob.size).toBe('NATIVE_REMOTE_FULL_RESULT\n'.repeat(4000).length);
+        fireEvent.click(within(preview).getByRole('button', { name: 'Close' }));
+      }
+    }
   } finally {
     cleanup();client.clear();useAuthStore.getState().logout();globalThis.fetch = original;
   }

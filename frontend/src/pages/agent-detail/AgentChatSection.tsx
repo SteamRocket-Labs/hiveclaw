@@ -1442,6 +1442,12 @@ function AgentChatSection({
 
   const renderEventMessage = React.useCallback(
     (msg: AgentChatMessage, index: number) => {
+      if (msg.eventType === 'remote_a2a_artifacts' && msg.artifacts?.length) {
+        return <div key={msg.transcriptEventId || msg.id || `remote-files-${index}`} className="session-tui-render-cell">
+          <ArtifactCards agentId={effectiveAgentId} artifacts={msg.artifacts} onOpenArtifact={openArtifact}
+            context="assistant" operatorView={operatorView} operatorReason={normalizedOperatorReason} />
+        </div>;
+      }
       const permissionRequest = msg.sessionPermissionRequest;
       const item = msg.threadItem || normalizeThreadItemPayload({
         id: msg.transcriptEventId || msg.id || `legacy-event-${index}`,
@@ -1500,7 +1506,7 @@ function AgentChatSection({
         </div>
       );
     },
-    [activeSession?.operator_view, activeSession?.audience_kind, currentUser?.id, canMutateSession, onBranchMessage, onResolveSessionPermission, selectThreadItem, selectedThreadItemId, t, toolEffectRecovery.blocked, visibleTimeline],
+    [activeSession?.operator_view, activeSession?.audience_kind, currentUser?.id, canMutateSession, onBranchMessage, onResolveSessionPermission, selectThreadItem, selectedThreadItemId, t, toolEffectRecovery.blocked, visibleTimeline, effectiveAgentId, openArtifact, operatorView, normalizedOperatorReason],
   );
 
   const renderInlinePlanToolCall = (msg: AgentChatMessage, index: number) => {
@@ -2211,7 +2217,7 @@ function AgentChatSection({
             </div>
             {operatorReadEnabled && artifactPreview && (
               <ArtifactPreviewPanel
-                key={childAuthorityIdentity}
+                key={`artifact-preview:${childAuthorityIdentity}`}
                 preview={artifactPreview}
                 agentId={effectiveAgentId || undefined}
                 workspaceAuthority={resourceOperatorOptions}
@@ -2383,7 +2389,7 @@ function AgentChatSection({
               )}
               {operatorReadEnabled && artifactPreview && (
                 <ArtifactPreviewPanel
-                  key={childAuthorityIdentity}
+                  key={`artifact-preview:${childAuthorityIdentity}`}
                   preview={artifactPreview}
                   agentId={effectiveAgentId || undefined}
                   workspaceAuthority={resourceOperatorOptions}
@@ -2419,7 +2425,7 @@ function AgentChatSection({
                 agentPermissions={agentPermissions} sessionPermissionMode={sessionPermissionMode}
               />
               {!operatorView && !isDraftSession && activeSession?.audience_kind !== 'group' && currentUser?.id && activeSessionId && (
-                <ProjectContextPicker key={childAuthorityIdentity} scope={{ userId: currentUser.id,
+                <ProjectContextPicker key={`project-context:${childAuthorityIdentity}`} scope={{ userId: currentUser.id,
                   tenantId: currentUser.role === 'platform_admin' ? localStorage.getItem('current_tenant_id') || '' : currentUser.tenant_id }}
                   disabled={!canUseComposer || projectSending} selection={selectedProjectContext}
                   onSelect={selection => { setProjectContext({ scope: childAuthorityIdentity, selection }); setProjectSendError(''); }} />

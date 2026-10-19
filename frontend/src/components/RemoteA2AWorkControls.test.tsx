@@ -93,3 +93,28 @@ it('discards a late receipt after account scope changes', async () => {
   await act(async () => resolve(task({ observation: { sensitive: 'old-owner-result' } })));
   expect(screen.queryByText(/old-owner-result/)).toBeNull();
 });
+
+it('recovers files from saved replies without sending a remote operation', async () => {
+  vi.mocked(remoteA2AApi.tasks).mockResolvedValue({ ...page(), connection: { ready: false, version: null }, items: [task()] });
+  const recover = vi.spyOn(remoteA2AApi, 'recoverArtifacts').mockResolvedValue({ agent_id: 'employee', task_id: 'transport-task',
+    source_session_id: 'original-work', parts: [{ type: 'artifact' }], file_returns: [{ status: 'available' }] });
+  const send = vi.spyOn(remoteA2AApi, 'operateTask');
+  await mount();fireEvent.click(await screen.findByText('transport-task'));
+  await screen.findByLabelText('Saved remote receipt');
+  fireEvent.click(screen.getByText('Recover files from saved replies'));
+  await waitFor(() => expect(recover).toHaveBeenCalledOnce());
+  expect(recover.mock.calls[0]).toEqual(['employee', 'transport-task', { expected_user_id: 'owner', expected_tenant_id: 'company' }]);
+  expect(send).not.toHaveBeenCalled();
+  expect(await screen.findByText(/Files returned to this work/)).toBeTruthy();
+});
+
+it('rejects file receipts returned for another original work', async () => {
+  vi.mocked(remoteA2AApi.tasks).mockResolvedValue({ ...page(), items: [task()] });
+  vi.spyOn(remoteA2AApi, 'recoverArtifacts').mockResolvedValue({ agent_id: 'employee', task_id: 'transport-task',
+    source_session_id: 'another-work', parts: [], file_returns: [] });
+  await mount();fireEvent.click(await screen.findByText('transport-task'));
+  await screen.findByLabelText('Saved remote receipt');
+  fireEvent.click(screen.getByText('Recover files from saved replies'));
+  await screen.findByRole('alert');
+  expect(screen.queryByText(/Files returned to this work/)).toBeNull();
+});

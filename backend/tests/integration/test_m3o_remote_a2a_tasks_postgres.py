@@ -439,8 +439,9 @@ async def test_uncontrolled_remote_cannot_waive_authoritative_policy_conditions(
         assert len(remote.requests) == 1
 
 
+@pytest.mark.parametrize("file_return", [False, True])
 async def test_original_work_ui_uses_real_owner_http_worker_and_remote_receipt(
-    remote_work, app_user_sessionmaker, monkeypatch, tmp_path
+    remote_work, app_user_sessionmaker, monkeypatch, tmp_path, file_return
 ):
     from fastapi import FastAPI
     from app.api import agents
@@ -455,6 +456,14 @@ async def test_original_work_ui_uses_real_owner_http_worker_and_remote_receipt(
         await db.commit()
     web = FastAPI()
     web.include_router(agents.router, prefix="/api")
+    if file_return:
+        from app.api import chat_sessions, files
+
+        web.include_router(files.router, prefix="/api")
+        web.include_router(chat_sessions.router, prefix="/api")
+        from app.config import get_settings
+
+        monkeypatch.setattr(get_settings(), "AGENT_DATA_DIR", str(tmp_path / "employees"))
 
     async def dependency():
         async with tenant_scoped_session(seed["tenant"], session_factory=app_user_sessionmaker) as db:
@@ -471,6 +480,9 @@ async def test_original_work_ui_uses_real_owner_http_worker_and_remote_receipt(
         try:
             task_id = await asyncio.wait_for(queued.get(), 20)
             await execute(seed, task_id, app_user_sessionmaker)
+            if file_return:
+                await RuntimeNotificationOutboxService(session_factory=app_user_sessionmaker).drain_once(
+                    worker_id="remote-dom-file-return")
         except BaseException as exc:
             failures.append(exc)
         finally:
@@ -490,7 +502,8 @@ async def test_original_work_ui_uses_real_owner_http_worker_and_remote_receipt(
                 "id": "remote-task",
                 "contextId": "remote-context",
                 "status": {"state": "TASK_STATE_COMPLETED"},
-                "artifacts": [{"artifactId": "report", "parts": [{"text": "NATIVE_REMOTE_FULL_RESULT\n" * 4000}]}],
+                "artifacts": [{"artifactId": "report", "parts": [{"text": "NATIVE_REMOTE_FULL_RESULT\n" * 4000,
+                    **({"filename": "report.txt"} if file_return else {})}]}],
             }
         }
         worker = asyncio.create_task(consume())
@@ -500,7 +513,8 @@ async def test_original_work_ui_uses_real_owner_http_worker_and_remote_receipt(
                 {"user_id": seed["owner"], "tenant_id": seed["tenant"], "agent_id": seed["agent"]},
                 tmp_path,
                 entry_file="e2e/remote-a2a-work-native.tsx",
-                extra_env={"HIVE_M3N_TOKEN": seed["user_token"], "HIVE_M3O_SESSION_ID": str(session_id)},
+                extra_env={"HIVE_M3N_TOKEN": seed["user_token"], "HIVE_M3O_SESSION_ID": str(session_id),
+                    "HIVE_M3P_FILE_RETURN": "1" if file_return else "0"},
             )
             await asyncio.wait_for(worker, 5)
             assert not failures

@@ -125,6 +125,11 @@ async def _validate_input_dependency_batch(db, tenant_id: uuid.UUID, dependencie
         if dependency["source_kind"] == "session_actor_identity":
             await _validate_session_actor_identity(db, tenant_id, dependency, user=user, runtime_request=runtime_request)
             continue
+        if dependency["source_kind"] == "remote_a2a_result":
+            from app.services.remote_a2a_artifacts import validate_remote_dependency
+
+            await validate_remote_dependency(db, tenant_id, dependency, user=user, runtime_request=runtime_request)
+            continue
         if dependency["source_kind"] == "delegation_context":
             from app.services.delegation_context_sources import validate_delegation_context_source
 

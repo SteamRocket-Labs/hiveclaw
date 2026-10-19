@@ -3,7 +3,7 @@
 import uuid
 from typing import Literal
 
-from fastapi import APIRouter, Depends, Response
+from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, StrictBool
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -97,6 +97,12 @@ class RemoteTaskOperationIn(RemoteConnectionFrame):
     params: dict = Field(default_factory=dict)
 
 
+class RemoteArtifactRecoveryIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    expected_user_id: uuid.UUID
+    expected_tenant_id: uuid.UUID
+
+
 @router.post("/tasks", status_code=201)
 async def start_task(
     agent_id: uuid.UUID,
@@ -152,3 +158,27 @@ async def operate_task(
 
     response.headers["Cache-Control"] = "private, no-store"
     return await remote_a2a_tasks.operate_task(db, agent_id=agent_id, task_id=task_id, actor=actor, **body.model_dump())
+
+
+@router.post("/tasks/{task_id}/artifacts")
+async def recover_artifacts(
+    agent_id: uuid.UUID,
+    task_id: uuid.UUID,
+    body: RemoteArtifactRecoveryIn,
+    response: Response,
+    actor: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    from app.services.remote_a2a_artifacts import recover_task_artifacts
+    from app.services.content_input_receipts import ContentInputReceiptError
+    from app.services.workspace_resource_authority import WorkspaceAuthorityError
+
+    response.headers["Cache-Control"] = "private, no-store"
+    try:
+        return await recover_task_artifacts(db, agent_id=agent_id, task_id=task_id, actor=actor, **body.model_dump())
+    except (ContentInputReceiptError, WorkspaceAuthorityError, OSError) as exc:
+        await db.rollback()
+        raise HTTPException(getattr(exc, "status_code", 503), detail={
+            "code": getattr(exc, "code", "remote_a2a_storage_unavailable"),
+            "recovery_action": "retry_saved_artifact_delivery", "remote_request_replayed": False,
+        }) from exc

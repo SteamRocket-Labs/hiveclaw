@@ -1,4 +1,5 @@
 from contextlib import contextmanager
+import base64
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 from threading import Thread
@@ -7,6 +8,14 @@ from types import SimpleNamespace
 import pytest
 
 from app.services.remote_a2a_transport import RemoteA2AEndpoint, RemoteA2AError
+
+
+async def test_binary_credentials_are_rejected_before_remote_dispatch():
+    with remote_server() as remote:
+        with pytest.raises(RemoteA2AError, match="remote_a2a_credential_in_request"):
+            await remote.endpoint.rpc("SendMessage", {"message": {"messageId": "original", "role": "ROLE_USER",
+                "parts": [{"raw": base64.b64encode(b"prefix::synthetic-remote-credential::suffix").decode()}]}})
+        assert not remote.requests
 
 
 @contextmanager

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import base64
+import binascii
 import json
 from typing import Any
 from uuid import uuid4
@@ -52,6 +54,29 @@ class RemoteA2AEndpoint:
             (("remote-a2a://credential/bearer", self.bearer_token),) if self.bearer_token else ()
         )
 
+    def redact_payload(self, payload):
+        boundary = self._boundary()
+
+        def redact(value):
+            if isinstance(value, list):
+                return [redact(item) for item in value]
+            if not isinstance(value, dict):
+                return value
+            result = {key: redact(item) for key, item in value.items()}
+            if isinstance(result.get("raw"), str):
+                try:
+                    body = base64.b64decode(result["raw"], validate=True)
+                except (ValueError, binascii.Error):
+                    return result
+                if boundary.match_binary_chunks((body,)):
+                    result["raw"] = base64.b64encode(b"[REDACTED_SECRET]").decode()
+                    metadata = result.get("metadata")
+                    result["metadata"] = {**(metadata if isinstance(metadata, dict) else {}),
+                        "hiveRemoteContentStatus": "credential_redacted"}
+            return result
+
+        return redact(boundary.redact_payload_with_evidence(payload).value)
+
     async def _request(self, method: str, url: str, *, payload: dict | None = None) -> dict:
         headers = {"Accept": "application/json", "A2A-Version": "1.0"}
         if self.bearer_token:
@@ -95,7 +120,7 @@ class RemoteA2AEndpoint:
             )
         # A remote endpoint may echo its credential. Only exact active secret
         # bytes are redacted; all other model-authored content stays intact.
-        return self._boundary().redact_payload_with_evidence(value).value
+        return self.redact_payload(value)
 
     async def discover(self) -> dict[str, Any]:
         from a2a.types import a2a_pb2 as protocol
@@ -128,6 +153,8 @@ class RemoteA2AEndpoint:
         }
         if method not in schemas:
             raise RemoteA2AError("remote_a2a_method_not_supported")
+        if self.redact_payload(params) != params:
+            raise RemoteA2AError("remote_a2a_credential_in_request")
         request_schema, response_schema = schemas[method]
         try:
             parsed_request = ParseDict(params, request_schema(), ignore_unknown_fields=False)

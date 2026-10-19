@@ -36,6 +36,7 @@ function Work({ agentId, sessionId, actorId, tenantId }: { agentId: string; sess
   const [unknown, setUnknown] = useState(false);
   const [error, setError] = useState(false);
   const [selected, setSelected] = useState<RemoteA2ATask | null>(null);
+  const [files, setFiles] = useState<{ taskId: string; available: number; unavailable: number; conflicts: number } | null>(null);
   const pending = useRef<Pending | null>(null);
   const current = useRef(true);
   const matches = () => current.current && useAuthStore.getState().user?.id === actorId
@@ -64,6 +65,21 @@ function Work({ agentId, sessionId, actorId, tenantId }: { agentId: string; sess
     const accepted = result.data?.items.find((task) => task.request_id === nonce || task.latest_operation_id === nonce);
     if (accepted) { pending.current = null;setUnknown(false);setText('');await read(accepted.id); }
     else if (selected) await read(selected.id);
+  }
+  async function recoverFiles() {
+    if (!selected || !matches()) return;
+    const taskId = selected.id;
+    setBusy(true);setError(false);
+    try {
+      const result = await remoteA2AApi.recoverArtifacts(agentId, taskId, {
+        expected_user_id: actorId, expected_tenant_id: tenantId });
+      if (!matches()) return;
+      if (result.agent_id !== agentId || result.task_id !== taskId || result.source_session_id !== sessionId) throw new Error('Remote file scope changed');
+      setFiles({ taskId, available: result.parts.length,
+        unavailable: result.file_returns.filter((file) => file.status === 'unavailable').length,
+        conflicts: result.file_returns.filter((file) => file.status === 'preserved_conflict').length });
+    } catch { if (matches()) setError(true); }
+    finally { if (matches()) setBusy(false); }
   }
   async function submit(request: Pending) {
     if (!matches()) return;
@@ -140,11 +156,14 @@ function Work({ agentId, sessionId, actorId, tenantId }: { agentId: string; sess
       <p>{t('remoteWork.costUnknown', 'External cost: unknown. Internal action control: unverified.')}</p>
       {selected.error_code && <p role="alert"><code>{selected.error_code}</code></p>}
       <div>
+        <button type="button" className="btn-secondary" disabled={busy} onClick={() => { void recoverFiles(); }}>{t('remoteWork.recoverFiles', 'Recover files from saved replies')}</button>
         {selected.recovery_actions.includes('refresh') && <button type="button" className="btn-secondary" disabled={busy || unknown} onClick={() => operate('refresh')}>{t('remoteWork.refresh', 'Check remote task')}</button>}
         {selected.recovery_actions.includes('send_message') && <button type="button" className="btn-primary" disabled={busy || unknown || !text.trim()} onClick={() => operate('send_message')}>{t('remoteWork.reply', 'Reply to this remote task')}</button>}
         {selected.recovery_actions.includes('cancel') && <button type="button" className="btn-secondary" disabled={busy || unknown} onClick={() => operate('cancel')}>{t('remoteWork.cancel', 'Request remote cancellation')}</button>}
         {selected.recovery_actions.includes('abandon') && <button type="button" className="btn-secondary" disabled={busy || unknown} onClick={() => operate('abandon')}>{t('remoteWork.abandon', 'Abandon locally; remote effects remain unconfirmed')}</button>}
       </div>
+      {files?.taskId === selected.id && <p role="status">{t('remoteWork.filesRecovered', 'Files returned to this work: {{count}}. Separate copies preserving existing files: {{conflicts}}. Unavailable parts: {{unavailable}}.',
+        { count: files.available, conflicts: files.conflicts, unavailable: files.unavailable })}</p>}
       {selected.observation && <pre style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{JSON.stringify(selected.observation, null, 2)}</pre>}
     </section>}
   </details>;

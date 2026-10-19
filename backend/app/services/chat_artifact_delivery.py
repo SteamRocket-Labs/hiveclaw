@@ -649,6 +649,7 @@ def build_artifact_candidate(
     execution_evidence_ref: str | None = None,
     tool_invocation_id: uuid.UUID | None = None,
     selection_model_result_id: uuid.UUID | None = None,
+    source_receipt_id: uuid.UUID | None = None,
 ) -> dict[str, Any] | None:
     """Return a durable artifact payload for a safe workspace file path.
 
@@ -681,6 +682,8 @@ def build_artifact_candidate(
             snapshot_hash = hashlib.sha256(f"{snapshot_hash}\n{execution_evidence_ref}".encode()).hexdigest()
         if selection_model_result_id is not None:
             snapshot_hash = hashlib.sha256(f"{snapshot_hash}\nselection-model:{selection_model_result_id}".encode()).hexdigest()
+        if source_receipt_id is not None:
+            snapshot_hash = hashlib.sha256(f"{snapshot_hash}\ncontent-receipt:{source_receipt_id}".encode()).hexdigest()
         preview_kind = _preview_kind_for_path(rel)
         preview_snapshot_content, preview_snapshot_truncated = _read_preview_snapshot(captured, preview_kind)
         snapshot_storage_path = _write_content_snapshot(
@@ -1153,6 +1156,7 @@ async def create_chat_artifacts_for_message(
                 execution_evidence_ref=execution_evidence_ref,
                 tool_invocation_id=tool_invocation_id,
                 selection_model_result_id=selection_model_result_id,
+                source_receipt_id=(source_receipt_ids or {}).get(_safe_workspace_relative_path(path).as_posix()),
             )
         except (OSError, WorkspaceAuthorityError):
             if publication_errors is None:

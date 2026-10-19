@@ -1266,6 +1266,13 @@ export function applyTranscriptEvent(
     };
   }
 
+  if (eventType === 'remote_a2a_artifacts') {
+    return { ...state, seenEventIds, messages: [...state.messages, {
+      ...messageIdentityFromTranscriptEvent(event), role: 'event', content, timestamp,
+      eventType, artifacts: extractArtifactParts(event), threadItem: threadItem || undefined,
+    }] };
+  }
+
   if (eventType !== 'artifact_delivery') {
     const eventDisplayContent =
       (typeof event.metadata?.message === 'string' && event.metadata.message) ||

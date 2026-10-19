@@ -25,7 +25,15 @@ export const remoteA2AApi = {
   task: (agentId: string, taskId: string) => get<RemoteA2ATask>(`${path(agentId)}/tasks/${encodeURIComponent(taskId)}`),
   startTask: (agentId: string, body: RemoteA2ATaskInput) => post<RemoteA2ATask>(`${path(agentId)}/tasks`, body),
   operateTask: (agentId: string, taskId: string, body: RemoteA2ATaskOperation) => post<RemoteA2ATask>(`${path(agentId)}/tasks/${encodeURIComponent(taskId)}/operations`, body),
+  recoverArtifacts: (agentId: string, taskId: string, body: Pick<RemoteA2AFrame, 'expected_user_id' | 'expected_tenant_id'>) =>
+    post<RemoteA2AFileReturn>(`${path(agentId)}/tasks/${encodeURIComponent(taskId)}/artifacts`, body),
 };
+
+export interface RemoteA2AFileReturn {
+  agent_id: string; task_id: string; source_session_id: string;
+  parts: Record<string, unknown>[];
+  file_returns: { status: string; path?: string; reason_code?: string; recovery_action?: string }[];
+}
 
 export interface RemoteA2ATask {
   id: string; agent_id: string; source_session_id: string; request_id: string; latest_operation_id: string;

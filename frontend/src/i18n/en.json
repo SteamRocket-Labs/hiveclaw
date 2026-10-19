@@ -5713,6 +5713,8 @@
     "refresh": "Check remote task",
     "reply": "Reply to this remote task",
     "cancel": "Request remote cancellation",
-    "abandon": "Abandon locally; remote effects remain unconfirmed"
+    "abandon": "Abandon locally; remote effects remain unconfirmed",
+    "recoverFiles": "Recover files from saved replies",
+    "filesRecovered": "Files returned to this work: {{count}}. Separate copies preserving existing files: {{conflicts}}. Unavailable parts: {{unavailable}}."
   }
 }

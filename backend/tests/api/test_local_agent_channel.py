@@ -78,10 +78,15 @@ def _client(monkeypatch, *, db=None, current_user=None, context=None, agent=None
         assert requested_agent_id == agent.id
         return agent, "manage"
 
+    async def fake_dispatch(db_arg, *, message_id, owner_user_id):
+        assert db_arg is db
+        return {'status': 'pending'}
+
     app.dependency_overrides[get_current_user] = override_user
     app.dependency_overrides[get_db] = override_db
     app.dependency_overrides[local_agent_channel_api.get_bridge_auth_context] = override_context
     monkeypatch.setattr(local_agent_channel_api, "check_agent_access", fake_check_agent_access)
+    monkeypatch.setattr(local_agent_channel_api.channel_service, 'dispatch_channel_message', fake_dispatch)
     return TestClient(app)
 
 

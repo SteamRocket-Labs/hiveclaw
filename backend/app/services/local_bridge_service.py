@@ -6,12 +6,12 @@ import hashlib
 import os
 import secrets
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from fastapi import HTTPException, status
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
@@ -159,6 +159,26 @@ class BridgeAuthContext:
     scopes: tuple[str, ...]
     client_kind: str
     device_name: str
+
+
+async def require_live_bridge_context(db: AsyncSession, context: BridgeAuthContext) -> BridgeAuthContext:
+    """Revalidate a cached channel identity before accepting another runtime frame."""
+    query = select(LocalAgentBridgeConnection).join(User, User.id == LocalAgentBridgeConnection.user_id).join(
+        Tenant, Tenant.id == LocalAgentBridgeConnection.tenant_id).where(
+        LocalAgentBridgeConnection.id == context.connection_id,
+        LocalAgentBridgeConnection.tenant_id == context.tenant_id,
+        LocalAgentBridgeConnection.agent_id == context.agent_id,
+        LocalAgentBridgeConnection.user_id == context.user_id,
+        LocalAgentBridgeConnection.status == 'active', LocalAgentBridgeConnection.expires_at > utcnow(),
+        User.is_active.is_(True), User.tenant_id == context.tenant_id, Tenant.is_active.is_(True))
+    if context.agent_id is not None:
+        query = query.join(Agent, Agent.id == LocalAgentBridgeConnection.agent_id).where(
+            Agent.tenant_id == context.tenant_id, Agent.deleted_at.is_(None), Agent.deactivated_at.is_(None),
+            func.coalesce(Agent.owner_user_id, Agent.creator_id) == context.user_id)
+    connection = await db.scalar(query.execution_options(populate_existing=True))
+    if connection is None:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail='Local Agent connection is no longer authorized')
+    return replace(context, scopes=tuple(scope for scope in context.scopes if scope in set(connection.scopes or ())))
 
 
 def select_effective_capability_policy(agent_policy, tenant_policy):

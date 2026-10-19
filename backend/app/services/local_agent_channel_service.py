@@ -1246,12 +1246,21 @@ def _enforce_action_conditions(
         )
 
 
+class _LiveCapabilityDenied(HTTPException):
+    def __init__(self, capability):
+        super().__init__(status_code=status.HTTP_403_FORBIDDEN,
+            detail=f'Local Agent capability denied by live policy: {capability}')
+
+
 async def _active_snapshot_for_context(
     db: AsyncSession,
     *,
     context: BridgeAuthContext,
     capability: str,
 ) -> tuple[LocalAgentChannel, LocalAgentCapabilitySnapshot]:
+    from app.services.local_bridge_service import require_live_bridge_context
+
+    context = await require_live_bridge_context(db, context)
     channel = await _get_active_channel(db, context=context)
     if channel is None:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Local Agent channel is not ready")
@@ -1283,6 +1292,10 @@ async def _active_snapshot_for_context(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=f"Local Agent capability denied: {capability}",
         )
+    live_capabilities = await _agent_capability_names(db, context=context,
+        server_capabilities=_server_capability_names(context))
+    if capability not in live_capabilities:
+        raise _LiveCapabilityDenied(capability)
     return channel, snapshot
 
 
@@ -1304,6 +1317,10 @@ async def _active_snapshot_for_session(
     )
     if session.source_agent_id is not None:
         stmt = stmt.where(LocalAgentCapabilitySnapshot.subject_agent_id == session.source_agent_id)
+    if getattr(session, 'connection_id', None) is not None:
+        stmt = stmt.where(LocalAgentChannel.connection_id == session.connection_id)
+    if getattr(session, 'channel_id', None) is not None:
+        stmt = stmt.where(LocalAgentChannel.id == session.channel_id)
     rows = (
         await db.execute(
             stmt.order_by(
@@ -1606,6 +1623,9 @@ async def mark_channel_ready(
 ) -> dict[str, Any]:
     """Issue an immutable signed capability snapshot and mark the channel online."""
 
+    from app.services.local_bridge_service import require_live_bridge_context
+
+    context = await require_live_bridge_context(db, context)
     _require_scope(context, "local_agent:connect")
     server_capabilities = _server_capability_names(context)
     agent_capabilities = await _agent_capability_names(
@@ -1701,7 +1721,9 @@ async def mark_channel_ready(
 
 async def mark_channel_seen(db: AsyncSession, *, context: BridgeAuthContext) -> None:
     """Refresh runner presence while the channel WebSocket remains alive."""
+    from app.services.local_bridge_service import require_live_bridge_context
 
+    context = await require_live_bridge_context(db, context)
     _require_scope(context, "local_agent:connect")
     channel = await _get_active_channel(db, context=context)
     if channel is None:
@@ -2116,16 +2138,62 @@ async def notify_local_agent_action_resolution(payload: dict[str, Any] | None) -
     if not payload or payload.get("status") != "pending":
         return
     try:
-        from app.api.local_agent_channel import channel_ws_manager
+        from app.database import tenant_scoped_session
 
-        await channel_ws_manager.send_to_user(
-            uuid.UUID(str(payload["owner_user_id"])),
-            {"type": "message", "message": payload},
-        )
+        async with tenant_scoped_session(uuid.UUID(str(payload['tenant_id'])), require_tenant=True) as db:
+            await dispatch_channel_message(db, message_id=uuid.UUID(str(payload['id'])),
+                owner_user_id=uuid.UUID(str(payload['owner_user_id'])))
     except Exception:
         # The transaction is already durable. An online runner polls on ping,
         # while an offline runner claims the same replay_key on reconnect.
         return
+
+
+async def dispatch_channel_message(db: AsyncSession, *, message_id: uuid.UUID, owner_user_id: uuid.UUID) -> dict:
+    """Use the durable poll lease for one online push to its original recipient."""
+    from app.api.local_agent_channel import channel_ws_manager
+
+    message = await db.scalar(select(LocalAgentChannelMessage).where(
+        LocalAgentChannelMessage.id == message_id, LocalAgentChannelMessage.owner_user_id == owner_user_id))
+    if message is None or message.status != 'pending':
+        return {'status': 'not_pending'}
+    pair = (await db.execute(select(LocalAgentCapabilitySnapshot, LocalAgentChannel).join(LocalAgentChannel,
+        LocalAgentChannel.id == LocalAgentCapabilitySnapshot.channel_id).where(
+        LocalAgentCapabilitySnapshot.snapshot_hash == message.capability_snapshot_hash,
+        LocalAgentCapabilitySnapshot.tenant_id == message.tenant_id,
+        LocalAgentChannel.tenant_id == message.tenant_id,
+        LocalAgentChannel.owner_user_id == owner_user_id))).first()
+    if pair is None:
+        return {'status': 'unavailable', 'reason_code': 'original_runner_unavailable'}
+    snapshot, channel = pair
+    connection = await db.scalar(select(LocalAgentBridgeConnection).join(User,
+        User.id == LocalAgentBridgeConnection.user_id).join(Tenant, Tenant.id == LocalAgentBridgeConnection.tenant_id).where(
+        LocalAgentBridgeConnection.id == channel.connection_id,
+        LocalAgentBridgeConnection.tenant_id == message.tenant_id,
+        LocalAgentBridgeConnection.user_id == owner_user_id,
+        LocalAgentBridgeConnection.agent_id == snapshot.subject_agent_id,
+        LocalAgentBridgeConnection.status == 'active', LocalAgentBridgeConnection.expires_at > utcnow(),
+        User.is_active.is_(True), User.tenant_id == message.tenant_id, Tenant.is_active.is_(True)))
+    if connection is None:
+        return {'status': 'unavailable', 'reason_code': 'original_runner_unavailable'}
+    context = BridgeAuthContext(connection_id=connection.id, tenant_id=connection.tenant_id,
+        agent_id=connection.agent_id, user_id=connection.user_id, scopes=tuple(connection.scopes or ()),
+        client_kind=connection.client_kind, device_name=connection.device_name)
+    if not await channel_ws_manager.has_connection(context):
+        return {'status': 'pending'}
+    claimed = await poll_pending_channel_messages(db, context=context, limit=1, message_id=message_id)
+    if not claimed:
+        return {'status': 'not_pending'}
+    sent = await channel_ws_manager.send_to_connection(context, {'type': 'message', 'message': claimed[0]})
+    delivery_status = 'sent' if sent else 'unknown'
+    retained = await db.scalar(select(LocalAgentChannelMessage).where(
+        LocalAgentChannelMessage.id == message_id).with_for_update().execution_options(populate_existing=True))
+    if retained is not None and retained.delivery_attempt_count == claimed[0]['delivery_attempt_count']:
+        retained.metadata_json = {**dict(retained.metadata_json or {}), 'last_live_delivery': {
+            'status': delivery_status, 'connection_id': str(context.connection_id),
+            'attempt': retained.delivery_attempt_count, 'observed_at': utcnow().isoformat()}}
+        await db.commit()
+    return {'status': delivery_status, 'replay_key': claimed[0]['replay_key']}
 
 
 async def _reconcile_stale_deliveries(
@@ -2138,6 +2206,7 @@ async def _reconcile_stale_deliveries(
         (
             await db.execute(
                 select(LocalAgentChannelMessage)
+                .join(LocalAgentChannelSession, LocalAgentChannelSession.id == LocalAgentChannelMessage.session_id)
                 .where(
                     LocalAgentChannelMessage.owner_user_id == context.user_id,
                     LocalAgentChannelMessage.tenant_id == context.tenant_id,
@@ -2145,6 +2214,7 @@ async def _reconcile_stale_deliveries(
                     LocalAgentChannelMessage.status == "delivered",
                     LocalAgentChannelMessage.delivery_lease_expires_at.is_not(None),
                     LocalAgentChannelMessage.delivery_lease_expires_at <= now,
+                    *_runner_session_scope(context), *_runner_message_scope(context),
                 )
                 .with_for_update(skip_locked=True)
             )
@@ -2205,13 +2275,17 @@ async def poll_pending_channel_messages(
     *,
     context: BridgeAuthContext,
     limit: int = 10,
+    message_id: uuid.UUID | None = None,
 ) -> list[dict[str, Any]]:
     """Lease pending work; stale deliveries requeue with the same replay key."""
 
     _require_scope(context, "local_agent:receive")
     snapshot = None
     if isinstance(db, AsyncSession):
-        _channel, snapshot = await _active_snapshot_for_context(db, context=context, capability="execute")
+        try:
+            _channel, snapshot = await _active_snapshot_for_context(db, context=context, capability="execute")
+        except _LiveCapabilityDenied:
+            return []
         await _reconcile_stale_deliveries(db, context=context)
     result = await db.execute(
         select(LocalAgentChannelMessage)
@@ -2221,6 +2295,8 @@ async def poll_pending_channel_messages(
             LocalAgentChannelMessage.tenant_id == context.tenant_id,
             LocalAgentChannelMessage.direction == "hive_to_local",
             LocalAgentChannelMessage.status == "pending",
+            *_runner_session_scope(context), *_runner_message_scope(context),
+            *([LocalAgentChannelMessage.id == message_id] if message_id is not None else []),
         )
         .order_by(LocalAgentChannelMessage.created_at.asc())
         .limit(limit)
@@ -2252,6 +2328,32 @@ async def poll_pending_channel_messages(
     return [_message_payload(message) for message in messages]
 
 
+def _runner_session_scope(context: BridgeAuthContext):
+    conditions = [or_(LocalAgentChannelSession.connection_id.is_(None),
+        LocalAgentChannelSession.connection_id == context.connection_id)]
+    if context.agent_id is not None:
+        conditions.append(or_(LocalAgentChannelSession.source_agent_id.is_(None),
+            LocalAgentChannelSession.source_agent_id == context.agent_id))
+    return conditions
+
+
+def _runner_message_scope(context: BridgeAuthContext):
+    recipient = select(LocalAgentCapabilitySnapshot.id).join(LocalAgentChannel,
+        LocalAgentChannel.id == LocalAgentCapabilitySnapshot.channel_id).where(
+        LocalAgentCapabilitySnapshot.snapshot_hash == LocalAgentChannelMessage.capability_snapshot_hash,
+        LocalAgentCapabilitySnapshot.tenant_id == context.tenant_id,
+        LocalAgentCapabilitySnapshot.subject_agent_id == context.agent_id,
+        LocalAgentChannel.tenant_id == context.tenant_id,
+        LocalAgentChannel.owner_user_id == context.user_id,
+        LocalAgentChannel.connection_id == context.connection_id,
+    ).correlate(LocalAgentChannelMessage).exists()
+    conditions = [or_(LocalAgentChannelMessage.capability_snapshot_hash.is_(None), recipient)]
+    if context.agent_id is not None:
+        conditions.append(or_(LocalAgentChannelMessage.source_agent_id.is_(None),
+            LocalAgentChannelMessage.source_agent_id == context.agent_id))
+    return conditions
+
+
 async def ack_channel_message(
     db: AsyncSession,
     *,
@@ -2262,11 +2364,13 @@ async def ack_channel_message(
     if isinstance(db, AsyncSession):
         await _active_snapshot_for_context(db, context=context, capability="execute")
     result = await db.execute(
-        select(LocalAgentChannelMessage).where(
+        select(LocalAgentChannelMessage).join(LocalAgentChannelSession,
+            LocalAgentChannelSession.id == LocalAgentChannelMessage.session_id).where(
             LocalAgentChannelMessage.id == message_id,
             LocalAgentChannelMessage.owner_user_id == context.user_id,
             LocalAgentChannelMessage.tenant_id == context.tenant_id,
-        )
+            *_runner_session_scope(context), *_runner_message_scope(context),
+        ).with_for_update()
     )
     message = result.scalar_one_or_none()
     if message is None:
@@ -2307,6 +2411,7 @@ async def record_channel_event(
             LocalAgentChannelSession.id == session_id,
             LocalAgentChannelSession.owner_user_id == context.user_id,
             LocalAgentChannelSession.tenant_id == context.tenant_id,
+            *_runner_session_scope(context),
         )
     )
     session = session_result.scalar_one_or_none()
@@ -2319,6 +2424,7 @@ async def record_channel_event(
                     LocalAgentChannelMessage.id == message_id,
                     LocalAgentChannelMessage.session_id == session.id,
                     LocalAgentChannelMessage.owner_user_id == context.user_id,
+                    *_runner_message_scope(context),
                 )
             )
         ).scalar_one_or_none()
@@ -2384,11 +2490,14 @@ async def record_channel_result(
     metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     _require_scope(context, "local_agent:report")
+    if isinstance(db, AsyncSession):
+        await _active_snapshot_for_context(db, context=context, capability="result_report")
     session_result = await db.execute(
         select(LocalAgentChannelSession).where(
             LocalAgentChannelSession.id == session_id,
             LocalAgentChannelSession.owner_user_id == context.user_id,
             LocalAgentChannelSession.tenant_id == context.tenant_id,
+            *_runner_session_scope(context),
         )
     )
     session = session_result.scalar_one_or_none()
@@ -2408,6 +2517,7 @@ async def record_channel_result(
             LocalAgentChannelMessage.session_id == session.id,
             LocalAgentChannelMessage.owner_user_id == context.user_id,
             LocalAgentChannelMessage.tenant_id == context.tenant_id,
+            *_runner_message_scope(context),
         )
         .with_for_update()
     )
@@ -2449,9 +2559,6 @@ async def record_channel_result(
             "source_delivery": source_delivery,
             "idempotent_replay": True,
         }
-    if isinstance(db, AsyncSession):
-        await _active_snapshot_for_context(db, context=context, capability="result_report")
-
     normalized_status = "failed" if result_status == "failed" else "completed"
     message.status = normalized_status
     message.result = output

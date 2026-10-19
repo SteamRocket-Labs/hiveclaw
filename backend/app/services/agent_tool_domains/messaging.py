@@ -1800,9 +1800,8 @@ async def _delegate_to_local_agent_channel(
             message_status = str(message.get("status") or "pending")
             if message_status in {"pending", "delivered"}:
                 try:
-                    from app.api.local_agent_channel import channel_ws_manager
-
-                    await channel_ws_manager.send_to_user(target_owner_id, {"type": "message", "message": message})
+                    await local_agent_channel_service.dispatch_channel_message(db,
+                        message_id=uuid.UUID(str(message['id'])), owner_user_id=target_owner_id)
                 except Exception as exc:
                     logger.debug("Suppressed local-agent channel WS fanout failure: %s", exc)
             result = {

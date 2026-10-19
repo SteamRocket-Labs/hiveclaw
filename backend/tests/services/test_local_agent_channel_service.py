@@ -813,6 +813,8 @@ async def test_record_channel_result_writes_assistant_message_for_actor_chat_ses
 
     db = _DbWithGet([channel_session, channel_message])
     context = SimpleNamespace(
+        connection_id=uuid4(),
+        agent_id=source_agent_id,
         tenant_id=tenant_id,
         user_id=host_owner_id,
         scopes=("local_agent:report",),
@@ -919,6 +921,8 @@ async def test_record_a2a_channel_result_enqueues_source_session_completion_befo
 
     db = _DbWithGet([channel_session, channel_message, parent_session])
     context = SimpleNamespace(
+        connection_id=uuid4(),
+        agent_id=target_agent_id,
         tenant_id=tenant_id,
         user_id=host_owner_id,
         scopes=("local_agent:report",),
@@ -1042,6 +1046,8 @@ async def test_record_a2a_channel_result_replay_repairs_missing_source_delivery(
     )
     db = _FakeDB([channel_session, channel_message, parent_session])
     context = SimpleNamespace(
+        connection_id=uuid4(),
+        agent_id=target_agent_id,
         tenant_id=tenant_id,
         user_id=host_owner_id,
         scopes=("local_agent:report",),
@@ -1117,7 +1123,8 @@ async def test_reconcile_stale_delivery_terminalizes_remote_action_span(monkeypa
         error=None,
     )
     db = _FakeDB([_RowsResult([message]), span])
-    context = SimpleNamespace(tenant_id=tenant_id, user_id=owner_user_id)
+    context = SimpleNamespace(tenant_id=tenant_id, user_id=owner_user_id,
+        connection_id=uuid4(), agent_id=source_agent_id)
 
     async def fixed_event_sequence(_db, *, session_id):
         assert session_id == message.session_id

@@ -317,20 +317,49 @@ def _local_agent_host_user_id(agent: Any) -> uuid.UUID:
 
 
 class LocalAgentChannelConnectionManager:
-    """Best-effort in-process fanout for online local runners."""
+    """Bound runtime sockets and best-effort online delivery."""
 
     def __init__(self) -> None:
         self._by_user: dict[str, list[WebSocket]] = {}
+        self._contexts: dict[int, BridgeAuthContext] = {}
         self._lock = asyncio.Lock()
 
     async def connect(self, *, context: BridgeAuthContext, websocket: WebSocket) -> None:
         async with self._lock:
             self._by_user.setdefault(str(context.user_id), []).append(websocket)
+            self._contexts[id(websocket)] = context
 
     async def disconnect(self, *, context: BridgeAuthContext, websocket: WebSocket) -> None:
         async with self._lock:
             sockets = self._by_user.get(str(context.user_id), [])
             self._by_user[str(context.user_id)] = [item for item in sockets if item is not websocket]
+            self._contexts.pop(id(websocket), None)
+
+    def _connection_sockets(self, context: BridgeAuthContext) -> list[WebSocket]:
+        def matches(socket):
+            connected = self._contexts.get(id(socket))
+            return connected is not None and (
+                connected.tenant_id, connected.user_id, connected.agent_id, connected.connection_id) == (
+                context.tenant_id, context.user_id, context.agent_id, context.connection_id)
+
+        return [socket for socket in self._by_user.get(str(context.user_id), []) if matches(socket)]
+
+    async def has_connection(self, context: BridgeAuthContext) -> bool:
+        async with self._lock:
+            return bool(self._connection_sockets(context))
+
+    async def send_to_connection(self, context: BridgeAuthContext, payload: dict[str, Any]) -> bool:
+        async with self._lock:
+            sockets = self._connection_sockets(context)
+        if not sockets:
+            return False
+        socket = sockets[-1]
+        try:
+            await socket.send_json(jsonable_encoder(payload))
+            return True
+        except Exception:
+            await self.disconnect(context=context, websocket=socket)
+            return False
 
     async def send_to_user(self, user_id: uuid.UUID, payload: dict[str, Any]) -> None:
         async with self._lock:
@@ -345,12 +374,13 @@ class LocalAgentChannelConnectionManager:
             async with self._lock:
                 current = self._by_user.get(str(user_id), [])
                 self._by_user[str(user_id)] = [item for item in current if item not in dead]
+                for socket in dead:
+                    self._contexts.pop(id(socket), None)
 
     async def send_to_agent(self, agent_id: uuid.UUID, payload: dict[str, Any]) -> None:
         """Compatibility no-op surface for old callers.
 
-        Local Agent Channel fanout is user-scoped now. New code must call
-        `send_to_user`.
+        Work dispatch uses the durable message claim and exact connection.
         """
         logger.debug("[LocalAgentChannel] ignored legacy agent fanout for {}", agent_id)
 
@@ -392,10 +422,6 @@ class LocalAgentBrowserChannelManager:
 
 
 browser_channel_ws_manager = LocalAgentBrowserChannelManager()
-
-
-def _runner_message_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    return {key: value for key, value in payload.items() if key != "event"}
 
 
 def _runner_dispatch_allowed(payload: dict[str, Any]) -> bool:
@@ -496,9 +522,8 @@ async def create_current_user_local_agent_channel_message(
         idempotency_key=body.idempotency_key,
     )
     if _runner_dispatch_allowed(payload):
-        await channel_ws_manager.send_to_user(
-            host_owner_user_id, {"type": "message", "message": _runner_message_payload(payload)}
-        )
+        await channel_service.dispatch_channel_message(db, message_id=uuid.UUID(str(payload['id'])),
+            owner_user_id=host_owner_user_id)
     await _broadcast_browser_channel_event(
         owner_user_id=host_owner_user_id,
         session_id=session_id,
@@ -851,9 +876,8 @@ async def create_local_agent_channel_message(
         idempotency_key=body.idempotency_key,
     )
     if _runner_dispatch_allowed(payload):
-        await channel_ws_manager.send_to_user(
-            host_owner_user_id, {"type": "message", "message": _runner_message_payload(payload)}
-        )
+        await channel_service.dispatch_channel_message(db, message_id=uuid.UUID(str(payload['id'])),
+            owner_user_id=host_owner_user_id)
     await _broadcast_browser_channel_event(
         owner_user_id=host_owner_user_id,
         session_id=session_id,

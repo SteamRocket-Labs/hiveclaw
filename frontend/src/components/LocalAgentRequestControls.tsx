@@ -89,6 +89,9 @@ function RequestList({ sessionId, actorId, tenantId }: { sessionId: string; acto
     {(query.isError || unknown) && <p role="alert">{t('localRequests.unavailable', 'The request state or control outcome could not be confirmed. Refresh before acting again.')}</p>}
     {!query.isError && query.data?.pages.flatMap((page) => page.requests).map((request) => <div key={request.id}>
       <p>{request.preview}</p><p role="status">{stateLabel(request)}</p>
+      {request.status === 'waiting_approval' && request.target_agent_id && request.approval_id
+        && <a href={`/agents/${encodeURIComponent(request.target_agent_id)}#approvals`}>
+          {t('localRequests.reviewApproval', 'Review this employee’s approvals')}</a>}
       {request.decision_reason && <p>{request.decision_reason}</p>}
       {request.source_delivery?.status === 'needs_reconciliation' && <p role="status">{t('localRequests.sourceHeld', 'The local result is retained. Return to the original work needs reconciliation. Review its access and binding, then retry the return.')}</p>}
       {request.source_delivery?.status === 'queued' && <p>{t('localRequests.sourceRecorded', 'The original-work return is recorded. Execution is not repeated.')}</p>}

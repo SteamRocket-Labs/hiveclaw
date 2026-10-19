@@ -183,12 +183,37 @@ async def require_live_bridge_context(db: AsyncSession, context: BridgeAuthConte
     return replace(context, scopes=tuple(scope for scope in context.scopes if scope in set(connection.scopes or ())))
 
 
-def select_effective_capability_policy(agent_policy, tenant_policy):
-    """Company denial wins. An agent policy can only narrow a company allow."""
+@dataclass(frozen=True)
+class EffectiveLocalAgentPolicy:
+    capability: str
+    allowed: bool
+    requires_approval: bool
+    conditions: dict[str, Any]
+    source_policies: tuple[CapabilityPolicy, ...]
 
-    if tenant_policy is not None and not tenant_policy.allowed:
-        return tenant_policy
-    return agent_policy or tenant_policy
+
+def select_effective_capability_policy(agent_policy, tenant_policy):
+    """Intersect the implemented local action limits; preserve both policy layers."""
+
+    for policy in (tenant_policy, agent_policy):
+        if policy is not None and not policy.allowed:
+            return policy
+    if agent_policy is None or tenant_policy is None:
+        return agent_policy or tenant_policy
+    policies = (tenant_policy, agent_policy)
+    conditions = {**dict(tenant_policy.conditions or {}), **dict(agent_policy.conditions or {})}
+    sources = [p.conditions['allowed_sources'] for p in policies
+        if isinstance((p.conditions or {}).get('allowed_sources'), list)]
+    if sources:
+        conditions['allowed_sources'] = sorted(set.intersection(*({str(v) for v in values} for values in sources)))
+    for key in ('max_content_chars', 'max_attachments'):
+        limits = [(p.conditions or {}).get(key) for p in policies]
+        limits = [v for v in limits if isinstance(v, int) and v >= 0]
+        if limits:
+            conditions[key] = min(limits)
+    return EffectiveLocalAgentPolicy(capability=agent_policy.capability,
+        allowed=all(p.allowed for p in policies), requires_approval=any(p.requires_approval for p in policies),
+        conditions=conditions, source_policies=policies)
 
 
 async def require_local_agent_capability_policy(
@@ -197,7 +222,7 @@ async def require_local_agent_capability_policy(
     tenant_id: uuid.UUID,
     agent_id: uuid.UUID | None,
     capability: str,
-) -> CapabilityPolicy:
+) -> CapabilityPolicy | EffectiveLocalAgentPolicy:
     """Resolve the live tenant/Agent policy for one bridge side effect."""
 
     if agent_id is None:
@@ -208,7 +233,7 @@ async def require_local_agent_capability_policy(
     policies = (
         (
             await db.execute(
-                select(CapabilityPolicy).where(
+                select(CapabilityPolicy).execution_options(populate_existing=True).where(
                     CapabilityPolicy.tenant_id == tenant_id,
                     or_(CapabilityPolicy.agent_id.is_(None), CapabilityPolicy.agent_id == agent_id),
                     CapabilityPolicy.capability == capability,

@@ -19,6 +19,14 @@ function mount() {
   render(<QueryClientProvider client={client}><LocalAgentRequestControls sessionId="work" /></QueryClientProvider>);
   fireEvent.click(screen.getByText('Local requests and cancellation'));
 }
+it('links a newly held request to the actual employee approval route', async () => {
+  vi.spyOn(localBridgeApi, 'listChannelRequests').mockResolvedValue(page({ requests: [{ ...request,
+    status: 'waiting_approval', target_agent_id: 'target-employee', approval_id: 'exact-decision' }] }));
+  mount();
+  const link = await screen.findByRole('link', { name: 'Review this employee’s approvals' });
+  expect(link.getAttribute('href')).toBe('/agents/target-employee#approvals');
+  expect(screen.getByText('Waiting for approval')).toBeTruthy();
+});
 beforeEach(() => {
   useAuthStore.setState({ user: { id: 'owner', tenant_id: 'tenant' } as any });
   localStorage.setItem('current_tenant_id', 'tenant');

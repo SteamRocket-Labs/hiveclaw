@@ -169,6 +169,7 @@ export interface LocalAgentRequestPage {
   scope: { actor_user_id: string; tenant_id: string; session_id: string };
   requests: Array<{
     id: string; request_hash: string | null; status: string; execution_state: string;
+    target_agent_id?: string | null; approval_id?: string | null;
     preview: string; created_at: string; control: LocalAgentRequestControl | null;
     can_cancel: boolean; can_abandon: boolean; next_action: string | null;
     source_delivery: LocalSourceDelivery | null; can_retry_source_return: boolean; decision_reason: string | null;

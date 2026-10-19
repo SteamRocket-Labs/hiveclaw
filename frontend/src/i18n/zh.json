@@ -5595,6 +5595,7 @@
   },
   "localRequests": {
     "rejected": "此操作未获执行许可",
+    "reviewApproval": "查看此员工的审批",
     "sourceHeld": "本机结果已保留，回到原工作仍待对账。请核查原工作权限与绑定后重试回传。",
     "sourceRecorded": "已记录原工作回传请求，不会重新执行任务。",
     "retrySource": "重试原工作回传",

@@ -51,6 +51,7 @@ from app.services.local_agent_protocol import (
 )
 from app.services.local_bridge_service import (
     BridgeAuthContext,
+    EffectiveLocalAgentPolicy,
     hash_secret,
     require_local_agent_capability_policy,
     select_effective_capability_policy,
@@ -1183,7 +1184,7 @@ async def _agent_capability_names(
     policies = (
         (
             await db.execute(
-                select(CapabilityPolicy).where(
+                select(CapabilityPolicy).execution_options(populate_existing=True).where(
                     CapabilityPolicy.tenant_id == context.tenant_id,
                     or_(CapabilityPolicy.agent_id.is_(None), CapabilityPolicy.agent_id == context.agent_id),
                     CapabilityPolicy.capability.in_(
@@ -1216,7 +1217,7 @@ async def _effective_capability_policy(
     tenant_id: uuid.UUID,
     agent_id: uuid.UUID,
     capability: str,
-) -> CapabilityPolicy:
+) -> CapabilityPolicy | EffectiveLocalAgentPolicy:
     return await require_local_agent_capability_policy(
         db,
         tenant_id=tenant_id,
@@ -1226,7 +1227,7 @@ async def _effective_capability_policy(
 
 
 def _enforce_action_conditions(
-    policy: CapabilityPolicy,
+    policy: CapabilityPolicy | EffectiveLocalAgentPolicy,
     *,
     source: str,
     content: str,
@@ -2003,6 +2004,41 @@ async def create_channel_session(
     }
 
 
+async def _request_message_approval(db: AsyncSession, *, message: LocalAgentChannelMessage,
+    source: str, policy, snapshot_hash: str) -> None:
+    from app.services.approval_service import approval_service
+
+    agent = await db.get(Agent, message.source_agent_id)
+    if agent is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Local Agent no longer exists")
+    approval_result = await approval_service.request_approval(db, agent, action_type="local_agent.execute",
+        details={
+            "requested_by": str(message.sender_user_id or message.owner_user_id),
+            "reason": "Owner approval is required before dispatch to the trusted local runtime.",
+            "origin": {"type": "local_agent_channel", "session_id": str(message.session_id), "source": source},
+            "local_agent_message_id": str(message.id), "request_hash": message.request_hash,
+            "replay_key": message.replay_key, "attachment_count": len(message.attachments_json or []),
+            "content_length": len(message.content),
+            "policy_snapshot": {
+                "capability": policy.capability, "tenant_id": str(message.tenant_id),
+                "agent_id": str(message.source_agent_id), "requires_approval": True,
+                "conditions": dict(policy.conditions or {}), "capability_snapshot_hash": snapshot_hash,
+                "policy_layers": [{"id": str(p.id), "agent_id": str(p.agent_id) if p.agent_id else None,
+                    "allowed": p.allowed, "requires_approval": p.requires_approval,
+                    "conditions": dict(p.conditions or {})} for p in getattr(policy, "source_policies", (policy,))],
+            },
+        })
+    message.approval_id = uuid.UUID(str(approval_result["approval_id"]))
+    message.status = "waiting_approval"
+
+
+async def _message_action_source(db: AsyncSession, message: LocalAgentChannelMessage) -> str:
+    session = await db.get(LocalAgentChannelSession, message.session_id, populate_existing=True)
+    if session is None or session.tenant_id != message.tenant_id or session.owner_user_id != message.owner_user_id:
+        raise HTTPException(403, detail="Local Agent session binding is unavailable")
+    return session.source
+
+
 async def enqueue_channel_message(
     db: AsyncSession,
     *,
@@ -2077,7 +2113,7 @@ async def enqueue_channel_message(
     snapshot_hash = "compatibility-test"
     channel = None
     snapshot = None
-    execute_policy: CapabilityPolicy | None = None
+    execute_policy: CapabilityPolicy | EffectiveLocalAgentPolicy | None = None
     if isinstance(db, AsyncSession):
         channel, snapshot = await _active_snapshot_for_session(db, session=session, capability="execute")
         snapshot_hash = snapshot.snapshot_hash
@@ -2124,39 +2160,8 @@ async def enqueue_channel_message(
     db.add(message)
     await db.flush()
     if execute_policy is not None and execute_policy.requires_approval:
-        agent = await db.get(Agent, snapshot.subject_agent_id)
-        if agent is None:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Local Agent no longer exists")
-        from app.services.approval_service import approval_service
-
-        approval_result = await approval_service.request_approval(
-            db,
-            agent,
-            action_type="local_agent.execute",
-            details={
-                "requested_by": str(sender_user_id or owner_user_id),
-                "reason": "Owner approval is required before dispatch to the trusted local runtime.",
-                "origin": {
-                    "type": "local_agent_channel",
-                    "session_id": str(session.id),
-                    "source": session.source,
-                },
-                "local_agent_message_id": str(message.id),
-                "request_hash": request_hash,
-                "replay_key": replay_key,
-                "attachment_count": len(clean_attachments),
-                "content_length": len(str(content)),
-                "policy_snapshot": {
-                    "capability": execute_policy.capability,
-                    "tenant_id": str(session.tenant_id),
-                    "agent_id": str(snapshot.subject_agent_id),
-                    "requires_approval": True,
-                    "conditions": dict(execute_policy.conditions or {}),
-                    "capability_snapshot_hash": snapshot_hash,
-                },
-            },
-        )
-        message.approval_id = uuid.UUID(str(approval_result["approval_id"]))
+        await _request_message_approval(db, message=message, source=session.source,
+            policy=execute_policy, snapshot_hash=snapshot_hash)
     _add_remote_action_span(db, message=message, session=session)
     if session.chat_session_id and session.source_agent_id:
         db.add(
@@ -2485,8 +2490,10 @@ async def list_channel_requests(
                 "request_hash": row.request_hash,
                 "status": row.status,
                 "execution_state": _execution_state(row, origin),
+                "target_agent_id": str(row.source_agent_id) if row.source_agent_id else None,
+                "approval_id": str(row.approval_id) if row.approval_id else None,
                 "source_delivery": source_delivery,
-                "decision_reason": row.result if row.status == "rejected" else None,
+                "decision_reason": row.result if row.status in {"rejected", "needs_reconciliation"} else None,
                 "can_retry_source_return": _a2a_local_delegation(row.metadata_json)
                 and (bool(disposition) or row.status in {"completed", "failed", "cancelled", "rejected"})
                 and actor_user_id in {row.sender_user_id, row.owner_user_id}
@@ -2866,7 +2873,7 @@ async def apply_local_agent_action_approval(
             )
             _enforce_action_conditions(
                 policy,
-                source=str((message.metadata_json or {}).get("source") or "unknown"),
+                source=await _message_action_source(db, message),
                 content=message.content,
                 attachments=list(message.attachments_json or []),
             )
@@ -3001,7 +3008,7 @@ async def _reconcile_stale_deliveries(
                     LocalAgentChannelMessage.delivery_lease_expires_at <= now,
                     *_runner_session_scope(context), *_runner_message_scope(context),
                 )
-                .with_for_update(skip_locked=True)
+                .with_for_update(skip_locked=True).execution_options(populate_existing=True)
             )
         )
         .scalars()
@@ -3055,6 +3062,77 @@ async def _reconcile_stale_deliveries(
     return len(stale)
 
 
+async def _dispatch_approval(db: AsyncSession, message: LocalAgentChannelMessage) -> ApprovalRequest | None:
+    approval = await db.get(ApprovalRequest, message.approval_id, populate_existing=True) if message.approval_id else None
+    details = (approval.details or {}) if approval is not None else {}
+    if (approval is not None and approval.tenant_id == message.tenant_id
+        and approval.agent_id == message.source_agent_id and approval.action_type == "local_agent.execute"
+        and details.get("local_agent_message_id") == str(message.id)
+        and details.get("request_hash") == message.request_hash and details.get("replay_key") == message.replay_key):
+        return approval
+    return None
+
+
+async def _withhold_message_dispatch(db: AsyncSession, *, message: LocalAgentChannelMessage,
+    reason: str) -> None:
+    origin = await _dispatch_origin(db, message)
+    execution = _execution_state(message, origin)
+    message.status = "rejected" if execution == "not_dispatched" else "needs_reconciliation"
+    message.result = reason
+    message.delivery_lease_expires_at = None
+    if execution == "not_dispatched":
+        message.completed_at = utcnow()
+    approval = await _dispatch_approval(db, message)
+    if approval is not None and approval.status == "approved":
+        approval.execution_status = "failed" if execution == "not_dispatched" else "needs_reconciliation"
+        approval.execution_result = reason
+    await _settle_a2a_source_delivery(db, message=message, terminal_status=message.status,
+        output=reason, artifacts=[])
+    await _complete_remote_action_span(db, message=message, receipt=_receipt_for_message(message),
+        failed=True, error=reason, terminal_metadata={"dispatch_policy": {
+            "status": message.status, "execution_state": execution, "reason": reason}})
+    db.add(LocalAgentChannelEvent(sequence=await _allocate_event_sequence(db, session_id=message.session_id),
+        tenant_id=message.tenant_id, owner_user_id=message.owner_user_id, source_agent_id=message.source_agent_id,
+        session_id=message.session_id, message_id=message.id, direction="hive_to_local",
+        event_type="dispatch_withheld", payload_json={"status": message.status,
+            "execution_state": execution, "reason": reason, "request_hash": message.request_hash}))
+
+
+async def _authorize_message_dispatch(db: AsyncSession, *, message: LocalAgentChannelMessage,
+    snapshot_hash: str) -> bool:
+    """Apply the live action policy before creating another delivery attempt."""
+    try:
+        policy = await _effective_capability_policy(db, tenant_id=message.tenant_id,
+            agent_id=message.source_agent_id, capability="local_agent.execute")
+        source = await _message_action_source(db, message)
+        _enforce_action_conditions(policy, source=source, content=message.content,
+            attachments=list(message.attachments_json or []))
+    except HTTPException as exc:
+        await _withhold_message_dispatch(db, message=message, reason=str(exc.detail))
+        return False
+    if not policy.requires_approval:
+        return True
+    approval = await _dispatch_approval(db, message)
+    if approval is not None and approval.status == "approved" and approval.execution_status == "approved":
+        return True
+    if _execution_state(message, await _dispatch_origin(db, message)) != "not_dispatched":
+        await _withhold_message_dispatch(db, message=message,
+            reason="Live policy requires approval; prior device execution needs reconciliation.")
+        return False
+    if message.approval_id and not (approval is not None and approval.status == "pending"):
+        await _withhold_message_dispatch(db, message=message, reason="Exact Local Agent approval is unavailable.")
+        return False
+    if approval is None:
+        await _request_message_approval(db, message=message, source=source, policy=policy, snapshot_hash=snapshot_hash)
+    else:
+        message.status = "waiting_approval"
+    db.add(LocalAgentChannelEvent(sequence=await _allocate_event_sequence(db, session_id=message.session_id),
+        tenant_id=message.tenant_id, owner_user_id=message.owner_user_id, source_agent_id=message.source_agent_id,
+        session_id=message.session_id, message_id=message.id, direction="hive_to_local",
+        event_type="approval_required", payload_json=_message_payload(message)))
+    return False
+
+
 async def poll_pending_channel_messages(
     db: AsyncSession,
     *,
@@ -3085,13 +3163,16 @@ async def poll_pending_channel_messages(
         )
         .order_by(LocalAgentChannelMessage.created_at.asc())
         .limit(limit)
-        .with_for_update(skip_locked=True)
+        .with_for_update(skip_locked=True).execution_options(populate_existing=True)
     )
     candidates = result.scalars().all()
     messages: list[LocalAgentChannelMessage] = []
     snapshot_hash = snapshot.snapshot_hash if snapshot is not None else "compatibility-test"
     for message in candidates:
         if context.agent_id is not None and message.source_agent_id not in {None, context.agent_id}:
+            continue
+        if isinstance(db, AsyncSession) and not await _authorize_message_dispatch(db,
+            message=message, snapshot_hash=snapshot_hash):
             continue
         messages.append(message)
     now = utcnow()

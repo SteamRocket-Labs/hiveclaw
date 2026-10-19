@@ -5595,6 +5595,7 @@
   },
   "localRequests": {
     "rejected": "Action was not released",
+    "reviewApproval": "Review this employee’s approvals",
     "sourceHeld": "The local result is retained. Return to the original work needs reconciliation. Review its access and binding, then retry the return.",
     "sourceRecorded": "The original-work return is recorded. Execution is not repeated.",
     "retrySource": "Retry original-work return",

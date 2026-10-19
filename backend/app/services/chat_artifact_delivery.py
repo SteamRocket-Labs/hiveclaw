@@ -996,7 +996,8 @@ async def create_chat_artifacts_for_message(
     seen: set[tuple[str, str]] = set()
     session_uuid = uuid.UUID(str(session_id))
     runtime_uuid = uuid.UUID(str(runtime_task_id)) if runtime_task_id else None
-    authority_user = runtime_principal = authority_error = None
+    authority_user = runtime_principal = authority_error = machine_scope = None
+    from app.services.machine_runtime_authority import is_machine_runtime_actor
     if isinstance(db, AsyncSession):
         from app.models.user import User
 
@@ -1013,6 +1014,22 @@ async def create_chat_artifacts_for_message(
         root_session_id = (
             authority_session.root_session_id or authority_session.id if authority_session is not None else None
         )
+        if authority_session is not None and authority_session.user_id is None and runtime_uuid is not None:
+            from app.services.machine_runtime_authority import MachineArtifactReader, load_machine_workspace_scope, machine_task_actor
+            from app.services.personal_knowledge_access import AgentRuntimePrincipal
+
+            try:
+                actor = await machine_task_actor(db, tenant_id=tenant_id, agent_id=agent_id,
+                    runtime_task_id=runtime_uuid, session_id=session_uuid, user_id=None,
+                    scope='task.read' if source == 'workspace_read' and selection_model_result_id is not None else 'agent.execute')
+                if actor is not None:
+                    authority_user = actor
+                    machine_scope = await load_machine_workspace_scope(db, actor=actor, session_id=session_uuid)
+                    principal_type = MachineArtifactReader if source == 'workspace_read' and selection_model_result_id is not None else AgentRuntimePrincipal
+                    runtime_principal = principal_type(agent_id=agent_id, requester_user_id=None,
+                        session_id=str(session_uuid), runtime_task_id=str(runtime_uuid), purpose='machine_task')
+            except HTTPException as exc:
+                authority_error = exc
         if authority_session is not None and authority_session.audience_kind == "group":
             from app.models.runtime_task import RuntimeTask
             from app.services.personal_knowledge_access import AgentRuntimePrincipal
@@ -1037,7 +1054,7 @@ async def create_chat_artifacts_for_message(
             authority_user = await db.get(User, owner_user_id)
             if authority_user is not None and authority_user.tenant_id != tenant_id:
                 authority_user = None
-    authority_state = "owned" if owner_user_id is not None else "quarantined"
+    authority_state = "owned" if owner_user_id is not None or is_machine_runtime_actor(authority_user) else "quarantined"
 
     def record_source_error(path, exc):
         if publication_errors is not None:
@@ -1059,6 +1076,7 @@ async def create_chat_artifacts_for_message(
             source="chat_artifact_delivery",
             content_hash=candidate.get("content_hash"),
             allow_owner_rebind=False,
+            authority_state=authority_state if is_machine_runtime_actor(authority_user) else None,
         )
 
     for path in paths:
@@ -1072,10 +1090,14 @@ async def create_chat_artifacts_for_message(
                     raise WorkspaceAuthorityError(
                         "artifact_source_principal_required", "Artifact publication requires the session's source reader.",
                     )
-                await authorize_workspace_path(
-                    db, authority_user, agent_id=agent_id, path=path, action="read",
-                    path_exists=True, session_id=session_uuid, runtime_principal=runtime_principal,
-                )
+                if machine_scope is not None:
+                    if not machine_scope.can_read(_safe_workspace_relative_path(path).as_posix()):
+                        raise WorkspaceAuthorityError('workspace_resource_forbidden', 'This output is outside the machine work.')
+                else:
+                    await authorize_workspace_path(
+                        db, authority_user, agent_id=agent_id, path=path, action="read",
+                        path_exists=True, session_id=session_uuid, runtime_principal=runtime_principal,
+                    )
             except (WorkspaceAuthorityError, HTTPException) as exc:
                 if publication_errors is not None:
                     denied = not isinstance(exc, HTTPException) or exc.status_code in {401, 403, 404}
@@ -1307,7 +1329,7 @@ async def materialize_declared_read_artifacts(db, *, task, model_result_id, path
         message_id = uuid.uuid5(invocation.id, "read-result-artifact-message")
         anchor = await _ensure_tool_result_artifact_message(db, message_id=message_id, agent_id=task.parent_agent_id,
             tenant_id=task.tenant_id, session_id=model.session_id, user_id=task.root_user_id,
-            external_principal_id=None, content=json.dumps({"tool_name": invocation.tool_name,
+            external_principal_id=task.root_external_principal_id, content=json.dumps({"tool_name": invocation.tool_name,
                 "invocation_id": str(invocation.id), "path": path, "source_receipt_id": str(receipt_id)}))
         errors = []
         created = await create_chat_artifacts_for_message(db=db, agent_id=task.parent_agent_id,

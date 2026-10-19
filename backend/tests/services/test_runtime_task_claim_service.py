@@ -95,6 +95,7 @@ def test_runtime_task_claim_statement_reclaims_only_expired_active_rows():
     assert "FOR UPDATE SKIP LOCKED" in compiled
     snapshot = runtime_task_claim_snapshot()
     assert snapshot["lease_reclaimable_task_types"] == [
+        "remote_a2a",
         "readiness_probe",
         "web_chat_turn",
         "goal_continuation",

@@ -122,7 +122,7 @@ function Connection({ agentId, actorId, tenantId }: { agentId: string; actorId: 
   };
   return <section className="card-pad-sm">
     <h3>{t('remoteA2A.title', 'Remote A2A connection')}</h3>
-    <p>{t('remoteA2A.boundary', 'Connection discovery is available. Employee dispatch is not activated; action control and complete cost metering remain unverified.')}</p>
+    <p>{t('remoteA2A.boundary', 'Automatic employee dispatch is not activated. Explicit remote requests are available in the original work; internal action control and complete cost metering remain unverified.')}</p>
     {query.isPending && <p role="status">{t('common.loading', 'Loading…')}</p>}
     {(query.isError || unknown) && <p role="alert">{t('remoteA2A.unknown', 'The operation could not be confirmed. Refresh or retry the same saved request.')}</p>}
     {credentialUnavailable && <p role="alert">{t('remoteA2A.credentialUnavailable', 'The saved machine credential cannot be read. Replace it or disable the connection.')}</p>}

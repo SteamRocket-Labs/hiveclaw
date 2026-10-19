@@ -38,7 +38,7 @@ class RuntimeNotificationOutbox(Base):
             name='ck_runtime_notification_outbox_requester_root'),
         CheckConstraint(
             "source_kind IN ('subagent','agent_team','workflow','trigger','delegation','a2a_delegation',"
-            "'a2a_continuation','runtime_budget','approval','employee_creation')",
+            "'a2a_continuation','runtime_budget','approval','employee_creation','remote_a2a')",
             name="ck_runtime_notification_outbox_source_kind",
         ),
         CheckConstraint(

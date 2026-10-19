@@ -101,7 +101,7 @@ class RuntimeTask(Base):
             "task_type IN ('web_chat_turn', 'goal_continuation', 'team_member', 'advanced_plan', "
             "'workflow', 'delegation', 'business_task', 'subagent', 'trigger', 'heartbeat', "
             "'coordinator_worker', 'harness_canary', 'a2a_delegation', 'approval_execution', "
-            "'hr_provisioning', 'dream', 'a2a_continuation', 'readiness_probe')",
+            "'hr_provisioning', 'dream', 'a2a_continuation', 'readiness_probe', 'remote_a2a')",
             name="ck_runtime_tasks_task_type",
         ),
         CheckConstraint(

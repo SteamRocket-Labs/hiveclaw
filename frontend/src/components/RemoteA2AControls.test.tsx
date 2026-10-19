@@ -45,7 +45,7 @@ it('saves a separate credential outside global caches and preserves truthful act
   expect(JSON.stringify(client.getQueryCache().getAll().map((query) => query.state.data))).not.toContain('synthetic-remote-only');
   expect(client.getMutationCache().getAll()).toHaveLength(0);
   expect(localStorage.getItem('token')).toBe('personal-login-only');
-  expect(screen.getByText(/Employee dispatch is not activated/)).toBeTruthy();
+  expect(screen.getByText(/Automatic employee dispatch is not activated/)).toBeTruthy();
 });
 
 it('retries the exact nonce and body after a lost save response', async () => {

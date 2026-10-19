@@ -42,7 +42,7 @@ it('configures, discovers and disables a remote endpoint from the actual employe
     fireEvent.click(controls.getByRole('button', { name: 'Read Agent Card' }));
     await controls.findByText('Agent Card read');
     await controls.findByText(/^Reference Agent/);
-    expect(controls.getByText(/Employee dispatch is not activated/)).toBeTruthy();
+    expect(controls.getByText(/Automatic employee dispatch is not activated/)).toBeTruthy();
     expect(JSON.stringify(client.getQueryCache().getAll().map((query) => query.state.data))).not.toContain('synthetic-remote-credential');
     expect(localStorage.getItem('token')).toBe(token);
     fireEvent.click(controls.getByRole('button', { name: 'Disable connection' }));

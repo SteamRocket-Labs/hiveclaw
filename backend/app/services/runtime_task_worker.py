@@ -45,6 +45,7 @@ if (*EXECUTABLE_CHAT_TASK_TYPES, *DIRECT_INVOCATION_TASK_TYPES) != TERMINAL_BOUN
 
 _LOCAL_WAKEUP_EVENT: asyncio.Event | None = None
 SUPPORTED_RUNTIME_TASK_TYPES = (
+    "remote_a2a",
     "readiness_probe",
     "web_chat_turn",
     "goal_continuation",
@@ -1043,6 +1044,10 @@ async def recover_terminal_target_session_inputs_once(
 
 
 def _dispatch_claimed_task(task: RuntimeTask) -> bool:
+    if task.task_type == "remote_a2a":
+        from app.services.remote_a2a_tasks import execute_claimed_task
+
+        return _dispatch_async_runtime_task(task, execute_claimed_task(task.id), task_type="remote_a2a")
     if task.task_type == "readiness_probe":
         from app.services.employee_readiness import execute_claimed_readiness_check
 

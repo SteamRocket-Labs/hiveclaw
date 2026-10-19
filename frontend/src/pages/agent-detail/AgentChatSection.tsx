@@ -27,6 +27,7 @@ import PlanCard from './PlanCard';
 import RunDisclosureBlock from './RunDisclosureBlock';
 import SlashCommandMenu from './SlashCommandMenu';
 import ChatWorkLedgerDock from './ChatWorkLedgerDock';
+import RemoteA2AWorkControls from '../../components/RemoteA2AWorkControls';
 import { SessionTransportStatus } from './SessionTransportStatus';
 import type { ChatTransportPhase } from './chatTransportRecovery';
 import { SessionWorkbenchHeader } from '../session-workbench/SessionWorkbenchChrome';
@@ -2376,6 +2377,9 @@ function AgentChatSection({
                   live={sessionWorkLedgerLive}
                   operatorView={Boolean(activeSession.operator_view)} operatorReason={operatorReason}
                 />
+              )}
+              {canUseComposer && !operatorView && effectiveAgentId && activeSession?.id && !isDraftSession && (
+                <RemoteA2AWorkControls agentId={effectiveAgentId} sessionId={String(activeSession.id)} />
               )}
               {operatorReadEnabled && artifactPreview && (
                 <ArtifactPreviewPanel

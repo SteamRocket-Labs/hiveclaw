@@ -5663,7 +5663,7 @@
     "endpointCredentialRequired": "Provide a machine credential again for the changed addresses, or remove the saved credential.",
     "credentialUnavailable": "The saved machine credential cannot be read. Replace it or disable the connection.",
     "title": "Remote A2A connection",
-    "boundary": "Connection discovery is available. Employee dispatch is not activated; action control and complete cost metering remain unverified.",
+    "boundary": "Automatic employee dispatch is not activated. Explicit remote requests are available in the original work; internal action control and complete cost metering remain unverified.",
     "unknown": "The operation could not be confirmed. Refresh or retry the same saved request.",
     "discoveryFailed": "Check the endpoint, credential and approved network ranges.",
     "cardUrl": "Agent Card URL",
@@ -5685,5 +5685,34 @@
       "needs_reauthorization": "Owner authorization required",
       "unavailable": "Unavailable"
     }
+  },
+  "remoteWork": {
+    "inputRequired": "Remote reply needed",
+    "authRequired": "Remote authorization required",
+    "queued": "Queued",
+    "contacting": "Contacting remote endpoint",
+    "waiting": "Remote task waiting",
+    "completed": "Remote reports completion",
+    "reportedFailure": "Remote reports failure",
+    "cancelConfirmed": "Remote cancellation confirmed",
+    "abandoned": "Locally abandoned",
+    "unconfirmed": "Remote state unconfirmed",
+    "title": "Remote A2A requests in this work",
+    "boundary": "Send an explicit request through this employee’s configured remote endpoint. Its internal actions cannot be intercepted here; external charges remain unknown. The employee’s selected native model is unchanged.",
+    "failed": "The request was denied or saved state is unavailable. Check access, connection and work identity.",
+    "unknown": "The request could not be confirmed. Read saved state or retry the exact request; it will not create a new dispatch.",
+    "read": "Read saved state",
+    "retry": "Retry exact request",
+    "unavailable": "A current, discovered connection is required for new remote requests. Existing receipts remain readable.",
+    "message": "Remote request or reply",
+    "effects": "I authorize this exact remote request with unverified internal effect controls.",
+    "cost": "I accept unknown external charges for this request; no hard spend limit is claimed.",
+    "start": "Send new remote request",
+    "receipt": "Saved remote receipt",
+    "costUnknown": "External cost: unknown. Internal action control: unverified.",
+    "refresh": "Check remote task",
+    "reply": "Reply to this remote task",
+    "cancel": "Request remote cancellation",
+    "abandon": "Abandon locally; remote effects remain unconfirmed"
   }
 }

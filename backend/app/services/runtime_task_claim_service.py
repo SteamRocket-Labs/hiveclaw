@@ -17,6 +17,9 @@ from app.models.tenant import Tenant
 
 CLAIMABLE_RUNTIME_TASK_STATUSES = ("pending", "resumable")
 LEASE_RECLAIMABLE_RUNTIME_TASK_TYPES = (
+    # Its durable dispatch marker turns an interrupted POST into unknown;
+    # reclaim never grants permission to repeat an unconfirmed remote effect.
+    "remote_a2a",
     "readiness_probe",
     "web_chat_turn",
     "goal_continuation",

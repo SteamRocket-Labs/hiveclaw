@@ -17,6 +17,24 @@ def question_payload(event):
     return dict((event.metadata_json or {}).get("v2_payload") or {})
 
 
+def question_requester_binding(task):
+    binding = {'requested_by_user_id': str(task.root_user_id) if task and task.root_user_id else None}
+    if task is not None and task.machine_credential_id is not None:
+        binding.update(requested_by_external_principal_id=str(task.root_external_principal_id),
+            machine_credential_id=str(task.machine_credential_id))
+    return binding
+
+
+def question_requester_matches(task, payload):
+    if task is None:
+        return False
+    binding = question_requester_binding(task)
+    if task.machine_credential_id is not None:
+        return task.root_user_id is None and task.root_external_principal_id is not None and all(
+            payload.get(key) == value for key, value in binding.items())
+    return task.root_user_id is not None and (payload.get('requested_by_user_id') or str(task.root_user_id)) == str(task.root_user_id)
+
+
 async def _authorize_question_source(db, *, authority, question):
     from fastapi import HTTPException
     from app.models.chat_session import ChatSession

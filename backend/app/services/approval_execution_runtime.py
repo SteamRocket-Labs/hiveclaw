@@ -84,7 +84,17 @@ def build_approval_execution_task(
     task_id = uuid.uuid4()
     details = dict(approval.details or {})
     session_id = str(details.get("session_id") or details.get("conversation_id") or "").strip() or None
-    root_user_id = approval.requested_by or approved_by_user_id
+    envelope = None
+    if (approval.execution_envelope or {}).get('schema') == 'hive.approval_execution_envelope.machine.v1':
+        from app.services.approval_ticket import restore_approval_execution_envelope
+
+        envelope = restore_approval_execution_envelope(approval.execution_envelope,
+            expected_hash=approval.execution_envelope_hash)
+        if (approval.requested_by is not None or envelope.requester_external_principal_id
+            != approval.requested_by_external_principal_id or envelope.agent_id != approval.agent_id
+            or envelope.tenant_id != approval.tenant_id):
+            raise ApprovalTicketError('machine approval execution authority mismatch')
+    root_user_id = None if envelope else approval.requested_by or approved_by_user_id
     metadata = {
         "schema": APPROVAL_EXECUTION_JOB_SCHEMA,
         "approval_id": str(approval.id),
@@ -118,6 +128,10 @@ def build_approval_execution_task(
         trace_id=f"approval:{approval.id}",
         parent_session_id=session_id,
         root_user_id=root_user_id,
+        root_external_principal_id=envelope.requester_external_principal_id if envelope else None,
+        machine_credential_id=envelope.machine_credential_id if envelope else None,
+        root_runtime_task_id=uuid.UUID(envelope.runtime_task_id) if envelope else None,
+        budget_run_id=uuid.UUID(envelope.budget_run_id) if envelope and envelope.budget_run_id else None,
         root_session_id=session_id,
         delegation_chain_json=[f"agent:{approval.agent_id}"],
         depth=1,
@@ -215,6 +229,16 @@ async def _enqueue_origin_continuation(
     receipt = dict(approval.execution_receipt or {})
     parent_user_id = session.user_id if session else None
     root_runtime_task_id = None
+    machine_budget_run_id = None
+    machine_return = session is not None and session.user_id is None and approval.requested_by_external_principal_id is not None
+    if machine_return:
+        from app.services.machine_runtime_authority import machine_approval_origin
+
+        original = await machine_approval_origin(db, session=session, approval=approval)
+        root_runtime_task_id = original.root_runtime_task_id or original.id
+        machine_budget_run_id = original.budget_run_id
+        if task is not None:
+            task.root_runtime_task_id = root_runtime_task_id
     if session is not None and session.audience_kind == "group":
         from app.services.session_approval import group_approval_requester
 
@@ -226,7 +250,7 @@ async def _enqueue_origin_continuation(
         receipt["continuation_status"] = "not_requested"
         approval.execution_receipt = receipt
         return None
-    if session is None or parent_user_id is None or approval.tenant_id is None:
+    if session is None or (parent_user_id is None and not machine_return) or approval.tenant_id is None:
         receipt.update(
             {
                 "continuation_status": "needs_reconciliation",
@@ -288,6 +312,7 @@ async def _enqueue_origin_continuation(
                 "tool_name": tool_name,
                 "model_context": model_context,
                 "origin_session_id": str(session.id),
+                **({'budget_run_id': str(machine_budget_run_id)} if machine_budget_run_id is not None else {}),
                 "result_semantics": "approval_status" if status_only else "execution_result",
             },
             payload_rank=100,

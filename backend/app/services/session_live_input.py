@@ -283,6 +283,9 @@ async def submit_live_human_input(
         if ingress is None or ingress.event_id != input_uuid:
             raise ValueError("shared_group_input_origin_mismatch")
         command_authority_stamp = {"schema": SHARED_GROUP_INGRESS_STAMP_SCHEMA, "ingress_event_id": str(input_uuid)}
+    elif authority.authority_source == 'machine_credential_session':
+        command_authority_stamp = {'schema': 'hive.session_command_authority.machine.v1',
+            'credential_id': str(authority.machine_credential_id)}
     if requested_kind == "answer_request":
         from fastapi import HTTPException
         from app.services.chat_transcript import lock_transcript_session
@@ -604,7 +607,7 @@ async def submit_live_cancel_input(
         if isinstance(control_id, uuid.UUID)
         else uuid.UUID(str(control_id))
         if control_id is not None
-        else uuid.uuid5(run_uuid, f"cancel:{user.id}")
+        else uuid.uuid5(run_uuid, f"cancel:{getattr(user, 'external_principal_id', None) or user.id}")
     )
     authority = await resolve_session_mutation_authority(
         db,

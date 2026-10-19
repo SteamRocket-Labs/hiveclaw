@@ -556,6 +556,8 @@ def authorize_workspace_tool_path(
             "workspace_resource_path_required",
             "User-owned tool inputs and outputs must be stored below workspace/.",
         )
+    if authority_scope is not None and not _is_workspace_path(normalized) and not authority_scope.can_perform(normalized, action):
+        raise WorkspaceAuthorityError('workspace_resource_forbidden', 'This source is outside the current runtime authority.')
     if authority_scope is None or not _is_workspace_path(normalized):
         return normalized
     if (normalized in authority_scope.known_paths and not authority_scope.can_perform(normalized, action)) or (
@@ -796,6 +798,7 @@ async def register_workspace_path(
     source: str,
     content_hash: str | None = None,
     allow_owner_rebind: bool = False,
+    authority_state: str | None = None,
 ) -> WorkspaceResourceManifest:
     normalized = normalize_workspace_resource_path(path)
     await db.execute(
@@ -808,6 +811,7 @@ async def register_workspace_path(
             source=source,
             content_hash=content_hash,
             allow_owner_rebind=allow_owner_rebind,
+            authority_state=authority_state,
         )
     )
     manifest = await _load_manifest(db, agent_id=agent_id, path=normalized)
@@ -1057,6 +1061,7 @@ async def record_workspace_tool_mutations(*, context, tool_name: str, arguments:
                 source=f"tool:{tool_name}",
                 content_hash=content_hash,
                 allow_owner_rebind=False,
+                authority_state=OWNED_AUTHORITY_STATE if getattr(context, 'machine_credential_id', None) else None,
             )
         await db.commit()
 

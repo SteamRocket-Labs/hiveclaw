@@ -266,8 +266,13 @@ class ApprovalService:
             )
             if restored_envelope.agent_id != agent.id or restored_envelope.tenant_id != agent.tenant_id:
                 raise ApprovalTicketError("approval execution envelope agent or tenant mismatch")
-            if requested_by is None or restored_envelope.requester_user_id != requested_by:
+            if restored_envelope.requester_user_id != requested_by or (requested_by is None and restored_envelope.machine_credential_id is None):
                 raise ApprovalTicketError("approval execution envelope requester mismatch")
+            if restored_envelope.machine_credential_id is not None:
+                from app.services.approval_ticket import validate_approval_execution_authority
+
+                await validate_approval_execution_authority(db=db, envelope=restored_envelope)
+                requested_by_external_principal_id = restored_envelope.requester_external_principal_id
             execution_identity = restored_envelope.execution_identity
             if execution_identity is not None and execution_identity.identity_type == "external_principal_bound":
                 requested_by_external_principal_id = execution_identity.identity_id

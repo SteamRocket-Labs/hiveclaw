@@ -269,7 +269,7 @@ class ToolGovernanceResolver:
                     details={
                         "tool": tool_name,
                         "args": arguments,
-                        "requested_by": str(user_id),
+                        "requested_by": str(user_id) if user_id is not None else None,
                         "reason": reason,
                         "session_id": session_id,
                         "decision_id": decision_id,

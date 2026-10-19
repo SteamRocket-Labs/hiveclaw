@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { machineIdentitiesApi, type MachineIssue, type MachineIssueReceipt } from '../api/domains/machineIdentities';
+import { machineIdentitiesApi, type MachineIssue, type MachineIssueReceipt, type MachineScope } from '../api/domains/machineIdentities';
 import { ApiError } from '../api/core';
 import { useAuthStore } from '../stores';
 
@@ -28,6 +28,7 @@ export default function MachineIdentityControls({ agentId }: { agentId: string }
 function Access({ agentId, actorId, tenantId }: { agentId: string; actorId: string; tenantId: string }) {
   const { t } = useTranslation();
   const [name, setName] = useState('');
+  const [scopes, setScopes] = useState<MachineScope[]>(['agent.describe']);
   const [expiry, setExpiry] = useState(() => {
     const date = new Date(Date.now() + 7 * 86400000);
     return new Date(date.getTime() - date.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
@@ -40,6 +41,12 @@ function Access({ agentId, actorId, tenantId }: { agentId: string; actorId: stri
   const [copied, setCopied] = useState(false);
   const [lost, setLost] = useState<string | null>(null);
   const pending = useRef<MachineIssue | null>(null);
+  const permissions: { scope: MachineScope; label: string }[] = [
+    { scope: 'agent.describe', label: t('machineAccess.describe', 'Read employee description') },
+    { scope: 'agent.execute', label: t('machineAccess.execute', 'Run tasks') },
+    { scope: 'task.read', label: t('machineAccess.read', 'Read task status and files') },
+    { scope: 'task.cancel', label: t('machineAccess.cancel', 'Cancel queued or running tasks') },
+  ];
   const matches = () => {
     const current = useAuthStore.getState().user;
     return current?.id === actorId && tenant(current?.tenant_id || '') === tenantId;
@@ -65,7 +72,10 @@ function Access({ agentId, actorId, tenantId }: { agentId: string; actorId: stri
     if (!pending.current && (!name.trim() || !Number.isFinite(date.getTime()) || date.getTime() <= Date.now())) {
       setFormError(t('machineAccess.validRequest', 'Enter an integration name and a future expiry time.'));return;
     }
-    const request = pending.current || { name: name.trim(), expires_at: date.toISOString(), scopes: ['agent.describe'] as ['agent.describe'],
+    if (!pending.current && !scopes.length) {
+      setFormError(t('machineAccess.permissionRequired', 'Choose at least one permission.'));return;
+    }
+    const request = pending.current || { name: name.trim(), expires_at: date.toISOString(), scopes: [...scopes],
       issue_request_id: crypto.randomUUID(), expected_user_id: actorId, expected_tenant_id: tenantId };
     pending.current = request;
     setBusy(true);
@@ -104,7 +114,7 @@ function Access({ agentId, actorId, tenantId }: { agentId: string; actorId: stri
     unavailable: t('machineAccess.unavailable', 'Employee or owner unavailable') };
   return <section className="card card-pad-sm">
     <h3>{t('machineAccess.title', 'Machine access')}</h3>
-    <p>{t('machineAccess.scope', 'Credentials can read this employee’s description. Task execution is not available yet.')}</p>
+    <p>{t('machineAccess.scope', 'Choose separate permissions for the employee description, task execution, results, and cancellation.')}</p>
     {query.isPending && <p role="status">{t('common.loading', 'Loading…')}</p>}
     {(query.isError || unknown) && <p role="alert">{t('machineAccess.unknown', 'The access or request outcome could not be confirmed. Refresh before acting again.')}</p>}
     {lost && <p role="alert">{t('machineAccess.lost', 'This credential was already issued. Its secret cannot be recovered; revoke it before issuing another.')}</p>}
@@ -115,7 +125,16 @@ function Access({ agentId, actorId, tenantId }: { agentId: string; actorId: stri
           disabled={busy || unknown || !!lost || !!secret || !!pending.current} onChange={(event) => setName(event.target.value)} /></label>
         <label>{t('machineAccess.expiry', 'Expires at')}<input type="datetime-local" required value={expiry}
           disabled={busy || unknown || !!lost || !!secret || !!pending.current} onChange={(event) => setExpiry(event.target.value)} /></label>
-        <button className="btn btn-primary" type="submit" disabled={busy || unknown || !!lost || !!secret || !name.trim()}>
+        <fieldset disabled={busy || unknown || !!lost || !!secret || !!pending.current}>
+          <legend>{t('machineAccess.permissions', 'Permissions')}</legend>
+          {permissions.filter((permission) => query.data?.supported_scopes.includes(permission.scope)).map((permission) =>
+            <label key={permission.scope}><input type="checkbox" checked={scopes.includes(permission.scope)} onChange={(event) => {
+              const selected = new Set(scopes);
+              if (event.target.checked) selected.add(permission.scope);else selected.delete(permission.scope);
+              setScopes(permissions.filter((item) => selected.has(item.scope)).map((item) => item.scope));
+            }} />{permission.label}</label>)}
+        </fieldset>
+        <button className="btn btn-primary" type="submit" disabled={busy || unknown || !!lost || !!secret || !name.trim() || !scopes.length}>
           {pending.current ? t('machineAccess.retry', 'Retry issuance') : t('machineAccess.issue', 'Issue credential')}</button>
       </form> : <p>{t('machineAccess.admin', 'Ask a company administrator to issue a credential. The current owner can revoke existing access.')}</p>}
       {secret && <div>
@@ -129,8 +148,10 @@ function Access({ agentId, actorId, tenantId }: { agentId: string; actorId: stri
         <button className="btn btn-secondary" type="button" onClick={() => setSecret(null)}>{t('machineAccess.hide', 'Dismiss secret')}</button>
       </div>}
       <p>{t('machineAccess.endpoint', 'Employee description endpoint')}: <code>{machineIdentitiesApi.descriptionPath(agentId)}</code></p>
+      <p>{t('machineAccess.taskEndpoint', 'Task endpoint')}: <code>{machineIdentitiesApi.taskPath(agentId)}</code> · A2A-Version: 1.0</p>
       {query.data.identities.map((identity) => <div key={identity.credential_id}>
         <p>{identity.name} · {statusLabels[identity.status] || identity.status}</p>
+        <p>{t('machineAccess.permissions', 'Permissions')}: <code>{identity.scopes.join(', ')}</code></p>
         <p>{t('machineAccess.expiry', 'Expires at')}: {new Date(identity.expires_at).toLocaleString()}</p>
         {identity.status !== 'revoked' && <button type="button" className="btn btn-secondary" disabled={busy || unknown}
           onClick={() => { void revoke(identity.id); }}>{t('machineAccess.revoke', 'Revoke access')}</button>}

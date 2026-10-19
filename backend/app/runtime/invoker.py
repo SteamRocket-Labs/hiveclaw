@@ -148,6 +148,8 @@ class AgentInvocationRequest:
     tenant_id: uuid.UUID | None = None
     agent_id: uuid.UUID | None = None
     user_id: uuid.UUID | None = None
+    external_principal_id: uuid.UUID | None = None
+    machine_credential_id: uuid.UUID | None = None
     execution_identity: ExecutionIdentityRef | None = None
     on_chunk: ChunkCallback | None = None
     on_tool_call: ToolCallback | None = None
@@ -1379,7 +1381,7 @@ async def _execute_tool_with_request(
 
     execute_kwargs: dict[str, Any] = {
         "agent_id": request.agent_id,
-        "user_id": request.user_id or request.agent_id,
+        "user_id": request.user_id if request.machine_credential_id is not None else request.user_id or request.agent_id,
     }
     if "execution_identity" in inspect.signature(execute_tool).parameters:
         execute_kwargs["execution_identity"] = request.execution_identity

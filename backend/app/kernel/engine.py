@@ -2411,6 +2411,7 @@ async def _execute_tool_with_hooks(
                 tenant_id=getattr(runtime_config, "tenant_id", None),
                 current_user_id=getattr(request, "user_id", None),
                 agent_id=getattr(request, "agent_id", None),
+                external_principal_id=getattr(request, 'external_principal_id', None),
             )
             result_str = _normalize_tool_result_for_llm(prompt_filter.payload)
         except Exception as exc:  # noqa: BLE001 - fail closed for governed result ingress
@@ -2473,6 +2474,7 @@ async def _execute_tool_with_hooks(
                     tenant_id=getattr(runtime_config, "tenant_id", None),
                     current_user_id=getattr(request, "user_id", None),
                     agent_id=getattr(request, "agent_id", None),
+                    external_principal_id=getattr(request, 'external_principal_id', None),
                 ).payload
             )
     tool_result_side_effects = _extract_tool_side_effects(result) or {}

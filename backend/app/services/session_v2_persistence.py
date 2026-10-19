@@ -78,6 +78,7 @@ SESSION_COMMAND_AUTHORITY_STAMP_KEY = "session_command_authority"
 # revalidation lane; it never grants authority and carries no claim data.
 RUNTIME_RESULT_INTEGRATION_AUTHORITY_SOURCE = "runtime_result_integration"
 GROUP_APPROVAL_RESULT_AUTHORITY_SOURCE = "shared_group_approval_result"
+MACHINE_APPROVAL_RESULT_AUTHORITY_SOURCE = 'machine_approval_result'
 RUNTIME_RESULT_INTEGRATION_STAMP_SCHEMA = "hive.session_command_authority.runtime_result_integration.v1"
 _A2A_OUTBOX_SOURCE_KINDS = frozenset({"delegation", "a2a_delegation", "a2a_continuation"})
 SHARED_GROUP_INGRESS_STAMP_SCHEMA = "hive.session_command_authority.shared_group_ingress.v1"
@@ -102,6 +103,7 @@ class AuthenticatedSessionAuthority:
     authority_source: str
     action: str
     _seal: object = field(repr=False, compare=False)
+    machine_credential_id: uuid.UUID | None = None
 
     def __post_init__(self) -> None:
         if self._seal is not _AUTHORITY_SEAL:
@@ -262,6 +264,24 @@ async def resolve_session_mutation_authority(
 
     agent_uuid = _uuid(agent_id, "agent_id")
     session_uuid = _uuid(session_id, "session_id")
+    from app.services.machine_runtime_authority import is_machine_runtime_actor
+    if is_machine_runtime_actor(user):
+        from app.services.machine_identity_service import load_machine_grant
+
+        required = {'mutate_session_input': 'agent.execute', 'answer_session_question': 'agent.execute',
+            'mutate_session_control': 'task.cancel', 'cancel_session_run': 'task.cancel'}.get(action)
+        if required is None:
+            raise PermissionError('machine_session_action_not_allowed')
+        context, _agent = await load_machine_grant(db, credential_id=user.machine_credential_id,
+            agent_id=agent_uuid, principal_id=user.external_principal_id, scope=required)
+        session = await db.get(ChatSession, session_uuid, populate_existing=True)
+        if (session is None or session.agent_id != agent_uuid or session.tenant_id != context.tenant_id
+            or session.user_id is not None or session.external_principal_id != context.principal_id):
+            raise PermissionError('machine_session_authority_mismatch')
+        return AuthenticatedSessionAuthority(tenant_id=context.tenant_id, agent_id=agent_uuid,
+            principal_type='external_principal', principal_id=context.principal_id, session_id=session_uuid,
+            authority_source='machine_credential_session', action=action, _seal=_AUTHORITY_SEAL,
+            machine_credential_id=context.credential_id)
     if getattr(user, "external_principal_id", None) is not None:
         return await _resolve_external_session_mutation_authority(
             db,
@@ -535,8 +555,9 @@ async def _validate_runtime_result_integration_binding(
     from app.models.runtime_task import RuntimeTask
 
     group_return = session.audience_kind == "group"
+    machine_return = session.user_id is None and session.external_principal_id is not None
     root_user = None
-    if not group_return:
+    if not group_return and not machine_return:
         if session.peer_agent_id is None or session.runtime_task_id is None:
             raise PermissionError("runtime_result_integration_target_not_delegation")
         root_user, _delegation_task = await _validate_a2a_delegation_peer_binding(
@@ -561,6 +582,13 @@ async def _validate_runtime_result_integration_binding(
         page = await db.get(RuntimeResultIntegrationPage, page_id)
     if page is None:
         raise PermissionError("runtime_result_integration_page_not_found")
+    if machine_return:
+        from app.services.machine_runtime_authority import machine_approval_return_actor
+
+        source_rows = list(await db.scalars(select(RuntimeNotificationOutbox).where(
+            RuntimeNotificationOutbox.integration_page_id == page.id)))
+        root_user = await machine_approval_return_actor(db, session=session, rows=source_rows,
+            root_runtime_task_id=page.root_runtime_task_id)
     if group_return:
         from app.services.session_approval import group_approval_return_actor
 
@@ -687,9 +715,11 @@ async def resolve_runtime_result_integration_authority(
         principal_type="external_principal" if getattr(root_user, "external_principal_id", None) else "user",
         principal_id=getattr(root_user, "external_principal_id", None) or root_user.id,
         session_id=session.id,
-        authority_source=GROUP_APPROVAL_RESULT_AUTHORITY_SOURCE if session.audience_kind == "group" else RUNTIME_RESULT_INTEGRATION_AUTHORITY_SOURCE,
+        authority_source=(MACHINE_APPROVAL_RESULT_AUTHORITY_SOURCE if getattr(root_user, 'machine_credential_id', None)
+            else GROUP_APPROVAL_RESULT_AUTHORITY_SOURCE if session.audience_kind == "group" else RUNTIME_RESULT_INTEGRATION_AUTHORITY_SOURCE),
         action=action,
         _seal=_AUTHORITY_SEAL,
+        machine_credential_id=getattr(root_user, 'machine_credential_id', None),
     )
 
 
@@ -716,6 +746,20 @@ async def resolve_session_command_authority(
         raise RuntimeError("session_command_agent_authority_mismatch")
 
     stamp = (command.target_json or {}).get(SESSION_COMMAND_AUTHORITY_STAMP_KEY)
+    if isinstance(stamp, dict) and stamp.get('schema') == 'hive.session_command_authority.machine.v1':
+        from app.services.machine_identity_service import load_machine_grant
+        from app.services.machine_runtime_authority import machine_runtime_actor
+
+        if command.principal_type != 'external_principal' or set(stamp) != {'schema', 'credential_id'}:
+            raise RuntimeError('session_command_machine_authority_invalid')
+        context, _agent = await load_machine_grant(db, credential_id=_uuid(stamp.get('credential_id'), 'credential_id'),
+            agent_id=agent.id, principal_id=command.principal_id,
+            scope='task.cancel' if action in {'mutate_session_control', 'cancel_session_run'} else 'agent.execute')
+        actor = await machine_runtime_actor(db, context)
+        authority = await resolve_session_mutation_authority(db, user=actor, agent_id=agent.id,
+            session_id=session.id, action='answer_session_question' if command.command_kind == 'answer_request' else action,
+            audit=False)
+        return SessionCommandAuthorityContext(authority=authority, agent=agent, actor=actor, session=session)
     if isinstance(stamp, dict) and stamp.get("schema") == SHARED_GROUP_INGRESS_STAMP_SCHEMA:
         if action != "mutate_session_input" or command.namespace != "human_input":
             raise PermissionError("shared_group_input_action_required")
@@ -741,9 +785,10 @@ async def resolve_session_command_authority(
         # stamp itself grants nothing.  Recovery revalidates only immutable
         # route and authority facts — a later page/task lifecycle state can
         # never strand an already-accepted command.
-        if (command.principal_type != "user" and not (session.audience_kind == "group"
-            and command.principal_type == "external_principal" and isinstance(stamp, dict)
-            and stamp.get("authority_source") == GROUP_APPROVAL_RESULT_AUTHORITY_SOURCE)) or not isinstance(stamp, dict):
+        if (command.principal_type != "user" and not (command.principal_type == "external_principal"
+            and isinstance(stamp, dict) and ((session.audience_kind == "group"
+                and stamp.get("authority_source") == GROUP_APPROVAL_RESULT_AUTHORITY_SOURCE)
+                or stamp.get('authority_source') == MACHINE_APPROVAL_RESULT_AUTHORITY_SOURCE))) or not isinstance(stamp, dict):
             raise RuntimeError("session_command_authority_stamp_invalid")
         stamp_source = stamp.get("authority_source")
         stamp_schema = stamp.get("schema")
@@ -764,7 +809,8 @@ async def resolve_session_command_authority(
                 delegation_runtime_task_id=delegation_runtime_task_id,
             )
         elif (
-            stamp_source in {RUNTIME_RESULT_INTEGRATION_AUTHORITY_SOURCE, GROUP_APPROVAL_RESULT_AUTHORITY_SOURCE}
+            stamp_source in {RUNTIME_RESULT_INTEGRATION_AUTHORITY_SOURCE, GROUP_APPROVAL_RESULT_AUTHORITY_SOURCE,
+                MACHINE_APPROVAL_RESULT_AUTHORITY_SOURCE}
             and stamp_schema == RUNTIME_RESULT_INTEGRATION_STAMP_SCHEMA
         ):
             if (stamp_source == GROUP_APPROVAL_RESULT_AUTHORITY_SOURCE) != (session.audience_kind == "group"):
@@ -795,6 +841,7 @@ async def resolve_session_command_authority(
             authority_source=str(stamp_source),
             action=action,
             _seal=_AUTHORITY_SEAL,
+            machine_credential_id=getattr(root_user, 'machine_credential_id', None),
         )
         return SessionCommandAuthorityContext(authority=authority, agent=agent, actor=root_user, session=session)
 
@@ -824,13 +871,8 @@ async def resolve_session_command_authority(
             raise RuntimeError("session_command_user_authority_mismatch")
     elif principal_type == "external_principal":
         from app.services.external_principal_service import load_external_runtime_actor
-
-        actor = await load_external_runtime_actor(
-            db,
-            tenant_id=command.tenant_id,
-            principal_id=command.principal_id,
-            expected_user_id=session.user_id,
-        )
+        actor = await load_external_runtime_actor(db, tenant_id=command.tenant_id,
+            principal_id=command.principal_id, expected_user_id=session.user_id)
     else:
         raise RuntimeError("session_command_principal_type_unsupported")
 
@@ -1025,6 +1067,9 @@ async def register_session_command(
     elif authority.principal_type == "external_principal" and authority.authority_source != GROUP_APPROVAL_RESULT_AUTHORITY_SOURCE:
         if locked_session.external_principal_id != principal_uuid:
             raise ValueError("session_external_principal_mismatch")
+    if authority.authority_source == 'machine_credential_session':
+        target_payload = {**target_payload, SESSION_COMMAND_AUTHORITY_STAMP_KEY: {
+            'schema': 'hive.session_command_authority.machine.v1', 'credential_id': str(authority.machine_credential_id)}}
     result = await db.execute(
         select(SessionCommand).where(
             SessionCommand.tenant_id == tenant_uuid,

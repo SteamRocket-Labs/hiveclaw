@@ -278,6 +278,9 @@ def _inject_runtime_context_arguments(
     approved_replay = (isinstance(approval, ApprovalDecisionSet) and approval.tool_name == tool_name
                        and str(approval.tenant_id) == str(runtime_context.tenant_id)
                        and approval.requested_by_user_id == runtime_context.user_id
+                       and (approval.machine_credential_id is None or (
+                           approval.machine_credential_id == runtime_context.machine_credential_id
+                           and approval.requested_by_external_principal_id == runtime_context.external_principal_id))
                        and approval.input_hash == hash_tool_input(tool_name, enriched))
     if exact_replay or approved_replay:
         # A server grant binds the persisted profile, including its absence, byte-for-byte.
@@ -1110,6 +1113,8 @@ class ToolRuntimeService:
             envelope.tenant_id != ticket.tenant_id
             or envelope.agent_id != ticket.agent_id
             or envelope.requester_user_id != ticket.requested_by_user_id
+            or (envelope.machine_credential_id is not None and envelope.requester_external_principal_id
+                != ticket.requested_by_external_principal_id)
         ):
             raise RuntimeError("approval_execution_envelope_authority_mismatch")
         decision = ApprovalDecisionSet(
@@ -1122,6 +1127,8 @@ class ToolRuntimeService:
             envelope_hash=ticket.execution_envelope_hash,
             decision_id=ticket.decision_id,
             requested_by_user_id=ticket.requested_by_user_id,
+            requested_by_external_principal_id=envelope.requester_external_principal_id,
+            machine_credential_id=envelope.machine_credential_id,
             approved_by_user_id=ticket.approved_by_user_id,
             plan_authorization=(
                 dict(ticket.arguments.get("_plan_authorization"))
@@ -1132,7 +1139,8 @@ class ToolRuntimeService:
         trace_metadata: dict[str, Any] = {}
         receipt = {
             "tool_name": ticket.tool_name,
-            "requested_by_user_id": str(ticket.requested_by_user_id),
+            "requested_by_user_id": str(ticket.requested_by_user_id) if ticket.requested_by_user_id is not None else None,
+            "requested_by_external_principal_id": str(envelope.requester_external_principal_id) if envelope.requester_external_principal_id else None,
             "approved_by_user_id": str(ticket.approved_by_user_id),
             "input_hash": ticket.input_hash,
             "policy_snapshot_hash": ticket.policy_snapshot_hash,

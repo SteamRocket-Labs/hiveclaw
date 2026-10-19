@@ -34,6 +34,8 @@ class RuntimeNotificationOutbox(Base):
 
     __tablename__ = "runtime_notification_outbox"
     __table_args__ = (
+        CheckConstraint('parent_user_id IS NOT NULL OR root_runtime_task_id IS NOT NULL',
+            name='ck_runtime_notification_outbox_requester_root'),
         CheckConstraint(
             "source_kind IN ('subagent','agent_team','workflow','trigger','delegation','a2a_delegation',"
             "'a2a_continuation','runtime_budget','approval','employee_creation')",
@@ -78,8 +80,8 @@ class RuntimeNotificationOutbox(Base):
     parent_agent_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("agents.id", ondelete="CASCADE"), nullable=False, index=True
     )
-    parent_user_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    parent_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=True, index=True
     )
     child_session_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("chat_sessions.id", ondelete="SET NULL"), nullable=True

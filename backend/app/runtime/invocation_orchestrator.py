@@ -361,6 +361,8 @@ def _build_kernel_request(
         role_description=request.role_description,
         agent_id=request.agent_id,
         user_id=request.user_id,
+        external_principal_id=request.external_principal_id,
+        machine_credential_id=request.machine_credential_id,
         execution_identity=execution_identity,
         on_chunk=on_chunk,
         on_tool_call=on_tool_call,

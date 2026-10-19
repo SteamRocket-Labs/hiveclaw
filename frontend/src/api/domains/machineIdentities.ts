@@ -1,5 +1,6 @@
 import { get, post } from '../core';
 
+export type MachineScope = 'agent.describe' | 'agent.execute' | 'task.read' | 'task.cancel';
 export interface MachineIdentity {
   id: string; credential_id: string; agent_id: string; issue_request_id: string;
   name: string; status: 'active' | 'revoked' | 'expired' | 'needs_reissue' | 'unavailable'; scopes: string[];
@@ -10,7 +11,7 @@ export interface MachineIdentityPage {
 }
 export interface MachineFrame { expected_user_id: string; expected_tenant_id: string }
 export interface MachineIssue extends MachineFrame {
-  name: string; expires_at: string; scopes: ['agent.describe']; issue_request_id: string;
+  name: string; expires_at: string; scopes: MachineScope[]; issue_request_id: string;
 }
 export interface MachineIssueReceipt extends MachineIdentity {
   token: string | null; idempotent_replay: boolean;
@@ -22,4 +23,5 @@ export const machineIdentitiesApi = {
   revoke: (agentId: string, id: string, body: MachineFrame) =>
     post<{ id: string; agent_id: string; status: 'revoked'; revoked_at: string }>(`/agents/${agentId}/machine-identities/${id}/revoke`, body),
   descriptionPath: (agentId: string) => `/api/agents/${encodeURIComponent(agentId)}/machine-description`,
+  taskPath: (agentId: string) => `/api/agents/${encodeURIComponent(agentId)}/a2a/rpc`,
 };

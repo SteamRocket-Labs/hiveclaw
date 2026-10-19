@@ -2827,7 +2827,8 @@ async def start_web_chat_run(
         str(actor_external_principal_id) if actor_external_principal_id else None
     )
     supplied_metadata["external_authority_bound"] = actor_authority_bound if actor_external_principal_id else None
-    if actor_external_principal_id is not None and not actor_authority_bound:
+    from app.services.machine_runtime_authority import is_machine_runtime_actor
+    if actor_external_principal_id is not None and not actor_authority_bound and not is_machine_runtime_actor(user):
         supplied_metadata["disable_tools"] = True
         supplied_metadata["tool_policy"] = "disabled_for_unbound_external_principal"
     turn_id = str(supplied_metadata.get("turn_id") or f"turn-{run_uuid.hex}")
@@ -2890,6 +2891,8 @@ async def start_web_chat_run(
         parent_session_id=str(session.id),
         child_session_id=str(session.id),
         root_user_id=actor_user_id,
+        root_external_principal_id=actor_external_principal_id,
+        machine_credential_id=user.machine_credential_id if is_machine_runtime_actor(user) else None,
         root_session_id=str(getattr(session, "root_session_id", None) or session.id),
         root_runtime_task_id=_uuid_or_none(supplied_metadata.get("root_runtime_task_id")) or run_uuid,
         delegation_chain_json=list(supplied_metadata.get("delegation_chain") or [])
@@ -5622,6 +5625,10 @@ async def _load_runtime_context(
             command = await db.get(SessionCommand, uuid.UUID(metadata["session_v2_command_id"]))
             metadata["channel"] = shared_group_command_channel(command, session=session)
             runtime_task.metadata_json = metadata
+        elif runtime_task.machine_credential_id is not None:
+            from app.services.machine_runtime_authority import load_machine_runtime_actor
+
+            user = await load_machine_runtime_actor(db, task=runtime_task, session=session)
         elif external_principal_id is not None:
             from app.services.external_principal_service import load_external_runtime_actor
 

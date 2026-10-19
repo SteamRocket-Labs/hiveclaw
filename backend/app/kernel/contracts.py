@@ -123,6 +123,8 @@ class InvocationRequest:
     fallback_model: Any | None = None
     agent_id: uuid.UUID | None = None
     user_id: uuid.UUID | None = None
+    external_principal_id: uuid.UUID | None = None
+    machine_credential_id: uuid.UUID | None = None
     execution_identity: ExecutionIdentityRef | None = None
     on_chunk: ChunkCallback | None = None
     on_tool_call: ToolCallback | None = None

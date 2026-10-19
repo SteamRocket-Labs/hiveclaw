@@ -19,7 +19,7 @@ from app.models.machine_credential import MachineCredential
 from app.models.tenant import Tenant
 from app.models.user import User
 
-MACHINE_SCOPES = frozenset({'agent.describe'})
+MACHINE_SCOPES = frozenset({'agent.describe', 'agent.execute', 'task.read', 'task.cancel'})
 
 
 def _now():
@@ -152,6 +152,29 @@ class MachineAuthContext:
     principal_id: uuid.UUID
     credential_id: uuid.UUID
     scopes: tuple[str, ...]
+
+
+async def load_machine_grant(db, *, credential_id, agent_id, principal_id, scope):
+    """Revalidate a durable server-admitted grant without retaining its bearer secret."""
+    credential = await db.get(MachineCredential, credential_id, populate_existing=True)
+    denied = HTTPException(403, detail={'code': 'machine_authority_unavailable'})
+    if credential is None or credential.agent_id != agent_id or credential.principal_id != principal_id:
+        raise denied
+    agent = await db.scalar(select(Agent).join(Tenant, Tenant.id == Agent.tenant_id).where(
+        Agent.id == agent_id, Agent.tenant_id == credential.tenant_id, Tenant.is_active.is_(True),
+        Agent.deleted_at.is_(None), Agent.deactivated_at.is_(None)).execution_options(populate_existing=True))
+    principal = await db.get(ExternalPrincipal, principal_id, populate_existing=True)
+    if (agent is None or credential.status != 'active' or credential.expires_at <= _now()
+        or scope not in set(credential.scopes) or principal is None or principal.tenant_id != credential.tenant_id
+        or principal.provider != 'a2a' or principal.linked_user_id is not None or principal.status != 'active'):
+        raise denied
+    try:
+        owner_scope = await _owner_scope(db, agent)
+    except HTTPException:
+        raise denied from None
+    if owner_scope != (credential.owner_user_id, credential.owner_epoch):
+        raise denied
+    return MachineAuthContext(credential.tenant_id, agent.id, principal.id, credential.id, tuple(credential.scopes)), agent
 
 
 async def authenticate_machine(db, *, token, agent_id, scope):

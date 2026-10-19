@@ -199,6 +199,12 @@ class RuntimeTask(Base):
     parent_session_id: Mapped[str | None] = mapped_column(String(512), nullable=True)
     child_session_id: Mapped[str | None] = mapped_column(String(512), nullable=True)
     root_user_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True, index=True)
+    root_external_principal_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("external_principals.id", ondelete="RESTRICT"), nullable=True, index=True
+    )
+    machine_credential_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("machine_credentials.id", ondelete="RESTRICT"), nullable=True, index=True
+    )
     root_session_id: Mapped[str | None] = mapped_column(String(512), nullable=True, index=True)
     delegation_chain_json: Mapped[list] = mapped_column(JSON, nullable=False, default=list, server_default=text("'[]'"))
     depth: Mapped[int] = mapped_column(default=1)
@@ -341,3 +347,5 @@ def _check_loaded_runtime_task_fence(target: RuntimeTask, _context) -> None:
 
 # Keep isolated RuntimeTask imports mapper-safe for tests and maintenance tools.
 from app.models.runtime_budget import RuntimeBudgetRun  # noqa: E402, F401
+from app.models.machine_credential import MachineCredential  # noqa: E402, F401
+from app.models.external_principal import ExternalPrincipal  # noqa: E402, F401

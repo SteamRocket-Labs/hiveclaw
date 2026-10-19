@@ -24,6 +24,8 @@ class ToolExecutionContext:
     user_id: uuid.UUID
     tenant_id: str | None
     workspace: Path
+    external_principal_id: uuid.UUID | None = None
+    machine_credential_id: uuid.UUID | None = None
     execution_identity: ExecutionIdentity | None = None
     execution_principal: ExecutionPrincipal | None = None
     authority_snapshot_hash: str | None = None

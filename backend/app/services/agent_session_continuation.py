@@ -561,6 +561,19 @@ async def continue_parent_session_with_result_page(
                 else {}
             ),
         }
+    from app.services.machine_runtime_authority import is_machine_runtime_actor
+
+    if is_machine_runtime_actor(user):
+        from app.services.session_live_input import submit_live_human_input
+
+        receipt = await submit_live_human_input(db=db, agent=agent, user=user, session=session,
+            content=runtime_context, display_content=display_content, role='system',
+            source='runtime_result_integration', input_id=uuid.uuid5(integration_page_id, 'machine-approval-return'),
+            idempotency_key=f'runtime-result-page:{integration_page_id}', runtime_metadata=metadata,
+            runtime_result_page_id=integration_page_id, runtime_result_page_claim_token=page_claim_token)
+        await db.commit()
+        return {'ok': True, 'status': receipt['status'], 'integration_page_id': str(integration_page_id),
+            'consumer': 'session_v2_round_input', 'input_receipt': receipt}
     if getattr(session, "audience_kind", None) == "group":
         from app.models.audit import ApprovalRequest
         from app.models.runtime_notification_outbox import RuntimeNotificationOutbox

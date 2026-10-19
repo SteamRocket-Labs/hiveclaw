@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any
 import uuid
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 import app.database as _app_database  # late-bound: a test (or redeploy) may rebind the app session factories
@@ -385,6 +385,11 @@ async def _latest_transcript_frontier(
             ChatTranscriptEvent.agent_id == agent_id,
             ChatTranscriptEvent.session_id == session_id,
             ChatTranscriptEvent.run_id == runtime_task_id,
+            # Question answers belong to later input commands. They retain
+            # the question's run scope without advancing that execution's
+            # terminal frontier after its tool result has committed.
+            or_(ChatTranscriptEvent.item_kind.is_distinct_from('user_question'),
+                ChatTranscriptEvent.command_id.is_(None), ChatTranscriptEvent.input_id.is_(None)),
         )
         .order_by(ChatTranscriptEvent.sequence.desc())
         .limit(1)

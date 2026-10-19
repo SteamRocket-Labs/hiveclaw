@@ -42,6 +42,7 @@ async def capture_context_message_origins(db, *, tenant_id, agent_id, session_id
         return
     owner_id = await db.scalar(select(ChatSession.user_id).where(ChatSession.id == session_id,
         ChatSession.tenant_id == tenant_id, ChatSession.agent_id == agent_id))
+    machine_actor = None
     if owner_id is None:
         from app.models.runtime_task import RuntimeTask
         from app.services.shared_group_authority import load_shared_group_runtime_actor
@@ -50,7 +51,11 @@ async def capture_context_message_origins(db, *, tenant_id, agent_id, session_id
         task = await db.get(RuntimeTask, run_id)
         if session is not None and session.audience_kind == "group" and task is not None:
             owner_id = (await load_shared_group_runtime_actor(db, task=task, session=session)).id
-    if owner_id is None:
+        elif task is not None and task.machine_credential_id is not None:
+            from app.services.machine_runtime_authority import load_machine_runtime_actor
+
+            machine_actor = await load_machine_runtime_actor(db, task=task, session=session)
+    if owner_id is None and machine_actor is None:
         return
     for index, message in enumerate(messages):
         origin = message.context_origin if isinstance(message, LLMMessage) else None
@@ -64,6 +69,9 @@ async def capture_context_message_origins(db, *, tenant_id, agent_id, session_id
             "model_result_id": str(result_id), "message_index": index, "kind": origin.kind,
             "message": snapshot, "sections": list(origin.sections), "dependencies": list(origin.sources),
             "dependency_coverage": {"complete": not origin.unbound, "unbound": list(origin.unbound)}}
+        if machine_actor is not None:
+            proof.update({'requester_external_principal_id': str(machine_actor.external_principal_id),
+                'machine_credential_id': str(machine_actor.machine_credential_id)})
         proof["source_hash"] = _hash(proof)
         source_id = uuid.uuid5(result_id, f"kernel-context:{index}:{proof['source_hash']}")
         row = await db.get(InvocationSpan, source_id, populate_existing=True)
@@ -103,6 +111,15 @@ async def load_context_message_origin(db, *, tenant_id, agent_id, source_id, ses
         proof.get("agent_id") != str(agent_id) or proof.get("session_id") != row.session_id
         or proof.get("run_id") != str(row.runtime_task_id) or _hash(payload) != proof.get("source_hash")):
         return None
+    if proof.get('machine_credential_id') is not None:
+        from app.models.runtime_task import RuntimeTask
+
+        task = await db.get(RuntimeTask, row.runtime_task_id, populate_existing=True)
+        if (task is None or task.tenant_id != tenant_id or task.parent_agent_id != agent_id
+            or task.parent_session_id != row.session_id or task.root_user_id is not None or row.user_id is not None
+            or str(task.machine_credential_id) != proof['machine_credential_id']
+            or str(task.root_external_principal_id) != proof.get('requester_external_principal_id')):
+            return None
     message = proof.get("message")
     if not isinstance(message, dict) or set(message) != {"role", "content"} or message["role"] not in {"system", "user"} or not isinstance(message["content"], str):
         return None
@@ -448,9 +465,15 @@ async def _origin_dependencies(db, *, tenant_id, agent_id, ref):
             ChatTranscriptEvent.item_id == uuid.uuid5(invocation.id, "user-question"),
             ChatTranscriptEvent.lifecycle == "waiting").order_by(ChatTranscriptEvent.sequence).limit(1)) if model else None
         question_payload = dict((question.metadata_json or {}).get("v2_payload") or {}) if question else {}
-        question_payload.pop("requested_by_user_id", None)
+        from app.models.runtime_task import RuntimeTask
+        from app.services.session_user_question import question_requester_binding, question_requester_matches
+
+        task = await db.get(RuntimeTask, invocation.run_id)
+        requester_matches = task is None or task.machine_credential_id is None or question_requester_matches(task, question_payload)
+        for field in question_requester_binding(task):
+            question_payload.pop(field, None)
         try:
-            complete = invocation.effect_state == "effect_committed" and bool(question) and question_payload == json.loads(content)
+            complete = invocation.effect_state == "effect_committed" and bool(question) and requester_matches and question_payload == json.loads(content)
         except (ValueError, TypeError):
             complete = False
         return _unique_dependencies(dependencies), inherited_complete and complete

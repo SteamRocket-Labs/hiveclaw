@@ -1,7 +1,14 @@
 {
   "machineAccess": {
+    "permissions": "Permissions",
+    "describe": "Read employee description",
+    "execute": "Run tasks",
+    "read": "Read task status and files",
+    "cancel": "Cancel queued or running tasks",
+    "permissionRequired": "Choose at least one permission.",
+    "taskEndpoint": "Task endpoint",
     "title": "Machine access",
-    "scope": "Credentials can read this employee’s description. Task execution is not available yet.",
+    "scope": "Choose separate permissions for the employee description, task execution, results, and cancellation.",
     "unknown": "The access or request outcome could not be confirmed. Refresh before acting again.",
     "lost": "This credential was already issued. Its secret cannot be recovered; revoke it before issuing another.",
     "name": "Integration name",

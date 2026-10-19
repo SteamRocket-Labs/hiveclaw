@@ -211,7 +211,9 @@ async def _validate_agent_context_dependency(db, tenant_id, dependency, *, user,
                     .execution_options(populate_existing=True))
                 if source is None:
                     raise ValueError("context_source_agent_unavailable")
-                await check_agent_access(db, _requester, agent_id)
+                from app.services.machine_runtime_authority import is_machine_runtime_actor
+                if not is_machine_runtime_actor(_requester):
+                    await check_agent_access(db, _requester, agent_id)
         else:
             source = await db.scalar(select(Agent).where(Agent.id == agent_id, Agent.tenant_id == tenant_id)
                 .execution_options(populate_existing=True))
@@ -335,6 +337,39 @@ async def record_session_actor_identity(db, *, tenant_id, agent_id, session_id, 
     from app.services.session_model_inputs import _hash
 
     session_id = uuid.UUID(str(session_id))
+    if user_id is None and runtime_task_id is not None:
+        from app.services.machine_runtime_authority import machine_task_actor
+
+        actor = await machine_task_actor(db, tenant_id=tenant_id, agent_id=agent_id, runtime_task_id=runtime_task_id,
+            session_id=session_id, user_id=None)
+        if actor is not None:
+            session = await db.get(ChatSession, session_id, populate_existing=True)
+            if display_name is not None and display_name != actor.display_name:
+                raise ContentInputReceiptError('context_actor_identity_unavailable', 'The machine actor observation changed.', 403)
+            if timezone_name is not None:
+                zones = (await db.execute(select(Agent.timezone, Tenant.timezone).join(Tenant, Tenant.id == Agent.tenant_id)
+                    .where(Agent.id == agent_id, Agent.tenant_id == tenant_id))).one()
+                if timezone_name != (zones[0] or zones[1] or 'UTC'):
+                    raise ContentInputReceiptError('context_timezone_changed', 'The observed timezone changed before capture.', 409)
+            payload = {'schema': 'hive.session_actor_identity.machine.v1', 'tenant_id': str(tenant_id),
+                'agent_id': str(agent_id), 'session_id': str(session_id), 'user_id': None,
+                'external_principal_id': str(actor.external_principal_id), 'machine_credential_id': str(actor.machine_credential_id),
+                'runtime_task_id': str(uuid.UUID(str(runtime_task_id))), 'display_name': display_name,
+                'channel': str(session.source_channel or ''), 'timezone': timezone_name}
+            version = _hash(payload)
+            source_id = uuid.uuid5(session.id, f'session-actor:{version}')
+            await db.execute(insert(InvocationSpan).values(id=source_id, tenant_id=tenant_id, agent_id=agent_id,
+                user_id=None, session_id=str(session.id), runtime_task_id=uuid.UUID(str(runtime_task_id)),
+                trace_id=f'session-context:{session.id}', span_id=f'actor-source:{source_id}',
+                span_type='session_actor_identity', name='session.actor.identity', status='captured', duration_ms=0,
+                started_at=datetime.now(timezone.utc), metadata_json={'session_actor_identity': payload})
+                .on_conflict_do_nothing(index_elements=['id']))
+            captured = await db.get(InvocationSpan, source_id, populate_existing=True)
+            if (captured is None or captured.user_id is not None or captured.tenant_id != tenant_id
+                or captured.agent_id != agent_id or captured.session_id != str(session_id)
+                or captured.metadata_json != {'session_actor_identity': payload}):
+                raise ContentInputReceiptError('context_actor_identity_unavailable', 'The machine observation cannot be rebound.', 503)
+            return {'source_kind': 'session_actor_identity', 'source_id': str(source_id), 'source_version': version}, payload
     row = (await db.execute(select(User, ChatSession).join(ChatSession, or_(ChatSession.user_id == User.id, ChatSession.audience_kind == "group"))
         .join(Agent, Agent.id == ChatSession.agent_id).where(
         User.id == user_id, User.tenant_id == tenant_id, User.is_active.is_(True),
@@ -388,6 +423,27 @@ async def _validate_session_actor_identity(db, tenant_id, dependency, *, user, r
         source_id = uuid.UUID(dependency["source_id"])
         row = await db.get(InvocationSpan, source_id, populate_existing=True)
         payload = (row.metadata_json or {}).get("session_actor_identity") if row is not None else None
+        if isinstance(payload, dict) and payload.get('schema') == 'hive.session_actor_identity.machine.v1':
+            from app.models.runtime_task import RuntimeTask
+            from app.services.machine_runtime_authority import MachineArtifactReader, load_machine_runtime_actor
+
+            task = await db.get(RuntimeTask, uuid.UUID(payload['runtime_task_id']), populate_existing=True)
+            session = await db.get(ChatSession, uuid.UUID(payload['session_id']), populate_existing=True)
+            actor = await load_machine_runtime_actor(db, task=task, session=session,
+                scope='task.read' if isinstance(runtime_request, MachineArtifactReader) else 'agent.execute')
+            if (set(payload) != {'schema', 'tenant_id', 'agent_id', 'session_id', 'user_id', 'external_principal_id',
+                'machine_credential_id', 'runtime_task_id', 'display_name', 'channel', 'timezone'}
+                or payload['tenant_id'] != str(tenant_id) or payload['agent_id'] != str(actor.agent_id)
+                or payload['external_principal_id'] != str(actor.external_principal_id)
+                or payload['machine_credential_id'] != str(actor.machine_credential_id) or payload['user_id'] is not None
+                or row.user_id is not None or row.tenant_id != tenant_id or row.agent_id != actor.agent_id
+                or row.runtime_task_id != task.id or row.session_id != str(session.id)
+                or row.span_type != 'session_actor_identity' or row.name != 'session.actor.identity' or row.status != 'captured'
+                or _hash(payload) != dependency['source_version']
+                or source_id != uuid.uuid5(session.id, f'session-actor:{_hash(payload)}')):
+                raise ValueError('machine_actor_source_binding_invalid')
+            await _authorize_session_input_source(db, tenant_id, session, user=user, runtime_request=runtime_request)
+            return
         if (not isinstance(payload, dict) or set(payload) != {"schema", "tenant_id", "agent_id", "session_id", "user_id", "display_name", "channel", "timezone"}
             or payload["schema"] != "hive.session_actor_identity.v1"
             or (payload["display_name"] is not None and not isinstance(payload["display_name"], str))
@@ -490,6 +546,15 @@ async def _authorize_session_input_source(db, tenant_id, session, *, user, runti
     from fastapi import HTTPException
     from app.core.permissions import authorize_session_action
 
+    if runtime_request is not None:
+        from app.services.machine_runtime_authority import machine_request_actor
+        machine = await machine_request_actor(db, tenant_id, runtime_request)
+        if machine is not None:
+            if (session.tenant_id != machine.tenant_id or session.agent_id != machine.agent_id
+                or session.external_principal_id != machine.external_principal_id or session.user_id is not None):
+                raise ContentInputReceiptError('content_source_access_denied', 'The machine cannot read this session source.', 403)
+            return
+
     if session.audience_kind == "group":
         from app.core.permissions import check_agent_access, is_scoped_business_admin
         from app.services.shared_group_authority import require_current_group_member
@@ -565,6 +630,17 @@ async def _runtime_input_actor(db, tenant_id, request):
     from app.models.user import User
     from app.services.personal_knowledge_access import AgentRuntimePrincipal
     from app.tools.handlers.knowledge import _personal_kb_runtime_principal
+
+    from app.services.machine_runtime_authority import machine_request_actor
+    machine = await machine_request_actor(db, tenant_id, request)
+    if machine is not None:
+        context = getattr(request, 'context', None) or request
+        session = getattr(context, 'session_context', None)
+        metadata = getattr(session, 'metadata', None) or {}
+        return AgentRuntimePrincipal(agent_id=machine.agent_id, requester_user_id=None,
+            session_id=str(getattr(context, 'session_id', None) or getattr(session, 'session_id', None)),
+            runtime_task_id=str(getattr(context, 'runtime_task_id', None) or metadata.get('runtime_task_id') or metadata.get('task_id')),
+            purpose='machine_task'), machine
 
     try:
         principal = request if isinstance(request, AgentRuntimePrincipal) else _personal_kb_runtime_principal(request)
@@ -693,9 +769,15 @@ async def _validate_workspace_dependency(db, tenant_id, dependency, *, user, run
         if principal.agent_id != agent_id and not project_source_read_allowed(tenant_id, principal):
             raise ContentInputReceiptError("content_source_access_denied", "The workspace source belongs to another employee.", 403)
     try:
-        await authorize_workspace_path(db, user, agent_id=agent_id, path=path, action="read", path_exists=True,
-            session_id=uuid.UUID(principal.session_id) if principal is not None and principal.agent_id == agent_id else None,
-            runtime_principal=principal)
+        from app.services.machine_runtime_authority import is_machine_runtime_actor, load_machine_workspace_scope
+        if is_machine_runtime_actor(user):
+            scope = await load_machine_workspace_scope(db, actor=user, session_id=uuid.UUID(principal.session_id))
+            if agent_id != user.agent_id or not scope.can_read(path):
+                raise WorkspaceAuthorityError('workspace_resource_forbidden', 'The machine cannot read this workspace source.')
+        else:
+            await authorize_workspace_path(db, user, agent_id=agent_id, path=path, action="read", path_exists=True,
+                session_id=uuid.UUID(principal.session_id) if principal is not None and principal.agent_id == agent_id else None,
+                runtime_principal=principal)
     except (HTTPException, WorkspaceAuthorityError) as exc:
         raise ContentInputReceiptError("content_source_access_denied", "The workspace source is no longer authorized for this reader.", 403) from exc
     latest = await latest_workspace_receipt(db, tenant_id, agent_id, path)

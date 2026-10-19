@@ -102,7 +102,7 @@ class CompletionNotification:
     source_run_id: str
     parent_session_id: uuid.UUID | str
     parent_agent_id: uuid.UUID | str
-    parent_user_id: uuid.UUID | str
+    parent_user_id: uuid.UUID | str | None
     terminal_status: str
     task_type: str
     summary: str
@@ -123,7 +123,7 @@ class ClaimedCompletionNotification:
     source_run_id: str
     parent_session_id: uuid.UUID
     parent_agent_id: uuid.UUID
-    parent_user_id: uuid.UUID
+    parent_user_id: uuid.UUID | None
     terminal_status: str
     task_type: str
     root_runtime_task_id: uuid.UUID | None
@@ -161,7 +161,7 @@ class ClaimedResultIntegrationPage:
     tenant_id: uuid.UUID
     parent_session_id: uuid.UUID
     parent_agent_id: uuid.UUID
-    parent_user_id: uuid.UUID
+    parent_user_id: uuid.UUID | None
     root_runtime_task_id: uuid.UUID | None
     root_scope_key: str
     integration_epoch: int
@@ -191,7 +191,7 @@ def _normalized_base_values(notification: CompletionNotification) -> dict[str, A
         "source_run_id": source_run_id,
         "parent_session_id": _uuid(notification.parent_session_id, field="parent_session_id"),
         "parent_agent_id": _uuid(notification.parent_agent_id, field="parent_agent_id"),
-        "parent_user_id": _uuid(notification.parent_user_id, field="parent_user_id"),
+        "parent_user_id": _uuid(notification.parent_user_id, field="parent_user_id") if notification.parent_user_id is not None else None,
         "child_session_id": (
             _uuid(notification.child_session_id, field="child_session_id")
             if notification.child_session_id is not None
@@ -1708,7 +1708,14 @@ class RuntimeNotificationOutboxService:
             ).scalar_one_or_none()
             owner = (
                 await db.execute(select(User).where(User.id == page.parent_user_id, User.tenant_id == page.tenant_id))
-            ).scalar_one_or_none()
+            ).scalar_one_or_none() if page.parent_user_id is not None else None
+            if parent_session is not None and page.parent_user_id is None:
+                from app.services.machine_runtime_authority import machine_approval_return_actor
+
+                rows = list(await db.scalars(select(RuntimeNotificationOutbox).where(
+                    RuntimeNotificationOutbox.integration_page_id == page.id)))
+                owner = await machine_approval_return_actor(db, session=parent_session, rows=rows,
+                    root_runtime_task_id=page.root_runtime_task_id)
             if parent_session is None or parent_agent is None or owner is None:
                 raise RuntimeError("runtime result page target authority no longer resolves")
             if parent_session.audience_kind == "group":

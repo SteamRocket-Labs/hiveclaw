@@ -2,7 +2,7 @@
 import uuid
 from typing import Literal
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Response
+from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
 from fastapi.security.utils import get_authorization_scheme_param
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -24,7 +24,8 @@ class MachineRequestFrame(BaseModel):
 class MachineIdentityIssueIn(MachineRequestFrame):
     name: str = Field(min_length=1, max_length=200)
     expires_at: AwareDatetime
-    scopes: list[Literal['agent.describe']] = Field(default_factory=lambda: ['agent.describe'], min_length=1)
+    scopes: list[Literal['agent.describe', 'agent.execute', 'task.read', 'task.cancel']] = Field(
+        default_factory=lambda: ['agent.describe'], min_length=1)
     issue_request_id: uuid.UUID
 
     @field_validator('name')
@@ -59,16 +60,22 @@ async def revoke_machine_identity(agent_id: uuid.UUID, principal_id: uuid.UUID, 
 
 
 @router.get('/{agent_id}/machine-description')
-async def get_machine_description(agent_id: uuid.UUID, response: Response,
+async def get_machine_description(agent_id: uuid.UUID, request: Request, response: Response,
     authorization: str | None = Header(default=None), db: AsyncSession = Depends(get_db)):
     scheme, token = get_authorization_scheme_param(authorization)
     if scheme.lower() != 'bearer' or not token:
         raise HTTPException(401, detail='Machine credential required', headers={'WWW-Authenticate': 'Bearer'})
     context, agent = await service.authenticate_machine(db, token=token, agent_id=agent_id, scope='agent.describe')
+    from app.services.a2a_machine_tasks import MACHINE_TASK_METHOD_SCOPES
+
     payload = {'schema': 'hive.machine_agent_description.v1',
         'agent': {'id': str(agent.id), 'name': agent.name, 'description': agent.role_description or agent.bio or ''},
         'principal_id': str(context.principal_id), 'scopes': list(context.scopes),
-        'interoperability': {'a2a_tasks': 'not_exposed'}}
+        'interoperability': {'a2a_tasks': {'status': 'available', 'protocol_version': '1.0', 'transport': 'JSONRPC',
+            'rpc_url': str(request.url_for('machine_task_rpc', agent_id=agent.id)),
+            'methods': {method: scope for method, scope in MACHINE_TASK_METHOD_SCOPES.items() if scope in context.scopes},
+            'inputs': {'text': True, 'files': False}, 'outputs': {'text': True, 'captured_files': True},
+            'history': 'current_run', 'streaming': False, 'push_notifications': False}}}
     await db.commit()
     response.headers['Cache-Control'] = 'no-store'
     return payload

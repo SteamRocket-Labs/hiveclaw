@@ -271,7 +271,9 @@ async def _load_web_chat_context(state: _WebChatRunState) -> None:
 
         state.metadata = group_permission_metadata(runtime_metadata=runtime_task.metadata_json,
             session_metadata=getattr(session, "transcript_metadata_json", None))
-    if state.actor_external_principal_id is not None and not state.actor_authority_bound:
+    from app.services.machine_runtime_authority import is_machine_runtime_actor
+    if (state.actor_external_principal_id is not None and not state.actor_authority_bound
+        and not is_machine_runtime_actor(user)):
         state.metadata["disable_tools"] = True
         state.metadata["tool_policy"] = "disabled_for_unbound_external_principal"
     mailbox_role = str(state.metadata.get("runtime_mailbox_role") or "").strip().lower()
@@ -986,6 +988,8 @@ def _agent_invocation_request(
         tenant_id=state.agent.tenant_id,
         agent_id=state.agent.id,
         user_id=state.actor_user_id,
+        external_principal_id=state.actor_external_principal_id,
+        machine_credential_id=getattr(state.user, 'machine_credential_id', None),
         execution_identity=ExecutionIdentityRef(
             identity_type=_execution_identity_type(state),
             identity_id=state.actor_external_principal_id or state.actor_user_id,
@@ -1066,6 +1070,14 @@ async def _prepare_session_model_request(state: _WebChatRunState, **payload: Any
     )
 
     async with state.ports.runtime.tenant_scoped_session(state.agent.tenant_id) as db:
+        if getattr(state.user, 'machine_credential_id', None) is not None:
+            from app.models.chat_session import ChatSession
+            from app.models.runtime_task import RuntimeTask
+            from app.services.machine_runtime_authority import load_machine_runtime_actor
+
+            task = await db.get(RuntimeTask, state.run_uuid, populate_existing=True)
+            session = await db.get(ChatSession, uuid.UUID(str(state.session_id)), populate_existing=True)
+            await load_machine_runtime_actor(db, task=task, session=session)
         try:
             round_index = int(payload["round_index"])
             logical_round_id = f"{state.run_uuid}:round:{round_index}"

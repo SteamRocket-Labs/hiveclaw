@@ -154,7 +154,8 @@ async def _load_company_result_sources(db, result):
             raise ValueError("ticket_scope_mismatch")
         office = approval.tool_name in FEISHU_RESULT_TOOLS
         workspace_office = approval.tool_name in {'office_document_create', 'office_document_apply'}
-        if session.audience_kind != "group" and not office and not workspace_office:
+        machine = approval.requested_by is None and approval.requested_by_external_principal_id is not None
+        if session.audience_kind != "group" and not machine and not office and not workspace_office:
             return False
         row = await db.get(RuntimeNotificationOutbox, uuid.UUID(approval.execution_receipt["continuation_outbox_id"]))
         if (row is None or row.result_object_id != result.id or row.source_kind != "approval"
@@ -169,6 +170,11 @@ async def _load_company_result_sources(db, result):
             or payload["metadata"].get("tool_name") != approval.tool_name):
             raise ValueError("ticket_result_changed")
         origin, invocation, _event = await group_approval_origin(db, session=session, approval=approval)
+        if machine:
+            from app.services.machine_runtime_authority import machine_approval_return_actor
+
+            await machine_approval_return_actor(db, session=session, rows=[row],
+                root_runtime_task_id=row.root_runtime_task_id)
         dependencies, complete = await _origin_dependencies(db, tenant_id=result.tenant_id,
             agent_id=session.agent_id, ref=f"session-tool-result:{invocation.id}")
         task = await db.get(RuntimeTask, approval.execution_task_id) if approval.execution_task_id else origin
@@ -193,7 +199,7 @@ async def _load_company_result_sources(db, result):
         elif office and (approval.execution_status == "succeeded" or payload["metadata"].get("result_semantics") == "execution_result"):
             if await load_approved_feishu_result(db, approval=approval) is None:
                 raise ValueError("ticket_office_result_unverified")
-        elif session.audience_kind != "group" and payload["metadata"].get("result_semantics") != "approval_status":
+        elif session.audience_kind != "group" and not machine and payload["metadata"].get("result_semantics") != "approval_status":
             raise ValueError("ticket_office_status_unverified")
         return task, dependencies, receipt_ids
     except (ApprovalTicketError, ValueError, KeyError, TypeError, AttributeError) as exc:
@@ -279,6 +285,11 @@ async def validate_runtime_result_sources(db, request, result_object, *, user=No
         reader_agent, reader_session = session.agent_id, session.id
     if reader_agent != task.parent_agent_id or reader_session != uuid.UUID(task.parent_session_id):
         raise ContentInputReceiptError("content_source_access_denied", "The result belongs to another original work.", 403)
+    if task.machine_credential_id is not None and (requester is None
+        or getattr(requester, 'machine_credential_id', None) != task.machine_credential_id
+        or getattr(requester, 'external_principal_id', None) != task.root_external_principal_id
+        or requester.id is not None):
+        raise ContentInputReceiptError('content_source_access_denied', 'The machine result belongs to another requester.', 403)
     if requester.id != task.root_user_id:
         from app.models.chat_session import ChatSession
         from app.services.content_input_receipts import _authorize_session_input_source

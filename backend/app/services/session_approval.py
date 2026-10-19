@@ -33,6 +33,9 @@ async def load_session_approval(db, *, session, approval_id, for_update=False):
     if (
         envelope.tenant_id != session.tenant_id or envelope.agent_id != session.agent_id
         or envelope.requester_user_id != approval.requested_by
+        or (envelope.machine_credential_id is not None and (session.user_id is not None
+            or session.external_principal_id != envelope.requester_external_principal_id
+            or approval.requested_by_external_principal_id != envelope.requester_external_principal_id))
         or not envelope.session_id
         or envelope.session_id not in {str(session.id), session.external_conv_id}
     ):

@@ -824,7 +824,7 @@ async def accept_cancel_control_input(
                 item_kind="control_input",
                 lifecycle="accepted",
                 scope=_run_scope(authority.session_id, task),
-                actor={"type": "user", "id": str(authority.principal_id)},
+                actor=authority.event_actor(),
                 payload={
                     "control_id": str(control_uuid),
                     "kind": "cancel_run",

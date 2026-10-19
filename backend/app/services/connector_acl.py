@@ -75,27 +75,32 @@ class _ApprovalHandoffReceipt:
     tenant_id: str
     user_id: str
     agent_id: str
+    external_principal_id: str | None = None
 
 
-def with_connector_approval_handoff(payload, *, approval_id, tenant_id, user_id, agent_id):
+def with_connector_approval_handoff(payload, *, approval_id, tenant_id, user_id, agent_id, external_principal_id=None):
     """Attest a runtime-created pre-effect ticket without granting its target resource."""
     source = f'approval://{approval_id}'
     item = authoritative_connector_source_item(source=source, connector='hive', resource_type='approval_handoff',
-        tenant_id=tenant_id, current_user_id=user_id, agent_id=agent_id, protected_text=str(payload))
+        tenant_id=tenant_id, current_user_id=user_id, agent_id=agent_id, protected_text=str(payload),
+        external_principal_id=external_principal_id)
     result = with_connector_source_items(payload, [item])
     marker = _ApprovalHandoffReceipt(source=source, content_hash=hashlib.sha256(str(result).encode()).hexdigest(),
-        tenant_id=str(tenant_id), user_id=str(user_id), agent_id=str(agent_id))
+        tenant_id=str(tenant_id), user_id=str(user_id), agent_id=str(agent_id),
+        external_principal_id=str(external_principal_id) if external_principal_id else None)
     return replace(result, metadata={**result.metadata, 'approval_handoff_receipt': marker})
 
 
-def _private_approval_handoff_visible(payload, source_items, *, tenant_id, current_user_id, agent_id):
+def _private_approval_handoff_visible(payload, source_items, *, tenant_id, current_user_id, agent_id, external_principal_id=None):
     marker = (getattr(payload, 'metadata', None) or {}).get('approval_handoff_receipt')
     if not isinstance(marker, _ApprovalHandoffReceipt) or (
-        marker.tenant_id, marker.user_id, marker.agent_id, marker.content_hash) != (
-        str(tenant_id), str(current_user_id), str(agent_id), hashlib.sha256(str(payload).encode()).hexdigest()):
+        marker.tenant_id, marker.user_id, marker.agent_id, marker.external_principal_id, marker.content_hash) != (
+        str(tenant_id), str(current_user_id), str(agent_id), str(external_principal_id) if external_principal_id else None,
+        hashlib.sha256(str(payload).encode()).hexdigest()):
         return False
     return any(_source_id(item) == marker.source and item.get('metadata', {}).get('resource_type') == 'approval_handoff'
-        and connector_item_visible(item, tenant_id=tenant_id, current_user_id=current_user_id, agent_id=agent_id)
+        and connector_item_visible(item, tenant_id=tenant_id, current_user_id=current_user_id, agent_id=agent_id,
+            external_principal_id=external_principal_id)
         for item in source_items if isinstance(item, dict))
 
 
@@ -300,6 +305,7 @@ def authoritative_connector_source_item(
     agent_id: uuid.UUID | str | None = None,
     scope: str | None = None,
     protected_text: str | None = None,
+    external_principal_id: uuid.UUID | str | None = None,
 ) -> dict[str, Any]:
     """Build source ACL metadata for a connector result successfully read by Hive."""
 
@@ -312,6 +318,8 @@ def authoritative_connector_source_item(
     if current_user_id:
         user_values.add(_string(current_user_id))
     _extend_acl_list(acl, "user_ids", user_values)
+    if external_principal_id:
+        _extend_acl_list(acl, 'principal_ids', [f'external_principal:{external_principal_id}'])
     _extend_acl_list(acl, "department_ids", department_ids)
     _extend_acl_list(acl, "group_ids", group_ids)
     if scope:
@@ -662,8 +670,11 @@ def _principal_ids(
     tenant_id: uuid.UUID | str | None,
     current_user_id: uuid.UUID | str | None,
     agent_id: uuid.UUID | str | None,
+    external_principal_id: uuid.UUID | str | None = None,
 ) -> set[str]:
     principals: set[str] = set()
+    if external_principal_id:
+        principals.add(f'external_principal:{external_principal_id}')
     if tenant_id:
         value = _string(tenant_id)
         principals.update({value, f"tenant:{value}"})
@@ -682,6 +693,7 @@ def connector_item_visible(
     tenant_id: uuid.UUID | str | None,
     current_user_id: uuid.UUID | str | None,
     agent_id: uuid.UUID | str | None = None,
+    external_principal_id: uuid.UUID | str | None = None,
 ) -> bool:
     """Return whether one connector result may enter prompt context.
 
@@ -713,7 +725,8 @@ def connector_item_visible(
     if scope in {"tenant", "company"}:
         return bool(allowed_tenants)
 
-    principals = _principal_ids(tenant_id=tenant_id, current_user_id=current_user_id, agent_id=agent_id)
+    principals = _principal_ids(tenant_id=tenant_id, current_user_id=current_user_id, agent_id=agent_id,
+        external_principal_id=external_principal_id)
     denied = _string_set(acl.get("deny_principal_ids") or acl.get("denied_principals"))
     if principals & denied:
         return False
@@ -758,6 +771,7 @@ def filter_connector_payload_for_prompt(
     tenant_id: uuid.UUID | str | None,
     current_user_id: uuid.UUID | str | None,
     agent_id: uuid.UUID | str | None = None,
+    external_principal_id: uuid.UUID | str | None = None,
 ) -> ConnectorPromptFilterResult:
     """Remove unauthorized connector payloads before they enter model context.
 
@@ -780,6 +794,7 @@ def filter_connector_payload_for_prompt(
             tenant_id=tenant_id,
             current_user_id=current_user_id,
             agent_id=agent_id,
+            external_principal_id=external_principal_id,
         )
         visible_by_source[source.lower()] = visible
         target = allowed_sources if visible else forbidden_sources
@@ -791,7 +806,8 @@ def filter_connector_payload_for_prompt(
 
     if _private_diagnostic_visible(payload, source_items,
         tenant_id=tenant_id, current_user_id=current_user_id, agent_id=agent_id) or _private_approval_handoff_visible(
-            payload, source_items, tenant_id=tenant_id, current_user_id=current_user_id, agent_id=agent_id):
+            payload, source_items, tenant_id=tenant_id, current_user_id=current_user_id, agent_id=agent_id,
+            external_principal_id=external_principal_id):
         # Keep argument-derived denial in the registry. Only this exact private
         # runtime receipt crosses; it is not content read from the refused resource.
         return ConnectorPromptFilterResult(payload=payload, allowed_sources=tuple(allowed_sources),
@@ -857,6 +873,7 @@ def validate_generated_source_permissions(
     tenant_id: uuid.UUID | str | None,
     current_user_id: uuid.UUID | str | None,
     agent_id: uuid.UUID | str | None = None,
+    external_principal_id: uuid.UUID | str | None = None,
 ) -> GeneratedSourcePermissionCheck:
     """Check that generated text does not cite or reveal forbidden connector sources."""
 
@@ -875,7 +892,8 @@ def validate_generated_source_permissions(
         protected_snippet_mentioned = bool(snippet_signatures and rendered_signatures & snippet_signatures)
         if not source_mentioned and not protected_snippet_mentioned:
             continue
-        if connector_item_visible(item, tenant_id=tenant_id, current_user_id=current_user_id, agent_id=agent_id):
+        if connector_item_visible(item, tenant_id=tenant_id, current_user_id=current_user_id, agent_id=agent_id,
+            external_principal_id=external_principal_id):
             if source not in allowed_sources:
                 allowed_sources.append(source)
         elif source not in forbidden_sources:
@@ -913,6 +931,7 @@ def redact_forbidden_generated_source_fragments(
     tenant_id: uuid.UUID | str | None,
     current_user_id: uuid.UUID | str | None,
     agent_id: uuid.UUID | str | None = None,
+    external_principal_id: uuid.UUID | str | None = None,
 ) -> tuple[str, GeneratedSourcePermissionCheck]:
     """Apply an exact final failsafe while preserving unrelated model prose."""
 
@@ -922,6 +941,7 @@ def redact_forbidden_generated_source_fragments(
         tenant_id=tenant_id,
         current_user_id=current_user_id,
         agent_id=agent_id,
+        external_principal_id=external_principal_id,
     )
     if check.allowed:
         return text, check

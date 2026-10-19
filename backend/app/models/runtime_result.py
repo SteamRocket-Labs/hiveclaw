@@ -95,6 +95,8 @@ class RuntimeResultIntegrationPage(Base):
 
     __tablename__ = "runtime_result_integration_pages"
     __table_args__ = (
+        CheckConstraint('parent_user_id IS NOT NULL OR root_runtime_task_id IS NOT NULL',
+            name='ck_runtime_result_pages_requester_root'),
         CheckConstraint(
             "delivery_mode IN ('parent_continuation','session_projection')",
             name="ck_runtime_result_integration_pages_delivery_mode",
@@ -138,8 +140,8 @@ class RuntimeResultIntegrationPage(Base):
     parent_agent_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("agents.id", ondelete="CASCADE"), nullable=False, index=True
     )
-    parent_user_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    parent_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=True, index=True
     )
     root_runtime_task_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True, index=True)
     root_scope_key: Mapped[str] = mapped_column(String(260), nullable=False)

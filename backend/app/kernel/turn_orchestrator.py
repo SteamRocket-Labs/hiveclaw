@@ -1495,6 +1495,7 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                 tenant_id=runtime_config.tenant_id,
                 current_user_id=request.user_id,
                 agent_id=request.agent_id,
+                external_principal_id=request.external_principal_id,
             )
             record_generated_source_permission_check(request.session_context, check)
             status = "allowed" if check.allowed else "blocked"

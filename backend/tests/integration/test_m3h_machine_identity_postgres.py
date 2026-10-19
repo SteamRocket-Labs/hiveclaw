@@ -65,7 +65,9 @@ async def test_admin_issues_once_machine_uses_exact_target_and_owner_revokes(mac
     assert listed.status_code == 200 and token not in listed.text and 'token_hash' not in listed.text
     machine = await api.get(f"/agents/{seed['agent']}/machine-description", headers={'Authorization': 'Bearer ' + token})
     assert machine.status_code == 200 and machine.json()['agent']['id'] == str(seed['agent'])
-    assert machine.json()['interoperability']['a2a_tasks'] == 'not_exposed'
+    transport = machine.json()['interoperability']['a2a_tasks']
+    assert transport['status'] == 'available' and transport['methods'] == {}
+    assert transport['rpc_url'] == f"http://local/agents/{seed['agent']}/a2a/rpc"
     assert 'owner_user_id' not in machine.text and 'sponsor_user_id' not in machine.text
     personal = await api.get(f"/agents/{seed['agent']}", headers={'Authorization': 'Bearer ' + token})
     assert personal.status_code == 401

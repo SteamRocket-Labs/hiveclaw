@@ -13,7 +13,7 @@ const identity: MachineIdentity = { id: 'principal', credential_id: 'credential'
   name: 'Partner service', status: 'active', scopes: ['agent.describe'], expires_at: '2026-11-01T10:00:00Z',
   last_used_at: null, revoked_at: null, created_at: '2026-10-19T10:00:00Z' };
 const page = (identities: MachineIdentity[] = [], can_issue = true) => ({ agent_id: 'employee', can_issue,
-  supported_scopes: ['agent.describe'], identities });
+  supported_scopes: ['agent.describe', 'agent.execute', 'task.read', 'task.cancel'], identities });
 function mount() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });clients.push(client);
   render(<QueryClientProvider client={client}><MachineIdentityControls agentId="employee" /></QueryClientProvider>);
@@ -57,6 +57,38 @@ it('reconciles a lost issuance response before another credential can be issued'
   expect(issue).toHaveBeenCalledTimes(1);
 });
 
+it('issues only explicitly selected task permissions and shows the task endpoint', async () => {
+  const list = vi.spyOn(machineIdentitiesApi, 'list').mockResolvedValue(page());
+  const issue = vi.spyOn(machineIdentitiesApi, 'issue').mockImplementation(async (_agent, body) => {
+    const created = { ...identity, issue_request_id: body.issue_request_id, scopes: body.scopes };
+    list.mockResolvedValue(page([created]));
+    return { ...created, token: 'hmi_explicit_task_scopes', idempotent_replay: false, secret_status: 'available_once' };
+  });
+  mount();
+  fireEvent.change(await screen.findByLabelText('Integration name'), { target: { value: 'Task integration' } });
+  fireEvent.click(screen.getByLabelText('Run tasks'));
+  fireEvent.click(screen.getByLabelText('Read task status and files'));
+  fireEvent.click(screen.getByLabelText('Cancel queued or running tasks'));
+  fireEvent.click(screen.getByRole('button', { name: 'Issue credential' }));
+  await screen.findByLabelText('New machine secret');
+  expect(issue.mock.calls[0][1].scopes).toEqual(['agent.describe', 'agent.execute', 'task.read', 'task.cancel']);
+  expect(screen.getByText('/api/agents/employee/a2a/rpc')).toBeTruthy();
+  expect(screen.getByText('agent.describe, agent.execute, task.read, task.cancel')).toBeTruthy();
+});
+
+it('requires at least one permission instead of silently issuing broader access', async () => {
+  vi.spyOn(machineIdentitiesApi, 'list').mockResolvedValue(page());
+  const issue = vi.spyOn(machineIdentitiesApi, 'issue');
+  mount();
+  const name = await screen.findByLabelText('Integration name');
+  fireEvent.change(name, { target: { value: 'No permissions' } });
+  fireEvent.click(screen.getByLabelText('Read employee description'));
+  expect((screen.getByRole('button', { name: 'Issue credential' }) as HTMLButtonElement).disabled).toBe(true);
+  fireEvent.submit(name.closest('form')!);
+  await screen.findByText('Choose at least one permission.');
+  expect(issue).not.toHaveBeenCalled();
+});
+
 it('hides an in-flight secret after the authenticated account changes', async () => {
   vi.spyOn(machineIdentitiesApi, 'list').mockResolvedValue(page());
   let resolve!: (value: MachineIssueReceipt) => void;
@@ -92,13 +124,16 @@ it('retries the same frozen issuance after a refresh finds no committed credenti
       return { ...created, token: 'hmi_recovered_secret', idempotent_replay: false, secret_status: 'available_once' };
     });
   mount();fireEvent.change(await screen.findByLabelText('Integration name'), { target: { value: 'Original integration' } });
+  fireEvent.click(screen.getByLabelText('Read task status and files'));
   fireEvent.click(screen.getByRole('button', { name: 'Issue credential' }));
   await screen.findByRole('alert');fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
   const retry = await screen.findByRole('button', { name: 'Retry issuance' });
   await waitFor(() => expect((retry as HTMLButtonElement).disabled).toBe(false));
   expect((screen.getByLabelText('Integration name') as HTMLInputElement).disabled).toBe(true);
+  expect(screen.getByLabelText('Read task status and files').matches(':disabled')).toBe(true);
   fireEvent.click(retry);await screen.findByLabelText('New machine secret');
   expect(issue.mock.calls[1][1]).toEqual(issue.mock.calls[0][1]);
+  expect(issue.mock.calls[1][1].scopes).toEqual(['agent.describe', 'task.read']);
 });
 
 it('clears the secret when the selected company changes in the same account', async () => {

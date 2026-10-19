@@ -169,19 +169,21 @@ async def _prepare_runtime_context(state: _ToolExecutionState) -> _Stop | None:
     if plan_block:
         _record_precontext_block(state, outcome=ports.decision_outcome_type.DENY, reason="plan_mode_readonly")
         return _Stop(plan_block)
-    state.runtime_context = await ports.resolve_runtime_context(
-        service.runtime_resolver,
-        agent_id=request.agent_id,
-        user_id=request.user_id,
-        session_id=request.session_id,
-        permission_profile=request.permission_profile,
-        turn_id=request.turn_id,
-        runtime_task_id=request.runtime_task_id,
-        budget_run_id=request.budget_run_id,
-        origin_channel=request.origin_channel,
-        round_state=request.round_state,
-        t0_refs=request.t0_refs,
-    )
+    from app.services.machine_runtime_authority import MachineRuntimeAuthorityDenied
+
+    try:
+        state.runtime_context = await ports.resolve_runtime_context(
+            service.runtime_resolver,
+            agent_id=request.agent_id, user_id=request.user_id, session_id=request.session_id,
+            permission_profile=request.permission_profile, turn_id=request.turn_id,
+            runtime_task_id=request.runtime_task_id, budget_run_id=request.budget_run_id,
+            origin_channel=request.origin_channel, round_state=request.round_state, t0_refs=request.t0_refs)
+    except MachineRuntimeAuthorityDenied:
+        _record_precontext_block(state, outcome=ports.decision_outcome_type.DENY, reason='machine_authority_unavailable')
+        return _Stop(ports.render_tool_error(tool_name=request.tool_name, error_class='auth_or_permission',
+            message='Machine authority no longer permits this action.', provider='machine_authority', retryable=False,
+            actionable_hint='Ask the employee owner or company administrator to restore scoped access.',
+            extra={'outcome': 'denied', 'reason_code': 'machine_authority_unavailable'}))
     state.runtime_context.tool_call_id = state.tool_call_id
     _configure_runtime_context(state)
     principal = state.runtime_context.execution_principal
@@ -852,7 +854,8 @@ def _approval_handoff_result(state: _ToolExecutionState, block: Any) -> Any:
     safe, _receipt = state.service._redact_runtime_egress(block, context=state.runtime_context,
         surface='approval_handoff', trace_metadata_sink=state.request.trace_metadata_sink)
     return with_connector_approval_handoff(str(safe), approval_id=context.approval_id,
-        tenant_id=state.runtime_context.tenant_id, user_id=state.runtime_context.user_id, agent_id=state.runtime_context.agent_id)
+        tenant_id=state.runtime_context.tenant_id, user_id=state.runtime_context.user_id, agent_id=state.runtime_context.agent_id,
+        external_principal_id=state.runtime_context.external_principal_id)
 
 
 async def _apply_governance(state: _ToolExecutionState) -> _Stop | None:
@@ -950,6 +953,21 @@ async def _execute_tool(state: _ToolExecutionState) -> Any:
     request, ports, service = state.request, state.ports, state.service
     timeout_seconds = tool_execution_policy(request.tool_name).timeout_seconds
     await ports.renew_runtime_lease()
+    if getattr(state.runtime_context, 'machine_credential_id', None) is not None:
+        from fastapi import HTTPException
+        from app.database import tenant_scoped_session
+        from app.services.machine_runtime_authority import revalidate_machine_tool_context
+
+        try:
+            async with tenant_scoped_session(state.runtime_context.tenant_id, require_tenant=True) as db:
+                await revalidate_machine_tool_context(db, state.runtime_context)
+        except HTTPException:
+            _record_lifecycle(state, 'blocked', 'machine_authority_unavailable')
+            _record_final_decision(state, outcome=ports.decision_outcome_type.DENY, reasons=('machine_authority_unavailable',))
+            return ports.render_tool_error(tool_name=request.tool_name, error_class='auth_or_permission',
+                message='Machine authority no longer permits this action.', provider='machine_authority', retryable=False,
+                actionable_hint='Ask the employee owner or company administrator to restore scoped access.',
+                extra={'outcome': 'denied', 'reason_code': 'machine_authority_unavailable'})
     if request.pre_effect_callback is not None:
         # Governance/preflight and the worker lease are already valid. The
         # callback is the durable authority fence; its failure must propagate

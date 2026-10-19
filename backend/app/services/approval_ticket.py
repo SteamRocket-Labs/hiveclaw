@@ -22,6 +22,7 @@ class ApprovalTicketError(RuntimeError):
 
 
 _APPROVAL_EXECUTION_ENVELOPE_SCHEMA = "hive.approval_execution_envelope.v2"
+_MACHINE_APPROVAL_ENVELOPE_SCHEMA = "hive.approval_execution_envelope.machine.v1"
 
 
 @dataclass(frozen=True, slots=True)
@@ -35,7 +36,7 @@ class ApprovalExecutionEnvelope:
 
     tenant_id: uuid.UUID
     agent_id: uuid.UUID
-    requester_user_id: uuid.UUID
+    requester_user_id: uuid.UUID | None
     execution_identity: Any | None
     workspace: Path
     tool_call_id: str
@@ -52,6 +53,8 @@ class ApprovalExecutionEnvelope:
     plan_mode_interactive_available: bool
     plan_mode_unattended_available: bool
     resolved_asset_refs: tuple[Any, ...]
+    requester_external_principal_id: uuid.UUID | None = None
+    machine_credential_id: uuid.UUID | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,9 +69,11 @@ class ApprovalDecisionSet:
     policy_snapshot_hash: str
     envelope_hash: str
     decision_id: str
-    requested_by_user_id: uuid.UUID
+    requested_by_user_id: uuid.UUID | None
     approved_by_user_id: uuid.UUID
     plan_authorization: dict[str, Any] | None = None
+    requested_by_external_principal_id: uuid.UUID | None = None
+    machine_credential_id: uuid.UUID | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,7 +81,7 @@ class ApprovalExecutionTicket:
     approval_id: uuid.UUID
     tenant_id: uuid.UUID
     agent_id: uuid.UUID
-    requested_by_user_id: uuid.UUID
+    requested_by_user_id: uuid.UUID | None
     approved_by_user_id: uuid.UUID
     tool_name: str
     arguments: dict[str, Any]
@@ -87,6 +92,7 @@ class ApprovalExecutionTicket:
     action_type: str
     execution_envelope: dict[str, Any]
     execution_envelope_hash: str
+    requested_by_external_principal_id: uuid.UUID | None = None
 
 
 def _json_safe(value: Any) -> Any:
@@ -123,7 +129,12 @@ def build_approval_execution_envelope(
         raise ApprovalTicketError("approval execution envelope requires tenant authority") from exc
     try:
         agent_id = uuid.UUID(str(context.agent_id))
-        requester_user_id = uuid.UUID(str(context.user_id))
+        machine_credential_id = getattr(context, 'machine_credential_id', None)
+        requester_user_id = uuid.UUID(str(context.user_id)) if machine_credential_id is None else None
+        requester_external_id = (uuid.UUID(str(context.external_principal_id)) if machine_credential_id is not None else None)
+        machine_credential_id = uuid.UUID(str(machine_credential_id)) if machine_credential_id is not None else None
+        if machine_credential_id is not None and context.user_id is not None:
+            raise ValueError('Machine authority cannot borrow a User')
     except (TypeError, ValueError) as exc:
         raise ApprovalTicketError("approval execution envelope requires agent and requester authority") from exc
     clean_tool_call_id = str(tool_call_id or "").strip()
@@ -137,17 +148,21 @@ def build_approval_execution_envelope(
     if isinstance(execution_identity_payload, dict):
         identity_type = str(execution_identity_payload.get("identity_type") or "").strip()
         identity_id = execution_identity_payload.get("identity_id")
-        if identity_type == "external_principal":
+        if identity_type == "external_principal" and machine_credential_id is None:
             raise ApprovalTicketError("unbound external principal cannot request tool approval")
+        if machine_credential_id is not None and (identity_type != 'external_principal' or str(identity_id) != str(requester_external_id)):
+            raise ApprovalTicketError('machine approval identity does not match requester')
         if identity_type == "external_principal_bound" and not identity_id:
             raise ApprovalTicketError("bound external principal approval requires principal identity")
         if identity_type == "delegated_user" and str(identity_id or "") != str(requester_user_id):
             raise ApprovalTicketError("delegated approval identity does not match requester")
     return {
-        "schema": _APPROVAL_EXECUTION_ENVELOPE_SCHEMA,
+        "schema": _MACHINE_APPROVAL_ENVELOPE_SCHEMA if machine_credential_id is not None else _APPROVAL_EXECUTION_ENVELOPE_SCHEMA,
         "tenant_id": str(tenant_id),
         "agent_id": str(agent_id),
-        "requester_user_id": str(requester_user_id),
+        "requester_user_id": str(requester_user_id) if requester_user_id is not None else None,
+        **({'requester_external_principal_id': str(requester_external_id), 'machine_credential_id': str(machine_credential_id)}
+            if machine_credential_id is not None else {}),
         "execution_identity": execution_identity_payload,
         "workspace": workspace,
         "tool_call_id": clean_tool_call_id,
@@ -187,6 +202,7 @@ def restore_approval_execution_envelope(
     if envelope.get("schema") not in {
         "hive.approval_execution_envelope.v1",
         _APPROVAL_EXECUTION_ENVELOPE_SCHEMA,
+        _MACHINE_APPROVAL_ENVELOPE_SCHEMA,
     }:
         raise ApprovalTicketError("unsupported approval execution envelope schema")
     actual_hash = hash_approval_execution_envelope(envelope)
@@ -195,7 +211,12 @@ def restore_approval_execution_envelope(
     try:
         tenant_id = uuid.UUID(str(envelope["tenant_id"]))
         agent_id = uuid.UUID(str(envelope["agent_id"]))
-        requester_user_id = uuid.UUID(str(envelope["requester_user_id"]))
+        machine = envelope['schema'] == _MACHINE_APPROVAL_ENVELOPE_SCHEMA
+        requester_user_id = None if machine else uuid.UUID(str(envelope["requester_user_id"]))
+        requester_external_id = uuid.UUID(str(envelope['requester_external_principal_id'])) if machine else None
+        machine_credential_id = uuid.UUID(str(envelope['machine_credential_id'])) if machine else None
+        if machine and envelope.get('requester_user_id') is not None:
+            raise ValueError('Machine authority cannot borrow a User')
     except (KeyError, TypeError, ValueError) as exc:
         raise ApprovalTicketError("approval execution envelope authority is invalid") from exc
     tool_call_id = str(envelope.get("tool_call_id") or "").strip()
@@ -222,8 +243,10 @@ def restore_approval_execution_envelope(
             identity_id = uuid.UUID(str(raw_identity_id)) if raw_identity_id else None
         except (TypeError, ValueError) as exc:
             raise ApprovalTicketError("approval execution identity id is invalid") from exc
-        if identity_type == "external_principal":
+        if identity_type == "external_principal" and not machine:
             raise ApprovalTicketError("unbound external principal cannot hold tool approval")
+        if machine and (identity_type != 'external_principal' or identity_id != requester_external_id):
+            raise ApprovalTicketError('machine approval identity does not match requester')
         if identity_type in {"delegated_user", "external_principal_bound"} and identity_id is None:
             raise ApprovalTicketError("approval execution identity is incomplete")
         if identity_type == "delegated_user" and identity_id != requester_user_id:
@@ -233,6 +256,8 @@ def restore_approval_execution_envelope(
             identity_id=identity_id,
             label=identity_label,
         )
+    if machine and (execution_identity is None or not envelope.get('session_id') or not envelope.get('runtime_task_id')):
+        raise ApprovalTicketError('machine approval requires canonical execution authority')
 
     raw_profile = dict(envelope.get("permission_profile") or {})
     sequence_fields = (
@@ -319,6 +344,8 @@ def restore_approval_execution_envelope(
         plan_mode_interactive_available=bool(envelope.get("plan_mode_interactive_available", False)),
         plan_mode_unattended_available=bool(envelope.get("plan_mode_unattended_available", False)),
         resolved_asset_refs=tuple(resolved_asset_refs),
+        requester_external_principal_id=requester_external_id,
+        machine_credential_id=machine_credential_id,
     )
 
 
@@ -401,6 +428,20 @@ async def validate_approval_execution_authority(
     from app.models.runtime_task import RuntimeTask
 
     identity = envelope.execution_identity
+    if envelope.machine_credential_id is not None:
+        from fastapi import HTTPException
+        from app.services.machine_runtime_authority import machine_task_actor
+
+        try:
+            actor = await machine_task_actor(db, tenant_id=envelope.tenant_id, agent_id=envelope.agent_id,
+                runtime_task_id=envelope.runtime_task_id, session_id=envelope.session_id, user_id=None)
+        except HTTPException as exc:
+            if exc.status_code not in {401, 403}:
+                raise
+            raise ApprovalTicketError('machine approval requester is no longer authorized') from exc
+        if (actor is None or actor.machine_credential_id != envelope.machine_credential_id
+            or actor.external_principal_id != envelope.requester_external_principal_id):
+            raise ApprovalTicketError('machine approval requester is no longer authorized')
     if identity is not None and identity.identity_type == "external_principal_bound":
         principal = (
             await db.execute(
@@ -497,6 +538,9 @@ async def validate_approval_execution_authority(
             raise ApprovalTicketError("approval execution budget agent mismatch")
         if budget_run.root_user_id is not None and budget_run.root_user_id != envelope.requester_user_id:
             raise ApprovalTicketError("approval execution budget requester mismatch")
+        if envelope.machine_credential_id is not None and (budget_run.root_user_id is not None
+            or budget_run.root_external_principal_id != envelope.requester_external_principal_id):
+            raise ApprovalTicketError('approval execution machine budget requester mismatch')
         if budget_run.status not in {"active", "resuming"}:
             raise ApprovalTicketError(f"approval execution budget is not active: {budget_run.status}")
 
@@ -567,7 +611,8 @@ async def consume_approval_ticket(
         if (
             tool_name in {"load_skill", "run_skill_tool", "spawn_subagent", "call_mcp_tool"}
             or tool_name.startswith("mcp__")
-        ) and (approval.execution_envelope or {}).get("schema") != _APPROVAL_EXECUTION_ENVELOPE_SCHEMA:
+        ) and (approval.execution_envelope or {}).get("schema") not in {
+            _APPROVAL_EXECUTION_ENVELOPE_SCHEMA, _MACHINE_APPROVAL_ENVELOPE_SCHEMA}:
             raise ApprovalTicketError("approval ticket asset revision binding requires reapproval")
         arguments = normalize_tool_arguments(approval.normalized_arguments)
         input_hash = hash_tool_input(tool_name, arguments)
@@ -595,10 +640,12 @@ async def consume_approval_ticket(
             restored_envelope.tenant_id != tenant_id
             or restored_envelope.agent_id != approval.agent_id
             or restored_envelope.requester_user_id != approval.requested_by
+            or (restored_envelope.machine_credential_id is not None
+                and restored_envelope.requester_external_principal_id != approval.requested_by_external_principal_id)
         ):
             raise ApprovalTicketError("approval execution envelope authority mismatch")
         await validate_approval_execution_authority(db=db, envelope=restored_envelope, approval=approval)
-        if approval.requested_by is None or approval.resolved_by is None:
+        if (approval.requested_by is None and restored_envelope.machine_credential_id is None) or approval.resolved_by is None:
             raise ApprovalTicketError("approval ticket principal binding is incomplete")
         if not str(approval.decision_id or "").strip():
             raise ApprovalTicketError("approval ticket decision binding is incomplete")
@@ -613,6 +660,7 @@ async def consume_approval_ticket(
             tenant_id=tenant_id,
             agent_id=approval.agent_id,
             requested_by_user_id=approval.requested_by,
+            requested_by_external_principal_id=approval.requested_by_external_principal_id,
             approved_by_user_id=approval.resolved_by,
             tool_name=tool_name,
             arguments=arguments,

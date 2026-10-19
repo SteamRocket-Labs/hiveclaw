@@ -112,12 +112,23 @@ class ToolRuntimeResolver:
             session_uuid = uuid.UUID(str(session_id)) if session_id else None
         except (TypeError, ValueError):
             session_uuid = None
-        workspace_authority_scope = await self.workspace_authority_loader(
-            tenant_id=tenant,
-            agent_id=agent_id,
-            user_id=user_id,
-            session_id=session_uuid,
-        )
+        from app.services.machine_runtime_authority import machine_task_actor, load_machine_workspace_scope
+        machine_actor, workspace_authority_scope = None, None
+        if user_id is None and runtime_task_id:
+            from fastapi import HTTPException
+            from app.services.machine_runtime_authority import MachineRuntimeAuthorityDenied
+
+            try:
+                async with tenant_scoped_session(tenant, session_factory=async_session, require_tenant=True) as machine_db:
+                    machine_actor = await machine_task_actor(machine_db, tenant_id=tenant, agent_id=agent_id,
+                        runtime_task_id=runtime_task_id, session_id=session_id, user_id=user_id)
+                    workspace_authority_scope = (await load_machine_workspace_scope(machine_db, actor=machine_actor, session_id=session_uuid)
+                        if machine_actor is not None else None)
+            except HTTPException as exc:
+                raise MachineRuntimeAuthorityDenied('Current machine authority is unavailable') from exc
+        if machine_actor is None:
+            workspace_authority_scope = await self.workspace_authority_loader(
+                tenant_id=tenant, agent_id=agent_id, user_id=user_id, session_id=session_uuid)
         try:
             exact_secret_boundary = await self.secret_boundary_loader(
                 tenant_id=tenant,
@@ -162,6 +173,8 @@ class ToolRuntimeResolver:
             user_id=user_id,
             tenant_id=tenant_id,
             workspace=workspace,
+            external_principal_id=machine_actor.external_principal_id if machine_actor is not None else None,
+            machine_credential_id=machine_actor.machine_credential_id if machine_actor is not None else None,
             execution_identity=get_execution_identity(),
             session_id=session_id,
             permission_profile=permission_profile,

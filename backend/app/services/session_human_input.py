@@ -322,12 +322,15 @@ async def cancel_unbound_human_input(
     authority: AuthenticatedSessionAuthority,
     input_id: uuid.UUID | str,
     expected_revision: int,
+    reopen_answer_request: bool = True,
 ) -> InputMailboxReceipt:
     input_uuid = input_id if isinstance(input_id, uuid.UUID) else uuid.UUID(str(input_id))
     row, admission, command = await _locked_input(db, authority=authority, input_id=input_uuid)
     if row.status == "cancelled":
         return _receipt(row, replayed=True)
-    if row.status not in _UNBOUND_STATUSES or row.bound_round_id is not None:
+    unbound = row.status in _UNBOUND_STATUSES or (row.status == 'rolled_over'
+        and admission.state == 'admitted' and admission.dispatch_state in {'pending', 'dispatching'})
+    if not unbound or row.bound_round_id is not None:
         raise ValueError("human_input_already_bound")
     if int(row.revision) != int(expected_revision):
         raise InputRevisionConflict(current_revision=row.revision)
@@ -354,7 +357,7 @@ async def cancel_unbound_human_input(
     if row.intent == "answer_request":
         from app.services.session_user_question import reopen_cancelled_answer
 
-        reopened = await reopen_cancelled_answer(db, authority=authority, row=row)
+        reopened = await reopen_cancelled_answer(db, authority=authority, row=row) if reopen_answer_request else None
         if delegation is not None and delegation.status == "pending":
             from app.services.runtime_root_ledger import transition_runtime_root_item_by_task
 
@@ -632,11 +635,16 @@ async def queue_admitted_human_input(
         if row.intent == "answer_request" and task is not None and (
             is_executable_chat_task_type(task.task_type) or delegated_answer
         ):
-            from app.services.session_user_question import question_payload, record_question_answer
+            from app.services.session_user_question import question_payload, question_requester_matches, record_question_answer
 
             requester = question_payload(question).get("requested_by_user_id") or str(task.root_user_id)
-            if (authority.principal_type != "user" or requester != str(authority.principal_id)
-                    or task.root_user_id != authority.principal_id):
+            machine_requester = (task.machine_credential_id is not None and authority.principal_type == 'external_principal'
+                and authority.principal_id == task.root_external_principal_id
+                and authority.machine_credential_id == task.machine_credential_id
+                and question_requester_matches(task, question_payload(question)))
+            human_requester = (authority.principal_type == 'user' and requester == str(authority.principal_id)
+                and task.root_user_id == authority.principal_id)
+            if not (machine_requester or human_requester):
                 return await _reject_admitted_input(db, authority=authority, row=row, command=command,
                                                     reason_code="user_question_requester_mismatch")
             if active_turn_id == row.target_turn_id and (

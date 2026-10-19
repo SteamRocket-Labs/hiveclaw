@@ -324,10 +324,12 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
             creating_rounds = list(await db.scalars(select(SessionModelResult).where(SessionModelResult.run_id == seed["run_id"])))
             assert len(creating_rounds) == 2 and all(row.model_request_snapshot_json["input_bindings"]["dependency_coverage"]["complete"] for row in creating_rounds)
     else:
+        execution_trace = {}
         result = await agent_tools.execute_tool(tool_name, arguments, agent_id=seed["agent_id"],
             user_id=seed["user_id"], session_id=str(seed["session_id"]), runtime_task_id=str(seed["run_id"]),
             turn_id=scope["turn_id"], tool_call_id=call_id, pre_effect_callback=pre_effect,
-            permission_profile=permission_profile_snapshot(None), emit_runtime_hooks=False)
+            permission_profile=permission_profile_snapshot(None), emit_runtime_hooks=False,
+            trace_metadata_sink=execution_trace)
     if first_task:
         from uuid import UUID
         from app.models.hr_creation import HrCreationDraft
@@ -337,8 +339,12 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
         creation = json.loads(str(result))
         assert creation.get("draft_status") == "confirmed", creation
         if delivery_case and not native_creation:
+            from app.services.session_permission_runtime import _execution_evidence
+
+            evidence = _execution_evidence(execution_trace)
+            assert evidence["status"] == "settled" and evidence["tool_decision"]["outcome"] == "allow"
             await _persist_tool_call(agent_id=seed["agent_id"], user_id=seed["user_id"], session_id=str(seed["session_id"]),
-                data={**event, "status": "done", "result": str(result)})
+                data={**event, "status": "done", "result": str(result), "tool_execution_evidence": evidence})
         job_id = UUID(creation["provisioning_task_id"])
         async with owner_sessionmaker() as db:
             job = await db.get(RuntimeTask, job_id)

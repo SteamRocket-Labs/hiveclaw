@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import json
 import uuid
@@ -90,11 +90,17 @@ class NativeRecoveryContextSource:
     checkpoint: dict
     sources: tuple
     unbound: tuple
+    file_snapshots: dict = field(default_factory=dict)
 
     def matches(self, result, session):
         return (result is not None and result.loaded and result.authority is not None
             and self.checkpoint == {"authority_hash": result.authority.digest,
                 "manifest_hash": result.envelope_sha256, "session_id": str(session.session_id)})
+
+    def matches_file_snapshots(self, session, paths):
+        return (self.checkpoint.get("session_id") == str(session.session_id) and bool(paths)
+            and all(path in self.file_snapshots and self.file_snapshots[path] == session.file_snapshots.get(path)
+                for path in paths))
 
 
 async def _recovery_inputs(db, *, task, provider_request_id):
@@ -151,7 +157,8 @@ async def capture_native_recovery_context(db, *, task, session, provider_request
         return
     proof = {"schema": "hive.native_recovery_context.v1", "checkpoint": checkpoint,
         "model_result_id": str(model.id), "model_request_hash": model.model_request_hash,
-        "provider_request_id": provider_request_id, "sources": sources, "complete": complete}
+        "provider_request_id": provider_request_id, "sources": sources, "complete": complete,
+        "file_snapshots": deepcopy(session.file_snapshots)}
     digest = _hash(proof)
     source_id = uuid.uuid5(task.id, f"native-recovery-context:{digest}")
     row = await db.get(InvocationSpan, source_id)
@@ -165,7 +172,7 @@ async def capture_native_recovery_context(db, *, task, session, provider_request
         return
     task.metadata_json = {**(task.metadata_json or {}), "native_recovery_context_source": {"id": str(source_id), "hash": digest}}
     session.metadata["_native_recovery_context_source"] = NativeRecoveryContextSource(checkpoint, tuple(sources),
-        () if complete else ("native_recovery_inputs_incomplete",))
+        () if complete else ("native_recovery_inputs_incomplete",), deepcopy(proof["file_snapshots"]))
     await db.flush()
 
 
@@ -181,13 +188,28 @@ async def bind_native_recovery_context(db, *, task, session):
             from app.services.session_approval import group_approval_origin, group_approval_return_actor
 
             group = await db.get(ChatSession, session_id)
-            if group is None or group.audience_kind != "group":
+            if group is None:
                 return
             rows = list(await db.scalars(select(RuntimeNotificationOutbox).where(
                 RuntimeNotificationOutbox.integration_page_id == uuid.UUID(task.metadata_json["integration_page_id"]))))
-            actor = await group_approval_return_actor(db, session=group, rows=rows)
-            if actor.id != task.root_user_id:
-                return
+            if group.audience_kind == "group":
+                actor = await group_approval_return_actor(db, session=group, rows=rows)
+                if actor.id != task.root_user_id:
+                    return
+            else:
+                from app.models.runtime_result import RuntimeResultObject
+                from app.services.runtime_result_sources import load_canonical_result_sources
+
+                if group.user_id != task.root_user_id or not rows:
+                    return
+                for row in rows:
+                    result = await db.get(RuntimeResultObject, row.result_object_id)
+                    canonical = await load_canonical_result_sources(db, result) if result is not None else False
+                    if (not canonical or row.tenant_id != task.tenant_id or row.source_kind != "approval"
+                        or row.parent_agent_id != agent_id or row.parent_session_id != session_id
+                        or row.parent_user_id != task.root_user_id or canonical[0].root_user_id != task.root_user_id
+                        or canonical[0].parent_session_id != str(session_id) or canonical[0].parent_agent_id != agent_id):
+                        return
             originals = {}
             for row in rows:
                 approval = await db.get(ApprovalRequest, uuid.UUID(row.metadata_json["approval_id"]))
@@ -215,7 +237,7 @@ async def bind_native_recovery_context(db, *, task, session):
         or sources != proof.get("sources") or complete is not proof.get("complete")):
         return
     session.metadata["_native_recovery_context_source"] = NativeRecoveryContextSource(proof["checkpoint"], tuple(sources),
-        () if complete else ("native_recovery_inputs_incomplete",))
+        () if complete else ("native_recovery_inputs_incomplete",), deepcopy(proof.get("file_snapshots") or {}))
 
 
 async def _facts(db, task):

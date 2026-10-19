@@ -835,6 +835,26 @@ async def _apply_workspace_mutation_path_authority(state: _ToolExecutionState) -
     return None
 
 
+def _approval_handoff_result(state: _ToolExecutionState, block: Any) -> Any:
+    from app.services.connector_acl import with_connector_approval_handoff
+    from app.tools.decision import ToolBoundaryBlock, ToolDecisionOutcome
+
+    context = state.governance_context
+    if not isinstance(block, ToolBoundaryBlock) or block.outcome != ToolDecisionOutcome.REQUIRE_APPROVAL or not getattr(context, 'approval_id', None):
+        return block
+    try:
+        payload = state.ports.json.loads(str(block))
+    except (ValueError, TypeError):
+        return block
+    if (not isinstance(payload, dict) or payload.get('status') != 'approval_required'
+        or payload.get('approval_id') != context.approval_id or payload.get('tool_name') != state.request.tool_name):
+        return block
+    safe, _receipt = state.service._redact_runtime_egress(block, context=state.runtime_context,
+        surface='approval_handoff', trace_metadata_sink=state.request.trace_metadata_sink)
+    return with_connector_approval_handoff(str(safe), approval_id=context.approval_id,
+        tenant_id=state.runtime_context.tenant_id, user_id=state.runtime_context.user_id, agent_id=state.runtime_context.agent_id)
+
+
 async def _apply_governance(state: _ToolExecutionState) -> _Stop | None:
     from app.tools.decision import ToolDecisionOutcome, boundary_block_from_machine_value
 
@@ -875,7 +895,7 @@ async def _apply_governance(state: _ToolExecutionState) -> _Stop | None:
             outcome = ToolDecisionOutcome.UNAVAILABLE
             reason_code = "untyped_governance_block"
         _record_final_decision(state, outcome=outcome, reasons=(reason_code,))
-        return _Stop(block)
+        return _Stop(_approval_handoff_result(state, block))
     _record_lifecycle(state, "governed")
     preflight_block = await service._preflight_tool_execution(
         request.tool_name,
@@ -914,7 +934,7 @@ async def _apply_governance(state: _ToolExecutionState) -> _Stop | None:
             reason_code = approval_block.reason_code
         _record_lifecycle(state, "blocked", "preflight_block")
         _record_final_decision(state, outcome=outcome, reasons=(reason_code,))
-        return _Stop(preflight_block)
+        return _Stop(_approval_handoff_result(state, preflight_block))
     _record_lifecycle(state, "preflight")
     _record_final_decision(
         state,

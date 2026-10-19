@@ -953,7 +953,7 @@ async def persist_workspace_execution_evidence(*, context, tool_name, tool_call_
                 from app.services.shared_group_authority import approval_execution_matches
 
                 task = await db.get(RuntimeTask, run_id)
-                if session.audience_kind != "group" or not await approval_execution_matches(
+                if not await approval_execution_matches(
                     db, task=task, session=session, invocation_id=invocation.id,
                 ):
                     raise ContentInputReceiptError("workspace_execution_scope_mismatch", "The settled call has no claimed company execution.")
@@ -1260,6 +1260,60 @@ async def load_workspace_execution_input_evidence(db, *, agent_id, invocation, m
         model_result=model_result, arguments=arguments, content_hash=content_hash)
     retained = await db.get(InvocationSpan, uuid.uuid5(invocation.id, "workspace-output-evidence"))
     return ref, _workspace_execution_input_sources(retained.metadata_json["workspace_execution_evidence"])
+
+
+async def load_approved_workspace_result(db, *, approval):
+    """Reopen only an actually captured approved Office write and its input inventory."""
+    from app.models.chat_session import ChatSession
+    from app.models.invocation_span import InvocationSpan
+    from app.models.runtime_task import RuntimeTask
+    from app.models.session_v2 import SessionModelResult
+    from app.services.approval_ticket import ApprovalTicketError
+    from app.services.session_approval import group_approval_origin
+    from app.services.session_model_inputs import _model_dependencies, _unique_dependencies
+    from app.services.session_tool_runtime import _sha256
+
+    if (approval.tool_name not in {'office_document_create', 'office_document_apply'} or approval.status != 'approved'
+        or approval.execution_status != 'succeeded' or approval.consumed_at is None):
+        return None
+    try:
+        session = await db.get(ChatSession, uuid.UUID(str(approval.execution_envelope['session_id'])))
+        original, invocation, _event = await group_approval_origin(db, session=session, approval=approval)
+        job = await db.get(RuntimeTask, approval.execution_task_id)
+        if (job is None or job.status != 'completed' or job.task_type != 'approval_execution'
+            or job.tenant_id != original.tenant_id or job.parent_agent_id != original.parent_agent_id
+            or job.parent_session_id != original.parent_session_id or job.root_user_id != approval.requested_by
+            or (job.metadata_json or {}).get('approval_id') != str(approval.id)):
+            return None
+        model = await db.scalar(select(SessionModelResult).where(SessionModelResult.run_id == invocation.run_id,
+            SessionModelResult.session_id == invocation.session_id, SessionModelResult.tenant_id == invocation.tenant_id,
+            SessionModelResult.provider_request_id == invocation.provider_request_id))
+        dependencies, complete = _model_dependencies(model)
+        if not complete:
+            return None
+        content_hash = _sha256(str(approval.execution_result))
+        ref, outputs = await load_workspace_execution_evidence(db, agent_id=approval.agent_id, invocation=invocation,
+            model_result=model, arguments=approval.normalized_arguments, content_hash=content_hash)
+        capture = ((approval.execution_receipt or {}).get('runtime_evidence') or {}).get('workspace_execution_evidence') or {}
+        span = await db.get(InvocationSpan, uuid.uuid5(invocation.id, 'workspace-output-evidence'))
+        native = (span.metadata_json or {}).get('native_content_receipts') or {}
+        if (capture.get('status') != 'captured' or capture.get('receipt_ref') != ref or not outputs
+            or span.user_id != approval.requested_by or native.get('status') != 'captured'):
+            return None
+        dependencies = _unique_dependencies([*dependencies, *_workspace_execution_input_sources(span.metadata_json['workspace_execution_evidence'])])
+        receipt_ids = set()
+        for path, digest in outputs.items():
+            receipt_id = uuid.UUID(str(native['receipts'][path]))
+            receipt = await db.get(ContentInputReceipt, receipt_id)
+            if (receipt is None or receipt_id != uuid.uuid5(invocation.id, f'workspace-content:{path}')
+                or receipt.tenant_id != approval.tenant_id or receipt.carrier_kind != 'workspace_artifact'
+                or receipt.carrier_ref != workspace_artifact_ref(approval.agent_id, path) or receipt.content_sha256 != digest):
+                return None
+            receipt_ids.add(receipt.id)
+            dependencies = _unique_dependencies([*dependencies, *receipt.dependencies_json])
+        return dependencies, receipt_ids
+    except (ApprovalTicketError, ContentInputReceiptError, ValueError, TypeError, KeyError, AttributeError):
+        return None
 
 
 async def load_workspace_execution_evidence(db, *, agent_id, invocation, model_result, arguments, content_hash):

@@ -587,7 +587,16 @@ def _build_runtime_attachment_sections(
                 ensure_runtime_assembly_state(session_context).record_context_sources(agent_id=agent_id, content=section,
                     sources=[tracked_sources[path] for path in changed_paths], unbound=())
             else:
-                _bind_recovery_attachment_source(agent_id, session_context, recovery_result, section)
+                from app.services.delegation_context_sources import NativeRecoveryContextSource
+
+                source = (getattr(session_context, "metadata", {}) or {}).get("_native_recovery_context_source")
+                if isinstance(source, NativeRecoveryContextSource) and source.matches_file_snapshots(session_context, changed_paths):
+                    from app.runtime.context import ensure_runtime_assembly_state
+
+                    ensure_runtime_assembly_state(session_context).record_context_sources(agent_id=agent_id, content=section,
+                        sources=source.sources, unbound=source.unbound)
+                else:
+                    _bind_recovery_attachment_source(agent_id, session_context, recovery_result, section)
 
     return sections
 

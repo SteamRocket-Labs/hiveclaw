@@ -111,7 +111,8 @@ async def test_company_update_requires_new_approval_and_returns_result_to_same_w
         async def consume_result(content, path):
             service = RuntimeNotificationOutboxService(session_factory=app_user_sessionmaker)
             rows = await service.claim_batch(worker_id="office-recovery-return", limit=100)
-            pages = await service.prepare_integration_pages(worker_id="office-recovery-return", claimed=rows)
+            pages = await service.prepare_integration_pages(worker_id="office-recovery-return",
+                claimed=[row for row in rows if row.tenant_id == seed["tenant_id"]])
             assert len(pages) == 1
             page = pages[0]
             receipt = await service._deliver_page(page)

@@ -153,7 +153,8 @@ async def _load_company_result_sources(db, result):
         if approval is None or approval.tenant_id != result.tenant_id or session.tenant_id != result.tenant_id:
             raise ValueError("ticket_scope_mismatch")
         office = approval.tool_name in FEISHU_RESULT_TOOLS
-        if session.audience_kind != "group" and not office:
+        workspace_office = approval.tool_name in {'office_document_create', 'office_document_apply'}
+        if session.audience_kind != "group" and not office and not workspace_office:
             return False
         row = await db.get(RuntimeNotificationOutbox, uuid.UUID(approval.execution_receipt["continuation_outbox_id"]))
         if (row is None or row.result_object_id != result.id or row.source_kind != "approval"
@@ -179,12 +180,22 @@ async def _load_company_result_sources(db, result):
             or approval.execution_status not in {"succeeded", "failed", "needs_reapproval", "needs_reconciliation", "rejected"}
             or payload["summary"] != expected_summary):
             raise ValueError("ticket_execution_unresolved")
-        if office and (approval.execution_status == "succeeded" or payload["metadata"].get("result_semantics") == "execution_result"):
+        receipt_ids = set()
+        if workspace_office and approval.execution_status == 'succeeded':
+            from app.services.content_input_receipts import load_approved_workspace_result
+            from app.services.session_model_inputs import _unique_dependencies
+
+            captured = await load_approved_workspace_result(db, approval=approval)
+            if captured is None:
+                raise ValueError('ticket_workspace_result_unverified')
+            sources, receipt_ids = captured
+            dependencies = _unique_dependencies([*dependencies, *sources])
+        elif office and (approval.execution_status == "succeeded" or payload["metadata"].get("result_semantics") == "execution_result"):
             if await load_approved_feishu_result(db, approval=approval) is None:
                 raise ValueError("ticket_office_result_unverified")
         elif session.audience_kind != "group" and payload["metadata"].get("result_semantics") != "approval_status":
             raise ValueError("ticket_office_status_unverified")
-        return task, dependencies, set()
+        return task, dependencies, receipt_ids
     except (ApprovalTicketError, ValueError, KeyError, TypeError, AttributeError) as exc:
         raise ContentInputReceiptError("runtime_result_sources_unbound", "Reconcile the original company approval result.", 503) from exc
 
@@ -198,6 +209,11 @@ async def _shared_company_result_published(db, *, result, agent_id, session_id):
     task, _dependencies, _receipts = canonical
     if task.parent_agent_id != agent_id or uuid.UUID(task.parent_session_id) != session_id:
         return False
+    from app.models.chat_session import ChatSession
+
+    session = await db.get(ChatSession, session_id)
+    if session is None or session.audience_kind != 'group':
+        return False
     from app.services.runtime_result_store import decode_runtime_result_payload
 
     payload = decode_runtime_result_payload(bytes(result.payload_bytes))
@@ -205,6 +221,31 @@ async def _shared_company_result_published(db, *, result, agent_id, session_id):
     if payload["metadata"]["tool_name"] not in {"write_file", "fs_write"}:
         raise ContentInputReceiptError("runtime_result_sources_unbound", "Reconcile the approved tool's output sources before group disclosure.", 503)
     return True
+
+
+async def approved_workspace_connector_sources(db, *, result, agent_id, user_id):
+    """Mirror only descriptor-proven Office outputs for their original private reader."""
+    from app.services.connector_acl import authoritative_connector_source_item
+    from app.services.runtime_result_store import decode_runtime_result_payload
+
+    if result.source_kind != 'approval' or decode_runtime_result_payload(bytes(result.payload_bytes))['metadata'].get(
+        'tool_name') not in {'office_document_create', 'office_document_apply'}:
+        return []
+    canonical = await load_canonical_result_sources(db, result)
+    if not canonical:
+        return []
+    task, _dependencies, receipt_ids = canonical
+    if task.parent_agent_id != agent_id or task.root_user_id != user_id:
+        return []
+    items = []
+    for receipt_id in receipt_ids:
+        receipt = await db.get(ContentInputReceipt, receipt_id)
+        prefix, path = receipt.carrier_ref.split('\n', 1)
+        if prefix != str(agent_id):
+            return []
+        items.append(authoritative_connector_source_item(source=f'office://workspace/{path}', connector='office',
+            resource_type='document', tenant_id=result.tenant_id, current_user_id=user_id, agent_id=agent_id))
+    return items
 
 
 async def runtime_result_publication_bound(db, *, result, agent_id, session_id, user_id):
@@ -248,6 +289,12 @@ async def validate_runtime_result_sources(db, request, result_object, *, user=No
         if source_session is None or source_session.tenant_id != task.tenant_id or source_session.agent_id != reader_agent:
             raise ContentInputReceiptError("content_source_unavailable", "The result's original group work is unavailable.", 503)
         await _authorize_session_input_source(db, task.tenant_id, source_session, user=user, runtime_request=request)
+    if result_object.source_kind == 'approval' and receipt_ids:
+        for receipt_id in receipt_ids:
+            output = await db.get(ContentInputReceipt, receipt_id)
+            await _validate_input_dependencies(db, task.tenant_id, [{'source_kind': 'workspace_artifact',
+                'source_id': str(output.id), 'source_version': output.content_sha256}], user=user,
+                runtime_request=request, active_workspace_receipts=frozenset())
     draft = await db.scalar(select(HrCreationDraft).where(HrCreationDraft.tenant_id == task.tenant_id,
         HrCreationDraft.created_agent_id == task.child_agent_id, HrCreationDraft.hr_agent_id == task.parent_agent_id,
         HrCreationDraft.session_id == uuid.UUID(task.parent_session_id), HrCreationDraft.requested_by_user_id == task.root_user_id))

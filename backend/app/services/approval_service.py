@@ -557,7 +557,9 @@ class ApprovalService:
                 ref_id=approval.id,
             )
 
-        channel_result = await db.execute(select(ChannelConfig).where(ChannelConfig.agent_id == agent.id))
+        channel_result = await db.execute(select(ChannelConfig).where(ChannelConfig.agent_id == agent.id,
+            ChannelConfig.tenant_id == agent.tenant_id, ChannelConfig.channel_type == 'feishu',
+            ChannelConfig.is_configured.is_(True)))
         channel = channel_result.scalars().first()
         if channel and channel.app_id and channel.app_secret:
             card_body = json.dumps(approval.details, ensure_ascii=False)[:500]

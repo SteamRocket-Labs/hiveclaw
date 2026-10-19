@@ -599,15 +599,24 @@ class _WebChatCallbacks:
                 await events.broadcast(state.agent.id, state.session_id, envelope)
         if data.get("status") != "done":
             return
-        if getattr(getattr(state, "session", None), "audience_kind", None) == "group":
+        if (getattr(state, "session", None) is not None
+            and isinstance(state.runtime_session_context.metadata.get("_native_recovery_checkpoint"), dict)):
             from app.models.runtime_task import RuntimeTask
-            from app.services.delegation_context_sources import capture_native_recovery_context
+            from app.services.delegation_context_sources import capture_native_recovery_context, NativeRecoveryContextSource
 
-            async with state.ports.runtime.tenant_scoped_session(state.agent.tenant_id) as db:
-                task = await db.get(RuntimeTask, state.run_uuid)
-                await capture_native_recovery_context(db, task=task, session=state.runtime_session_context,
-                    provider_request_id=state.active_provider_request_id)
-                await db.commit()
+            try:
+                async with state.ports.runtime.tenant_scoped_session(state.agent.tenant_id) as db:
+                    task = await db.get(RuntimeTask, state.run_uuid)
+                    await capture_native_recovery_context(db, task=task, session=state.runtime_session_context,
+                        provider_request_id=state.active_provider_request_id)
+                    await db.commit()
+            except Exception:
+                metadata = state.runtime_session_context.metadata
+                checkpoint = metadata.get("_native_recovery_checkpoint")
+                metadata.pop("_native_recovery_context_source", None)
+                if isinstance(checkpoint, dict):
+                    metadata["_native_recovery_context_source"] = NativeRecoveryContextSource(
+                        checkpoint, (), ("native_recovery_capture_unavailable",))
         await self._consume_completed_tool(data)
 
     async def _consume_completed_tool(self, data: dict[str, Any]) -> None:
@@ -636,11 +645,14 @@ class _WebChatCallbacks:
             # The kernel must finish persisting every matching result in the
             # current Provider tool batch before the Run may suspend. Raising
             # here used to strand already-executed parallel siblings.
-            if pause == "awaiting_session_permission" and not state.ports.context.is_web_origin_turn(
-                state.metadata,
-                state.runtime_session_context,
+            if pause in {"awaiting_session_permission", "awaiting_company_approval"} and not state.ports.context.is_web_origin_turn(
+                getattr(state, 'metadata', {}),
+                getattr(state, 'runtime_session_context', None),
             ):
-                state.interactive_pause_channel_text = state.ports.context.channel_permission_prompt(data)
+                prompt_data = data
+                if pause == 'awaiting_company_approval':
+                    prompt_data = {**data, 'session_work': {'agent_id': str(state.agent.id), 'session_id': state.session_id}}
+                state.interactive_pause_channel_text = state.ports.context.channel_permission_prompt(prompt_data)
             return
         await self.finalize_terminal_card(pause)
         raise events.terminal_signal_type(pause)
@@ -927,15 +939,20 @@ async def _invoke_model(state: _WebChatRunState, callbacks: _WebChatCallbacks, s
                 async with state.ports.runtime.tenant_scoped_session(state.agent.tenant_id) as db:
                     await bind_shared_group_permission_source(db, task=state.runtime_task, session=state.session,
                         invocation=invocation)
-                    from app.services.delegation_context_sources import bind_native_recovery_context
-
-                    await bind_native_recovery_context(db, task=state.runtime_task, session=invocation.session_context)
             elif (getattr(state.runtime_task, "metadata_json", None) or {}).get("session_v2_command_id"):
                 from app.services.delegation_context_sources import bind_private_session_permission_source
 
                 async with state.ports.runtime.tenant_scoped_session(state.agent.tenant_id) as db:
                     await bind_private_session_permission_source(db, task=state.runtime_task, session=state.session,
                         invocation=invocation)
+            from app.services.delegation_context_sources import bind_native_recovery_context
+
+            if invocation.session_context is not None:
+                invocation.session_context.metadata.pop("_native_recovery_context_source", None)
+            recovery_metadata = getattr(state.runtime_task, "metadata_json", None) or {}
+            if recovery_metadata.get("native_recovery_context_source") or recovery_metadata.get("integration_page_id"):
+                async with state.ports.runtime.tenant_scoped_session(state.agent.tenant_id) as db:
+                    await bind_native_recovery_context(db, task=state.runtime_task, session=invocation.session_context)
             return await state.ports.runtime.invoke_agent(invocation)
         except state.ports.events.terminal_signal_type as signal:
             state.interactive_pause_summary = signal.summary
@@ -1317,6 +1334,7 @@ async def _finalize_interactive_pause(state: _WebChatRunState, summary: str) -> 
         status="killed" if cancelled else "completed",
         result_summary=summary,
         metadata_json=metadata,
+        channel_delivery_text=getattr(state, 'interactive_pause_channel_text', None) if not cancelled else None,
         **_file_change_kwargs(state),
     )
     if not finalized:
@@ -1337,6 +1355,7 @@ async def _finalize_empty_interactive_response(
         status=status,
         result_summary=summary,
         metadata_json=metadata,
+        channel_delivery_text=getattr(state, 'interactive_pause_channel_text', None) if status != 'killed' else None,
         **_file_change_kwargs(state),
     )
     if not finalized:

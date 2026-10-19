@@ -338,6 +338,7 @@ async def read_runtime_result(request: ToolExecutionRequest) -> str:
             }
         )
     ref_sha256 = match.group("sha256")
+    verified_sources = []
     async with tenant_scoped_session(
         tenant_id,
         session_factory=async_session,
@@ -388,6 +389,11 @@ async def read_runtime_result(request: ToolExecutionRequest) -> str:
 
             try:
                 source_complete = await validate_runtime_result_sources(db, request, result_object)
+                if source_complete:
+                    from app.services.runtime_result_sources import approved_workspace_connector_sources
+
+                    verified_sources = await approved_workspace_connector_sources(db, result=result_object,
+                        agent_id=context.agent_id, user_id=context.user_id)
             except ContentInputReceiptError as exc:
                 return _json({"schema": schema, "status": "source_access_denied" if exc.status_code == 403 else "source_unavailable",
                     "reason_code": exc.code, "result_ref": result_ref, "retryable": False,
@@ -433,7 +439,7 @@ async def read_runtime_result(request: ToolExecutionRequest) -> str:
         )
     content = payload_text[offset : offset + limit]
     next_offset = min(offset + len(content), len(payload_text))
-    return _json(
+    rendered = _json(
         {
             "schema": schema,
             "status": "ok",
@@ -450,3 +456,8 @@ async def read_runtime_result(request: ToolExecutionRequest) -> str:
             "dependency_coverage": {"complete": source_complete},
         }
     )
+    if verified_sources:
+        from app.services.connector_acl import with_connector_source_items
+
+        return with_connector_source_items(rendered, verified_sources)
+    return rendered

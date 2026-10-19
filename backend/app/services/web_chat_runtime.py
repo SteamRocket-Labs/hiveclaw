@@ -5060,6 +5060,26 @@ def _tool_result_payload_from_runtime_event(data: dict[str, Any]) -> dict[str, A
 
 def _channel_session_permission_prompt_for_tool_call(data: dict[str, Any]) -> str | None:
     payload = _tool_result_payload_from_runtime_event(data)
+    if payload.get('status') == 'approval_required':
+        from urllib.parse import urlsplit
+        from app.config import get_settings
+
+        try:
+            approval_id = uuid.UUID(str(payload.get('approval_id')))
+            work = data.get('session_work') or {}
+            agent_id, session_id = uuid.UUID(str(work['agent_id'])), uuid.UUID(str(work['session_id']))
+        except (ValueError, TypeError, KeyError):
+            return None
+        lines = ['此操作正在等待公司审批。请由当前有效审批人在原工作中批准或拒绝；普通权限回复不能代替公司审批。',
+            f'approval_id={approval_id}']
+        settings = get_settings()
+        base = (settings.PUBLIC_BASE_URL or settings.BASE_URL).rstrip('/')
+        parsed = urlsplit(base)
+        if parsed.scheme in {'http', 'https'} and parsed.hostname and not (parsed.username or parsed.password or parsed.query or parsed.fragment):
+            lines.append(f'{base}/agents/{agent_id}/sessions/{session_id}')
+        else:
+            lines.append('请在 HiveClaw 中打开此项原工作查看审批。')
+        return '\n'.join(lines)
     if payload.get("status") != "session_permission_required":
         return None
     request = payload.get("permission_request")

@@ -18,6 +18,7 @@ from sqlalchemy import func, or_, select, text, union_all
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.machine_identities import router as machine_identity_router
 from app.config import get_settings
 from app.core.permissions import (
     AGENT_OPERATOR_INSPECT_ACTION,
@@ -57,6 +58,8 @@ from app.services.mcp_server_service import get_agent_mcp_servers
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/agents", tags=["agents"])
+
+router.include_router(machine_identity_router)
 
 AGENT_LIST_ROLE_DESCRIPTION_CHARS = 320
 

@@ -3,6 +3,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { a2aApi } from '../../api/domains/a2a';
 
+vi.mock('../../stores', () => ({ useAuthStore: (select: (state: { user: null }) => unknown) => select({ user: null }) }));
+
 const queryCalls = vi.hoisted(() => [] as Array<{ queryKey: unknown[]; enabled?: boolean }>);
 
 vi.mock('react-i18next', () => ({

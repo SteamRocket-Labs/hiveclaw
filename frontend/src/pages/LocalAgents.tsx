@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { useLocation } from 'react-router-dom';
+import LocalAgentRequestControls from '../components/LocalAgentRequestControls';
 import {
   localBridgeApi,
   type LocalAgentChannelEvent,
@@ -770,6 +771,7 @@ export default function LocalAgents({ agentId, agentName, embedded = false, init
                 {messageStatus.message}
               </div>
             )}
+            <LocalAgentRequestControls sessionId={activeChannelSessionId} />
             {activeChannelSessionId && (
               <div className="local-agents-transcript">
                 <div className="local-agents-section-label">

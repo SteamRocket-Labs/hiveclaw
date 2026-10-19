@@ -326,6 +326,7 @@ def _session_payload(session: LocalAgentChannelSession, chat_session: ChatSessio
     updated_at = last_message_at or getattr(session, "updated_at", None) or getattr(session, "created_at", None)
     return {
         "id": session.id,
+        "tenant_id": getattr(session, 'tenant_id', None),
         "chat_session_id": session.chat_session_id,
         "agent_id": session.source_agent_id,
         "title": title,
@@ -1506,7 +1507,7 @@ async def get_a2a_channel_message_status(
             )
         ).scalar_one_or_none()
 
-    terminal = message.status in {"completed", "failed"}
+    terminal = message.status in {"completed", "failed", "cancelled"}
     if outbox is not None:
         source_delivery = {
             "status": outbox.status,
@@ -1536,7 +1537,9 @@ async def get_a2a_channel_message_status(
         "artifacts": artifacts,
         "receipt": _receipt_for_message(message),
         "source_delivery": source_delivery,
-        "retryable": message.status not in {"completed", "failed"},
+        "retryable": message.status not in {"completed", "failed", "cancelled", "needs_reconciliation"},
+        "next_action": "continue_original_work" if message.status == "cancelled" else
+            "inspect_original_runner" if message.status == "needs_reconciliation" else "review_result" if terminal else "wait",
     }
     if terminal:
         payload["result"] = str(message.result or "")
@@ -1574,7 +1577,8 @@ def _add_remote_action_span(
             duration_ms=0.0,
             evidence_refs=[f"local-agent-message://{message.id}"],
             truth_evidence_json=[f"local-agent-message://{message.id}"],
-            metadata_json={"execution_receipt": receipt or {}},
+            metadata_json={"execution_receipt": receipt or {},
+                "dispatch_protocol": "hive.local_message_leased_dispatch.v1"},
         )
     )
 
@@ -2022,6 +2026,306 @@ async def enqueue_channel_message(
     return {**_message_payload(message), "event": _event_payload(event)}
 
 
+def _leased_dispatch_attested(message, origin) -> bool:
+    metadata = origin.metadata_json if origin is not None and isinstance(origin.metadata_json, dict) else {}
+    original = metadata.get("execution_receipt")
+    expected = _receipt_for_message(message)
+    return (
+        origin is not None
+        and origin.tenant_id == message.tenant_id
+        and origin.request_id == message.id
+        and origin.session_id == str(message.session_id)
+        and origin.agent_id == message.source_agent_id
+        and origin.user_id == message.sender_user_id
+        and origin.input_hash == message.request_hash
+        and origin.trace_id == message.receipt_trace_id
+        and origin.span_id == message.receipt_span_id
+        and origin.span_type == "remote_action"
+        and origin.name == "local_agent.execute"
+        and metadata.get("dispatch_protocol") == "hive.local_message_leased_dispatch.v1"
+        and isinstance(original, dict)
+        and bool(expected)
+        and all(
+            original.get(key) == expected.get(key)
+            for key in ("schema", "request_hash", "capability_snapshot_hash", "replay_key", "trace_id", "span_id")
+        )
+    )
+
+
+async def list_channel_requests(
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    session_id: uuid.UUID,
+    owner_user_id: uuid.UUID,
+    actor_user_id: uuid.UUID,
+    limit: int = 50,
+    before: uuid.UUID | None = None,
+) -> dict:
+    query = select(LocalAgentChannelMessage).where(
+        LocalAgentChannelMessage.tenant_id == tenant_id,
+        LocalAgentChannelMessage.session_id == session_id,
+        LocalAgentChannelMessage.owner_user_id == owner_user_id,
+        LocalAgentChannelMessage.direction == "hive_to_local",
+    )
+    if before is not None:
+        anchor = await db.scalar(query.where(LocalAgentChannelMessage.id == before))
+        if anchor is None:
+            raise HTTPException(404, detail="Local agent request cursor not found")
+        query = query.where(
+            or_(
+                LocalAgentChannelMessage.created_at < anchor.created_at,
+                and_(LocalAgentChannelMessage.created_at == anchor.created_at, LocalAgentChannelMessage.id < anchor.id),
+            )
+        )
+    rows = list(
+        await db.scalars(
+            query.order_by(LocalAgentChannelMessage.created_at.desc(), LocalAgentChannelMessage.id.desc()).limit(
+                limit + 1
+            )
+        )
+    )
+    more, rows = len(rows) > limit, rows[:limit]
+    origins, controls = {}, {}
+    if rows:
+        spans = await db.scalars(
+            select(InvocationSpan)
+            .where(
+                InvocationSpan.tenant_id == tenant_id,
+                InvocationSpan.session_id == str(session_id),
+                InvocationSpan.request_id.in_([row.id for row in rows]),
+                InvocationSpan.span_type.in_(["remote_action", "remote_control"]),
+            )
+            .order_by(InvocationSpan.started_at.desc())
+        )
+        for span in spans:
+            if span.span_type == "remote_action":
+                origins.setdefault(span.request_id, span)
+            elif span.name == "local_agent.cancel":
+                metadata = span.metadata_json if isinstance(span.metadata_json, dict) else {}
+                receipt = metadata.get("control")
+                if not isinstance(receipt, dict):
+                    continue
+                if (
+                    receipt.get("schema") == "hive.local_message_control.v1"
+                    and receipt.get("control_id") == str(span.id)
+                    and receipt.get("message_id") == str(span.request_id)
+                    and receipt.get("session_id") == str(session_id)
+                    and receipt.get("actor_user_id") == str(span.user_id)
+                    and receipt.get("execution_state")
+                    in {"unknown", "not_dispatched", "reported_completed", "reported_failed"}
+                ):
+                    controls.setdefault(span.request_id, receipt)
+    projected = []
+    for row in rows:
+        control = controls.get(row.id)
+        undispatched = (
+            _leased_dispatch_attested(row, origins.get(row.id))
+            and row.delivery_attempt_count == 0
+            and row.delivered_at is None
+            and row.status in {"pending", "waiting_approval", "cancelled"}
+        )
+        projected.append(
+            {
+                "id": str(row.id),
+                "request_hash": row.request_hash,
+                "status": row.status,
+                "execution_state": "not_dispatched"
+                if undispatched
+                else f"reported_{row.status}"
+                if row.status in {"completed", "failed"}
+                else "unknown",
+                "preview": row.content[:240],
+                "created_at": row.created_at.isoformat(),
+                "control": control,
+                "can_cancel": actor_user_id in {row.sender_user_id, row.owner_user_id}
+                and row.status in {"pending", "waiting_approval", "delivered", "needs_reconciliation"},
+                "next_action": "review_late_result"
+                if control and control["execution_state"] == "unknown" and row.status in {"completed", "failed"}
+                else (control or {}).get("next_action"),
+            }
+        )
+    return {
+        "scope": {"actor_user_id": str(actor_user_id), "tenant_id": str(tenant_id), "session_id": str(session_id)},
+        "requests": projected,
+        "next_cursor": str(rows[-1].id) if more else None,
+    }
+
+
+async def cancel_channel_message(
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    session_id: uuid.UUID,
+    message_id: uuid.UUID,
+    owner_user_id: uuid.UUID,
+    actor_user_id: uuid.UUID,
+    request_hash: str | None,
+    idempotency_key: str,
+) -> dict:
+    """Withdraw one request without inventing an external runtime stop."""
+    message = await db.scalar(
+        select(LocalAgentChannelMessage)
+        .join(LocalAgentChannelSession, LocalAgentChannelSession.id == LocalAgentChannelMessage.session_id)
+        .where(
+            LocalAgentChannelMessage.id == message_id,
+            LocalAgentChannelMessage.tenant_id == tenant_id,
+            LocalAgentChannelMessage.session_id == session_id,
+            LocalAgentChannelMessage.owner_user_id == owner_user_id,
+            LocalAgentChannelSession.tenant_id == tenant_id,
+            LocalAgentChannelSession.owner_user_id == owner_user_id,
+        )
+        .with_for_update(of=LocalAgentChannelMessage)
+        .execution_options(populate_existing=True)
+    )
+    if message is None:
+        raise HTTPException(404, detail="Local agent channel message not found")
+    actor = await db.get(User, actor_user_id)
+    if actor is None or not actor.is_active or actor_user_id not in {message.sender_user_id, message.owner_user_id}:
+        raise HTTPException(403, detail="Only the requester or host owner can withdraw this request")
+    if message.request_hash != request_hash:
+        raise HTTPException(409, detail={"code": "local_agent_request_changed"})
+    command_hash = _canonical_hash(
+        {
+            "action": "cancel",
+            "message_id": str(message_id),
+            "session_id": str(session_id),
+            "tenant_id": str(tenant_id),
+            "actor_user_id": str(actor_user_id),
+            "request_hash": request_hash,
+        }
+    )
+    control_id = uuid.uuid5(message_id, f"cancel:{actor_user_id}:{idempotency_key}")
+    previous = await db.get(InvocationSpan, control_id)
+    if previous is not None:
+        if (
+            previous.tenant_id != tenant_id
+            or previous.user_id != actor_user_id
+            or previous.request_id != message_id
+            or previous.session_id != str(session_id)
+            or previous.span_type != "remote_control"
+            or previous.input_hash != command_hash
+        ):
+            raise HTTPException(409, detail={"code": "local_agent_control_conflict"})
+        metadata = previous.metadata_json if isinstance(previous.metadata_json, dict) else {}
+        receipt = metadata.get("control")
+        if not isinstance(receipt, dict) or receipt.get("control_id") != str(control_id):
+            raise HTTPException(409, detail={"code": "local_agent_control_conflict"})
+        return {"receipt": receipt, "event": None}
+    origin = await db.scalar(
+        select(InvocationSpan).where(
+            InvocationSpan.tenant_id == tenant_id,
+            InvocationSpan.request_id == message_id,
+            InvocationSpan.session_id == str(session_id),
+            InvocationSpan.trace_id == message.receipt_trace_id,
+            InvocationSpan.span_id == message.receipt_span_id,
+            InvocationSpan.span_type == "remote_action",
+            InvocationSpan.name == "local_agent.execute",
+        )
+    )
+    origin_metadata = (
+        dict(origin.metadata_json) if origin is not None and isinstance(origin.metadata_json, dict) else {}
+    )
+    attested = _leased_dispatch_attested(message, origin)
+    now = utcnow()
+    if message.status in {"completed", "failed"}:
+        state, execution, next_action = "already_terminal", f"reported_{message.status}", "review_result"
+    elif (
+        attested
+        and message.status in {"pending", "waiting_approval", "cancelled"}
+        and message.delivery_attempt_count == 0
+        and message.delivered_at is None
+    ):
+        state, execution, next_action = "cancelled", "not_dispatched", "continue_original_work"
+        message.status, message.completed_at = "cancelled", now
+        message.result = "Cancelled before dispatch."
+        message.delivery_lease_expires_at = None
+        origin.status, origin.ended_at = "cancelled", now
+        origin.duration_ms = max(0.0, (now - origin.started_at).total_seconds() * 1000)
+        origin.metadata_json = {**origin_metadata, "execution_receipt": _receipt_for_message(message)}
+    else:
+        state, execution, next_action = "needs_reconciliation", "unknown", "inspect_original_runner"
+        message.status = "needs_reconciliation"
+    receipt = {
+        "schema": "hive.local_message_control.v1",
+        "control_id": str(control_id),
+        "action": "cancel",
+        "message_id": str(message_id),
+        "session_id": str(session_id),
+        "actor_user_id": str(actor_user_id),
+        "status": state,
+        "execution_state": execution,
+        "next_action": next_action,
+        "recorded_at": now.isoformat(),
+    }
+    db.add(
+        InvocationSpan(
+            id=control_id,
+            tenant_id=tenant_id,
+            agent_id=message.source_agent_id,
+            user_id=actor_user_id,
+            execution_identity_type="user",
+            execution_identity_id=actor_user_id,
+            session_id=str(session_id),
+            request_id=message_id,
+            trace_id=f"local-agent:{message_id}",
+            span_id=f"remote-control:{control_id}",
+            span_type="remote_control",
+            name="local_agent.cancel",
+            status="ok",
+            started_at=now,
+            ended_at=now,
+            duration_ms=0,
+            input_hash=command_hash,
+            evidence_refs=[f"local-agent-message://{message_id}"],
+            metadata_json={"control": receipt},
+        )
+    )
+    event = LocalAgentChannelEvent(
+        sequence=await _allocate_event_sequence(db, session_id=session_id),
+        tenant_id=tenant_id,
+        owner_user_id=owner_user_id,
+        source_agent_id=message.source_agent_id,
+        session_id=session_id,
+        message_id=message_id,
+        direction="hive_to_local",
+        event_type="control",
+        payload_json=receipt,
+    )
+    db.add(event)
+    if state == "cancelled" and _a2a_local_delegation(message.metadata_json):
+        try:
+            source_route = await _validated_a2a_source_route(
+                db,
+                tenant_id=tenant_id,
+                sender_agent_id=message.sender_agent_id,
+                sender_user_id=message.sender_user_id,
+                target_agent_id=message.source_agent_id,
+                target_owner_user_id=owner_user_id,
+                metadata=dict(message.metadata_json or {}),
+            )
+        except HTTPException:
+            message.metadata_json = {
+                **dict(message.metadata_json or {}),
+                "source_delivery": {
+                    "status": "needs_reconciliation",
+                    "reason": "original_source_authority_unavailable",
+                },
+            }
+        else:
+            await _enqueue_a2a_source_delivery(
+                db,
+                message=message,
+                source_route=source_route,
+                terminal_status="cancelled",
+                output=message.result,
+                artifacts=[],
+            )
+    await db.flush()
+    await db.commit()
+    return {"receipt": receipt, "event": _event_payload(event)}
+
+
 async def list_channel_events(
     db: AsyncSession,
     *,
@@ -2067,7 +2371,7 @@ async def apply_local_agent_action_approval(
     if message is None:
         raise ValueError("Local Agent approval message binding not found")
     if message.status != "waiting_approval":
-        if message.status in {"pending", "delivered", "rejected"}:
+        if message.status in {"pending", "delivered", "rejected", "cancelled", "needs_reconciliation"}:
             return _message_payload(message)
         raise ValueError(f"Local Agent message cannot resolve approval from {message.status}")
 
@@ -2425,11 +2729,13 @@ async def record_channel_event(
                     LocalAgentChannelMessage.session_id == session.id,
                     LocalAgentChannelMessage.owner_user_id == context.user_id,
                     *_runner_message_scope(context),
-                )
+                ).with_for_update().execution_options(populate_existing=True)
             )
         ).scalar_one_or_none()
         if bound_message is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Local agent channel message not found")
+        if bound_message.status == 'cancelled':
+            raise HTTPException(409, detail={'code': 'local_agent_request_cancelled'})
         if bound_message.status == "delivered":
             activity_seconds = max(
                 30,
@@ -2519,11 +2825,13 @@ async def record_channel_result(
             LocalAgentChannelMessage.tenant_id == context.tenant_id,
             *_runner_message_scope(context),
         )
-        .with_for_update()
+        .with_for_update().execution_options(populate_existing=True)
     )
     message = message_result.scalar_one_or_none()
     if message is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Local agent channel message not found")
+    if message.status == 'cancelled':
+        raise HTTPException(409, detail={'code': 'local_agent_request_cancelled'})
     source_route: tuple[ChatSession, ExecutionPrincipal] | None = None
     if _a2a_local_delegation(message.metadata_json):
         source_route = await _validated_a2a_source_route(

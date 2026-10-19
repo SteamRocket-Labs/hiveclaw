@@ -632,6 +632,7 @@ async def test_list_agent_channel_sessions_returns_sidebar_ready_sessions() -> N
     assert rows == [
         {
             "id": channel_session_id,
+            "tenant_id": tenant_id,
             "chat_session_id": chat_session_id,
             "agent_id": source_agent_id,
             "title": "Codex on Mac",

@@ -17,7 +17,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, 
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import FileResponse
 from loguru import logger
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.local_bridge import get_bridge_auth_context
@@ -70,6 +70,14 @@ class LocalAgentChannelMessageIn(BaseModel):
     attachments: list[dict[str, Any]] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
     idempotency_key: str | None = Field(default=None, min_length=1, max_length=200)
+
+
+class LocalAgentMessageCancelIn(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    expected_user_id: uuid.UUID
+    expected_tenant_id: uuid.UUID
+    request_hash: str | None = Field(min_length=64, max_length=64)
+    idempotency_key: str = Field(min_length=1, max_length=200)
 
 
 class LocalAgentChannelMessageOut(BaseModel):
@@ -557,6 +565,35 @@ async def get_current_user_local_agent_channel_timeline(
     }
 
 
+@router.get('/local-agents/sessions/{session_id}/requests')
+async def list_local_agent_requests(session_id: uuid.UUID, limit: int = Query(default=50, ge=1, le=100),
+    before: uuid.UUID | None = None, current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db),
+):
+    session, owner = await channel_service.get_channel_session_for_actor(db, session_id=session_id,
+        actor_user_id=current_user.id, access_user=current_user, action='requests')
+    return await channel_service.list_channel_requests(db, tenant_id=uuid.UUID(str(session['tenant_id'])),
+        session_id=session_id, owner_user_id=owner, actor_user_id=current_user.id, limit=limit, before=before)
+
+
+@router.post('/local-agents/sessions/{session_id}/messages/{message_id}/cancel')
+async def cancel_user_local_agent_request(session_id: uuid.UUID, message_id: uuid.UUID, body: LocalAgentMessageCancelIn,
+    current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db),
+):
+    if body.expected_user_id != current_user.id:
+        raise HTTPException(409, detail={'code': 'local_agent_account_changed'})
+    session, owner = await channel_service.get_channel_session_for_actor(db, session_id=session_id,
+        actor_user_id=current_user.id, access_user=current_user, action='cancel')
+    tenant_id = uuid.UUID(str(session['tenant_id']))
+    if body.expected_tenant_id != tenant_id:
+        raise HTTPException(409, detail={'code': 'local_agent_tenant_changed'})
+    controlled = await channel_service.cancel_channel_message(db, tenant_id=tenant_id, session_id=session_id,
+        message_id=message_id, owner_user_id=owner, actor_user_id=current_user.id,
+        request_hash=body.request_hash, idempotency_key=body.idempotency_key)
+    if controlled['event'] is not None:
+        await _broadcast_browser_channel_event(owner_user_id=owner, session_id=session_id, event=controlled['event'])
+    return controlled['receipt']
+
+
 @router.post("/local-agents/sessions/{session_id}/ws-ticket", response_model=WsTicketOut, status_code=201)
 async def create_current_user_local_agent_channel_browser_ws_ticket(
     session_id: uuid.UUID,
@@ -886,6 +923,27 @@ async def create_local_agent_channel_message(
     return _serialize_message(payload)
 
 
+@router.post('/agents/{agent_id}/local-agent/sessions/{session_id}/messages/{message_id}/cancel')
+async def cancel_local_agent_channel_message(agent_id: uuid.UUID, session_id: uuid.UUID, message_id: uuid.UUID,
+    body: LocalAgentMessageCancelIn, current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db),
+):
+    if body.expected_user_id != current_user.id:
+        raise HTTPException(409, detail={'code': 'local_agent_account_changed'})
+    agent, _access = await check_agent_access(db, current_user, agent_id)
+    if body.expected_tenant_id != agent.tenant_id:
+        raise HTTPException(409, detail={'code': 'local_agent_tenant_changed'})
+    host_owner = _local_agent_host_user_id(agent)
+    await channel_service.resolve_agent_channel_session(db, tenant_id=agent.tenant_id, owner_user_id=host_owner,
+        actor_user_id=None if is_scoped_business_admin(current_user, resource_tenant_id=agent.tenant_id) else current_user.id,
+        source_agent_id=agent_id, session_id=session_id, access_user=current_user, audit_action='cancel')
+    controlled = await channel_service.cancel_channel_message(db, tenant_id=agent.tenant_id, session_id=session_id,
+        message_id=message_id, owner_user_id=host_owner, actor_user_id=current_user.id,
+        request_hash=body.request_hash, idempotency_key=body.idempotency_key)
+    if controlled['event'] is not None:
+        await _broadcast_browser_channel_event(owner_user_id=host_owner, session_id=session_id, event=controlled['event'])
+    return controlled['receipt']
+
+
 @router.get("/agents/{agent_id}/local-agent/sessions/{session_id}/events")
 async def list_local_agent_channel_events(
     agent_id: uuid.UUID,
@@ -1110,86 +1168,96 @@ async def local_agent_channel_ws(
     try:
         while True:
             data = await websocket.receive_json()
-            message_type = data.get("type")
-            if message_type == "ping":
-                await channel_service.mark_channel_seen(db, context=context)
-                for message in await channel_service.poll_pending_channel_messages(db, context=context):
-                    await websocket.send_json(jsonable_encoder({"type": "message", "message": message}))
-                await websocket.send_json({"type": "pong"})
-                continue
-            if message_type == "ready":
-                ready = await channel_service.mark_channel_ready(
-                    db,
-                    context=context,
-                    runtime_kind=str(data.get("runtime_kind") or context.client_kind),
-                    capabilities=dict(data.get("capabilities") or {}),
-                )
-                await websocket.send_json(
-                    jsonable_encoder(
-                        {
-                            "type": "ready_ack",
-                            "status": ready["status"],
-                            "snapshot_hash": ready["snapshot_hash"],
-                            "effective_capabilities": ready["effective_capabilities"],
-                            "expires_at": ready["expires_at"],
-                        }
+            try:
+                message_type = data.get("type")
+                if message_type == "ping":
+                    await channel_service.mark_channel_seen(db, context=context)
+                    for message in await channel_service.poll_pending_channel_messages(db, context=context):
+                        await websocket.send_json(jsonable_encoder({"type": "message", "message": message}))
+                    await websocket.send_json({"type": "pong"})
+                    continue
+                if message_type == "ready":
+                    ready = await channel_service.mark_channel_ready(
+                        db,
+                        context=context,
+                        runtime_kind=str(data.get("runtime_kind") or context.client_kind),
+                        capabilities=dict(data.get("capabilities") or {}),
                     )
-                )
-                for message in await channel_service.poll_pending_channel_messages(db, context=context):
-                    await websocket.send_json(jsonable_encoder({"type": "message", "message": message}))
-                continue
-            if message_type == "ack":
-                message_id = _coerce_uuid(data.get("message_id"))
-                await channel_service.ack_channel_message(db, context=context, message_id=message_id)
-                await websocket.send_json(jsonable_encoder({"type": "ack_ack", "message_id": str(message_id)}))
-                continue
-            if message_type == "event":
-                event = await channel_service.record_channel_event(
-                    db,
-                    context=context,
-                    session_id=_coerce_uuid(data.get("session_id")),
-                    message_id=_coerce_uuid(data["message_id"]) if data.get("message_id") else None,
-                    event_type=str(data.get("event_type") or data.get("event") or "text"),
-                    payload=dict(data.get("payload") or {}),
-                )
-                await _broadcast_browser_channel_event(
-                    owner_user_id=context.user_id,
-                    session_id=_coerce_uuid(data.get("session_id")),
-                    event=event,
-                )
-                await websocket.send_json(jsonable_encoder({"type": "event_ack", "event_id": event["id"]}))
-                continue
-            if message_type == "result":
-                message_id = _coerce_uuid(data.get("message_id"))
-                result = await channel_service.record_channel_result(
-                    db,
-                    context=context,
-                    session_id=_coerce_uuid(data.get("session_id")),
-                    message_id=message_id,
-                    result_status=str(data.get("status") or "completed"),
-                    output=str(data.get("output") or ""),
-                    artifacts=list(data.get("artifacts") or []),
-                    metadata=dict(data.get("metadata") or {}),
-                )
-                await _broadcast_browser_channel_event(
-                    owner_user_id=context.user_id,
-                    session_id=_coerce_uuid(data.get("session_id")),
-                    event=result.get("event") if isinstance(result, dict) else None,
-                )
-                await websocket.send_json(
-                    jsonable_encoder(
-                        {
-                            "type": "result_ack",
-                            "message_id": str(message_id),
-                            "status": result["status"],
-                            "receipt": result.get("receipt"),
-                        }
+                    await websocket.send_json(
+                        jsonable_encoder(
+                            {
+                                "type": "ready_ack",
+                                "status": ready["status"],
+                                "snapshot_hash": ready["snapshot_hash"],
+                                "effective_capabilities": ready["effective_capabilities"],
+                                "expires_at": ready["expires_at"],
+                            }
+                        )
                     )
+                    for message in await channel_service.poll_pending_channel_messages(db, context=context):
+                        await websocket.send_json(jsonable_encoder({"type": "message", "message": message}))
+                    continue
+                if message_type == "ack":
+                    message_id = _coerce_uuid(data.get("message_id"))
+                    await channel_service.ack_channel_message(db, context=context, message_id=message_id)
+                    await websocket.send_json(jsonable_encoder({"type": "ack_ack", "message_id": str(message_id)}))
+                    continue
+                if message_type == "event":
+                    event = await channel_service.record_channel_event(
+                        db,
+                        context=context,
+                        session_id=_coerce_uuid(data.get("session_id")),
+                        message_id=_coerce_uuid(data["message_id"]) if data.get("message_id") else None,
+                        event_type=str(data.get("event_type") or data.get("event") or "text"),
+                        payload=dict(data.get("payload") or {}),
+                    )
+                    await _broadcast_browser_channel_event(
+                        owner_user_id=context.user_id,
+                        session_id=_coerce_uuid(data.get("session_id")),
+                        event=event,
+                    )
+                    await websocket.send_json(jsonable_encoder({"type": "event_ack", "event_id": event["id"]}))
+                    continue
+                if message_type == "result":
+                    message_id = _coerce_uuid(data.get("message_id"))
+                    result = await channel_service.record_channel_result(
+                        db,
+                        context=context,
+                        session_id=_coerce_uuid(data.get("session_id")),
+                        message_id=message_id,
+                        result_status=str(data.get("status") or "completed"),
+                        output=str(data.get("output") or ""),
+                        artifacts=list(data.get("artifacts") or []),
+                        metadata=dict(data.get("metadata") or {}),
+                    )
+                    await _broadcast_browser_channel_event(
+                        owner_user_id=context.user_id,
+                        session_id=_coerce_uuid(data.get("session_id")),
+                        event=result.get("event") if isinstance(result, dict) else None,
+                    )
+                    await websocket.send_json(
+                        jsonable_encoder(
+                            {
+                                "type": "result_ack",
+                                "message_id": str(message_id),
+                                "status": result["status"],
+                                "receipt": result.get("receipt"),
+                            }
+                        )
+                    )
+                    continue
+                await websocket.send_json(
+                    jsonable_encoder({"type": "error", "error": f"Unsupported message type: {message_type}"})
                 )
-                continue
-            await websocket.send_json(
-                jsonable_encoder({"type": "error", "error": f"Unsupported message type: {message_type}"})
-            )
+            except HTTPException as exc:
+                await db.rollback()
+                try:
+                    await bridge_service.require_live_bridge_context(db, context=context)
+                except HTTPException:
+                    await websocket.close(code=4403)
+                    break
+                await websocket.send_json(jsonable_encoder({"type": "error", "status_code": exc.status_code,
+                    "error": exc.detail, "message_id": data.get("message_id")}))
     except WebSocketDisconnect:
         try:
             await channel_service.mark_channel_offline(db, context=context)

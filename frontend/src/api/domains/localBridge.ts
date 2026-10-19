@@ -93,6 +93,29 @@ export interface LocalAgentChannelTimeline {
   next_cursor: number;
 }
 
+export interface LocalAgentRequestControl {
+  schema: 'hive.local_message_control.v1';
+  control_id: string;
+  action: 'cancel';
+  message_id: string;
+  session_id: string;
+  actor_user_id: string;
+  status: 'cancelled' | 'needs_reconciliation' | 'already_terminal';
+  execution_state: string;
+  next_action: string;
+  recorded_at: string;
+}
+
+export interface LocalAgentRequestPage {
+  scope: { actor_user_id: string; tenant_id: string; session_id: string };
+  requests: Array<{
+    id: string; request_hash: string | null; status: string; execution_state: string;
+    preview: string; created_at: string; control: LocalAgentRequestControl | null;
+    can_cancel: boolean; next_action: string | null;
+  }>;
+  next_cursor: string | null;
+}
+
 export interface LocalAgentBrowserWsTicket {
   ticket: string;
   expires_in: number;
@@ -190,6 +213,14 @@ export const localBridgeApi = {
     const suffix = afterSequence > 0 ? `?after_sequence=${encodeURIComponent(String(afterSequence))}` : '';
     return get<LocalAgentChannelTimeline>(`/local-agents/sessions/${sessionId}/timeline${suffix}`);
   },
+  listChannelRequests: (sessionId: string, before?: string) => {
+    const params = new URLSearchParams({ limit: '50' });
+    if (before) params.set('before', before);
+    return get<LocalAgentRequestPage>(`/local-agents/sessions/${sessionId}/requests?${params}`);
+  },
+  cancelChannelRequest: (sessionId: string, messageId: string, command: {
+    expected_user_id: string; expected_tenant_id: string; request_hash: string | null; idempotency_key: string;
+  }) => post<LocalAgentRequestControl>(`/local-agents/sessions/${sessionId}/messages/${messageId}/cancel`, command),
   createBrowserChannelWsTicket: (sessionId: string) =>
     post<LocalAgentBrowserWsTicket>(`/local-agents/sessions/${sessionId}/ws-ticket`),
   listChannelEvents: (sessionId: string, afterSequence = 0) => {

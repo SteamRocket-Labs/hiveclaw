@@ -5592,5 +5592,20 @@
     "mappingUnavailable": "This directory connection is paused or its application identity changed. Review the company connection before mapping or assigning departments. Revocation remains available.",
     "assignmentReview": "Some department assignments need review. Existing assignments were preserved.",
     "departments": "Review department mappings and assignments"
+  },
+  "localRequests": {
+    "late": "A late result arrived. Review it in this work; the earlier control remains unconfirmed.",
+    "cancelled": "Cancelled before dispatch",
+    "unknown": "Further dispatch withheld. Execution is unknown; inspect or stop this request on the original device.",
+    "approval": "Waiting for approval",
+    "queued": "Queued",
+    "delivered": "Delivered to the original device",
+    "completed": "Device reported completion",
+    "failed": "Device reported failure",
+    "title": "Local requests and cancellation",
+    "scope": "Cancel individual requests here. A request already delivered to a device may still be running; Hive cannot confirm a device stop.",
+    "unavailable": "The request state or control outcome could not be confirmed. Refresh before acting again.",
+    "cancel": "Cancel this request",
+    "older": "Load older requests"
   }
 }

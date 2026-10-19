@@ -6,6 +6,7 @@ import { IconFileText } from '@tabler/icons-react';
 
 import './LocalAgentChatSection.css';
 import MarkdownRenderer from '../../components/MarkdownRenderer';
+import LocalAgentRequestControls from '../../components/LocalAgentRequestControls';
 import type { AgentPermissions } from '../../api/domains/agents';
 import {
   localBridgeApi,
@@ -595,6 +596,7 @@ export default function LocalAgentChatSection({ agentId, agent, agentPermissions
           ))
         )}
       </div>
+      <LocalAgentRequestControls sessionId={channelSessionId} />
       {error && (
         <div className="local-chat-error">
           {error}

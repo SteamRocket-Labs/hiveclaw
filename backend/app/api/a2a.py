@@ -1,6 +1,6 @@
 """Agent-to-Agent collaboration API.
 
-This is the only HTTP surface for governed A2A collaboration. Legacy
+This is the human management surface for internal A2A collaboration. Legacy
 Relationship APIs and `relationships.md` materialization are intentionally not
 used here; the live collaborator projection is derived from owner/public/group
 state in the database.

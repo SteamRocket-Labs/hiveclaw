@@ -1,16 +1,57 @@
 """Machine-authenticated A2A task transport, separate from human management APIs."""
+import posixpath
 import uuid
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
 from fastapi.security.utils import get_authorization_scheme_param
 from sqlalchemy.ext.asyncio import AsyncSession
+from starlette.routing import NoMatchFound
 
 from app.database import get_db
 from app.services.a2a_machine_tasks import A2AError, MACHINE_TASK_METHOD_SCOPES, cancel_machine_task, get_machine_artifact, get_machine_task, send_machine_message, wait_for_machine_task
 from app.services.machine_identity_service import authenticate_machine
 
 router = APIRouter()
+
+_UNSUPPORTED_METHODS = {
+    'SendStreamingMessage': ('agent.execute', -32004),
+    'SubscribeToTask': ('task.read', -32004),
+    'GetExtendedAgentCard': ('agent.describe', -32004),
+    'CreateTaskPushNotificationConfig': ('agent.execute', -32003),
+    'GetTaskPushNotificationConfig': ('task.read', -32003),
+    'ListTaskPushNotificationConfigs': ('task.read', -32003),
+    'DeleteTaskPushNotificationConfig': ('agent.execute', -32003),
+}
+
+
+def machine_route_url(request: Request, name: str, **params):
+    """Keep links on the same router alias when the app mounts both API versions."""
+    current = request.url.path.removeprefix(request.scope.get('root_path', ''))
+    paths = []
+    for route in request.app.routes:
+        try:
+            paths.append(route.url_path_for(name, **params))
+        except NoMatchFound:
+            continue
+    if not paths:
+        raise NoMatchFound(name, params)
+    path = max(paths, key=lambda candidate: len(posixpath.commonpath((current, str(candidate))).split('/')))
+    return path.make_absolute_url(base_url=request.base_url)
+
+
+@router.get('/{agent_id}/a2a/.well-known/agent-card.json')
+async def machine_agent_card(agent_id: uuid.UUID, request: Request,
+    authorization: str | None = Header(default=None), db: AsyncSession = Depends(get_db)):
+    from app.services.interoperability import build_machine_agent_card
+
+    scheme, token = get_authorization_scheme_param(authorization)
+    if scheme.lower() != 'bearer' or not token:
+        raise HTTPException(401, detail='Machine credential required', headers={'WWW-Authenticate': 'Bearer'})
+    _context, agent = await authenticate_machine(db, token=token, agent_id=agent_id, scope='agent.describe')
+    card = build_machine_agent_card(agent, rpc_url=str(machine_route_url(request, 'machine_task_rpc', agent_id=agent_id)))
+    await db.commit()
+    return JSONResponse(card, headers={'Cache-Control': 'private, no-store', 'A2A-Version': '1.0'})
 
 
 @router.post('/{agent_id}/a2a/rpc')
@@ -29,14 +70,18 @@ async def machine_task_rpc(agent_id: uuid.UUID, request: Request,
         if isinstance(request_id, bool) or not isinstance(request_id, (str, int)):
             raise A2AError(-32600, 'Request payload validation error')
         method = payload.get('method')
-        if not isinstance(method, str) or method not in MACHINE_TASK_METHOD_SCOPES:
+        if not isinstance(method, str) or method not in MACHINE_TASK_METHOD_SCOPES.keys() | _UNSUPPORTED_METHODS.keys():
             raise A2AError(-32601, 'Method not found')
         scheme, token = get_authorization_scheme_param(authorization)
         if scheme.lower() != 'bearer' or not token:
             raise HTTPException(401, detail='Machine credential required', headers={'WWW-Authenticate': 'Bearer'})
-        context, agent = await authenticate_machine(db, token=token, agent_id=agent_id, scope=MACHINE_TASK_METHOD_SCOPES[method])
+        scope = MACHINE_TASK_METHOD_SCOPES.get(method) or _UNSUPPORTED_METHODS[method][0]
+        context, agent = await authenticate_machine(db, token=token, agent_id=agent_id, scope=scope)
         if a2a_version != '1.0':
             raise A2AError(-32009, 'Version not supported')
+        if method in _UNSUPPORTED_METHODS:
+            code = _UNSUPPORTED_METHODS[method][1]
+            raise A2AError(code, 'Push notifications are not supported' if code == -32003 else 'This operation is not supported')
         params = payload.get('params', {})
         if not isinstance(params, dict):
             raise A2AError(-32602, 'Invalid parameters')
@@ -58,7 +103,7 @@ async def machine_task_rpc(agent_id: uuid.UUID, request: Request,
         for artifact in task.get('artifacts', []):
             for part in artifact.get('parts', []):
                 if 'url' in part:
-                    part['url'] = str(request.url_for('machine_task_artifact', agent_id=agent_id,
+                    part['url'] = str(machine_route_url(request, 'machine_task_artifact', agent_id=agent_id,
                         task_id=task['id'], artifact_id=artifact['artifactId']))
         await db.commit()
         return JSONResponse({'jsonrpc': '2.0', 'id': request_id, 'result': result}, headers={'Cache-Control': 'no-store', 'A2A-Version': '1.0'})

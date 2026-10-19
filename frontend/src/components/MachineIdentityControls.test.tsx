@@ -73,6 +73,7 @@ it('issues only explicitly selected task permissions and shows the task endpoint
   await screen.findByLabelText('New machine secret');
   expect(issue.mock.calls[0][1].scopes).toEqual(['agent.describe', 'agent.execute', 'task.read', 'task.cancel']);
   expect(screen.getByText('/api/agents/employee/a2a/rpc')).toBeTruthy();
+  expect(screen.getByText('/api/agents/employee/a2a/.well-known/agent-card.json')).toBeTruthy();
   expect(screen.getByText('agent.describe, agent.execute, task.read, task.cancel')).toBeTruthy();
 });
 

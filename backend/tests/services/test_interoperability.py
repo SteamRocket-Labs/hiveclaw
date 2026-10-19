@@ -36,6 +36,8 @@ def test_build_a2a_agent_card_exposes_identity_auth_without_legacy_gateway() -> 
     assert all(scheme.get("name") != "X-Api-Key" for scheme in card["authentication"]["schemes"])
     assert card["authentication"]["oauth_delegation"]["status"] == "not_exposed"
     assert card["capabilities"]["agent_to_agent_messages"] is True
+    assert card["capabilities"]["json_rpc_tasks"]["status"] == "machine_authenticated"
+    assert card["endpoints"]["machine_card"] == f"https://hive.example/api/v1/agents/{agent_id}/a2a/.well-known/agent-card.json"
     assert card["hive"]["agent_id"] == str(agent_id)
     assert card["hive"]["tenant_id"] == str(tenant_id)
     assert card["hive"]["participant_id"] == str(participant_id)
@@ -53,7 +55,8 @@ def test_build_interoperability_profile_is_machine_readable_and_honest() -> None
     assert profile["standards"]["mcp"]["oauth_authorization_client"]["pkce"] == "S256"
     assert "PKCE authorization flow" not in profile["standards"]["mcp"]["oauth_resource_server"]["missing"]
     assert profile["standards"]["a2a"]["agent_card_endpoint"] == "/api/v1/agents/{agent_id}/a2a-card"
-    assert profile["standards"]["a2a"]["json_rpc_tasks"]["status"] == "not_exposed"
+    assert profile["standards"]["a2a"]["json_rpc_tasks"]["status"] == "machine_authenticated"
+    assert profile["standards"]["a2a"]["machine_agent_card_endpoint"] == "/api/v1/agents/{agent_id}/a2a/.well-known/agent-card.json"
     assert profile["standards"]["oauth_delegation"]["status"] == "not_exposed"
     assert "unsupported" not in profile["standards"]["a2a"]["json_rpc_tasks"]
     assert "gateway" not in str(profile).lower()

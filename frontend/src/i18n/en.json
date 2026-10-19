@@ -6,6 +6,7 @@
     "read": "Read task status and files",
     "cancel": "Cancel queued or running tasks",
     "permissionRequired": "Choose at least one permission.",
+    "agentCard": "Agent Card endpoint",
     "taskEndpoint": "Task endpoint",
     "title": "Machine access",
     "scope": "Choose separate permissions for the employee description, task execution, results, and cancellation.",

@@ -46,7 +46,15 @@ it('issues from the real A2A tab, uses a distinct machine credential, and revoke
     expect(details.interoperability.a2a_tasks.methods).toEqual({
       SendMessage: 'agent.execute', GetTask: 'task.read', CancelTask: 'task.cancel',
     });
-    const taskPath = new URL(details.interoperability.a2a_tasks.rpc_url).pathname;
+    const cardPath = new URL(details.interoperability.a2a_tasks.agent_card_url).pathname;
+    expect(cardPath).toBe(`/api/agents/${agentId}/a2a/.well-known/agent-card.json`);
+    expect(screen.getByText(cardPath)).toBeTruthy();
+    const discovery = await fetch(cardPath, { headers: { Authorization: `Bearer ${machineToken}` } });
+    expect(discovery.status).toBe(200);
+    const card = await discovery.json();
+    expect(card.supportedInterfaces[0].protocolBinding).toBe('JSONRPC');
+    expect(card.supportedInterfaces[0].protocolVersion).toBe('1.0');
+    const taskPath = new URL(card.supportedInterfaces[0].url).pathname;
     expect(taskPath).toBe(`/api/agents/${agentId}/a2a/rpc`);
     const headers = { Authorization: `Bearer ${machineToken}`, 'A2A-Version': '1.0', 'Content-Type': 'application/json' };
     const submit = await fetch(taskPath, { method: 'POST', headers, body: JSON.stringify({

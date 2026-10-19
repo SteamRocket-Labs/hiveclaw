@@ -6,6 +6,7 @@
     "read": "读取任务状态和文件",
     "cancel": "取消排队中或执行中的任务",
     "permissionRequired": "请至少选择一项权限。",
+    "agentCard": "Agent Card 地址",
     "taskEndpoint": "任务接口",
     "title": "机器身份访问",
     "scope": "为集成分别选择员工简介、任务执行、成果读取和取消权限。",

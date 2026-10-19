@@ -67,12 +67,14 @@ async def get_machine_description(agent_id: uuid.UUID, request: Request, respons
         raise HTTPException(401, detail='Machine credential required', headers={'WWW-Authenticate': 'Bearer'})
     context, agent = await service.authenticate_machine(db, token=token, agent_id=agent_id, scope='agent.describe')
     from app.services.a2a_machine_tasks import MACHINE_TASK_METHOD_SCOPES
+    from app.api.a2a_tasks import machine_route_url
 
     payload = {'schema': 'hive.machine_agent_description.v1',
         'agent': {'id': str(agent.id), 'name': agent.name, 'description': agent.role_description or agent.bio or ''},
         'principal_id': str(context.principal_id), 'scopes': list(context.scopes),
         'interoperability': {'a2a_tasks': {'status': 'available', 'protocol_version': '1.0', 'transport': 'JSONRPC',
-            'rpc_url': str(request.url_for('machine_task_rpc', agent_id=agent.id)),
+            'rpc_url': str(machine_route_url(request, 'machine_task_rpc', agent_id=agent.id)),
+            'agent_card_url': str(machine_route_url(request, 'machine_agent_card', agent_id=agent.id)),
             'methods': {method: scope for method, scope in MACHINE_TASK_METHOD_SCOPES.items() if scope in context.scopes},
             'inputs': {'text': True, 'files': False}, 'outputs': {'text': True, 'captured_files': True},
             'history': 'logical_task', 'streaming': False, 'push_notifications': False}}}

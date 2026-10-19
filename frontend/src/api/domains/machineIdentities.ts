@@ -23,5 +23,6 @@ export const machineIdentitiesApi = {
   revoke: (agentId: string, id: string, body: MachineFrame) =>
     post<{ id: string; agent_id: string; status: 'revoked'; revoked_at: string }>(`/agents/${agentId}/machine-identities/${id}/revoke`, body),
   descriptionPath: (agentId: string) => `/api/agents/${encodeURIComponent(agentId)}/machine-description`,
+  cardPath: (agentId: string) => `/api/agents/${encodeURIComponent(agentId)}/a2a/.well-known/agent-card.json`,
   taskPath: (agentId: string) => `/api/agents/${encodeURIComponent(agentId)}/a2a/rpc`,
 };

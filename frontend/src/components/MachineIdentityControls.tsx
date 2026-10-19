@@ -148,6 +148,7 @@ function Access({ agentId, actorId, tenantId }: { agentId: string; actorId: stri
         <button className="btn btn-secondary" type="button" onClick={() => setSecret(null)}>{t('machineAccess.hide', 'Dismiss secret')}</button>
       </div>}
       <p>{t('machineAccess.endpoint', 'Employee description endpoint')}: <code>{machineIdentitiesApi.descriptionPath(agentId)}</code></p>
+      <p>{t('machineAccess.agentCard', 'Agent Card endpoint')}: <code>{machineIdentitiesApi.cardPath(agentId)}</code></p>
       <p>{t('machineAccess.taskEndpoint', 'Task endpoint')}: <code>{machineIdentitiesApi.taskPath(agentId)}</code> · A2A-Version: 1.0</p>
       {query.data.identities.map((identity) => <div key={identity.credential_id}>
         <p>{identity.name} · {statusLabels[identity.status] || identity.status}</p>

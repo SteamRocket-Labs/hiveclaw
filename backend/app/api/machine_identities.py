@@ -75,7 +75,7 @@ async def get_machine_description(agent_id: uuid.UUID, request: Request, respons
             'rpc_url': str(request.url_for('machine_task_rpc', agent_id=agent.id)),
             'methods': {method: scope for method, scope in MACHINE_TASK_METHOD_SCOPES.items() if scope in context.scopes},
             'inputs': {'text': True, 'files': False}, 'outputs': {'text': True, 'captured_files': True},
-            'history': 'current_run', 'streaming': False, 'push_notifications': False}}}
+            'history': 'logical_task', 'streaming': False, 'push_notifications': False}}}
     await db.commit()
     response.headers['Cache-Control'] = 'no-store'
     return payload

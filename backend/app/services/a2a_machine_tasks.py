@@ -5,7 +5,7 @@ import hashlib
 import json
 import uuid
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert
 
 from app.models.channel_ingress_event import ChannelIngressEvent
@@ -100,6 +100,89 @@ async def _cancelled_machine_input(db, context, public_task_id, task):
         .order_by(SessionTurnInput.queue_ordinal.desc()).limit(1))
 
 
+def _machine_input_message(context, public_task_id, session_id, row, command):
+    original = ((command.target_json or {}).get('runtime_metadata') or {}).get('a2a_input_message') or {}
+    message_id = original.get('messageId')
+    if (not isinstance(message_id, str) or not message_id
+        or uuid.uuid5(context.principal_id, 'a2a-message:' + message_id) != row.id):
+        raise A2AError(-32603, 'Committed task input identity is unavailable')
+    # The canonical input has passed the trusted ingress secret boundary.
+    # Raw transport metadata must never undo its exact-byte redactions.
+    parts = [{'text': part['text']} for part in row.content_parts_json or []
+        if isinstance(part, dict) and part.get('type') == 'text' and isinstance(part.get('text'), str)]
+    if not parts:
+        raise A2AError(-32603, 'Committed task input is unavailable')
+    return {'messageId': message_id, 'contextId': str(session_id), 'taskId': str(public_task_id),
+        'role': 'ROLE_USER', 'parts': parts}
+
+
+def _machine_question_message(question, public_task_id, session_id):
+    details = (question.metadata_json or {}).get('v2_payload') or {}
+    return {'messageId': str(question.id), 'contextId': str(session_id), 'taskId': str(public_task_id),
+        'role': 'ROLE_AGENT', 'parts': [{'data': {'requestItemId': str(question.item_id),
+            'questions': details.get('questions', [])}, 'mediaType': 'application/json'}]}
+
+
+async def _machine_task_history(db, context, public_task_id, task, *, semantic_history=None):
+    """Project one logical task from its original commands and canonical journal."""
+    from app.models.session_v2 import SessionCommand, SessionTurnInput
+    from app.services.session_semantic_history import load_session_semantic_history
+    from app.services.session_user_question import question_payload, question_requester_matches
+
+    session_id = _uuid(task.parent_session_id)
+    runs = list(await db.scalars(select(RuntimeTask).where(RuntimeTask.tenant_id == context.tenant_id,
+        RuntimeTask.parent_agent_id == context.agent_id, RuntimeTask.parent_session_id == str(session_id),
+        RuntimeTask.root_runtime_task_id == public_task_id, RuntimeTask.root_user_id.is_(None),
+        RuntimeTask.root_external_principal_id == context.principal_id,
+        RuntimeTask.machine_credential_id == task.machine_credential_id, RuntimeTask.task_type != 'approval_execution')))
+    by_run = {run.id: run for run in runs}
+    events = list(await db.scalars(select(ChatTranscriptEvent).where(
+        ChatTranscriptEvent.tenant_id == context.tenant_id, ChatTranscriptEvent.agent_id == context.agent_id,
+        ChatTranscriptEvent.session_id == session_id, ChatTranscriptEvent.run_id.in_(by_run))
+        .order_by(ChatTranscriptEvent.sequence)))
+    allowed_events = {str(event.id) for event in events}
+    candidates = list((await db.execute(select(SessionTurnInput, SessionCommand).join(SessionCommand,
+        SessionCommand.id == SessionTurnInput.command_id).where(SessionTurnInput.tenant_id == context.tenant_id,
+        SessionCommand.tenant_id == context.tenant_id, SessionTurnInput.session_id == session_id,
+        SessionCommand.session_id == session_id, SessionCommand.principal_type == 'external_principal',
+        SessionCommand.principal_id == context.principal_id,
+        SessionCommand.target_json['session_command_authority']['schema'].astext == 'hive.session_command_authority.machine.v1',
+        SessionCommand.target_json['session_command_authority']['credential_id'].astext == str(task.machine_credential_id),
+        SessionCommand.target_json['runtime_metadata']['source'].astext == 'a2a'))).all())
+    run_ids = {str(run_id) for run_id in by_run}
+    inputs = [(row, command) for row, command in candidates
+        if uuid.uuid5(row.id, 'session-v2-runtime-run') in by_run
+        or ((command.target_json or {}).get('runtime_metadata') or {}).get('root_runtime_task_id') == str(public_task_id)
+        or (row.intent in {'answer_request', 'steer_current_turn'}
+            and (str(row.target_run_id) in run_ids or (command.target_json or {}).get('expected_run_id') in run_ids))]
+    if not any(uuid.uuid5(row.id, 'session-v2-runtime-run') == public_task_id for row, _command in inputs):
+        raise A2AError(-32603, 'Committed task input identity is unavailable')
+    sequences = dict((await db.execute(select(ChatTranscriptEvent.input_id, func.min(ChatTranscriptEvent.sequence))
+        .where(ChatTranscriptEvent.tenant_id == context.tenant_id, ChatTranscriptEvent.agent_id == context.agent_id,
+            ChatTranscriptEvent.session_id == session_id, ChatTranscriptEvent.input_id.in_([row.id for row, _command in inputs]),
+            ChatTranscriptEvent.item_kind == 'human_input', ChatTranscriptEvent.lifecycle == 'accepted')
+        .group_by(ChatTranscriptEvent.input_id))).all())
+    ordered = []
+    for row, command in inputs:
+        if row.id not in sequences:
+            raise A2AError(-32603, 'Committed task input order is unavailable')
+        ordered.append((sequences[row.id], _machine_input_message(context, public_task_id, session_id, row, command)))
+    questions = set()
+    for event in events:
+        if (event.item_kind == 'user_question' and event.lifecycle in {'created', 'waiting'}
+            and event.item_id not in questions and question_requester_matches(by_run[event.run_id], question_payload(event))):
+            questions.add(event.item_id)
+            ordered.append((event.sequence, _machine_question_message(event, public_task_id, session_id)))
+    if semantic_history is None:
+        semantic_history = await load_session_semantic_history(db, tenant_id=context.tenant_id,
+            agent_id=context.agent_id, session_id=session_id)
+    for message in semantic_history.messages:
+        if message.role == 'assistant' and message.content and allowed_events.intersection(message.source_event_ids):
+            ordered.append((message.sequence, {'messageId': message.id, 'contextId': str(session_id),
+                'taskId': str(public_task_id), 'role': 'ROLE_AGENT', 'parts': [{'text': message.content}]}))
+    return [message for _sequence, message in sorted(ordered, key=lambda item: (item[0], item[1]['messageId']))]
+
+
 async def _machine_task_artifacts(db, context, task):
     """Read the committed selection, never enumerate the agent's workspace."""
     from app.models.chat_artifact import ChatArtifact
@@ -174,7 +257,7 @@ async def get_machine_task(db, context, task_id, *, history_length=None):
         payload = {'id': str(task_id), 'contextId': str(ingress.result_session_id), 'status': {'state': state},
             'metadata': {'hive': {'admissionStatus': admission.state, 'dispatchStatus': admission.dispatch_state}}}
         if history_length != 0:
-            payload['history'] = [{**ingress.payload_json['message'], 'taskId': str(task_id), 'contextId': payload['contextId']}]
+            payload['history'] = [_machine_input_message(context, public_task_id, ingress.result_session_id, row, command)]
         return payload
     states = {'pending': 'TASK_STATE_SUBMITTED', 'running': 'TASK_STATE_WORKING',
         'completed': 'TASK_STATE_COMPLETED', 'failed': 'TASK_STATE_FAILED', 'killed': 'TASK_STATE_CANCELED',
@@ -183,9 +266,7 @@ async def get_machine_task(db, context, task_id, *, history_length=None):
         ChatTranscriptEvent.agent_id == context.agent_id, ChatTranscriptEvent.run_id == task.id,
         ChatTranscriptEvent.event_type.in_(['assistant_message', 'user_message']))
         .order_by(ChatTranscriptEvent.sequence)))
-    messages = [{'messageId': str(row.id), 'contextId': str(row.session_id), 'taskId': str(public_task_id),
-        'role': 'ROLE_USER' if row.event_type == 'user_message' else 'ROLE_AGENT',
-        'parts': [{'text': row.content}]} for row in events]
+    semantic_history = None
     payload = {'id': str(public_task_id), 'contextId': task.parent_session_id,
         'status': {'state': states.get(task.status, 'TASK_STATE_UNSPECIFIED')},
         'metadata': {'hive': {'runtimeStatus': task.status}}}
@@ -204,11 +285,7 @@ async def get_machine_task(db, context, task_id, *, history_length=None):
     if payload['status']['state'] == 'TASK_STATE_INPUT_REQUIRED':
         question = await _machine_question(db, task)
         if question is not None:
-            details = dict((question.metadata_json or {}).get('v2_payload') or {})
-            payload['status']['message'] = {'messageId': str(question.id), 'contextId': task.parent_session_id,
-                'taskId': str(public_task_id), 'role': 'ROLE_AGENT', 'parts': [
-                    {'data': {'requestItemId': str(question.item_id), 'questions': details.get('questions', [])},
-                        'mediaType': 'application/json'}]}
+            payload['status']['message'] = _machine_question_message(question, public_task_id, task.parent_session_id)
     # Full durable assistant bytes, never RuntimeTask.result_summary's bounded projection.
     outputs = [row for row in events if row.event_type == 'assistant_message']
     if payload['status']['state'] == 'TASK_STATE_COMPLETED' and outputs:
@@ -223,21 +300,20 @@ async def get_machine_task(db, context, task_id, *, history_length=None):
             SessionRunOutcome.state == 'terminal_committed'))
         if outcome is None:
             raise A2AError(-32603, 'Committed task result is unavailable')
-        history = await load_session_semantic_history(db, tenant_id=context.tenant_id, agent_id=context.agent_id,
+        semantic_history = await load_session_semantic_history(db, tenant_id=context.tenant_id, agent_id=context.agent_id,
             session_id=_uuid(task.parent_session_id))
-        final = next((message for message in history.messages
+        final = next((message for message in semantic_history.messages
             if message.id == f'session-model-result:{outcome.terminal_result_id}' and message.role == 'assistant'), None)
         if final is None:
             raise A2AError(-32603, 'Committed task result is unavailable')
         payload['artifacts'] = [{'artifactId': str(outcome.id), 'name': 'Response', 'parts': [{'text': final.content or ''}]}]
-        messages.append({'messageId': final.id, 'contextId': task.parent_session_id, 'taskId': str(public_task_id),
-            'role': 'ROLE_AGENT', 'parts': [{'text': final.content or ''}]})
     if payload['status']['state'] == 'TASK_STATE_COMPLETED':
         artifacts = await _machine_task_artifacts(db, context, task)
         payload.setdefault('artifacts', []).extend({'artifactId': str(row.id), 'name': row.name,
             'parts': [{'url': f'/agents/{context.agent_id}/a2a/tasks/{public_task_id}/artifacts/{row.id}',
                 'filename': row.name, 'mediaType': row.mime_type or 'application/octet-stream'}]} for row in artifacts)
     if history_length != 0:
+        messages = await _machine_task_history(db, context, public_task_id, task, semantic_history=semantic_history)
         payload['history'] = messages if history_length is None else messages[-history_length:]
     return payload
 
@@ -337,7 +413,30 @@ async def cancel_machine_task(db, context, agent, task_id):
     return result
 
 
-async def send_machine_message(db, context, agent, params):
+async def _protect_machine_ingress(db, context, immutable, bearer_secret):
+    from app.services.credential_boundary_loader import (
+        RuntimeIngressSecretBoundaryUnavailable, exact_secret_redaction_receipt, load_runtime_ingress_secret_boundary,
+    )
+    from app.services.exact_secret_boundary import ExactSecretBoundary
+
+    try:
+        inventory = await load_runtime_ingress_secret_boundary(db, tenant_id=context.tenant_id, agent_id=context.agent_id)
+    except RuntimeIngressSecretBoundaryUnavailable as exc:
+        raise A2AError(-32603, 'Task ingress credential boundary is unavailable') from exc
+    boundary = ExactSecretBoundary.combine(inventory, ExactSecretBoundary.from_pairs([
+        (f'machine-credential://{context.credential_id}/token', bearer_secret)]))
+    redaction = boundary.redact_payload_with_evidence(immutable)
+    protected = redaction.value
+    message = protected.get('message') or {}
+    if (not isinstance(message, dict) or any(message.get(key) != immutable['message'].get(key)
+        for key in ('messageId', 'taskId', 'contextId', 'role'))
+        or not isinstance(message.get('parts'), list)
+        or any(not isinstance(part, dict) or not isinstance(part.get('text'), str) for part in message['parts'])):
+        raise A2AError(-32602, 'Invalid message identity or target')
+    return protected, exact_secret_redaction_receipt(redaction, phase='a2a_machine_message')
+
+
+async def send_machine_message(db, context, agent, params, *, bearer_secret):
     from app.services.session_live_input import submit_live_human_input
 
     message = params.get('message')
@@ -360,7 +459,10 @@ async def send_machine_message(db, context, agent, params):
     if 'returnImmediately' in configuration and type(configuration['returnImmediately']) is not bool:
         raise A2AError(-32602, 'Invalid returnImmediately value')
     immutable = {'message': message, 'metadata': params.get('metadata')}
-    encoded = json.dumps(immutable, ensure_ascii=False, sort_keys=True, separators=(',', ':'), allow_nan=False)
+    try:
+        encoded = json.dumps(immutable, ensure_ascii=False, sort_keys=True, separators=(',', ':'), allow_nan=False)
+    except (TypeError, ValueError):
+        raise A2AError(-32602, 'Invalid parameters') from None
     digest = hashlib.sha256(encoded.encode()).hexdigest()
     input_id = uuid.uuid5(context.principal_id, 'a2a-message:' + message['messageId'])
     run_id = uuid.uuid5(input_id, 'session-v2-runtime-run')
@@ -392,7 +494,13 @@ async def send_machine_message(db, context, agent, params):
             or metadata.get('a2a_message_hash') != digest):
             raise A2AError(-32602, 'Message identity conflicts with an existing request')
         session = await db.get(ChatSession, admitted.session_id, populate_existing=True)
+        immutable = {'message': metadata.get('a2a_input_message') or {}, 'metadata': metadata.get('a2a_request_metadata')}
         replayed = True
+    immutable, ingress_redaction = await _protect_machine_ingress(db, context, immutable, bearer_secret)
+    message = immutable['message']
+    content = '\n'.join(part['text'] for part in message['parts'])
+    if replayed:
+        pass
     elif message.get('taskId'):
         current = await get_machine_task(db, context, public_task_id, history_length=0)
         from app.services.chat_transcript import lock_transcript_session
@@ -438,7 +546,9 @@ async def send_machine_message(db, context, agent, params):
             **({'requested_kind': 'answer_request', 'request_item_id': question.item_id,
                 'expected_run_id': question.run_id} if question is not None else {}),
             runtime_metadata={'source': 'a2a', 'channel': 'a2a', 'a2a_message_hash': digest,
-                'a2a_input_message': message, **continuation_metadata})
+                'a2a_input_message': message, 'a2a_request_metadata': immutable.get('metadata'),
+                **({'exact_secret_ingress_redaction': ingress_redaction} if ingress_redaction is not None else {}),
+                **continuation_metadata})
     task = await db.get(RuntimeTask, run_id, populate_existing=True)
     values = dict(id=uuid.uuid5(run_id, 'ingress'), tenant_id=context.tenant_id, agent_id=context.agent_id,
         provider='a2a', installation_ref=f'machine:{context.principal_id}', provider_event_id=message['messageId'],

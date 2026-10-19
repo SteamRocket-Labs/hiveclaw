@@ -47,7 +47,7 @@ async def machine_task_rpc(agent_id: uuid.UUID, request: Request,
         if history_length is not None and (type(history_length) is not int or history_length < 0):
             raise A2AError(-32602, 'Invalid history length')
         if method == 'SendMessage':
-            result = await send_machine_message(db, context, agent, params)
+            result = await send_machine_message(db, context, agent, params, bearer_secret=token)
             if config.get('returnImmediately') is not True:
                 result = {'task': await wait_for_machine_task(db, context, result['task'], history_length=history_length)}
         elif method == 'GetTask':

@@ -54,6 +54,7 @@ async def test_machine_message_enters_real_shared_runtime_once_without_a_user_al
     assert response.status_code == 200 and 'result' in response.json(), response.text
     task = response.json()['result']['task']
     assert task['status']['state'] == 'TASK_STATE_SUBMITTED'
+    assert task['history'] == [{**request['params']['message'], 'taskId': task['id'], 'contextId': task['contextId']}]
     repeated = await api.post(path, json={**request, 'id': 'different-rpc-id'}, headers=headers)
     assert repeated.status_code == 200 and repeated.json()['result']['task']['id'] == task['id']
     changed = _send('An unrelated replacement.', message_id=request['params']['message']['messageId'])
@@ -83,6 +84,7 @@ async def test_description_grant_does_not_silently_acquire_task_authority(machin
         'Authorization': 'Bearer ' + issued.json()['token']})
     transport = description.json()['interoperability']['a2a_tasks']
     assert transport['status'] == 'available' and transport['methods'] == {}
+    assert transport['history'] == 'logical_task'
     assert transport['streaming'] is False and transport['push_notifications'] is False
     denied = await api.post(f"/agents/{seed['agent']}/a2a/rpc", json=_send(), headers={
         'Authorization': 'Bearer ' + issued.json()['token'], 'A2A-Version': '1.0'})
@@ -109,6 +111,53 @@ async def test_machine_description_methods_consume_the_advertised_route_under_ex
         'method': 'CancelTask', 'params': {'id': task_id}}, headers=headers)
     assert cancelled.json()['result']['status']['state'] == 'TASK_STATE_SUBMITTED', cancelled.text
     assert cancelled.json()['result']['metadata']['hive']['cancellationStatus'] == 'applying'
+
+
+async def test_machine_history_and_receipts_preserve_exact_ingress_secret_protection(
+    machine_api, owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path,
+):
+    from app.models.agent import Agent
+    from app.models.llm import LLMModel
+    from app.models.session_v2 import SessionCommand, SessionTurnInput
+    from app.services.secrets_provider import get_secrets_provider
+
+    seed, api = machine_api
+    await _prepare_native_machine(seed, owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path)
+    issued = await api.post(f"/agents/{seed['agent']}/machine-identities", json={**_issue(seed),
+        'scopes': ['agent.execute', 'task.read']})
+    identity = issued.json()
+    bearer = identity['token']
+    model_secret = 'synthetic-machine-only'
+    headers = {'Authorization': 'Bearer ' + bearer, 'A2A-Version': '1.0'}
+    request = _send(f'Keep {model_secret} and {bearer} out of the prompt. Preserve api_key=sk-example-not-authority.')
+    request['params']['metadata'] = {bearer: model_secret}
+    request['params']['message']['parts'][0]['metadata'] = {'private': model_secret}
+    path = f"/agents/{seed['agent']}/a2a/rpc"
+    response = await api.post(path, json=request, headers=headers)
+    assert response.status_code == 200 and 'result' in response.json(), response.text
+    task = response.json()['result']['task']
+    text = task['history'][0]['parts'][0]['text']
+    assert model_secret not in text and bearer not in text
+    assert 'api_key=sk-example-not-authority' in text and text.count('[REDACTED_SECRET]') == 2
+    async with tenant_scoped_session(seed['tenant'], session_factory=app_user_sessionmaker) as db:
+        run = await db.get(RuntimeTask, UUID(task['id']))
+        ingress = await db.get(ChannelIngressEvent, uuid5(UUID(task['id']), 'ingress'))
+        row = await db.get(SessionTurnInput, uuid5(UUID(identity['id']), 'a2a-message:' + request['params']['message']['messageId']))
+        command = await db.get(SessionCommand, row.command_id)
+        stored = json.dumps([run.metadata_json, ingress.payload_json, command.target_json, row.content_parts_json])
+        assert model_secret not in stored and bearer not in stored
+    async with owner_sessionmaker() as db:
+        agent = await db.get(Agent, seed['agent'])
+        model = await db.get(LLMModel, agent.primary_model_id)
+        model.api_key_encrypted = get_secrets_provider().encrypt('synthetic-rotated-machine-only')
+        await db.commit()
+    replayed = await api.post(path, json=request, headers=headers)
+    assert replayed.json()['result']['task']['id'] == task['id'], replayed.text
+    assert replayed.json()['result']['task']['history'] == task['history']
+    invalid_id = await api.post(path, json=_send('A separate request.', message_id=bearer), headers=headers)
+    assert invalid_id.json().get('error', {}).get('code') == -32602, invalid_id.text
+    async with tenant_scoped_session(seed['tenant'], session_factory=app_user_sessionmaker) as db:
+        assert await db.scalar(select(func.count(RuntimeTask.id)).where(RuntimeTask.parent_agent_id == seed['agent'])) == 1
 
 
 async def _prepare_native_machine(seed, owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path):
@@ -282,7 +331,8 @@ async def test_machine_can_deliver_a_consumed_file_from_an_earlier_work_in_its_c
             'arguments': json.dumps({'path': 'workspace/source.txt'})}}], 'finish_reason': 'tool_calls'},
         {'content': 'DELIVERABLE: workspace/source.txt\n[Consumed source](workspace/source.txt)', 'finish_reason': 'stop'}])
     monkeypatch.setattr(invoker, 'create_llm_client', lambda **_kwargs: model)
-    first = await api.post(rpc, json=_send('Save the partner source for another work item.'), headers=headers)
+    first_request = _send('Save the partner source for another work item.')
+    first = await api.post(rpc, json=first_request, headers=headers)
     prior = first.json()['result']['task']
     await _run_native_machine_task(seed, UUID(prior['id']), app_user_sessionmaker)
     from app.services.runtime_task_worker import drain_web_terminal_boundary_outbox_once
@@ -308,6 +358,12 @@ async def test_machine_can_deliver_a_consumed_file_from_an_earlier_work_in_its_c
     current = await api.post(rpc, json={'jsonrpc': '2.0', 'id': 'read-file', 'method': 'GetTask',
         'params': {'id': task['id']}}, headers=headers)
     assert current.json()['result']['status']['state'] == 'TASK_STATE_COMPLETED', current.text
+    history = current.json()['result']['history']
+    assert [row['role'] for row in history] == ['ROLE_USER', 'ROLE_AGENT']
+    assert history[0]['messageId'] == request['params']['message']['messageId']
+    assert first_request['params']['message']['messageId'] not in {row['messageId'] for row in history}
+    assert 'The source is saved for the next work item.' not in json.dumps(history)
+    assert 'Partner source with its original provenance.' not in json.dumps(history, ensure_ascii=False)
     artifact = next(row for row in current.json()['result']['artifacts'] if row['artifactId'] == str(rows[0].id))
     download = await api.get(artifact['parts'][0]['url'], headers=headers)
     assert download.status_code == 200 and download.content == content.encode(), download.text
@@ -359,6 +415,10 @@ async def test_machine_question_returns_to_caller_and_blocking_answer_keeps_task
     assert task['status']['message']['role'] == 'ROLE_AGENT'
     card = next(part['data'] for part in task['status']['message']['parts'] if 'data' in part)
     assert card['questions'] == questions and UUID(card['requestItemId'])
+    assert task['history'] == [
+        {**body['params']['message'], 'taskId': original['id'], 'contextId': original['contextId']},
+        task['status']['message'],
+    ]
     other = await api.post(f"/agents/{seed['agent']}/machine-identities", json={**_issue(seed),
         'scopes': ['agent.execute', 'task.read']})
     foreign = _send('An answer from another principal.')
@@ -421,6 +481,8 @@ async def test_machine_question_returns_to_caller_and_blocking_answer_keeps_task
             stopped = await asyncio.wait_for(request, 15)
             assert stopped.json()['result']['task']['id'] == original['id']
             assert stopped.json()['result']['task']['status']['state'] == 'TASK_STATE_CANCELED', stopped.text
+            assert [row['messageId'] for row in stopped.json()['result']['task']['history']] == [
+                body['params']['message']['messageId'], task['status']['message']['messageId'], answer['params']['message']['messageId']]
             assert not (Path(get_settings().AGENT_DATA_DIR) / str(seed['agent']) / 'workspace/after-answer-stop.md').exists()
             async with tenant_scoped_session(seed['tenant'], session_factory=app_user_sessionmaker) as db:
                 controls = list(await db.scalars(select(SessionControlInput).where(SessionControlInput.session_id == UUID(original['contextId']))))
@@ -433,6 +495,20 @@ async def test_machine_question_returns_to_caller_and_blocking_answer_keeps_task
         result = completed.json()['result']['task']
         assert result['id'] == original['id'] and result['contextId'] == original['contextId']
         assert result['status']['state'] == 'TASK_STATE_COMPLETED' and result['artifacts'][0]['parts'] == [{'text': final}]
+        history = result['history']
+        assert len(history) == 4 and [row['role'] for row in history] == ['ROLE_USER', 'ROLE_AGENT', 'ROLE_USER', 'ROLE_AGENT']
+        assert [row['messageId'] for row in history[:3]] == [body['params']['message']['messageId'],
+            task['status']['message']['messageId'], answer['params']['message']['messageId']]
+        assert history[-1]['parts'] == [{'text': final}]
+        assert all(row['taskId'] == original['id'] and row['contextId'] == original['contextId'] for row in history)
+        for count in (0, 1, 2, 10):
+            read = await api.post(path, json={'jsonrpc': '2.0', 'id': 'history-' + str(count), 'method': 'GetTask',
+                'params': {'id': original['id'], 'historyLength': count}}, headers=headers)
+            assert read.status_code == 200 and 'result' in read.json(), read.text
+            if count:
+                assert read.json()['result']['history'] == history[-count:]
+            else:
+                assert 'history' not in read.json()['result']
         repeated = await api.post(path, json={**answer, 'id': 'repeated-answer'}, headers=headers)
         assert repeated.json()['result']['task']['id'] == original['id'] and len(model.requests) == 2
         later = _send('Start another task with this completed task ID.')
@@ -489,6 +565,7 @@ async def test_machine_answer_survives_transport_receipt_loss_and_terminal_bound
     assert paused.json()['result']['status']['state'] == 'TASK_STATE_INPUT_REQUIRED', paused.text
     answer = _send('External partners.')
     answer['params']['message']['taskId'] = str(root_id)
+    answer['params']['metadata'] = {'credential': identity['token'], 'provider_key': 'synthetic-machine-only'}
     actual_insert = transport.insert
     fail_once = True
     def fail_transport_receipt(model_type):
@@ -506,9 +583,28 @@ async def test_machine_answer_survives_transport_receipt_loss_and_terminal_bound
         row = await db.get(SessionTurnInput, input_id)
         assert row is not None and row.intent == 'answer_request' and row.status == 'rolled_over'
         assert await db.get(ChannelIngressEvent, uuid5(uuid5(input_id, 'session-v2-runtime-run'), 'ingress')) is None
+    from app.models.agent import Agent
+    from app.models.llm import LLMModel
+    from app.services.secrets_provider import get_secrets_provider
+
+    async with owner_sessionmaker() as db:
+        agent = await db.get(Agent, seed['agent'])
+        configured = await db.get(LLMModel, agent.primary_model_id)
+        configured.api_key_encrypted = get_secrets_provider().encrypt('synthetic-recovered-machine-only')
+        await db.commit()
+    before_replay = await api.post(path, json={'jsonrpc': '2.0', 'id': 'read-without-receipt', 'method': 'GetTask',
+        'params': {'id': str(root_id)}}, headers=headers)
+    history_before_replay = before_replay.json()['result']['history']
+    assert [row['messageId'] for row in history_before_replay] == [started.json()['result']['task']['history'][0]['messageId'],
+        paused.json()['result']['status']['message']['messageId'], answer['params']['message']['messageId']]
     replayed = await api.post(path, json=answer, headers=headers)
     assert replayed.status_code == 200 and replayed.json()['result']['task']['id'] == original['id'], replayed.text
     assert replayed.json()['result']['task']['status']['state'] == 'TASK_STATE_SUBMITTED', replayed.text
+    assert replayed.json()['result']['task']['history'] == history_before_replay
+    async with tenant_scoped_session(seed['tenant'], session_factory=app_user_sessionmaker) as db:
+        ingress = await db.get(ChannelIngressEvent, uuid5(uuid5(input_id, 'session-v2-runtime-run'), 'ingress'))
+        persisted = json.dumps(ingress.payload_json)
+        assert identity['token'] not in persisted and 'synthetic-machine-only' not in persisted
     if cancel_queued:
         import asyncio
         from app.services.session_event_outbox import SessionEventOutboxPublisher

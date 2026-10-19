@@ -56,6 +56,7 @@ _UNBOUND_RUNTIME_TASK_RESERVATION_GRACE = timedelta(hours=24)
 _OUTER_RUNTIME_TASK_ACTUALS = {
     "subagent": {"subagents": 1, "background_tasks": 1},
     "delegation": {"delegations": 1, "background_tasks": 1},
+    "remote_a2a": {"delegations": 1, "background_tasks": 1},
     "trigger": {"background_tasks": 1},
     "workflow": {"background_tasks": 1},
 }
@@ -257,7 +258,8 @@ async def assert_runtime_task_budget_reservation_open(
 ) -> RuntimeTask | None:
     """Lock the budget handoff and return an already-durable exact task, if any."""
 
-    run = await db.scalar(select(RuntimeBudgetRun).where(RuntimeBudgetRun.id == budget_run_id).with_for_update())
+    run = await db.scalar(select(RuntimeBudgetRun).where(RuntimeBudgetRun.id == budget_run_id)
+        .with_for_update().execution_options(populate_existing=True))
     if run is None:
         raise RuntimeBudgetSettlementConflict(f"runtime budget run missing for RuntimeTask {runtime_task_id}")
     if str(run.status) != "active":
@@ -2145,6 +2147,16 @@ class RuntimeBudgetService:
         terminal_at = completed_at or datetime.now(UTC)
         for task in tasks:
             metadata = dict(task.metadata_json or {})
+            remote = metadata.get("remote_a2a") if task.task_type == "remote_a2a" else None
+            if isinstance(remote, dict) and (remote.get("remote_task_id") or any(
+                operation.get("phase") in {"dispatching", "unknown"} for operation in remote.get("operations") or [])):
+                # Stopping local dispatch is not a remote cancellation receipt.
+                # Preserve the journal and leave read/cancel/reconcile reachable.
+                task.status = "needs_reconciliation"
+                task.budget_terminal_reason = terminal_reason
+                task.metadata_json = {**metadata, "remote_a2a": {**remote,
+                    "error_code": "remote_a2a_runtime_budget_stopped"}}
+                continue
             existing_actuals = metadata.get("runtime_budget_actuals")
             if existing_actuals is not None:
                 stamp_runtime_task_budget_actuals(task, existing_actuals)

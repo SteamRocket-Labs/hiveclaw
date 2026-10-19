@@ -454,6 +454,9 @@ async def read_runtime_result(request: ToolExecutionRequest) -> str:
             "total_bytes": len(payload_bytes),
             "content": content,
             "dependency_coverage": {"complete": source_complete},
+            **({"evidence_scope": "external_packet_and_known_local_inputs",
+                "remote_internal_source_coverage": "unknown", "remote_business_acceptance": "unverified"}
+                if result_object.source_kind == "remote_a2a" else {}),
         }
     )
     if verified_sources:

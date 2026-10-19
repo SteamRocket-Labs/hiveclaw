@@ -53,7 +53,7 @@ export interface Agent {
     default_session_permission_mode?: 'default' | 'auto' | 'bypassPermissions';
     smart_model_routing?: { enabled: boolean; max_simple_chars: number; max_simple_words: number } | null;
     context_window_size?: number;
-    agent_type?: 'native' | 'local_agent';
+    agent_type?: 'native' | 'local_agent' | 'remote_a2a';
     created_at: string;
     last_active_at?: string;
 }

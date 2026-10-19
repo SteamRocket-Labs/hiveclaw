@@ -91,6 +91,26 @@ class RemoteTaskIn(RemoteConnectionFrame):
     required_controls: list[str] = Field(default_factory=list)
 
 
+class RemoteRuntimeSelectionIn(RemoteConnectionFrame):
+    request_id: uuid.UUID
+    expected_runtime_revision: int | None = Field(default=None, ge=1)
+    selected_runtime: Literal["remote_a2a", "previous"]
+    uncontrolled_effects_acknowledged: StrictBool = False
+    unknown_cost_acknowledged: StrictBool = False
+    required_controls: list[str] = Field(default_factory=list)
+
+
+@router.post("/runtime")
+async def select_runtime(
+    agent_id: uuid.UUID, body: RemoteRuntimeSelectionIn, response: Response,
+    actor: User = Depends(get_current_user), db: AsyncSession = Depends(get_db),
+):
+    from app.services.remote_a2a_runtime import select_runtime as select_employee_runtime
+
+    response.headers["Cache-Control"] = "private, no-store"
+    return await select_employee_runtime(db, agent_id=agent_id, actor=actor, **body.model_dump())
+
+
 class RemoteTaskOperationIn(RemoteConnectionFrame):
     operation_id: uuid.UUID
     action: Literal["refresh", "cancel", "send_message", "abandon"]
@@ -128,7 +148,8 @@ async def get_task(
     from app.services import remote_a2a_tasks
 
     response.headers["Cache-Control"] = "private, no-store"
-    return remote_a2a_tasks._view(await remote_a2a_tasks.get_task(db, agent_id=agent_id, task_id=task_id, actor=actor))
+    task = await remote_a2a_tasks.get_task(db, agent_id=agent_id, task_id=task_id, actor=actor)
+    return await remote_a2a_tasks.read_task_view(db, task)
 
 
 @router.get("/tasks")

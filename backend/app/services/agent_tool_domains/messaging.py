@@ -288,6 +288,9 @@ async def _resolve_target_agent_runtime(
         if not policy.allowed:
             return source_agent, target, None, f"❌ {policy.message}"
 
+        if target.agent_type == "remote_a2a":
+            return source_agent, target, None, None
+
         selection = await resolve_agent_runtime_models(db, target)
         if selection.status == "primary_unavailable":
             return (
@@ -1238,6 +1241,9 @@ async def _send_message_to_agent_outcome(
             from app.services.model_resolution import resolve_agent_runtime_models
 
             selection = await resolve_agent_runtime_models(db, target)
+            if selection.status == "remote_runtime_selected":
+                return _a2a_failure("consult", error_code="remote_executor_async_required",
+                    message="This employee uses a remote executor. Use delegate_to_agent and its durable task controls.")
             if selection.status == "primary_unavailable":
                 return _a2a_failure(
                     "consult",
@@ -1493,6 +1499,10 @@ async def _delegate_to_agent_async_outcome(
             )
         assert source_agent is not None
         assert target is not None
+        if args.get("execution_target") == "remote_a2a" and target.agent_type != "remote_a2a":
+            return A2AOutcome.failure(operation="delegate", error_code="remote_a2a_selected_runtime_mismatch",
+                message="The requested remote executor is not selected for this employee. Executor selection requires owner authorization.",
+                status="unavailable", payload={"execution_target": "remote_a2a"})
         if principal is not None:
             try:
                 principal.assert_scope(tenant_id=source_agent.tenant_id, source_agent_id=from_agent_id)
@@ -1511,6 +1521,22 @@ async def _delegate_to_agent_async_outcome(
                 return _a2a_failure(
                     "delegate", error_code="invalid_runtime_budget", message="runtime budget id is invalid"
                 )
+
+        if target.agent_type == "remote_a2a":
+            from fastapi import HTTPException
+            from app.services.remote_a2a_delegation import delegate_employee
+
+            try:
+                payload = await delegate_employee(source_agent=source_agent, target_agent=target,
+                    arguments=args, context=execution_context)
+                return A2AOutcome.success(operation="delegate", payload=payload)
+            except HTTPException as exc:
+                code = exc.detail.get("code", "remote_a2a_unavailable") if isinstance(exc.detail, dict) else "remote_a2a_unavailable"
+                return A2AOutcome.failure(operation="delegate", error_code=code,
+                    message="Remote employee dispatch is unavailable; reconcile its exact authority or requested contract.",
+                    status="unavailable", retryable=False, payload={"execution_target": "remote_a2a",
+                        **({"source_reason_code": exc.detail["source_reason_code"]}
+                            if isinstance(exc.detail, dict) and exc.detail.get("source_reason_code") else {})})
 
         if str(args.get("execution_target") or "cloud_agent").strip() == "local_agent":
             local_args = dict(args)
@@ -1655,6 +1681,8 @@ async def _delegate_to_agent_async_outcome(
 async def _delegate_to_agent_async(from_agent_id: uuid.UUID, args: dict, *, execution_context=None) -> str:
     """Compatibility renderer for the LLM tool surface."""
     outcome = await _delegate_to_agent_async_outcome(from_agent_id, args, execution_context=execution_context)
+    if outcome.payload.get("execution_target") == "remote_a2a":
+        return json.dumps(outcome.to_payload(), ensure_ascii=False)
     return outcome.to_tool_result()
 
 
@@ -1897,6 +1925,10 @@ async def _check_async_task(
         if not decision.allowed:
             return f"❌ RuntimeTask access denied: {decision.reason}"
 
+        if record.get("task_type") == "remote_a2a":
+            from app.services.remote_a2a_delegation import inspect_employee_task
+
+            return json.dumps(await inspect_employee_task(task_id=task_id, principal=principal), ensure_ascii=False)
         status = await check_async_delegation(task_id, parent_agent_id=from_agent_id)
         if status.get("status") == "forbidden":
             return "❌ This task does not belong to the current agent"
@@ -1934,6 +1966,10 @@ async def _cancel_async_task(
         if not decision.allowed:
             return f"❌ RuntimeTask access denied: {decision.reason}"
 
+        if record.get("task_type") == "remote_a2a":
+            from app.services.remote_a2a_delegation import inspect_employee_task
+
+            return json.dumps(await inspect_employee_task(task_id=task_id, principal=principal, cancel=True), ensure_ascii=False)
         min_runtime_seconds, timeout_error = _parse_timeout_seconds_arg(
             args.get("min_runtime_seconds"),
             default_seconds=ASYNC_DELEGATION_CANCEL_GRACE_SECONDS,

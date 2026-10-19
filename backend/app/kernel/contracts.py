@@ -86,6 +86,7 @@ class TerminalReason(str, Enum):
     QUOTA_DENIED = "quota_denied"
     QUOTA_UNAVAILABLE = "quota_unavailable"
     TENANT_RESOLUTION_ERROR = "tenant_resolution_error"
+    EXECUTOR_UNAVAILABLE = "executor_unavailable"
     MEMORY_UNAVAILABLE = "memory_unavailable"
 
 
@@ -220,6 +221,7 @@ class RuntimeConfig:
     execution_mode: str | None = None
     runtime_continuity_enabled: bool = False
     skill_candidate_loop_enabled: bool = False
+    executor_unavailable: str | None = None
     # P0-1b: when invoker._resolve_runtime_config cannot resolve tenant
     # (missing agent_id / agent not found / DB exception), it now sets this
     # sentinel instead of silently returning tenant_id=None. Kernel checks

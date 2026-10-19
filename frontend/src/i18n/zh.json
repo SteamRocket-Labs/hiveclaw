@@ -5684,7 +5684,17 @@
       "disabled": "已停用",
       "needs_reauthorization": "需要责任人重新授权",
       "unavailable": "暂不可用"
-    }
+    },
+    "selectedBoundary": "选择执行方式不代表已验证远程服务的内部动作、资料访问或费用。原生模型配置会保留，可在恢复原执行方式时使用。",
+    "runtimeActive": "员工委派已选择远程执行。对方内部动作和费用仍未验证。",
+    "runtimeReauthorize": "已选的远程执行方式需要重新授权。新派发已暂停，请核对连接或恢复原执行方式。",
+    "runtimeInactive": "员工仍使用原先的执行方式。",
+    "runtimeTitle": "选择员工执行方式",
+    "runtimeEffects": "我授权今后的员工委派发送到此端点，并接受其内部效果控制尚未验证。",
+    "runtimeCosts": "我接受后续委派的外部费用未知；这里不提供远程费用硬上限。",
+    "selectRuntime": "选择远程执行",
+    "restoreRuntime": "恢复原执行方式",
+    "retryRuntime": "重试同一次执行方式选择"
   },
   "remoteWork": {
     "title": "在本工作中发起远程 A2A 请求",

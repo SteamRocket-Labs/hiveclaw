@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { ApiError } from '../api/core';
-import { remoteA2AApi, type RemoteA2AConfiguration } from '../api/domains/remoteA2A';
+import { remoteA2AApi, type RemoteA2AConfiguration, type RemoteRuntimeSelection } from '../api/domains/remoteA2A';
 import { useAuthStore } from '../stores';
 
 function company(fallback: string) {
@@ -27,6 +27,7 @@ export default function RemoteA2AControls({ agentId }: { agentId: string }) {
 
 function Connection({ agentId, actorId, tenantId }: { agentId: string; actorId: string; tenantId: string }) {
   const { t } = useTranslation();
+  const client = useQueryClient();
   const [cardUrl, setCardUrl] = useState('');
   const [rpcUrl, setRpcUrl] = useState('');
   const [token, setToken] = useState('');
@@ -40,6 +41,9 @@ function Connection({ agentId, actorId, tenantId }: { agentId: string; actorId: 
   const [endpointCredentialRequired, setEndpointCredentialRequired] = useState(false);
   const dirty = useRef(false);
   const pending = useRef<RemoteA2AConfiguration | null>(null);
+  const pendingRuntime = useRef<RemoteRuntimeSelection | null>(null);
+  const [authorizeEffects, setAuthorizeEffects] = useState(false);
+  const [authorizeCosts, setAuthorizeCosts] = useState(false);
   const matches = () => {
     const current = useAuthStore.getState().user;
     return current?.id === actorId && company(current?.tenant_id || '') === tenantId;
@@ -56,7 +60,10 @@ function Connection({ agentId, actorId, tenantId }: { agentId: string; actorId: 
     setNetworks(query.data.allowed_networks.join(', '));
     setMaxBytes(query.data.max_response_bytes);setTimeout(query.data.timeout_seconds);
   }, [query.data]);
-  useEffect(() => () => { pending.current = null; }, []);
+  useEffect(() => {
+    setAuthorizeEffects(false);setAuthorizeCosts(false);
+  }, [query.data?.version, query.data?.runtime_revision]);
+  useEffect(() => () => { pending.current = null;pendingRuntime.current = null; }, []);
   function credentialRepair(error: unknown): 'unreadable' | 'endpoint' | null {
     if (!(error instanceof ApiError)) return null;
     const data = error.data as { code?: string; detail?: { code?: string } } | undefined;
@@ -68,10 +75,15 @@ function Connection({ agentId, actorId, tenantId }: { agentId: string; actorId: 
   async function refresh() {
     const result = await query.refetch();
     if (result.isError || !matches()) return;
-    if (!pending.current || result.data?.request_id === pending.current.request_id) {
-      pending.current = null;setToken('');setClearToken(false);setUnknown(false);
+    const configurationConfirmed = !pending.current || result.data?.request_id === pending.current.request_id;
+    const runtimeConfirmed = !pendingRuntime.current || result.data?.runtime_request_id === pendingRuntime.current.request_id
+      || (result.data?.runtime_revision ?? null) !== pendingRuntime.current.expected_runtime_revision;
+    if (configurationConfirmed) {
+      pending.current = null;setToken('');setClearToken(false);
       if (!result.data?.credential_configured) { setCredentialUnavailable(false);setEndpointCredentialRequired(false); }
     }
+    if (runtimeConfirmed) pendingRuntime.current = null;
+    setUnknown(!configurationConfirmed || !runtimeConfirmed);
   }
   async function save(event: FormEvent) {
     event.preventDefault();
@@ -112,6 +124,24 @@ function Connection({ agentId, actorId, tenantId }: { agentId: string; actorId: 
       else setUnknown(true);
     } finally { setBusy(false); }
   }
+  async function selectRuntime(selected: RemoteRuntimeSelection['selected_runtime']) {
+    if (!matches() || !query.data || pending.current) return;
+    const body = pendingRuntime.current || { expected_user_id: actorId, expected_tenant_id: tenantId,
+      expected_version: query.data.version, expected_runtime_revision: query.data.runtime_revision ?? null,
+      request_id: crypto.randomUUID(), selected_runtime: selected,
+      uncontrolled_effects_acknowledged: authorizeEffects, unknown_cost_acknowledged: authorizeCosts };
+    pendingRuntime.current = body;setBusy(true);
+    try {
+      const result = await remoteA2AApi.selectRuntime(agentId, body);
+      if (!matches() || result.agent_id !== agentId || result.runtime_request_id !== body.request_id) throw new Error('Remote runtime scope changed');
+      pendingRuntime.current = null;setUnknown(false);
+      await refresh();
+      void client.invalidateQueries({ queryKey: ['agent', agentId] });
+    } catch (error) {
+      if (error instanceof ApiError && error.status >= 400 && error.status < 500) pendingRuntime.current = null;
+      setUnknown(true);
+    } finally { setBusy(false); }
+  }
   const states: Record<string, string> = {
     not_configured: t('remoteA2A.states.not_configured', 'Not configured'),
     configured: t('remoteA2A.states.configured', 'Configured'),
@@ -122,7 +152,9 @@ function Connection({ agentId, actorId, tenantId }: { agentId: string; actorId: 
   };
   return <section className="card-pad-sm">
     <h3>{t('remoteA2A.title', 'Remote A2A connection')}</h3>
-    <p>{t('remoteA2A.boundary', 'Automatic employee dispatch is not activated. Explicit remote requests are available in the original work; internal action control and complete cost metering remain unverified.')}</p>
+    {query.data && <p>{query.data.runtime_activation !== 'not_activated'
+      ? t('remoteA2A.selectedBoundary', 'Executor selection does not verify the remote service’s internal actions, data access or charges. Saved native model settings are preserved for restoration.')
+      : t('remoteA2A.boundary', 'Automatic employee dispatch is not activated. Explicit remote requests are available in the original work; internal action control and complete cost metering remain unverified.')}</p>}
     {query.isPending && <p role="status">{t('common.loading', 'Loading…')}</p>}
     {(query.isError || unknown) && <p role="alert">{t('remoteA2A.unknown', 'The operation could not be confirmed. Refresh or retry the same saved request.')}</p>}
     {credentialUnavailable && <p role="alert">{t('remoteA2A.credentialUnavailable', 'The saved machine credential cannot be read. Replace it or disable the connection.')}</p>}
@@ -131,6 +163,24 @@ function Connection({ agentId, actorId, tenantId }: { agentId: string; actorId: 
       <p>{states[query.data.state] || states.unavailable}</p>
       {query.data.discovery_error && <p role="alert">{t('remoteA2A.discoveryFailed', 'Check the endpoint, credential and approved network ranges.')} <code>{query.data.discovery_error}</code></p>}
       {query.data.agent_card && <p>{query.data.agent_card.name} · {query.data.agent_card.description}</p>}
+      <p role="status">{query.data.runtime_activation === 'activated'
+        ? t('remoteA2A.runtimeActive', 'Remote executor selected for employee delegation. Remote internal actions and charges remain unverified.')
+        : query.data.runtime_activation === 'authorization_required'
+          ? t('remoteA2A.runtimeReauthorize', 'The selected remote executor needs renewed authorization. New dispatch is paused; review the connection or restore the previous executor.')
+          : t('remoteA2A.runtimeInactive', 'The previous employee executor remains selected.')}</p>
+      {query.data.can_configure && query.data.state === 'discovered' && <fieldset disabled={busy || unknown}>
+        <legend>{t('remoteA2A.runtimeTitle', 'Choose the employee executor')}</legend>
+        <label><input type="checkbox" checked={authorizeEffects} onChange={(event) => setAuthorizeEffects(event.target.checked)} />
+          {t('remoteA2A.runtimeEffects', 'I authorize future employee delegations to this endpoint with unverified internal effect controls.')}</label>
+        <label><input type="checkbox" checked={authorizeCosts} onChange={(event) => setAuthorizeCosts(event.target.checked)} />
+          {t('remoteA2A.runtimeCosts', 'I accept unknown external charges for future delegations; no hard remote spend limit is claimed.')}</label>
+        <button className="btn btn-secondary" type="button" disabled={!authorizeEffects || !authorizeCosts}
+          onClick={() => { void selectRuntime('remote_a2a'); }}>{t('remoteA2A.selectRuntime', 'Select remote executor')}</button>
+      </fieldset>}
+      {query.data.runtime_activation !== 'not_activated' && query.data.can_disable && <button className="btn btn-secondary" type="button"
+        disabled={busy || unknown} onClick={() => { void selectRuntime('previous'); }}>{t('remoteA2A.restoreRuntime', 'Restore previous executor')}</button>}
+      {pendingRuntime.current && <button className="btn btn-secondary" type="button" disabled={busy}
+        onClick={() => { void selectRuntime(pendingRuntime.current!.selected_runtime); }}>{t('remoteA2A.retryRuntime', 'Retry same executor selection')}</button>}
       {query.data.can_configure ? <form onSubmit={(event) => { void save(event); }}>
         <fieldset disabled={busy || unknown || !!pending.current} onChange={() => { dirty.current = true; }}>
           <label>{t('remoteA2A.cardUrl', 'Agent Card URL')}<input type="url" required value={cardUrl} onChange={(event) => setCardUrl(event.target.value)} /></label>

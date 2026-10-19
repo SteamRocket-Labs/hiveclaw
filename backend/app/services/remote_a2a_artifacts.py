@@ -37,7 +37,7 @@ from app.services.workspace_resource_authority import (
 )
 
 
-async def load_packet(db, tenant_id, dependency, *, user=None, runtime_request=None):
+async def load_packet(db, tenant_id, dependency, *, user=None, runtime_request=None, allow_unconfirmed=False):
     """Revalidate immutable bytes, exact source operation and original requester."""
     from app.services.content_input_receipts import _runtime_input_actor
     from app.services.remote_a2a_tasks import SCHEMA, TASK_TYPE
@@ -53,13 +53,14 @@ async def load_packet(db, tenant_id, dependency, *, user=None, runtime_request=N
         task = await db.get(RuntimeTask, uuid.UUID(task_id), populate_existing=True)
         view = json.loads(decode_runtime_result_payload(result.payload_bytes)["summary"])["remote_a2a"]
         if (task is None or task.tenant_id != tenant_id or task.task_type != TASK_TYPE
-            or task.metadata_json.get("schema") != SCHEMA or view.get("error_code")
+            or task.metadata_json.get("schema") != SCHEMA or (view.get("error_code") and not allow_unconfirmed)
             or view["id"] != str(task.id) or view["agent_id"] != str(task.child_agent_id)
             or view["source_session_id"] != task.parent_session_id or view["latest_operation_id"] != operation_id):
             raise ValueError("remote_packet_identity_mismatch")
         operation = next(op for op in task.metadata_json["remote_a2a"]["operations"] if op["id"] == operation_id)
-        if (operation["phase"] != "received" or operation.get("observation") != view.get("operation_observation")
-            or not isinstance(view.get("operation_observation"), dict)):
+        if (operation.get("observation") != view.get("operation_observation")
+            or (not allow_unconfirmed and (operation["phase"] != "received"
+                or not isinstance(view.get("operation_observation"), dict)))):
             raise ValueError("remote_packet_operation_mismatch")
         session = await db.get(ChatSession, uuid.UUID(task.parent_session_id), populate_existing=True)
         if (session is None or (session.tenant_id, session.agent_id, session.user_id) != (
@@ -67,7 +68,9 @@ async def load_packet(db, tenant_id, dependency, *, user=None, runtime_request=N
             or str(session.root_session_id or session.id) != task.root_session_id):
             raise ValueError("remote_packet_work_mismatch")
         if runtime_request is not None:
-            _principal, user = await _runtime_input_actor(db, tenant_id, runtime_request)
+            principal, user = await _runtime_input_actor(db, tenant_id, runtime_request)
+            if principal.agent_id != task.parent_agent_id or str(principal.session_id) != task.parent_session_id:
+                raise ValueError("remote_packet_runtime_work_mismatch")
         reader = await db.get(User, user.id, populate_existing=True) if user is not None else None
         if reader is None or not reader.is_active or (reader.id, reader.tenant_id) != (task.root_user_id, tenant_id):
             raise ValueError("remote_packet_reader_mismatch")
@@ -85,6 +88,14 @@ async def load_packet(db, tenant_id, dependency, *, user=None, runtime_request=N
         ).limit(1))
         if route is None:
             raise ValueError("remote_packet_route_unavailable")
+        from app.services.remote_a2a_delegation import validate_instruction_sources
+        from fastapi import HTTPException
+
+        try:
+            await validate_instruction_sources(db, task=task, state=task.metadata_json["remote_a2a"])
+        except HTTPException as exc:
+            raise ContentInputReceiptError("remote_a2a_instruction_source_unavailable",
+                "The remote result's known local inputs are no longer available.", exc.status_code) from exc
         return task, result, session, view["operation_observation"]
     except (ValueError, KeyError, TypeError, StopIteration, AttributeError) as exc:
         raise ContentInputReceiptError("remote_a2a_source_unavailable",

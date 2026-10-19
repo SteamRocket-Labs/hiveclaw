@@ -2699,6 +2699,9 @@ async def start_web_chat_run(
 ) -> dict[str, Any]:
     if is_agent_expired(agent):
         raise HTTPException(status_code=403, detail="Agent has expired")
+    if agent.agent_type == "remote_a2a":
+        raise HTTPException(409, detail={"code": "remote_a2a_entrypoint_unavailable",
+            "recovery_actions": ["use_remote_requests_in_original_work", "restore_previous_runtime"]})
     if not content:
         raise HTTPException(status_code=400, detail="content is required")
     if not is_executable_chat_task_type(runtime_task_type):

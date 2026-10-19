@@ -27,6 +27,8 @@ def _frame(agent, actor, expected_user_id, expected_tenant_id):
 
 
 def _view(agent, actor, connection, scope):
+    from app.services.remote_a2a_runtime import authorization_valid
+
     state = connection.state if connection else "not_configured"
     if connection and state != "disabled":
         if scope != (connection.owner_user_id, connection.owner_epoch):
@@ -53,7 +55,11 @@ def _view(agent, actor, connection, scope):
         "protocol_binding": "JSONRPC",
         "effect_control": "unverified",
         "cost_metering": "unknown",
-        "runtime_activation": "not_activated",
+        "runtime_activation": ("activated" if authorization_valid(agent, connection, scope)
+            else "authorization_required" if agent.agent_type == "remote_a2a" else "not_activated"),
+        "runtime_revision": (connection.runtime_authorization or {}).get("revision") if connection else None,
+        "runtime_request_id": (connection.runtime_authorization or {}).get("request_id") if connection else None,
+        "previous_runtime": (connection.runtime_authorization or {}).get("previous_runtime") if connection else None,
     }
 
 

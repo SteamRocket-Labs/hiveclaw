@@ -286,7 +286,8 @@ async def send_message_to_agent(agent_id: uuid.UUID, arguments: dict) -> str:
                     "type": "string",
                     "enum": ["peer_agent", "worker_safe", "memory_readonly", "review_readonly", "research_readonly"],
                     "description": (
-                        "Optional worker tool policy. "
+                        "Optional native worker tool policy. Omit for a selected remote executor: explicit native "
+                        "profiles return unavailable because remote internal enforcement cannot be attested. "
                         "`peer_agent` (default) lets the target digital employee use its own assigned/read-authorized tools; "
                         "`worker_safe` isolates long-term memory; "
                         "`memory_readonly` allows search_memory/load_memory but still blocks save_memory; "
@@ -303,9 +304,10 @@ async def send_message_to_agent(agent_id: uuid.UUID, arguments: dict) -> str:
                 },
                 "execution_target": {
                     "type": "string",
-                    "enum": ["cloud_agent", "local_agent"],
+                    "enum": ["cloud_agent", "local_agent", "remote_a2a"],
                     "description": (
-                        "Optional execution target. Use local_agent only when the target employee has a bound "
+                        "Omit to use the employee's selected executor. remote_a2a names an already-selected remote "
+                        "executor; it cannot activate one or override owner selection. Use local_agent only when the target employee has a bound "
                         "Hive Connect local runner and the work should execute on that local machine."
                     ),
                 },

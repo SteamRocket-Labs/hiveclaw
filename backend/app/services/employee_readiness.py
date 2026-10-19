@@ -178,7 +178,17 @@ async def execute_claimed_readiness_check(task_id):
             identity_code = get_agent_lifecycle_block_reason(agent) or principal.block_reason
             checks = [{"key": "identity", "status": "blocked" if identity_code else "passed", "code": identity_code},
                 {"key": "worker", "status": "passed"}]
-            if agent.agent_type == "local_agent":
+            if agent.agent_type == "remote_a2a":
+                from app.services.remote_a2a_runtime import require_runtime_authorization
+
+                checks.extend([{"key": "model_configuration", "status": "not_applicable"},
+                    {"key": "storage", "status": "not_applicable"}, {"key": "external_runtime", "status": "unverified"}])
+                try:
+                    await require_runtime_authorization(db, agent=agent)
+                    checks.append({"key": "remote_runtime_authorization", "status": "passed"})
+                except HTTPException as exc:
+                    checks.append({"key": "remote_runtime_authorization", "status": "blocked", "code": exc.detail["code"]})
+            elif agent.agent_type == "local_agent":
                 checks.extend([{"key": "model_configuration", "status": "not_applicable"},
                     {"key": "storage", "status": "not_applicable"}, {"key": "external_runtime", "status": "unverified"}])
             else:

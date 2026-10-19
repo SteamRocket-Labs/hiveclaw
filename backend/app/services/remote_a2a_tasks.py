@@ -54,6 +54,7 @@ def _view(task):
         "latest_operation_id": state["operations"][-1]["id"],
         "agent_id": str(task.child_agent_id),
         "source_session_id": task.parent_session_id,
+        "child_session_id": task.child_session_id,
         "status": task.status,
         "remote_task_id": state.get("remote_task_id"),
         "remote_context_id": state.get("remote_context_id"),
@@ -66,6 +67,17 @@ def _view(task):
         "local_abandoned": bool(state.get("abandoned")),
         "recovery_actions": actions,
     }
+
+
+async def read_task_view(db, task):
+    from app.services.remote_a2a_delegation import validate_instruction_sources
+
+    try:
+        await validate_instruction_sources(db, task=task, state=task.metadata_json["remote_a2a"])
+        return _view(task)
+    except HTTPException:
+        return {**{key: value for key, value in _view(task).items() if key not in {"operations", "observation"}},
+            "content_status": "source_unavailable", "content_recovery_action": "reconcile_instruction_sources"}
 
 
 async def _send_policy(db, *, tenant_id, source_agent_id):
@@ -171,6 +183,7 @@ async def start_task(
     uncontrolled_effects_acknowledged,
     unknown_cost_acknowledged,
     required_controls,
+    _runtime_dispatch=None,
 ):
     agent, _level = await require_agent_execution_access(db, actor, agent_id)
     _frame(agent, actor, expected_user_id, expected_tenant_id)
@@ -179,6 +192,10 @@ async def start_task(
     if required_controls:
         raise HTTPException(409, detail={"code": "remote_a2a_required_control_unavailable"})
     session = await _work(db, actor=actor, session_id=source_session_id, target=agent)
+    if _runtime_dispatch is not None:
+        from app.services.remote_a2a_runtime import require_runtime_authorization
+
+        await require_runtime_authorization(db, agent=agent, expected_hash=_runtime_dispatch["runtime_authorization_hash"])
     _message(params)
     digest = _digest(
         {
@@ -187,6 +204,7 @@ async def start_task(
             "version": expected_version,
             "uncontrolled_effects_acknowledged": True,
             "unknown_cost_acknowledged": True,
+            **({"runtime_dispatch": _runtime_dispatch} if _runtime_dispatch else {}),
         }
     )
     run_id = uuid.uuid5(uuid.NAMESPACE_URL, f"remote-a2a:{agent.tenant_id}:{agent.id}:{actor.id}:{request_id}")
@@ -209,13 +227,17 @@ async def start_task(
         parent_session_id=str(session.id),
         root_session_id=str(session.root_session_id or session.id),
         root_user_id=actor.id,
-        root_runtime_task_id=session.runtime_task_id or run_id,
+        root_runtime_task_id=(uuid.UUID(_runtime_dispatch["root_runtime_task_id"]) if _runtime_dispatch
+            else session.runtime_task_id or run_id),
         root_idempotency_key=f"remote-a2a:{run_id}",
+        delegation_chain_json=(_runtime_dispatch.get("delegation_chain") if _runtime_dispatch else None)
+            or [str(session.agent_id), str(agent.id)],
         config_snapshot_hash=digest,
         policy_snapshot_hash=digest,
         metadata_json={
             "schema": SCHEMA,
             "remote_a2a": {
+                **(_runtime_dispatch or {}),
                 "configuration_version": expected_version,
                 "owner_scope": scope,
                 "operations": [
@@ -230,11 +252,21 @@ async def start_task(
             },
         },
     )
+    if _runtime_dispatch:
+        from app.services.remote_a2a_delegation import validate_instruction_sources
+
+        await validate_instruction_sources(db, task=task, state=task.metadata_json["remote_a2a"])
+        await _reserve_employee_budget(db, task=task, state=_runtime_dispatch)
     from app.services.session_writer_epoch import assign_runtime_task_writer_generation
 
     await assign_runtime_task_writer_generation(db, task)
     db.add(task)
     try:
+        if _runtime_dispatch:
+            from app.services.remote_a2a_delegation import create_employee_session
+
+            await db.flush()
+            await create_employee_session(db, task)
         await db.commit()
     except IntegrityError:
         await db.rollback()
@@ -340,7 +372,7 @@ async def operate_task(
         task.status = "skipped"
         task.metadata_json = {**task.metadata_json, "remote_a2a": state}
         await db.commit()
-        return _view(task)
+        return await read_task_view(db, task)
     method = {"refresh": "GetTask", "cancel": "CancelTask", "send_message": "SendMessage"}[action]
     if method != "SendMessage":
         if params:
@@ -353,13 +385,15 @@ async def operate_task(
         if operation["id"] == str(operation_id):
             if operation.get("control_hash") != digest:
                 raise HTTPException(409, detail={"code": "remote_a2a_request_conflict"})
-            return _view(task)
+            return await read_task_view(db, task)
     if task.status in {"pending", "running"} or task.status in TERMINAL:
         raise HTTPException(409, detail={"code": "remote_a2a_operation_in_progress"})
     if not state.get("remote_task_id") or (method == "SendMessage" and state.get("error_code")):
         raise HTTPException(409, detail={"code": "remote_a2a_reconciliation_required"})
     if expected_version != state["configuration_version"]:
         raise HTTPException(409, detail={"code": "remote_a2a_version_conflict"})
+    if method == "SendMessage":
+        await _active_employee_budget(db, task)
     agent, _level = await require_agent_execution_access(db, actor, agent_id)
     await _work(
         db, actor=actor, session_id=uuid.UUID(task.parent_session_id), target=agent, new_effect=method == "SendMessage"
@@ -384,7 +418,7 @@ async def operate_task(
     from app.services.runtime_task_worker import notify_runtime_task_worker
 
     await notify_runtime_task_worker(reason="remote_a2a_operation_queued", runtime_task_id=task.id)
-    return _view(task)
+    return await read_task_view(db, task)
 
 
 async def _record(db, task, state):
@@ -407,13 +441,14 @@ async def _record(db, task, state):
             root_runtime_task_id=task.root_runtime_task_id,
             terminal_status=task.status,
             task_type=TASK_TYPE,
-            delivery_mode="session_projection",
+            delivery_mode="parent_continuation" if state.get("dispatch_kind") == "employee" else "session_projection",
             summary=json.dumps({"remote_a2a": result}, ensure_ascii=False),
             metadata={
                 "runtime_task_id": str(task.id),
                 "remote_untrusted_data": True,
                 "cost_metering": "unknown",
                 "effect_control": "unverified",
+                **({"budget_run_id": str(task.budget_run_id)} if task.budget_run_id else {}),
             },
         ),
     )
@@ -458,6 +493,7 @@ async def execute_claimed_task(task_id):
             endpoint, _scope = await _endpoint(
                 db, agent=agent, version=state["configuration_version"], owner_scope=state["owner_scope"]
             )
+            await _employee_send_authority(db, task=task, state=state, agent=agent, operation=operation)
         except HTTPException:
             state["error_code"], operation["phase"] = "remote_a2a_authority_unavailable", "not_started"
             task.status = "needs_reconciliation"
@@ -494,6 +530,7 @@ async def execute_claimed_task(task_id):
             await _connection_scope(
                 db, agent=agent, version=state["configuration_version"], owner_scope=state["owner_scope"]
             )
+            await _employee_send_authority(db, task=task, state=state, agent=agent, operation=operation)
         except HTTPException:
             authority_changed = True
         if error:
@@ -528,3 +565,59 @@ async def execute_claimed_task(task_id):
             state["error_code"] = "remote_a2a_authority_changed"
             task.status = "needs_reconciliation"
         await _record(db, task, state)
+
+
+async def _employee_send_authority(db, *, task, state, agent, operation):
+    if state.get("dispatch_kind") != "employee" or operation["method"] != "SendMessage":
+        return
+    from app.services.remote_a2a_delegation import validate_instruction_sources
+    from app.services.remote_a2a_runtime import require_runtime_authorization
+
+    await require_runtime_authorization(db, agent=agent, expected_hash=state["runtime_authorization_hash"])
+    await _active_employee_budget(db, task)
+    await validate_instruction_sources(db, task=task, state=state, recipient=True)
+
+
+async def _active_employee_budget(db, task):
+    if task.budget_run_id is None:
+        return
+    from app.models.runtime_budget import RuntimeBudgetRun
+
+    budget = await db.get(RuntimeBudgetRun, task.budget_run_id, populate_existing=True)
+    if budget is None or budget.status != "active":
+        raise HTTPException(409, detail={"code": "remote_a2a_runtime_budget_stopped"})
+
+
+async def _reserve_employee_budget(db, *, task, state):
+    from app.models.runtime_budget import RuntimeBudgetRun
+    from app.services.runtime_budget_service import (
+        RuntimeBudgetApprovalRequired, RuntimeBudgetDenied, RuntimeBudgetReservation, RuntimeBudgetService,
+        RuntimeBudgetSettlementConflict, assert_runtime_task_budget_reservation_open,
+    )
+
+    if not state.get("budget_run_id"):
+        return
+    budget_id = uuid.UUID(state["budget_run_id"])
+    budget = await db.get(RuntimeBudgetRun, budget_id, populate_existing=True)
+    if (budget is None or budget.tenant_id != task.tenant_id or budget.root_user_id != task.root_user_id
+        or budget.root_runtime_task_id != task.root_runtime_task_id):
+        raise HTTPException(403, detail={"code": "remote_a2a_source_budget_mismatch"})
+    key = f"remote-employee:{task.id}:enqueue"
+    try:
+        await RuntimeBudgetService().reserve(RuntimeBudgetReservation(budget_run_id=budget_id,
+            reservation_key=key, runtime_task_id=task.id, delegations=1, background_tasks=1,
+            reason="remote_employee_enqueue", metadata={"external_cost_metering": "unknown"}))
+        await assert_runtime_task_budget_reservation_open(db, budget_run_id=budget_id,
+            reservation_key=key, runtime_task_id=task.id)
+    except RuntimeBudgetDenied as exc:
+        raise HTTPException(409, detail={"code": "runtime_budget_approval_required"
+            if isinstance(exc, RuntimeBudgetApprovalRequired) else "runtime_budget_denied"}) from exc
+    except RuntimeBudgetSettlementConflict as exc:
+        raise HTTPException(409, detail={"code": "remote_a2a_budget_reservation_unavailable"}) from exc
+    # Only local work-amplification counts are measured. Remote provider usage
+    # remains unknown, as acknowledged by the authenticated executor selection.
+    task.budget_run_id, task.budget_reservation_key = budget_id, key
+    task.budget_admission_status = "reserved"
+    from app.services.runtime_budget_service import stamp_runtime_task_budget_actuals
+
+    stamp_runtime_task_budget_actuals(task, {"delegations": 1, "background_tasks": 1})

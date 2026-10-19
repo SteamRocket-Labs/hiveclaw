@@ -1054,6 +1054,9 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                 f"{runtime_config.tenant_resolution_error}. Please retry or contact admin.",
                 terminal_reason=TerminalReason.TENANT_RESOLUTION_ERROR,
             )
+        if getattr(runtime_config, "executor_unavailable", None):
+            return _build_error_result(runtime_config.executor_unavailable,
+                terminal_reason=TerminalReason.EXECUTOR_UNAVAILABLE)
         if runtime_config.quota_message:
             # Note: final_tools not included — not yet resolved at this point
             return _build_error_result(runtime_config.quota_message, terminal_reason=TerminalReason.QUOTA_DENIED)

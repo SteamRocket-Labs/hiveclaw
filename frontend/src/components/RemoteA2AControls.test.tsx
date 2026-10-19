@@ -123,3 +123,69 @@ it.each([
   expect(configure.mock.calls[1][1].bearer_token).toBe('synthetic-replacement');
   expect(configure.mock.calls[1][1].request_id).not.toBe(configure.mock.calls[0][1].request_id);
 });
+
+it('requires both standing acknowledgements before explicitly selecting the remote executor', async () => {
+  const get = vi.spyOn(remoteA2AApi, 'get').mockResolvedValue(page({ state: 'discovered', version: 1 }));
+  const select = vi.spyOn(remoteA2AApi, 'selectRuntime').mockImplementation(async (_agent, body) => {
+    expect(body).toMatchObject({ expected_user_id: 'owner', expected_tenant_id: 'company', expected_version: 1,
+      expected_runtime_revision: null, selected_runtime: 'remote_a2a', uncontrolled_effects_acknowledged: true,
+      unknown_cost_acknowledged: true });
+    const active = page({ state: 'discovered', version: 1, runtime_activation: 'activated', runtime_revision: 1,
+      runtime_request_id: body.request_id });get.mockResolvedValue(active);return active;
+  });
+  mount();
+  const button = await screen.findByRole('button', { name: 'Select remote executor' });
+  expect(button.matches(':disabled')).toBe(true);
+  expect(select).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByLabelText(/I authorize future employee delegations/));
+  expect(button.matches(':disabled')).toBe(true);
+  fireEvent.click(screen.getByLabelText(/I accept unknown external charges for future delegations/));
+  fireEvent.click(button);
+  await screen.findByText(/Remote executor selected for employee delegation/);
+  expect(select).toHaveBeenCalledTimes(1);
+  expect(screen.queryByText(/Automatic employee dispatch is not activated/)).toBeNull();
+});
+
+it.each([true, false])('recovers a lost runtime selection response with persisted=%s', async (persisted) => {
+  const original = page({ state: 'discovered', version: 1, runtime_revision: null });
+  const get = vi.spyOn(remoteA2AApi, 'get').mockResolvedValue(original);
+  const select = vi.spyOn(remoteA2AApi, 'selectRuntime').mockImplementationOnce(async (_agent, body) => {
+    if (persisted) get.mockResolvedValue(page({ state: 'discovered', version: 1, runtime_activation: 'activated',
+      runtime_revision: 1, runtime_request_id: body.request_id }));
+    throw new Error('Lost runtime selection response');
+  }).mockImplementation(async (_agent, body) => {
+    const active = page({ state: 'discovered', version: 1, runtime_activation: 'activated', runtime_revision: 1,
+      runtime_request_id: body.request_id });get.mockResolvedValue(active);return active;
+  });
+  mount();await screen.findByRole('button', { name: 'Select remote executor' });
+  fireEvent.click(screen.getByLabelText(/I authorize future employee delegations/));
+  fireEvent.click(screen.getByLabelText(/I accept unknown external charges for future delegations/));
+  fireEvent.click(screen.getByRole('button', { name: 'Select remote executor' }));
+  await screen.findByRole('alert');
+  if (persisted) {
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
+    await screen.findByText(/Remote executor selected for employee delegation/);
+    expect(select).toHaveBeenCalledTimes(1);
+  } else {
+    fireEvent.click(screen.getByRole('button', { name: 'Retry same executor selection' }));
+    await screen.findByText(/Remote executor selected for employee delegation/);
+    expect(select).toHaveBeenCalledTimes(2);
+    expect(select.mock.calls[1][1]).toEqual(select.mock.calls[0][1]);
+  }
+  expect(screen.queryByRole('button', { name: 'Retry same executor selection' })).toBeNull();
+});
+
+it('lets an owner restore the previous executor after remote authorization becomes unavailable', async () => {
+  const get = vi.spyOn(remoteA2AApi, 'get').mockResolvedValue(page({ state: 'disabled', version: 2,
+    can_configure: false, can_disable: true, runtime_activation: 'authorization_required', runtime_revision: 1,
+    previous_runtime: 'local_agent' }));
+  const select = vi.spyOn(remoteA2AApi, 'selectRuntime').mockImplementation(async (_agent, body) => {
+    expect(body).toMatchObject({ selected_runtime: 'previous', expected_version: 2, expected_runtime_revision: 1,
+      uncontrolled_effects_acknowledged: false, unknown_cost_acknowledged: false });
+    const restored = page({ state: 'disabled', version: 2, runtime_revision: 2,
+      runtime_request_id: body.request_id });get.mockResolvedValue(restored);return restored;
+  });
+  mount();fireEvent.click(await screen.findByRole('button', { name: 'Restore previous executor' }));
+  await screen.findByText('The previous employee executor remains selected.');
+  expect(select).toHaveBeenCalledTimes(1);
+});

@@ -5684,7 +5684,17 @@
       "disabled": "Disabled",
       "needs_reauthorization": "Owner authorization required",
       "unavailable": "Unavailable"
-    }
+    },
+    "selectedBoundary": "Executor selection does not verify the remote service’s internal actions, data access or charges. Saved native model settings are preserved for restoration.",
+    "runtimeActive": "Remote executor selected for employee delegation. Remote internal actions and charges remain unverified.",
+    "runtimeReauthorize": "The selected remote executor needs renewed authorization. New dispatch is paused; review the connection or restore the previous executor.",
+    "runtimeInactive": "The previous employee executor remains selected.",
+    "runtimeTitle": "Choose the employee executor",
+    "runtimeEffects": "I authorize future employee delegations to this endpoint with unverified internal effect controls.",
+    "runtimeCosts": "I accept unknown external charges for future delegations; no hard remote spend limit is claimed.",
+    "selectRuntime": "Select remote executor",
+    "restoreRuntime": "Restore previous executor",
+    "retryRuntime": "Retry same executor selection"
   },
   "remoteWork": {
     "inputRequired": "Remote reply needed",

@@ -273,6 +273,17 @@ async def runtime_result_publication_bound(db, *, result, agent_id, session_id, 
 
 
 async def validate_runtime_result_sources(db, request, result_object, *, user=None, session=None):
+    if result_object.source_kind == "remote_a2a":
+        from app.services.remote_a2a_artifacts import load_packet
+
+        task, _result, original, _observation = await load_packet(db, result_object.tenant_id,
+            {"source_id": str(result_object.id), "source_version": result_object.sha256},
+            user=user, runtime_request=request, allow_unconfirmed=True)
+        if session is not None and (session.id != original.id or session.agent_id != task.parent_agent_id):
+            raise ContentInputReceiptError("content_source_access_denied", "The remote observation belongs to another work.", 403)
+        # This covers the external packet and known local inputs, never the
+        # remote service's internal sources, actions, charges or business truth.
+        return True
     canonical = await load_canonical_result_sources(db, result_object)
     if not canonical:
         return False

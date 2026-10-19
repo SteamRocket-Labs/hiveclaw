@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import and_, desc, exists, or_, select
+from sqlalchemy import and_, case, desc, exists, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from loguru import logger
@@ -101,6 +101,13 @@ async def _finish_deferred_business_task_quarantines(task_ids: list[UUID]) -> No
             )
 
 
+def _remote_recovery_control_condition():
+    # Only the trusted journal's read/cancel operations may run after a root
+    # budget stops. This cannot admit another SendMessage or native inference.
+    return and_(RuntimeTask.task_type == "remote_a2a",
+        RuntimeTask.metadata_json["remote_a2a"]["operations"][-1]["method"].as_string().in_(("GetTask", "CancelTask")))
+
+
 def _runtime_task_claim_conditions(*, claim_now: datetime):
     return (
         or_(
@@ -120,6 +127,7 @@ def _runtime_task_claim_conditions(*, claim_now: datetime):
         RuntimeTask.tenant_id.in_(select(Tenant.id).where(Tenant.is_active.is_(True))),
         or_(
             RuntimeTask.budget_run_id.is_(None),
+            _remote_recovery_control_condition(),
             exists(
                 select(RuntimeBudgetRun.id).where(
                     RuntimeBudgetRun.id == RuntimeTask.budget_run_id,
@@ -145,7 +153,8 @@ def build_runtime_task_claim_candidate_statement(
 
     claim_now = now or _utcnow()
     stmt = (
-        select(RuntimeTask.id, RuntimeTask.budget_run_id)
+        select(RuntimeTask.id, case((_remote_recovery_control_condition(), None),
+            else_=RuntimeTask.budget_run_id).label("budget_run_id"))
         .where(*_runtime_task_claim_conditions(claim_now=claim_now))
         .order_by(desc(RuntimeTask.priority), RuntimeTask.created_at.asc())
         .limit(batch_size)

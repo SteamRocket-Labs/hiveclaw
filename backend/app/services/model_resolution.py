@@ -126,6 +126,8 @@ async def resolve_agent_runtime_models(
     primary. No configured primary may promote an explicit enabled fallback.
     """
 
+    if getattr(agent, "agent_type", None) == "remote_a2a":
+        return RuntimeModelSelection(None, None, "remote_runtime_selected")
     tenant_id = getattr(agent, "tenant_id", None)
     if override_model_id is not None:
         override = await load_enabled_tenant_model(db, override_model_id, tenant_id)

@@ -12,7 +12,9 @@ def _agent_line(agent: dict[str, Any], *, relation_label: str) -> str:
     agent_id = str(agent.get("id") or agent.get("agent_id") or "").strip()
     suffix = f" — {role}" if role else ""
     id_part = f" ({agent_id})" if agent_id else ""
-    return f"- **{name}**{id_part}: {relation_label}, status={status}{suffix}"
+    executor = (", executor=remote_a2a; use delegate_to_agent without native tool profiles; "
+        "remote internal controls and charges are unverified" if agent.get("agent_type") == "remote_a2a" else "")
+    return f"- **{name}**{id_part}: {relation_label}, status={status}{executor}{suffix}"
 
 
 def build_a2a_collaborators_section(read_model: dict[str, Any] | None, *, max_chars: int | None = 6000) -> str:

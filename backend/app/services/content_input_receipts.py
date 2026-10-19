@@ -615,7 +615,7 @@ async def _authorize_session_input_source(db, tenant_id, session, *, user, runti
                 raise ValueError("session_source_actor_mismatch")
             parent = await db.scalar(select(Agent).join(RuntimeTask, RuntimeTask.parent_agent_id == Agent.id).where(
                 RuntimeTask.id == uuid.UUID(str(context.runtime_task_id)), RuntimeTask.tenant_id == tenant_id,
-                RuntimeTask.task_type == "delegation", RuntimeTask.status == "running",
+                RuntimeTask.task_type.in_(("delegation", "remote_a2a")), RuntimeTask.status == "running",
                 RuntimeTask.root_user_id == requester.id, RuntimeTask.child_agent_id == context.agent_id,
                 func.replace(func.lower(RuntimeTask.child_session_id), "-", "") == uuid.UUID(str(context.session_id)).hex,
                 RuntimeTask.claim_expires_at > datetime.now(timezone.utc), RuntimeTask.parent_agent_id == session.agent_id,
@@ -623,6 +623,19 @@ async def _authorize_session_input_source(db, tenant_id, session, *, user, runti
                 Agent.tenant_id == tenant_id, Agent.deleted_at.is_(None), Agent.deactivated_at.is_(None)))
             if parent is None or (parent.owner_user_id or parent.creator_id) != requester.id:
                 raise ValueError("session_source_actor_mismatch")
+            task = await db.get(RuntimeTask, uuid.UUID(str(context.runtime_task_id)), populate_existing=True)
+            if task.task_type == "remote_a2a":
+                from app.services.remote_a2a_tasks import SCHEMA
+                from app.services.remote_a2a_runtime import require_runtime_authorization
+                from app.services.remote_a2a_delegation import validate_instruction_sources
+
+                state = task.metadata_json.get("remote_a2a") or {}
+                if (task.metadata_json.get("schema") != SCHEMA or state.get("dispatch_kind") != "employee"
+                    or token.delegation_id != str(task.id) or state["operations"][-1]["method"] != "SendMessage"):
+                    raise ValueError("remote_instruction_ingress_unavailable")
+                target = await db.get(Agent, task.child_agent_id, populate_existing=True)
+                await require_runtime_authorization(db, agent=target, expected_hash=state["runtime_authorization_hash"])
+                await validate_instruction_sources(db, task=task, state=state)
     except (HTTPException, ValueError) as exc:
         raise ContentInputReceiptError("content_source_access_denied", "The session source is no longer authorized for this reader.", 403) from exc
 

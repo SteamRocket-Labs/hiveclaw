@@ -6,7 +6,9 @@ export interface RemoteA2AConnection {
   credential_configured: boolean; allowed_networks: string[]; max_response_bytes: number;
   timeout_seconds: number; discovered_at: string | null; discovery_error: string | null;
   agent_card: { name?: string; description?: string } | null;
-  effect_control: 'unverified'; cost_metering: 'unknown'; runtime_activation: 'not_activated';
+  effect_control: 'unverified'; cost_metering: 'unknown';
+  runtime_activation: 'not_activated' | 'activated' | 'authorization_required';
+  runtime_revision?: number | null; runtime_request_id?: string | null; previous_runtime?: 'native' | 'local_agent' | null;
 }
 export interface RemoteA2AFrame {
   expected_user_id: string; expected_tenant_id: string; expected_version: number | null;
@@ -15,12 +17,17 @@ export interface RemoteA2AConfiguration extends RemoteA2AFrame {
   request_id: string; card_url: string; rpc_url: string; bearer_token?: string;
   allowed_networks: string[]; max_response_bytes: number; timeout_seconds: number;
 }
+export interface RemoteRuntimeSelection extends RemoteA2AFrame {
+  request_id: string; expected_runtime_revision: number | null; selected_runtime: 'remote_a2a' | 'previous';
+  uncontrolled_effects_acknowledged: boolean; unknown_cost_acknowledged: boolean;
+}
 const path = (agentId: string) => `/agents/${encodeURIComponent(agentId)}/remote-a2a`;
 export const remoteA2AApi = {
   get: (agentId: string) => get<RemoteA2AConnection>(path(agentId)),
   configure: (agentId: string, body: RemoteA2AConfiguration) => put<RemoteA2AConnection>(path(agentId), body),
   discover: (agentId: string, body: RemoteA2AFrame) => post<RemoteA2AConnection>(`${path(agentId)}/discover`, body),
   disable: (agentId: string, body: RemoteA2AFrame) => post<RemoteA2AConnection>(`${path(agentId)}/disable`, body),
+  selectRuntime: (agentId: string, body: RemoteRuntimeSelection) => post<RemoteA2AConnection>(`${path(agentId)}/runtime`, body),
   tasks: (agentId: string, sessionId: string) => get<RemoteA2ATasks>(`${path(agentId)}/tasks?source_session_id=${encodeURIComponent(sessionId)}`),
   task: (agentId: string, taskId: string) => get<RemoteA2ATask>(`${path(agentId)}/tasks/${encodeURIComponent(taskId)}`),
   startTask: (agentId: string, body: RemoteA2ATaskInput) => post<RemoteA2ATask>(`${path(agentId)}/tasks`, body),

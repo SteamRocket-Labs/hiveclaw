@@ -595,6 +595,9 @@ async def _resolve_runtime_config(agent_id: uuid.UUID | None) -> RuntimeConfig:
                     max_tool_rounds=agent.max_tool_rounds or 200,
                     tenant_resolution_error=f"Agent {agent_id} is not active: {lifecycle_reason}",
                 )
+            if getattr(agent, "agent_type", None) == "remote_a2a":
+                return RuntimeConfig(tenant_id=agent.tenant_id, max_tool_rounds=agent.max_tool_rounds or 200,
+                    executor_unavailable="remote_a2a_runtime_selected: use remote employee delegation or restore the previous executor")
 
             # Token quota enforcement is now at User level (quota_guard.check_user_llm_quota)
             quota_message = None

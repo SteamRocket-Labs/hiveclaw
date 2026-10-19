@@ -26,7 +26,7 @@ from app.database import Base
 class Agent(Base):
     """Digital employee (Agent) instance.
 
-    agent_type: 'native' (platform-hosted) or 'local_agent' (Hive Connect runtime).
+    agent_type: native, local_agent (Hive Connect), or remote_a2a.
     """
 
     __tablename__ = "agents"
@@ -76,7 +76,7 @@ class Agent(Base):
     participant_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("participants.id"), nullable=False)
     tenant_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("tenants.id"), nullable=False)
 
-    # Agent type: 'native' (platform-hosted LLM) or 'local_agent' (Hive Connect runtime)
+    # Explicit employee executor; remote selection preserves native model settings.
     agent_type: Mapped[str] = mapped_column(String(20), default="native", nullable=False)
 
     # Agent classification and security zone

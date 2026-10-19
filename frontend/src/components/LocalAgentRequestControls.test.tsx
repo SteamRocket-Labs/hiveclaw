@@ -10,7 +10,7 @@ import LocalAgentRequestControls from './LocalAgentRequestControls';
 vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: (_key: string, fallback: string) => fallback }) }));
 const clients: QueryClient[] = [];
 const request = { id: 'request', request_hash: 'a'.repeat(64), status: 'pending', execution_state: 'not_dispatched',
-  preview: 'Original local work', created_at: '2026-10-19T01:00:00Z', control: null, can_cancel: true, next_action: null };
+  preview: 'Original local work', created_at: '2026-10-19T01:00:00Z', control: null, can_cancel: true, can_abandon: false, tracking_state: 'open' as const, disposition: null, next_action: null };
 function page(overrides: Partial<LocalAgentRequestPage> = {}): LocalAgentRequestPage {
   return { scope: { actor_user_id: 'owner', tenant_id: 'tenant', session_id: 'work' }, requests: [request], next_cursor: null, ...overrides };
 }
@@ -69,4 +69,21 @@ it('loads older requests and identifies late reported results', async () => {
   mount(); fireEvent.click(await screen.findByRole('button', { name: 'Load older requests' }));
   await screen.findByText('Older original work'); expect(read).toHaveBeenCalledWith('work', 'request');
   expect(screen.getByText('A late result arrived. Review it in this work; the earlier control remains unconfirmed.')).toBeTruthy();
+});
+it('ends tracking a held unknown request without claiming a device stop', async () => {
+  const held = { ...request, status: 'needs_reconciliation', execution_state: 'unknown', can_abandon: true };
+  const read = vi.spyOn(localBridgeApi, 'listChannelRequests').mockResolvedValue(page({ requests: [held] }));
+  const abandon = vi.spyOn(localBridgeApi, 'abandonChannelRequest').mockImplementation(async (_session, _message, command) => {
+    const receipt = { schema: 'hive.local_work_disposition.v1' as const, control_id: 'disposition', action: 'abandon' as const,
+      message_id: 'request', session_id: 'work', actor_user_id: 'owner', request_hash: request.request_hash,
+      status: 'abandoned' as const, execution_state: 'unknown' as const, next_action: 'continue_original_work', recorded_at: 'now' };
+    expect(command).toMatchObject({ expected_user_id: 'owner', expected_tenant_id: 'tenant', request_hash: request.request_hash });
+    read.mockResolvedValue(page({ requests: [{ ...held, can_cancel: false, can_abandon: false, tracking_state: 'abandoned', disposition: receipt }] }));
+    return receipt;
+  });
+  mount(); fireEvent.click(await screen.findByRole('button', { name: 'End tracking this request' }));
+  await screen.findByText('Tracking ended. External execution remains unknown.');
+  expect(abandon).toHaveBeenCalledTimes(1);
+  expect(screen.queryByRole('button', { name: 'End tracking this request' })).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Cancel this request' })).toBeNull();
 });

@@ -133,12 +133,27 @@ export interface LocalAgentRequestControl {
   recorded_at: string;
 }
 
+export interface LocalWorkDisposition {
+  schema: 'hive.local_work_disposition.v1';
+  control_id: string;
+  action: 'abandon';
+  message_id: string;
+  session_id: string;
+  actor_user_id: string;
+  request_hash: string | null;
+  status: 'abandoned';
+  execution_state: 'unknown';
+  next_action: string;
+  recorded_at: string;
+}
+
 export interface LocalAgentRequestPage {
   scope: { actor_user_id: string; tenant_id: string; session_id: string };
   requests: Array<{
     id: string; request_hash: string | null; status: string; execution_state: string;
     preview: string; created_at: string; control: LocalAgentRequestControl | null;
-    can_cancel: boolean; next_action: string | null;
+    can_cancel: boolean; can_abandon: boolean; next_action: string | null;
+    tracking_state: 'open' | 'settled' | 'abandoned'; disposition: LocalWorkDisposition | null;
   }>;
   next_cursor: string | null;
 }
@@ -248,6 +263,9 @@ export const localBridgeApi = {
   cancelChannelRequest: (sessionId: string, messageId: string, command: {
     expected_user_id: string; expected_tenant_id: string; request_hash: string | null; idempotency_key: string;
   }) => post<LocalAgentRequestControl>(`/local-agents/sessions/${sessionId}/messages/${messageId}/cancel`, command),
+  abandonChannelRequest: (sessionId: string, messageId: string, command: {
+    expected_user_id: string; expected_tenant_id: string; request_hash: string | null; idempotency_key: string;
+  }) => post<LocalWorkDisposition>(`/local-agents/sessions/${sessionId}/messages/${messageId}/abandon`, command),
   createBrowserChannelWsTicket: (sessionId: string) =>
     post<LocalAgentBrowserWsTicket>(`/local-agents/sessions/${sessionId}/ws-ticket`),
   listChannelEvents: (sessionId: string, afterSequence = 0) => {

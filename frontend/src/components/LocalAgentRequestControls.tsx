@@ -44,25 +44,31 @@ function RequestList({ sessionId, actorId, tenantId }: { sessionId: string; acto
     const result = await query.refetch();
     if (!result.isError) setUnknown(false);
   }
-  async function cancel(request: LocalAgentRequestPage['requests'][number]) {
+  async function control(request: LocalAgentRequestPage['requests'][number], action: 'cancel' | 'abandon') {
     const current = useAuthStore.getState().user;
     if (!current || current.id !== actorId || currentTenant(current.tenant_id || '') !== tenantId) {
       setUnknown(true);
       return;
     }
-    const key = keys.current.get(request.id) || crypto.randomUUID();
-    keys.current.set(request.id, key);
+    const commandId = `${action}:${request.id}`;
+    const key = keys.current.get(commandId) || crypto.randomUUID();
+    keys.current.set(commandId, key);
     setBusy(request.id);
     try {
-      const receipt = await localBridgeApi.cancelChannelRequest(sessionId, request.id, {
-        expected_user_id: actorId, expected_tenant_id: tenantId, request_hash: request.request_hash, idempotency_key: key,
-      });
-      if (receipt.schema !== 'hive.local_message_control.v1' || receipt.actor_user_id !== actorId
+      const command = { expected_user_id: actorId, expected_tenant_id: tenantId,
+        request_hash: request.request_hash, idempotency_key: key };
+      const receipt = await (action === 'cancel' ? localBridgeApi.cancelChannelRequest(sessionId, request.id, command)
+        : localBridgeApi.abandonChannelRequest(sessionId, request.id, command));
+      if (receipt.schema !== (action === 'cancel' ? 'hive.local_message_control.v1' : 'hive.local_work_disposition.v1')
+        || (action === 'cancel' && receipt.actor_user_id !== actorId)
         || receipt.session_id !== sessionId || receipt.message_id !== request.id) throw new Error('Local control scope changed');
       await refresh();
     } catch { setUnknown(true); } finally { setBusy(null); }
   }
   function stateLabel(request: LocalAgentRequestPage['requests'][number]) {
+    if (request.tracking_state === 'abandoned') return request.next_action === 'review_late_result'
+      ? t('localRequests.abandonedLate', 'Tracking ended. A late result is available here for review; execution was not repeated.')
+      : t('localRequests.abandoned', 'Tracking ended. External execution remains unknown.');
     if (request.next_action === 'review_late_result') return t('localRequests.late', 'A late result arrived. Review it in this work; the earlier control remains unconfirmed.');
     if (request.status === 'cancelled' && request.execution_state === 'not_dispatched') return t('localRequests.cancelled', 'Cancelled before dispatch');
     if (request.status === 'needs_reconciliation') return t('localRequests.unknown', 'Further dispatch withheld. Execution is unknown; inspect or stop this request on the original device.');
@@ -81,7 +87,12 @@ function RequestList({ sessionId, actorId, tenantId }: { sessionId: string; acto
     {!query.isError && query.data?.pages.flatMap((page) => page.requests).map((request) => <div key={request.id}>
       <p>{request.preview}</p><p role="status">{stateLabel(request)}</p>
       {request.can_cancel && <button type="button" className="btn btn-secondary" disabled={!!busy || unknown}
-        onClick={() => { void cancel(request); }}>{t('localRequests.cancel', 'Cancel this request')}</button>}
+        onClick={() => { void control(request, 'cancel'); }}>{t('localRequests.cancel', 'Cancel this request')}</button>}
+      {request.can_abandon && <>
+        <p>{t('localRequests.abandonHint', 'End tracking without stopping or repeating device execution. Any late result received remains here for review.')}</p>
+        <button type="button" className="btn btn-secondary" disabled={!!busy || unknown}
+          onClick={() => { void control(request, 'abandon'); }}>{t('localRequests.abandon', 'End tracking this request')}</button>
+      </>}
     </div>)}
     <button type="button" className="btn btn-secondary" disabled={!!busy || query.isFetching}
       onClick={() => { void refresh(); }}>{t('common.refresh', 'Refresh')}</button>

@@ -1393,6 +1393,7 @@ async def _enqueue_a2a_source_delivery(
     if source_route is None:
         return None
     parent_session, principal = source_route
+    disposition = await _find_work_disposition(db, message)
     metadata = dict(message.metadata_json or {})
     receipt = _receipt_for_message(message)
     summary = str(output or "").strip()
@@ -1414,9 +1415,10 @@ async def _enqueue_a2a_source_delivery(
         summary=summary,
         root_runtime_task_id=principal.root_runtime_task_id,
         child_agent_name=str(metadata.get("target_agent_name") or "").strip() or None,
-        delivery_mode="parent_continuation",
+        delivery_mode="session_projection" if disposition else "parent_continuation",
         artifacts=list(artifacts),
         metadata={
+            **({"local_work_disposition": disposition} if disposition else {}),
             "execution_target": "local_agent",
             "local_agent_message_id": str(message.id),
             "local_agent_channel_session_id": str(message.session_id),
@@ -1512,7 +1514,8 @@ async def get_a2a_channel_message_status(
             )
         ).scalar_one_or_none()
 
-    terminal = message.status in {"completed", "failed", "cancelled"}
+    disposition = await _find_work_disposition(db, message)
+    terminal = bool(disposition) or message.status in {"completed", "failed", "cancelled"}
     if outbox is not None:
         source_delivery = {
             "status": outbox.status,
@@ -1534,7 +1537,9 @@ async def get_a2a_channel_message_status(
     payload = {
         "kind": "local_agent_delegation",
         "message_id": str(message.id),
-        "status": message.status,
+        "status": "abandoned" if disposition else message.status,
+        **({"tracking_state": "abandoned", "execution_state": f"reported_{message.status}"
+            if message.status in {"completed", "failed"} else "unknown"} if disposition else {}),
         "terminal": terminal,
         "target_agent_id": str(message.source_agent_id),
         "target_agent": metadata.get("target_agent_name"),
@@ -1542,8 +1547,9 @@ async def get_a2a_channel_message_status(
         "artifacts": artifacts,
         "receipt": _receipt_for_message(message),
         "source_delivery": source_delivery,
-        "retryable": message.status not in {"completed", "failed", "cancelled", "needs_reconciliation"},
-        "next_action": "continue_original_work" if message.status == "cancelled" else
+        "retryable": not disposition and message.status not in {"completed", "failed", "cancelled", "needs_reconciliation"},
+        "next_action": "review_late_result" if disposition and message.status in {"completed", "failed"} else
+            "continue_original_work" if disposition or message.status == "cancelled" else
             "inspect_original_runner" if message.status == "needs_reconciliation" else "review_result" if terminal else "wait",
     }
     if terminal:
@@ -2057,6 +2063,148 @@ def _leased_dispatch_attested(message, origin) -> bool:
     )
 
 
+def _work_disposition(span: InvocationSpan | None, message: LocalAgentChannelMessage) -> dict | None:
+    metadata = span.metadata_json if span is not None and isinstance(span.metadata_json, dict) else {}
+    receipt = metadata.get("disposition")
+    if (
+        span is not None
+        and span.id == uuid.uuid5(message.id, "work_disposition:abandon")
+        and span.tenant_id == message.tenant_id
+        and span.request_id == message.id
+        and span.session_id == str(message.session_id)
+        and span.agent_id == message.source_agent_id
+        and span.user_id == (message.sender_user_id or message.owner_user_id)
+        and span.span_type == "remote_control"
+        and span.name == "local_agent.abandon"
+        and isinstance(receipt, dict)
+        and receipt.get("schema") == "hive.local_work_disposition.v1"
+        and receipt.get("control_id") == str(span.id)
+        and receipt.get("message_id") == str(message.id)
+        and receipt.get("session_id") == str(message.session_id)
+        and receipt.get("actor_user_id") == str(span.user_id)
+        and receipt.get("request_hash") == message.request_hash
+        and receipt.get("status") == "abandoned"
+        and receipt.get("execution_state") == "unknown"
+    ):
+        return receipt
+    return None
+
+
+async def _find_work_disposition(db: AsyncSession, message: LocalAgentChannelMessage) -> dict | None:
+    span = await db.get(InvocationSpan, uuid.uuid5(message.id, "work_disposition:abandon"))
+    return _work_disposition(span, message)
+
+
+async def abandon_channel_message(
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    session_id: uuid.UUID,
+    message_id: uuid.UUID,
+    owner_user_id: uuid.UUID,
+    actor_user_id: uuid.UUID,
+    request_hash: str | None,
+    idempotency_key: str,
+) -> dict:
+    """Close tracking of held unknown execution; never attest that the external host stopped."""
+    message = await _locked_control_message(
+        db,
+        tenant_id=tenant_id,
+        session_id=session_id,
+        message_id=message_id,
+        owner_user_id=owner_user_id,
+        actor_user_id=actor_user_id,
+        request_hash=request_hash,
+    )
+    if actor_user_id != (message.sender_user_id or message.owner_user_id):
+        raise HTTPException(403, detail="Only the original requester can end business tracking")
+    existing = await _find_work_disposition(db, message)
+    if existing is not None:
+        return {"receipt": existing, "event": None}
+    if message.status != "needs_reconciliation":
+        raise HTTPException(409, detail={"code": "local_agent_disposition_requires_held_unknown_execution"})
+    control_id, now = uuid.uuid5(message_id, "work_disposition:abandon"), utcnow()
+    receipt = {
+        "schema": "hive.local_work_disposition.v1",
+        "control_id": str(control_id),
+        "action": "abandon",
+        "message_id": str(message_id),
+        "session_id": str(session_id),
+        "actor_user_id": str(actor_user_id),
+        "request_hash": request_hash,
+        "status": "abandoned",
+        "execution_state": "unknown",
+        "next_action": "continue_original_work",
+        "recorded_at": now.isoformat(),
+    }
+    db.add(
+        InvocationSpan(
+            id=control_id,
+            tenant_id=tenant_id,
+            agent_id=message.source_agent_id,
+            user_id=actor_user_id,
+            execution_identity_type="user",
+            execution_identity_id=actor_user_id,
+            session_id=str(session_id),
+            request_id=message_id,
+            trace_id=f"local-agent:{message_id}",
+            span_id=f"work-disposition:{control_id}",
+            span_type="remote_control",
+            name="local_agent.abandon",
+            status="ok",
+            started_at=now,
+            ended_at=now,
+            duration_ms=0,
+            input_hash=_canonical_hash({**receipt, "idempotency_key": idempotency_key}),
+            evidence_refs=[f"local-agent-message://{message_id}"],
+            metadata_json={"disposition": receipt, "idempotency_key": idempotency_key},
+        )
+    )
+    event = LocalAgentChannelEvent(
+        sequence=await _allocate_event_sequence(db, session_id=session_id),
+        tenant_id=tenant_id,
+        owner_user_id=owner_user_id,
+        source_agent_id=message.source_agent_id,
+        session_id=session_id,
+        message_id=message_id,
+        direction="hive_to_local",
+        event_type="work_disposition",
+        payload_json=receipt,
+    )
+    db.add(event)
+    await db.flush()
+    if _a2a_local_delegation(message.metadata_json):
+        try:
+            source_route = await _validated_a2a_source_route(
+                db,
+                tenant_id=tenant_id,
+                sender_agent_id=message.sender_agent_id,
+                sender_user_id=message.sender_user_id,
+                target_agent_id=message.source_agent_id,
+                target_owner_user_id=owner_user_id,
+                metadata=dict(message.metadata_json or {}),
+            )
+        except HTTPException:
+            message.metadata_json = {
+                **dict(message.metadata_json or {}),
+                "source_delivery": {
+                    "status": "needs_reconciliation",
+                    "reason": "original_source_authority_unavailable",
+                },
+            }
+        else:
+            await _enqueue_a2a_source_delivery(
+                db,
+                message=message,
+                source_route=source_route,
+                terminal_status="abandoned",
+                output="Tracking ended by an authorized requester or host owner. External execution remains unknown.",
+                artifacts=[],
+            )
+    await db.commit()
+    return {"receipt": receipt, "event": _event_payload(event)}
+
+
 async def list_channel_requests(
     db: AsyncSession,
     *,
@@ -2091,7 +2239,7 @@ async def list_channel_requests(
         )
     )
     more, rows = len(rows) > limit, rows[:limit]
-    origins, controls = {}, {}
+    origins, controls, dispositions = {}, {}, {}
     if rows:
         spans = await db.scalars(
             select(InvocationSpan)
@@ -2103,7 +2251,11 @@ async def list_channel_requests(
             )
             .order_by(InvocationSpan.started_at.desc())
         )
+        by_id = {row.id: row for row in rows}
         for span in spans:
+            disposition = _work_disposition(span, by_id[span.request_id])
+            if disposition is not None:
+                dispositions[span.request_id] = disposition
             if span.span_type == "remote_action":
                 origins.setdefault(span.request_id, span)
             elif span.name in {"local_agent.cancel", "local_agent.revoke_connection"}:
@@ -2124,6 +2276,7 @@ async def list_channel_requests(
     projected = []
     for row in rows:
         control = controls.get(row.id)
+        disposition = dispositions.get(row.id)
         undispatched = (
             _leased_dispatch_attested(row, origins.get(row.id))
             and row.delivery_attempt_count == 0
@@ -2143,11 +2296,22 @@ async def list_channel_requests(
                 "preview": row.content[:240],
                 "created_at": row.created_at.isoformat(),
                 "control": control,
-                "can_cancel": actor_user_id in {row.sender_user_id, row.owner_user_id}
+                "tracking_state": "abandoned"
+                if disposition
+                else "settled"
+                if row.status in {"completed", "failed", "cancelled"}
+                else "open",
+                "disposition": disposition,
+                "can_abandon": not disposition
+                and row.status == "needs_reconciliation"
+                and actor_user_id == (row.sender_user_id or row.owner_user_id),
+                "can_cancel": not disposition
+                and actor_user_id in {row.sender_user_id, row.owner_user_id}
                 and row.status in {"pending", "waiting_approval", "delivered", "needs_reconciliation"},
                 "next_action": "review_late_result"
-                if control and control["execution_state"] == "unknown" and row.status in {"completed", "failed"}
-                else (control or {}).get("next_action"),
+                if (disposition or (control and control["execution_state"] == "unknown"))
+                and row.status in {"completed", "failed"}
+                else (disposition or control or {}).get("next_action"),
             }
         )
     return {
@@ -2157,7 +2321,7 @@ async def list_channel_requests(
     }
 
 
-async def cancel_channel_message(
+async def _locked_control_message(
     db: AsyncSession,
     *,
     tenant_id: uuid.UUID,
@@ -2166,9 +2330,7 @@ async def cancel_channel_message(
     owner_user_id: uuid.UUID,
     actor_user_id: uuid.UUID,
     request_hash: str | None,
-    idempotency_key: str,
-) -> dict:
-    """Withdraw one request without inventing an external runtime stop."""
+) -> LocalAgentChannelMessage:
     message = await db.scalar(
         select(LocalAgentChannelMessage)
         .join(LocalAgentChannelSession, LocalAgentChannelSession.id == LocalAgentChannelMessage.session_id)
@@ -2190,6 +2352,30 @@ async def cancel_channel_message(
         raise HTTPException(403, detail="Only the requester or host owner can withdraw this request")
     if message.request_hash != request_hash:
         raise HTTPException(409, detail={"code": "local_agent_request_changed"})
+    return message
+
+
+async def cancel_channel_message(
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    session_id: uuid.UUID,
+    message_id: uuid.UUID,
+    owner_user_id: uuid.UUID,
+    actor_user_id: uuid.UUID,
+    request_hash: str | None,
+    idempotency_key: str,
+) -> dict:
+    """Withdraw one request without inventing an external runtime stop."""
+    message = await _locked_control_message(
+        db,
+        tenant_id=tenant_id,
+        session_id=session_id,
+        message_id=message_id,
+        owner_user_id=owner_user_id,
+        actor_user_id=actor_user_id,
+        request_hash=request_hash,
+    )
     command_hash = _canonical_hash(
         {
             "action": "cancel",
@@ -2217,8 +2403,14 @@ async def cancel_channel_message(
         if not isinstance(receipt, dict) or receipt.get("control_id") != str(control_id):
             raise HTTPException(409, detail={"code": "local_agent_control_conflict"})
         return {"receipt": receipt, "event": None}
-    result = await _withdraw_locked_message(db, message=message, actor_user_id=actor_user_id,
-        control_id=control_id, command_hash=command_hash, action="cancel")
+    result = await _withdraw_locked_message(
+        db,
+        message=message,
+        actor_user_id=actor_user_id,
+        control_id=control_id,
+        command_hash=command_hash,
+        action="cancel",
+    )
     await db.commit()
     return result
 

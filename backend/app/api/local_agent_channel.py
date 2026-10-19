@@ -594,6 +594,25 @@ async def cancel_user_local_agent_request(session_id: uuid.UUID, message_id: uui
     return controlled['receipt']
 
 
+@router.post('/local-agents/sessions/{session_id}/messages/{message_id}/abandon')
+async def abandon_user_local_agent_request(session_id: uuid.UUID, message_id: uuid.UUID, body: LocalAgentMessageCancelIn,
+    current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db),
+):
+    if body.expected_user_id != current_user.id:
+        raise HTTPException(409, detail={'code': 'local_agent_account_changed'})
+    session, owner = await channel_service.get_channel_session_for_actor(db, session_id=session_id,
+        actor_user_id=current_user.id, access_user=current_user, action='abandon')
+    tenant_id = uuid.UUID(str(session['tenant_id']))
+    if body.expected_tenant_id != tenant_id:
+        raise HTTPException(409, detail={'code': 'local_agent_tenant_changed'})
+    controlled = await channel_service.abandon_channel_message(db, tenant_id=tenant_id, session_id=session_id,
+        message_id=message_id, owner_user_id=owner, actor_user_id=current_user.id,
+        request_hash=body.request_hash, idempotency_key=body.idempotency_key)
+    if controlled['event'] is not None:
+        await _broadcast_browser_channel_event(owner_user_id=owner, session_id=session_id, event=controlled['event'])
+    return controlled['receipt']
+
+
 @router.post("/local-agents/sessions/{session_id}/ws-ticket", response_model=WsTicketOut, status_code=201)
 async def create_current_user_local_agent_channel_browser_ws_ticket(
     session_id: uuid.UUID,

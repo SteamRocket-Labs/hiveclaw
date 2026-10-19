@@ -5594,6 +5594,10 @@
     "departments": "Review department mappings and assignments"
   },
   "localRequests": {
+    "abandonedLate": "Tracking ended. A late result is available here for review; execution was not repeated.",
+    "abandoned": "Tracking ended. External execution remains unknown.",
+    "abandonHint": "End tracking without stopping or repeating device execution. Any late result received remains here for review.",
+    "abandon": "End tracking this request",
     "late": "A late result arrived. Review it in this work; the earlier control remains unconfirmed.",
     "cancelled": "Cancelled before dispatch",
     "unknown": "Further dispatch withheld. Execution is unknown; inspect or stop this request on the original device.",

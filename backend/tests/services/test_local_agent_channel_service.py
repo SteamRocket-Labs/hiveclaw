@@ -917,6 +917,8 @@ async def test_record_a2a_channel_result_enqueues_source_session_completion_befo
 
     class _DbWithGet(_FakeDB):
         async def get(self, _model, obj_id):
+            if _model is service.InvocationSpan:
+                return None
             assert obj_id == target_chat_session_id
             return target_chat_session
 
@@ -1045,7 +1047,12 @@ async def test_record_a2a_channel_result_replay_repairs_missing_source_delivery(
         agent_id=source_agent_id,
         user_id=requester_user_id,
     )
-    db = _FakeDB([channel_session, channel_message, parent_session])
+    class ReplayDB(_FakeDB):
+        async def get(self, model, _object_id):
+            assert model is service.InvocationSpan
+            return None
+
+    db = ReplayDB([channel_session, channel_message, parent_session])
     context = SimpleNamespace(
         connection_id=uuid4(),
         agent_id=target_agent_id,

@@ -43,3 +43,53 @@ async def test_dingtalk_receipts_preserve_explicit_failure_and_unknown(monkeypat
         await send_dingtalk_text('https://oapi.dingtalk.com/robot/sendBySession?session=SYNTHETIC_PRIVATE_TOKEN', 'Work result')
     assert error.value.status == status and error.value.retryable == retryable
     assert 'SYNTHETIC_PRIVATE' not in str(error.value)
+
+
+@pytest.mark.parametrize('outcome,status,retryable', [('confirmed', None, False), ('no_key', 'unknown', False),
+    ('invalid', 'failed', False), ('filtered', 'failed', False), ('flow', 'failed', True),
+    ('pending', 'unknown', False), ('query_failed', 'unknown', False), ('send_lost', 'unknown', False)])
+async def test_dingtalk_file_requires_the_actual_recipient_and_delivery_receipt(monkeypatch, tmp_path, outcome, status, retryable):
+    import json
+    from app.services.channel_provider_receipts import ProviderReceiptError, send_dingtalk_file
+
+    path = tmp_path / 'result.xlsx'
+    path.write_bytes(b'synthetic-transport-bytes')
+    calls, factory = [], httpx.AsyncClient
+    def respond(request):
+        calls.append(request)
+        if request.url.path == '/gettoken':
+            return httpx.Response(200, json={'errcode': 0, 'access_token': 'synthetic-oapi-token'})
+        if request.url.path == '/media/upload':
+            assert request.url.params['access_token'] == 'synthetic-oapi-token'
+            return httpx.Response(200, json={'errcode': 0, 'media_id': '@synthetic-raw-media'})
+        if request.url.path == '/v1.0/oauth2/accessToken':
+            return httpx.Response(200, json={'accessToken': 'synthetic-v1-token'})
+        assert request.headers['x-acs-dingtalk-access-token'] == 'synthetic-v1-token'
+        if request.url.path.endswith('/batchSend'):
+            data = json.loads(request.content)
+            assert data['userIds'] == ['member-one'] and data['robotCode'] == 'synthetic-app'
+            assert json.loads(data['msgParam'])['mediaId'] == '@synthetic-raw-media'
+            if outcome == 'send_lost':
+                raise httpx.ReadTimeout('synthetic-private-diagnostic', request=request)
+            if outcome == 'no_key':
+                return httpx.Response(200, json={})
+            refused = {'invalid': 'invalidStaffIdList', 'filtered': 'filteredStaffIdList', 'flow': 'flowControlledStaffIdList'}
+            return httpx.Response(200, json={'processQueryKey': 'synthetic-file-receipt',
+                **({refused[outcome]: ['member-one']} if outcome in refused else {})})
+        assert request.url.path.endswith('/readStatus') and request.url.params['processQueryKey'] == 'synthetic-file-receipt'
+        if outcome == 'query_failed':
+            return httpx.Response(403, json={'code': 'synthetic-private-diagnostic'})
+        return httpx.Response(200, json={'sendStatus': 'SUCESS' if outcome == 'confirmed' else 'SENDING'})
+    monkeypatch.setattr(httpx, 'AsyncClient', lambda **kwargs: factory(**{**kwargs, 'transport': httpx.MockTransport(respond)}))
+    if status is None:
+        assert await send_dingtalk_file(app_key='synthetic-app', app_secret='synthetic-secret', to_user='member-one', path=path) == {
+            'provider_reference': 'synthetic-file-receipt'}
+    else:
+        with pytest.raises(ProviderReceiptError) as error:
+            await send_dingtalk_file(app_key='synthetic-app', app_secret='synthetic-secret', to_user='member-one', path=path)
+        assert error.value.status == status and error.value.retryable == retryable
+        assert 'synthetic-private-diagnostic' not in str(error.value)
+        if outcome in {'pending', 'query_failed'}:
+            assert error.value.detail == {'provider_reference': 'synthetic-file-receipt'}
+    assert sum(request.url.path.endswith('/batchSend') for request in calls) == 1
+    assert sum(request.url.path.endswith('/readStatus') for request in calls) == (outcome in {'confirmed', 'pending', 'query_failed'})

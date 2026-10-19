@@ -1,5 +1,6 @@
 {
   "companyMessaging": {
+    "fileUnavailable": "The file could not be retrieved. Upload it again in the original conversation, or ask an administrator to check the connection.",
     "historyConflict": "This sender account has prior channel ownership. Contact your administrator to review the connection; earlier private work remains with its original owner.",
     "applicationInUse": "This DingTalk application is already assigned to another bot connection. Use a dedicated application, or disconnect the previous bot before enabling company messaging.",
     "receiving": "Last received a message from this application:",
@@ -18,7 +19,7 @@
     "sendCommand": "Send this command in a private chat with the configured company bot from the directory account shown here. Then refresh. Keep the command private.",
     "command": "One-time verification command",
     "expires": "Expires",
-    "coverage": "Company messaging currently supports private text. Use Web for files and group work. Saved settings and verified identity do not confirm live delivery.",
+    "coverage": "Private messages support text, DingTalk files and WeCom images, voice and video. Files and media are limited to 20 MiB; Office results can return to the original chat. Use Web for WeCom file input and group work. Saved settings and verified identity do not confirm live delivery.",
     "setupTitle": "Company bot messaging",
     "adminHelp": "Directory sync stays available without messaging. Enabling messaging also requires each member to verify their own sender account in Account Settings.",
     "enable": "Enable company bot private messages",

@@ -980,7 +980,7 @@ def input_parts_to_runtime_messages(rows: Iterable[SessionTurnInput], *, answer_
             content: Any = (answer_projections or {}).get(str(row.id), parts[0]["text"])
         else:
             content = parts
-        if has_project:
+        if has_project or any(isinstance(part, dict) and part.get("type") == "attachment_ref" for part in parts):
             from app.services.session_user_checkpoint import render_human_input_content
 
             content = render_human_input_content(parts)

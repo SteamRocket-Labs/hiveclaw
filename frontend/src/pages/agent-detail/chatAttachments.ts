@@ -3,6 +3,32 @@ import type { AgentChatMessage } from './chatRuntime';
 const IMAGE_EXTS = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp'];
 
 export function parseUserAttachment(msg: AgentChatMessage, agentId?: string): AgentChatMessage {
+    const parts = msg.sessionItem?.payload.content_parts;
+    if (Array.isArray(parts)) {
+        const records = parts.filter((part): part is Record<string, unknown> => Boolean(part) && typeof part === 'object' && !Array.isArray(part));
+        const inputAttachmentFailures = records.flatMap((part) => {
+            const attachment = part.type === 'attachment_ref' && part.attachment && typeof part.attachment === 'object'
+                ? part.attachment as Record<string, unknown> : undefined;
+            return attachment?.state === 'unavailable' && typeof attachment.name === 'string' ? [{ name: attachment.name }] : [];
+        });
+        const inputAttachments = records.flatMap((part) => {
+            const attachment = part.type === 'attachment_ref' && part.attachment && typeof part.attachment === 'object'
+                ? part.attachment as Record<string, unknown> : undefined;
+            const path = attachment?.path;
+            if (typeof path !== 'string' || !path.startsWith('workspace/') || path.split('/').includes('..')) return [];
+            return [{ path, name: typeof attachment?.name === 'string' ? attachment.name : path.split('/').pop() || 'file',
+                ...(typeof attachment?.size === 'number' ? { size: attachment.size } : {}),
+                ...(typeof attachment?.content_type === 'string' ? { mimeType: attachment.content_type } : {}), source: 'human_input' }];
+        });
+        if (inputAttachments.length || inputAttachmentFailures.length) {
+            const plain = records.length === parts.length && records.every(part => ['text', 'attachment_ref'].includes(String(part.type)))
+                && inputAttachments.length + inputAttachmentFailures.length === records.filter(part => part.type === 'attachment_ref').length;
+            return { ...msg, fileName: undefined, imageUrl: undefined, inputAttachments,
+                inputAttachmentFailures: inputAttachmentFailures.length ? inputAttachmentFailures : undefined,
+                content: plain ? records.filter(part => part.type === 'text')
+                .map(part => typeof part.text === 'string' ? part.text : typeof part.content === 'string' ? part.content : '').join('\n') : msg.content };
+        }
+    }
     let parsed = { ...msg };
     let attachmentPath: string | undefined;
     // Qualified Feishu headers carry one file; legacy batches keep their first-marker behavior.

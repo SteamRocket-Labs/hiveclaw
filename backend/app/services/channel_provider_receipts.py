@@ -1,15 +1,17 @@
 """Exact provider receipts without exporting URLs, credentials or message bodies."""
 
 from urllib.parse import urlsplit
+import json
 import mimetypes
 
 import httpx
 
 
 class ProviderReceiptError(ValueError):
-    def __init__(self, message, *, status='failed', retryable=False):
+    def __init__(self, message, *, status='failed', retryable=False, detail=None):
         super().__init__(message)
         self.status, self.retryable = status, retryable
+        self.detail = dict(detail or {})
 
 
 async def _send(client, url, **kwargs):
@@ -48,6 +50,88 @@ async def send_dingtalk_text(session_webhook, text):
     async with httpx.AsyncClient(timeout=10) as client:
         return await _send(client, session_webhook,
             json={'msgtype': 'markdown', 'markdown': {'title': 'AI Reply', 'text': text}})
+
+
+async def _dingtalk_response(client, method, path, **kwargs):
+    try:
+        response = await client.request(method, 'https://api.dingtalk.com' + path, **kwargs)
+    except (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout):
+        raise ProviderReceiptError('DingTalk connection unavailable', status='unavailable', retryable=True) from None
+    except httpx.HTTPError:
+        raise ProviderReceiptError('DingTalk request outcome is unknown', status='unknown') from None
+    if 400 <= response.status_code < 500:
+        raise ProviderReceiptError(f'DingTalk refused the request (HTTP {response.status_code})', retryable=response.status_code == 429)
+    if response.status_code != 200:
+        raise ProviderReceiptError('DingTalk request has no authoritative receipt', status='unknown')
+    try:
+        payload = response.json()
+    except ValueError:
+        raise ProviderReceiptError('DingTalk response is unreadable', status='unknown') from None
+    if not isinstance(payload, dict):
+        raise ProviderReceiptError('DingTalk response is incomplete', status='unknown')
+    return payload
+
+
+async def dingtalk_access_token(client, app_key, app_secret):
+    try:
+        payload = await _dingtalk_response(client, 'POST', '/v1.0/oauth2/accessToken',
+            json={'appKey': app_key, 'appSecret': app_secret})
+    except ProviderReceiptError as exc:
+        if exc.status == 'unknown':
+            raise ProviderReceiptError('DingTalk credentials are unavailable', status='unavailable', retryable=True) from None
+        raise
+    token = payload.get('accessToken')
+    if not isinstance(token, str) or not token:
+        raise ProviderReceiptError('DingTalk token receipt is incomplete', status='unavailable', retryable=True)
+    return token
+
+
+async def send_dingtalk_file(*, app_key, app_secret, to_user, path):
+    if not to_user:
+        raise ProviderReceiptError('DingTalk file recipient is unavailable', status='denied')
+    if not 0 < path.stat().st_size <= 20 * 1024 * 1024:
+        raise ProviderReceiptError('DingTalk file must be nonempty and at most 20 MiB', status='denied')
+    async with httpx.AsyncClient(timeout=30) as client:
+        # OAPI upload and v1 robot APIs have separate credential contracts.
+        try:
+            response = await client.get('https://oapi.dingtalk.com/gettoken',
+                params={'appkey': app_key, 'appsecret': app_secret})
+            response.raise_for_status()
+            credentials = response.json()
+        except (httpx.HTTPError, ValueError):
+            raise ProviderReceiptError('DingTalk upload credentials are unavailable', status='unavailable', retryable=True) from None
+        if (not isinstance(credentials, dict) or type(credentials.get('errcode')) is not int or credentials['errcode'] != 0
+            or not isinstance(credentials.get('access_token'), str) or not credentials['access_token']):
+            raise ProviderReceiptError('DingTalk upload token was rejected')
+        with path.open('rb') as source:
+            media = await _send(client, 'https://oapi.dingtalk.com/media/upload',
+                params={'access_token': credentials['access_token'], 'type': 'file'},
+                files={'media': (path.name, source, 'application/octet-stream')})
+        media_id = media.get('media_id')
+        if not isinstance(media_id, str) or not media_id:
+            raise ProviderReceiptError('DingTalk upload receipt is incomplete', status='unavailable', retryable=True)
+        token = await dingtalk_access_token(client, app_key, app_secret)
+        headers = {'x-acs-dingtalk-access-token': token}
+        sent = await _dingtalk_response(client, 'POST', '/v1.0/robot/oToMessages/batchSend', headers=headers,
+            json={'robotCode': app_key, 'userIds': [to_user], 'msgKey': 'sampleFile',
+                'msgParam': json.dumps({'mediaId': media_id, 'fileName': path.name, 'fileType': path.suffix.lstrip('.')})})
+        for key in ('invalidStaffIdList', 'flowControlledStaffIdList', 'filteredStaffIdList'):
+            if key in sent and not isinstance(sent[key], list):
+                raise ProviderReceiptError('DingTalk recipient receipt is incomplete', status='unknown')
+            if sent.get(key):
+                raise ProviderReceiptError('DingTalk refused a file recipient', retryable=key == 'flowControlledStaffIdList')
+        reference = sent.get('processQueryKey')
+        if not isinstance(reference, str) or not reference:
+            raise ProviderReceiptError('DingTalk file acceptance receipt is incomplete', status='unknown')
+        detail = {'provider_reference': reference}
+        try:
+            confirmed = await _dingtalk_response(client, 'GET', '/v1.0/robot/oToMessages/readStatus',
+                headers=headers, params={'robotCode': app_key, 'processQueryKey': reference})
+        except ProviderReceiptError:
+            raise ProviderReceiptError('DingTalk file delivery requires reconciliation', status='unknown', detail=detail) from None
+        if confirmed.get('sendStatus') != 'SUCESS':
+            raise ProviderReceiptError('DingTalk file delivery is not confirmed', status='unknown', detail=detail)
+        return detail
 
 
 async def _wecom_token(client, corp_id, corp_secret):

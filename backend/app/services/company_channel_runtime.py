@@ -41,7 +41,7 @@ async def _authorized_target(db, config, principal, accepted=None):
     return agent.id if agent.tenant_id == config.tenant_id else None, actor
 
 
-async def accept_company_message(db, *, config, subject_id, text, event_id, delivery_target=None):
+async def accept_company_message(db, *, config, subject_id, text, event_id, delivery_target=None, attachment=None):
     """The caller has verified the concrete provider callback or SDK session."""
     if not company_channel_ready(config) or not subject_id:
         raise PermissionError('company_channel_not_configured')
@@ -63,7 +63,8 @@ async def accept_company_message(db, *, config, subject_id, text, event_id, deli
     receipt = await accept_authenticated_channel_event(db, tenant_id=config.tenant_id, agent_id=target,
         provider=config.channel_type, installation_ref=installation, provider_event_id=event_id,
         handler_key=f'company.{config.channel_type}.message',
-        body={'subject_id': subject_id, 'user_text': text, 'delivery_target': dict(delivery_target or {})},
+        body={'subject_id': subject_id, 'user_text': text, 'delivery_target': dict(delivery_target or {}),
+            **({'attachment': dict(attachment)} if attachment else {})},
         metadata={'tenant_channel_config_id': str(config.id), 'requester_user_id': str(actor.id), 'transport': 'company_authenticated'})
     return {'routed': True, 'state': 'accepted', 'event_id': str(receipt.event_id)}
 
@@ -111,12 +112,27 @@ async def process_company_message(db, item, body):
     delivery_target['session_id'] = str(session.id)
     session.delivery_target_json = delivery_target
     bind_channel_ingress_external_principal(principal.id)
+    attachments = []
+    if body.get('attachment'):
+        from app.services.company_channel_files import materialize_company_attachment
+        from app.services.feishu_uploads import _upload_name
+
+        try:
+            attachments.append(await materialize_company_attachment(db, config=config, actor=actor, session=session,
+                attachment=body['attachment'], event_id=item.id))
+        except HTTPException as exc:
+            if exc.status_code not in {409, 413, 422, 503}:
+                raise
+            detail = exc.detail if isinstance(exc.detail, dict) else {}
+            attachments.append({'name': _upload_name(body['attachment'].get('filename') or body['attachment'].get('kind')),
+                'state': 'unavailable', 'reason_code': detail.get('code') or 'company_file_unavailable',
+                'recovery_action': 'upload_new_message'})
     db.add(ChatMessage(tenant_id=item.tenant_id, agent_id=agent.id, user_id=actor.id,
         external_principal_id=principal.id, role='user', content=str(body.get('user_text') or ''),
         conversation_id=str(session.id), source_ingress_event_id=item.id))
     await db.flush()
     receipt = await submit_live_human_input(db=db, agent=agent, user=actor, session=session,
-        content=str(body.get('user_text') or ''), source=item.provider, input_id=item.id,
+        content=str(body.get('user_text') or ''), attachments=attachments, source=item.provider, input_id=item.id,
         idempotency_key=f'channel:{item.provider}:ingress:{item.id}',
         runtime_metadata={'source': item.provider, 'channel': item.provider,
             'channel_ingress_event_id': str(item.id), 'budget_interactive': False})

@@ -63,11 +63,18 @@ def _store_upload(root, parts, content):
 
 
 async def save_feishu_upload(db, *, actor, session, message_id, resource_key, filename, content):
+    return await save_channel_upload(db, actor=actor, session=session, provider="feishu", message_id=message_id,
+        resource_key=resource_key, filename=filename, content=content)
+
+
+async def save_channel_upload(db, *, actor, session, provider, message_id, resource_key, filename, content):
     from app.config import get_settings
     from app.services.channel_ingress_context import current_channel_ingress_context
     from app.services.workspace_resource_authority import register_workspace_path
     from app.services.content_input_receipts import latest_workspace_receipt, lock_workspace_receipt_write, record_workspace_receipt
 
+    if provider not in {"feishu", "dingtalk", "wecom"}:
+        raise HTTPException(422, "Unsupported channel upload provider")
     if session.audience_kind == "group":
         from app.services.shared_group_authority import resolve_shared_group_entry_authority
 
@@ -77,7 +84,7 @@ async def save_feishu_upload(db, *, actor, session, message_id, resource_key, fi
             session_id=session.id, action="mutate_session_input")
     ingress = current_channel_ingress_context()
     if ingress and (ingress.tenant_id, ingress.agent_id, ingress.external_principal_id, ingress.provider) != (
-        authority.tenant_id, authority.agent_id, actor.external_principal_id, "feishu"):
+        authority.tenant_id, authority.agent_id, actor.external_principal_id, provider):
         raise HTTPException(403, "Upload ingress does not belong to this sender and work")
     if ingress:
         from app.models.external_principal import ExternalPrincipal
@@ -91,13 +98,13 @@ async def save_feishu_upload(db, *, actor, session, message_id, resource_key, fi
     origin = json.dumps([str(authority.tenant_id), str(authority.agent_id), str(session.id),
         str(actor.external_principal_id), message_id, resource_key], separators=(",", ":"))
     name = _upload_name(filename)
-    path = f"workspace/uploads/feishu/{hashlib.sha256(origin.encode()).hexdigest()}/{name}"
+    path = f"workspace/uploads/{provider}/{hashlib.sha256(origin.encode()).hexdigest()}/{name}"
     digest = hashlib.sha256(content).hexdigest()
     manifest = await db.scalar(select(WorkspaceResourceManifest).where(WorkspaceResourceManifest.agent_id == session.agent_id,
         WorkspaceResourceManifest.path == path).with_for_update().execution_options(populate_existing=True))
     root_session_id = session.root_session_id or session.id
     if manifest and (manifest.tenant_id, manifest.owner_user_id, manifest.root_session_id, manifest.source, manifest.content_hash, manifest.deleted_at) != (
-        authority.tenant_id, actor.id, root_session_id, "feishu_upload", digest, None):
+        authority.tenant_id, actor.id, root_session_id, f"{provider}_upload", digest, None):
         raise HTTPException(409, "Upload authority or contents changed; preserve the current file and upload a new message")
     await lock_workspace_receipt_write(db, authority.tenant_id, authority.agent_id, path)
     previous = await latest_workspace_receipt(db, authority.tenant_id, authority.agent_id, path)
@@ -107,7 +114,7 @@ async def save_feishu_upload(db, *, actor, session, message_id, resource_key, fi
     root.mkdir(parents=True, exist_ok=True)
     _store_upload(root, (str(session.agent_id), *Path(path).parts), content)
     await register_workspace_path(db, tenant_id=authority.tenant_id, agent_id=authority.agent_id, path=path,
-        owner_user_id=actor.id, root_session_id=root_session_id, source="feishu_upload", content_hash=digest)
+        owner_user_id=actor.id, root_session_id=root_session_id, source=f"{provider}_upload", content_hash=digest)
     if previous is None:
         record_workspace_receipt(db, authority.tenant_id, authority.agent_id, path, digest, None)
     if ingress:

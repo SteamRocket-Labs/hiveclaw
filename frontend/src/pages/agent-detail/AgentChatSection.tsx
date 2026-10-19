@@ -1088,6 +1088,18 @@ const ChatMessageItem = React.memo(function ChatMessageItem({
         ) : (
           <div style={{ whiteSpace: 'pre-wrap' }}>{msg.content}</div>
         )}
+        {msg.role === 'user' && msg.inputAttachmentFailures?.map((file, index) => <div
+          key={`${file.name}-${index}`} className="session-tui-file-chip" role="status"
+        >
+          <span>📎 {file.name}</span>
+          <span>{t('companyMessaging.fileUnavailable')}</span>
+        </div>)}
+        {msg.role === 'user' && <ArtifactCards
+          agentId={effectiveAgentId}
+          artifacts={msg.inputAttachments}
+          onOpenArtifact={onOpenArtifact}
+          operatorView={operatorView} operatorReason={operatorReason}
+        />}
         <ArtifactCards
           agentId={effectiveAgentId}
           artifacts={msg.artifacts}

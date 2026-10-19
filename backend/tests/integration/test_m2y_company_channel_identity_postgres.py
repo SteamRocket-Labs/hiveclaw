@@ -85,12 +85,13 @@ async def test_directory_link_cannot_bind_channel_without_member_challenge(compa
         assert not list(await db.scalars(select(ExternalPrincipal).where(ExternalPrincipal.tenant_id == seed['tenant_id'])))
 
 
-def company_wecom_request(config, *, text, subject='member-one', recipient=None, agent_id='100001', message_id='binding-message'):
+def company_wecom_request(config, *, text, subject='member-one', recipient=None, agent_id='100001', message_id='binding-message',
+    msg_type='text', media_id=None):
     import xml.etree.ElementTree as ET
     from app.api.wecom import _encrypt_msg, _verify_signature
     plain = ET.Element('xml')
     for key, value in {'ToUserName': recipient or config.app_id, 'FromUserName': subject, 'AgentID': agent_id,
-        'MsgType': 'text', 'MsgId': message_id, 'Content': text}.items():
+        'MsgType': msg_type, 'MsgId': message_id, 'Content': text, **({'MediaId': media_id} if media_id else {})}.items():
         ET.SubElement(plain, key).text = value
     encrypted = _encrypt_msg(config.encrypt_key, ET.tostring(plain, encoding='unicode'), recipient or config.app_id)
     outer = ET.Element('xml')
@@ -296,6 +297,17 @@ async def test_authenticated_private_work_uses_native_tools_and_original_outbox(
             return httpx.Response(200, json={'errcode': 0, 'access_token': 'synthetic-token'})
         if outcome == 'unknown':
             raise httpx.ReadTimeout('synthetic response lost', request=request)
+        if provider == 'dingtalk' and request.url.path == '/media/upload':
+            assert b'COMPANY_RESULT' in request.content
+            return httpx.Response(200, json={'errcode': 0, 'media_id': '@synthetic-report-media'})
+        if provider == 'dingtalk' and request.url.path == '/v1.0/oauth2/accessToken':
+            return httpx.Response(200, json={'accessToken': 'synthetic-robot-token'})
+        if provider == 'dingtalk' and request.url.path == '/v1.0/robot/oToMessages/batchSend':
+            payload = json.loads(request.content)
+            assert payload['userIds'] == ['member-one'] and payload['robotCode'] == config.app_id
+            assert json.loads(payload['msgParam']) == {'mediaId': '@synthetic-report-media',
+                'fileName': 'company-report.md', 'fileType': 'md'}
+            return httpx.Response(400, json={'code': 'synthetic-provider-file-refusal'})
         return httpx.Response(200, json={'errcode': 0 if outcome == 'success' else 40014, 'msgid': 'synthetic-receipt'})
     monkeypatch.setattr(httpx, 'AsyncClient', lambda **kwargs: factory(transport=httpx.MockTransport(provider_request), **kwargs))
     service = ChannelDeliveryOutboxService(session_factory=app_user_sessionmaker)
@@ -311,7 +323,15 @@ async def test_authenticated_private_work_uses_native_tools_and_original_outbox(
             payload = json.loads(next(r.content for r in calls if r.method == 'POST'))
             assert payload['touser'] == 'member-one' and payload['agentid'] == 100001
         else:
-            assert len(calls) == 1 and calls[0].url.host == 'oapi.dingtalk.com'
+            text_calls = [request for request in calls if request.url.path == '/robot/sendBySession']
+            assert len(text_calls) == 1 and text_calls[0].url.host == 'oapi.dingtalk.com'
+            if outcome == 'success':
+                assert len(calls) == 5 and row.status == 'dead_letter'
+                assert len(row.delivery_receipts_json['artifacts']) == 1
+                assert all(receipt['state'] == 'failed' and not receipt['retryable']
+                    for receipt in row.delivery_receipts_json['artifacts'].values())
+            else:
+                assert len(calls) == 1
     before = len(calls)
     await service.drain_once(worker_id='company-results', limit=50)
     assert len(calls) == before

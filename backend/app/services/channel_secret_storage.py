@@ -40,11 +40,13 @@ DELIVERY_TARGET_SECRET_FIELDS = {
 }
 CHANNEL_INGRESS_PROVIDER_FIELD = "_channel_ingress_provider"
 CHANNEL_INGRESS_SECRET_PATHS = {
-    "dingtalk": (("body", "session_webhook"), ("body", "delivery_target", "session_webhook")),
+    "dingtalk": (("body", "session_webhook"), ("body", "delivery_target", "session_webhook"),
+        ("body", "attachment", "resource_key")),
     "discord": (("body", "token"),),
     "feishu": (("body", "token"),),
     "slack": (("body", "token"),),
     "wechat_personal": (("body", "delivery_target", "context_token"),),
+    "wecom": (("body", "attachment", "resource_key"),),
 }
 DELIVERY_TARGET_SECRET_TABLES = (
     ("chat_sessions.delivery_target_json", "chat_sessions", "delivery_target_json", "JSONB"),

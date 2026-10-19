@@ -82,13 +82,24 @@ async def accept_company_dingtalk_message(*, tenant_id, config_id, revision, ins
             raise PermissionError('company_dingtalk_sender_namespace_mismatch')
         if str(body.get('conversationType') or '') != '1':
             return {'routed': False, 'state': 'company_group_not_configured'}
-        if body.get('msgtype') != 'text':
+        kind = body.get('msgtype')
+        attachment = None
+        if kind == 'file':
+            content = body.get('content')
+            if (not isinstance(content, dict) or not isinstance(content.get('downloadCode'), str)
+                or not content['downloadCode'] or not isinstance(content.get('fileName'), str) or not content['fileName']):
+                raise PermissionError('company_dingtalk_file_invalid')
+            attachment = {'kind': 'file', 'filename': content['fileName'], 'resource_key': content['downloadCode']}
+            text = ''
+        elif kind != 'text':
             return {'routed': False, 'state': 'unsupported_message_type'}
-        message = dingtalk_stream.ChatbotMessage.from_dict(body)
-        text = ' '.join(message.get_text_list() or [])
+        else:
+            message = dingtalk_stream.ChatbotMessage.from_dict(body)
+            text = ' '.join(message.get_text_list() or [])
         result = await accept_company_message(db, config=config, subject_id=body['senderStaffId'], text=text,
-            event_id=str(body.get('msgId') or ''), delivery_target={'session_webhook': message.session_webhook or '',
-                'conversation_id': message.conversation_id or ''})
+            event_id=str(body.get('msgId') or ''), attachment=attachment,
+            delivery_target={'session_webhook': str(body.get('sessionWebhook') or ''),
+                'conversation_id': str(body.get('conversationId') or '')})
         return result
 
 

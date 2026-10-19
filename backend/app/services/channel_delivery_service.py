@@ -130,15 +130,15 @@ class ChannelDeliveryService:
             base["capabilities"].update(
                 {
                     "live_text": True,
-                    "inbound_file": False,
-                    "outbound_file": False,
+                    "inbound_file": "conditional",
+                    "outbound_file": True,
                     "deferred_text": True,
-                    "deferred_file": False,
+                    "deferred_file": True,
                     "on_message_current_sender": True,
                     "on_message_by_name": False,
                 }
             )
-            base["limitations"].append("DingTalk 延迟回投依赖保存的 session_webhook。")
+            base["limitations"].append("DingTalk file input requires a company connection. File replies require the authenticated staff ID and robot permission, support at most 20 MiB, and retain unknown send status for reconciliation. Text replies use the saved session_webhook.")
         elif channel == "discord":
             base["official_api"] = True
             base["capabilities"].update(
@@ -1009,6 +1009,12 @@ class ChannelDeliveryService:
                     agent_id=(getattr(config, "extra_config", {}) or {}).get("wecom_agent_id"),
                     to_user=str(target.get("user_id") or ""), path=path)
                 result = ChannelDeliveryService._success(channel, "WeCom file delivered.", file_name=path.name)
+            elif channel == "dingtalk":
+                from app.services.channel_provider_receipts import send_dingtalk_file
+
+                receipt = await send_dingtalk_file(app_key=config.app_id, app_secret=config.app_secret,
+                    to_user=str(target.get("sender_staff_id") or ""), path=path)
+                result = ChannelDeliveryService._success(channel, "DingTalk file delivered.", file_name=path.name, **receipt)
             elif channel == "telegram":
                 from app.api.telegram import _send_telegram_file
 
@@ -1125,6 +1131,7 @@ class ChannelDeliveryService:
                     retryable=exc.retryable if isinstance(exc, ProviderReceiptError) else True,
                     file_name=path.name,
                     secret_evidence_refs=list(error.matched_refs),
+                    **(exc.detail if isinstance(exc, ProviderReceiptError) else {}),
                 )
         except BaseException:
             snapshot_dir.cleanup()

@@ -598,11 +598,18 @@ async def receive_company_wecom_webhook(tenant_id: uuid.UUID, request: Request, 
         or root.findtext('ToUserName', config.app_id) != config.app_id
         or root.findtext('AgentID', agent_id) != agent_id):
         raise HTTPException(403, 'WeCom application recipient rejected')
-    if message.findtext('MsgType', '') != 'text':
+    kind = message.findtext('MsgType', '')
+    attachment = None
+    if kind in {'image', 'voice', 'video'}:
+        resource = message.findtext('MediaId', '')
+        if not resource:
+            raise HTTPException(422, 'WeCom media resource is missing')
+        attachment = {'kind': kind, 'resource_key': resource}
+    elif kind != 'text':
         return Response(content='success', media_type='text/plain')
     text = message.findtext('Content', '')
-    if text:
+    if text or attachment:
         await accept_company_message(db, config=config, subject_id=message.findtext('FromUserName', ''),
-            text=text, event_id=message.findtext('MsgId', ''))
+            text=text, event_id=message.findtext('MsgId', ''), attachment=attachment)
         await db.commit()
     return Response(content='success', media_type='text/plain')

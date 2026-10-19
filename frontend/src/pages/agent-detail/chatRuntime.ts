@@ -54,6 +54,8 @@ export interface AgentChatMessage {
   content: string;
   fileName?: string;
   imageUrl?: string;
+  inputAttachments?: ChatArtifactPart[];
+  inputAttachmentFailures?: Array<{ name: string }>;
   thinking?: string;
   sender_name?: string;
   toolName?: string;

@@ -1244,10 +1244,14 @@ async def feishu_task_comment(agent_id: uuid.UUID, arguments: dict) -> str:
         adapter="agent_args",
     )
 )
-async def feishu_doc_create(agent_id: uuid.UUID, arguments: dict) -> str:
+async def feishu_doc_create(agent_id: uuid.UUID, arguments: dict, *, execution_context=None) -> str:
     from app.services.agent_tools import _feishu_doc_create
 
-    return await _feishu_doc_create(agent_id, arguments)
+    from app.services.feishu_read_receipts import capture_feishu_result, settle_feishu_result
+
+    with capture_feishu_result(execution_context, "feishu_doc_create", arguments) as capture:
+        result = await _feishu_doc_create(agent_id, arguments)
+        return await settle_feishu_result(capture, result)
 
 
 # -- feishu_doc_delete --------------------------------------------------------
@@ -1320,10 +1324,14 @@ async def feishu_doc_delete(agent_id: uuid.UUID, arguments: dict) -> str:
         adapter="agent_args",
     )
 )
-async def feishu_doc_append(agent_id: uuid.UUID, arguments: dict) -> str:
+async def feishu_doc_append(agent_id: uuid.UUID, arguments: dict, *, execution_context=None) -> str:
     from app.services.agent_tools import _feishu_doc_append
 
-    return await _feishu_doc_append(agent_id, arguments)
+    from app.services.feishu_read_receipts import capture_feishu_result, settle_feishu_result
+
+    with capture_feishu_result(execution_context, "feishu_doc_append", arguments) as capture:
+        result = await _feishu_doc_append(agent_id, arguments)
+        return await settle_feishu_result(capture, result)
 
 
 # -- feishu_doc_share ---------------------------------------------------------
@@ -1418,12 +1426,16 @@ async def feishu_doc_share(agent_id: uuid.UUID, arguments: dict) -> str:
         governance="sensitive",
     )
 )
-async def feishu_approval_create(agent_id: uuid.UUID, arguments: dict) -> str:
+async def feishu_approval_create(agent_id: uuid.UUID, arguments: dict, *, execution_context=None) -> str:
     if not await _check_feishu_configured(agent_id):
         return _FEISHU_NOT_CONFIGURED_MSG
     from app.services.agent_tools import _feishu_approval_create
 
-    return await _feishu_approval_create(agent_id, arguments)
+    from app.services.feishu_read_receipts import capture_feishu_result, settle_feishu_result
+
+    with capture_feishu_result(execution_context, "feishu_approval_create", arguments) as capture:
+        result = await _feishu_approval_create(agent_id, arguments)
+        return await settle_feishu_result(capture, result)
 
 
 # -- feishu_approval_definition ----------------------------------------------
@@ -1449,12 +1461,19 @@ async def feishu_approval_create(agent_id: uuid.UUID, arguments: dict) -> str:
         governance="safe",
     )
 )
-async def feishu_approval_definition(agent_id: uuid.UUID, arguments: dict) -> str:
+async def feishu_approval_definition(agent_id: uuid.UUID, arguments: dict, tenant_id=None, *, user_id=None, execution_context=None) -> str:
     if not await _check_feishu_configured(agent_id):
         return _FEISHU_NOT_CONFIGURED_MSG
     from app.services.agent_tools import _feishu_approval_definition
 
-    return await _feishu_approval_definition(agent_id, arguments)
+    from app.services.feishu_read_receipts import capture_feishu_result, settle_feishu_result
+
+    with capture_feishu_result(execution_context, "feishu_approval_definition", arguments) as capture:
+        if tenant_id is None and user_id is None:
+            result = await _feishu_approval_definition(agent_id, arguments)
+        else:
+            result = await _feishu_approval_definition(agent_id, arguments, tenant_id=tenant_id, current_user_id=user_id)
+        return await settle_feishu_result(capture, result)
 
 
 # -- feishu_approval_query ----------------------------------------------------
@@ -1519,12 +1538,19 @@ async def feishu_approval_query(agent_id: uuid.UUID, arguments: dict, tenant_id=
         governance="safe",
     )
 )
-async def feishu_approval_get(agent_id: uuid.UUID, arguments: dict) -> str:
+async def feishu_approval_get(agent_id: uuid.UUID, arguments: dict, tenant_id=None, *, user_id=None, execution_context=None) -> str:
     if not await _check_feishu_configured(agent_id):
         return _FEISHU_NOT_CONFIGURED_MSG
     from app.services.agent_tools import _feishu_approval_get
 
-    return await _feishu_approval_get(agent_id, arguments)
+    from app.services.feishu_read_receipts import capture_feishu_result, settle_feishu_result
+
+    with capture_feishu_result(execution_context, "feishu_approval_get", arguments) as capture:
+        if tenant_id is None and user_id is None:
+            result = await _feishu_approval_get(agent_id, arguments)
+        else:
+            result = await _feishu_approval_get(agent_id, arguments, tenant_id=tenant_id, current_user_id=user_id)
+        return await settle_feishu_result(capture, result)
 
 
 # -- feishu_user_search -------------------------------------------------------

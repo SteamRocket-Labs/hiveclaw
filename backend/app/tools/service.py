@@ -1501,13 +1501,19 @@ class ToolRuntimeService:
                 ) from None
             raise
         result_failed = _tool_result_failed(result)
+        from app.tools.registry import tool_spec_v1
+
+        spec = tool_spec_v1(tool_name)
+        external_effect = result.metadata.get("external_effect") if isinstance(result, ToolContentEnvelope) else None
+        effect_unknown = bool(spec and spec.external_visible) and isinstance(external_effect, dict) and external_effect == {
+            "schema": "hive.external_effect.v1", "status": "unknown", "operation": tool_name}
         _record_tool_execution_frame(
             context,
             tool_call_id=tool_call_id,
             tool_name=tool_name,
             executor=self.backend.name if self.backend else "unknown",
             arguments=arguments,
-            status="failed" if result_failed else "completed",
+            status="unknown" if effect_unknown else "failed" if result_failed else "completed",
             result=str(result),
             started_at=started_frame.get("started_at"),
             trace_metadata_sink=trace_metadata_sink,
@@ -1517,7 +1523,7 @@ class ToolRuntimeService:
                 context,
                 tool_call_id=tool_call_id,
                 tool_name=tool_name,
-                state="failed" if result_failed else "completed",
+                state="unknown" if effect_unknown else "failed" if result_failed else "completed",
                 original_arguments=original_arguments,
                 effective_arguments=dict(arguments or {}),
             )

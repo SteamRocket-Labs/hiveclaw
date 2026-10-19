@@ -20,9 +20,10 @@ from tests.services.test_session_input_control_v2 import _mark_web_terminal_boun
 pytestmark = pytest.mark.usefixtures("migrated_pg_url")
 
 
-@pytest.mark.parametrize("action", ["approve", "reject", "view_only"])
+@pytest.mark.parametrize("tool_name,action", [("read_file", "approve"), ("read_file", "reject"),
+    ("read_file", "view_only"), ("feishu_doc_create", "reject"), ("feishu_doc_create", "view_only")])
 async def test_actual_enterprise_ticket_is_not_a_local_permission_and_stays_in_its_work(
-    owner_sessionmaker, app_user_sessionmaker, monkeypatch, action,
+    owner_sessionmaker, app_user_sessionmaker, monkeypatch, tool_name, action,
 ):
     from app.api.chat_sessions import router
     from app.core.execution_context import ExecutionIdentity
@@ -52,27 +53,34 @@ async def test_actual_enterprise_ticket_is_not_a_local_permission_and_stays_in_i
 
         await register_workspace_path(db, tenant_id=tenant_id, agent_id=agent_id, path="workspace/requested.md",
             owner_user_id=user_id, root_session_id=session_id, source="synthetic-test-fixture")
-        db.add(GuardPolicy(tenant_id=tenant_id, zone_guard={"tool_rules": [{"tools": ["read_file"], "decision": "require_approval"}]}))
+        db.add(GuardPolicy(tenant_id=tenant_id, zone_guard={"tool_rules": [{"tools": [tool_name], "decision": "require_approval"}]}))
+        if tool_name == "feishu_doc_create":
+            from app.models.tenant_channel_config import TenantChannelConfig
+            from app.models.capability_policy import CapabilityPolicy
+            db.add(TenantChannelConfig(tenant_id=tenant_id, channel_type="feishu", app_id="synthetic-approval-app",
+                app_secret="synthetic-approval-secret", is_active=True))
+            db.add(CapabilityPolicy(tenant_id=tenant_id, capability="channel.feishu.document", allowed=True,
+                requires_approval=False))
         await db.commit()
     async with app_user_sessionmaker() as db:
         await pin_rls_tenant_context(db, tenant_id)
-        args, call_id, turn_id = {"path": "workspace/requested.md"}, f"call-{run_id.hex}", f"turn-{run_id.hex}"
+        args, call_id, turn_id = ({"path": "workspace/requested.md"} if tool_name == "read_file" else {"title": "Requested report"}), f"call-{run_id.hex}", f"turn-{run_id.hex}"
         wire = {"messages": [{"role": "user", "content": "Read the requested file"}],
-                "tools": [{"type": "function", "function": {"name": "read_file"}}], "max_tokens": 8192}
+                "tools": [{"type": "function", "function": {"name": tool_name}}], "max_tokens": 8192}
         request_id = await prepare_model_request(db, tenant_id=tenant_id, agent_id=agent_id, session_id=session_id,
             run_id=run_id, turn_id=turn_id, round_index=1, continuation_index=0, messages=wire["messages"], tools=wire["tools"],
             provider="openai", model="synthetic-no-network", wire_request=wire, attempt_owner="enterprise-test")
         await seal_model_response(db, tenant_id=tenant_id, agent_id=agent_id, session_id=session_id, run_id=run_id,
             turn_id=turn_id, round_index=1, provider_request_id=request_id, response={"content": None,
-                "tool_calls": [{"id": call_id, "type": "function", "function": {"name": "read_file", "arguments": json.dumps(args)}}],
+                "tool_calls": [{"id": call_id, "type": "function", "function": {"name": tool_name, "arguments": json.dumps(args)}}],
                 "finish_reason": "tool_calls", "usage": {"prompt_tokens": 20, "completion_tokens": 5}})
         await commit_sealed_model_round(db, tenant_id=tenant_id, agent_id=agent_id, session_id=session_id, run_id=run_id,
             turn_id=turn_id, round_index=1, provider_request_id=request_id)
         invocation = await prepare_tool_invocation(db, tenant_id=tenant_id, agent_id=agent_id, session_id=session_id,
-            run_id=run_id, provider_request_id=request_id, provider_tool_use_id=call_id, tool_name="read_file", arguments=args)
+            run_id=run_id, provider_request_id=request_id, provider_tool_use_id=call_id, tool_name=tool_name, arguments=args)
         await db.commit()
         trace = {}
-        outcome = await agent_tools._get_tool_runtime_service().execute("read_file", args, agent_id=agent_id,
+        outcome = await agent_tools._get_tool_runtime_service().execute(tool_name, args, agent_id=agent_id,
             user_id=user_id, session_id=str(session_id), runtime_task_id=str(run_id), turn_id=turn_id,
             execution_identity=ExecutionIdentity("delegated_user", user_id, "Synthetic requester"),
             tool_call_id=call_id, emit_runtime_hooks=False, trace_metadata_sink=trace)
@@ -92,6 +100,11 @@ async def test_actual_enterprise_ticket_is_not_a_local_permission_and_stays_in_i
         assert invocation.permission_item_id is None and invocation.permission_state != "waiting"
         assert invocation.result_event_id == events[-1].id and invocation.effect_state == "prepared_not_started"
         assert events[-1].metadata_json["v2_payload"]["outcome"] == "approval_required"
+        from app.services.content_input_receipts import _validate_input_dependencies
+        from app.services.session_model_inputs import _hash
+
+        await _validate_input_dependencies(db, tenant_id, [{"source_kind": "session_tool_invocation",
+            "source_id": str(invocation.id), "source_version": _hash(str(outcome))}], user=await db.get(User, user_id))
         user = await db.get(User, user_id)
         ticket = await db.get(ApprovalRequest, approval_id)
         ticket.details = {**ticket.details, "secret_field": "synthetic-must-not-leak"}

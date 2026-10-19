@@ -8,7 +8,7 @@ from collections import OrderedDict
 import httpx
 
 from app.config import get_settings
-from app.services.feishu_platform import resolve_feishu_platform
+from app.services.feishu_platform import resolve_feishu_platform, post_feishu_mutation
 
 try:
     import lark_oapi as lark
@@ -474,7 +474,7 @@ class FeishuService:
         tenant_token = await self.get_tenant_access_token(app_id, app_secret, extra_config=extra_config)
         submitter_payload = self._approval_submitter_payload(user_id)
         async with httpx.AsyncClient(timeout=15) as client:
-            resp = await client.post(
+            resp = await post_feishu_mutation(client,
                 platform.open_api_url("/approval/v4/instances"),
                 json={
                     "approval_code": approval_code,

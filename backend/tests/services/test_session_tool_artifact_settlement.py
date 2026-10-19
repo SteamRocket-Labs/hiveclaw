@@ -205,7 +205,7 @@ async def _start_effect(
             )
         )
         assert invocation is not None
-        from types import SimpleNamespace
+        from app.tools.runtime import ToolExecutionContext
         from app.config import get_settings
         from app.services.content_input_receipts import persist_workspace_execution_evidence
         from app.services.session_workspace_snapshot import workspace_path_state
@@ -217,8 +217,8 @@ async def _start_effect(
         target.write_text("production-shaped artifact\n", encoding="utf-8")
         after = workspace_path_state(workspace=root / "workspace", path=path)
         proof = await persist_workspace_execution_evidence(
-            context=SimpleNamespace(tenant_id=tenant_id, agent_id=agent_id, user_id=user_id,
-                session_id=session_id, runtime_task_id=run_id), tool_name=tool_name,
+            context=ToolExecutionContext(tenant_id=str(tenant_id), agent_id=agent_id, user_id=user_id,
+                workspace=root, session_id=str(session_id), runtime_task_id=str(run_id)), tool_name=tool_name,
             tool_call_id=provider_tool_use_id, arguments=base["args"], result="Wrote workspace/report.md",
             states={path: after}, lineage=[{"path": path, "before_state": before, "after_state": after}], errors={},
         )

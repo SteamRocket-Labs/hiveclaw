@@ -29,6 +29,7 @@ from app.kernel.contracts import (
     TerminalReason,
     ThinkingCallback,
     ToolLifecyclePersistenceError,
+    SessionRestartRecoveryRequired,
 )
 from app.kernel.loop_guard import LoopGuard, LoopGuardDecision
 from app.kernel.reminder_scheduler import (
@@ -242,7 +243,7 @@ async def _maybe_await(value: Any) -> Any:
 
 
 def _is_terminal_tool_card_signal(exc: BaseException) -> bool:
-    return isinstance(exc, ToolLifecyclePersistenceError) or exc.__class__.__name__ == "_TerminalToolCardSignal"
+    return isinstance(exc, (SessionRestartRecoveryRequired, ToolLifecyclePersistenceError)) or exc.__class__.__name__ == "_TerminalToolCardSignal"
 
 
 def _hook_event_label(event: Any) -> str:
@@ -2607,7 +2608,7 @@ async def _execute_tool_with_hooks(
             side_effect_sink.update(_captured_side_effects)
         execution_frame = trace_metadata_sink.get("tool_execution_frame")
         frame_status = str(execution_frame.get("status") or "") if isinstance(execution_frame, dict) else ""
-        machine_status = "failed" if frame_status == "failed" else "settled"
+        machine_status = "unknown" if frame_status == "unknown" else "failed" if frame_status == "failed" else "settled"
         side_effect_sink["tool_execution_evidence"] = _tool_execution_evidence(
             tool_name=tool_name,
             tool_args=effective_args,

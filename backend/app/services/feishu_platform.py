@@ -19,6 +19,30 @@ LARK_GLOBAL_OPEN_API_DOMAIN = "https://open.larksuite.com"
 LARK_GLOBAL_OAUTH_AUTHORIZE_URL = "https://accounts.larksuite.com/open-apis/authen/v1/authorize"
 
 
+class FeishuMutationUnknown(RuntimeError):
+    """A dispatched mutation lacks a reliable response and must be reconciled."""
+
+
+async def post_feishu_mutation(client, url, **kwargs):
+    """Never turn an ambiguous mutating transport response into a retryable failure."""
+    import httpx
+
+    try:
+        response = await client.post(url, **kwargs)
+    except httpx.RequestError as exc:
+        raise FeishuMutationUnknown("feishu_mutation_outcome_unknown") from exc
+    if response.status_code >= 500 or 300 <= response.status_code < 400:
+        raise FeishuMutationUnknown("feishu_mutation_outcome_unknown")
+    if response.status_code < 300:
+        try:
+            data = response.json()
+        except (ValueError, TypeError) as exc:
+            raise FeishuMutationUnknown("feishu_mutation_response_unreadable") from exc
+        if not isinstance(data, dict):
+            raise FeishuMutationUnknown("feishu_mutation_response_unreadable")
+    return response
+
+
 @dataclass(frozen=True, slots=True)
 class FeishuPlatform:
     region: str

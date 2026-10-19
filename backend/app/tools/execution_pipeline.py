@@ -959,11 +959,13 @@ async def _execute_tool(state: _ToolExecutionState) -> Any:
         result_text = str(result)
         error_payload = ports.extract_error_payload(result_text)
         failed = ports.tool_result_failed(result)
+        frame = (request.trace_metadata_sink or {}).get("tool_execution_frame")
+        unknown = isinstance(frame, dict) and frame.get("status") == "unknown"
         if failed and error_payload is None:
             error_payload = {"error_class": "legacy_tool_error", "message": result_text, "retryable": False}
-        _record_lifecycle(state, "failed" if failed else "completed")
+        _record_lifecycle(state, "unknown" if unknown else "failed" if failed else "completed")
         await _log_execution_result(state, result_text, error_payload)
-        rewritten = await _run_result_hooks(state, result_text, failed)
+        rewritten = await _run_result_hooks(state, result_text, failed or unknown)
         return rewritten.value if rewritten is not None else result
     except ports.asyncio.TimeoutError:
         return await _handle_execution_failure(state, timeout_seconds=timeout_seconds)

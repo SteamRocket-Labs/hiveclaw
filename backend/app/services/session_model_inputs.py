@@ -393,10 +393,10 @@ async def _origin_dependencies(db, *, tenant_id, agent_id, ref):
     # The call's own audience remains a source, including empty searches and private query arguments.
     dependencies = [*dependencies, {"source_kind": "session_tool_invocation", "source_id": str(invocation.id),
         "source_version": payload["content_hash"]}]
-    from app.services.feishu_read_receipts import FEISHU_READ_TOOLS, load_feishu_read
+    from app.services.feishu_read_receipts import FEISHU_RESULT_TOOLS, load_feishu_result
 
-    if invocation.tool_name in FEISHU_READ_TOOLS:
-        receipt = await load_feishu_read(db, tenant_id=tenant_id, agent_id=agent_id, invocation=invocation,
+    if invocation.tool_name in FEISHU_RESULT_TOOLS and invocation.effect_state == "effect_committed":
+        receipt = await load_feishu_result(db, tenant_id=tenant_id, agent_id=agent_id, invocation=invocation,
             content_hash=payload["content_hash"])
         return _unique_dependencies(dependencies), inherited_complete and receipt is not None
     if invocation.tool_name == "read_project_resource":

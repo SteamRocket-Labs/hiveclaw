@@ -458,15 +458,15 @@ async def _validate_session_dependency(db, tenant_id, dependency, *, user, runti
             and source.principal_id == context.user_id
             and SESSION_COMMAND_AUTHORITY_STAMP_KEY not in (source.target_json or {})))
     if model is SessionToolInvocation:
-        from app.services.feishu_read_receipts import FEISHU_READ_TOOLS, load_feishu_read
+        from app.services.feishu_read_receipts import FEISHU_RESULT_TOOLS, load_feishu_result
 
-        if source.tool_name in FEISHU_READ_TOOLS:
-            proof = await load_feishu_read(db, tenant_id=tenant_id, agent_id=session.agent_id,
+        if source.tool_name in FEISHU_RESULT_TOOLS and source.effect_state == "effect_committed":
+            proof = await load_feishu_result(db, tenant_id=tenant_id, agent_id=session.agent_id,
                 invocation=source, content_hash=version, current=True)
             reader = (await _runtime_input_actor(db, tenant_id, runtime_request))[1] if runtime_request is not None else user
             if proof is None or reader is None or proof["reader_id"] != str(reader.id):
                 raise ContentInputReceiptError("content_source_access_denied",
-                    "The original Feishu read or its connection is no longer authorized for this reader.", 403)
+                    "The original Feishu result or its connection is no longer authorized for this reader.", 403)
     if session.audience_kind == "group" and model is SessionToolInvocation:
         from app.services.session_model_inputs import _origin_dependencies
 

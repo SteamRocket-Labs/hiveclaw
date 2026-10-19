@@ -4768,7 +4768,13 @@ async def _persist_tool_call(
                 else []
             )
             await db.commit()
+            if (settlement_invocation_id is not None and invocation.effect_state == "needs_reconciliation"
+                and invocation.result_event_id is None):
+                raise SessionRestartRecoveryRequired(reason_code="tool_effect_outcome_unknown", detail={
+                    "invocation_id": str(invocation.id), "tool_name": invocation.tool_name, "run_id": str(run_id)})
             return [dict(envelope or {}) for envelope in envelopes]
+    except SessionRestartRecoveryRequired:
+        raise
     except Exception:
         if status in {"done", "completed", "failed"} and settlement_invocation_id is not None:
             try:

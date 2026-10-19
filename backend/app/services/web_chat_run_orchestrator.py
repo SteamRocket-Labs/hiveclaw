@@ -585,7 +585,7 @@ class _WebChatCallbacks:
                 session_id=state.session_id,
                 data=data,
             )
-        except ToolLifecyclePersistenceError:
+        except (SessionRestartRecoveryRequired, ToolLifecyclePersistenceError):
             raise
         except Exception as exc:
             raise ToolLifecyclePersistenceError(
@@ -1847,10 +1847,10 @@ async def _handle_restart_recovery_required(
     state: _WebChatRunState,
     exc: SessionRestartRecoveryRequired,
 ) -> None:
-    """Hold a reclaimed run whose durable frontier needs typed reconciliation.
+    """Hold a run whose durable frontier needs typed reconciliation.
 
-    The restart loader proved that at least one round inside the frontier has
-    an unprovable commit or an unknown tool-effect outcome.  The run must stop
+    The durable reader or live tool writer found an unprovable commit or an
+    unknown tool-effect outcome. The run must stop
     in a truthful ``needs_reconciliation`` state — never a provider error and
     never a fabricated continuation.
     """
@@ -1863,10 +1863,15 @@ async def _handle_restart_recovery_required(
             **exc.detail,
         },
     }
+    effect_unknown = exc.reason_code == "tool_effect_outcome_unknown"
+    if effect_unknown:
+        metadata.update(error_code="tool_effect_outcome_unknown", effect_outcome_unknown=True,
+            automatic_retry_allowed=False, tool_effect_reconciliation=metadata.pop("session_restart_reconciliation"))
     await state.ports.terminal.update_runtime_task(
         state.run_uuid,
         status="needs_reconciliation",
-        result_summary="Worker-restart recovery requires operator reconciliation.",
+        result_summary=("The tool outcome is unknown; verify it before continuing this work." if effect_unknown
+            else "Worker-restart recovery requires operator reconciliation."),
         metadata_json=metadata,
     )
     if state.agent is None or not state.session_id:

@@ -20,6 +20,8 @@ from app.services.connector_acl import (
     with_connector_source_items,
 )
 from app.tools.result_envelope import render_tool_error, render_tool_fallback
+from app.services.feishu_platform import FeishuMutationUnknown, post_feishu_mutation
+from app.services.feishu_read_receipts import attest_feishu_action_result, feishu_action_unknown
 
 logger = logging.getLogger(__name__)
 
@@ -375,6 +377,29 @@ async def _feishu_doc_read(
         return with_connector_source_items(rendered, fallback_source_items)
 
 
+async def _document_link_note(token, document_id):
+    """Use the matching provider metadata URL; never invent a tenant hostname."""
+    from urllib.parse import urlsplit
+
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            response = await client.post(_feishu_api_url(token, "/drive/v1/metas/batch_query"),
+                headers={"Authorization": f"Bearer {token}"}, json={
+                    "request_docs": [{"doc_token": document_id, "doc_type": "docx"}], "with_url": True})
+        data = response.json()
+        if response.status_code < 400 and data.get("code") == 0:
+            for meta in data.get("data", {}).get("metas", []):
+                if meta.get("doc_token") != document_id or meta.get("doc_type") != "docx":
+                    continue
+                url = meta.get("url")
+                parsed = urlsplit(url) if isinstance(url, str) else None
+                if parsed and parsed.scheme in {"https", "http"} and parsed.hostname and not parsed.username and not parsed.password:
+                    return f"🔗 访问链接：{url}"
+    except Exception as exc:
+        logger.debug("Document URL metadata unavailable (%s)", type(exc).__name__)
+    return "文档操作已完成；链接暂不可用，可继续使用文档 Token，无需重复执行。"
+
+
 async def _feishu_doc_create(agent_id: uuid.UUID, arguments: dict) -> str:
     from app.services.agent_tools import channel_feishu_sender_open_id
 
@@ -392,19 +417,21 @@ async def _feishu_doc_create(agent_id: uuid.UUID, arguments: dict) -> str:
     if arguments.get("folder_token"):
         body["folder_token"] = arguments["folder_token"]
 
-    async with httpx.AsyncClient(timeout=20) as client:
-        resp = await client.post(
-            _feishu_api_url(token, "/docx/v1/documents"),
-            json=body,
-            headers=headers,
-        )
+    try:
+        async with httpx.AsyncClient(timeout=20) as client:
+            resp = await post_feishu_mutation(client, _feishu_api_url(token, "/docx/v1/documents"),
+                json=body, headers=headers)
+    except FeishuMutationUnknown:
+        return feishu_action_unknown("feishu_doc_create")
 
     data = _safe_feishu_json(resp, "doc_create")
-    if data.get("code") != 0:
+    if resp.status_code >= 400 or data.get("code") != 0:
         return f"❌ Failed to create document: {data.get('msg')} (code {data.get('code')})"
 
     doc_token = data.get("data", {}).get("document", {}).get("document_id", "")
-    doc_url = f"https://bytedance.larkoffice.com/docx/{doc_token}"
+    if not isinstance(doc_token, str) or not doc_token:
+        return feishu_action_unknown("feishu_doc_create")
+    link_note = await _document_link_note(token, doc_token)
 
     # Auto-share with the Feishu sender so they can access the document
     share_note = ""
@@ -430,13 +457,13 @@ async def _feishu_doc_create(agent_id: uuid.UUID, arguments: dict) -> str:
     except Exception as _e:
         share_note = f"\n⚠️ 自动授权异常: {_e}"
 
-    return (
+    return attest_feishu_action_result((
         f"✅ 文档创建成功！{share_note}\n"
         f"标题：{title}\n"
         f"Token：{doc_token}\n"
-        f"🔗 访问链接：{doc_url}\n"
+        f"{link_note}\n"
         f'下一步：调用 feishu_doc_append(document_token="{doc_token}", content="...") 写入正文内容。'
-    )
+    ), platform=_feishu_token_platform(token), resource_type="doc", resource_id=doc_token, response=data)
 
 
 def _parse_inline_markdown(text: str) -> list[dict]:
@@ -624,6 +651,11 @@ async def _feishu_doc_append(agent_id: uuid.UUID, arguments: dict) -> str:
         return "❌ Missing required argument 'document_token'"
     if not content:
         return "❌ Missing required argument 'content'"
+    from app.services.agent_tool_domains.feishu_drive import _parse_feishu_url
+
+    target = _parse_feishu_url(document_token)
+    if target and target.kind in {"doc", "docx", "wiki"}:
+        document_token = target.token
 
     creds = await _get_feishu_token(agent_id)
     if not creds:
@@ -648,18 +680,20 @@ async def _feishu_doc_append(agent_id: uuid.UUID, arguments: dict) -> str:
 
         children = _markdown_to_feishu_blocks(content)
 
-        append_resp = await client.post(
-            _feishu_api_url(token, f"/docx/v1/documents/{docx_token}/blocks/{body_block_id}/children"),
-            json={"children": children, "index": -1},
-            headers=headers,
-        )
+        try:
+            append_resp = await post_feishu_mutation(client,
+                _feishu_api_url(token, f"/docx/v1/documents/{docx_token}/blocks/{body_block_id}/children"),
+                json={"children": children, "index": -1}, headers=headers)
+        except FeishuMutationUnknown:
+            return feishu_action_unknown("feishu_doc_append", resource_id=docx_token)
         result = _safe_feishu_json(append_resp, "doc_append")
 
-    if result.get("code") != 0:
+    if append_resp.status_code >= 400 or result.get("code") != 0:
         return f"❌ Failed to append: {result.get('msg')} (code {result.get('code')})"
 
-    doc_url = f"https://bytedance.larkoffice.com/docx/{docx_token}"
-    return f"✅ 已写入 {len(children)} 个段落到文档。\n🔗 文档直链（原文发给用户，勿修改）：{doc_url}"
+    link_note = await _document_link_note(token, docx_token)
+    return attest_feishu_action_result(f"✅ 已写入 {len(children)} 个段落到文档。\nToken：{docx_token}\n{link_note}",
+        platform=_feishu_token_platform(token), resource_type="doc", resource_id=docx_token, response=result)
 
 
 async def _feishu_doc_delete(agent_id: uuid.UUID, arguments: dict) -> str:

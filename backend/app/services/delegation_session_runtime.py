@@ -191,7 +191,7 @@ class DelegationSessionRuntime:
                 session_id=str(self.scope["session_id"]), data={**data,
                     "provider_request_id": self.active_provider_request_id,
                     "runtime_task_id": str(self.scope["run_id"])})
-        except ToolLifecyclePersistenceError:
+        except (SessionRestartRecoveryRequired, ToolLifecyclePersistenceError):
             raise
         except Exception as exc:
             raise ToolLifecyclePersistenceError(tool_name=str(data.get("name") or ""),

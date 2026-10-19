@@ -9,6 +9,8 @@ import uuid
 from app.services.agent_tool_domains.feishu_helpers import FeishuToolAuth, _get_feishu_tool_auth
 from app.services.feishu_service import feishu_service
 from app.tools.result_envelope import render_tool_error
+from app.services.feishu_platform import FeishuMutationUnknown
+from app.services.feishu_read_receipts import attest_feishu_action_result, feishu_action_unknown
 
 _ALIAS_STRIP_CHARS = " \t\r\n`'\"“”‘’.,，。:：;；!！?？、()（）[]【】<>《》"
 
@@ -233,25 +235,25 @@ async def _feishu_approval_create(agent_id: uuid.UUID, arguments: dict) -> str:
             provider="feishu_openapi",
             actionable_hint="先调用 feishu_approval_definition 查看字段，或直接用字段中文名和值组成对象提交。",
         )
-    payload = await feishu_service.create_approval_instance(
-        app_id,
-        app_secret,
-        approval_code,
-        user_id,
-        prepared_form,
-        extra_config=creds.extra_config,
-    )
+    try:
+        payload = await feishu_service.create_approval_instance(app_id, app_secret, approval_code, user_id,
+            prepared_form, extra_config=creds.extra_config)
+    except FeishuMutationUnknown:
+        return feishu_action_unknown("feishu_approval_create")
     instance = (
         payload.get("instance_code")
         or payload.get("instance_id")
         or payload.get("instance", {}).get("instance_code", "")
     )
+    if not isinstance(instance, str) or not instance:
+        return feishu_action_unknown("feishu_approval_create")
     lines = ["✅ 已创建飞书审批实例"]
     if instance:
         lines.append(f"- Instance ID: `{instance}`")
     lines.append(f"- Approval Code: `{approval_code}`")
     lines.append(f"- User ID: `{user_id}`")
-    return "\n".join(lines)
+    return attest_feishu_action_result("\n".join(lines), platform=creds.platform,
+        resource_type="approval_instance", resource_id=instance, response=payload)
 
 
 async def _feishu_approval_query(agent_id: uuid.UUID, arguments: dict, *, tenant_id=None, current_user_id=None) -> str:
@@ -286,7 +288,7 @@ async def _feishu_approval_query(agent_id: uuid.UUID, arguments: dict, *, tenant
         agent_id=agent_id, tenant_id=tenant_id, current_user_id=current_user_id), platform=creds.platform)
 
 
-async def _feishu_approval_definition(agent_id: uuid.UUID, arguments: dict) -> str:
+async def _feishu_approval_definition(agent_id: uuid.UUID, arguments: dict, *, tenant_id=None, current_user_id=None) -> str:
     approval_code = str(arguments.get("approval_code") or "").strip()
     if not approval_code:
         return "❌ Missing required argument 'approval_code'"
@@ -296,10 +298,15 @@ async def _feishu_approval_definition(agent_id: uuid.UUID, arguments: dict) -> s
         return creds
     app_id, app_secret = creds.app_id, creds.app_secret
     payload = await feishu_service.get_approval_definition(app_id, app_secret, approval_code, extra_config=creds.extra_config)
-    return _render_approval_definition(approval_code, payload)
+    from app.services.agent_tool_domains.feishu_acl import with_feishu_read_authority
+    from app.services.feishu_read_receipts import attest_feishu_api_read
+
+    return attest_feishu_api_read(with_feishu_read_authority(_render_approval_definition(approval_code, payload),
+        sources=[(f"feishu://approval/{approval_code}", "approval_definition")], agent_id=agent_id,
+        tenant_id=tenant_id, current_user_id=current_user_id), platform=creds.platform)
 
 
-async def _feishu_approval_get(agent_id: uuid.UUID, arguments: dict) -> str:
+async def _feishu_approval_get(agent_id: uuid.UUID, arguments: dict, *, tenant_id=None, current_user_id=None) -> str:
     instance_id = str(arguments.get("instance_id") or "").strip()
     if not instance_id:
         return "❌ Missing required argument 'instance_id'"
@@ -309,7 +316,11 @@ async def _feishu_approval_get(agent_id: uuid.UUID, arguments: dict) -> str:
         return creds
     app_id, app_secret = creds.app_id, creds.app_secret
     payload = await feishu_service.get_approval_instance(app_id, app_secret, instance_id, extra_config=creds.extra_config)
-    return (
+    from app.services.agent_tool_domains.feishu_acl import with_feishu_read_authority
+    from app.services.feishu_read_receipts import attest_feishu_api_read
+
+    return attest_feishu_api_read(with_feishu_read_authority((
         f"📄 **Feishu approval instance** `{instance_id}`\n"
         f"```json\n{json.dumps(payload, ensure_ascii=False, indent=2)}\n```"
-    )
+    ), sources=[(f"feishu://approval-instance/{instance_id}", "approval_instance")], agent_id=agent_id,
+        tenant_id=tenant_id, current_user_id=current_user_id), platform=creds.platform)

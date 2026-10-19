@@ -44,7 +44,7 @@ function RequestList({ sessionId, actorId, tenantId }: { sessionId: string; acto
     const result = await query.refetch();
     if (!result.isError) setUnknown(false);
   }
-  async function control(request: LocalAgentRequestPage['requests'][number], action: 'cancel' | 'abandon') {
+  async function control(request: LocalAgentRequestPage['requests'][number], action: 'cancel' | 'abandon' | 'retry_source') {
     const current = useAuthStore.getState().user;
     if (!current || current.id !== actorId || currentTenant(current.tenant_id || '') !== tenantId) {
       setUnknown(true);
@@ -58,9 +58,11 @@ function RequestList({ sessionId, actorId, tenantId }: { sessionId: string; acto
       const command = { expected_user_id: actorId, expected_tenant_id: tenantId,
         request_hash: request.request_hash, idempotency_key: key };
       const receipt = await (action === 'cancel' ? localBridgeApi.cancelChannelRequest(sessionId, request.id, command)
-        : localBridgeApi.abandonChannelRequest(sessionId, request.id, command));
-      if (receipt.schema !== (action === 'cancel' ? 'hive.local_message_control.v1' : 'hive.local_work_disposition.v1')
-        || (action === 'cancel' && receipt.actor_user_id !== actorId)
+        : action === 'abandon' ? localBridgeApi.abandonChannelRequest(sessionId, request.id, command)
+          : localBridgeApi.retryChannelSourceReturn(sessionId, request.id, { expected_user_id: actorId,
+            expected_tenant_id: tenantId, request_hash: request.request_hash }));
+      if (receipt.schema !== (action === 'cancel' ? 'hive.local_message_control.v1' : action === 'abandon' ? 'hive.local_work_disposition.v1' : 'hive.local_source_return.v1')
+        || (action !== 'abandon' && receipt.actor_user_id !== actorId)
         || receipt.session_id !== sessionId || receipt.message_id !== request.id) throw new Error('Local control scope changed');
       await refresh();
     } catch { setUnknown(true); } finally { setBusy(null); }
@@ -72,6 +74,7 @@ function RequestList({ sessionId, actorId, tenantId }: { sessionId: string; acto
     if (request.next_action === 'review_late_result') return t('localRequests.late', 'A late result arrived. Review it in this work; the earlier control remains unconfirmed.');
     if (request.status === 'cancelled' && request.execution_state === 'not_dispatched') return t('localRequests.cancelled', 'Cancelled before dispatch');
     if (request.status === 'needs_reconciliation') return t('localRequests.unknown', 'Further dispatch withheld. Execution is unknown; inspect or stop this request on the original device.');
+    if (request.status === 'rejected') return t('localRequests.rejected', 'Action was not released');
     if (request.status === 'waiting_approval') return t('localRequests.approval', 'Waiting for approval');
     if (request.status === 'pending') return t('localRequests.queued', 'Queued');
     if (request.status === 'delivered') return t('localRequests.delivered', 'Delivered to the original device');
@@ -86,6 +89,11 @@ function RequestList({ sessionId, actorId, tenantId }: { sessionId: string; acto
     {(query.isError || unknown) && <p role="alert">{t('localRequests.unavailable', 'The request state or control outcome could not be confirmed. Refresh before acting again.')}</p>}
     {!query.isError && query.data?.pages.flatMap((page) => page.requests).map((request) => <div key={request.id}>
       <p>{request.preview}</p><p role="status">{stateLabel(request)}</p>
+      {request.decision_reason && <p>{request.decision_reason}</p>}
+      {request.source_delivery?.status === 'needs_reconciliation' && <p role="status">{t('localRequests.sourceHeld', 'The local result is retained. Return to the original work needs reconciliation. Review its access and binding, then retry the return.')}</p>}
+      {request.source_delivery?.status === 'queued' && <p>{t('localRequests.sourceRecorded', 'The original-work return is recorded. Execution is not repeated.')}</p>}
+      {request.can_retry_source_return && <button type="button" className="btn btn-secondary" disabled={!!busy || unknown}
+        onClick={() => { void control(request, 'retry_source'); }}>{t('localRequests.retrySource', 'Retry original-work return')}</button>}
       {request.can_cancel && <button type="button" className="btn btn-secondary" disabled={!!busy || unknown}
         onClick={() => { void control(request, 'cancel'); }}>{t('localRequests.cancel', 'Cancel this request')}</button>}
       {request.can_abandon && <>

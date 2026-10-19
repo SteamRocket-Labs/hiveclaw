@@ -80,6 +80,13 @@ class LocalAgentMessageCancelIn(BaseModel):
     idempotency_key: str = Field(min_length=1, max_length=200)
 
 
+class LocalAgentSourceReturnIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    expected_user_id: uuid.UUID
+    expected_tenant_id: uuid.UUID
+    request_hash: str | None = Field(default=None, min_length=64, max_length=64)
+
+
 class LocalAgentChannelMessageOut(BaseModel):
     id: uuid.UUID
     session_id: uuid.UUID
@@ -592,6 +599,21 @@ async def cancel_user_local_agent_request(session_id: uuid.UUID, message_id: uui
     if controlled['event'] is not None:
         await _broadcast_browser_channel_event(owner_user_id=owner, session_id=session_id, event=controlled['event'])
     return controlled['receipt']
+
+
+@router.post('/local-agents/sessions/{session_id}/messages/{message_id}/source-return/retry')
+async def retry_user_local_agent_source_return(session_id: uuid.UUID, message_id: uuid.UUID, body: LocalAgentSourceReturnIn,
+    current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db),
+):
+    if body.expected_user_id != current_user.id:
+        raise HTTPException(409, detail={'code': 'local_agent_account_changed'})
+    session, owner = await channel_service.get_channel_session_for_actor(db, session_id=session_id,
+        actor_user_id=current_user.id, access_user=current_user, action='retry_source_return')
+    tenant_id = uuid.UUID(str(session['tenant_id']))
+    if body.expected_tenant_id != tenant_id:
+        raise HTTPException(409, detail={'code': 'local_agent_tenant_changed'})
+    return await channel_service.retry_channel_source_return(db, tenant_id=tenant_id, session_id=session_id,
+        message_id=message_id, owner_user_id=owner, actor_user_id=current_user.id, request_hash=body.request_hash)
 
 
 @router.post('/local-agents/sessions/{session_id}/messages/{message_id}/abandon')
@@ -1261,6 +1283,7 @@ async def local_agent_channel_ws(
                                 "message_id": str(message_id),
                                 "status": result["status"],
                                 "receipt": result.get("receipt"),
+                                "source_delivery": result.get("source_delivery"),
                             }
                         )
                     )

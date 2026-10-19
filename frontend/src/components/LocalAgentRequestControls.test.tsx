@@ -10,7 +10,7 @@ import LocalAgentRequestControls from './LocalAgentRequestControls';
 vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: (_key: string, fallback: string) => fallback }) }));
 const clients: QueryClient[] = [];
 const request = { id: 'request', request_hash: 'a'.repeat(64), status: 'pending', execution_state: 'not_dispatched',
-  preview: 'Original local work', created_at: '2026-10-19T01:00:00Z', control: null, can_cancel: true, can_abandon: false, tracking_state: 'open' as const, disposition: null, next_action: null };
+  preview: 'Original local work', created_at: '2026-10-19T01:00:00Z', control: null, can_cancel: true, can_abandon: false, source_delivery: null, can_retry_source_return: false, decision_reason: null, tracking_state: 'open' as const, disposition: null, next_action: null };
 function page(overrides: Partial<LocalAgentRequestPage> = {}): LocalAgentRequestPage {
   return { scope: { actor_user_id: 'owner', tenant_id: 'tenant', session_id: 'work' }, requests: [request], next_cursor: null, ...overrides };
 }
@@ -86,4 +86,23 @@ it('ends tracking a held unknown request without claiming a device stop', async 
   expect(abandon).toHaveBeenCalledTimes(1);
   expect(screen.queryByRole('button', { name: 'End tracking this request' })).toBeNull();
   expect(screen.queryByRole('button', { name: 'Cancel this request' })).toBeNull();
+});
+it('retries only the retained result return and explains a rejected action', async () => {
+  const held = { ...request, status: 'rejected', execution_state: 'not_dispatched', can_cancel: false,
+    decision_reason: 'The current policy did not release this action.', can_retry_source_return: true,
+    source_delivery: { status: 'needs_reconciliation' as const } };
+  const read = vi.spyOn(localBridgeApi, 'listChannelRequests').mockResolvedValue(page({ requests: [held] }));
+  const retry = vi.spyOn(localBridgeApi, 'retryChannelSourceReturn').mockImplementation(async (_work, _id, body) => {
+    expect(body).toEqual({ expected_user_id: 'owner', expected_tenant_id: 'tenant', request_hash: request.request_hash });
+    const delivery = { status: 'queued' as const, notification_id: 'original-notice' };
+    read.mockResolvedValue(page({ requests: [{ ...held, source_delivery: delivery, can_retry_source_return: false }] }));
+    return { schema: 'hive.local_source_return.v1', message_id: request.id, session_id: 'work', actor_user_id: 'owner',
+      status: 'rejected', source_delivery: delivery, reexecuted: false };
+  });
+  mount();
+  await screen.findByText('Action was not released');
+  expect(screen.getByText('The current policy did not release this action.')).toBeTruthy();
+  fireEvent.click(screen.getByRole('button', { name: 'Retry original-work return' }));
+  await screen.findByText('The original-work return is recorded. Execution is not repeated.');
+  expect(retry).toHaveBeenCalledTimes(1);
 });

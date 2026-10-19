@@ -62,6 +62,11 @@ class _FakeDB:
             if getattr(obj, "id", None) is None:
                 obj.id = uuid4()
 
+    @contextlib.asynccontextmanager
+    async def begin_nested(self):
+        await self.flush()
+        yield
+
     async def commit(self):
         self.committed = True
 

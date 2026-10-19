@@ -83,6 +83,8 @@ async def test_abandoned_delegation_and_its_late_result_project_without_resuming
     from app.models.chat_transcript_event import ChatTranscriptEvent
     from app.models.runtime_notification_outbox import RuntimeNotificationOutbox
     from app.services.runtime_notification_outbox import RuntimeNotificationOutboxService
+    from tests.services.test_runtime_notification_outbox import _clear_outbox
+    await _clear_outbox(owner_sessionmaker)
     seed = local_work
     source, parent = seed['other'].agent_id, uuid4()
     principal = ExecutionPrincipal(tenant_id=seed['tenant_id'], source_agent_id=source,

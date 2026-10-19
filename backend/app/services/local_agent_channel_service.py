@@ -19,13 +19,14 @@ from fastapi import HTTPException, status
 from jose import JWTError, jwt
 from sqlalchemy import and_, case, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.exc import SQLAlchemyError
 
 from app.config import get_settings
 from app.core.execution_context import ExecutionPrincipal
 from app.core.resource_authority import normalize_workspace_resource_path
 from app.database import enter_rls_bypass, pin_rls_tenant_context
 from app.models.agent import Agent
-from app.models.audit import ApprovalRequest, ChatMessage
+from app.models.audit import ApprovalRequest, AuditLog, ChatMessage
 from app.models.capability_policy import CapabilityPolicy
 from app.models.chat_session import ChatSession
 from app.models.invocation_span import InvocationSpan
@@ -171,7 +172,8 @@ def _receipt_for_message(
         return None
     metadata = dict(getattr(message, "metadata_json", None) or {})
     stored = metadata.get("execution_receipt")
-    stored_result_refs = list(stored.get("result_refs") or []) if isinstance(stored, dict) else []
+    stored_result_refs = (list(stored.get("result_refs") or [])
+        if isinstance(stored, dict) and getattr(message, "status", None) in {"completed", "failed"} else [])
     return build_execution_receipt(
         request_hash=request_hash,
         capability_snapshot_hash=snapshot_hash,
@@ -1419,6 +1421,7 @@ async def _enqueue_a2a_source_delivery(
         artifacts=list(artifacts),
         metadata={
             **({"local_work_disposition": disposition} if disposition else {}),
+            "approval": await _approval_decision(db, message),
             "execution_target": "local_agent",
             "local_agent_message_id": str(message.id),
             "local_agent_channel_session_id": str(message.session_id),
@@ -1446,6 +1449,133 @@ async def _enqueue_a2a_source_delivery(
         "source_delivery": source_delivery,
     }
     return source_delivery
+
+
+async def _settle_a2a_source_delivery(
+    db: AsyncSession,
+    *,
+    message: LocalAgentChannelMessage,
+    terminal_status: str,
+    output: str,
+    artifacts: list[dict[str, Any]],
+) -> dict | None:
+    if not _a2a_local_delegation(message.metadata_json):
+        return None
+    try:
+        async with db.begin_nested():
+            route = await _validated_a2a_source_route(
+                db,
+                tenant_id=message.tenant_id,
+                sender_agent_id=message.sender_agent_id,
+                sender_user_id=message.sender_user_id,
+                target_agent_id=message.source_agent_id,
+                target_owner_user_id=message.owner_user_id,
+                metadata=dict(message.metadata_json or {}),
+            )
+            delivery = await _enqueue_a2a_source_delivery(
+                db,
+                message=message,
+                source_route=route,
+                terminal_status=terminal_status,
+                output=output,
+                artifacts=artifacts,
+            )
+    except HTTPException:
+        delivery = {
+            "status": "needs_reconciliation",
+            "reason": "original_source_authority_unavailable",
+            "retryable": False,
+            "recovery_action": "reconcile_original_source",
+        }
+    except SQLAlchemyError as exc:
+        if getattr(exc, "connection_invalidated", False):
+            raise
+        await db.refresh(message)
+        delivery = {
+            "status": "needs_reconciliation",
+            "reason": "source_storage_unavailable",
+            "retryable": True,
+            "recovery_action": "retry_original_source_return",
+        }
+    message.metadata_json = {**dict(message.metadata_json or {}), "source_delivery": delivery}
+    origin = await _dispatch_origin(db, message)
+    if _origin_matches(message, origin):
+        origin.metadata_json = {
+            **dict(origin.metadata_json or {}),
+            "source_delivery_receipt": {
+                "schema": "hive.local_source_delivery.v1",
+                "message_id": str(message.id),
+                "request_hash": message.request_hash,
+                **delivery,
+            },
+        }
+    return delivery
+
+
+async def retry_channel_source_return(
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    session_id: uuid.UUID,
+    message_id: uuid.UUID,
+    owner_user_id: uuid.UUID,
+    actor_user_id: uuid.UUID,
+    request_hash: str | None,
+) -> dict:
+    message = await _locked_control_message(
+        db,
+        tenant_id=tenant_id,
+        session_id=session_id,
+        message_id=message_id,
+        owner_user_id=owner_user_id,
+        actor_user_id=actor_user_id,
+        request_hash=request_hash,
+    )
+    disposition = await _find_work_disposition(db, message)
+    if not _a2a_local_delegation(message.metadata_json) or (
+        not disposition and message.status not in {"completed", "failed", "cancelled", "rejected"}
+    ):
+        raise HTTPException(409, detail={"code": "local_agent_source_return_not_ready"})
+    terminal_status = (
+        message.status if message.status in {"completed", "failed", "cancelled", "rejected"} else "abandoned"
+    )
+    report = dict((message.metadata_json or {}).get("report") or {})
+    output = (
+        str(message.result or "")
+        if terminal_status != "abandoned"
+        else "Tracking ended by an authorized requester. External execution remains unknown."
+    )
+    delivery = await _settle_a2a_source_delivery(
+        db,
+        message=message,
+        terminal_status=terminal_status,
+        output=output,
+        artifacts=list(report.get("artifacts") or []) if message.status in {"completed", "failed"} else [],
+    )
+    db.add(
+        AuditLog(
+            tenant_id=tenant_id,
+            agent_id=message.source_agent_id,
+            user_id=actor_user_id,
+            action="local_agent_source_return_retry",
+            details={
+                "message_id": str(message_id),
+                "session_id": str(session_id),
+                "request_hash": request_hash,
+                "source_delivery": delivery,
+            },
+        )
+    )
+    await db.commit()
+    return {
+        "schema": "hive.local_source_return.v1",
+        "message_id": str(message_id),
+        "session_id": str(session_id),
+        "actor_user_id": str(actor_user_id),
+        "status": message.status,
+        "source_delivery": delivery,
+        "reexecuted": False,
+    }
 
 
 async def get_a2a_channel_message_status(
@@ -1515,7 +1645,7 @@ async def get_a2a_channel_message_status(
         ).scalar_one_or_none()
 
     disposition = await _find_work_disposition(db, message)
-    terminal = bool(disposition) or message.status in {"completed", "failed", "cancelled"}
+    terminal = bool(disposition) or message.status in {"completed", "failed", "cancelled", "rejected"}
     if outbox is not None:
         source_delivery = {
             "status": outbox.status,
@@ -1538,8 +1668,18 @@ async def get_a2a_channel_message_status(
         "kind": "local_agent_delegation",
         "message_id": str(message.id),
         "status": "abandoned" if disposition else message.status,
-        **({"tracking_state": "abandoned", "execution_state": f"reported_{message.status}"
-            if message.status in {"completed", "failed"} else "unknown"} if disposition else {}),
+        **(
+            {
+                "tracking_state": "abandoned",
+                "execution_state": f"reported_{message.status}"
+                if message.status in {"completed", "failed"}
+                else "unknown",
+            }
+            if disposition
+            else {}
+        ),
+        "execution_state": _execution_state(message, await _dispatch_origin(db, message)),
+        "approval": await _approval_decision(db, message),
         "terminal": terminal,
         "target_agent_id": str(message.source_agent_id),
         "target_agent": metadata.get("target_agent_name"),
@@ -1547,10 +1687,19 @@ async def get_a2a_channel_message_status(
         "artifacts": artifacts,
         "receipt": _receipt_for_message(message),
         "source_delivery": source_delivery,
-        "retryable": not disposition and message.status not in {"completed", "failed", "cancelled", "needs_reconciliation"},
-        "next_action": "review_late_result" if disposition and message.status in {"completed", "failed"} else
-            "continue_original_work" if disposition or message.status == "cancelled" else
-            "inspect_original_runner" if message.status == "needs_reconciliation" else "review_result" if terminal else "wait",
+        "retryable": not disposition
+        and message.status not in {"completed", "failed", "cancelled", "rejected", "needs_reconciliation"},
+        "next_action": "review_late_result"
+        if disposition and message.status in {"completed", "failed"}
+        else "continue_original_work"
+        if disposition or message.status == "cancelled"
+        else "revise_original_work"
+        if message.status == "rejected"
+        else "inspect_original_runner"
+        if message.status == "needs_reconciliation"
+        else "review_result"
+        if terminal
+        else "wait",
     }
     if terminal:
         payload["result"] = str(message.result or "")
@@ -2037,10 +2186,7 @@ async def enqueue_channel_message(
     return {**_message_payload(message), "event": _event_payload(event)}
 
 
-def _leased_dispatch_attested(message, origin) -> bool:
-    metadata = origin.metadata_json if origin is not None and isinstance(origin.metadata_json, dict) else {}
-    original = metadata.get("execution_receipt")
-    expected = _receipt_for_message(message)
+def _origin_matches(message, origin) -> bool:
     return (
         origin is not None
         and origin.tenant_id == message.tenant_id
@@ -2053,6 +2199,14 @@ def _leased_dispatch_attested(message, origin) -> bool:
         and origin.span_id == message.receipt_span_id
         and origin.span_type == "remote_action"
         and origin.name == "local_agent.execute"
+    )
+
+
+def _leased_dispatch_attested(message, origin) -> bool:
+    metadata = origin.metadata_json if origin is not None and isinstance(origin.metadata_json, dict) else {}
+    original, expected = metadata.get("execution_receipt"), _receipt_for_message(message)
+    return (
+        _origin_matches(message, origin)
         and metadata.get("dispatch_protocol") == "hive.local_message_leased_dispatch.v1"
         and isinstance(original, dict)
         and bool(expected)
@@ -2061,6 +2215,78 @@ def _leased_dispatch_attested(message, origin) -> bool:
             for key in ("schema", "request_hash", "capability_snapshot_hash", "replay_key", "trace_id", "span_id")
         )
     )
+
+
+async def _dispatch_origin(db: AsyncSession, message: LocalAgentChannelMessage) -> InvocationSpan | None:
+    if not getattr(message, "receipt_trace_id", None) or not getattr(message, "receipt_span_id", None):
+        return None
+    return await db.scalar(
+        select(InvocationSpan).where(
+            InvocationSpan.tenant_id == message.tenant_id,
+            InvocationSpan.request_id == message.id,
+            InvocationSpan.session_id == str(message.session_id),
+            InvocationSpan.trace_id == message.receipt_trace_id,
+            InvocationSpan.span_id == message.receipt_span_id,
+            InvocationSpan.span_type == "remote_action",
+            InvocationSpan.name == "local_agent.execute",
+        )
+    )
+
+
+def _execution_state(message, origin) -> str:
+    if message.status in {"completed", "failed"}:
+        return f"reported_{message.status}"
+    if (
+        message.status in {"pending", "waiting_approval", "cancelled", "rejected", "needs_reconciliation"}
+        and int(getattr(message, "delivery_attempt_count", 0) or 0) == 0
+        and getattr(message, "delivered_at", None) is None
+        and _leased_dispatch_attested(message, origin)
+    ):
+        return "not_dispatched"
+    return "unknown"
+
+
+async def _require_dispatched_callback(db: AsyncSession, message: LocalAgentChannelMessage) -> None:
+    if message.status in {"completed", "failed"} or int(getattr(message, "delivery_attempt_count", 0) or 0) > 0:
+        return
+    if _execution_state(message, await _dispatch_origin(db, message)) == "not_dispatched":
+        raise HTTPException(409, detail={"code": "local_agent_request_not_dispatched"})
+
+
+async def _approval_decision(db: AsyncSession, message: LocalAgentChannelMessage) -> dict | None:
+    approval_id = getattr(message, "approval_id", None)
+    if approval_id is None:
+        return None
+    approval = await db.get(ApprovalRequest, approval_id)
+    if (
+        approval is None
+        or approval.tenant_id != message.tenant_id
+        or approval.agent_id != message.source_agent_id
+        or approval.action_type != "local_agent.execute"
+        or str((approval.details or {}).get("local_agent_message_id")) != str(message.id)
+    ):
+        return {"id": str(approval_id), "status": "unavailable", "recovery_action": "reconcile_original_approval"}
+    return {
+        "id": str(approval.id),
+        "status": approval.status,
+        "execution_status": approval.execution_status,
+        "resolved_by": str(approval.resolved_by) if approval.resolved_by is not None else None,
+    }
+
+
+def _source_delivery_fact(message, origin) -> dict | None:
+    metadata = origin.metadata_json if origin is not None and isinstance(origin.metadata_json, dict) else {}
+    fact = metadata.get("source_delivery_receipt")
+    if (
+        _origin_matches(message, origin)
+        and isinstance(fact, dict)
+        and fact.get("schema") == "hive.local_source_delivery.v1"
+        and fact.get("message_id") == str(message.id)
+        and fact.get("request_hash") == message.request_hash
+        and fact.get("status") in {"queued", "needs_reconciliation"}
+    ):
+        return {key: value for key, value in fact.items() if key not in {"schema", "message_id", "request_hash"}}
+    return None
 
 
 def _work_disposition(span: InvocationSpan | None, message: LocalAgentChannelMessage) -> dict | None:
@@ -2173,34 +2399,8 @@ async def abandon_channel_message(
     )
     db.add(event)
     await db.flush()
-    if _a2a_local_delegation(message.metadata_json):
-        try:
-            source_route = await _validated_a2a_source_route(
-                db,
-                tenant_id=tenant_id,
-                sender_agent_id=message.sender_agent_id,
-                sender_user_id=message.sender_user_id,
-                target_agent_id=message.source_agent_id,
-                target_owner_user_id=owner_user_id,
-                metadata=dict(message.metadata_json or {}),
-            )
-        except HTTPException:
-            message.metadata_json = {
-                **dict(message.metadata_json or {}),
-                "source_delivery": {
-                    "status": "needs_reconciliation",
-                    "reason": "original_source_authority_unavailable",
-                },
-            }
-        else:
-            await _enqueue_a2a_source_delivery(
-                db,
-                message=message,
-                source_route=source_route,
-                terminal_status="abandoned",
-                output="Tracking ended by an authorized requester or host owner. External execution remains unknown.",
-                artifacts=[],
-            )
+    await _settle_a2a_source_delivery(db, message=message,
+        terminal_status="abandoned", output="Tracking ended by an authorized requester. External execution remains unknown.", artifacts=[])
     await db.commit()
     return {"receipt": receipt, "event": _event_payload(event)}
 
@@ -2277,22 +2477,20 @@ async def list_channel_requests(
     for row in rows:
         control = controls.get(row.id)
         disposition = dispositions.get(row.id)
-        undispatched = (
-            _leased_dispatch_attested(row, origins.get(row.id))
-            and row.delivery_attempt_count == 0
-            and row.delivered_at is None
-            and row.status in {"pending", "waiting_approval", "cancelled"}
-        )
+        origin = origins.get(row.id)
+        source_delivery = _source_delivery_fact(row, origin)
         projected.append(
             {
                 "id": str(row.id),
                 "request_hash": row.request_hash,
                 "status": row.status,
-                "execution_state": "not_dispatched"
-                if undispatched
-                else f"reported_{row.status}"
-                if row.status in {"completed", "failed"}
-                else "unknown",
+                "execution_state": _execution_state(row, origin),
+                "source_delivery": source_delivery,
+                "decision_reason": row.result if row.status == "rejected" else None,
+                "can_retry_source_return": _a2a_local_delegation(row.metadata_json)
+                and (bool(disposition) or row.status in {"completed", "failed", "cancelled", "rejected"})
+                and actor_user_id in {row.sender_user_id, row.owner_user_id}
+                and (source_delivery is None or source_delivery["status"] == "needs_reconciliation"),
                 "preview": row.content[:240],
                 "created_at": row.created_at.isoformat(),
                 "control": control,
@@ -2311,6 +2509,10 @@ async def list_channel_requests(
                 "next_action": "review_late_result"
                 if (disposition or (control and control["execution_state"] == "unknown"))
                 and row.status in {"completed", "failed"}
+                else "reconcile_original_source"
+                if source_delivery and source_delivery["status"] == "needs_reconciliation"
+                else "revise_original_work"
+                if row.status == "rejected"
                 else (disposition or control or {}).get("next_action"),
             }
         )
@@ -2516,34 +2718,9 @@ async def _withdraw_locked_message(
         payload_json=receipt,
     )
     db.add(event)
-    if state == "cancelled" and _a2a_local_delegation(message.metadata_json):
-        try:
-            source_route = await _validated_a2a_source_route(
-                db,
-                tenant_id=tenant_id,
-                sender_agent_id=message.sender_agent_id,
-                sender_user_id=message.sender_user_id,
-                target_agent_id=message.source_agent_id,
-                target_owner_user_id=owner_user_id,
-                metadata=dict(message.metadata_json or {}),
-            )
-        except HTTPException:
-            message.metadata_json = {
-                **dict(message.metadata_json or {}),
-                "source_delivery": {
-                    "status": "needs_reconciliation",
-                    "reason": "original_source_authority_unavailable",
-                },
-            }
-        else:
-            await _enqueue_a2a_source_delivery(
-                db,
-                message=message,
-                source_route=source_route,
-                terminal_status="cancelled",
-                output=message.result,
-                artifacts=[],
-            )
+    if state == "cancelled":
+        await _settle_a2a_source_delivery(db, message=message,
+            terminal_status="cancelled", output=str(message.result or ""), artifacts=[])
     await db.flush()
     return {"receipt": receipt, "event": _event_payload(event)}
 
@@ -2664,12 +2841,15 @@ async def apply_local_agent_action_approval(
                 LocalAgentChannelMessage.approval_id == approval.id,
                 LocalAgentChannelMessage.tenant_id == approval.tenant_id,
             )
-            .with_for_update()
+            .with_for_update().execution_options(populate_existing=True)
         )
     ).scalar_one_or_none()
     if message is None:
         raise ValueError("Local Agent approval message binding not found")
     if message.status != "waiting_approval":
+        if message.status == "rejected":
+            await _settle_a2a_source_delivery(db, message=message, terminal_status="rejected",
+                output=str(message.result or "Local Agent action was not released."), artifacts=[])
         if message.status in {"pending", "delivered", "rejected", "cancelled", "needs_reconciliation"}:
             return _message_payload(message)
         raise ValueError(f"Local Agent message cannot resolve approval from {message.status}")
@@ -2706,6 +2886,8 @@ async def apply_local_agent_action_approval(
         message.result = "Owner rejected this Local Agent action."
         approval.execution_status = "rejected"
     if not approved:
+        await _settle_a2a_source_delivery(db, message=message, terminal_status="rejected",
+            output=str(message.result or "Local Agent action was not released."), artifacts=[])
         await _complete_remote_action_span(
             db,
             message=message,
@@ -2973,11 +3155,12 @@ async def ack_channel_message(
             LocalAgentChannelMessage.owner_user_id == context.user_id,
             LocalAgentChannelMessage.tenant_id == context.tenant_id,
             *_runner_session_scope(context), *_runner_message_scope(context),
-        ).with_for_update()
+        ).with_for_update().execution_options(populate_existing=True)
     )
     message = result.scalar_one_or_none()
     if message is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Local agent channel message not found")
+    await _require_dispatched_callback(db, message)
     if message.status == "pending":
         message.status = "delivered"
         message.delivered_at = utcnow()
@@ -3035,6 +3218,7 @@ async def record_channel_event(
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Local agent channel message not found")
         if bound_message.status == 'cancelled':
             raise HTTPException(409, detail={'code': 'local_agent_request_cancelled'})
+        await _require_dispatched_callback(db, bound_message)
         if bound_message.status == "delivered":
             activity_seconds = max(
                 30,
@@ -3131,26 +3315,15 @@ async def record_channel_result(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Local agent channel message not found")
     if message.status == 'cancelled':
         raise HTTPException(409, detail={'code': 'local_agent_request_cancelled'})
-    source_route: tuple[ChatSession, ExecutionPrincipal] | None = None
-    if _a2a_local_delegation(message.metadata_json):
-        source_route = await _validated_a2a_source_route(
-            db,
-            tenant_id=context.tenant_id,
-            sender_agent_id=message.sender_agent_id,
-            sender_user_id=message.sender_user_id,
-            target_agent_id=message.source_agent_id,
-            target_owner_user_id=message.owner_user_id,
-            metadata=dict(message.metadata_json or {}),
-        )
+    await _require_dispatched_callback(db, message)
     if message.status in {"completed", "failed"}:
         report = dict((message.metadata_json or {}).get("report") or {})
         persisted_artifacts = report.get("artifacts")
         if not isinstance(persisted_artifacts, list):
             persisted_artifacts = []
-        source_delivery = await _enqueue_a2a_source_delivery(
+        source_delivery = await _settle_a2a_source_delivery(
             db,
             message=message,
-            source_route=source_route,
             terminal_status=message.status,
             output=str(message.result or ""),
             artifacts=persisted_artifacts,
@@ -3222,10 +3395,9 @@ async def record_channel_result(
         receipt=receipt,
         failed=normalized_status == "failed",
     )
-    source_delivery = await _enqueue_a2a_source_delivery(
+    source_delivery = await _settle_a2a_source_delivery(
         db,
         message=message,
-        source_route=source_route,
         terminal_status=normalized_status,
         output=output,
         artifacts=list(artifacts or []),

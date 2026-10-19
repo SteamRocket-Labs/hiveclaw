@@ -5594,6 +5594,10 @@
     "departments": "Review department mappings and assignments"
   },
   "localRequests": {
+    "rejected": "Action was not released",
+    "sourceHeld": "The local result is retained. Return to the original work needs reconciliation. Review its access and binding, then retry the return.",
+    "sourceRecorded": "The original-work return is recorded. Execution is not repeated.",
+    "retrySource": "Retry original-work return",
     "abandonedLate": "Tracking ended. A late result is available here for review; execution was not repeated.",
     "abandoned": "Tracking ended. External execution remains unknown.",
     "abandonHint": "End tracking without stopping or repeating device execution. Any late result received remains here for review.",

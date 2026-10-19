@@ -379,3 +379,37 @@ describe('organization cutover card', () => {
     expect(screen.getByText('Unknown operator at 2026-10-16 00:00:00 UTC · journalb')).toBeTruthy();
   });
 });
+
+it('selects explicitly linked provider people for assignments without offering Feishu backfill', async () => {
+  api.previewIdentityBackfill.mockResolvedValue({ ...preview, rows: [] });
+  api.listIdentityLinks.mockResolvedValue({ members: [{ org_member_id: 'wecom-person', label: 'WeCom person',
+    subject_kinds: ['provider_user_id'], reason: 'active', valid: true,
+    links: [{ id: 'person-link', user_id: 'linked-account', provider_id: 'wecom-provider', valid: true, status: 'active' }] }],
+    accounts: [{ user_id: 'linked-account', label: 'Linked account', is_active: true }],
+    providers: [{ id: 'wecom-provider', provider_type: 'wecom', name: 'WeCom', is_active: true }] });
+  api.applyDepartmentCutover.mockResolvedValue({ tenant_id: 'tenant-1', status: 'complete', applied: true, rows: [], counts: {
+    link_backfill: {}, department_mappings: {}, user_assignments: { changed: 1 } } });
+  mount();
+  fireEvent.click(screen.getByRole('button', { name: words.cutoverReview }));
+  const person = await screen.findByRole('checkbox', { name: /WeCom person/ });
+  expect((person as HTMLInputElement).disabled).toBe(false);
+  fireEvent.click(person);
+  expect((screen.getByRole('button', { name: words.cutoverApplyLinks }) as HTMLButtonElement).disabled).toBe(true);
+  fireEvent.click(screen.getByRole('button', { name: words.cutoverApplyAssignments }));
+  await screen.findByText(/User assignments changed: 1/);
+  expect(api.applyDepartmentCutover).toHaveBeenCalledWith(['wecom-person'], 'tenant-1');
+  expect(api.applyIdentityBackfill).not.toHaveBeenCalled();
+});
+
+it('shows provider scope failure while retaining the mapping revocation action', async () => {
+  api.listDepartmentLinks.mockResolvedValue({ ...directory, org_departments: [{ ...directory.org_departments[1],
+    provider: 'wecom', provider_id: 'wecom-provider', provider_department_id: '2', reason: 'directory_namespace_changed',
+    link: { ...directory.org_departments[1].link, valid: false } }] });
+  mount();
+  fireEvent.click(screen.getByRole('button', { name: words.cutoverReview }));
+  await screen.findByText(en.companyDirectory.mappingUnavailable);
+  expect(screen.getByText(/WeCom.*2/)).toBeTruthy();
+  fireEvent.change(document.getElementById('cutover-dept-org-mapped')!, { target: { value: 'dept-research' } });
+  expect((screen.getByRole('button', { name: words.cutoverRepairMapping }) as HTMLButtonElement).disabled).toBe(true);
+  expect((screen.getByRole('button', { name: words.cutoverRevokeMapping }) as HTMLButtonElement).disabled).toBe(false);
+});

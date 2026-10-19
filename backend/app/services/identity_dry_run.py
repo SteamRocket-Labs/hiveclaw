@@ -294,6 +294,7 @@ async def build_identity_dry_run_report(
                 select(DepartmentDirectoryLink).where(
                     DepartmentDirectoryLink.tenant_id == tenant_id,
                     DepartmentDirectoryLink.status == "active",
+                    DepartmentDirectoryLink.provider == "feishu",
                 )
             )
         ).scalars().all()

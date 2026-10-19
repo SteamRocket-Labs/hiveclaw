@@ -24,6 +24,17 @@ from app.models.user import Department, User
 from app.services.identity_dry_run import COUNT_KEYS
 from app.services.org_sync_service import org_sync_service
 
+# This module seeds platform-global providers. Keep that independent identity
+# universe out of the OAuth fixtures in other modules, using the shared fixtures.
+from tests.integration import conftest as _database_fixtures
+
+app_user_engine = _database_fixtures.app_user_engine
+app_user_sessionmaker = _database_fixtures.app_user_sessionmaker
+migrated_pg_url = _database_fixtures.migrated_pg_url
+owner_engine = _database_fixtures.owner_engine
+owner_sessionmaker = _database_fixtures.owner_sessionmaker
+pg_container = _database_fixtures.pg_container
+
 REVISION = "136332b2165f50e610ee07f509cc748cf42d653e"
 
 

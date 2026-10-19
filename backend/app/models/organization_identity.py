@@ -110,9 +110,11 @@ class DepartmentDirectoryLink(Base):
             name="ck_department_directory_links_status",
         ),
         CheckConstraint(
-            "provider = 'feishu'",
+            "provider IN ('feishu','dingtalk','wecom')",
             name="ck_department_directory_links_provider",
         ),
+        CheckConstraint("provider = 'feishu' OR provider_id IS NOT NULL",
+            name="ck_department_directory_links_namespace"),
         CheckConstraint(
             "provider_department_id <> ''",
             name="ck_department_directory_links_provider_department",
@@ -135,6 +137,7 @@ class DepartmentDirectoryLink(Base):
         Index(
             "uq_department_directory_links_active_department",
             "tenant_id",
+            "provider",
             "department_id",
             unique=True,
             postgresql_where=text("status = 'active' AND department_id IS NOT NULL"),
@@ -152,6 +155,9 @@ class DepartmentDirectoryLink(Base):
         UUID(as_uuid=True), ForeignKey("departments.id", ondelete="RESTRICT"), nullable=True, index=True
     )
     provider: Mapped[str] = mapped_column(String(32), nullable=False)
+    provider_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("identity_providers.id", ondelete="RESTRICT"), nullable=True
+    )
     provider_department_id: Mapped[str] = mapped_column(String(100), nullable=False)
     status: Mapped[str] = mapped_column(String(32), nullable=False)
 

@@ -5552,6 +5552,9 @@
     "readFailed": "The current connection could not be read. Refresh before saving or syncing.",
     "changed": "The connection changed elsewhere. Read the current connection and review your draft before saving.",
     "complete": "Observed {{departments}} departments and {{members}} people in the application-visible directory.",
-    "repair": "Review person-to-account mappings"
+    "repair": "Review person-to-account mappings",
+    "mappingUnavailable": "This directory connection is paused or its application identity changed. Review the company connection before mapping or assigning departments. Revocation remains available.",
+    "assignmentReview": "Some department assignments need review. Existing assignments were preserved.",
+    "departments": "Review department mappings and assignments"
   }
 }

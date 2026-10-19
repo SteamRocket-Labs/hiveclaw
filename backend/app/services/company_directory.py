@@ -221,6 +221,7 @@ async def sync_company_directory(db: AsyncSession, *, tenant_id: UUID, actor_id:
                 if member.external_id in people:
                     raise DirectoryFetchError("directory_subject_conflict", "Stored people share a provider identity. Repair the conflicting records before syncing.")
                 people[member.external_id] = member
+            observed_members = []
             for key, row in members.items():
                 member = people.get(key)
                 if member is None:
@@ -234,14 +235,20 @@ async def sync_company_directory(db: AsyncSession, *, tenant_id: UUID, actor_id:
                 member.department_id = primary.id if primary else None
                 member.department_path = primary.path if primary else ""
                 member.synced_at = now
+                observed_members.append(member)
             await db.flush()
             await write_audit_event(db, tenant_id=tenant_id, actor_type="user", actor_id=actor_id,
                 event_type="organization.directory_synced", action="organization.directory.sync",
                 resource_type="identity_provider", resource_id=provider.id,
                 details={"provider": provider_type, "coverage": "application_visible",
                     "departments": len(departments), "members": len(members), "unseen_rows": "retained"})
+            from app.services.identity_cutover import apply_user_department_cutover
+            assignments = await apply_user_department_cutover(db, tenant_id=tenant_id, actor_id=actor_id,
+                org_member_ids=[member.id for member in observed_members])
         return {"status": "complete", "provider": provider_type, "coverage": "application_visible",
             "tenant_id": str(tenant_id),
+            "assignment_counts": assignments["counts"]["user_assignments"],
+            "assignment_rows": assignments["rows"],
             "departments": len(departments), "members": len(members), "applied": len(members),
             "skipped": 0, "conflicts": 0, "rows": []}
     except DirectoryFetchError as exc:

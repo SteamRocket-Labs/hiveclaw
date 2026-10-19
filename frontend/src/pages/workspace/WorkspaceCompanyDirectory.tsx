@@ -79,7 +79,9 @@ function DirectoryEditor({ scope, provider }: { scope: TenantChannelScope; provi
       if (result.status !== 'complete') {
         setError(true); setMessage(typeof result.error === 'string' ? result.error : t('companyDirectory.syncFailed'));
       } else {
-        setMessage(t('companyDirectory.complete', { departments: result.departments, members: result.members }));
+        const assignments = result.assignment_counts as { conflict?: number; unavailable?: number } | undefined;
+        setMessage(t('companyDirectory.complete', { departments: result.departments, members: result.members })
+          + (assignments?.conflict || assignments?.unavailable ? ` ${t('companyDirectory.assignmentReview')}` : ''));
         for (const key of ['org-departments', 'org-members', 'org-identity-links', 'org-department-links']) {
           await cache.invalidateQueries({ predicate: (item) => item.queryKey[0] === key && item.queryKey.includes(scope.expected_tenant_id) });
         }
@@ -115,5 +117,6 @@ function DirectoryEditor({ scope, provider }: { scope: TenantChannelScope; provi
     </div>
     {message && <p role={error ? 'alert' : 'status'}>{message}</p>}
     <a href="#identity-repair-person">{t('companyDirectory.repair')}</a>
+    {' · '}<a href="#org-department-cutover">{t('companyDirectory.departments')}</a>
   </>;
 }

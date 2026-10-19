@@ -78,6 +78,9 @@ function cutoverReason(reason: string, t: TFunction): string {
       return t('enterprise.org.reason.inactive_user');
     case 'provider_namespace':
       return t('enterprise.org.reason.provider_namespace');
+    case 'directory_connection_inactive':
+    case 'directory_namespace_changed':
+      return t('companyDirectory.mappingUnavailable');
     case 'unregistered':
       return t('enterprise.org.reason.unregistered');
     case 'active':
@@ -324,7 +327,16 @@ export default function WorkspaceOrgCutoverCard({
   };
 
   const counts = result?.counts;
-  const peopleNames = (preview?.rows ?? []).map((row) => (
+  const linkedPeople = (identityLinks?.members ?? []).filter((member) => member.valid && member.links.some((link) => link.valid));
+  const linkedPersonIds = new Set(linkedPeople.map((member) => member.org_member_id));
+  const peopleRows: IdentityBackfillRow[] = preview ? [...preview.rows,
+    ...linkedPeople.filter((member) => !preview.rows.some((row) => row.org_member_id === member.org_member_id))
+      .map((member) => ({ org_member_id: member.org_member_id, disposition: 'trusted', reason: 'active',
+        user_id: member.links.find((link) => link.valid)?.user_id || null,
+        subject_kinds: member.subject_kinds, selectable: false })),
+  ] : [];
+  const selectedBackfill = selectedPeople.filter((id) => preview?.rows.some((row) => row.org_member_id === id && row.selectable));
+  const peopleNames = peopleRows.map((row) => (
     identityLinks?.members.find((member) => member.org_member_id === row.org_member_id)?.label
     || identityLinks?.accounts.find((account) => account.user_id === row.user_id)?.label
     || ''
@@ -384,12 +396,12 @@ export default function WorkspaceOrgCutoverCard({
       {preview ? (
         <div>
           <h5>{t('enterprise.org.cutoverPeople')}</h5>
-          {preview.rows.length === 0 ? <p>{t('enterprise.org.cutoverEmptyPeople')}</p> : null}
-          {preview.rows.map((row) => (
+          {peopleRows.length === 0 ? <p>{t('enterprise.org.cutoverEmptyPeople')}</p> : null}
+          {peopleRows.map((row) => (
             <label key={row.org_member_id} className="ws-org-choice">
               <input
                 type="checkbox"
-                disabled={!row.selectable || busy}
+                disabled={(!row.selectable && !linkedPersonIds.has(row.org_member_id)) || busy}
                 checked={selectedPeople.includes(row.org_member_id)}
                 onChange={() => toggle(row.org_member_id, selectedPeople, setSelectedPeople)}
               />
@@ -398,15 +410,17 @@ export default function WorkspaceOrgCutoverCard({
                 {' '}
                 <span>{previewContext(row, identityLinks, t)}</span>
                 {' '}
-                <span>{row.selectable ? t('enterprise.org.disposition.trusted') : cutoverReason(row.reason, t)}</span>
+                <span>{row.selectable ? t('enterprise.org.disposition.trusted')
+                  : linkedPersonIds.has(row.org_member_id)
+                    ? t('enterprise.org.identityStatusActive') : cutoverReason(row.reason, t)}</span>
               </span>
             </label>
           ))}
           <button
             type="button"
             className="btn btn-primary"
-            disabled={busy || selectedPeople.length === 0}
-            onClick={() => run(() => enterpriseApi.applyIdentityBackfill(selectedPeople, tenantId || undefined))}
+            disabled={busy || selectedBackfill.length === 0}
+            onClick={() => run(() => enterpriseApi.applyIdentityBackfill(selectedBackfill, tenantId || undefined))}
           >
             {t('enterprise.org.cutoverApplyLinks')}
           </button>
@@ -423,6 +437,8 @@ export default function WorkspaceOrgCutoverCard({
             <div key={row.org_department_id} className="ws-org-form-row">
               <div>
                 {distinguishable(t, row.name, row.org_department_id, repeatedDepartments.has(row.name))}
+                {row.provider ? ` · ${row.provider === 'dingtalk' ? t('companyDirectory.dingtalk')
+                  : row.provider === 'wecom' ? t('companyDirectory.wecom') : 'Feishu / Lark'}` : ''}
                 {row.provider_department_id ? ` · ${row.provider_department_id}` : ''}
               </div>
               {row.proposal ? (
@@ -434,7 +450,7 @@ export default function WorkspaceOrgCutoverCard({
               ) : null}
               {row.link ? (
                 <>
-                  <div>{t('enterprise.org.identityStatusActive')}</div>
+                  <div>{row.link.valid === false ? cutoverReason(row.reason || '', t) : t('enterprise.org.identityStatusActive')}</div>
                   <div>
                     {t('enterprise.org.cutoverCurrentDepartment', {
                       department: departmentText(directory, mappedId, t),
@@ -471,7 +487,7 @@ export default function WorkspaceOrgCutoverCard({
                   <button
                     type="button"
                     className="btn btn-secondary"
-                    disabled={busy}
+                    disabled={busy || Boolean(row.reason)}
                     onClick={() => run(() => enterpriseApi.applyDepartmentLinks([
                       {
                         org_department_id: row.org_department_id,
@@ -487,7 +503,7 @@ export default function WorkspaceOrgCutoverCard({
                   <button
                     type="button"
                     className="btn btn-secondary"
-                    disabled={busy}
+                    disabled={busy || row.link.valid === false}
                     onClick={() => run(() => enterpriseApi.applyDepartmentLinks([
                       { action: 'repair', link_id: row.link?.id, department_id: choices[row.org_department_id] },
                     ], tenantId || undefined))}

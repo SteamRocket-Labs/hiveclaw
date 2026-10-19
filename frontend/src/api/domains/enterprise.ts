@@ -221,8 +221,11 @@ export interface DepartmentDirectoryReport {
   org_departments: Array<{
     org_department_id: string;
     name: string;
+    provider?: string | null;
+    provider_id?: string | null;
+    reason?: string | null;
     provider_department_id: string | null;
-    link: { id: string; department_id: string | null; status: string } | null;
+    link: { id: string; department_id: string | null; status: string; valid?: boolean } | null;
     proposal: { action: string; selectable: boolean; reason: string } | null;
     same_name_department_ids: string[];
   }>;

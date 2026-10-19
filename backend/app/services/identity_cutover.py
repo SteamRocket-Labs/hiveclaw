@@ -115,6 +115,7 @@ def _department_snapshot(link: DepartmentDirectoryLink) -> dict[str, Any]:
         "org_department_id": str(link.org_department_id),
         "department_id": str(link.department_id) if link.department_id else None,
         "provider": link.provider,
+        "provider_id": str(link.provider_id) if link.provider_id else None,
         "provider_department_id": link.provider_department_id,
         "status": link.status,
     }
@@ -388,6 +389,59 @@ def _current_block(report: dict, member_id: uuid.UUID) -> tuple[str, str]:
     return "skipped", reason
 
 
+async def _directory_department_identity(session, tenant_id, org, *, for_effect=False) -> dict:
+    """Resolve the stored mirror's namespace; directory names never prove identity."""
+    from app.models.identity import IdentityProvider
+    from app.models.tenant_channel_config import TenantChannelConfig
+
+    provider_id = getattr(org, "provider_id", None)
+    remote_id = getattr(org, "provider_department_id", None)
+    identity = {"provider": "feishu", "provider_id": None,
+        "provider_department_id": (getattr(org, "feishu_id", None) or "").strip(), "reason": None}
+    if org is None or org.tenant_id != tenant_id:
+        identity["reason"] = "org_department_not_in_tenant"
+    elif provider_id is None and remote_id is None:
+        if not identity["provider_department_id"]:
+            identity["reason"] = "missing_provider_department"
+    else:
+        identity.update(provider=None, provider_id=str(provider_id) if provider_id else None,
+            provider_department_id=remote_id)
+        provider = await session.scalar(select(IdentityProvider).where(IdentityProvider.id == provider_id,
+            IdentityProvider.tenant_id == tenant_id)) if provider_id else None
+        if provider is None or provider.provider_type not in {"dingtalk", "wecom"} or org.feishu_id or not remote_id:
+            identity["reason"] = "provider_namespace"
+            return identity
+        identity["provider"] = provider.provider_type
+        if for_effect:
+            from app.api.tenant_channels import _lock_config
+            await _lock_config(session, tenant_id, provider.provider_type)
+            provider = await session.scalar(select(IdentityProvider).where(IdentityProvider.id == provider_id,
+                IdentityProvider.tenant_id == tenant_id).with_for_update().execution_options(populate_existing=True))
+            if provider is None or provider.provider_type != identity["provider"]:
+                identity["reason"] = "provider_namespace"
+                return identity
+        config = await session.scalar(select(TenantChannelConfig).where(TenantChannelConfig.tenant_id == tenant_id,
+            TenantChannelConfig.channel_type == provider.provider_type).execution_options(populate_existing=True))
+        if not provider.is_active or config is None or not config.is_configured:
+            identity["reason"] = "directory_connection_inactive"
+        elif provider.config != {"connection_id": str(config.id), "app_id": config.app_id}:
+            identity["reason"] = "directory_namespace_changed"
+    return identity
+
+
+def _department_link_matches(link, identity):
+    return all(getattr(link, field) == (uuid.UUID(identity[field]) if field == "provider_id" and identity[field]
+        else identity[field]) for field in ("provider", "provider_id", "provider_department_id"))
+
+
+async def _department_link_reason(session, tenant_id, link, org=None):
+    if org is None:
+        org = await session.scalar(select(OrgDepartment).where(OrgDepartment.id == link.org_department_id,
+            OrgDepartment.tenant_id == tenant_id))
+    identity = await _directory_department_identity(session, tenant_id, org, for_effect=True)
+    return identity["reason"] or (None if _department_link_matches(link, identity) else "provider_namespace")
+
+
 async def list_department_directory(
     session: AsyncSession, *, tenant_id: uuid.UUID, actor_id: uuid.UUID
 ) -> dict[str, Any]:
@@ -418,13 +472,15 @@ async def list_department_directory(
     rows = []
     for org in org_departments:
         link = by_org.get(org.id)
-        parent_ready, parent_reason, _parent_department = _parent_expectation(org, org_departments, by_org)
+        identity = await _directory_department_identity(session, tenant_id, org)
+        link_reason = identity["reason"] or ("provider_namespace" if link and not _department_link_matches(link, identity) else None)
+        parent_ready, parent_reason, _parent_department = await _parent_expectation(session, tenant_id, org, org_departments, by_org)
         proposal = None
         if link is None:
             if not (org.name or "").strip():
                 proposal = {"action": "create", "selectable": False, "reason": "missing_department_name"}
-            elif not org.feishu_id:
-                proposal = {"action": "create", "selectable": False, "reason": "missing_provider_department"}
+            elif identity["reason"]:
+                proposal = {"action": "create", "selectable": False, "reason": identity["reason"]}
             elif org.name in names:
                 proposal = {"action": "create", "selectable": False, "reason": "name_collision"}
             elif not parent_ready:
@@ -435,7 +491,10 @@ async def list_department_directory(
             {
                 "org_department_id": str(org.id),
                 "name": org.name,
-                "provider_department_id": org.feishu_id,
+                "provider": identity["provider"],
+                "provider_id": identity["provider_id"],
+                "provider_department_id": identity["provider_department_id"],
+                "reason": link_reason,
                 "parent_org_department_id": str(org.parent_id) if org.parent_id else None,
                 "link": None
                 if link is None
@@ -443,6 +502,7 @@ async def list_department_directory(
                     "id": str(link.id),
                     "department_id": str(link.department_id) if link.department_id else None,
                     "status": link.status,
+                    "valid": link_reason is None,
                     "provider_department_id": link.provider_department_id,
                 },
                 "proposal": proposal,
@@ -471,7 +531,9 @@ async def list_department_directory(
     }
 
 
-def _parent_expectation(org: OrgDepartment, org_departments: list[OrgDepartment], active_by_org: dict):
+async def _parent_expectation(session, tenant_id, org, org_departments, active_by_org, *, for_effect=False):
+    if org is None:
+        return False, "missing_parent", None
     if org.parent_id is None:
         return True, "root", None
     parent = next((item for item in org_departments if item.id == org.parent_id), None)
@@ -480,6 +542,12 @@ def _parent_expectation(org: OrgDepartment, org_departments: list[OrgDepartment]
     parent_link = active_by_org.get(parent.id)
     if parent_link is None or parent_link.department_id is None:
         return False, "missing_parent", None
+    identity = await _directory_department_identity(session, tenant_id, parent, for_effect=for_effect)
+    child = await _directory_department_identity(session, tenant_id, org, for_effect=for_effect)
+    if identity["reason"] or child["reason"]:
+        return False, identity["reason"] or child["reason"], None
+    if (identity["provider"], identity["provider_id"]) != (child["provider"], child["provider_id"]) or not _department_link_matches(parent_link, identity):
+        return False, "provider_namespace", None
     return True, "parent", parent_link.department_id
 
 
@@ -620,9 +688,10 @@ async def _link_or_create_department(
     ).scalar_one_or_none()
     if org is None:
         _blocked("unavailable", "org_department_not_in_tenant", object_id=str(org_department_id))
-    provider_department_id = (org.feishu_id or "").strip()
-    if not provider_department_id:
-        _blocked("conflict", "missing_provider_department", object_id=str(org.id))
+    identity = await _directory_department_identity(session, tenant_id, org, for_effect=True)
+    if identity["reason"]:
+        _blocked("conflict", identity["reason"], object_id=str(org.id))
+    provider_department_id = identity["provider_department_id"]
     blocked = await _foreign_blocks(
         session,
         tenant_id,
@@ -636,7 +705,7 @@ async def _link_or_create_department(
             "ext_union": [],
             "provider_id": None,
         },
-    )
+    ) if identity["provider"] == "feishu" else set()
     if ("dept", provider_department_id) in blocked:
         _blocked("conflict", "global_unique_blocked", object_id=str(org.id))
     org_departments = list(
@@ -650,9 +719,9 @@ async def _link_or_create_department(
     by_org = {link.org_department_id: link for link in active}
     if org.id in by_org:
         _blocked("conflict", "already_mapped", object_id=str(org.id), link_id=str(by_org[org.id].id))
-    if any(link.provider_department_id == provider_department_id for link in active):
+    if any(link.provider == identity["provider"] and link.provider_department_id == provider_department_id for link in active):
         _blocked("conflict", "provider_department_collision", object_id=str(org.id))
-    ready, parent_reason, expected_parent = _parent_expectation(org, org_departments, by_org)
+    ready, parent_reason, expected_parent = await _parent_expectation(session, tenant_id, org, org_departments, by_org, for_effect=True)
     if not ready:
         _blocked("conflict", parent_reason, object_id=str(org.id))
     cycle = _walk_parents(departments_by_id, expected_parent)
@@ -677,7 +746,7 @@ async def _link_or_create_department(
         department = departments_by_id.get(department_id)
         if department is None or department.tenant_id != tenant_id:
             _blocked("unavailable", "department_not_in_tenant", object_id=str(org.id))
-        if any(link.department_id == department.id for link in active):
+        if any(link.provider == identity["provider"] and link.department_id == department.id for link in active):
             _blocked("conflict", "already_mapped", object_id=str(org.id))
         if department.parent_id != expected_parent:
             _blocked("conflict", "parent_conflict", object_id=str(org.id))
@@ -687,7 +756,8 @@ async def _link_or_create_department(
         tenant_id=tenant_id,
         org_department_id=org.id,
         department_id=department.id,
-        provider="feishu",
+        provider=identity["provider"],
+        provider_id=uuid.UUID(identity["provider_id"]) if identity["provider_id"] else None,
         provider_department_id=provider_department_id,
         status="active",
     )
@@ -758,6 +828,9 @@ async def _repair_department_link(
         _blocked("unavailable", "link_not_in_tenant", object_id=str(link_id))
     if link.status != "active":
         _blocked("conflict", link.status, object_id=str(link.org_department_id), link_id=str(link.id))
+    reason = await _department_link_reason(session, tenant_id, link)
+    if reason:
+        _blocked("conflict", reason, object_id=str(link.org_department_id), link_id=str(link.id))
     if link.department_id == department_id:
         counts["department_mappings"]["noop"] += 1
         return {
@@ -777,7 +850,7 @@ async def _repair_department_link(
     if department is None:
         _blocked("unavailable", "department_not_in_tenant", object_id=str(link.org_department_id))
     active = await _active_department_links(session, tenant_id)
-    if any(item.department_id == department.id and item.id != link.id for item in active):
+    if any(item.provider == link.provider and item.department_id == department.id and item.id != link.id for item in active):
         _blocked("conflict", "already_mapped", object_id=str(link.org_department_id))
     org = (
         await session.execute(
@@ -791,15 +864,13 @@ async def _repair_department_link(
         (await session.execute(select(Department).where(Department.tenant_id == tenant_id))).scalars().all()
     )
     by_org = {item.org_department_id: item for item in active if item.id != link.id}
-    ready, parent_reason, expected_parent = _parent_expectation(org, org_departments, by_org)
+    ready, parent_reason, expected_parent = await _parent_expectation(session, tenant_id, org, org_departments, by_org, for_effect=True)
     if org is None or not ready:
         _blocked("conflict", parent_reason if org is not None else "missing_parent", object_id=str(link.org_department_id))
     if department.parent_id != expected_parent:
         _blocked("conflict", "parent_conflict", object_id=str(link.org_department_id))
     if _walk_parents({item.id: item for item in departments}, department.id) == "cycle":
         _blocked("conflict", "cycle", object_id=str(link.org_department_id))
-    if link.provider_department_id != (org.feishu_id or ""):
-        _blocked("conflict", "provider_department_collision", object_id=str(org.id))
     before = _department_snapshot(link)
     link.department_id = department.id
     await session.flush()
@@ -911,12 +982,16 @@ async def apply_user_department_cutover(
             # built before that write must not keep the old ambiguity.
             if ambiguous or (member_id in withheld and not unambiguous):
                 reported.add(member_id)
+                user_id = withheld.get(member_id)
+                if user_id is None:
+                    linked = await _member_cutover_plan(session, tenant_id, member_id)
+                    user_id = linked.get("user_id")
                 rows.append(
                     await _withheld_department_conflict(
                         session,
                         tenant_id=tenant_id,
                         member_id=member_id,
-                        user_id=withheld.get(member_id),
+                        user_id=str(user_id) if user_id else None,
                         counts=counts,
                     )
                 )
@@ -1049,6 +1124,16 @@ async def _member_cutover_plan(session: AsyncSession, tenant_id: uuid.UUID, memb
             "reason": "unmapped",
             "user_id": str(distinct_users[0]),
         }
+    reason = await _department_link_reason(session, tenant_id, department_link)
+    member_provider = providers_by_id.get(member.provider_id)
+    if not reason and (
+        department_link.provider_id is not None and department_link.provider_id != member.provider_id
+        or department_link.provider_id is None and member_provider is not None and member_provider.provider_type != "feishu"
+    ):
+        reason = "provider_namespace"
+    if reason:
+        return {"object_kind": "org_member", "object_id": str(member.id), "outcome": "conflict",
+            "reason": reason, "user_id": str(distinct_users[0])}
     return {
         "member_id": member.id,
         "user_id": distinct_users[0],
@@ -1820,7 +1905,8 @@ async def _department_active_taken(
     taken = (
         await session.execute(
             select(DepartmentDirectoryLink.id)
-            .where(*shared, DepartmentDirectoryLink.department_id == department_id)
+            .where(*shared, DepartmentDirectoryLink.provider == link.provider,
+                DepartmentDirectoryLink.department_id == department_id)
             .limit(1)
         )
     ).first()
@@ -1909,7 +1995,7 @@ async def _restore_department_link(session, *, tenant_id, actor_id, row, counts)
     if link is None or not _same_mapping(
         observed,
         row.after_json,
-        ("org_department_id", "department_id", "provider", "provider_department_id", "status"),
+        ("org_department_id", "department_id", "provider", "provider_id", "provider_department_id", "status"),
     ):
         counts["department_mappings"]["conflict"] += 1
         return _rollback_conflict(row, reason="rollback_conflict", observed=observed)
@@ -1928,6 +2014,11 @@ async def _restore_department_link(session, *, tenant_id, actor_id, row, counts)
             "outcome": "noop",
             "reason": "already_restored",
         }
+    if target_status == "active" and link.provider_id is not None:
+        reason = await _department_link_reason(session, tenant_id, link)
+        if reason:
+            counts["department_mappings"]["conflict"] += 1
+            return _rollback_conflict(row, reason=reason, observed=observed)
     if await _department_active_taken(session, tenant_id, link, target_status, target_department):
         counts["department_mappings"]["conflict"] += 1
         return _rollback_conflict(row, reason="already_mapped", observed=observed)

@@ -77,3 +77,13 @@ it('discards a late sync result after switching the selected company', async () 
   await waitFor(() => expect((screen.getByRole('button', { name: en.enterprise.org.syncNow }) as HTMLButtonElement).disabled).toBe(false));
   expect(screen.queryByText(/Observed 99/)).toBeNull();
 });
+
+it('reports assignment conflicts and links to the existing department repair surface', async () => {
+  mocks.sync.mockResolvedValueOnce({ tenant_id: 'company-a', provider: 'dingtalk', status: 'complete', departments: 2, members: 3,
+    assignment_counts: { conflict: 1 } });
+  mount();
+  await waitFor(() => expect((screen.getByRole('button', { name: en.enterprise.org.syncNow }) as HTMLButtonElement).disabled).toBe(false));
+  fireEvent.click(screen.getByRole('button', { name: en.enterprise.org.syncNow }));
+  await screen.findByText((text) => text.includes(en.companyDirectory.assignmentReview));
+  expect(screen.getByRole('link', { name: en.companyDirectory.departments }).getAttribute('href')).toBe('#org-department-cutover');
+});

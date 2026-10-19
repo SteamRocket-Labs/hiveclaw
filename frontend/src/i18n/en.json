@@ -5533,5 +5533,25 @@
     "conflict": "The project changed. Reload to compare the current project with your retained edits.",
     "writeDenied": "Project editing is unavailable. Your local draft is retained.",
     "loadMore": "Load more"
+  },
+  "companyDirectory": {
+    "title": "DingTalk / WeCom directory",
+    "description": "Use a company application connection to observe its departments and people.",
+    "provider": "Directory provider",
+    "dingtalk": "DingTalk",
+    "wecom": "WeCom",
+    "coverage": "Only the application-visible directory is observed. Unseen people are retained. Account and internal department mappings require explicit review.",
+    "secret": "Application secret",
+    "secretSaved": "Saved; leave blank to keep",
+    "active": "Connection enabled",
+    "save": "Save connection",
+    "refresh": "Read current connection",
+    "saved": "Connection saved. You can now sync the visible directory.",
+    "saveFailed": "The save could not be confirmed. Your draft is kept. Read the current connection, review it, and retry.",
+    "syncFailed": "The sync could not be confirmed. Read the directory before retrying.",
+    "readFailed": "The current connection could not be read. Refresh before saving or syncing.",
+    "changed": "The connection changed elsewhere. Read the current connection and review your draft before saving.",
+    "complete": "Observed {{departments}} departments and {{members}} people in the application-visible directory.",
+    "repair": "Review person-to-account mappings"
   }
 }

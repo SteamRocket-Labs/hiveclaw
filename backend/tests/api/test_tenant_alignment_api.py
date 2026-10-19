@@ -480,6 +480,8 @@ async def test_enterprise_org_departments_default_to_current_tenant():
                         id=uuid4(),
                         tenant_id=current_tenant_id,
                         feishu_id="dept-a",
+                        provider_id=None,
+                        provider_department_id=None,
                         name="Dept A",
                         parent_id=None,
                         path="Dept A",
@@ -506,6 +508,8 @@ async def test_enterprise_org_departments_default_to_current_tenant():
 
     assert len(result) == 1
     assert result[0]["name"] == "Dept A"
+    assert result[0]["provider_id"] is None
+    assert result[0]["provider_department_id"] is None
 
 
 @pytest.mark.asyncio

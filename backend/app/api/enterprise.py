@@ -1372,6 +1372,8 @@ async def list_org_departments(
         {
             "id": str(d.id),
             "feishu_id": d.feishu_id,
+            "provider_id": str(d.provider_id) if d.provider_id else None,
+            "provider_department_id": d.provider_department_id,
             "name": d.name,
             "parent_id": str(d.parent_id) if d.parent_id else None,
             "path": d.path,
@@ -1418,14 +1420,32 @@ async def list_org_members(
 @router.post("/org/sync")
 async def trigger_org_sync(
     tenant_id: str | None = None,
+    provider: Literal["feishu", "dingtalk", "wecom"] = "feishu",
+    expected_user_id: uuid.UUID | None = None,
     current_user: User = Depends(get_current_admin),
     db: AsyncSession = Depends(get_db),
 ):
-    """Manually trigger org structure sync from Feishu."""
+    """Manually sync the selected company application's visible directory."""
     _require_org_admin(current_user)
+    if expected_user_id is not None and expected_user_id != current_user.id:
+        raise HTTPException(409, detail={"code": "directory_requester_changed"})
     from app.services.org_sync_service import org_sync_service
 
     target_tenant_id = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
+    if provider != "feishu":
+        from app.services.company_directory import sync_company_directory
+        from app.services.workspace_sync import sync_org_structure
+        from app.services.workspace_sync_dirty import mark_tenant_dirty
+
+        result = await sync_company_directory(db, tenant_id=target_tenant_id,
+            actor_id=current_user.id, provider_type=provider)
+        if result.get("status") == "complete":
+            # Publish only durable observations; the dirty marker also allows
+            # workspace recovery if the immediate projection fails.
+            await db.commit()
+            mark_tenant_dirty(target_tenant_id)
+            await sync_org_structure(db, target_tenant_id)
+        return result
     result = await org_sync_service.full_sync(target_tenant_id, actor_id=current_user.id)
     if result.get("status") != "complete":
         return result

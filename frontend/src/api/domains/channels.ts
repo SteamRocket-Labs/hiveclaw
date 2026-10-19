@@ -98,6 +98,8 @@ export const channelApi = {
   tenantChannels: (scope: TenantChannelScope, signal?: AbortSignal) =>
     get<TenantChannelConfig[]>(`/tenant-channels?${new URLSearchParams({ ...scope })}`, { signal }),
   saveTenantFeishu: (data: TenantChannelUpdate) => put<TenantChannelConfig>('/tenant-channels/feishu', data),
+  saveTenantDirectory: (provider: 'dingtalk' | 'wecom', data: TenantChannelUpdate) =>
+    put<TenantChannelConfig>(`/tenant-channels/${provider}`, data),
   tenantFeishuWebhook: (scope: TenantChannelScope, signal?: AbortSignal) =>
     get<{ webhook_url: string; tenant_id: string }>(`/tenant-channels/feishu/webhook-url?${new URLSearchParams({ ...scope })}`, { signal }),
   tenantFeishuIdentity: (scope: TenantChannelScope, signal?: AbortSignal) =>

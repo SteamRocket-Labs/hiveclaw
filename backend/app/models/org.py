@@ -1,9 +1,9 @@
-"""Organization structure models — departments and members synced from Feishu."""
+"""Organization directory mirrors and digital employee relationships."""
 
 import uuid
 from datetime import datetime
 
-from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Integer, String, Text, func
+from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -11,12 +11,18 @@ from app.database import Base
 
 
 class OrgDepartment(Base):
-    """Department from Feishu org structure."""
+    """An observed department in a provider's directory namespace."""
 
     __tablename__ = "org_departments"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "provider_id", "provider_department_id", name="uq_org_department_provider_subject"),
+        CheckConstraint("(provider_id IS NULL) = (provider_department_id IS NULL)", name="ck_org_department_provider_subject"),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     feishu_id: Mapped[str | None] = mapped_column(String(100), unique=True)
+    provider_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("identity_providers.id"))
+    provider_department_id: Mapped[str | None] = mapped_column(String(100))
     name: Mapped[str] = mapped_column(String(200), nullable=False)
     parent_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("org_departments.id"))
     path: Mapped[str] = mapped_column(String(500), default="")
@@ -30,7 +36,7 @@ class OrgDepartment(Base):
 
 
 class OrgMember(Base):
-    """Person from Feishu org structure."""
+    """An observed person, without an implied application account or role."""
 
     __tablename__ = "org_members"
     __table_args__ = (

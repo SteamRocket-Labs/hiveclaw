@@ -431,7 +431,13 @@ export const enterpriseApi = {
     const suffix = query ? `?${query}` : '';
     return get<OrgMember[]>(`/enterprise/org/members${suffix}`);
   },
-  syncOrg: (tenantId?: string) => post<Record<string, unknown>>(`/enterprise/org/sync${tenantId ? `?tenant_id=${tenantId}` : ''}`),
+  syncOrg: (tenantId?: string, provider?: 'dingtalk' | 'wecom', expectedUserId?: string) => {
+    const query = new URLSearchParams();
+    if (tenantId) query.set('tenant_id', tenantId);
+    if (provider) query.set('provider', provider);
+    if (expectedUserId) query.set('expected_user_id', expectedUserId);
+    return post<Record<string, unknown>>(`/enterprise/org/sync${query.size ? `?${query}` : ''}`);
+  },
   dryRunIdentityLinks: (tenantId?: string) =>
     post<IdentityDryRunReport>(
       `/enterprise/org/identity-links/dry-run${tenantId ? `?tenant_id=${tenantId}` : ''}`,

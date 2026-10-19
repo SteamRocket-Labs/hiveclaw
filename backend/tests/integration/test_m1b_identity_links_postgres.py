@@ -1201,7 +1201,10 @@ async def test_populated_legacy_rows_survive_upgrade_and_downgrade_is_not_a_rest
                 "id": manifest_id, "tenant_id": tenant_id, "agent_id": agent_id,
                 "path": f"workspace/{tag}.md", "authority_state": "owned", "source": "workspace_api",
             })
-            db.add(OrgDepartment(id=department_id, tenant_id=tenant_id, name="Legacy", feishu_id=feishu_department))
+            await _insert_reflected(db, "org_departments", {
+                "id": department_id, "tenant_id": tenant_id, "name": "Legacy", "feishu_id": feishu_department,
+                "path": "", "member_count": 0,
+            })
             await db.flush()
             # The downgraded table has no observation column. Insert the historical
             # row through the reflected schema instead of the current ORM metadata.

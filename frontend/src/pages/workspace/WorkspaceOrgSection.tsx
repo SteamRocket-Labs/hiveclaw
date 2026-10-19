@@ -13,6 +13,7 @@ import {
 import { toolsApi, type FeishuRuntimeStatus } from '../../api/domains/tools';
 import FeishuRuntimeStatusCard from '../../components/FeishuRuntimeStatusCard';
 import WorkspaceOrgCutoverCard from './WorkspaceOrgCutoverCard';
+import WorkspaceCompanyDirectory from './WorkspaceCompanyDirectory';
 
 import './WorkspaceOrgSection.css';
 
@@ -982,6 +983,7 @@ export default function WorkspaceOrgSection({
 
   return (
     <div>
+      <WorkspaceCompanyDirectory selectedTenantId={selectedTenantId} />
       <div className="card ws-org-card">
         <h4 className="ws-org-card-title">{t('enterprise.org.feishuSync', 'Feishu Sync')}</h4>
         <p className="ws-org-card-desc">

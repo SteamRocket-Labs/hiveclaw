@@ -103,14 +103,14 @@ class ChannelDeliveryService:
                 {
                     "live_text": True,
                     "inbound_file": False,
-                    "outbound_file": False,
+                    "outbound_file": True,
                     "deferred_text": True,
-                    "deferred_file": False,
+                    "deferred_file": True,
                     "on_message_current_sender": True,
                     "on_message_by_name": False,
                 }
             )
-            base["limitations"].append("WeCom 当前仅承诺文本闭环；文件回发仍显式标记为 unsupported。")
+            base["limitations"].append("WeCom file replies support nonempty files up to 20 MiB. App callbacks do not accept file input; attach files in the original Web work.")
         elif channel == "slack":
             base["official_api"] = True
             base["capabilities"].update(
@@ -781,6 +781,7 @@ class ChannelDeliveryService:
         tenant_id: uuid.UUID | None = None,
         reply_target: dict[str, Any] | None,
         file_path: str | Path,
+        file_name: str | None = None,
         message: str = "",
         delivery_mode: str = "live",
         extra_detail: dict[str, Any] | None = None,
@@ -873,6 +874,14 @@ class ChannelDeliveryService:
             )
             return result
 
+        selected_name = file_name if file_name is not None else source_path.name
+        if not selected_name or Path(selected_name).name != selected_name or any(c in selected_name for c in ('\\', '\x00', '\r', '\n')):
+            return ChannelDeliveryService._failed(channel, "File name is invalid.", status="denied")
+        name_redaction = redact_outbound(selected_name, channel=channel, secret_boundary=exact_secret_boundary)
+        if name_redaction.rejected:
+            return ChannelDeliveryService._failed(channel, "File name contains protected credential bytes.", status="denied",
+                secret_evidence_refs=list(name_redaction.secret_evidence_refs))
+
         message_redaction = redact_outbound(
             message,
             channel=channel,
@@ -897,7 +906,7 @@ class ChannelDeliveryService:
         message = message_redaction.text
 
         snapshot_dir = TemporaryDirectory(prefix="hive-channel-delivery-")
-        path = Path(snapshot_dir.name) / source_path.name
+        path = Path(snapshot_dir.name) / selected_name
         content_digest = hashlib.sha256()
         try:
             with source_path.open("rb") as source, path.open("xb") as snapshot:
@@ -993,6 +1002,13 @@ class ChannelDeliveryService:
                     extra_config=config.extra_config,
                 )
                 result = ChannelDeliveryService._success(channel, "Feishu file delivered.", file_name=path.name)
+            elif channel == "wecom":
+                from app.services.channel_provider_receipts import send_wecom_file
+
+                await send_wecom_file(corp_id=config.app_id, corp_secret=config.app_secret,
+                    agent_id=(getattr(config, "extra_config", {}) or {}).get("wecom_agent_id"),
+                    to_user=str(target.get("user_id") or ""), path=path)
+                result = ChannelDeliveryService._success(channel, "WeCom file delivered.", file_name=path.name)
             elif channel == "telegram":
                 from app.api.telegram import _send_telegram_file
 
@@ -1105,7 +1121,8 @@ class ChannelDeliveryService:
                 result = ChannelDeliveryService._failed(
                     channel,
                     error.text,
-                    retryable=True,
+                    status=exc.status if isinstance(exc, ProviderReceiptError) else "failed",
+                    retryable=exc.retryable if isinstance(exc, ProviderReceiptError) else True,
                     file_name=path.name,
                     secret_evidence_refs=list(error.matched_refs),
                 )

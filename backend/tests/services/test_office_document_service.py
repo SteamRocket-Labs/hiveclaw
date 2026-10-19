@@ -46,6 +46,57 @@ class _BatchAdapter:
         return self.response
 
 
+@pytest.mark.parametrize("failure", [None, "source_changed", "predecessor_changed", "partial_failure"])
+def test_scoped_office_producer_commits_only_verified_private_output(tmp_path, failure):
+    from hashlib import sha256
+    from uuid import uuid4
+    from app.services.office_document_service import OfficeDocumentService
+    from app.services.workspace_resource_authority import (
+        WorkspaceAuthorityError, WorkspaceAuthorityScope, WorkspaceExecutionInputs, WorkspaceInputRead, WorkspaceOutputWrite,
+    )
+
+    path = "workspace/private.docx"
+    source = tmp_path / path
+    source.parent.mkdir()
+    original, output, concurrent = b"original document", b"produced document", b"independent edit"
+    source.write_bytes(original)
+    read = WorkspaceInputRead(path, uuid4(), 1, sha256(original).hexdigest(), "synthetic-dependencies")
+    writer = WorkspaceOutputWrite.capture(tmp_path, path)
+    capture = WorkspaceExecutionInputs()
+    scope = WorkspaceAuthorityScope(uuid4(), uuid4(), uuid4(), frozenset({path}), False, "session_owner",
+        input_reads=(read,), output_writes=(writer,), execution_inputs=capture)
+    calls = []
+    def batch(target, *, input_file, cwd):
+        calls.append(target)
+        assert target != source and target.is_relative_to(cwd) and target.read_bytes() == original
+        target.write_bytes(output)
+        if failure == "partial_failure":
+            raise ValueError("synthetic partial Office operation")
+        if failure == "predecessor_changed":
+            source.write_bytes(concurrent)
+        return {"success": True}
+    adapter = _BatchAdapter()
+    adapter.run_batch = batch
+    service = OfficeDocumentService(tmp_path, adapter=adapter, authority_scope=scope)
+    if failure == "source_changed":
+        source.write_bytes(concurrent)
+    if failure:
+        with pytest.raises(WorkspaceAuthorityError if failure != "partial_failure" else ValueError):
+            service.run_apply(path, operations=[{"command": "set", "path": "/", "props": {}}])
+        assert source.read_bytes() == (original if failure == "partial_failure" else concurrent)
+        assert not writer.verified
+        if failure == "source_changed":
+            assert not calls
+    else:
+        assert service.run_apply(path, operations=[{"command": "set", "path": "/", "props": {}}])["success"]
+        assert source.read_bytes() == output and writer.verified
+        assert writer.observed_predecessor_sha256 == sha256(original).hexdigest()
+        assert writer.observed_output_sha256 == sha256(output).hexdigest()
+        assert capture.snapshot()["sources"] == [{"source_kind": "workspace_artifact",
+            "source_id": str(read.receipt_id), "source_version": sha256(original).hexdigest()}]
+    assert all(not target.exists() for target in calls)
+
+
 def test_office_document_service_rejects_path_escape(tmp_path):
     from app.services.office_document_service import OfficeDocumentPathError, OfficeDocumentService
 

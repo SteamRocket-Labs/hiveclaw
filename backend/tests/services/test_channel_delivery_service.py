@@ -91,7 +91,9 @@ class TestResolveCapabilities:
         assert caps["connected"] is True
         assert caps["capabilities"]["live_text"] is True
         assert caps["capabilities"]["deferred_text"] is True
-        assert caps["capabilities"]["deferred_file"] is False
+        assert caps["capabilities"]["deferred_file"] is True
+        assert caps["capabilities"]["outbound_file"] is True
+        assert caps["capabilities"]["inbound_file"] is False
         assert caps["capabilities"]["on_message_current_sender"] is True
         assert caps["capabilities"]["on_message_by_name"] is False
 

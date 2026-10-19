@@ -478,13 +478,19 @@ async def _origin_dependencies(db, *, tenant_id, agent_id, ref):
             return _unique_dependencies(dependencies), inherited_complete and arguments.get("path") in hashes
         except (ContentInputReceiptError, ValueError, TypeError):
             return _unique_dependencies(dependencies), False
-    if invocation.tool_name in {"run_command", "execute_code"}:
-        from app.services.content_input_receipts import load_workspace_execution_input_evidence
+    if invocation.tool_name in {"run_command", "execute_code", "office_document_create", "office_document_apply"}:
+        from app.services.content_input_receipts import load_workspace_execution_input_evidence, load_workspace_execution_evidence
 
         try:
+            arguments = invocation.effective_arguments_json or invocation.provider_arguments_json
             _ref, sources = await load_workspace_execution_input_evidence(db, agent_id=agent_id, invocation=invocation,
-                model_result=model, arguments=invocation.effective_arguments_json or invocation.provider_arguments_json,
+                model_result=model, arguments=arguments,
                 content_hash=payload["content_hash"])
+            if invocation.tool_name in {"office_document_create", "office_document_apply"}:
+                _ref, hashes = await load_workspace_execution_evidence(db, agent_id=agent_id, invocation=invocation,
+                    model_result=model, arguments=arguments, content_hash=payload["content_hash"])
+                if (arguments.get("output_path") or arguments.get("path")) not in hashes:
+                    return _unique_dependencies(dependencies), False
             return _unique_dependencies([*dependencies, *sources]), inherited_complete
         except (ContentInputReceiptError, ValueError, TypeError):
             return _unique_dependencies(dependencies), False

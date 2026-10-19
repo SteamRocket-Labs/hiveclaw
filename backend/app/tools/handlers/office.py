@@ -132,7 +132,8 @@ async def office_document_create(
                 action="read",
                 require_user_workspace=True,
             )
-        service = OfficeDocumentService(workspace)
+        service = OfficeDocumentService(workspace, **({"authority_scope": authority_scope}
+            if isinstance(authority_scope, WorkspaceAuthorityScope) else {}))
         result = service.create_document(
             str(arguments.get("path", "")),
             kind=str(arguments.get("kind", "")),
@@ -273,6 +274,8 @@ async def office_document_query(
                     "type": "string",
                     "description": "Optional workspace-relative output path; when given and different from path, the source stays unchanged",
                 },
+                "resource_paths": {"type": "array", "items": {"type": "string"},
+                    "description": "Authorized workspace files used by operations, such as picture src. Use these exact relative paths in props; only declared inputs enter the private Office workspace."},
             },
             "required": ["path", "operations"],
         },
@@ -310,10 +313,17 @@ async def office_document_apply(
         operations = arguments.get("operations") or []
         if not isinstance(operations, list):
             raise ValueError("operations must be a list")
-        payload = OfficeDocumentService(workspace).run_apply(
+        resource_paths = arguments.get('resource_paths') or []
+        if not isinstance(resource_paths, list) or any(not isinstance(path, str) for path in resource_paths):
+            raise ValueError('resource_paths must be a list of workspace paths')
+        for resource in resource_paths:
+            authorize_workspace_tool_path(workspace, authority_scope, resource, action='read', require_user_workspace=True)
+        payload = OfficeDocumentService(workspace, **({"authority_scope": authority_scope}
+            if isinstance(authority_scope, WorkspaceAuthorityScope) else {})).run_apply(
             str(arguments.get("path", "")),
             operations=operations,
             output_path=arguments.get("output_path"),
+            **({'resource_paths': resource_paths} if resource_paths else {}),
         )
         return _json_ok_with_office_sources(
             tenant_id=tenant_id,

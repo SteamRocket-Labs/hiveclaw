@@ -1359,12 +1359,15 @@ class ToolRuntimeService:
                     from app.services.workspace_resource_authority import WorkspaceExecutionInputs
 
                     context.workspace_authority_scope = replace(scope, output_writes=(), skill_inputs=None,
-                        execution_inputs=WorkspaceExecutionInputs() if tool_name in {"run_command", "execute_code"} else None)
+                        execution_inputs=WorkspaceExecutionInputs() if tool_name in {
+                            "run_command", "execute_code", "office_document_create", "office_document_apply"} else None)
                     text_write = tool_name in {"write_file", "edit_file"} or (
                         tool_name == "fs_write" and str(arguments.get("mode") or "write").strip().lower() in {"write", "edit"})
-                    if text_write:
+                    office_write = tool_name in {"office_document_create", "office_document_apply"}
+                    if text_write or office_write:
                         try:
-                            path = authorize_workspace_tool_path(context.workspace, scope, str(arguments.get("path") or ""), action="write")
+                            output = arguments.get("output_path") if tool_name == "office_document_apply" else None
+                            path = authorize_workspace_tool_path(context.workspace, scope, str(output or arguments.get("path") or ""), action="write")
                         except WorkspaceAuthorityError:
                             path = ""  # Preserve the backend's existing path/permission denial.
                         if path.startswith("workspace/"):
@@ -1375,7 +1378,8 @@ class ToolRuntimeService:
                                     message="The write predecessor cannot be verified. Reconcile the file before retrying.",
                                     provider="workspace", http_status=503, retryable=False,
                                     extra={"reason_code": exc.code, "outcome": "unavailable"})
-                            context.workspace_authority_scope = replace(scope, output_writes=(observation,), skill_inputs=None)
+                            context.workspace_authority_scope = replace(context.workspace_authority_scope,
+                                output_writes=(observation,), skill_inputs=None)
                 from app.services.skill_source_receipts import prepare_skill_input_capture
 
                 await prepare_skill_input_capture(request)

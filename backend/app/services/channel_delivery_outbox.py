@@ -436,7 +436,7 @@ class ChannelDeliveryOutboxService:
     async def _load_delivery_authority_and_artifacts(
         self,
         item: ClaimedChannelDelivery,
-    ) -> list[tuple[uuid.UUID, Path]]:
+    ) -> list[tuple[uuid.UUID, Path, str]]:
         async with tenant_scoped_session(
             item.tenant_id,
             session_factory=self._session_factory,
@@ -512,7 +512,7 @@ class ChannelDeliveryOutboxService:
                 .all()
             )
             by_id = {artifact.id: artifact for artifact in artifacts}
-            resolved: list[tuple[uuid.UUID, Path]] = []
+            resolved: list[tuple[uuid.UUID, Path, str]] = []
             workspace_root = (Path(get_settings().AGENT_DATA_DIR) / str(item.agent_id)).resolve()
             for artifact_id in item.artifact_ids:
                 artifact = by_id.get(artifact_id)
@@ -531,7 +531,7 @@ class ChannelDeliveryOutboxService:
                     ) from exc
                 if not absolute.is_file():
                     raise ChannelDeliveryPermanentError(f"artifact {artifact_id} snapshot is unavailable")
-                resolved.append((artifact_id, absolute))
+                resolved.append((artifact_id, absolute, Path(artifact.path).name))
             return resolved
 
     async def _send_part(
@@ -619,7 +619,7 @@ class ChannelDeliveryOutboxService:
                     **common,
                 },
             )
-            for artifact_id, file_path in artifact_paths:
+            for artifact_id, file_path, file_name in artifact_paths:
                 await self._send_part(
                     item=item,
                     worker_id=worker_id,
@@ -630,6 +630,7 @@ class ChannelDeliveryOutboxService:
                         "tenant_id": item.tenant_id,
                         "artifact_id": artifact_id,
                         "file_path": file_path,
+                        "file_name": file_name,
                         "message": "",
                         **common,
                     },

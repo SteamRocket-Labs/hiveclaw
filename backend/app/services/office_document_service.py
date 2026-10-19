@@ -170,10 +170,12 @@ class OfficeDocumentService:
         *,
         adapter: OfficeCLIAdapter | None = None,
         preview_max_bytes: int | None = None,
+        authority_scope=None,
     ) -> None:
         settings = get_settings()
         self.workspace = workspace.resolve()
         self.adapter = adapter or OfficeCLIAdapter()
+        self.authority_scope = authority_scope
         self.preview_max_bytes = int(
             preview_max_bytes
             if preview_max_bytes is not None
@@ -210,13 +212,23 @@ class OfficeDocumentService:
         if target.exists():
             raise OfficeDocumentExistsError(f"Document already exists: {normalized}")
 
-        target.parent.mkdir(parents=True, exist_ok=True)
-        if template_path:
+        if self.authority_scope is not None:
+            with tempfile.TemporaryDirectory(prefix="hive-office-producer-") as temporary:
+                produced = Path(temporary) / target.name
+                if template_path:
+                    produced.write_bytes(self._read_producer_source(template_path))
+                else:
+                    self._observe_producer_inputs({})
+                    self._create_blank_document(produced, kind, adapter=self._producer_adapter(Path(temporary)))
+                self._commit_producer_output(normalized, produced.read_bytes())
+        elif template_path:
+            target.parent.mkdir(parents=True, exist_ok=True)
             template = self.resolve_document_path(template_path)
             if not template.is_file():
                 raise OfficeDocumentNotFoundError(f"Template not found: {template_path}")
             self._atomic_copy(template, target)
         else:
+            target.parent.mkdir(parents=True, exist_ok=True)
             self._create_blank_document(target, kind)
 
         manifest = self._load_manifest(normalized)
@@ -231,6 +243,36 @@ class OfficeDocumentService:
         )
         self._save_manifest(normalized, manifest)
         return {"path": normalized, "kind": kind, "size": target.stat().st_size}
+
+    def _observe_producer_inputs(self, states: dict) -> None:
+        capture = getattr(self.authority_scope, "execution_inputs", None)
+        if capture is not None:
+            capture.observe(states, self.authority_scope)
+
+    def _read_producer_source(self, path: str) -> bytes:
+        from app.services.workspace_resource_authority import WorkspaceAuthorityError, open_workspace_file
+
+        normalized = self._normalize_rel_path(path)
+        if not self.authority_scope.can_read(normalized):
+            raise WorkspaceAuthorityError('workspace_resource_forbidden', 'The Office input is not authorized.')
+        with open_workspace_file(self.workspace, normalized) as source:
+            raw = source.read()
+        read = self.authority_scope.input_read(normalized)
+        if read is not None:
+            read.verify(raw)
+        self._observe_producer_inputs({normalized: {"path": normalized, "sha256": sha256(raw).hexdigest()}})
+        return raw
+
+    def _commit_producer_output(self, path: str, raw: bytes) -> None:
+        from app.services.workspace_resource_authority import WorkspaceOutputWrite, write_workspace_file
+
+        observation = self.authority_scope.output_write(path) or WorkspaceOutputWrite.capture(self.workspace, path)
+        write_workspace_file(self.workspace, path, raw, observation=observation)
+
+    def _producer_adapter(self, workspace: Path):
+        if isinstance(self.adapter, OfficeCLIAdapter):
+            return self.adapter.for_workspace_producer(workspace, canonical_workspace=self.workspace)
+        return self.adapter
 
     def atomic_save_bytes(
         self,
@@ -357,6 +399,7 @@ class OfficeDocumentService:
         *,
         operations: list[dict[str, Any]],
         output_path: str | None = None,
+        resource_paths: list[str] | None = None,
     ) -> dict[str, Any]:
         normalized = self._normalize_rel_path(rel_path)
         target = self._require_existing_file(normalized)
@@ -364,7 +407,8 @@ class OfficeDocumentService:
         audit_path = self._normalize_rel_path(output_path) if output_path else normalized
 
         op_file = self._write_operation(audit_path, validated_operations)
-        payload = self._apply_operations(target, op_file, source_normalized=normalized, output_path=output_path)
+        payload = self._apply_operations(target, op_file, source_normalized=normalized, output_path=output_path,
+            resource_paths=resource_paths)
 
         manifest = self._load_manifest(audit_path)
         manifest["updated_at"] = self._now()
@@ -405,6 +449,7 @@ class OfficeDocumentService:
         *,
         source_normalized: str,
         output_path: str | None,
+        resource_paths: list[str] | None = None,
     ) -> dict[str, Any]:
         """Apply batch operations through the real CLI contract.
 
@@ -421,6 +466,30 @@ class OfficeDocumentService:
         normalized_output: str | None = None
         if output_path:
             normalized_output = self._normalize_rel_path(output_path)
+
+        if self.authority_scope is not None:
+            raw = self._read_producer_source(source_normalized)
+            destination = normalized_output or source_normalized
+            observation = self.authority_scope.output_write(destination)
+            if destination == source_normalized and observation is not None:
+                observation.verify_predecessor(raw)
+            with tempfile.TemporaryDirectory(prefix="hive-office-producer-") as temporary:
+                private = Path(temporary)
+                produced = private / source_normalized
+                produced.parent.mkdir(parents=True)
+                produced.write_bytes(raw)
+                for resource in dict.fromkeys(resource_paths or ()):
+                    normalized = self._normalize_rel_path(resource)
+                    if normalized == source_normalized:
+                        continue
+                    copied = private / normalized
+                    copied.parent.mkdir(parents=True, exist_ok=True)
+                    copied.write_bytes(self._read_producer_source(normalized))
+                private_operations = private / 'operations.json'
+                private_operations.write_bytes(Path(op_file).read_bytes())
+                payload = self._producer_adapter(private).run_batch(produced, input_file=private_operations, cwd=private)
+                self._commit_producer_output(destination, produced.read_bytes())
+            return payload
 
         if normalized_output is None or normalized_output == source_normalized:
             return self.adapter.run_batch(target, input_file=op_file, cwd=self.workspace)
@@ -727,7 +796,7 @@ class OfficeDocumentService:
         self._atomic_write_text(operation_path, json.dumps(operations, ensure_ascii=False, indent=2))
         return str(operation_path)
 
-    def _create_blank_document(self, target: Path, kind: str) -> None:
+    def _create_blank_document(self, target: Path, kind: str, *, adapter=None) -> None:
         with tempfile.NamedTemporaryFile(delete=False, suffix=target.suffix, dir=target.parent) as handle:
             tmp_path = Path(handle.name)
         try:
@@ -738,7 +807,7 @@ class OfficeDocumentService:
                 document.add_paragraph("")
                 document.save(tmp_path)
             elif kind == "xlsx":
-                self.adapter.create_document(tmp_path, cwd=self.workspace)
+                (adapter or self.adapter).create_document(tmp_path, cwd=target.parent if adapter is not None else self.workspace)
             elif kind == "pptx":
                 from pptx import Presentation
 

@@ -107,6 +107,25 @@ class OfficeCLIAdapter:
         self.runner = runner or subprocess.run
         self.timeout_seconds = timeout_seconds or int(getattr(settings, "OFFICECLI_TIMEOUT_SECONDS", 45))
         self._version: str | None = None
+        self._producer_workspace: Path | None = None
+        self._producer_source: Path | None = None
+
+    def for_workspace_producer(self, workspace: Path, *, canonical_workspace: Path):
+        """Stage the trusted executable beside isolated, receipted document inputs."""
+        binary = Path(self._verify_binary_sha256())
+        if not binary.is_file():
+            binary = Path(shutil.which(str(binary)) or binary)
+        runtime = workspace / '.office-runtime'
+        runtime.mkdir()
+        digest = hashlib.sha256(binary.read_bytes()).hexdigest()
+        staged = runtime / binary.name
+        shutil.copyfile(binary, staged)
+        staged.chmod(0o700)
+        adapter = OfficeCLIAdapter(binary=str(staged), binary_sha256=digest, runner=self.runner,
+            timeout_seconds=self.timeout_seconds)
+        adapter._producer_workspace = workspace.resolve()
+        adapter._producer_source = canonical_workspace.resolve()
+        return adapter
 
     def run(
         self,
@@ -291,7 +310,32 @@ class OfficeCLIAdapter:
         command: str,
         cwd: str | Path | None,
     ) -> subprocess.CompletedProcess[str]:
-        env = os.environ.copy()
+        cleanup = []
+        if self._producer_workspace is not None:
+            import tempfile
+            from app.runtime.ccplus_contracts import SandboxProfile
+            from app.services.subprocess_env import build_agent_subprocess_env
+            from app.services.subprocess_sandbox import SandboxBuildSpec, build_sandboxed_agent_command
+
+            home = self._producer_workspace / '.office-home'
+            home.mkdir(exist_ok=True)
+            scratch = home / 'tmp'
+            scratch.mkdir(exist_ok=True)
+            env = build_agent_subprocess_env(home=home)
+            env['TMPDIR'] = str(scratch)
+            env['DOTNET_BUNDLE_EXTRACT_BASE_DIR'] = str(home / '.net')
+            roots = (self._producer_source.parent, Path.cwd(), Path.home(),
+                Path('/Users'), Path(tempfile.gettempdir()), Path('/tmp'), Path('/var/tmp'))
+            spec = SandboxBuildSpec(profile=SandboxProfile.WORKSPACE_WRITE,
+                protected_roots=tuple(dict.fromkeys(str(root.resolve()) for root in roots if root.is_dir())))
+            sandbox = build_sandboxed_agent_command(args, work_dir=self._producer_workspace, env=env, spec=spec)
+            cleanup = sandbox.cleanup_paths
+            if sandbox.command is None:
+                raise OfficeCLIExecutionError(command=command, returncode=126,
+                    stderr='Office workspace sandbox unavailable; preserve the document and retry on a capable host')
+            args = sandbox.command
+        else:
+            env = os.environ.copy()
         env["OFFICECLI_SKIP_UPDATE"] = "1"
         # Each tool receipt must describe flushed bytes, not a resident's dirty in-memory document.
         env["OFFICECLI_NO_AUTO_RESIDENT"] = "1"
@@ -325,6 +369,9 @@ class OfficeCLIAdapter:
                 returncode=126,
                 stderr=f"OfficeCLI process could not start ({type(exc).__name__})",
             ) from exc
+        finally:
+            for path in cleanup:
+                path.unlink(missing_ok=True)
 
     def _verify_binary_sha256(self) -> str:
         expected = (self.binary_sha256 or "").strip().lower()

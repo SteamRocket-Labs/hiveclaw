@@ -113,7 +113,7 @@ async def test_office_apply_checks_source_read_and_actual_output_write(
             return json.loads(process.stdout)
 
     probe = NativeDocumentProbe()
-    monkeypatch.setattr(office, "OfficeDocumentService", lambda workspace: OfficeDocumentService(workspace, adapter=probe))
+    monkeypatch.setattr(office, "OfficeDocumentService", lambda workspace, **kwargs: OfficeDocumentService(workspace, adapter=probe, **kwargs))
     handler = office.office_document_apply
     result = await adapt_and_call(handler.meta, handler, ToolExecutionRequest(tool_name="office_document_apply", arguments=arguments, context=context))
     payload = json.loads(result)

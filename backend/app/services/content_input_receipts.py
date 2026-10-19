@@ -727,11 +727,19 @@ async def authorize_workspace_execution_inputs(request) -> list[dict]:
 
     context = request.context
     scope = context.workspace_authority_scope
-    if request.tool_name not in {"execute_code", "run_command", "run_skill_tool"} or not isinstance(scope, WorkspaceAuthorityScope):
+    if request.tool_name not in {"execute_code", "run_command", "run_skill_tool", "office_document_create", "office_document_apply"} or not isinstance(scope, WorkspaceAuthorityScope):
         return []
     paths = {path for path in scope.allowed_paths if path.startswith("workspace/")}
     reads, denied = [], []
     try:
+        if request.tool_name in {"office_document_create", "office_document_apply"}:
+            from app.core.resource_authority import normalize_workspace_resource_path
+
+            raw = request.arguments.get("template_path") if request.tool_name == "office_document_create" else request.arguments.get("path")
+            resources = (request.arguments.get('resource_paths') or []) if request.tool_name == 'office_document_apply' else []
+            if not isinstance(resources, list) or any(not isinstance(path, str) for path in resources):
+                raise ValueError('invalid Office resource paths')
+            paths &= {normalize_workspace_resource_path(path) for path in [*([str(raw)] if raw else []), *resources]}
         tenant_id = uuid.UUID(str(context.tenant_id))
         if scope.agent_id != context.agent_id or scope.user_id != context.user_id or scope.operator_view:
             raise ContentInputReceiptError("content_source_access_denied", "The execution input scope does not match.", 403)
@@ -1030,7 +1038,7 @@ async def record_native_workspace_receipts(db, *, context, invocation, model, ar
     dependencies, complete = _model_dependencies(model)
     if not complete:
         return {"status": "unavailable", "reason_code": "model_input_inventory_incomplete", "receipts": {}}
-    if invocation.tool_name not in {"write_file", "fs_write", "run_skill_tool", "run_command", "execute_code"}:
+    if invocation.tool_name not in {"write_file", "fs_write", "run_skill_tool", "run_command", "execute_code", "office_document_create", "office_document_apply"}:
         return {"status": "unavailable", "reason_code": "runtime_output_producer_unavailable", "receipts": {}}
     request = ToolExecutionRequest(tool_name=invocation.tool_name, arguments=arguments, context=context)
     try:
@@ -1058,7 +1066,7 @@ async def record_native_workspace_receipts(db, *, context, invocation, model, ar
         _ref, outputs = await load_workspace_execution_evidence(db, agent_id=context.agent_id, invocation=invocation,
             model_result=model, arguments=arguments, content_hash=content_hash)
         proof = retained.metadata_json["workspace_execution_evidence"]
-        if invocation.tool_name in {"run_command", "execute_code"}:
+        if invocation.tool_name in {"run_command", "execute_code", "office_document_create", "office_document_apply"}:
             dependencies = _unique_dependencies([*dependencies, *_workspace_execution_input_sources(proof)])
     except ContentInputReceiptError as exc:
         return {"status": "denied" if exc.status_code == 403 else "unavailable", "reason_code": exc.code, "receipts": {}}
@@ -1288,6 +1296,12 @@ async def load_workspace_execution_evidence(db, *, agent_id, invocation, model_r
             continue
         digest = after.get("sha256")
         if isinstance(digest, str) and len(digest) == 64 and all(c in "0123456789abcdef" for c in digest):
+            if invocation.tool_name in {"office_document_create", "office_document_apply"}:
+                writers = proof.get("descriptor_writes")
+                if not isinstance(writers, list) or not any(isinstance(writer, dict) and writer.get("path") == path
+                    and writer.get("verified") is True and writer.get("observed_output_sha256") == digest
+                    and writer.get("expected_output_sha256") == digest for writer in writers):
+                    continue
             if invocation.tool_name in {"write_file", "fs_write"} and isinstance(arguments.get("content"), str):
                 if digest != hashlib.sha256(arguments["content"].encode()).hexdigest():
                     continue

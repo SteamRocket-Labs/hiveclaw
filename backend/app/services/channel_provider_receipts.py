@@ -1,6 +1,7 @@
 """Exact provider receipts without exporting URLs, credentials or message bodies."""
 
 from urllib.parse import urlsplit
+import mimetypes
 
 import httpx
 
@@ -49,22 +50,50 @@ async def send_dingtalk_text(session_webhook, text):
             json={'msgtype': 'markdown', 'markdown': {'title': 'AI Reply', 'text': text}})
 
 
+async def _wecom_token(client, corp_id, corp_secret):
+    try:
+        response = await client.get('https://qyapi.weixin.qq.com/cgi-bin/gettoken',
+            params={'corpid': corp_id, 'corpsecret': corp_secret})
+        response.raise_for_status()
+        payload = response.json()
+    except (httpx.HTTPError, ValueError):
+        raise ProviderReceiptError('WeCom credentials could not be verified', status='unavailable', retryable=True) from None
+    if not isinstance(payload, dict) or type(payload.get('errcode')) is not int or payload['errcode'] != 0:
+        raise ProviderReceiptError('WeCom token request was rejected')
+    token = payload.get('access_token')
+    if not isinstance(token, str) or not token:
+        raise ProviderReceiptError('WeCom token receipt is incomplete', status='unavailable', retryable=True)
+    return token
+
+
+def _wecom_recipient(payload):
+    if any(payload.get(key) for key in ('invaliduser', 'invalidparty', 'invalidtag', 'unlicenseduser')):
+        raise ProviderReceiptError('WeCom rejected a message recipient')
+    return payload
+
+
 async def send_wecom_text(*, corp_id, corp_secret, agent_id, to_user, text):
     async with httpx.AsyncClient(timeout=10) as client:
-        try:
-            response = await client.get('https://qyapi.weixin.qq.com/cgi-bin/gettoken',
-                params={'corpid': corp_id, 'corpsecret': corp_secret})
-            response.raise_for_status()
-            payload = response.json()
-        except (httpx.HTTPError, ValueError):
-            raise ProviderReceiptError('WeCom credentials could not be verified', status='unavailable', retryable=True) from None
-        if not isinstance(payload, dict) or type(payload.get('errcode')) is not int or payload['errcode'] != 0:
-            raise ProviderReceiptError('WeCom token request was rejected')
-        token = payload.get('access_token')
-        if not isinstance(token, str) or not token:
-            raise ProviderReceiptError('WeCom token receipt is incomplete', status='unavailable', retryable=True)
+        token = await _wecom_token(client, corp_id, corp_secret)
         payload = await _send(client, 'https://qyapi.weixin.qq.com/cgi-bin/message/send', params={'access_token': token},
             json={'touser': to_user, 'msgtype': 'text', 'agentid': int(agent_id), 'text': {'content': text}})
-        if any(payload.get(key) for key in ('invaliduser', 'invalidparty', 'invalidtag', 'unlicenseduser')):
-            raise ProviderReceiptError('WeCom rejected a message recipient')
-        return payload
+        return _wecom_recipient(payload)
+
+
+async def send_wecom_file(*, corp_id, corp_secret, agent_id, to_user, path):
+    if not to_user or not agent_id:
+        raise ProviderReceiptError('WeCom file recipient is unavailable', status='denied')
+    if not 0 < path.stat().st_size <= 20 * 1024 * 1024:
+        raise ProviderReceiptError('WeCom file must be nonempty and at most 20 MiB', status='denied')
+    async with httpx.AsyncClient(timeout=30) as client:
+        token = await _wecom_token(client, corp_id, corp_secret)
+        with path.open('rb') as source:
+            media = await _send(client, 'https://qyapi.weixin.qq.com/cgi-bin/media/upload',
+                params={'access_token': token, 'type': 'file'},
+                files={'media': (path.name, source, mimetypes.guess_type(path.name)[0] or 'application/octet-stream')})
+        media_id = media.get('media_id')
+        if not isinstance(media_id, str) or not media_id:
+            raise ProviderReceiptError('WeCom upload receipt is incomplete', status='unavailable', retryable=True)
+        return _wecom_recipient(await _send(client, 'https://qyapi.weixin.qq.com/cgi-bin/message/send',
+            params={'access_token': token}, json={'touser': to_user, 'msgtype': 'file',
+                'agentid': int(agent_id), 'file': {'media_id': media_id}}))

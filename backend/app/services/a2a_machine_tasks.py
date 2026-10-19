@@ -30,6 +30,10 @@ def _uuid(value):
         raise A2AError(-32001, 'Task not found') from None
 
 
+def _machine_input_run_id(input_id, intent):
+    return uuid.uuid5(input_id, 'session-v2-successor-run' if intent == 'queue_next_turn' else 'session-v2-runtime-run')
+
+
 async def _machine_runtime_task(db, context, task_id):
     task = await db.scalar(select(RuntimeTask).where(RuntimeTask.id == _uuid(task_id),
         RuntimeTask.tenant_id == context.tenant_id, RuntimeTask.parent_agent_id == context.agent_id,
@@ -151,11 +155,11 @@ async def _machine_task_history(db, context, public_task_id, task, *, semantic_h
         SessionCommand.target_json['runtime_metadata']['source'].astext == 'a2a'))).all())
     run_ids = {str(run_id) for run_id in by_run}
     inputs = [(row, command) for row, command in candidates
-        if uuid.uuid5(row.id, 'session-v2-runtime-run') in by_run
+        if _machine_input_run_id(row.id, row.intent) in by_run
         or ((command.target_json or {}).get('runtime_metadata') or {}).get('root_runtime_task_id') == str(public_task_id)
         or (row.intent in {'answer_request', 'steer_current_turn'}
             and (str(row.target_run_id) in run_ids or (command.target_json or {}).get('expected_run_id') in run_ids))]
-    if not any(uuid.uuid5(row.id, 'session-v2-runtime-run') == public_task_id for row, _command in inputs):
+    if not any(_machine_input_run_id(row.id, row.intent) == public_task_id for row, _command in inputs):
         raise A2AError(-32603, 'Committed task input identity is unavailable')
     sequences = dict((await db.execute(select(ChatTranscriptEvent.input_id, func.min(ChatTranscriptEvent.sequence))
         .where(ChatTranscriptEvent.tenant_id == context.tenant_id, ChatTranscriptEvent.agent_id == context.agent_id,
@@ -249,7 +253,7 @@ async def get_machine_task(db, context, task_id, *, history_length=None):
             .order_by(SessionInputAdmission.input_revision.desc()).limit(1)) if row is not None else None
         if (row is None or command is None or admission is None or command.principal_type != 'external_principal'
             or command.principal_id != context.principal_id or command.session_id != ingress.result_session_id
-            or uuid.uuid5(input_id, 'session-v2-runtime-run') != _uuid(task_id)):
+            or _machine_input_run_id(input_id, row.intent) != _uuid(task_id)):
             raise A2AError(-32001, 'Task not found')
         state = ('TASK_STATE_CANCELED' if row.status == 'cancelled'
             else 'TASK_STATE_REJECTED' if admission.state in {'rejected', 'cancelled'}
@@ -437,6 +441,7 @@ async def _protect_machine_ingress(db, context, immutable, bearer_secret):
 
 
 async def send_machine_message(db, context, agent, params, *, bearer_secret):
+    from app.models.session_v2 import SessionCommand, SessionTurnInput
     from app.services.session_live_input import submit_live_human_input
 
     message = params.get('message')
@@ -465,7 +470,11 @@ async def send_machine_message(db, context, agent, params, *, bearer_secret):
         raise A2AError(-32602, 'Invalid parameters') from None
     digest = hashlib.sha256(encoded.encode()).hexdigest()
     input_id = uuid.uuid5(context.principal_id, 'a2a-message:' + message['messageId'])
-    run_id = uuid.uuid5(input_id, 'session-v2-runtime-run')
+    admitted = await db.get(SessionTurnInput, input_id, populate_existing=True)
+    # A context-only message starts independent FIFO work. Preserve the
+    # canonical intent of an already accepted nonce, including older inputs.
+    requested_kind = 'queue_next_turn' if message.get('contextId') and not message.get('taskId') else 'start_turn'
+    run_id = _machine_input_run_id(input_id, admitted.intent if admitted is not None else requested_kind)
     public_task_id = _uuid(message['taskId']) if message.get('taskId') else run_id
     previous = await db.get(RuntimeTask, run_id, populate_existing=True)
     if previous is not None:
@@ -480,11 +489,9 @@ async def send_machine_message(db, context, agent, params, *, bearer_secret):
         return {'task': await get_machine_task(db, context, public_task_id, history_length=configuration.get('historyLength'))}
     # The shared admission can commit before the transport receipt. Recover
     # that exact nonce from the canonical command before considering new work.
-    from app.models.session_v2 import SessionCommand, SessionTurnInput
-
-    admitted = await db.get(SessionTurnInput, input_id, populate_existing=True)
     replayed = False
     question = None
+    target = {'requested_kind': requested_kind}
     continuation_metadata = {}
     if admitted is not None:
         command = await db.get(SessionCommand, admitted.command_id, populate_existing=True)
@@ -515,6 +522,8 @@ async def send_machine_message(db, context, agent, params, *, bearer_secret):
         if task is None:
             raise A2AError(-32004, 'Task admission is not ready for another message')
         session = await db.get(ChatSession, _uuid(task.parent_session_id), populate_existing=True)
+        target = {'requested_kind': 'steer_current_turn', 'expected_run_id': task.id,
+            'expected_turn_id': str((task.metadata_json or {}).get('turn_id') or f'turn-{task.id.hex}')}
         if current['status']['state'] == 'TASK_STATE_INPUT_REQUIRED':
             question = await _machine_question(db, task)
             if question is None:
@@ -544,7 +553,7 @@ async def send_machine_message(db, context, agent, params, *, bearer_secret):
         await submit_live_human_input(db=db, agent=agent, user=actor, session=session, content=content,
             source='a2a', input_id=input_id, idempotency_key=f'a2a-message:{message["messageId"]}',
             **({'requested_kind': 'answer_request', 'request_item_id': question.item_id,
-                'expected_run_id': question.run_id} if question is not None else {}),
+                'expected_run_id': question.run_id} if question is not None else target),
             runtime_metadata={'source': 'a2a', 'channel': 'a2a', 'a2a_message_hash': digest,
                 'a2a_input_message': message, 'a2a_request_metadata': immutable.get('metadata'),
                 **({'exact_secret_ingress_redaction': ingress_redaction} if ingress_redaction is not None else {}),

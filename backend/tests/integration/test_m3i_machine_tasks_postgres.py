@@ -419,6 +419,19 @@ async def test_machine_question_returns_to_caller_and_blocking_answer_keeps_task
         {**body['params']['message'], 'taskId': original['id'], 'contextId': original['contextId']},
         task['status']['message'],
     ]
+    separate = _send('Prepare a separate work item in this conversation.')
+    separate['params']['message']['contextId'] = original['contextId']
+    new_work = await api.post(path, json=separate, headers=headers)
+    assert 'result' in new_work.json(), new_work.text
+    separate_task = new_work.json()['result']['task']
+    assert separate_task['id'] != original['id'] and separate_task['contextId'] == original['contextId']
+    stopped_separate = await api.post(path, json={'jsonrpc': '2.0', 'id': 'cancel-separate', 'method': 'CancelTask',
+        'params': {'id': separate_task['id']}}, headers=headers)
+    assert stopped_separate.json()['result']['status']['state'] == 'TASK_STATE_CANCELED', stopped_separate.text
+    still_waiting = await api.post(path, json={'jsonrpc': '2.0', 'id': 'still-question', 'method': 'GetTask',
+        'params': {'id': original['id']}}, headers=headers)
+    assert still_waiting.json()['result']['status'] == task['status'], still_waiting.text
+    assert still_waiting.json()['result']['history'] == task['history']
     other = await api.post(f"/agents/{seed['agent']}/machine-identities", json={**_issue(seed),
         'scopes': ['agent.execute', 'task.read']})
     foreign = _send('An answer from another principal.')
@@ -932,16 +945,18 @@ async def test_machine_task_runs_native_kernel_tools_and_returns_full_original_r
     assert canary not in json.dumps(client.requests, default=str) and private.read_text() == canary
 
 
+@pytest.mark.parametrize('cancel_separate', [False, True])
 async def test_machine_cancel_returns_actual_pending_then_acknowledged_state(
-    machine_api, owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path,
+    machine_api, owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, drain_terminal_boundary_for_task, cancel_separate,
 ):
     import asyncio
     from datetime import datetime, timedelta, timezone
     import app.kernel.engine as engine
     import app.runtime.invoker as invoker
     from app.models.chat_transcript_event import ChatTranscriptEvent
-    from app.models.session_v2 import SessionCommand, SessionControlInput
+    from app.models.session_v2 import SessionCommand, SessionControlInput, SessionTurnInput
     from app.services.runtime_task_fence import reset_runtime_task_fence, set_runtime_task_fence
+    from app.services.runtime_task_worker import drain_web_terminal_boundary_outbox_once
     from app.services.web_chat_runtime import execute_web_chat_run
     from tests.integration.test_web_chat_worker_restart_kernel_recovery import ScriptedLLMClient
 
@@ -962,9 +977,10 @@ async def test_machine_cancel_returns_actual_pending_then_acknowledged_state(
         await release.wait()
         return await actual_tool(*args, **kwargs)
     monkeypatch.setattr(engine, '_execute_tool_call_with_cancel', held_tool)
+    separate_final = 'The separate work item completed under its own task identity.'
     model = ScriptedLLMClient([{'tool_calls': [{'id': 'cancelled-write', 'type': 'function', 'function': {
         'name': 'write_file', 'arguments': json.dumps({'path': 'workspace/after-stop.md', 'content': 'MUST_NOT_EXECUTE'})}}],
-        'finish_reason': 'tool_calls'}])
+        'finish_reason': 'tool_calls'}, {'content': separate_final, 'finish_reason': 'stop'}])
     monkeypatch.setattr(invoker, 'create_llm_client', lambda **_kwargs: model)
     async with tenant_scoped_session(seed['tenant'], session_factory=app_user_sessionmaker) as db:
         task = await db.get(RuntimeTask, task_id)
@@ -980,6 +996,42 @@ async def test_machine_cancel_returns_actual_pending_then_acknowledged_state(
     worker = asyncio.create_task(run())
     try:
         await asyncio.wait_for(entered.wait(), 15)
+        separate = _send('Prepare a separate work item while this task is running.')
+        separate['params']['message']['contextId'] = submitted.json()['result']['task']['contextId']
+        new_work = await api.post(path, json=separate, headers=headers)
+        assert 'result' in new_work.json(), new_work.text
+        separate_task = new_work.json()['result']['task']
+        assert separate_task['id'] != str(task_id)
+        assert separate_task['contextId'] == separate['params']['message']['contextId']
+        assert separate_task['status']['state'] == 'TASK_STATE_SUBMITTED', new_work.text
+        async with tenant_scoped_session(seed['tenant'], session_factory=app_user_sessionmaker) as db:
+            new_input = await db.get(SessionTurnInput, uuid5(UUID(identity['id']),
+                'a2a-message:' + separate['params']['message']['messageId']))
+            assert new_input.intent == 'queue_next_turn' and new_input.target_run_id is None
+            assert new_input.request_item_id is None
+        if cancel_separate:
+            stopped_separate = await api.post(path, json={'jsonrpc': '2.0', 'id': 'cancel-separate', 'method': 'CancelTask',
+                'params': {'id': separate_task['id']}}, headers=headers)
+            assert stopped_separate.json()['result']['status']['state'] == 'TASK_STATE_CANCELED', stopped_separate.text
+        else:
+            async with tenant_scoped_session(seed['tenant'], session_factory=app_user_sessionmaker) as db:
+                receipt = await db.get(ChannelIngressEvent, uuid5(UUID(separate_task['id']), 'ingress'))
+                await db.delete(receipt)  # Admission committed before its transport receipt survived.
+                await db.commit()
+        replay_separate = await api.post(path, json=separate, headers=headers)
+        assert replay_separate.json()['result']['task']['id'] == separate_task['id'], replay_separate.text
+        assert replay_separate.json()['result']['task']['status']['state'] == (
+            'TASK_STATE_CANCELED' if cancel_separate else 'TASK_STATE_SUBMITTED')
+        assert replay_separate.json()['result']['task']['history'] == [
+            {**separate['params']['message'], 'taskId': separate_task['id']}]
+        original = await api.post(path, json={'jsonrpc': '2.0', 'id': 'read-original', 'method': 'GetTask',
+            'params': {'id': str(task_id)}}, headers=headers)
+        assert original.json()['result']['status']['state'] == 'TASK_STATE_WORKING', original.text
+        assert separate['params']['message']['messageId'] not in [row['messageId']
+            for row in original.json()['result']['history']]
+        async with tenant_scoped_session(seed['tenant'], session_factory=app_user_sessionmaker) as db:
+            assert await db.scalar(select(func.count(SessionControlInput.id)).where(
+                SessionControlInput.expected_run_id == task_id)) == 0
         body = {'jsonrpc': '2.0', 'id': 'stop-1', 'method': 'CancelTask', 'params': {'id': str(task_id)}}
         cancelled = await api.post(path, json=body, headers=headers)
         assert cancelled.status_code == 200 and 'result' in cancelled.json(), cancelled.text
@@ -1004,6 +1056,27 @@ async def test_machine_cancel_returns_actual_pending_then_acknowledged_state(
         async with tenant_scoped_session(seed['tenant'], session_factory=app_user_sessionmaker) as db:
             control = await db.scalar(select(SessionControlInput).where(SessionControlInput.expected_run_id == task_id))
             assert control.status == 'applied'
+        if not cancel_separate:
+            await drain_terminal_boundary_for_task(drain_web_terminal_boundary_outbox_once, task_id=task_id,
+                worker_id='machine-queued-work-boundary')
+            separate_id = UUID(separate_task['id'])
+            await _dispatch_machine_input(seed, separate_id, app_user_sessionmaker)
+            async with tenant_scoped_session(seed['tenant'], session_factory=app_user_sessionmaker) as db:
+                separate_run, original_run = await db.get(RuntimeTask, separate_id), await db.get(RuntimeTask, task_id)
+                assert separate_run.root_runtime_task_id == separate_id and separate_run.status == 'pending'
+                assert separate_run.budget_run_id != original_run.budget_run_id
+                assert separate_run.root_external_principal_id == UUID(identity['id']) and separate_run.root_user_id is None
+            await _run_native_machine_task(seed, separate_id, app_user_sessionmaker)
+            delivered = await api.post(path, json={'jsonrpc': '2.0', 'id': 'read-separate', 'method': 'GetTask',
+                'params': {'id': separate_task['id']}}, headers=headers)
+            completed = delivered.json()['result']
+            assert completed['status']['state'] == 'TASK_STATE_COMPLETED', delivered.text
+            assert completed['artifacts'][0]['parts'] == [{'text': separate_final}]
+            assert len(completed['history']) == 2 and completed['history'][0] == {
+                **separate['params']['message'], 'taskId': separate_task['id']}
+            assert completed['history'][1]['parts'] == [{'text': separate_final}]
+            assert all(row['taskId'] == separate_task['id'] for row in completed['history'])
+            assert len(model.requests) == 2 and not (root / 'workspace/after-stop.md').exists()
     finally:
         release.set()
         if not worker.done():

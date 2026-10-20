@@ -2955,7 +2955,7 @@ async def start_web_chat_run(
         from app.services.remote_a2a_chat import capture_executor
         from app.services.remote_a2a_tasks import SCHEMA as REMOTE_TASK_SCHEMA
 
-        remote = await capture_executor(db, agent=agent, user=user, session=session,
+        remote = await capture_executor(db, agent=agent, user=user, session=session, metadata=supplied_metadata,
             run_id=run_uuid, interactive=budget_interactive and runtime_task_type == WEB_CHAT_TURN_TASK_TYPE
                 and root_item_intent is None)
         runtime_task.metadata_json = {**runtime_task.metadata_json, "schema": REMOTE_TASK_SCHEMA,

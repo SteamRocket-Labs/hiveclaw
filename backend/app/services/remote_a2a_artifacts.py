@@ -96,8 +96,9 @@ async def load_packet(db, tenant_id, dependency, *, user=None, runtime_request=N
             state = task.metadata_json["remote_a2a"]
             # Later queued inputs do not change the causal inputs of this packet.
             end = state["operations"].index(operation) + 1
+            # Reading the owner's saved packet does not authorize a new channel effect.
             await validate_instruction_sources(db, task=task,
-                state={**state, "operations": state["operations"][:end]})
+                state={**state, "operations": state["operations"][:end]}, for_effect=False)
         except HTTPException as exc:
             raise ContentInputReceiptError("remote_a2a_instruction_source_unavailable",
                 "The remote result's known local inputs are no longer available.", exc.status_code) from exc
@@ -292,9 +293,15 @@ async def import_page_artifacts(db, *, page, user):
             continue
         result = await db.get(RuntimeResultObject, item.result_object_id)
         view = json.loads(decode_runtime_result_payload(result.payload_bytes)["summary"])["remote_a2a"]
+        parts = []
         if view.get("error_code") is None:
-            await import_packet(db, tenant_id=page.tenant_id, result_id=item.result_object_id,
+            receipt = await import_packet(db, tenant_id=page.tenant_id, result_id=item.result_object_id,
                 sha256=item.result_sha256, user=user)
+            parts = receipt["parts"]
+        from app.services.remote_a2a_channel import deliver_packet
+
+        task = await db.get(RuntimeTask, uuid.UUID(view["id"]))
+        await deliver_packet(db, task=task, result=result, view=view, parts=parts)
 
 
 async def recover_task_artifacts(db, *, agent_id, task_id, actor, expected_user_id, expected_tenant_id):

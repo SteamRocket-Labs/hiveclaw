@@ -34,7 +34,7 @@ pytestmark = pytest.mark.usefixtures('migrated_pg_url')
 
 
 @asynccontextmanager
-async def sdk_receiver(directory, strict):
+async def sdk_receiver(directory, strict, *, input_required=False):
     directory.mkdir()
     listener = socket.socket()
     listener.bind(('127.0.0.1', 0))
@@ -42,7 +42,8 @@ async def sdk_receiver(directory, strict):
     script = Path(__file__).parents[1] / 'fixtures/remote_chat_sdk_receiver.py'
     log = (directory / 'server.log').open('wb')
     process = await asyncio.create_subprocess_exec(sys.executable, '-B', str(script), '--fd', str(listener.fileno()),
-        '--directory', str(directory), *(['--strict'] if strict else []), pass_fds=(listener.fileno(),),
+        '--directory', str(directory), *(['--strict'] if strict else []),
+        *(['--input-required'] if input_required else []), pass_fds=(listener.fileno(),),
         env=env, stdout=asyncio.subprocess.PIPE, stderr=log)
     try:
         line = await asyncio.wait_for(process.stdout.readline(), 10)

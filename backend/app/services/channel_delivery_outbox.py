@@ -490,6 +490,12 @@ class ChannelDeliveryOutboxService:
 
             session = await db.scalar(select(ChatSession).where(ChatSession.id == item.session_id,
                 ChatSession.tenant_id == item.tenant_id, ChatSession.agent_id == item.agent_id))
+            if (session is not None and session.audience_kind != "group" and item.external_principal_id is not None
+                and item.user_id is not None and (session.user_id != item.user_id or principal.linked_user_id != item.user_id)):
+                raise ChannelDeliveryPermanentError("private channel requester binding changed")
+            from app.services.remote_a2a_channel import validate_delivery
+
+            await validate_delivery(db, item=item)
             if session is not None and session.audience_kind == "group":
                 from app.services.shared_group_authority import validate_shared_group_delivery
 

@@ -23,19 +23,24 @@ def is_remote_task(task):
         and (task.metadata_json.get("remote_a2a") or {}).get("dispatch_kind") == "session")
 
 
-async def capture_executor(db, *, agent, user, session, run_id, interactive):
+async def capture_executor(db, *, agent, user, session, run_id, interactive, metadata=None):
     from app.services.remote_a2a_runtime import require_runtime_authorization
     from app.services.remote_a2a_tasks import _work
 
-    if (not interactive or session.audience_kind not in {None, "private"}
+    if (session.audience_kind not in {None, "private"}
         or user.id is None or session.user_id != user.id
-        or getattr(user, "machine_credential_id", None) is not None
-        or getattr(user, "external_principal_id", None) is not None):
+        or getattr(user, "machine_credential_id", None) is not None):
         raise HTTPException(409, detail={"code": "remote_a2a_session_principal_unavailable"})
+    origin = None
+    if not interactive or getattr(user, "external_principal_id", None) is not None:
+        from app.services.remote_a2a_channel import capture_origin
+
+        origin = await capture_origin(db, agent=agent, user=user, session=session, metadata=metadata or {})
     await _work(db, actor=user, session_id=session.id, target=agent)
     connection, authority, authority_hash = await require_runtime_authorization(db, agent=agent)
     return {"dispatch_kind": "session", "configuration_version": connection.version,
         "owner_scope": authority["owner_scope"], "runtime_authorization_hash": authority_hash,
+        **({"channel_origin": origin} if origin else {}),
         "source_read_principal": AgentRuntimePrincipal(agent_id=agent.id, requester_user_id=user.id,
             session_id=str(session.id), runtime_task_id=str(run_id), purpose="interactive_session",
             autonomous=False).evidence(),
@@ -64,6 +69,27 @@ def _principal(task, state):
     return principal
 
 
+async def _session_principal(db, *, task, state, for_effect=True):
+    session = await db.get(ChatSession, uuid.UUID(task.parent_session_id), populate_existing=True)
+    if (session is None or session.audience_kind not in {None, "private"}
+        or session.user_id != task.root_user_id or task.machine_credential_id):
+        raise HTTPException(409, detail={"code": "remote_a2a_session_principal_unavailable"})
+    if state.get("channel_origin") is not None:
+        from app.services.remote_a2a_channel import validate_origin
+
+        origin = state["channel_origin"]
+        if (not isinstance(origin, dict) or origin.get("schema") != "hive.remote_channel_origin.v1"
+            or origin.get("external_principal_id") != str(task.root_external_principal_id)
+            or session.external_principal_id != task.root_external_principal_id
+            or origin.get("command_id") != task.metadata_json.get("session_v2_command_id")
+            or origin.get("ingress_event_id") != task.metadata_json.get("channel_ingress_event_id")):
+            raise HTTPException(409, detail={"code": "remote_a2a_session_principal_unavailable"})
+        if for_effect:
+            await validate_origin(db, task=task, state=state, session=session)
+    elif task.root_external_principal_id:
+        raise HTTPException(409, detail={"code": "remote_a2a_session_principal_unavailable"})
+
+
 async def prepare_send(db, *, task, state, agent, endpoint):
     """Bind canonical inputs once; never recreate a send after an ambiguous effect."""
     operation = state["operations"][-1]
@@ -84,6 +110,7 @@ async def prepare_send(db, *, task, state, agent, endpoint):
     await require_runtime_authorization(db, agent=agent, expected_hash=state["runtime_authorization_hash"])
     await _active_employee_budget(db, task)
     principal = _principal(task, state)
+    await _session_principal(db, task=task, state=state)
     session_id = uuid.UUID(task.parent_session_id)
     operation_id = uuid.UUID(operation["id"])
     rows = await bind_admitted_inputs_to_round(db, tenant_id=task.tenant_id, agent_id=agent.id,
@@ -184,15 +211,13 @@ async def prepare_send(db, *, task, state, agent, endpoint):
     await db.flush()
 
 
-async def validate_sources(db, *, task, state):
+async def validate_sources(db, *, task, state, for_effect=True):
+    """Recheck data access; a new effect also requires the live channel authority."""
     from app.services.content_input_receipts import ContentInputReceiptError, _validate_input_dependencies
     from app.services.remote_a2a_tasks import _digest
 
     principal = _principal(task, state)
-    session = await db.get(ChatSession, uuid.UUID(task.parent_session_id), populate_existing=True)
-    if (session is None or session.audience_kind not in {None, "private"}
-        or session.user_id != task.root_user_id or task.machine_credential_id or task.root_external_principal_id):
-        raise HTTPException(409, detail={"code": "remote_a2a_session_principal_unavailable"})
+    await _session_principal(db, task=task, state=state, for_effect=for_effect)
     for operation in state["operations"]:
         if operation["method"] != "SendMessage":
             continue

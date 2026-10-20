@@ -23,7 +23,7 @@ from starlette.routing import Route
 import uvicorn
 
 
-async def serve(fd, directory, strict):
+async def serve(fd, directory, strict, input_required=False):
     listener = socket.socket(fileno=fd)
     directory = Path(directory)
     origin = f'http://127.0.0.1:{listener.getsockname()[1]}'
@@ -35,8 +35,9 @@ async def serve(fd, directory, strict):
     class Executor(AgentExecutor):
         async def execute(self, context, event_queue):
             text = context.get_user_input()
-            await event_queue.enqueue_event(protocol.Task(id=context.task_id, context_id=context.context_id,
-                status=protocol.TaskStatus(state=protocol.TASK_STATE_SUBMITTED), history=[context.message]))
+            if context.current_task is None:
+                await event_queue.enqueue_event(protocol.Task(id=context.task_id, context_id=context.context_id,
+                    status=protocol.TaskStatus(state=protocol.TASK_STATE_SUBMITTED), history=[context.message]))
             updater = TaskUpdater(event_queue, context.task_id, context.context_id)
             # Consume only the ordinary SDK text interface, not a fixture's
             # alternate DataPart parser or a sender-side context injection.
@@ -63,6 +64,9 @@ async def serve(fd, directory, strict):
             report = json.dumps({'instruction': instruction, 'context_sha256': hashlib.sha256(encoded.encode()).hexdigest(),
                 'soul': record['resources']['soul'], 'messages': record['messages'], 'files': files}, ensure_ascii=False)
             (directory / f'report-{number}.txt').write_text(report)
+            if input_required and number == 0:
+                await updater.requires_input(new_text_message('Please provide the requested detail in this original work.'))
+                return
             await updater.add_artifact([protocol.Part(text=report, filename='sdk-report.txt')], name='sdk-report.txt')
             await updater.complete(new_text_message(report))
 
@@ -98,5 +102,6 @@ if __name__ == '__main__':
     parser.add_argument('--fd', type=int, required=True)
     parser.add_argument('--directory', required=True)
     parser.add_argument('--strict', action='store_true')
+    parser.add_argument('--input-required', action='store_true')
     args = parser.parse_args()
-    asyncio.run(serve(args.fd, args.directory, args.strict))
+    asyncio.run(serve(args.fd, args.directory, args.strict, args.input_required))

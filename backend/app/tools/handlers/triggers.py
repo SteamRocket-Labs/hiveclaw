@@ -5,6 +5,7 @@ from __future__ import annotations
 import uuid
 
 from app.tools.decorator import RESULT_CHARS_UNLIMITED, ToolMeta, tool
+from app.tools.runtime import ToolExecutionRequest
 
 
 # -- set_trigger --------------------------------------------------------------
@@ -268,14 +269,10 @@ async def cancel_trigger(
         icon="\U0001f4cb",
         read_only=True,
         parallel_safe=True,
-        adapter="agent_only",
+        adapter="request",
     )
 )
-async def list_triggers(
-    agent_id: uuid.UUID,
-    *,
-    user_id: uuid.UUID | None = None,
-) -> str:
+async def list_triggers(request: ToolExecutionRequest) -> str:
     from app.services.agent_tools import _handle_list_triggers
 
-    return await _handle_list_triggers(agent_id, user_id=user_id)
+    return await _handle_list_triggers(request.context.agent_id, user_id=request.context.user_id, runtime_request=request)

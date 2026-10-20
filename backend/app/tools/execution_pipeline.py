@@ -997,6 +997,10 @@ async def _execute_tool(state: _ToolExecutionState) -> Any:
                     from app.services.native_trigger_context import revalidate_native_trigger_context
 
                     await revalidate_native_trigger_context(db, task=task, frame=frame, effect="tool_execution")
+                    from app.services.trigger_read_sources import revalidate_native_trigger_tool_sources
+
+                    await revalidate_native_trigger_tool_sources(db, task=task,
+                        tool_call_id=state.tool_call_id, tool_name=request.tool_name)
         except (HTTPException, ExecutionAuthorityUnavailable) as exc:
             reason = (exc.code if isinstance(exc, ExecutionAuthorityUnavailable) else
                 exc.detail.get("code", "native_trigger_authority_unavailable") if isinstance(exc.detail, dict) else

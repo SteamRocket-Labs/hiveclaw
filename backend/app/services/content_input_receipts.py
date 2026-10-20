@@ -130,6 +130,11 @@ async def _validate_input_dependency_batch(db, tenant_id: uuid.UUID, dependencie
 
             await validate_remote_dependency(db, tenant_id, dependency, user=user, runtime_request=runtime_request)
             continue
+        if dependency["source_kind"] == "trigger_read":
+            from app.services.trigger_read_sources import validate_trigger_read
+
+            await validate_trigger_read(db, tenant_id, dependency, user=user, runtime_request=runtime_request)
+            continue
         if dependency["source_kind"] == "trigger_write":
             from app.services.trigger_context_sources import validate_trigger_write
 
@@ -560,19 +565,19 @@ async def _validate_session_dependency(db, tenant_id, dependency, *, user, runti
             if proof is None or reader is None or proof["reader_id"] != str(reader.id):
                 raise ContentInputReceiptError("content_source_access_denied",
                     "The original Feishu result or its connection is no longer authorized for this reader.", 403)
-    if session.audience_kind == "group" and model is SessionToolInvocation:
+    if model is SessionToolInvocation and (session.audience_kind == "group" or source.tool_name == "list_triggers"):
         from app.services.session_model_inputs import _origin_dependencies
 
         key = (dependency["source_id"], dependency["source_version"])
         active = _ACTIVE_GROUP_TOOL_SOURCES.get()
         if key in active:
-            raise ContentInputReceiptError("content_source_unavailable", "The group tool source has a cyclic dependency.", 503)
+            raise ContentInputReceiptError("content_source_unavailable", "The tool source has a cyclic dependency.", 503)
         token = _ACTIVE_GROUP_TOOL_SOURCES.set(active | {key})
         try:
             sources, complete = await _origin_dependencies(db, tenant_id=tenant_id, agent_id=session.agent_id,
                 ref=f"session-tool-result:{source.id}")
             if not complete:
-                raise ContentInputReceiptError("content_source_unavailable", "The group tool source lacks its complete receipt.", 503)
+                raise ContentInputReceiptError("content_source_unavailable", "The tool source lacks its complete receipt.", 503)
             await _validate_input_dependencies(db, tenant_id, [item for item in sources if item != dependency], user=user,
                 runtime_request=runtime_request, active_workspace_receipts=active_workspace_receipts)
         finally:

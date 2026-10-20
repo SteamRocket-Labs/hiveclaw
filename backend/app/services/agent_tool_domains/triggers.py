@@ -1091,6 +1091,7 @@ async def _handle_list_triggers(
     agent_id: uuid.UUID,
     *,
     user_id: uuid.UUID | None = None,
+    runtime_request=None,
 ) -> str:
     """List all active triggers for the agent."""
     import app.services.autonomous_audit as autonomous_audit
@@ -1134,52 +1135,68 @@ async def _handle_list_triggers(
                 agent_access=(agent, "use"),
             )
             triggers = [trigger for trigger, _decision in authorized]
+            sources, unavailable = [], []
+            if runtime_request is not None:
+                from app.services.trigger_read_sources import readable_trigger_definitions
 
-        lines = []
-        if not triggers:
-            lines.append("No triggers found. Use set_trigger to create one.")
-        else:
-            lines.extend(
-                [
-                    "| Name | Type | Config | Reason | Status | Fires |",
-                    "|------|------|--------|--------|--------|-------|",
-                ]
-            )
-        for t in triggers:
-            status = "✅ active" if t.is_enabled else "⏸ disabled"
-            config_str = str(t.config)
-            reason_str = t.reason if t.reason else ""
-            lines.append(f"| {t.name} | {t.type} | {config_str} | {reason_str} | {status} | {t.fire_count} |")
+                triggers, sources, unavailable = await readable_trigger_definitions(db, triggers=triggers, request=runtime_request)
 
-        if agent is not None:
-            report = autonomous_audit.audit_agent_autonomy_snapshot(
-                agent=agent,
-                triggers=list(triggers),
-            )
-            findings = report.get("findings", [])
-            if findings:
+            lines = []
+            if not triggers:
+                lines.append("No triggers found. Use set_trigger to create one.")
+            else:
                 lines.extend(
                     [
-                        "",
-                        "## Trigger Diagnostics",
-                        "| Severity | Category | Trigger | Recommendation |",
-                        "|----------|----------|---------|----------------|",
+                        "| Name | Type | Config | Reason | Status | Fires |",
+                        "|------|------|--------|--------|--------|-------|",
                     ]
                 )
-                trigger_names_by_id = {str(t.id): t.name for t in triggers}
-                for finding in findings:
-                    trigger_id = finding.get("trigger_id")
-                    trigger_name = trigger_names_by_id.get(str(trigger_id), "") if trigger_id else ""
-                    lines.append(
-                        "| {severity} | {category} | {trigger} | {recommendation} |".format(
-                            severity=finding.get("severity", ""),
-                            category=finding.get("category", ""),
-                            trigger=trigger_name,
-                            recommendation=str(finding.get("recommendation", "")).replace("|", "/"),
-                        )
-                    )
+            for t in triggers:
+                status = "✅ active" if t.is_enabled else "⏸ disabled"
+                config_str = str(t.config)
+                reason_str = t.reason if t.reason else ""
+                lines.append(f"| {t.name} | {t.type} | {config_str} | {reason_str} | {status} | {t.fire_count} |")
 
-        return "\n".join(lines)
+            for item in unavailable:
+                lines.append("Trigger source " + item["resource_id"] + " is " + item["status"] + " (" + item["code"]
+                    + "). Restore source access or revise this definition. Other definitions remain available.")
+
+            if agent is not None:
+                report = autonomous_audit.audit_agent_autonomy_snapshot(
+                    agent=agent,
+                    triggers=list(triggers),
+                )
+                findings = report.get("findings", [])
+                if findings:
+                    lines.extend(
+                        [
+                            "",
+                            "## Trigger Diagnostics",
+                            "| Severity | Category | Trigger | Recommendation |",
+                            "|----------|----------|---------|----------------|",
+                        ]
+                    )
+                    trigger_names_by_id = {str(t.id): t.name for t in triggers}
+                    for finding in findings:
+                        trigger_id = finding.get("trigger_id")
+                        trigger_name = trigger_names_by_id.get(str(trigger_id), "") if trigger_id else ""
+                        lines.append(
+                            "| {severity} | {category} | {trigger} | {recommendation} |".format(
+                                severity=finding.get("severity", ""),
+                                category=finding.get("category", ""),
+                                trigger=trigger_name,
+                                recommendation=str(finding.get("recommendation", "")).replace("|", "/"),
+                            )
+                        )
+
+            content = "\n".join(lines)
+            if runtime_request is not None:
+                from app.services.trigger_read_sources import record_trigger_read
+
+                await record_trigger_read(db, request=runtime_request, sources=sources, unavailable=unavailable,
+                    triggers=triggers, content=content)
+            return content
 
     except Exception as e:
-        return _trigger_error("list_triggers", "operation_failed", f"Failed to list triggers: {e}", retryable=True)
+        message = "Trigger sources are temporarily unavailable. Retry after source recovery." if runtime_request is not None else f"Failed to list triggers: {e}"
+        return _trigger_error("list_triggers", "operation_failed", message, retryable=True)

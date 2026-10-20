@@ -617,6 +617,10 @@ async def prepare_model_request(
 
     await validate_shared_group_model_inputs(db, tenant_id=tenant_id, agent_id=agent_id, session_id=session_id,
         run_id=run_id, input_bindings=input_bindings)
+    from app.services.trigger_read_sources import validate_native_trigger_model_sources
+
+    await validate_native_trigger_model_sources(db, task=await db.get(RuntimeTask, run_id),
+        dependencies=input_bindings["dependencies"], effect="model_request")
     snapshot = {
         "provider": provider,
         "model": model,

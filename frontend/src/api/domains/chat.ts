@@ -189,7 +189,7 @@ export interface CreateSessionRunInput extends StartSessionRunInput {
 
 export interface CreateSessionRunResponse {
   session: ChatSession;
-  run: SessionRun;
+  run: SessionStartResponse;
 }
 
 export interface SessionHumanInputReceipt {

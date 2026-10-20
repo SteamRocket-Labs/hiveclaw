@@ -5369,6 +5369,11 @@
     "limitsHint": "Enter each limit that needs an increase. Leave other limits blank."
   },
   "teamTasks": {
+    "openStartedWork": "Open submitted work",
+    "workBoundary": "Start a new private work with this reviewed shared goal. Previous execution keeps its current state; private conversations, results and permissions stay with their original owners.",
+    "instructions": "Your instructions",
+    "startOwnWork": "Start in my own work",
+    "workUnavailable": "The goal or your access changed. Refresh and review the current shared task before starting.",
     "updateShared": "Review and update shared details",
     "share": "Share task with a team",
     "makePrivate": "Make private and return responsibility to the creator",

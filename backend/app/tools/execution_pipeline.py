@@ -953,6 +953,24 @@ async def _execute_tool(state: _ToolExecutionState) -> Any:
     request, ports, service = state.request, state.ports, state.service
     timeout_seconds = tool_execution_policy(request.tool_name).timeout_seconds
     await ports.renew_runtime_lease()
+    if state.runtime_context.runtime_task_id:
+        import uuid
+
+        from app.database import tenant_scoped_session
+        from app.kernel.contracts import ExecutionAuthorityUnavailable
+        from app.services.team_task_context import revalidate_tool_sources
+
+        try:
+            async with tenant_scoped_session(state.runtime_context.tenant_id, require_tenant=True) as db:
+                await revalidate_tool_sources(db, task_id=uuid.UUID(str(state.runtime_context.runtime_task_id)),
+                    tool_call_id=state.tool_call_id, tool_name=request.tool_name)
+        except ExecutionAuthorityUnavailable as exc:
+            _record_lifecycle(state, "blocked", exc.code)
+            _record_final_decision(state, outcome=ports.decision_outcome_type.DENY, reasons=(exc.code,))
+            return ports.render_tool_error(tool_name=request.tool_name, error_class="auth_or_permission",
+                message="The selected shared goal is no longer authorized.", provider="team_task_source", retryable=False,
+                actionable_hint="Restore team access or review a currently shared goal.",
+                extra={"outcome": exc.status, "reason_code": exc.code})
     if getattr(state.runtime_context, 'machine_credential_id', None) is not None:
         from fastapi import HTTPException
         from app.database import tenant_scoped_session

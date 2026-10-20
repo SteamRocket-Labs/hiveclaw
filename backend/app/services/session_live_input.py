@@ -198,6 +198,16 @@ async def submit_live_human_input(
         file_name=file_name,
         role=role,
     )
+    from app.services.team_task_context import validate_selection as validate_team_task_selection
+    from app.services.content_input_receipts import ContentInputReceiptError
+
+    try:
+        await validate_team_task_selection(db, session=session, user=user, parts=content_parts,
+            allowed=allow_project_selection and role == "user" and a2a_peer_agent_id is None and runtime_result_page_id is None)
+    except ContentInputReceiptError as exc:
+        from fastapi import HTTPException
+
+        raise HTTPException(exc.status_code, detail={"code": exc.code, "message": str(exc)}) from exc
     from app.services.project_context import ORIGIN_KEY, references, selection_origin, validate_selection
     from app.services.content_input_receipts import ContentInputReceiptError
 

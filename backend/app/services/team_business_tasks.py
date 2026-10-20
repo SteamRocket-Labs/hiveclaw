@@ -28,6 +28,7 @@ async def task_team_projection(db, task, *, can_handover=False):
         AuditLog.details["command"]["business_team_id"].astext == str(task.business_team_id))
         .order_by(AuditLog.created_at.desc(), AuditLog.id.desc()).limit(1)) if task.business_team_id else None
     shared = (disclosure.details.get("shared_task") or {}) if disclosure else {}
+    from app.services.team_task_context import work_context
     agent = await db.get(Agent, task.agent_id)
     responsible_id = task.responsible_user_id or task.created_by
     users = (await db.scalars(select(User).where(User.tenant_id == task.tenant_id,
@@ -38,7 +39,7 @@ async def task_team_projection(db, task, *, can_handover=False):
         "description": shared.get("description"), "status": task.status, "priority": shared.get("priority"), "due_date": shared.get("due_date"),
         "created_by_name": names.get(task.created_by), "responsible_user_id": responsible_id,
         "responsible_name": names.get(responsible_id), "updated_at": task.updated_at, "can_handover": can_handover,
-        "disclosure_available": bool(disclosure and "title" in shared)}
+        "disclosure_available": bool(disclosure and "title" in shared), "work_context": work_context(task, disclosure)}
 
 
 async def list_team_tasks(db, *, user, team_id, limit, offset):

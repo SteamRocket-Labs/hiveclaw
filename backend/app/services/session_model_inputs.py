@@ -360,7 +360,13 @@ async def _origin_dependencies(db, *, tenant_id, agent_id, ref):
             scheduled, complete = await native_trigger_input_sources(db, tenant_id=tenant_id, agent_id=agent_id, row=row, command=command)
         except ContentInputReceiptError:
             scheduled, complete = [], False
-        return [{"source_kind": "session_command", "source_id": str(command.id), "source_version": command.request_hash}, *scheduled], complete
+        from app.services.team_task_context import input_sources
+
+        try:
+            shared = await input_sources(db, tenant_id=tenant_id, row=row)
+        except ContentInputReceiptError:
+            shared, complete = [], False
+        return [{"source_kind": "session_command", "source_id": str(command.id), "source_version": command.request_hash}, *scheduled, *shared], complete
     if kind == "remote-chat-result":
         from app.models.runtime_result import RuntimeResultObject
 

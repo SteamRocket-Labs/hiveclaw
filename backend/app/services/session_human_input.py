@@ -186,6 +186,11 @@ async def revise_unbound_human_input(
         raise InputRevisionConflict(current_revision=row.revision)
     if not isinstance(content_parts, list):
         raise ValueError("content_parts must be an array")
+    from app.models.chat_session import ChatSession
+    from app.services.team_task_context import validate_selection as validate_team_task_selection
+
+    await validate_team_task_selection(db, session=await db.get(ChatSession, row.session_id), user=user,
+        parts=content_parts, allowed=allow_project_selection)
     from app.services.project_context import ORIGIN_KEY, references, selection_origin, validate_selection
     from app.services.content_input_receipts import ContentInputReceiptError
 
@@ -988,7 +993,8 @@ def input_parts_to_runtime_messages(rows: Iterable[SessionTurnInput], *, answer_
             content: Any = (answer_projections or {}).get(str(row.id), parts[0]["text"])
         else:
             content = parts
-        if has_project or any(isinstance(part, dict) and part.get("type") == "attachment_ref" for part in parts):
+        if has_project or any(isinstance(part, dict) and (part.get("type") == "attachment_ref"
+            or "team_task_source" in part) for part in parts):
             from app.services.session_user_checkpoint import render_human_input_content
 
             content = render_human_input_content(parts)

@@ -104,6 +104,11 @@ async def _validate_input_dependency_batch(db, tenant_id: uuid.UUID, dependencie
             await _validate_input_dependencies(db, tenant_id, [dependency], user=published_user,
                 active_workspace_receipts=active_workspace_receipts)
             continue
+        if dependency["source_kind"] == "team_task_input":
+            from app.services.team_task_context import validate_source
+
+            await validate_source(db, tenant_id, dependency, user=user, runtime_request=runtime_request)
+            continue
         if dependency["source_kind"] == "project_resource":
             from app.services.project_context import validate_project_dependency
 
@@ -543,6 +548,14 @@ async def _validate_session_dependency(db, tenant_id, dependency, *, user, runti
             and source.principal_type == "user" and isinstance(context, ToolExecutionContext)
             and source.principal_id == context.user_id
             and SESSION_COMMAND_AUTHORITY_STAMP_KEY not in (source.target_json or {})))
+    if model is SessionCommand:
+        from app.models.session_v2 import SessionTurnInput
+        from app.services.team_task_context import input_sources
+
+        input_row = await db.scalar(select(SessionTurnInput).where(SessionTurnInput.command_id == source.id,
+            SessionTurnInput.tenant_id == tenant_id, SessionTurnInput.session_id == session.id))
+        shared = await input_sources(db, tenant_id=tenant_id, row=input_row) if input_row else []
+        await _validate_input_dependencies(db, tenant_id, shared, user=user, runtime_request=runtime_request)
     if model is SessionCommand and ((source.target_json or {}).get("runtime_metadata") or {}).get("source") == "loop_same_session":
         from app.models.session_v2 import SessionTurnInput
         from app.services.trigger_instruction_sources import native_trigger_input_sources

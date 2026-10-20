@@ -621,6 +621,10 @@ async def prepare_model_request(
 
     await validate_native_trigger_model_sources(db, task=await db.get(RuntimeTask, run_id),
         dependencies=input_bindings["dependencies"], effect="model_request")
+    from app.services.team_task_context import validate_model_sources
+
+    await validate_model_sources(db, task=await db.get(RuntimeTask, run_id),
+        dependencies=input_bindings["dependencies"], effect="model_request")
     snapshot = {
         "provider": provider,
         "model": model,

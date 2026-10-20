@@ -20,13 +20,15 @@ export function parseUserAttachment(msg: AgentChatMessage, agentId?: string): Ag
                 ...(typeof attachment?.size === 'number' ? { size: attachment.size } : {}),
                 ...(typeof attachment?.content_type === 'string' ? { mimeType: attachment.content_type } : {}), source: 'human_input' }];
         });
-        if (inputAttachments.length || inputAttachmentFailures.length) {
+        const sharedGoal = records.some(part => part.type === 'text' && part.team_task_source && typeof part.team_task_source === 'object');
+        if (inputAttachments.length || inputAttachmentFailures.length || sharedGoal) {
             const plain = records.length === parts.length && records.every(part => ['text', 'attachment_ref'].includes(String(part.type)))
                 && inputAttachments.length + inputAttachmentFailures.length === records.filter(part => part.type === 'attachment_ref').length;
             return { ...msg, fileName: undefined, imageUrl: undefined, inputAttachments,
                 inputAttachmentFailures: inputAttachmentFailures.length ? inputAttachmentFailures : undefined,
                 content: plain ? records.filter(part => part.type === 'text')
-                .map(part => typeof part.text === 'string' ? part.text : typeof part.content === 'string' ? part.content : '').join('\n') : msg.content };
+                .map(part => sharedGoal && typeof part.display_content === 'string' ? part.display_content
+                    : typeof part.text === 'string' ? part.text : typeof part.content === 'string' ? part.content : '').join('\n') : msg.content };
         }
     }
     let parsed = { ...msg };

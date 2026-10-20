@@ -13,6 +13,7 @@ export interface SharedTeamTask {
   created_by_name: string | null;
   updated_at: string;
   can_handover: boolean;
+  work_context: { type: 'text'; text: string; display_content: string; team_task_source: Record<string, string> } | null;
 }
 export interface TaskResponsibilityChange {
   request_id: string;

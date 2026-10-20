@@ -2,6 +2,21 @@ import { expect, it } from 'vitest';
 import { parseUserAttachment } from './chatAttachments';
 import type { AgentChatMessage } from './chatRuntime';
 
+it('renders a selected shared goal without exposing its internal source envelope', () => {
+  const parts = [{ type: 'text', text: 'Prepare a draft.' }, { type: 'text', text: 'Canonical machine source data',
+    display_content: 'Reviewed goal\nPrepare the comparison', team_task_source: { disclosure_id: 'private-source-envelope' } }];
+  const message: AgentChatMessage = { role: 'user', content: JSON.stringify(parts), sessionItem: {
+    id: 'input', kind: 'human_input', scope: { level: 'session', session_id: 'work', thread_id: 'work' },
+    lifecycle: 'accepted', terminal: false, revision: 0, content: JSON.stringify(parts), payload: { content_parts: parts },
+    actor: { type: 'user', id: 'owner' }, visibility: { audience: 'private' }, occurredAt: '2026-10-20T00:00:00Z',
+    first_sequence: 1, last_sequence: 1,
+  } };
+  const parsed = parseUserAttachment(message, 'employee');
+  expect(parsed.content).toBe('Prepare a draft.\nReviewed goal\nPrepare the comparison');
+  expect(parsed.sessionItem).toBe(message.sessionItem);
+  expect(message.content).toContain('private-source-envelope');
+});
+
 it('displays canonical attachment refs without reinterpreting filename bytes as markers', () => {
   const parts = [{ type: 'text', text: 'Use both source files.' },
     { type: 'attachment_ref', attachment: { path: 'workspace/uploads/dingtalk/receipt/amount]report.csv', name: 'amount]report.csv', size: 12 } },

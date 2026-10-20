@@ -11,7 +11,7 @@ from typing import Any, Literal, Optional
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import or_, select, func
+from sqlalchemy import or_, select, func, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.permissions import (
@@ -1603,23 +1603,32 @@ async def create_session_run(
     agent, access_level = await check_agent_access(db, current_user, agent_id)
     reject_non_executing_agent_access(access_level)
 
+    if body.input_id is None and body.idempotency_key:
+        body = body.model_copy(update={"input_id": uuid.uuid5(current_user.id,
+            f"first-input-key:{agent_id}:{body.idempotency_key}")})
+
     now = datetime.now(tz.utc)
-    session = ChatSession(
-        id=uuid.uuid4(),
-        agent_id=agent_id,
-        tenant_id=getattr(agent, "tenant_id", getattr(current_user, "tenant_id", None)),
-        user_id=current_user.id,
-        title=body.title or f"Session {now.strftime('%m-%d %H:%M')}",
-        created_at=now,
-        source_channel="web",
-        session_kind="human_chat",
-        actor_type="user",
-        runtime_source="web_chat",
-        visibility_scope="direct_user",
-        listed_surface="chat",
-    )
-    db.add(session)
-    await db.flush()
+    session_id = uuid.uuid5(current_user.id, f"first-input:{agent_id}:{body.input_id}") if body.input_id else uuid.uuid4()
+    # The durable input key must cover creation too: an ambiguous HTTP result
+    # may be retried without creating a second private work and first dispatch.
+    if body.input_id:
+        await db.execute(text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
+            {"key": f"first-input-session:{session_id}"})
+    session = await db.get(ChatSession, session_id, populate_existing=True) if body.input_id else None
+    tenant_id = getattr(agent, "tenant_id", getattr(current_user, "tenant_id", None))
+    if session is not None and (session.agent_id != agent_id or session.tenant_id != tenant_id
+        or session.user_id != current_user.id or session.session_kind != "human_chat"
+        or session.audience_kind not in {None, "private"}):
+        raise HTTPException(409, detail={"code": "first_input_session_conflict"})
+    if session is None:
+        session = ChatSession(
+            id=session_id, agent_id=agent_id, tenant_id=tenant_id, user_id=current_user.id,
+            title=body.title or f"Session {now.strftime('%m-%d %H:%M')}", created_at=now,
+            source_channel="web", session_kind="human_chat", actor_type="user", runtime_source="web_chat",
+            visibility_scope="direct_user", listed_surface="chat",
+        )
+        db.add(session)
+        await db.flush()
     permission_mode = (
         body.permission_mode
         or str(getattr(agent, "default_session_permission_mode", "") or "").strip()
@@ -1646,7 +1655,7 @@ async def create_session_run(
             parts=body.parts,
             allow_project_selection=True,
         )
-        run = dict(receipt.get("run") or {})
+        run = dict(receipt.get("run") or receipt)
     except IdempotencyConflict as exc:
         await db.rollback()
         raise HTTPException(
@@ -1658,7 +1667,10 @@ async def create_session_run(
         raise HTTPException(status_code=409, detail=exc.http_detail()) from exc
 
     await db.refresh(session)
-    return CreateSessionRunOut(session=_session_out(session, current_user, message_count=1), run=run)
+    result = CreateSessionRunOut(session=_session_out(session, current_user, message_count=1), run=run)
+    if not receipt.get("run"):
+        return JSONResponse(status_code=202, content=result.model_dump(mode="json"))
+    return result
 
 
 @router.post("/{agent_id}/sessions/{session_id}/runs", status_code=201)

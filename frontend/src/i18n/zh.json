@@ -5369,6 +5369,11 @@
     "limitsHint": "填写每项需要增加的上限，其他项留空。"
   },
   "teamTasks": {
+    "openStartedWork": "打开已提交的工作",
+    "workBoundary": "以已审阅的共享目标启动新的私有工作。原执行保持当前状态；私有对话、结果和权限仍归原持有人。",
+    "instructions": "你的工作要求",
+    "startOwnWork": "在我自己的工作中启动",
+    "workUnavailable": "目标或你的访问权限已变更。请刷新并审阅当前共享任务后再启动。",
     "updateShared": "审阅并更新共享资料",
     "share": "将任务共享给团队",
     "makePrivate": "改为私有并将责任交还创建人",

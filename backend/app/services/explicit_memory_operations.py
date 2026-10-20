@@ -18,7 +18,7 @@ from app.services.agent_asset_transaction import AgentAssetTransaction
 from app.services.content_input_receipts import ContentInputReceiptError, validate_runtime_input_dependencies
 from app.services.explicit_memory_authority import (
     AUTHORITY_SCHEMA, _actor, _authorize_entry, _prepared_entry, _result, _writer_input,
-    latest_memory_receipt, memory_effect_actor, memory_ref, source_dependency,
+    audience_for_session, authorize_memory_audience, latest_memory_receipt, memory_effect_actor, memory_ref, source_dependency,
 )
 from app.services.session_model_inputs import _unique_dependencies
 
@@ -56,7 +56,10 @@ async def _reserve_target(db, request, row, *, root, actor, dependencies):
     target_id = request.arguments.get("memory_id") or request.arguments.get("id")
     await _lock(db, row.tenant_id, request.context.agent_id, target_id)
     previous = await latest_memory_receipt(db, row.tenant_id, request.context.agent_id, target_id)
-    _owned(previous, tenant_id=row.tenant_id, agent_id=request.context.agent_id, actor_id=actor.id)
+    if previous is None:
+        raise ContentInputReceiptError("explicit_memory_source_unverified", "The target source needs reconciliation.", 403)
+    await authorize_memory_audience(db, tenant_id=row.tenant_id, agent_id=request.context.agent_id,
+        request=request, authority=previous.authority_json, mutation=True)
     privacy_withdrawal = a["operation_kind"] == "retire" and request.arguments.get("reason") == "privacy"
     allowed_states = {"active", "retired"} if privacy_withdrawal else {"active"}
     if previous.authority_json.get("state") not in allowed_states:
@@ -127,7 +130,7 @@ async def _prepare_operation(request, root, session_factory):
         entry_id = "explicit_" + uuid.uuid5(invocation.id, "explicit-memory-entry").hex
         authority = {"schema": AUTHORITY_SCHEMA, "state": "prepared" if kind == "retire" else "reviewing",
             "operation_kind": kind, "tenant_id": str(tenant_id), "agent_id": str(request.context.agent_id),
-            "owner_user_id": str(actor.id), "audience_kind": "private", "source_session_id": str(session.id),
+            "owner_user_id": str(actor.id), **audience_for_session(session), "source_session_id": str(session.id),
             "invocation_id": str(invocation.id), "model_result_id": str(model.id),
             "model_request_hash": model.model_request_hash, "args_hash": args_hash, "entry_id": entry_id}
         row = ContentInputReceipt(id=operation_id, tenant_id=tenant_id, carrier_kind="explicit_memory",
@@ -197,6 +200,8 @@ async def _resume_operation(request, operation_id, root, session_factory):
         _owned(row, tenant_id=tenant_id, agent_id=request.context.agent_id, actor_id=actor.id)
         a = deepcopy(row.authority_json)
         if a["state"] in {"held", "rejected"}:
+            await authorize_memory_audience(db, tenant_id=tenant_id, agent_id=request.context.agent_id,
+                request=request, authority=a)
             result = a["review_result"]
             return ExplicitMemoryOverlayResult(status=a["state"], category=result["category"],
                 sensitivity=result["sensitivity"], reason=result["reason"])
@@ -213,6 +218,8 @@ async def _resume_operation(request, operation_id, root, session_factory):
             raise MemoryOperationError("explicit_memory_review_unknown",
                 "The review outcome is unresolved. Cancel this write or inspect its status; do not repeat the review.", row.id)
         await memory_effect_actor(db, tenant_id, request)
+        await authorize_memory_audience(db, tenant_id=tenant_id, agent_id=request.context.agent_id,
+            request=request, authority=a)
         if a["operation_kind"] != "retire":
             await validate_runtime_input_dependencies(db, request, row.dependencies_json)
         if a.get("target"):
@@ -235,6 +242,8 @@ async def _resume_operation(request, operation_id, root, session_factory):
         if row.authority_json["state"] != "prepared":
             raise MemoryOperationError("explicit_memory_operation_changed", "The operation changed before activation.", operation_id)
         a = deepcopy(row.authority_json)
+        await authorize_memory_audience(db, tenant_id=tenant_id, agent_id=request.context.agent_id,
+            request=request, authority=a)
         entry = None
         if a["operation_kind"] != "retire":
             await validate_runtime_input_dependencies(db, request, row.dependencies_json)

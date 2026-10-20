@@ -108,6 +108,7 @@ class MemoryRetriever:
         rerank_model_config: dict | None = None,
         retrieval_profile: ContextBudget | None = None,
         activation_context: ActivationContext | None = None,
+        runtime_task_id: str | None = None,
     ) -> list[MemoryItem]:
         """Gather complete authorized evidence, then let the model select semantics.
 
@@ -129,7 +130,7 @@ class MemoryRetriever:
         items = await self._filter_episodic_sources(items, agent_id=agent_id, tenant_id=tenant_id,
             session_id=session_id, activation_context=activation_context)
         items = await self._filter_explicit_sources(items, agent_id=agent_id, tenant_id=tenant_id,
-            session_id=session_id, activation_context=activation_context)
+            session_id=session_id, activation_context=activation_context, runtime_task_id=runtime_task_id)
         selected = await self._select_candidates(
             items,
             agent_id=agent_id,
@@ -141,9 +142,9 @@ class MemoryRetriever:
         selected = await self._filter_episodic_sources(selected, agent_id=agent_id, tenant_id=tenant_id,
             session_id=session_id, activation_context=activation_context)
         return await self._filter_explicit_sources(selected, agent_id=agent_id, tenant_id=tenant_id,
-            session_id=session_id, activation_context=activation_context)
+            session_id=session_id, activation_context=activation_context, runtime_task_id=runtime_task_id)
 
-    async def _filter_explicit_sources(self, items, *, agent_id, tenant_id, session_id, activation_context):
+    async def _filter_explicit_sources(self, items, *, agent_id, tenant_id, session_id, activation_context, runtime_task_id=None):
         from app.memory.explicit_overlay import load_explicit_overlay_entries_by_ids
         from app.services.explicit_memory_authority import authorized_explicit_entries, source_dependency
         from app.services.personal_knowledge_access import AgentRuntimePrincipal
@@ -156,12 +157,13 @@ class MemoryRetriever:
         try:
             requester = activation_context.principal_stack.current_user if activation_context else None
             principal = AgentRuntimePrincipal(agent_id=agent_id, requester_user_id=uuid.UUID(str(requester.id)),
-                session_id=str(session_id), purpose="interactive_session")
+                session_id=str(session_id), runtime_task_id=runtime_task_id, purpose="interactive_session")
             entries = load_explicit_overlay_entries_by_ids(self.data_root, agent_id,
                 [item.metadata["entry_id"] for item in explicit])
+            issues = []
             allowed = {entry.entry_id: (entry, receipt) for entry, receipt in await authorized_explicit_entries(
-                tenant_id=uuid.UUID(str(tenant_id)), agent_id=agent_id, request=principal, entries=entries)}
-            self.last_explicit_source_status = "ready"
+                tenant_id=uuid.UUID(str(tenant_id)), agent_id=agent_id, request=principal, entries=entries, issue_observer=issues)}
+            self.last_explicit_source_status = "partial" if issues else "ready"
         except Exception as exc:
             logger.warning("Explicit memory source authority unavailable: %s", type(exc).__name__)
         result = []

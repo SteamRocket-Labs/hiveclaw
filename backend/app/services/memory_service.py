@@ -111,6 +111,7 @@ async def build_memory_context(
     *,
     session_id: str | None = None,
     turn_id: str | None = None,
+    runtime_task_id: str | None = None,
     query: str = "",
     context_window_tokens: int | None = None,
     budget_profile: ContextBudget | None = None,
@@ -131,6 +132,7 @@ async def build_memory_context(
         tenant_id,
         session_id=session_id,
         turn_id=turn_id,
+        runtime_task_id=runtime_task_id,
         query=query,
         context_window_tokens=context_window_tokens,
         budget_profile=budget_profile,
@@ -147,6 +149,7 @@ async def _build_memory_context_result(
     *,
     session_id: str | None,
     turn_id: str | None,
+    runtime_task_id: str | None,
     query: str,
     context_window_tokens: int | None,
     budget_profile: ContextBudget | None,
@@ -307,6 +310,8 @@ async def _build_memory_context_result(
                 retrieve_kwargs["retrieval_profile"] = retrieval_profile
             if "activation_context" in retrieve_params and activation_context:
                 retrieve_kwargs["activation_context"] = activation_context
+            if "runtime_task_id" in retrieve_params:
+                retrieve_kwargs["runtime_task_id"] = runtime_task_id
             items = await retriever.retrieve(
                 agent_id,
                 query,
@@ -337,9 +342,12 @@ async def _build_memory_context_result(
             from app.services.personal_knowledge_access import AgentRuntimePrincipal
 
             principal = AgentRuntimePrincipal(agent_id=agent_id, requester_user_id=uuid.UUID(str(current_user_id)),
-                session_id=str(session_id), purpose="interactive_session")
+                session_id=str(session_id), runtime_task_id=runtime_task_id, purpose="interactive_session")
+            issues = []
             authorized = await authorized_explicit_entries(tenant_id=tenant_id, agent_id=agent_id, request=principal,
-                entries=load_explicit_overlay_entries(data_root, agent_id))
+                entries=load_explicit_overlay_entries(data_root, agent_id), issue_observer=issues)
+            if issues or getattr(retriever, "last_explicit_source_status", "ready") != "ready":
+                degraded_components.append("explicit_memory_source_authority")
             resident = with_explicit_memory_index(resident, [entry for entry, _receipt in authorized],
                 {entry.entry_id: (source_dependency(receipt),) for entry, receipt in authorized})
         except Exception as exc:

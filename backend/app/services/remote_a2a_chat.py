@@ -201,7 +201,8 @@ async def prepare_send(db, *, task, state, agent, endpoint):
             dependencies.append({"source_kind": "agent_context_resource", "source_id": f"{agent.id}\n{ref}",
                 "source_version": resource.sha256})
     memory = await memory_service.build_memory_context(agent.id, task.tenant_id, session_id=str(session_id),
-        turn_id=task.metadata_json["turn_id"], query="\n".join(str(message["content"]) for message in current_messages),
+        turn_id=task.metadata_json["turn_id"], runtime_task_id=str(task.id),
+        query="\n".join(str(message["content"]) for message in current_messages),
         current_user_id=task.root_user_id,
         return_result=True)
     if memory.source_unbound or not memory.authority_context_available or not memory.external_effects_available:

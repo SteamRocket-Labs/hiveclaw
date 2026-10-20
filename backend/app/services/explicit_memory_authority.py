@@ -45,10 +45,63 @@ async def _actor(db, tenant_id, request):
 
     principal, actor = await _runtime_input_actor(db, tenant_id, request)
     session = await db.get(ChatSession, uuid.UUID(str(principal.session_id)), populate_existing=True)
-    if getattr(actor, "id", None) is None or session.audience_kind not in {None, "private"}:
+    if getattr(actor, "id", None) is None or session.audience_kind not in {None, "private", "group"}:
         raise ContentInputReceiptError("explicit_memory_scoped_audience_unavailable",
             "This memory operation requires a supported current source audience.")
     return principal, actor, session
+
+
+def audience_for_session(session):
+    if session.audience_kind in {None, "private"}:
+        return {"audience_kind": "private"}
+    if (session.audience_kind == "group" and session.user_id is None and session.external_principal_id is None
+        and session.group_installation_ref and session.group_subject_id and session.source_channel):
+        return {"audience_kind": "group", "group_installation_ref": session.group_installation_ref,
+            "group_subject_id": session.group_subject_id, "source_channel": session.source_channel}
+    raise ContentInputReceiptError("explicit_memory_scoped_audience_unavailable", "The source audience needs reconciliation.")
+
+
+def _same_group(authority, session):
+    return session.audience_kind == "group" and all(authority.get(key) == value
+        for key, value in audience_for_session(session).items())
+
+
+async def authorize_memory_audience(db, *, tenant_id, agent_id, request, authority, mutation=False):
+    """A source audience is independent of creator and operation-recovery ownership."""
+    from fastapi import HTTPException
+    from app.models.chat_session import ChatSession
+    from app.services.shared_group_authority import require_current_group_member
+
+    principal, actor, current = await _actor(db, tenant_id, request)
+    if (authority.get("schema") != AUTHORITY_SCHEMA or authority.get("tenant_id") != str(tenant_id)
+        or authority.get("agent_id") != str(agent_id) or principal.agent_id != agent_id):
+        raise ContentInputReceiptError("explicit_memory_source_unverified", "The memory source binding is unavailable.", 403)
+    if authority.get("audience_kind") == "private":
+        if authority.get("owner_user_id") != str(actor.id) or current.audience_kind not in {None, "private"}:
+            raise ContentInputReceiptError("explicit_memory_source_unverified", "The private memory is not authorized in this work.", 403)
+    elif authority.get("audience_kind") == "group":
+        try:
+            origin = await db.get(ChatSession, uuid.UUID(authority["source_session_id"]), populate_existing=True)
+            if (origin is None or origin.tenant_id != tenant_id or origin.agent_id != agent_id
+                or not _same_group(authority, origin)
+                or (current.audience_kind == "group" and not _same_group(authority, current))
+                or (mutation and not _same_group(authority, current))):
+                raise ContentInputReceiptError("explicit_memory_group_context_mismatch",
+                    "Revise group memory in its original group; private work does not grant group disclosure.", 403)
+            # Even an administrator's Agent run needs actual membership.
+            # Business inspection belongs to the separate browser reader.
+            await require_current_group_member(db, session=origin, user=actor)
+        except HTTPException as exc:
+            detail = exc.detail if isinstance(exc.detail, dict) else {}
+            raise ContentInputReceiptError(detail.get("code", "explicit_memory_group_denied"),
+                "The original group requires current membership and installation access.", exc.status_code) from exc
+        except ContentInputReceiptError:
+            raise
+        except (ValueError, KeyError, TypeError) as exc:
+            raise ContentInputReceiptError("explicit_memory_group_source_unavailable", "The original group binding needs recovery.") from exc
+    else:
+        raise ContentInputReceiptError("explicit_memory_scoped_audience_unavailable", "This memory audience is unsupported.")
+    return principal, actor, current
 
 
 async def memory_effect_actor(db, tenant_id, request):
@@ -97,16 +150,15 @@ async def latest_memory_receipt(db, tenant_id, agent_id, entry_id):
 
 
 async def _authorize_entry(db, *, tenant_id, agent_id, request, entry, receipt, active_receipts=frozenset()):
-    principal, actor, _session = await _actor(db, tenant_id, request)
     authority = receipt.authority_json if receipt is not None else {}
+    await authorize_memory_audience(db, tenant_id=tenant_id, agent_id=agent_id, request=request, authority=authority)
     if (
         receipt is None or receipt.tenant_id != tenant_id or receipt.carrier_kind != "explicit_memory"
         or receipt.carrier_ref != memory_ref(agent_id, entry.entry_id)
         or receipt.content_sha256 != entry.source_sha256
         or authority.get("schema") != AUTHORITY_SCHEMA or authority.get("state") != "active"
         or authority.get("tenant_id") != str(tenant_id) or authority.get("agent_id") != str(agent_id)
-        or principal.agent_id != agent_id or authority.get("owner_user_id") != str(actor.id)
-        or authority.get("audience_kind") != "private" or entry.status != "active"
+        or entry.status != "active"
         or authority.get("metadata") != entry.metadata
     ):
         raise ContentInputReceiptError("explicit_memory_source_unverified",
@@ -118,7 +170,7 @@ async def _authorize_entry(db, *, tenant_id, agent_id, request, entry, receipt, 
     _validate_source_bytes(path, receipt.content_sha256)
     await _validate_input_dependencies(db, tenant_id, receipt.dependencies_json, runtime_request=request,
         active_workspace_receipts=active_receipts | {receipt.id})
-    await _actor(db, tenant_id, request)
+    await authorize_memory_audience(db, tenant_id=tenant_id, agent_id=agent_id, request=request, authority=authority)
     latest = await latest_memory_receipt(db, tenant_id, agent_id, entry.entry_id)
     if latest is None or latest.id != receipt.id or _sha256(latest.authority_json) != version:
         raise ContentInputReceiptError("explicit_memory_source_changed", "The memory authority changed while reading.", 403)
@@ -132,6 +184,7 @@ async def authorized_explicit_entries(*, tenant_id, agent_id, request, entries, 
     async with tenant_scoped_session(tenant_id, session_factory=session_factory) as db:
         _principal, actor, _session = await _actor(db, tenant_id, request)
         actor_id = actor.id
+        current_audience = audience_for_session(_session)
         issues = []
         for entry in entries:
             receipt = None
@@ -143,13 +196,19 @@ async def authorized_explicit_entries(*, tenant_id, agent_id, request, entries, 
                 authority = receipt.authority_json if receipt is not None else {}
                 if (authority.get("owner_user_id") == str(actor_id)
                     and authority.get("tenant_id") == str(tenant_id) and authority.get("agent_id") == str(agent_id)
-                    and authority.get("schema") == AUTHORITY_SCHEMA and authority.get("state") not in {"retired", "revoked"}):
+                    and authority.get("schema") == AUTHORITY_SCHEMA and authority.get("state") not in {"retired", "revoked"}
+                    and (_session.audience_kind in {None, "private"} or _same_group(authority, _session))):
                     issues.append({"memory_id": entry.entry_id, "status": "denied" if exc.status_code == 403 else "unavailable",
                         "code": exc.code})
+                elif (authority.get("schema") == AUTHORITY_SCHEMA and authority.get("audience_kind") == "group"
+                    and exc.status_code >= 500):
+                    issue = {"status": "unavailable", "code": "explicit_memory_group_unavailable"}
+                    if issue not in issues:
+                        issues.append(issue)
                 continue
             allowed.append((entry, receipt))
         _principal, current_actor, _session = await _actor(db, tenant_id, request)
-        if current_actor.id != actor_id:
+        if current_actor.id != actor_id or audience_for_session(_session) != current_audience:
             raise ContentInputReceiptError("explicit_memory_reader_changed", "The current memory reader changed.", 403)
         if issue_observer is not None:
             issue_observer.extend(issues)
@@ -204,14 +263,12 @@ async def validate_explicit_memory_dependency(db, tenant_id, dependency, *, requ
 
 async def authorize_memory_history(db, *, tenant_id, agent_id, entry_id, request, receipt, active_receipts=frozenset()):
     """Historical evidence retains source ACLs; semantic retirement stops new recall."""
-    principal, actor, _session = await _actor(db, tenant_id, request)
     authority = receipt.authority_json
+    await authorize_memory_audience(db, tenant_id=tenant_id, agent_id=agent_id, request=request, authority=authority)
     if (receipt.tenant_id != tenant_id or receipt.carrier_kind != "explicit_memory"
         or receipt.carrier_ref != memory_ref(agent_id, entry_id)
         or authority.get("schema") != AUTHORITY_SCHEMA or authority.get("state") not in {"active", "retired"}
-        or authority.get("tenant_id") != str(tenant_id) or authority.get("agent_id") != str(agent_id)
-        or principal.agent_id != agent_id or authority.get("owner_user_id") != str(actor.id)
-        or authority.get("audience_kind") != "private"):
+        or authority.get("tenant_id") != str(tenant_id) or authority.get("agent_id") != str(agent_id)):
         raise ContentInputReceiptError("explicit_memory_history_denied", "The historical memory source is not authorized.", 403)
     if receipt.id in active_receipts:
         raise ContentInputReceiptError("explicit_memory_source_cycle", "The memory source chain is cyclic.")
@@ -220,7 +277,7 @@ async def authorize_memory_history(db, *, tenant_id, agent_id, entry_id, request
 
     await _validate_input_dependencies(db, tenant_id, receipt.dependencies_json, runtime_request=request,
         active_workspace_receipts=active_receipts | {receipt.id})
-    await _actor(db, tenant_id, request)
+    await authorize_memory_audience(db, tenant_id=tenant_id, agent_id=agent_id, request=request, authority=authority)
     latest = await latest_memory_receipt(db, tenant_id, agent_id, entry_id)
     if (latest is None or latest.authority_json.get("state") == "revoked"
         or (latest.authority_json.get("state") == "prepared" and latest.authority_json.get("planned_state") == "revoked")):
@@ -244,11 +301,13 @@ async def validate_browser_memory_dependency(db, tenant_id, dependency, *, user,
         session = await db.get(ChatSession, uuid.UUID(a["source_session_id"]), populate_existing=True)
         if (receipt.tenant_id != tenant_id or receipt.carrier_kind != "explicit_memory"
             or receipt.content_sha256 != dependency["source_version"] or a.get("schema") != AUTHORITY_SCHEMA
-            or a.get("state") not in {"active", "retired"} or a.get("audience_kind") != "private"
+            or a.get("state") not in {"active", "retired"} or a.get("audience_kind") not in {"private", "group"}
             or a.get("tenant_id") != str(tenant_id) or a.get("agent_id") != str(agent_id)
             or requester is None or not requester.is_active
-            or (a.get("owner_user_id") != str(requester.id) and not is_scoped_business_admin(requester, resource_tenant_id=tenant_id))
-            or session is None or session.tenant_id != tenant_id or session.agent_id != agent_id):
+            or (a.get("audience_kind") == "private" and a.get("owner_user_id") != str(requester.id)
+                and not is_scoped_business_admin(requester, resource_tenant_id=tenant_id))
+            or session is None or session.tenant_id != tenant_id or session.agent_id != agent_id
+            or (a.get("audience_kind") == "group" and not _same_group(a, session))):
             raise ValueError("browser_memory_source_denied")
     except (ValueError, TypeError, AttributeError, KeyError) as exc:
         raise ContentInputReceiptError("explicit_memory_browser_denied", "This memory source is not authorized for this browser reader.", 403) from exc
@@ -261,8 +320,13 @@ async def validate_browser_memory_dependency(db, tenant_id, dependency, *, user,
         active_workspace_receipts=active_receipts | {receipt.id})
     requester = await db.get(User, user.id, populate_existing=True)
     if (requester is None or not requester.is_active
-        or (a.get("owner_user_id") != str(requester.id) and not is_scoped_business_admin(requester, resource_tenant_id=tenant_id))):
+        or (a.get("audience_kind") == "private" and a.get("owner_user_id") != str(requester.id)
+            and not is_scoped_business_admin(requester, resource_tenant_id=tenant_id))):
         raise ContentInputReceiptError("explicit_memory_browser_denied", "The browser source reader changed.", 403)
+    session = await db.get(ChatSession, session.id, populate_existing=True)
+    if a.get("audience_kind") == "group" and (session is None or not _same_group(a, session)):
+        raise ContentInputReceiptError("explicit_memory_group_source_changed", "The original group binding changed.", 403)
+    await _authorize_session_input_source(db, tenant_id, session, user=requester, runtime_request=None)
     latest = await latest_memory_receipt(db, tenant_id, agent_id, entry_id)
     if (latest is None or latest.authority_json.get("state") == "revoked"
         or latest.authority_json.get("planned_state") == "revoked"):

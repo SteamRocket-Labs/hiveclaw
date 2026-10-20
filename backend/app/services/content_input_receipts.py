@@ -626,7 +626,7 @@ async def _authorize_session_input_source(db, tenant_id, session, *, user, runti
 
         try:
             requester = (await _runtime_input_actor(db, tenant_id, runtime_request))[1] if runtime_request is not None else user
-            if is_scoped_business_admin(requester, resource_tenant_id=session.tenant_id):
+            if runtime_request is None and is_scoped_business_admin(requester, resource_tenant_id=session.tenant_id):
                 await authorize_session_action(db, requester, agent_id=session.agent_id, session_id=session.id,
                     action="read_content_input_source")
                 return
@@ -748,7 +748,11 @@ async def _runtime_input_actor(db, tenant_id, request):
             raise ValueError("runtime_agent_tenant_mismatch")
         await check_agent_access(db, requester, principal.agent_id)
         return principal, requester
-    except (HTTPException, ValueError, PermissionError) as exc:
+    except HTTPException as exc:
+        unavailable = exc.status_code >= 500
+        raise ContentInputReceiptError("content_source_authority_unavailable" if unavailable else "content_source_access_denied",
+            "The runtime source reader could not verify current authority.", 503 if unavailable else 403) from exc
+    except (ValueError, PermissionError) as exc:
         raise ContentInputReceiptError("content_source_access_denied", "The runtime source reader is no longer authorized.", 403) from exc
 
 

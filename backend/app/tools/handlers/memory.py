@@ -213,10 +213,13 @@ def _memory_authority_error(tool_name, error):
     code = error.code if isinstance(error, ContentInputReceiptError) else "explicit_memory_operation_unknown"
     outcome = ("unknown" if not isinstance(error, ContentInputReceiptError) or code.endswith("unknown")
         else "approval_required" if code == "explicit_memory_approval_required" else "denied" if status == 403 else "unavailable")
+    hint = ("Return to the group where this memory was recorded to correct or retire it. Private work cannot disclose a correction to that group."
+        if code == "explicit_memory_group_context_mismatch" else
+        "Restore current source authority or reconcile the retained write plan before retrying the same command.")
     return render_tool_error(tool_name=tool_name, error_class="auth_or_permission" if status == 403 else "provider_unavailable",
         message="This memory operation could not verify its source or commit state.", provider="explicit_memory",
         http_status=status, retryable=status == 503,
-        actionable_hint="Restore current source authority or reconcile the retained write plan before retrying the same command.",
+        actionable_hint=hint,
         extra={"reason_code": code, "outcome": outcome, "error_type": type(error).__name__,
             **({"operation_id": error.operation_id,
                 "recovery_tool": "reconcile_memory_write"} if getattr(error, "operation_id", None) else {})})

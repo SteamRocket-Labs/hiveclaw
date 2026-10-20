@@ -321,6 +321,7 @@ async def _create_trigger_runtime_task(
             or (getattr(triggers[0], "type", "") if triggers else "")
             or "trigger"
         )
+        batch_root_user_id, batch_root_session_id = batch_trigger_authority(triggers)
         if tenant_id is not None:
             reservation_service = RuntimeBudgetService()
             budget_lookup = RuntimeBudgetPolicyLookup(
@@ -341,6 +342,8 @@ async def _create_trigger_runtime_task(
                     policy_id=getattr(budget_policy, "id", None),
                     root_runtime_task_id=uuid.UUID(task_id),
                     root_agent_id=agent_id,
+                    root_user_id=batch_root_user_id,
+                    root_session_id=str(batch_root_session_id) if batch_root_session_id is not None else None,
                     enforcement_mode=str(getattr(budget_policy, "enforcement_mode", None) or "enforce"),
                     fail_mode=str(getattr(budget_policy, "fail_mode", None) or "fail_closed"),
                     max_tokens=getattr(budget_policy, "max_tokens", None),
@@ -430,7 +433,6 @@ async def _create_trigger_runtime_task(
         admission_status = (
             "waiting_budget_approval" if admission_decision is not None and admission_decision.waiting else "admitted"
         )
-        batch_root_user_id, batch_root_session_id = batch_trigger_authority(triggers)
         persisted_task_id = await create_runtime_task_record(
             task_id=task_id,
             task_type="trigger",

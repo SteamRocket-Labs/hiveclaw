@@ -347,6 +347,13 @@ async def test_enabled_routine_uses_native_tool_edits_and_returns_once_to_its_so
         await bridge_transcript_event_to_t0(transcript_event_id=event_id, attempts=1)
     boundary = await runtime_task_worker.drain_web_terminal_boundary_outbox_once(worker_id="g7-boundary", session_factory=scoped)
     assert boundary["delivered"] == 1, boundary
+    # Acknowledge the already-applied original mailbox input before measuring
+    # the later scheduled dispatch, just as the normal worker does.
+    prior = await runtime_task_worker.recover_session_input_dispatches_once(worker_id="g7-prior-input", session_factory=scoped)
+    assert prior["dispatched"] == 1, prior
+    async with owner_sessionmaker() as db:
+        assert await db.scalar(select(func.count()).select_from(RuntimeTask).where(
+            RuntimeTask.parent_agent_id == seed["agent_id"], RuntimeTask.task_type == "web_chat_turn")) == 1
     blocked = await trigger_daemon.fire_trigger_once_now(seed["agent_id"], trigger_id)
     assert blocked["fired"] is False and blocked["reason"] == "plan_required", blocked
     async with owner_sessionmaker() as db:

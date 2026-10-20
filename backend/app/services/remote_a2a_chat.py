@@ -32,8 +32,15 @@ async def capture_executor(db, *, agent, user, session, run_id, interactive, met
         or user.id is None or (not shared and session.user_id != user.id)
         or getattr(user, "machine_credential_id", None) is not None):
         raise HTTPException(409, detail={"code": "remote_a2a_session_principal_unavailable"})
+    from app.services.trigger_input_authority import load_trigger_input_origin
+
+    trigger_origin = await load_trigger_input_origin(db, tenant_id=agent.tenant_id, agent_id=agent.id,
+        session=session, metadata=metadata or {})
+    if trigger_origin != (metadata or {}).get("trigger_origin"):
+        raise HTTPException(409, detail={"code": "remote_a2a_trigger_origin_unavailable"})
+    autonomous = trigger_origin is not None
     origin = None
-    if not interactive or getattr(user, "external_principal_id", None) is not None:
+    if (not interactive and not autonomous) or getattr(user, "external_principal_id", None) is not None:
         from app.services.remote_a2a_channel import capture_origin
 
         origin = await capture_origin(db, agent=agent, user=user, session=session, metadata=metadata or {})
@@ -42,11 +49,12 @@ async def capture_executor(db, *, agent, user, session, run_id, interactive, met
     return {"dispatch_kind": "session", "configuration_version": connection.version,
         "owner_scope": authority["owner_scope"], "runtime_authorization_hash": authority_hash,
         **({"channel_origin": origin} if origin else {}),
+        **({"trigger_origin": trigger_origin} if autonomous else {}),
         **({"shared_session": {"session_id": str(session.id), "installation_ref": session.group_installation_ref,
             "subject_id": session.group_subject_id}} if shared else {}),
         "source_read_principal": AgentRuntimePrincipal(agent_id=agent.id, requester_user_id=user.id,
-            session_id=str(session.id), runtime_task_id=str(run_id), purpose="interactive_session",
-            autonomous=False).evidence(),
+            session_id=str(session.id), runtime_task_id=str(run_id),
+            purpose="autonomous_agent" if autonomous else "interactive_session", autonomous=autonomous).evidence(),
         "operations": [{"id": str(uuid.uuid5(run_id, "remote-chat:0")), "method": "SendMessage",
             "params": {}, "phase": "pending"}]}
 
@@ -65,8 +73,10 @@ async def assert_session_effects_settled(db, *, agent, session):
 
 def _principal(task, state):
     evidence = state.get("source_read_principal") or {}
+    autonomous = state.get("trigger_origin") is not None
     principal = AgentRuntimePrincipal(agent_id=task.parent_agent_id, requester_user_id=task.root_user_id,
-        session_id=task.parent_session_id, runtime_task_id=str(task.id), purpose="interactive_session", autonomous=False)
+        session_id=task.parent_session_id, runtime_task_id=str(task.id),
+        purpose="autonomous_agent" if autonomous else "interactive_session", autonomous=autonomous)
     if task.task_type != "web_chat_turn" or evidence != principal.evidence():
         raise HTTPException(409, detail={"code": "remote_a2a_source_principal_unavailable"})
     return principal
@@ -94,6 +104,23 @@ async def _session_principal(db, *, task, state, for_effect=True):
             raise HTTPException(409, detail={"code": "remote_a2a_session_principal_unavailable"}) from exc
     elif session.audience_kind not in {None, "private"} or session.user_id != task.root_user_id or state.get("shared_session"):
         raise HTTPException(409, detail={"code": "remote_a2a_session_principal_unavailable"})
+    trigger_origin = state.get("trigger_origin")
+    if trigger_origin is not None:
+        from app.services.trigger_input_authority import load_trigger_input_origin
+
+        if not isinstance(trigger_origin, dict):
+            raise HTTPException(409, detail={"code": "remote_a2a_trigger_origin_unavailable"})
+        actual = await load_trigger_input_origin(db, tenant_id=task.tenant_id, agent_id=task.parent_agent_id,
+            session=session, metadata={"source": "loop_same_session",
+                "trigger_runtime_task_id": trigger_origin.get("wrapper_id"),
+                "session_v2_input_id": trigger_origin.get("input_id"),
+                "session_v2_command_id": trigger_origin.get("command_id")}, for_effect=for_effect)
+        if (actual != trigger_origin or str(task.root_user_id) != actual["requester_user_id"]
+            or str(task.budget_run_id) != actual["budget_run_id"]
+            or str(task.root_runtime_task_id) != actual["root_runtime_task_id"]):
+            raise HTTPException(409, detail={"code": "remote_a2a_trigger_origin_unavailable"})
+    elif for_effect and (task.metadata_json or {}).get("source") == "loop_same_session":
+        raise HTTPException(409, detail={"code": "remote_a2a_trigger_origin_unavailable"})
     if state.get("channel_origin") is not None:
         from app.services.remote_a2a_channel import validate_origin
 

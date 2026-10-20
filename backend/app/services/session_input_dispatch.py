@@ -319,6 +319,15 @@ async def _start_input_runtime(
     input_metadata = (
         {"session_v2_rolled_over_input_id": str(row.id)} if rolled_over else {"session_v2_input_id": str(row.id)}
     )
+    from app.services.trigger_input_authority import load_trigger_input_origin
+
+    metadata.pop("trigger_origin", None)
+    origin = await load_trigger_input_origin(db, tenant_id=agent.tenant_id, agent_id=agent.id, session=session,
+        metadata={**metadata, "session_v2_input_id": str(row.id), "session_v2_command_id": str(command.id)})
+    if origin is not None:
+        metadata.update(trigger_origin=origin, budget_run_id=origin["budget_run_id"],
+            root_runtime_task_id=origin["root_runtime_task_id"])
+        budget_interactive = False
     content = _runtime_content(row)
     if row.intent == "answer_request":
         from app.services.session_user_question import answer_projection

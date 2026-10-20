@@ -2,6 +2,7 @@
 
 from copy import deepcopy
 from datetime import datetime, timezone
+import json
 import uuid
 
 from fastapi import HTTPException
@@ -101,7 +102,8 @@ async def prepare_send(db, *, task, state, agent, endpoint):
     current_refs = {f"session-input:{row.id}" for row in rows}
     messages = [message for message in conversation_from_history_messages(history.messages)
         if message.get("source_ref") not in current_refs]
-    messages.extend(input_parts_to_runtime_messages(rows, answer_projections=await answer_projections(db, rows)))
+    current_messages = input_parts_to_runtime_messages(rows, answer_projections=await answer_projections(db, rows))
+    messages.extend(current_messages)
     wire = [message_snapshot(message) for message in messages]
     bindings = await build_model_input_bindings(db, tenant_id=task.tenant_id, agent_id=agent.id,
         session_id=session_id, messages=messages, wire_messages=wire)
@@ -122,7 +124,8 @@ async def prepare_send(db, *, task, state, agent, endpoint):
             dependencies.append({"source_kind": "agent_context_resource", "source_id": f"{agent.id}\n{ref}",
                 "source_version": resource.sha256})
     memory = await memory_service.build_memory_context(agent.id, task.tenant_id, session_id=str(session_id),
-        turn_id=task.metadata_json["turn_id"], query=task.prompt or "", current_user_id=task.root_user_id,
+        turn_id=task.metadata_json["turn_id"], query="\n".join(str(message["content"]) for message in current_messages),
+        current_user_id=task.root_user_id,
         return_result=True)
     if memory.source_unbound or not memory.authority_context_available or not memory.external_effects_available:
         raise HTTPException(409, detail={"code": "remote_a2a_memory_sources_unavailable"})
@@ -139,8 +142,16 @@ async def prepare_send(db, *, task, state, agent, endpoint):
         "runtime_task_id": str(task.id), "budget_run_id": str(task.budget_run_id),
         "history_receipt": history.receipt, "dependencies": dependencies}
     text = "\n".join(str(message["content"]) for message in input_parts_to_runtime_messages(rows))
+    # Standard SDK text adapters ignore DataPart. Expose the complete record
+    # once as text, retaining its schema and exact digest for structured readers.
+    # Check structured secrets before JSON escaping can change their bytes.
+    if endpoint.redact_payload(context) != context:
+        raise HTTPException(422, detail={"code": "remote_a2a_credential_in_request"})
+    context_hash = _digest(context)
+    context_text = json.dumps(context, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
     params = {"message": {"messageId": str(operation_id), "role": "ROLE_USER", "parts": [
-        {"text": text}, {"data": context}]}}
+        {"text": text}, {"text": context_text, "metadata": {
+            "hiveContextSchema": context["schema"], "hiveContextSha256": context_hash}}]}}
     if state.get("remote_task_id"):
         params["message"]["taskId"] = state["remote_task_id"]
     if state.get("remote_context_id"):

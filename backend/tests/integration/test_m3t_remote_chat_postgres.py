@@ -1,5 +1,7 @@
 """Ordinary owner chat reaches the selected remote executor and original work."""
 
+import hashlib
+import json
 from uuid import UUID, uuid4
 
 import pytest
@@ -26,6 +28,14 @@ remote_work = original.remote_work
 pytestmark = pytest.mark.usefixtures("migrated_pg_url")
 
 
+def context_record(parts):
+    assert len(parts) == 2 and all('text' in part for part in parts)
+    part = parts[1]
+    assert part['metadata']['hiveContextSchema'] == 'hive.remote_chat_context.v1'
+    assert hashlib.sha256(part['text'].encode()).hexdigest() == part['metadata']['hiveContextSha256']
+    return json.loads(part['text'])
+
+
 async def execute_chat(seed, run_id, factory):
     import asyncio
     from app.services import runtime_task_worker
@@ -38,7 +48,7 @@ async def execute_chat(seed, run_id, factory):
     await asyncio.wait_for(process, 30)
 
 
-async def prepare_employee(seed, factory, monkeypatch, tmp_path):
+async def prepare_employee(seed, factory, monkeypatch, tmp_path, *, personality='ORIGINAL_REMOTE_EMPLOYEE_CONTEXT'):
     from app.config import get_settings
     from app.services import agent_context, agent_manager, memory_service, web_chat_runtime
     from app.services.agent_manager import AgentManager
@@ -51,7 +61,7 @@ async def prepare_employee(seed, factory, monkeypatch, tmp_path):
     async with tenant_scoped_session(seed['tenant'], session_factory=factory) as db:
         agent = await db.get(Agent, seed['agent'])
         agent.agent_type = 'native'
-        await AgentManager().initialize_agent_files(db, agent, personality='ORIGINAL_REMOTE_EMPLOYEE_CONTEXT',
+        await AgentManager().initialize_agent_files(db, agent, personality=personality,
             original_author_id=seed['owner'])
         await db.commit()
     async def local_memory(*_args, **_kwargs):
@@ -103,6 +113,13 @@ async def test_ordinary_chat_uses_canonical_inputs_full_context_and_real_remote_
     seed, api, session_id = remote_work
     api._transport.app.include_router(chat_sessions.router)
     await prepare_employee(seed, app_user_sessionmaker, monkeypatch, tmp_path)
+    from app.services import memory_service
+    memory_queries = []
+    local_memory = memory_service.build_memory_context
+    async def capture_memory(*args, **kwargs):
+        memory_queries.append(kwargs['query'])
+        return await local_memory(*args, **kwargs)
+    monkeypatch.setattr(memory_service, 'build_memory_context', capture_memory)
     with remote_server() as remote:
         path = await original.configure(seed, api, remote)
         selected = await api.post(path + '/runtime', json=selection(seed))
@@ -153,7 +170,7 @@ async def test_ordinary_chat_uses_canonical_inputs_full_context_and_real_remote_
         assert len(posts) == 1 and posts[0]['method'] == 'SendMessage'
         parts = posts[0]['params']['message']['parts']
         assert parts[0]['text'] == body['content']
-        context = next(part['data'] for part in parts if 'data' in part)
+        context = context_record(parts)
         assert context['schema'] == 'hive.remote_chat_context.v1'
         assert context['inputs'][0]['input_id'] == body['input_id']
         assert 'ORIGINAL_REMOTE_EMPLOYEE_CONTEXT' in str(context['resources'])
@@ -216,8 +233,9 @@ async def test_ordinary_chat_uses_canonical_inputs_full_context_and_real_remote_
             if flow == 'input_required':
                 assert posts[-1]['params']['message']['taskId'] == 'remote-chat-1'
                 assert posts[-1]['params']['message']['parts'][0]['text'] == reply_body['content']
+                assert memory_queries[-1] == reply_body['content']
                 assert posts[-1]['params']['message']['contextId'] == 'durable-remote-chat-context'
-                continued = next(part['data'] for part in posts[-1]['params']['message']['parts'] if 'data' in part)
+                continued = context_record(posts[-1]['params']['message']['parts'])
                 assert any(message.get('content') == text for message in continued['messages']), 'The prior remote question must remain in the same work context.'
                 assert sum(message.get('content') == body['content'] for message in continued['messages']) == 1
                 assert sum(message.get('content') == reply_body['content'] for message in continued['messages']) == 1
@@ -248,7 +266,7 @@ async def test_ordinary_chat_uses_canonical_inputs_full_context_and_real_remote_
                 return
             posts = [row[3] for row in remote.requests if row[0] == 'POST']
             assert len(posts) == 2 and posts[-1]['params']['message']['contextId'] == 'durable-remote-chat-context'
-            context = next(part['data'] for part in posts[-1]['params']['message']['parts'] if 'data' in part)
+            context = context_record(posts[-1]['params']['message']['parts'])
             assert any(message.get('content') == text for message in context['messages'])
 
 
@@ -339,3 +357,36 @@ async def test_stopped_budget_does_not_treat_a_non_remote_run_as_recovery(
                 task_types=('web_chat_turn',)).claim_available()
             assert task_id not in {task.id for task in claimed}
         assert not [request for request in remote.requests if request[0] == 'POST']
+
+
+async def test_remote_context_credentials_are_checked_before_text_encoding(
+    remote_work, app_user_sessionmaker, monkeypatch, tmp_path
+):
+    from app.api import chat_sessions
+
+    seed, api, session_id = remote_work
+    api._transport.app.include_router(chat_sessions.router)
+    secret = 'synthetic-quote"slash\\credential'
+    await prepare_employee(seed, app_user_sessionmaker, monkeypatch, tmp_path,
+        personality=f'Authorized background must not disclose this credential: {secret}')
+    with remote_server() as remote:
+        path = f"/agents/{seed['agent']}/remote-a2a"
+        config = original.configuration(seed, remote)
+        config['bearer_token'] = secret
+        configured = await api.put(path, json=config)
+        assert configured.status_code == 200, configured.text
+        discovered = await api.post(path + '/discover', json=original.request_frame(seed, 1))
+        assert discovered.status_code == 200, discovered.text
+        assert (await api.post(path + '/runtime', json=selection(seed))).status_code == 200
+        response = await api.post(f"/agents/{seed['agent']}/sessions/{session_id}/runs", json={
+            'content': 'Use the authorized background.', 'input_id': str(uuid4()),
+            'idempotency_key': 'escaped-context-credential'})
+        assert response.status_code == 201, response.text
+        run_id = response.json()['run_id']
+        await execute_chat(seed, run_id, app_user_sessionmaker)
+        assert not [request for request in remote.requests if request[0] == 'POST']
+        async with tenant_scoped_session(seed['tenant'], session_factory=app_user_sessionmaker) as db:
+            task = await db.get(RuntimeTask, UUID(run_id))
+            state = task.metadata_json['remote_a2a']
+            assert task.status == 'needs_reconciliation' and state['operations'][-1]['phase'] == 'not_started'
+            assert state['source_error']['code'] == 'remote_a2a_credential_in_request'

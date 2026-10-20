@@ -490,11 +490,9 @@ async def bridge_transcript_event_to_t0(
                             append_metadata = metadata
                             append_run_id = transcript_event.run_id
                             if join_active_segment:
-                                # A guest run — no RuntimeTask row, or a proven
-                                # terminal task with no boundary lane of its
-                                # own — cannot open, own, or boundary a
-                                # segment, so it projects as a guest event of
-                                # the active segment. The FK on run_id means
+                                # Session deliveries and guest runs cannot own
+                                # or boundary a segment, so they join the active
+                                # segment. The FK on run_id means
                                 # a run identity rides metadata when the
                                 # column is NULL, so record the same
                                 # column-or-metadata identity the ledger used
@@ -528,8 +526,17 @@ async def bridge_transcript_event_to_t0(
                         try:
                             if existing_t0_event is None:
                                 try:
-                                    t0_result = _append_t0_event(join_active_segment=await _is_settled_question_followup(
-                                        db, transcript_event=transcript_event))
+                                    # File delivery can follow its run's sealed
+                                    # terminal boundary. Keep its original run
+                                    # provenance without reopening that run's
+                                    # segment, including for already saved rows.
+                                    session_delivery = (
+                                        transcript_event.event_type == "remote_a2a_artifacts"
+                                        and transcript_event.actor_type == "system"
+                                        and source == "remote_a2a_return"
+                                    )
+                                    t0_result = _append_t0_event(join_active_segment=session_delivery
+                                        or await _is_settled_question_followup(db, transcript_event=transcript_event))
                                 except T0SegmentBoundaryPending as boundary_error:
                                     # Three disjoint recovery cases; every
                                     # unproven fact still re-raises and fails

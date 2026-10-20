@@ -13,6 +13,7 @@ from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
 from app.database import PostgresTextContractError
 from app.kernel.contracts import (
+    ExecutionAuthorityUnavailable,
     ExecutionIdentityRef,
     ProviderRequestNeedsReconciliation,
     SessionRestartRecoveryRequired,
@@ -175,6 +176,7 @@ class _WebChatRunState:
     interactive_pause_channel_text: str | None = None
     terminal_tool_card_finalized: bool = False
     active_provider_request_id: str | None = None
+    native_trigger_frame: Any | None = None
 
 
 async def run_web_chat_task(
@@ -230,6 +232,7 @@ async def _load_web_chat_context(state: _WebChatRunState) -> None:
     else:
         runtime_task, agent, user, model, fallback, history, session = loaded
     state.runtime_task = runtime_task
+    state.native_trigger_frame = getattr(runtime_task, "_native_trigger_frame", None)
     state.agent = agent
     state.user = user
     state.llm_model = model
@@ -992,8 +995,9 @@ def _agent_invocation_request(
         machine_credential_id=getattr(state.user, 'machine_credential_id', None),
         execution_identity=ExecutionIdentityRef(
             identity_type=_execution_identity_type(state),
-            identity_id=state.actor_external_principal_id or state.actor_user_id,
+            identity_id=state.agent.id if getattr(state, "native_trigger_frame", None) is not None else state.actor_external_principal_id or state.actor_user_id,
             label=(
+                f"Agent: {state.agent.name} (scheduled)" if getattr(state, "native_trigger_frame", None) is not None else
                 f"{state.user.display_name or state.user.username} via {state.runtime_session_context.channel or 'web'}"
             ),
         ),
@@ -1013,11 +1017,23 @@ def _agent_invocation_request(
         model_request_fail=lambda **payload: _fail_session_model_request(state, **payload),
         initial_round_index=max(0, int(state.metadata.get("session_resume_round_index") or 0)),
         initial_turn_tokens_used=max(0, int(state.metadata.get("session_resume_tokens_used") or 0)),
-        disable_tools=state.disable_tools_for_turn,
-        allowed_tool_names=_exact_session_allowed_tools(state.runtime_session_context),
-        excluded_tool_names=state.excluded_tool_names_for_turn,
-        model_routing_locked=bool(state.metadata.get("model_routing_locked")),
+        disable_tools=state.disable_tools_for_turn or _native_trigger_tools_empty(state),
+        allowed_tool_names=_invocation_allowed_tools(state),
+        excluded_tool_names=tuple(dict.fromkeys((*tuple(state.excluded_tool_names_for_turn or ()),
+            *(getattr(state, "native_trigger_frame", None).excluded_tools if getattr(state, "native_trigger_frame", None) else ())))),
+        model_routing_locked=bool(state.metadata.get("model_routing_locked")) or bool(
+            getattr(state, "native_trigger_frame", None) and getattr(state, "native_trigger_frame", None).model_id),
     )
+
+
+def _invocation_allowed_tools(state):
+    session_tools = _exact_session_allowed_tools(state.runtime_session_context)
+    return getattr(state, "native_trigger_frame", None).allowed_with(session_tools) if getattr(state, "native_trigger_frame", None) else session_tools
+
+
+def _native_trigger_tools_empty(state):
+    return bool(getattr(state, "native_trigger_frame", None) and getattr(state, "native_trigger_frame", None).allowed_tools
+        and _exact_session_allowed_tools(state.runtime_session_context) and not _invocation_allowed_tools(state))
 
 
 def _exact_session_allowed_tools(runtime_session_context: Any) -> tuple[str, ...]:
@@ -1070,6 +1086,22 @@ async def _prepare_session_model_request(state: _WebChatRunState, **payload: Any
     )
 
     async with state.ports.runtime.tenant_scoped_session(state.agent.tenant_id) as db:
+        if getattr(state, "native_trigger_frame", None) is not None:
+            from app.models.chat_session import ChatSession
+            from app.models.runtime_task import RuntimeTask
+            from app.services.native_trigger_frame import load_native_trigger_frame
+            from app.services.model_resolution import load_enabled_tenant_model
+
+            task = await db.get(RuntimeTask, state.run_uuid, populate_existing=True)
+            session = await db.get(ChatSession, uuid.UUID(str(state.session_id)), populate_existing=True)
+            frame = await load_native_trigger_frame(db, task=task, session=session, effect="model_request")
+            if frame != getattr(state, "native_trigger_frame", None):
+                raise ExecutionAuthorityUnavailable(code="native_trigger_frame_changed", task=task, effect="model_request")
+            if frame.model_id is not None:
+                model = await load_enabled_tenant_model(db, frame.model_id, state.agent.tenant_id)
+                if (model is None or model.id != state.llm_model.id
+                    or model.provider != payload.get("provider") or model.model != payload.get("model")):
+                    raise ExecutionAuthorityUnavailable(code="native_trigger_model_unavailable", task=task, effect="model_request")
         if getattr(state.user, 'machine_credential_id', None) is not None:
             from app.models.chat_session import ChatSession
             from app.models.runtime_task import RuntimeTask
@@ -1256,6 +1288,8 @@ async def _fail_session_model_request(state: _WebChatRunState, **payload: Any) -
 
 
 def _execution_identity_type(state: _WebChatRunState) -> str:
+    if getattr(state, "native_trigger_frame", None) is not None:
+        return "agent_bot"
     if state.actor_external_principal_id is None:
         return "delegated_user"
     return "external_principal_bound" if state.actor_authority_bound else "external_principal"
@@ -1744,12 +1778,16 @@ async def _handle_web_chat_failure(state: _WebChatRunState, exc: Exception) -> N
         await _handle_restart_recovery_required(state, exc)
         return
     summary = (
+        "Scheduled execution stopped before the next effect; restore authority or revise the schedule."
+        if isinstance(exc, ExecutionAuthorityUnavailable) else
         "Canonical session history is unavailable; model invocation did not start."
         if isinstance(exc, SessionSemanticHistoryUnavailable)
         else f"Web chat run failed: {type(exc).__name__}"
     )
     failure = _runtime_exception_failure(exc)
     metadata = {"error": str(exc), "terminal_reason": failure.terminal_reason}
+    if isinstance(exc, ExecutionAuthorityUnavailable):
+        metadata.update(error_code=exc.code, blocked_effect=exc.receipt())
     if isinstance(exc, SessionSemanticHistoryUnavailable):
         metadata.update(
             {
@@ -1762,7 +1800,7 @@ async def _handle_web_chat_failure(state: _WebChatRunState, exc: Exception) -> N
     try:
         if state.stream_batcher is not None:
             await state.stream_batcher.flush()
-        if isinstance(exc, SessionSemanticHistoryUnavailable):
+        if isinstance(exc, (SessionSemanticHistoryUnavailable, ExecutionAuthorityUnavailable)):
             agent_id = exc.agent_id
             session_id = str(exc.session_id)
         else:

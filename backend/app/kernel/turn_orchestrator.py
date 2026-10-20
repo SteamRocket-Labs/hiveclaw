@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from app.kernel.contracts import (
-    ContextDependencyUnavailable, ProviderRequestNeedsReconciliation,
+    ContextDependencyUnavailable, ExecutionAuthorityUnavailable, ProviderRequestNeedsReconciliation,
     SessionRestartRecoveryRequired, ToolLifecyclePersistenceError,
 )
 
@@ -2084,7 +2084,7 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                         if cost_loop_decision:
                             await _inject_loop_guard_warning(cost_loop_decision)
                         break
-                    except (SessionRestartRecoveryRequired, ToolLifecyclePersistenceError):
+                    except (SessionRestartRecoveryRequired, ToolLifecyclePersistenceError, ExecutionAuthorityUnavailable):
                         raise
                     except ContextDependencyUnavailable as exc:
                         await _record_new_token_usage()

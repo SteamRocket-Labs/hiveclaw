@@ -197,8 +197,9 @@ async def test_profile_and_native_schedule_replacements_preserve_the_original_wo
         assert stored.reason == "Compare updated sources."
 
 
+@pytest.mark.parametrize("fault", [None, "claim_revoked", "provider_revoked", "model_disabled", "origin_tamper", "tool_revoked", "tool_scope", "context", "allowed_tool"])
 async def test_enabled_routine_uses_native_tool_edits_and_returns_once_to_its_source_worker(
-    owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path,
+    owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, fault,
 ):
     import json
     import httpx
@@ -212,6 +213,7 @@ async def test_enabled_routine_uses_native_tool_edits_and_returns_once_to_its_so
     from app.models.runtime_task import RuntimeTask
     from app.models.session_v2 import SessionTurnInput
     from app.models.user import User
+    from app.models.llm import LLMModel
     from app.services import agent_tools, runtime_task_worker, tenant_resolver, trigger_daemon, web_chat_runtime
     from app.services.agent_context import build_agent_context
     from app.services.agent_tool_domains import triggers as domain
@@ -259,11 +261,21 @@ async def test_enabled_routine_uses_native_tool_edits_and_returns_once_to_its_so
 
     real_resolve = tenant_resolver.resolve_tenant_for_agent
     seed = await _seed_run(owner_sessionmaker, tmp_path, prompt="Adjust my saved routine and report the next evidence comparison here.")
+    pinned_id = uuid.uuid4()
     async with owner_sessionmaker() as db:
+        db.add(LLMModel(id=pinned_id, tenant_id=seed["tenant_id"], label="Scheduled pin", provider="openai",
+            model="fake-scheduled-native", api_key_encrypted="synthetic-scheduled-key", enabled=True))
+        from app.models.agent import Agent
+
+        employee = await db.get(Agent, seed["agent_id"])
+        employee.fallback_model_id = employee.primary_model_id
         user = await db.get(User, seed["user_id"])
         user.role = "member"
         db.add(CapabilityPolicy(tenant_id=seed["tenant_id"], capability="agent.trigger.modify",
             allowed=True, requires_approval=False))
+        if fault == "allowed_tool":
+            db.add(CapabilityPolicy(tenant_id=seed["tenant_id"], capability="agent.trigger.read",
+                allowed=True, requires_approval=False))
         await db.commit()
 
     @asynccontextmanager
@@ -276,16 +288,69 @@ async def test_enabled_routine_uses_native_tool_edits_and_returns_once_to_its_so
     _patch_runtime_settings(monkeypatch, seed)
     _patch_environment_seams(monkeypatch, scoped)
     call = {"id": "edit-routine", "type": "function", "function": {"name": "update_trigger", "arguments": json.dumps({
-        "name": "source_comparison", "config": {"minutes": 45,
+        "name": "source_comparison", "config": {"minutes": 45, "model_id": str(pinned_id), "toolset": ["list_triggers"] if fault == "allowed_tool" else ["update_trigger"],
+            "excluded_tool_names": ["read_file"], "workdir": "workspace/routine",
             "metadata": {"plan_exempt_reason": "user_declined_plan_mode"}},
         "reason": "G7_COMPARE_CURRENT_SOURCES: compute23*7 and report here."})}}
     llm = ScriptedLLMClient([{"tool_calls": [call], "finish_reason": "tool_calls"},
         {"content": "Routine timing and instructions updated.", "finish_reason": "stop"}])
     _patch_invoker_seams(monkeypatch, llm, seed, scoped)
+    invocation_receipts, selected_models = [], []
+    real_invoke = web_chat_runtime.invoke_agent
+
+    async def invoke(request):
+        invocation_receipts.append({"identity": request.execution_identity, "requester": request.user_id,
+            "model_id": request.model.id, "fallback": request.fallback_model, "allowed": request.allowed_tool_names,
+            "excluded": request.excluded_tool_names, "locked": request.model_routing_locked})
+        if len(invocation_receipts) == 2 and fault in {"provider_revoked", "model_disabled", "origin_tamper"}:
+            async with owner_sessionmaker() as db:
+                if fault == "model_disabled":
+                    model = await db.get(LLMModel, pinned_id)
+                    model.enabled = False
+                elif fault == "origin_tamper":
+                    task = await db.get(RuntimeTask, successor)
+                    task.metadata_json = {**task.metadata_json, "trigger_origin": {
+                        **task.metadata_json["trigger_origin"], "input_sha256": "0" * 64}}
+                else:
+                    trigger = await db.get(AgentTrigger, uuid.UUID(trigger_id))
+                    trigger.config = {**trigger.config, "authority_state": "quarantined"}
+                await db.commit()
+        return await real_invoke(request)
+
+    real_stream = llm.stream
+
+    async def stream(**kwargs):
+        response = await real_stream(**kwargs)
+        if len(llm.requests) == 3 and fault == "tool_revoked":
+            async with owner_sessionmaker() as db:
+                trigger = await db.get(AgentTrigger, uuid.UUID(trigger_id))
+                trigger.config = {**trigger.config, "authority_state": "quarantined"}
+                await db.commit()
+        return response
+
+    from app.tools.service import ToolRuntimeService
+
+    real_effect = ToolRuntimeService.execute_with_context
+    effects = []
+
+    async def effect(service, tool_name, arguments, context, **kwargs):
+        effects.append(tool_name)
+        return await real_effect(service, tool_name, arguments, context, **kwargs)
+
+    monkeypatch.setattr(llm, "stream", stream)
+    monkeypatch.setattr(ToolRuntimeService, "execute_with_context", effect)
+
+    def create_client(**kwargs):
+        selected_models.append(kwargs["model"])
+        return llm
+
+    monkeypatch.setattr(web_chat_runtime, "invoke_agent", invoke)
+    monkeypatch.setattr(invoker, "create_llm_client", create_client)
     monkeypatch.setattr(invoker, "build_agent_context", build_agent_context)
     monkeypatch.setattr(invoker, "execute_tool", agent_tools.execute_tool)
     monkeypatch.setattr(invoker, "get_agent_tools_for_llm", lambda *a, **k: [{"type": "function", "function": {
-        "name": "update_trigger", "parameters": {"type": "object"}}}])
+        "name": name, "parameters": {"type": "object"}}} for name in
+        (["update_trigger", "list_triggers"] if fault == "allowed_tool" else ["update_trigger"])])
     monkeypatch.setattr(tenant_resolver, "resolve_tenant_for_agent", real_resolve)
     monkeypatch.setattr(tenant_resolver, "async_session", app_user_sessionmaker)
     for module in (resolver, domain, trigger_daemon):
@@ -374,6 +439,29 @@ async def test_enabled_routine_uses_native_tool_edits_and_returns_once_to_its_so
         reviewed = await client.patch(endpoint + "/triggers/" + trigger_id, json={"is_enabled": True,
             "plan_mode_decision": "declined", "plan_recommendation_id": declined.json()["id"]})
         assert reviewed.status_code == 200, reviewed.text
+    if fault == "context":
+        async with owner_sessionmaker() as db:
+            trigger = await db.get(AgentTrigger, uuid.UUID(trigger_id))
+            trigger.config = {**trigger.config, "context_from": ["session:" + str(seed["session_id"])]}
+            await db.commit()
+        unavailable = await trigger_daemon.fire_trigger_once_now(seed["agent_id"], trigger_id)
+        assert unavailable["fired"] is False and unavailable["reason"] == "native_trigger_context_unavailable", unavailable
+        async with owner_sessionmaker() as db:
+            wrapper = await db.get(RuntimeTask, uuid.UUID(unavailable["runtime_task_id"]))
+            assert wrapper.status == "skipped" and wrapper.metadata_json["skip_reason"] == "native_trigger_context_unavailable"
+            assert set((await db.scalars(select(SessionTurnInput.id).where(SessionTurnInput.session_id == seed["session_id"]))).all()) == original_inputs
+        assert len(llm.requests) == 2 and outbound == []
+        delivered = 0
+        for _ in range(2):
+            boundary = await runtime_task_worker.drain_direct_terminal_boundary_outbox_once(worker_id="g7-context-boundary", session_factory=scoped)
+            delivered += boundary["delivered"]
+        assert delivered == 2
+        from app.runtime import hooks_setup
+
+        jobs = [task for key, task in list(hooks_setup._T2_BACKGROUND_TASKS.items()) if key.startswith(str(seed["agent_id"]) + ":")]
+        if jobs:
+            await asyncio.wait_for(asyncio.gather(*jobs), 10)
+        return
     fire = await trigger_daemon.fire_trigger_once_now(seed["agent_id"], trigger_id)
     assert fire["fired"], fire
     wrapper_id = uuid.UUID(fire["runtime_task_id"])
@@ -408,19 +496,66 @@ async def test_enabled_routine_uses_native_tool_edits_and_returns_once_to_its_so
         claims = await RuntimeTaskClaimService(db=db, worker_id="g7-successor", task_types=["web_chat_turn"], lease_seconds=60).claim_available(batch_size=1)
         assert len(claims) == 1
         successor = claims[0].id
+    if fault == "claim_revoked":
+        async with owner_sessionmaker() as db:
+            trigger = await db.get(AgentTrigger, uuid.UUID(trigger_id))
+            trigger.config = {**trigger.config, "authority_state": "quarantined"}
+            await db.commit()
+    if fault == "allowed_tool":
+        llm.script.append({"tool_calls": [{"id": "scheduled-allowed-tool", "type": "function", "function": {
+            "name": "list_triggers", "arguments": "{}"}}], "finish_reason": "tool_calls"})
+    if fault in {"tool_revoked", "tool_scope"}:
+        llm.script.append({"tool_calls": [{"id": "scheduled-scope-probe", "type": "function", "function": {
+            "name": "read_file", "arguments": json.dumps({"path": "workspace/never-read.txt"})}}], "finish_reason": "tool_calls"})
     llm.script.append({"content": "Synthetic evidence comparison:23*7=161.", "finish_reason": "stop"})
     await asyncio.wait_for(web_chat_runtime.execute_web_chat_run(successor), 20)
-    assert len(llm.requests) == 3
-    wire = json.dumps(llm.requests[2]["messages"])
-    assert "G7_COMPARE_CURRENT_SOURCES" in wire and "Old routine instructions" not in wire
+    expected_requests = 2 if fault in {"claim_revoked", "provider_revoked", "model_disabled", "origin_tamper"} else 4 if fault in {"tool_scope", "allowed_tool"} else 3
+    assert len(llm.requests) == expected_requests
+    assert effects == (["update_trigger", "list_triggers"] if fault == "allowed_tool" else ["update_trigger"])
+    if fault == "claim_revoked":
+        assert len(invocation_receipts) == 1
+    else:
+        scheduled = invocation_receipts[-1]
+        assert scheduled["identity"].identity_type == "agent_bot"
+        assert scheduled["identity"].identity_id == seed["agent_id"] and scheduled["requester"] == seed["user_id"]
+        assert scheduled["model_id"] == pinned_id and scheduled["fallback"] is None and scheduled["locked"] is True
+        assert scheduled["allowed"] == (("list_triggers",) if fault == "allowed_tool" else ("update_trigger",)) and scheduled["excluded"] == ("read_file",)
+        assert selected_models[-1] == "fake-scheduled-native" and selected_models[0] == "fake-4.1"
+        if fault not in {"provider_revoked", "model_disabled", "origin_tamper"}:
+            assert [tool["function"]["name"] for tool in llm.requests[-1]["tools"]] == (["list_triggers"] if fault == "allowed_tool" else ["update_trigger"])
+        if fault == "allowed_tool":
+            assert "source_comparison" in json.dumps(llm.requests[3]["messages"])
+            assert "auth_or_permission" not in json.dumps(llm.requests[3]["messages"])
+        if fault == "tool_scope":
+            assert "native_trigger_tool_out_of_scope" in json.dumps(llm.requests[3]["messages"])
+        (tmp_path / "native-frame-invocation.json").write_text(json.dumps({"identity_type": scheduled["identity"].identity_type,
+            "identity_id": str(scheduled["identity"].identity_id), "requester": str(scheduled["requester"]),
+            "model_id": str(scheduled["model_id"]), "allowed": scheduled["allowed"], "excluded": scheduled["excluded"],
+            "selected_models": selected_models, "model_routing_locked": scheduled["locked"], "fault": fault,
+            "actual_provider_requests": len(llm.requests), "executor_entries": effects}, indent=2))
+    if fault not in {"claim_revoked", "provider_revoked", "model_disabled", "origin_tamper"}:
+        wire = json.dumps(llm.requests[2]["messages"])
+        assert "workspace/routine" in wire
+        assert "G7_COMPARE_CURRENT_SOURCES" in wire and "Old routine instructions" not in wire
     async with owner_sessionmaker() as db:
         row = await db.get(SessionTurnInput, expected_input)
         task = await db.get(RuntimeTask, successor)
         events = (await db.scalars(select(ChatTranscriptEvent).where(ChatTranscriptEvent.run_id == successor))).all()
         assert row.target_run_id == successor
-        assert task.status == "completed" and task.root_user_id == seed["user_id"]
+        failed = fault not in {None, "tool_scope", "allowed_tool"}
+        assert task.status == ("failed" if failed else "completed") and task.root_user_id == seed["user_id"]
         assert task.root_session_id == str(seed["session_id"])
-        assert any(e.item_kind == "assistant_final" and e.lifecycle == "completed" for e in events)
+        if not failed:
+            assert any(e.item_kind == "assistant_final" and e.lifecycle == "completed" for e in events)
+        else:
+            codes = {"claim_revoked": "trigger_input_origin_unavailable", "provider_revoked": "trigger_input_origin_unavailable",
+                "model_disabled": "native_trigger_model_unavailable", "origin_tamper": "native_trigger_origin_unavailable",
+                "tool_revoked": "trigger_input_origin_unavailable"}
+            assert task.metadata_json["error_code"] == codes[fault]
+            assert task.metadata_json["terminal_reason"] == "turn_abort"
+            assert task.metadata_json["blocked_effect"]["effect_state"] == "not_started"
+            assert task.metadata_json["blocked_effect"]["next_action"] == "restore_authority_or_revise_schedule"
+            assert any(e.item_kind == "runtime_failure" for e in events), [(e.item_kind, e.content) for e in events]
         final_event_ids = [event.id for event in events]
     for event_id in final_event_ids:
         await bridge_transcript_event_to_t0(transcript_event_id=event_id, attempts=1)

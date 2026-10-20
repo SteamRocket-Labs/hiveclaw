@@ -968,6 +968,41 @@ async def _execute_tool(state: _ToolExecutionState) -> Any:
                 message='Machine authority no longer permits this action.', provider='machine_authority', retryable=False,
                 actionable_hint='Ask the employee owner or company administrator to restore scoped access.',
                 extra={'outcome': 'denied', 'reason_code': 'machine_authority_unavailable'})
+    if (getattr(getattr(state.runtime_context, "execution_identity", None), "identity_type", None) == "agent_bot"
+        and state.runtime_context.runtime_task_id):
+        import uuid
+
+        from fastapi import HTTPException
+        from app.kernel.contracts import ExecutionAuthorityUnavailable
+        from app.database import tenant_scoped_session
+        from app.models.chat_session import ChatSession
+        from app.models.runtime_task import RuntimeTask
+        from app.services.native_trigger_frame import load_native_trigger_frame
+
+        try:
+            async with tenant_scoped_session(state.runtime_context.tenant_id, require_tenant=True) as db:
+                task = await db.get(RuntimeTask, uuid.UUID(str(state.runtime_context.runtime_task_id)), populate_existing=True)
+                metadata = getattr(task, "metadata_json", None) or {}
+                scheduled = metadata.get("trigger_origin") is not None or metadata.get("source") in {"loop_same_session", "trigger_reflection"}
+                session = await db.get(ChatSession, uuid.UUID(str(state.runtime_context.session_id)), populate_existing=True) if scheduled else None
+                frame = await load_native_trigger_frame(db, task=task, session=session, effect="tool_execution")
+                if frame is not None and (task.parent_agent_id != state.runtime_context.agent_id
+                    or task.root_user_id != state.runtime_context.user_id
+                    or str(task.budget_run_id) != str(state.runtime_context.budget_run_id)
+                    or state.runtime_context.execution_identity.identity_id != task.parent_agent_id):
+                    raise HTTPException(403, detail={"code": "native_trigger_tool_principal_mismatch"})
+                if frame is not None and not frame.permits(request.tool_name):
+                    raise HTTPException(403, detail={"code": "native_trigger_tool_out_of_scope"})
+        except (HTTPException, ExecutionAuthorityUnavailable) as exc:
+            reason = (exc.code if isinstance(exc, ExecutionAuthorityUnavailable) else
+                exc.detail.get("code", "native_trigger_authority_unavailable") if isinstance(exc.detail, dict) else
+                "native_trigger_authority_unavailable")
+            _record_lifecycle(state, "blocked", reason)
+            _record_final_decision(state, outcome=ports.decision_outcome_type.DENY, reasons=(reason,))
+            return ports.render_tool_error(tool_name=request.tool_name, error_class="auth_or_permission",
+                message="The scheduled execution no longer permits this tool effect.", provider="trigger_authority",
+                retryable=False, actionable_hint="Restore the schedule authority or revise its declared tool scope.",
+                extra={"outcome": "denied", "reason_code": reason})
     if request.pre_effect_callback is not None:
         # Governance/preflight and the worker lease are already valid. The
         # callback is the durable authority fence; its failure must propagate

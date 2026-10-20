@@ -5709,11 +5709,22 @@ async def _load_runtime_context(
 
         if getattr(agent, "agent_type", None) == "remote_a2a":
             raise HTTPException(409, detail={"code": "remote_a2a_executor_binding_required"})
-        primary_model, fallback_model = await _resolve_runtime_models_for_task(
-            db,
-            agent=agent,
-            metadata=metadata,
-        )
+        from app.services.native_trigger_frame import load_native_trigger_frame
+
+        native_frame = await load_native_trigger_frame(db, task=runtime_task, session=session)
+        runtime_task._native_trigger_frame = native_frame
+        if native_frame is not None and native_frame.model_id is not None:
+            metadata = {**metadata, "runtime_model_id": str(native_frame.model_id)}
+        try:
+            primary_model, fallback_model = await _resolve_runtime_models_for_task(db, agent=agent, metadata=metadata)
+        except RuntimeError as exc:
+            if native_frame is None:
+                raise
+            from app.kernel.contracts import ExecutionAuthorityUnavailable
+
+            raise ExecutionAuthorityUnavailable(code="native_trigger_model_unavailable", task=runtime_task) from exc
+        if native_frame is not None and native_frame.model_id is not None:
+            fallback_model = None
 
         if session is None:
             raise RuntimeError(f"RuntimeTask {run_uuid.hex} has no canonical ChatSession")

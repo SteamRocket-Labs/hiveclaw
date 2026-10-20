@@ -1917,6 +1917,29 @@ async def _deliver_batch_to_source_session(
         content, trigger_names = _build_trigger_context(triggers)
         if wake_content is not None:
             content = wake_content
+        native_options = {}
+        if getattr(agent, "agent_type", None) != "remote_a2a":
+            from app.services.trigger_preflight import collect_trigger_runtime_options, select_trigger_model
+
+            options = collect_trigger_runtime_options(triggers)
+            if options["context_from"]:
+                await _skip_trigger_runtime_task(runtime_task_id, skip_reason="native_trigger_context_unavailable",
+                    result_summary="Cross-session scheduled context requires a recoverable semantic source binding.",
+                    settlement_overrides={str(trigger.id): "release" for trigger in triggers})
+                return True
+            model_metadata = {}
+            if any((trigger.config or {}).get("model_id") for trigger in triggers):
+                _model, model_metadata, error = await select_trigger_model(db, agent, triggers)
+                if error:
+                    raise HTTPException(409, detail={"code": error})
+            if any(options.values()) or model_metadata:
+                native_options = {**options, "allowed_tool_names": list(options["allowed_tool_names"]),
+                    "excluded_tool_names": list(options["excluded_tool_names"]),
+                    "model_id": model_metadata.get("model_id") if model_metadata.get("model_source") == "trigger_config" else None}
+            if options["execution_class"]:
+                content += "\n\nExecution class: " + options["execution_class"]
+            if options["workdir"]:
+                content += "\n\nUse this job workdir for generated files when applicable: " + options["workdir"]
         trigger_ids = [str(getattr(t, "id", "")) for t in triggers if getattr(t, "id", None)]
         child_run_id = _trigger_child_run_id(
             runtime_task_id,
@@ -1947,6 +1970,7 @@ async def _deliver_batch_to_source_session(
                         "trigger_ids": trigger_ids,
                         "trigger_names": trigger_names,
                         "trigger_runtime_task_id": runtime_task_id,
+                        **({"native_trigger_options": native_options} if native_options else {}),
                     },
                 )
                 if payload.get("admission_state") != "admitted":

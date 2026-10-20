@@ -37,6 +37,24 @@ class ProviderRequestNeedsReconciliation(RuntimeError):
         self.error_class = error_class
 
 
+class ExecutionAuthorityUnavailable(RuntimeError):
+    """A live authority check stopped a specific effect before execution."""
+
+    def __init__(self, *, code, task, effect="runtime_start", status="unavailable"):
+        super().__init__(code)
+        self.code = code
+        self.run_id = task.id
+        self.tenant_id = task.tenant_id
+        self.agent_id = task.parent_agent_id
+        self.session_id = task.parent_session_id
+        self.effect = effect
+        self.status = status
+
+    def receipt(self):
+        return {"status": self.status, "error_code": self.code, "effect": self.effect,
+            "effect_state": "not_started", "next_action": "restore_authority_or_revise_schedule"}
+
+
 class SessionRestartRecoveryRequired(RuntimeError):
     """A reclaimed run cannot be reassembled without operator reconciliation.
 

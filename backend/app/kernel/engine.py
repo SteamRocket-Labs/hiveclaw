@@ -22,6 +22,7 @@ from app.core.execution_context import (
 )
 from app.kernel.contracts import (
     ChunkCallback,
+    ExecutionAuthorityUnavailable,
     InvocationRequest,
     InvocationResult,
     ModelRequestPrepare,
@@ -243,7 +244,7 @@ async def _maybe_await(value: Any) -> Any:
 
 
 def _is_terminal_tool_card_signal(exc: BaseException) -> bool:
-    return isinstance(exc, (SessionRestartRecoveryRequired, ToolLifecyclePersistenceError)) or exc.__class__.__name__ == "_TerminalToolCardSignal"
+    return isinstance(exc, (SessionRestartRecoveryRequired, ToolLifecyclePersistenceError, ExecutionAuthorityUnavailable)) or exc.__class__.__name__ == "_TerminalToolCardSignal"
 
 
 def _hook_event_label(event: Any) -> str:

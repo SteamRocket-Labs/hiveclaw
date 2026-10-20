@@ -77,10 +77,15 @@ async def bind_private_session_permission_source(db, *, task, session, invocatio
     frame = dict((command.target_json or {}).get("runtime_metadata") or {})
     profile = frame.get("permission_profile") or {}
     exact = (profile.get("capability_policy_snapshot") or {}).get("session_exact_scope") is True
+    from app.services.native_trigger_frame import load_native_trigger_frame
+
+    native_frame = await load_native_trigger_frame(db, task=task, session=session, for_effect=False)
+    session_tools = tuple(profile.get("allowed_tools") or ()) if exact else ()
+    allowed_tools = native_frame.allowed_with(session_tools) if native_frame else session_tools
     source = PermissionContextSource(
         reference={"source_kind": "session_command", "source_id": str(command.id), "source_version": command.request_hash},
         permission_inputs=_permission_inputs(frame),
-        allowed_tool_names=tuple(profile.get("allowed_tools") or ()) if exact else ())
+        allowed_tool_names=allowed_tools)
     if source.matches(metadata, invocation.allowed_tool_names):
         metadata["_session_permission_context_source"] = source
 

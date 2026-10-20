@@ -251,6 +251,10 @@ async def evaluate_trigger_preflight(
         )
 
     runtime_options = collect_trigger_runtime_options(triggers)
+    if (getattr(agent, "agent_type", None) != "remote_a2a" and runtime_options["context_from"]
+        and all(_config(trigger).get("delivery") == "same_session" for trigger in triggers)):
+        return TriggerPreflightResult(False, "native_trigger_context_unavailable",
+            "Cross-session scheduled context requires a recoverable semantic source binding.", runtime_options)
     for trigger in triggers:
         cfg = _config(trigger)
         backoff_until = _parse_datetime(cfg.get("backoff_until"))

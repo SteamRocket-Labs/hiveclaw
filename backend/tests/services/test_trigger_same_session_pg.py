@@ -14,6 +14,7 @@ from tests.services.test_trigger_daemon_loop import _loop_trigger
 @pytest.mark.parametrize("busy", [False, True])
 async def test_trigger_input_reaches_provider_once_after_idle_or_restart(owner_sessionmaker, monkeypatch, busy):
     from app.models.runtime_task import RuntimeTask
+    from app.models.runtime_budget import RuntimeBudgetRun
     from app.models.session_v2 import SessionTurnInput
     from app.models.trigger import AgentTrigger
     from app.services import trigger_daemon, web_chat_runtime
@@ -29,6 +30,14 @@ async def test_trigger_input_reaches_provider_once_after_idle_or_restart(owner_s
     async with owner_sessionmaker() as db:
         db.add(AgentTrigger(id=trigger.id, agent_id=agent_id, tenant_id=tenant_id, name=trigger.name,
             type=trigger.type, config=trigger.config, reason=trigger.reason, is_enabled=True))
+        budget_id = uuid.uuid4()
+        db.add(RuntimeBudgetRun(id=budget_id, tenant_id=tenant_id, root_run_kind="trigger_fire", root_run_key=str(wrapper_id),
+            root_runtime_task_id=wrapper_id, root_agent_id=agent_id, root_user_id=requester_id, root_session_id=str(session_id),
+            source="trigger", status="active"))
+        await db.flush()
+        db.add(RuntimeTask(id=wrapper_id, tenant_id=tenant_id, parent_agent_id=agent_id, root_user_id=requester_id,
+            root_runtime_task_id=wrapper_id, root_session_id=str(session_id), budget_run_id=budget_id,
+            task_type="trigger", status="pending", prompt="Scheduled delivery", metadata_json={"trigger_ids": [str(trigger.id)]}))
         await db.commit()
 
     @asynccontextmanager
@@ -53,6 +62,11 @@ async def test_trigger_input_reaches_provider_once_after_idle_or_restart(owner_s
     async def settle(_wrapper, **kwargs):
         assert _wrapper == str(wrapper_id)
         settlements.append(kwargs)
+        async with owner_sessionmaker() as db:
+            wrapper = await db.get(RuntimeTask, wrapper_id)
+            wrapper.status = kwargs["status"]
+            wrapper.metadata_json = {**wrapper.metadata_json, **kwargs["metadata_json"]}
+            await db.commit()
         return True
 
     monkeypatch.setattr(trigger_daemon, "tenant_scoped_session", scoped)
@@ -91,11 +105,14 @@ async def test_trigger_input_reaches_provider_once_after_idle_or_restart(owner_s
             await _mark_web_terminal_boundary_delivered(db, task=active, agent_id=agent_id, session_id=session_id)
             await db.commit()
 
-    if busy:
-        # A fresh worker consumes the durable queue without another trigger fire.
-        await recover_session_input_dispatches_once(
-            worker_id="new-trigger-worker", tenant_id=tenant_id, session_factory=owner_sessionmaker
-        )
+    # The canonical wrapper settles after admission; a fresh worker retries
+    # the durable dispatch once its original delivery authority is committed.
+    import asyncio
+
+    await asyncio.sleep(5.1)
+    await recover_session_input_dispatches_once(
+        worker_id="new-trigger-worker", tenant_id=tenant_id, session_factory=owner_sessionmaker
+    )
     async with owner_sessionmaker() as db:
         row = await db.get(SessionTurnInput, input_id)
         run = await db.get(RuntimeTask, successor_id)

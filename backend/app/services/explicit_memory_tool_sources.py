@@ -13,7 +13,7 @@ MEMORY_RESULT_TOOLS = frozenset({"save_memory", "update_memory", "retire_memory"
     "load_memory", "search_memory"})
 
 
-async def record_memory_result(request, *, content, entries=(), unbound=(), session_factory=None):
+async def record_memory_result(request, *, content, entries=(), team_entries=(), unbound=(), session_factory=None):
     """Pin actual emitted entries, never infer source completeness from prose."""
     tenant_id = uuid.UUID(str(request.context.tenant_id))
     async with tenant_scoped_session(tenant_id, session_factory=session_factory) as db:
@@ -21,6 +21,10 @@ async def record_memory_result(request, *, content, entries=(), unbound=(), sess
         for entry, receipt in entries:
             await _authorize_entry(db, tenant_id=tenant_id, agent_id=request.context.agent_id,
                 request=request, entry=entry, receipt=receipt)
+        from app.services.team_memory_runtime import authorize_entry, source_dependency as team_source
+
+        for entry, receipt in team_entries:
+            await authorize_entry(db, tenant_id, request, entry, receipt)
         try:
             facts = await _writer_input(db, request, require_sources=False)
         except ContentInputReceiptError as exc:
@@ -33,7 +37,8 @@ async def record_memory_result(request, *, content, entries=(), unbound=(), sess
         proof = {"schema": "hive.explicit_memory_tool_result.v1", "invocation_id": str(invocation.id),
             "model_result_id": str(model.id), "model_request_hash": model.model_request_hash,
             "args_hash": args_hash, "authority_hash": invocation.authority_snapshot_hash,
-            "content_hash": _hash(content), "sources": _unique_dependencies([source_dependency(r) for _e, r in entries]),
+            "content_hash": _hash(content), "sources": _unique_dependencies([
+                *[source_dependency(r) for _e, r in entries], *[team_source(r) for _e, r in team_entries]]),
             "unbound": sorted(set(unbound))}
         identity = uuid.uuid5(invocation.id, "explicit-memory-tool-result")
         row = await db.get(InvocationSpan, identity, populate_existing=True)

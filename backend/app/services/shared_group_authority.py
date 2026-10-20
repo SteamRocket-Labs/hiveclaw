@@ -512,7 +512,7 @@ async def read_shared_group_history(db, *, session, messages, user=None, run_id=
             await _validate_input_dependencies(db, session.tenant_id, _unique_dependencies(dependencies),
                 user=user, runtime_request=principal)
         except (ContentInputReceiptError, HTTPException) as exc:
-            denied = exc.status_code == 403
+            denied = exc.status_code in {401, 403, 404}
             held.append({"kind": "source_access_denied" if denied else "source_unavailable",
                 "code": getattr(exc, "code", "group_history_sources_unavailable"), "retryable": not denied,
                 "evidence_refs": [message.id for message in group]})
@@ -521,11 +521,44 @@ async def read_shared_group_history(db, *, session, messages, user=None, run_id=
     return [message for message in messages if message.group_id in allowed], held
 
 
+async def load_current_group_recipient_users(db, *, session):
+    """Resolve every actual recipient without treating an unknown identity as a member."""
+    from app.models.user import User
+
+    config, members = await load_current_group_members(db, session=session)
+    if not members:
+        raise HTTPException(503, detail={"code": "group_membership_unavailable"})
+    principals = list(await db.scalars(select(ExternalPrincipal).where(
+        ExternalPrincipal.tenant_id == session.tenant_id, ExternalPrincipal.provider == "feishu",
+        ExternalPrincipal.installation_ref == session.group_installation_ref, _principal_installation(config),
+        ExternalPrincipal.subject_id.in_(members), ExternalPrincipal.status == "active",
+        ExternalPrincipal.linked_user_id.is_not(None), ExternalPrincipal.binding_method == _principal_binding_method(config),
+        ExternalPrincipal.binding_verified_at.is_not(None))))
+    if {row.subject_id for row in principals} != members:
+        raise HTTPException(503, detail={"code": "group_recipient_identity_unavailable"})
+    if isinstance(config, TenantChannelConfig):
+        from app.services.external_principal_service import load_external_runtime_actor
+
+        for principal in principals:
+            actor = await load_external_runtime_actor(db, tenant_id=session.tenant_id,
+                principal_id=principal.id, expected_user_id=principal.linked_user_id)
+            if not actor.authority_bound:
+                raise HTTPException(403, detail={"code": "group_recipient_identity_changed"})
+    users = []
+    for user_id in {row.linked_user_id for row in principals}:
+        user = await db.scalar(select(User).where(User.id == user_id, User.tenant_id == session.tenant_id,
+            User.is_active.is_(True)).execution_options(populate_existing=True))
+        if user is None:
+            raise HTTPException(503, detail={"code": "group_recipient_identity_unavailable"})
+        users.append(user)
+    return config, users
+
+
 async def validate_shared_group_delivery(db, *, item, session):
     """Release canonical output only to current recipients who can read every source."""
     from app.models.session_v2 import SessionModelResult
     from app.models.chat_transcript_event import ChatTranscriptEvent
-    from app.models.user import User
+    from app.core.source_read_purpose import source_recipient_read
     from app.services.channel_delivery_outbox import ChannelDeliveryPermanentError, ChannelDeliveryRetryableError
     from app.services.content_input_receipts import ContentInputReceiptError, _validate_input_dependencies
     from app.services.session_model_inputs import _model_dependencies
@@ -536,25 +569,9 @@ async def validate_shared_group_delivery(db, *, item, session):
         or target.get("receive_id") != session.group_subject_id or target.get("chat_id") != session.group_subject_id):
         raise ChannelDeliveryPermanentError("shared_group_delivery_target_mismatch")
     try:
-        config, members = await load_current_group_members(db, session=session)
-        if item.channel_config_id != config.id or not members:
+        config, recipients = await load_current_group_recipient_users(db, session=session)
+        if item.channel_config_id != config.id:
             raise HTTPException(503, detail={"code": "group_membership_unavailable"})
-        principals = list(await db.scalars(select(ExternalPrincipal).where(
-            ExternalPrincipal.tenant_id == session.tenant_id, ExternalPrincipal.provider == "feishu",
-            ExternalPrincipal.installation_ref == session.group_installation_ref, _principal_installation(config),
-            ExternalPrincipal.subject_id.in_(members), ExternalPrincipal.status == "active",
-            ExternalPrincipal.linked_user_id.is_not(None), ExternalPrincipal.binding_method == _principal_binding_method(config),
-            ExternalPrincipal.binding_verified_at.is_not(None))))
-        if {row.subject_id for row in principals} != members:
-            raise HTTPException(503, detail={"code": "group_recipient_identity_unavailable"})
-        if isinstance(config, TenantChannelConfig):
-            from app.services.external_principal_service import load_external_runtime_actor
-
-            for principal in principals:
-                actor = await load_external_runtime_actor(db, tenant_id=session.tenant_id,
-                    principal_id=principal.id, expected_user_id=principal.linked_user_id)
-                if not actor.authority_bound:
-                    raise HTTPException(403, detail={"code": "group_recipient_identity_changed"})
         if item.metadata.get("source") == "remote_a2a_chat":
             # Remote packets have their own exact operation/input receipts.
             # They never acquire a native-model result seal.
@@ -570,16 +587,13 @@ async def validate_shared_group_delivery(db, *, item, session):
             dependencies, complete = _model_dependencies(result)
             if not complete:
                 raise ContentInputReceiptError("group_output_sources_unavailable", "The group output lacks its complete source receipt.", 503)
-        for user_id in {row.linked_user_id for row in principals}:
-            user = await db.scalar(select(User).where(User.id == user_id, User.tenant_id == session.tenant_id,
-                User.is_active.is_(True)).execution_options(populate_existing=True))
-            if user is None:
-                raise HTTPException(503, detail={"code": "group_recipient_identity_unavailable"})
-            await _validate_input_dependencies(db, session.tenant_id, dependencies, user=user)
+        for user in recipients:
+            with source_recipient_read(session_id=session.id, user_id=user.id):
+                await _validate_input_dependencies(db, session.tenant_id, dependencies, user=user)
     except (HTTPException, ContentInputReceiptError) as exc:
         detail = getattr(exc, "detail", None)
         code = getattr(exc, "code", None) or (detail.get("code") if isinstance(detail, dict) else None)
         message = f"shared_group_output_unavailable:{code or 'source_access_denied'}"
-        if exc.status_code == 403:
+        if exc.status_code in {401, 403, 404}:
             raise ChannelDeliveryPermanentError(message) from exc
         raise ChannelDeliveryRetryableError(message) from exc

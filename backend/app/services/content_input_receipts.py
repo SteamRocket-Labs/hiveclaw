@@ -67,6 +67,11 @@ async def validate_runtime_input_dependencies(db, request, dependencies: list) -
 
 async def _validate_input_dependencies(db, tenant_id: uuid.UUID, dependencies: list, *, user=None, runtime_request=None,
     active_workspace_receipts: frozenset[uuid.UUID] = frozenset()) -> None:
+    from app.core.source_read_purpose import current_source_recipient
+
+    recipient = current_source_recipient()
+    if recipient is not None and (runtime_request is not None or str(getattr(user, "id", None)) != recipient[1]):
+        raise ContentInputReceiptError("content_source_recipient_mismatch", "The source reader changed its recipient purpose.", 403)
     verified = _DISCLOSURE_SOURCE_VALIDATIONS.get()
     context = {"user": user, "runtime_request": runtime_request, "active_workspace_receipts": active_workspace_receipts}
     if verified is None or not isinstance(dependencies, list) or any(
@@ -76,7 +81,7 @@ async def _validate_input_dependencies(db, tenant_id: uuid.UUID, dependencies: l
         return await _validate_input_dependency_batch(db, tenant_id, dependencies, **context)
     for dependency in dependencies:
         source_key = (dependency["source_kind"], dependency["source_id"], dependency["source_version"])
-        reader_key = (id(db), tenant_id, id(user), id(runtime_request), active_workspace_receipts, source_key)
+        reader_key = (id(db), tenant_id, id(user), id(runtime_request), recipient, active_workspace_receipts, source_key)
         if (reader_key not in verified or (source_key[0] == "session_tool_invocation"
             and source_key[1:] in _ACTIVE_GROUP_TOOL_SOURCES.get())):
             await _validate_input_dependency_batch(db, tenant_id, [dependency], **context)
@@ -136,6 +141,12 @@ async def _validate_input_dependency_batch(db, tenant_id: uuid.UUID, dependencie
             else:
                 await validate_explicit_memory_dependency(db, tenant_id, dependency, request=runtime_request,
                     active_receipts=active_workspace_receipts)
+            continue
+        if dependency["source_kind"] == "team_memory":
+            from app.services.team_memory_runtime import validate_dependency
+
+            await validate_dependency(db, tenant_id, dependency, user=user, runtime_request=runtime_request,
+                active_receipts=active_workspace_receipts)
             continue
         if dependency["source_kind"] == "session_actor_identity":
             await _validate_session_actor_identity(db, tenant_id, dependency, user=user, runtime_request=runtime_request)
@@ -610,6 +621,7 @@ async def _validate_session_dependency(db, tenant_id, dependency, *, user, runti
 async def _authorize_session_input_source(db, tenant_id, session, *, user, runtime_request, delegated_user_command=False):
     from fastapi import HTTPException
     from app.core.permissions import authorize_session_action
+    from app.core.source_read_purpose import business_inspection_allowed
 
     if runtime_request is not None:
         from app.services.machine_runtime_authority import machine_request_actor
@@ -626,7 +638,8 @@ async def _authorize_session_input_source(db, tenant_id, session, *, user, runti
 
         try:
             requester = (await _runtime_input_actor(db, tenant_id, runtime_request))[1] if runtime_request is not None else user
-            if runtime_request is None and is_scoped_business_admin(requester, resource_tenant_id=session.tenant_id):
+            if (runtime_request is None and business_inspection_allowed()
+                and is_scoped_business_admin(requester, resource_tenant_id=session.tenant_id)):
                 await authorize_session_action(db, requester, agent_id=session.agent_id, session_id=session.id,
                     action="read_content_input_source")
                 return
@@ -644,6 +657,8 @@ async def _authorize_session_input_source(db, tenant_id, session, *, user, runti
         raise ContentInputReceiptError("content_source_unavailable", "This session source requires its live shared-audience reader.", 503)
     try:
         if runtime_request is None:
+            if not business_inspection_allowed() and session.user_id != getattr(user, "id", None):
+                raise ValueError("private_session_recipient_mismatch")
             await authorize_session_action(db, user, agent_id=session.agent_id, session_id=session.id,
                 action="read_content_input_source")
             return

@@ -51,7 +51,9 @@ class HumanBrowserPrincipal:
         company (``home_tenant_id`` carries that selection for browser
         principals). Never granted to Agent runtime principals, and never for
         a company other than the authenticated one."""
-        if self.role not in ("org_admin", "platform_admin"):
+        from app.core.source_read_purpose import business_inspection_allowed
+
+        if not business_inspection_allowed() or self.role not in ("org_admin", "platform_admin"):
             return False
         return self.home_tenant_id is not None and str(self.home_tenant_id) == str(tenant_id)
 

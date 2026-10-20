@@ -171,7 +171,7 @@ async def save_memory(agent_id: uuid.UUID, arguments: dict, tenant_id: uuid.UUID
     return content
 
 
-async def _record_memory_output(tool_name, agent_id, arguments, context, content, *, entry_id=None, entries=(), unbound=()):
+async def _record_memory_output(tool_name, agent_id, arguments, context, content, *, entry_id=None, entries=(), team_entries=(), unbound=()):
     from app.services.explicit_memory_tool_sources import record_memory_result
     from app.tools.runtime import ToolExecutionRequest
 
@@ -183,7 +183,7 @@ async def _record_memory_output(tool_name, agent_id, arguments, context, content
 
                 raise ContentInputReceiptError("explicit_memory_source_changed", "The written source needs reconciliation.")
         await record_memory_result(ToolExecutionRequest(tool_name, arguments, context),
-            content=content, entries=entries, unbound=unbound)
+            content=content, entries=entries, team_entries=team_entries, unbound=unbound)
         return content
     except Exception as exc:
         return _memory_authority_error(tool_name, exc)
@@ -731,7 +731,8 @@ async def reconcile_memory_write(agent_id, arguments, tenant_id=None, *, executi
         name="load_memory",
         description=(
             "Load full long-term memory entries by ID after search_memory or the prompt memory index returns IDs.\n\n"
-            "Use this before relying on an indexed/preview-only memory entry. Supports batch IDs."
+            "Use this before relying on an indexed/preview-only memory entry. Supports batch IDs, including exact "
+            "team_memory: workspace references returned by search. Team reads use current membership and source access."
         ),
         parameters={
             "type": "object",
@@ -860,19 +861,29 @@ async def _load_scoped_memory(agent_id, arguments, execution_context):
     raw_ids = arguments.get("ids") or []
     ids = [part.strip() for part in raw_ids.split(",") if part.strip()] if isinstance(raw_ids, str) else [str(value) for value in raw_ids]
     try:
+        from app.services.team_memory_runtime import read_entries, render_entry
+        from app.tools.runtime import ToolExecutionRequest
+
+        team_ids = [value for value in ids if value.startswith("team_memory:")]
+        local_ids = [value for value in ids if value not in team_ids]
         issues = []
-        entries = await _scoped_explicit_entries(agent_id, execution_context, ids=ids, issue_observer=issues)
-        content = _memory_availability(load_memory(agent_id, arguments,
-            _authorized_explicit_entries=[entry for entry, _receipt in entries]), issues)
+        entries = await _scoped_explicit_entries(agent_id, execution_context, ids=local_ids, issue_observer=issues)
+        content = load_memory(agent_id, {**arguments, "ids": local_ids},
+            _authorized_explicit_entries=[entry for entry, _receipt in entries]) if local_ids else ""
+        teams = await read_entries(tenant_id=uuid.UUID(str(execution_context.tenant_id)),
+            request=ToolExecutionRequest("load_memory", arguments, execution_context), ids=team_ids, issues=issues) if team_ids else []
+        if teams:
+            content += "\n\n## Team Memory\n" + "\n".join(render_entry(entry) for entry, _receipt in teams)
+        content = _memory_availability(content or "No team memory was found for the supplied current load references.", issues)
         from app.config import get_settings
         from app.memory.explicit_overlay import load_explicit_overlay_entries_by_ids
         from app.memory.plane_read import load_plane_entries
 
         root = Path(get_settings().AGENT_DATA_DIR)
-        explicit_ids = {e.entry_id for e in load_explicit_overlay_entries_by_ids(root, agent_id, ids)}
-        plane = load_plane_entries(root, agent_id, [entry_id for entry_id in ids if entry_id not in explicit_ids])
+        explicit_ids = {e.entry_id for e in load_explicit_overlay_entries_by_ids(root, agent_id, local_ids)}
+        plane = load_plane_entries(root, agent_id, [entry_id for entry_id in local_ids if entry_id not in explicit_ids])
         return await _record_memory_output("load_memory", agent_id, arguments, execution_context, content,
-            entries=entries, unbound=("legacy_memory_sources",) if plane else ())
+            entries=entries, team_entries=teams, unbound=("legacy_memory_sources",) if plane else ())
     except Exception as exc:
         return await _record_memory_error("load_memory", agent_id, arguments, execution_context, exc)
 
@@ -890,6 +901,7 @@ async def _load_scoped_memory(agent_id, arguments, execution_context):
             "- Decisions, preferences, or constraints from past sessions\n"
             "- Strategies that worked or approaches that failed\n"
             "- Any fact you saved previously with save_memory\n\n"
+            "- Current business-team and work-team memory authorized for this work and its recipients\n\n"
             "Returns every authorized matching fact and recalled session by default, with complete semantic content. "
             "Set limit only when you intentionally want the retrieval layer to return fewer candidates. "
             "Retrieval uses indexed terms and phrases, not a cross-language semantic guarantee. "
@@ -962,6 +974,7 @@ async def search_memory(agent_id: uuid.UUID, arguments: dict, tenant_id: str | N
     results: list[str] = []
     overlay_pairs = []
     overlay_facts = []
+    team_pairs = []
     unbound = []
     issues = []
 
@@ -1096,6 +1109,19 @@ async def search_memory(agent_id: uuid.UUID, arguments: dict, tenant_id: str | N
             entries=[entry for entry, _receipt in overlay_pairs if entry.entry_id in ids], issue_observer=issues)
         allowed_ids = {entry.entry_id for entry, _receipt in overlay_pairs}
         overlay_facts = [fact for fact in overlay_facts if fact["id"] in allowed_ids]
+    if execution_context is not None and scope in {"facts", "all"}:
+        from app.services.team_memory_runtime import read_entries, render_entry
+        from app.tools.runtime import ToolExecutionRequest
+
+        try:
+            team_pairs = await read_entries(tenant_id=uuid.UUID(str(execution_context.tenant_id)), query=query, issues=issues,
+                request=ToolExecutionRequest("search_memory", arguments, execution_context))
+            if limit is not None:
+                team_pairs = team_pairs[:limit]
+            if team_pairs:
+                results.append("## Team Memory\n" + "\n".join(render_entry(entry) for entry, _receipt in team_pairs))
+        except Exception:
+            issues.append({"status": "unavailable", "code": "team_memory_source_unavailable"})
     overlay_lines = []
     if overlay_facts:
         overlay_lines.append("## Explicit Memory Overlay")
@@ -1118,7 +1144,7 @@ async def search_memory(agent_id: uuid.UUID, arguments: dict, tenant_id: str | N
     if execution_context is not None:
         used_ids = {fact["id"] for fact in overlay_facts}
         return await _record_memory_output("search_memory", agent_id, arguments, execution_context, content,
-            entries=[pair for pair in overlay_pairs if pair[0].entry_id in used_ids], unbound=unbound)
+            entries=[pair for pair in overlay_pairs if pair[0].entry_id in used_ids], team_entries=team_pairs, unbound=unbound)
     return content
 
 

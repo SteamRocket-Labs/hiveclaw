@@ -16,6 +16,7 @@ from typing import Any, Literal, TypeAlias
 from sqlalchemy import or_, select
 
 from app.models.security_audit import ResourcePermission
+from app.core.source_read_purpose import business_inspection_allowed
 from app.services.privacy_layer import SensitivityLevel, canonicalize_sensitivity, sensitivity_rank
 
 
@@ -382,7 +383,7 @@ async def resolve_company_knowledge_permission(
     # (checked above), the evidence bundle must be complete, and PL4
     # credentials remain reference-only.
     if (
-        principal.actor_type != "agent"
+        principal.actor_type != "agent" and business_inspection_allowed()
         and principal.accountable_role in _SCOPED_BUSINESS_ADMIN_ROLES
         and action in _CONTENT_ACTIONS | _TENANT_ADMIN_METADATA_ACTIONS | _SCOPED_ADMIN_LIFECYCLE_ACTIONS
     ):

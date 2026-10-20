@@ -343,7 +343,10 @@ async def authorize_resource_action(
     # projection (the same order as the session lane), so an explicitly
     # requested operator view is recorded as ignored evidence instead of
     # turning business access into a 403 or a grant requirement.
-    if runtime_principal is None and is_scoped_business_admin(user, resource_tenant_id=getattr(agent, "tenant_id", None)):
+    from app.core.source_read_purpose import business_inspection_allowed
+
+    if (runtime_principal is None and business_inspection_allowed()
+        and is_scoped_business_admin(user, resource_tenant_id=getattr(agent, "tenant_id", None))):
         if audit:
             await _audit_scoped_business_admin_resource_access(
                 db,

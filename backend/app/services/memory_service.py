@@ -379,6 +379,8 @@ async def _build_memory_context_result(
     selection_status = str(getattr(retriever, "last_selection_status", "not_reported"))
     selection_receipt = str(getattr(retriever, "last_selection_receipt", "") or "") or None
     episodic_sources_unavailable = getattr(retriever, "last_episodic_source_status", "ready") != "ready"
+    if getattr(retriever, "last_team_source_status", "ready") != "ready":
+        degraded_components.append("team_memory_source_authority")
     if episodic_sources_unavailable:
         degraded_components.append("episodic_source_authority")
     if selection_status in {"model_unavailable", "failed"}:

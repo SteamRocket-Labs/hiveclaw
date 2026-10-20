@@ -292,6 +292,11 @@ async def validate_browser_memory_dependency(db, tenant_id, dependency, *, user,
     from app.models.user import User
     from app.services.content_input_receipts import _authorize_session_input_source
 
+    from app.core.source_read_purpose import business_inspection_allowed
+
+    def can_inspect(reader):
+        return business_inspection_allowed() and is_scoped_business_admin(reader, resource_tenant_id=tenant_id)
+
     try:
         receipt = await db.get(ContentInputReceipt, uuid.UUID(dependency["source_id"]), populate_existing=True)
         a = receipt.authority_json
@@ -305,7 +310,7 @@ async def validate_browser_memory_dependency(db, tenant_id, dependency, *, user,
             or a.get("tenant_id") != str(tenant_id) or a.get("agent_id") != str(agent_id)
             or requester is None or not requester.is_active
             or (a.get("audience_kind") == "private" and a.get("owner_user_id") != str(requester.id)
-                and not is_scoped_business_admin(requester, resource_tenant_id=tenant_id))
+                and not can_inspect(requester))
             or session is None or session.tenant_id != tenant_id or session.agent_id != agent_id
             or (a.get("audience_kind") == "group" and not _same_group(a, session))):
             raise ValueError("browser_memory_source_denied")
@@ -321,7 +326,7 @@ async def validate_browser_memory_dependency(db, tenant_id, dependency, *, user,
     requester = await db.get(User, user.id, populate_existing=True)
     if (requester is None or not requester.is_active
         or (a.get("audience_kind") == "private" and a.get("owner_user_id") != str(requester.id)
-            and not is_scoped_business_admin(requester, resource_tenant_id=tenant_id))):
+            and not can_inspect(requester))):
         raise ContentInputReceiptError("explicit_memory_browser_denied", "The browser source reader changed.", 403)
     session = await db.get(ChatSession, session.id, populate_existing=True)
     if a.get("audience_kind") == "group" and (session is None or not _same_group(a, session)):
@@ -426,11 +431,11 @@ async def save_scoped_explicit_memory(request, *, data_root, session_factory=Non
 
 
 async def validate_memory_model_sources(db, *, task, agent_id, session_id, dependencies):
-    """Recheck recalled private memory at the actual provider-request boundary."""
+    """Recheck source-bound recalled memory at the actual provider boundary."""
     from app.kernel.contracts import ExecutionAuthorityUnavailable
     from app.services.personal_knowledge_access import AgentRuntimePrincipal
 
-    sources = [ref for ref in dependencies if ref["source_kind"] == "explicit_memory"]
+    sources = [ref for ref in dependencies if ref["source_kind"] in {"explicit_memory", "team_memory"}]
     if not sources:
         return
     try:
@@ -439,7 +444,12 @@ async def validate_memory_model_sources(db, *, task, agent_id, session_id, depen
         principal = AgentRuntimePrincipal(agent_id=agent_id, requester_user_id=task.root_user_id,
             session_id=str(session_id), runtime_task_id=str(task.id), purpose="interactive_session")
         for source in sources:
-            await validate_explicit_memory_dependency(db, task.tenant_id, source, request=principal)
+            if source["source_kind"] == "team_memory":
+                from app.services.team_memory_runtime import validate_dependency
+
+                await validate_dependency(db, task.tenant_id, source, runtime_request=principal)
+            else:
+                await validate_explicit_memory_dependency(db, task.tenant_id, source, request=principal)
     except ContentInputReceiptError as exc:
         raise ExecutionAuthorityUnavailable(code=exc.code, task=task, effect="model_request",
-            status="denied" if exc.status_code == 403 else "unavailable") from exc
+            status="denied" if exc.status_code in {401, 403, 404} else "unavailable") from exc

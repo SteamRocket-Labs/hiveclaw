@@ -5,6 +5,7 @@ import uuid
 from sqlalchemy import select
 
 from app.core.permissions import is_scoped_business_admin
+from app.core.source_read_purpose import business_inspection_allowed
 from app.core.policy import write_audit_event
 from app.models.agent_team import AgentTeam
 from app.models.chat_session import ChatSession
@@ -48,7 +49,7 @@ async def authorize_workspace(db, tenant_id, workspace_key, *, user=None, runtim
         _principal, actor = await _runtime_input_actor(db, tenant_id, runtime_request)
     else:
         actor = await _browser_actor(db, user)
-    admin = runtime_request is None and is_scoped_business_admin(actor, resource_tenant_id=tenant_id)
+    admin = runtime_request is None and business_inspection_allowed() and is_scoped_business_admin(actor, resource_tenant_id=tenant_id)
     if actor is None or not actor.is_active or (actor.tenant_id != tenant_id and not admin):
         raise ContentInputReceiptError("team_memory_workspace_denied", "This team workspace is not available.", 404)
     model = BusinessTeam if kind == "business_team" else AgentTeam

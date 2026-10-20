@@ -96,6 +96,7 @@ class MemoryRetriever:
         self.last_selection_receipt: str | None = None
         self.last_selection_coverage_path: str | None = None
         self.last_episodic_source_status = "ready"
+        self.last_team_source_status = "ready"
 
     async def retrieve(
         self,
@@ -127,6 +128,8 @@ class MemoryRetriever:
             tenant_id,
             activation_context=activation_context,
         )
+        items.extend(await self._team_candidates(agent_id=agent_id, tenant_id=tenant_id, session_id=session_id,
+            activation_context=activation_context, runtime_task_id=runtime_task_id))
         items = await self._filter_episodic_sources(items, agent_id=agent_id, tenant_id=tenant_id,
             session_id=session_id, activation_context=activation_context)
         items = await self._filter_explicit_sources(items, agent_id=agent_id, tenant_id=tenant_id,
@@ -141,8 +144,64 @@ class MemoryRetriever:
         # Selection can await a provider; recheck before releasing bodies to the main prompt.
         selected = await self._filter_episodic_sources(selected, agent_id=agent_id, tenant_id=tenant_id,
             session_id=session_id, activation_context=activation_context)
-        return await self._filter_explicit_sources(selected, agent_id=agent_id, tenant_id=tenant_id,
+        selected = await self._filter_explicit_sources(selected, agent_id=agent_id, tenant_id=tenant_id,
             session_id=session_id, activation_context=activation_context, runtime_task_id=runtime_task_id)
+        return await self._filter_team_sources(selected, agent_id=agent_id, tenant_id=tenant_id,
+            session_id=session_id, activation_context=activation_context, runtime_task_id=runtime_task_id)
+
+    def _team_principal(self, *, agent_id, session_id, activation_context, runtime_task_id):
+        from app.services.personal_knowledge_access import AgentRuntimePrincipal
+
+        actor = activation_context.principal_stack.current_user if activation_context else None
+        return AgentRuntimePrincipal(agent_id=agent_id, requester_user_id=uuid.UUID(str(actor.id)),
+            session_id=str(session_id), runtime_task_id=runtime_task_id, purpose="interactive_session")
+
+    async def _team_candidates(self, *, agent_id, tenant_id, session_id, activation_context, runtime_task_id):
+        from app.services.team_memory_runtime import memory_id, read_entries, render_entry, source_dependency
+
+        if activation_context is None or activation_context.principal_stack.current_user is None:
+            return []
+        try:
+            issues = []
+            pairs = await read_entries(tenant_id=uuid.UUID(str(tenant_id)), data_root=self.data_root, issues=issues,
+                request=self._team_principal(agent_id=agent_id, session_id=session_id,
+                    activation_context=activation_context, runtime_task_id=runtime_task_id))
+            self.last_team_source_status = "partial" if issues else "ready"
+            return [MemoryItem(kind=MemoryKind.SEMANTIC, content=render_entry(entry), score=0.5,
+                source=memory_id(entry), metadata={"source_type": "team_memory", "entry_id": memory_id(entry),
+                    "title": entry.title, "description": entry.content}, source_refs=(source_dependency(receipt),))
+                for entry, receipt in pairs]
+        except Exception as exc:
+            logger.warning("Team memory source authority unavailable: %s", type(exc).__name__)
+            self.last_team_source_status = "unavailable"
+            return []
+
+    async def _filter_team_sources(self, items, *, agent_id, tenant_id, session_id, activation_context, runtime_task_id):
+        from app.services.team_memory_runtime import memory_id, read_entries, render_entry, source_dependency
+
+        team = [item for item in items if item.metadata.get("source_type") == "team_memory"]
+        if not team:
+            return items
+        allowed = {}
+        try:
+            pairs = await read_entries(tenant_id=uuid.UUID(str(tenant_id)), data_root=self.data_root,
+                request=self._team_principal(agent_id=agent_id, session_id=session_id,
+                    activation_context=activation_context, runtime_task_id=runtime_task_id),
+                ids=[item.metadata["entry_id"] for item in team])
+            allowed = {memory_id(entry): (entry, receipt) for entry, receipt in pairs}
+        except Exception as exc:
+            logger.warning("Selected team source authority unavailable: %s", type(exc).__name__)
+        result = []
+        for item in items:
+            if item.metadata.get("source_type") != "team_memory":
+                result.append(item)
+                continue
+            entry, receipt = allowed.get(item.metadata.get("entry_id"), (None, None))
+            if entry is not None and item.content == render_entry(entry) and item.source_refs == (source_dependency(receipt),):
+                result.append(item)
+            else:
+                self.last_team_source_status = "partial"
+        return result
 
     async def _filter_explicit_sources(self, items, *, agent_id, tenant_id, session_id, activation_context, runtime_task_id=None):
         from app.memory.explicit_overlay import load_explicit_overlay_entries_by_ids

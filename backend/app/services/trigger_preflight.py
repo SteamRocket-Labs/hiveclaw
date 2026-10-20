@@ -108,6 +108,10 @@ async def select_trigger_model(
 
         if model_ids:
             return None, {"model_ids": model_ids}, "remote_a2a_model_pin_unavailable"
+        options = collect_trigger_runtime_options(triggers)
+        controls = [key for key in ("workdir", "allowed_tool_names", "excluded_tool_names", "context_from") if options.get(key)]
+        if controls:
+            return None, {"unsupported_controls": controls}, "remote_a2a_trigger_control_unavailable"
         try:
             connection, _authorization, digest = await require_runtime_authorization(db, agent=agent)
         except HTTPException as exc:

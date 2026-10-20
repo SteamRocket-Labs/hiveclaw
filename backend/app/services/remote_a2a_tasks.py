@@ -549,6 +549,9 @@ async def _record(db, task, state):
         await project_reply(db, task=task, state=state, operation=operation, outbox_id=outbox_id)
         if task.status in TERMINAL or task.status == "needs_reconciliation":
             await settle_and_enqueue_runtime_task_terminal(db, task, terminal_source="remote_a2a_chat")
+            from app.services.remote_a2a_terminal import capture_terminal
+
+            await capture_terminal(db, task)
         else:
             # A reply/cancel admitted during the HTTP gap stays on this Run.
             schedule_cancel(task, state)

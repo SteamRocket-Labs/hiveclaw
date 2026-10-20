@@ -377,6 +377,7 @@ async def _latest_transcript_frontier(
     agent_id: uuid.UUID,
     session_id: uuid.UUID,
     lock_rows: bool,
+    event_id: uuid.UUID | None = None,
 ) -> ChatTranscriptEvent:
     statement = (
         select(ChatTranscriptEvent)
@@ -397,6 +398,8 @@ async def _latest_transcript_frontier(
         .order_by(ChatTranscriptEvent.sequence.desc())
         .limit(1)
     )
+    if event_id is not None:
+        statement = statement.where(ChatTranscriptEvent.id == event_id)
     if lock_rows:
         statement = statement.with_for_update()
     terminal_event = await db.scalar(statement)
@@ -461,7 +464,6 @@ async def _load_bound_task_and_session(
         RuntimeTask.tenant_id == tenant_id,
         RuntimeTask.parent_agent_id == agent_id,
         RuntimeTask.parent_session_id == str(session_id),
-        RuntimeTask.status == terminal_status,
     )
     session_statement = select(ChatSession).where(
         ChatSession.id == session_id,
@@ -477,6 +479,11 @@ async def _load_bound_task_and_session(
     session = await db.scalar(session_statement)
     agent = await db.scalar(agent_statement)
     if task is None or session is None or agent is None:
+        raise TerminalBoundaryCanonicalMismatch("Web terminal task/session/agent authority is incomplete")
+    from app.services.remote_a2a_terminal import terminal_task_snapshot
+
+    task = await terminal_task_snapshot(db, task, terminal_status)
+    if task.status != terminal_status:
         raise TerminalBoundaryCanonicalMismatch("Web terminal task/session/agent authority is incomplete")
     return task, session, agent
 
@@ -704,6 +711,7 @@ async def build_web_terminal_boundary_binding(
         agent_id=agent_uuid,
         session_id=session_uuid,
         lock_rows=lock_rows,
+        event_id=getattr(task, "_terminal_snapshot_event_id", None),
     )
     terminal_sha256 = _transcript_frontier_sha256(terminal_event)
     hook_metadata_sha256 = _sha256(

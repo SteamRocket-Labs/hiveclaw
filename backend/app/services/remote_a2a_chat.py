@@ -111,7 +111,7 @@ async def _session_principal(db, *, task, state, for_effect=True):
         if not isinstance(trigger_origin, dict):
             raise HTTPException(409, detail={"code": "remote_a2a_trigger_origin_unavailable"})
         actual = await load_trigger_input_origin(db, tenant_id=task.tenant_id, agent_id=task.parent_agent_id,
-            session=session, metadata={"source": "loop_same_session",
+            session=session, metadata={"source": trigger_origin.get("source", "loop_same_session"),
                 "trigger_runtime_task_id": trigger_origin.get("wrapper_id"),
                 "session_v2_input_id": trigger_origin.get("input_id"),
                 "session_v2_command_id": trigger_origin.get("command_id")}, for_effect=for_effect)
@@ -119,7 +119,7 @@ async def _session_principal(db, *, task, state, for_effect=True):
             or str(task.budget_run_id) != actual["budget_run_id"]
             or str(task.root_runtime_task_id) != actual["root_runtime_task_id"]):
             raise HTTPException(409, detail={"code": "remote_a2a_trigger_origin_unavailable"})
-    elif for_effect and (task.metadata_json or {}).get("source") == "loop_same_session":
+    elif for_effect and (task.metadata_json or {}).get("source") in {"loop_same_session", "trigger_reflection"}:
         raise HTTPException(409, detail={"code": "remote_a2a_trigger_origin_unavailable"})
     if state.get("channel_origin") is not None:
         from app.services.remote_a2a_channel import validate_origin

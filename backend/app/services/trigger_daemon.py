@@ -1831,6 +1831,8 @@ async def _deliver_batch_to_source_session(
     runtime_task_id: str | None,
     settlement_overrides: dict[str, str] | None = None,
     workflow_results: list[dict[str, Any]] | None = None,
+    reflection: bool = False,
+    wake_content: str | None = None,
 ) -> bool:
     """Deliver a fired ``same_session`` batch into its source chat session as a
     new turn instead of starting a fresh ``trigger_run`` invocation.
@@ -1913,6 +1915,8 @@ async def _deliver_batch_to_source_session(
             return True
 
         content, trigger_names = _build_trigger_context(triggers)
+        if wake_content is not None:
+            content = wake_content
         trigger_ids = [str(getattr(t, "id", "")) for t in triggers if getattr(t, "id", None)]
         child_run_id = _trigger_child_run_id(
             runtime_task_id,
@@ -1934,7 +1938,7 @@ async def _deliver_batch_to_source_session(
                     user=user,
                     session=session,
                     content=content,
-                    source="loop_same_session",
+                    source="trigger_reflection" if reflection else "loop_same_session",
                     input_id=child_run_id,
                     idempotency_key=f"trigger-same-session:{runtime_task_id}:{source_session_id}",
                     requested_kind="queue_next_turn",
@@ -1964,12 +1968,12 @@ async def _deliver_batch_to_source_session(
         runtime_task_id,
         status="completed",
         result_summary=(
-            f"Loop delivered into session {source_session_id} "
+            f"{'Reflection work' if reflection else 'Loop'} delivered into session {source_session_id} "
             f"({'queued behind active run' if queued else 'started new turn'})."
         ),
         session_id=source_session_id,
         metadata_json={
-            "delivery": "same_session",
+            "delivery": "reflection" if reflection else "same_session",
             "delivered_run_id": delivered_run_id,
             "queued": queued,
             "source_session_id": source_session_id,
@@ -2641,6 +2645,16 @@ async def _invoke_agent_for_triggers(
             )
             db.add(session)
             await db.flush()
+
+            if agent.agent_type == "remote_a2a":
+                await db.commit()
+                delivered = await _deliver_batch_to_source_session(agent_id, triggers,
+                    source_session_id=str(session_id), runtime_task_id=runtime_task_id,
+                    settlement_overrides=settlement_overrides, workflow_results=workflow_results,
+                    reflection=True, wake_content=trigger_context)
+                if not delivered:
+                    raise RuntimeError("remote_a2a_reflection_delivery_unavailable")
+                return
 
             memory_messages = [{"role": "user", "content": trigger_context}]
             messages = list(memory_messages)

@@ -17,7 +17,8 @@ def _unavailable():
 
 
 async def load_trigger_input_origin(db, *, tenant_id, agent_id, session, metadata, for_effect=True):
-    if metadata.get("source") != "loop_same_session":
+    source = metadata.get("source")
+    if source not in {"loop_same_session", "trigger_reflection"}:
         return None
     if session.tenant_id != tenant_id or session.agent_id != agent_id:
         raise _unavailable()
@@ -37,7 +38,9 @@ async def load_trigger_input_origin(db, *, tenant_id, agent_id, session, metadat
         if (wrapper is None or wrapper.tenant_id != tenant_id or wrapper.parent_agent_id != agent_id
             or wrapper.task_type != "trigger" or wrapper.status != "completed"
             or wrapper.root_user_id is None or wrapper.root_user_id != session.user_id
-            or wrapper.metadata_json.get("delivery") != "same_session"
+            or wrapper.metadata_json.get("delivery") != ("reflection" if source == "trigger_reflection" else "same_session")
+            or (source == "trigger_reflection" and (session.session_kind != "trigger_run"
+                or session.runtime_source != "trigger" or session.runtime_task_id != wrapper.id))
             or wrapper.metadata_json.get("source_session_id") != str(session.id)
             or input_id != _trigger_child_run_id(wrapper.id, effect="same_session", discriminator=str(session.id))
             or row is None or row.tenant_id != tenant_id or row.session_id != session.id
@@ -51,7 +54,7 @@ async def load_trigger_input_origin(db, *, tenant_id, agent_id, session, metadat
             raise ValueError("scheduled_input_binding_mismatch")
         original = command.target_json["runtime_metadata"]
         trigger_ids = [uuid.UUID(str(value)) for value in original["trigger_ids"]]
-        if (original.get("source") != "loop_same_session"
+        if (original.get("source") != source
             or uuid.UUID(str(original.get("trigger_runtime_task_id"))) != wrapper.id
             or not trigger_ids or len(set(trigger_ids)) != len(trigger_ids)
             or not set(map(str, trigger_ids)).issubset(set(wrapper.metadata_json.get("trigger_ids") or []))
@@ -73,7 +76,7 @@ async def load_trigger_input_origin(db, *, tenant_id, agent_id, session, metadat
                     raise ValueError("scheduled_input_requester_changed")
                 await authorize_trigger_action(db, user, agent_id=agent_id, trigger=trigger, action="execute")
         return {"schema": "hive.trigger_input_origin.v1", "wrapper_id": str(wrapper.id),
-            "input_id": str(row.id), "input_revision": row.revision, "input_sha256": _hash(row.content_parts_json),
+            **({"source": source} if source == "trigger_reflection" else {}), "input_id": str(row.id), "input_revision": row.revision, "input_sha256": _hash(row.content_parts_json),
             "command_id": str(command.id), "request_hash": command.request_hash, "target_hash": command.target_hash,
             "trigger_ids": list(map(str, trigger_ids)), "requester_user_id": str(wrapper.root_user_id),
             "session_id": str(session.id), "budget_run_id": str(budget.id), "root_runtime_task_id": str(root_id)}

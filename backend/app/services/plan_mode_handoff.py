@@ -43,7 +43,7 @@ from app.services.tenant_resolver import resolve_tenant_for_agent
 from app.services.plan_authorization_lease import require_active_plan_authorization
 from app.models.agent import Agent
 from app.models.trigger import AgentTrigger
-from app.services.trigger_resource_authority import preserve_trigger_authority, strip_trigger_runtime_config
+from app.services.trigger_resource_authority import preserve_trigger_authority, stamp_trigger_authority, strip_trigger_runtime_config
 
 logger = logging.getLogger(__name__)
 
@@ -217,7 +217,8 @@ async def _ensure_enabled_trigger(db: Any, agent: Any, plan: Any, *, force_once:
         tenant_id=agent.tenant_id,
         name=payload["name"],
         type=payload["type"],
-        config=payload["config"],
+        config=stamp_trigger_authority(payload["config"], owner_user_id=getattr(plan, "requested_by_user_id", None),
+            root_session_id=getattr(plan, "session_id", None)),
         reason=payload["reason"],
         is_enabled=True,
     )

@@ -153,7 +153,7 @@ def _is_terminal_wrapper(task: RuntimeTask) -> bool:
     return bool(
         task.task_type == "trigger"
         and (
-            str(metadata.get("delivery") or "").strip() in {"same_session", "workflow"}
+            str(metadata.get("delivery") or "").strip() in {"same_session", "reflection", "workflow"}
             or str(metadata.get("skip_reason") or "").strip() == "workflow_ref_handled"
         )
     )

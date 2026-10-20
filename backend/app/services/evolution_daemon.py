@@ -292,6 +292,7 @@ async def _drain_company_kb_jobs():
     from app.database import async_session, enter_rls_bypass
     from app.services.company_knowledge_indexer import CompanyKnowledgeIndexer
     from app.services.company_knowledge_service import CompanyKnowledgeService
+    from app.services.company_knowledge_analysis import CompanyKnowledgeAnalyzer
 
     async with (
         async_session() as db,
@@ -302,6 +303,10 @@ async def _drain_company_kb_jobs():
             session_factory=async_session,
             limit=10,
         )
+        analysis = await CompanyKnowledgeAnalyzer(data_root=get_settings().AGENT_DATA_DIR).recover_due(
+            db, session_factory=async_session, limit=10)
+        if analysis["attempted"]:
+            logger.info("[EvolutionDaemon] Company KB analysis drain: {}", analysis)
         indexer = CompanyKnowledgeIndexer()
         index_completed = 0
         index_failed = 0

@@ -43,6 +43,7 @@ vi.mock('../api/domains/companyKnowledge', () => ({
     materializeReview: vi.fn(),
     decideReview: vi.fn(),
     publishReview: vi.fn(),
+    recoverAnalysis: vi.fn(),
     uploadCompanyImportFile: vi.fn(),
     createSourceContract: vi.fn(),
     retryCompanyImportJob: vi.fn(),
@@ -111,6 +112,11 @@ function workspaceFor(review: CompanyKnowledgeReview, marker: string): CompanyKn
     candidateTitle: review.title,
     candidateMarkdown: 'Reviewed content.',
     reason: marker,
+    analysis: { job: { id: 'analysis', status: 'completed', error_code: null, can_retry: false, model_execution: 'not_in_progress' },
+      override: null, can_override: false, candidate_hash: 'analysis-hash', candidate: {
+        entities: [], assertions: [], links: [], covered_source_refs: ['company-evidence://reference'],
+        unresolved_conflicts: [], resolved_conflicts: [], duplicate_candidates: [], unresolved_questions: [],
+      } },
   };
 }
 
@@ -256,4 +262,36 @@ describe('Company Knowledge control plane — mounted authority views', () => {
       }),
     );
   });
+});
+
+it('keeps an unknown analysis read-only until an explicit authorized exception is recorded', async () => {
+  let current = workspaceFor(reviewA, 'analysis-held');
+  current = { ...current, analysis: {
+    job: { id: 'analysis-held', status: 'held', error_code: 'company_analysis_provider_execution_unknown', can_retry: false, model_execution: 'unknown' },
+    candidate: null, candidate_hash: null, override: null, can_override: true,
+  } };
+  api.getReviewWorkspace.mockImplementation(async () => current);
+  api.recoverAnalysis.mockImplementation(async (_workspace, reason) => {
+    current = { ...current, stateVersion: current.stateVersion + 1, analysis: { ...current.analysis!,
+      override: { reason: reason! }, can_override: false } };
+  });
+  renderPlane();
+  fireEvent.click(screen.getByRole('button', { name: 'Review & publish' }));
+  await screen.findByText(/The model request has an unknown outcome/);
+  expect(screen.queryByRole('button', { name: 'Approve' })).toBeNull();
+  fireEvent.click(screen.getByRole('button', { name: 'Refresh analysis' }));
+  await waitFor(() => expect(api.getReviewWorkspace.mock.calls.length).toBeGreaterThan(1));
+  expect(api.recoverAnalysis).not.toHaveBeenCalled();
+  const confirm = screen.getByRole('button', { name: 'Record exception and allow review' }) as HTMLButtonElement;
+  expect(confirm.disabled).toBe(true);
+  fireEvent.change(screen.getByLabelText('Reason for skipping analysis'), { target: { value: 'Reviewed complete original evidence manually' } });
+  fireEvent.click(confirm);
+  await waitFor(() => expect(api.recoverAnalysis).toHaveBeenCalledTimes(1));
+  expect(api.recoverAnalysis.mock.calls[0]).toEqual([
+    expect.objectContaining({ reviewKey: reviewA.reviewKey, stateVersion: reviewA.stateVersion }),
+    'Reviewed complete original evidence manually',
+  ]);
+  await screen.findByRole('button', { name: 'Approve' });
+  await screen.findByText(/The original may be published; graph projection remains skipped/);
+  expect(api.decideReview).not.toHaveBeenCalled();
 });

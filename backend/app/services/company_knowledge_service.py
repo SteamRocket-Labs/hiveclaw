@@ -1556,6 +1556,10 @@ class CompanyKnowledgeService:
                         )
                     await session.flush()
 
+                from app.services.company_knowledge_analysis import enqueue_evidence_analysis
+
+                await enqueue_evidence_analysis(session, evidence=evidence, document=document,
+                    principal=principal, namespace=request["proposed_namespace"])
                 await self._complete_promotion_handoff(
                     session,
                     principal=principal,
@@ -2051,6 +2055,8 @@ class CompanyKnowledgeService:
     ) -> CompanyKnowledgeProposal:
         if request.proposal_kind not in _PROPOSAL_KINDS:
             raise ValueError("unsupported_company_knowledge_proposal_kind")
+        if {"analysis", "analysis_override", "analysis_legacy_review", "type_confirmation"} & set(request.ontology_mapping):
+            raise ValueError("company_analysis_runtime_binding_is_read_only")
         if request.risk_level not in _RISK_LEVELS:
             raise ValueError("unsupported_company_knowledge_risk_level")
         if request.source_coverage.get("complete") is not True or request.source_coverage.get(
@@ -2221,6 +2227,9 @@ class CompanyKnowledgeService:
             action="propose",
         )
         proposal.status = next_company_proposal_status(proposal.status, "submit")
+        from app.services.company_knowledge_analysis import prepare_proposal_analysis
+
+        await prepare_proposal_analysis(session, principal=principal, proposal=proposal)
         proposal.state_version += 1
         proposal.submitted_at = _utcnow()
         await append_company_knowledge_event(
@@ -2255,8 +2264,12 @@ class CompanyKnowledgeService:
             if not proposal.materialization_content_hash or proposal.materialized_document_id is None:
                 raise ValueError("company_knowledge_materialization_required_before_review")
             CompanyKnowledgeService._validated_materialization_receipt(proposal)
-            return str(proposal.materialization_content_hash)
-        return str(proposal.proposed_content_hash)
+            content_hash = str(proposal.materialization_content_hash)
+        else:
+            content_hash = str(proposal.proposed_content_hash)
+        mapping = dict(proposal.ontology_mapping_json or {})
+        binding = mapping.get("analysis_override") or mapping.get("analysis")
+        return _hash_json({"content_hash": content_hash, "analysis": binding}) if binding else content_hash
 
     @staticmethod
     def _validated_materialization_receipt(
@@ -2381,6 +2394,16 @@ class CompanyKnowledgeService:
         action: str,
     ) -> dict[str, Any]:
         """Authorize one proposal action against every bound source authority."""
+
+        analysis_binding = dict(proposal.ontology_mapping_json or {}).get("analysis") or {}
+        if analysis_binding and action in {"review", "approve", "publish"}:
+            from app.models.company_knowledge_analysis import CompanyKnowledgeExtraction
+            from app.services.company_knowledge_analysis import authorize_extraction_context
+
+            extraction = await session.get(CompanyKnowledgeExtraction, uuid.UUID(analysis_binding["extraction_id"]))
+            if extraction is None or extraction.tenant_id != principal.tenant_id:
+                raise PermissionError("company_analysis_extraction_unavailable")
+            await authorize_extraction_context(session, principal=principal, extraction=extraction)
 
         decisions = [
             await self._require_permission(
@@ -2640,6 +2663,11 @@ class CompanyKnowledgeService:
             "attested_by_user_id": str(principal.accountable_user_id),
             "attestation": "candidate_applied",
         }
+        from app.services.company_knowledge_analysis import prepare_proposal_analysis
+
+        proposal.ontology_mapping_json = {key: value for key, value in dict(proposal.ontology_mapping_json or {}).items()
+            if key not in {"analysis", "analysis_override", "analysis_legacy_review", "type_confirmation"}}
+        await prepare_proposal_analysis(session, principal=principal, proposal=proposal)
         proposal.status = "submitted"
         proposal.submitted_at = now
         proposal.state_version += 1
@@ -2703,6 +2731,13 @@ class CompanyKnowledgeService:
             proposal=proposal,
             action=action,
         )
+        if proposal.proposal_kind != "ontology":
+            from app.services.company_knowledge_analysis import CompanyKnowledgeAnalysisReview
+
+            if self._requires_materialization(proposal):
+                self._review_subject_hash(proposal)
+            await CompanyKnowledgeAnalysisReview(data_root=self._data_root).require(session,
+                principal=principal, proposal=proposal, action=action)
         if proposal.status == "submitted":
             proposal.status = next_company_proposal_status(proposal.status, "begin_review")
         if proposal.status != "in_review":
@@ -2893,6 +2928,10 @@ class CompanyKnowledgeService:
             resource=resource,
             action="publish",
         )
+        from app.services.company_knowledge_analysis import CompanyKnowledgeAnalysisReview
+
+        await CompanyKnowledgeAnalysisReview(data_root=self._data_root).require(session,
+            principal=principal, proposal=proposal, action="publish")
         reviews = (
             (
                 await session.execute(
@@ -2974,6 +3013,12 @@ class CompanyKnowledgeService:
         )
         session.add(publication)
         await session.flush()
+        from app.services.company_knowledge_projection import CompanyKnowledgeProjector
+
+        projector = CompanyKnowledgeProjector(data_root=self._data_root)
+        if current:
+            await projector.retire(session, publication=current, at=valid_from, status="superseded")
+        await projector.apply(session, principal=principal, publication=publication, proposal=proposal, trace_id=trace_id)
         proposal.status = next_company_proposal_status(proposal.status, "publish_succeeded")
         proposal.state_version += 1
         await append_company_knowledge_event_with_outbox(
@@ -3109,6 +3154,9 @@ class CompanyKnowledgeService:
         publication.status = "retired"
         publication.retired_at = now
         publication.valid_until = now
+        from app.services.company_knowledge_projection import CompanyKnowledgeProjector
+
+        await CompanyKnowledgeProjector.retire(session, publication=publication, at=now)
         await append_company_knowledge_event_with_outbox(
             session,
             event_input=_event_input(
@@ -3221,6 +3269,17 @@ class CompanyKnowledgeService:
         )
         session.add(restored)
         await session.flush()
+        from app.services.company_knowledge_projection import CompanyKnowledgeProjector
+
+        restored.analysis_extraction_id = retired.analysis_extraction_id
+        projector = CompanyKnowledgeProjector(data_root=self._data_root)
+        if active:
+            await projector.retire(session, publication=active, at=valid_from, status="superseded")
+        confirmation = dict(retired.graph_projection_receipt_json or {}).get("confirmation")
+        if confirmation:
+            confirmation = {**confirmation, "publication_id": str(restored.id),
+                "restored_from_publication_id": str(retired.id), "restore_permission": policy}
+        await projector.apply(session, principal=principal, publication=restored, confirmation=confirmation, trace_id=trace_id)
         await append_company_knowledge_event_with_outbox(
             session,
             event_input=_event_input(

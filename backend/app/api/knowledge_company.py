@@ -12,7 +12,7 @@ import anyio
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Query, UploadFile, status
 from fastapi.encoders import jsonable_encoder
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
@@ -20,8 +20,11 @@ from app.core.security import get_current_user
 from app.core.tenant_scope import resolve_and_pin_tenant_scope
 from app.database import async_session, get_db
 from app.models.company_knowledge import (
+    CompanyKnowledgeEvent, CompanyKnowledgeProposal,
+    CompanyKnowledgePublication,
     CompanyKnowledgeSourceContract,
 )
+from app.models.company_knowledge_analysis import CompanyKnowledgeAnalysisJob
 from app.models.company_ontology import (
     CompanyOntologyActivation,
     CompanyOntologyCurationRun,
@@ -35,6 +38,10 @@ from app.services.company_knowledge_contracts import (
     SourceContractInput,
     default_company_knowledge_review_policy,
 )
+from app.services.company_knowledge_analysis import (
+    CompanyAnalysisGate, CompanyKnowledgeAnalysisReview, CompanyKnowledgeAnalyzer,
+)
+from app.services.company_knowledge_projection import CompanyKnowledgeProjector
 from app.services.company_knowledge_control_plane import (
     CompanyKnowledgePermissionGrantInput,
     CompanyKnowledgePermissionService,
@@ -140,6 +147,8 @@ def _payload(value: Any) -> dict[str, Any]:
 async def _call(awaitable: Any) -> Any:
     try:
         return await awaitable
+    except CompanyAnalysisGate as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=exc.detail) from exc
     except OntologyEngineUnavailable as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -327,6 +336,26 @@ class ProposalCreate(BaseModel):
 class ProposalSubmit(BaseModel):
     expected_state_version: int = Field(..., ge=1)
     trace_id: str = Field(..., min_length=1, max_length=300)
+
+
+class AnalysisOverride(ProposalSubmit):
+    model_config = ConfigDict(extra="forbid")
+    reason: str = Field(..., min_length=1, max_length=10000)
+
+
+class ProjectionBackfill(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    trace_id: str = Field(..., min_length=1, max_length=300)
+
+
+class ProjectionTypeConfirmation(ProjectionBackfill):
+    candidate_hash: str = Field(..., pattern=r"^[0-9a-f]{64}$")
+    content_hash: str = Field(..., pattern=r"^[0-9a-f]{64}$")
+    activation_id: uuid.UUID
+    entity_types: dict[str, str] = Field(default_factory=dict)
+    property_refs: dict[str, str] = Field(default_factory=dict)
+    link_types: dict[str, str] = Field(default_factory=dict)
+    reason: str = Field(..., min_length=1, max_length=10000)
 
 
 class ProposalReview(BaseModel):
@@ -1219,6 +1248,75 @@ async def get_proposal(
     return _payload(row)
 
 
+@router.get("/analysis/metrics")
+async def company_analysis_metrics(
+    tenant_id: uuid.UUID | None = Query(None), db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    target = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
+    if current_user.role not in {"org_admin", "platform_admin"}:
+        raise HTTPException(status_code=403, detail="company_analysis_metrics_requires_administrator")
+    rows = (await db.execute(select(CompanyKnowledgeAnalysisJob.status, func.count()).where(
+        CompanyKnowledgeAnalysisJob.tenant_id == target).group_by(CompanyKnowledgeAnalysisJob.status))).all()
+    errors = (await db.execute(select(CompanyKnowledgeAnalysisJob.error_code, func.count()).where(
+        CompanyKnowledgeAnalysisJob.tenant_id == target, CompanyKnowledgeAnalysisJob.error_code.is_not(None))
+        .group_by(CompanyKnowledgeAnalysisJob.error_code))).all()
+    overrides = await db.scalar(select(func.count(func.distinct(CompanyKnowledgeEvent.resource_id))).where(
+        CompanyKnowledgeEvent.tenant_id == target, CompanyKnowledgeEvent.event_type == "company_knowledge.analysis_gate_overridden"))
+    proposals = await db.scalar(select(func.count()).select_from(CompanyKnowledgeProposal).where(
+        CompanyKnowledgeProposal.tenant_id == target, CompanyKnowledgeProposal.proposal_kind != "ontology"))
+    total = sum(count for _status, count in rows)
+    statuses = dict(rows)
+    return {"total_jobs": total, "jobs_by_status": statuses, "error_counts": dict(errors),
+        "held_rate": statuses.get("held", 0) / total if total else None,
+        "failed_rate": statuses.get("failed", 0) / total if total else None,
+        "override_proposals": overrides, "knowledge_proposals": proposals,
+        "override_rate": overrides / proposals if proposals else None,
+        "scope": "current_tenant_all_recorded_jobs_and_proposals"}
+
+
+@router.get("/proposals/{proposal_id}/analysis")
+async def get_proposal_analysis(
+    proposal_id: uuid.UUID, tenant_id: uuid.UUID | None = Query(None),
+    db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_user),
+):
+    target = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
+    principal = _principal(current_user, target)
+    proposal = await _call(_service().get_proposal_for_review(db, principal=principal, proposal_id=proposal_id))
+    return await _call(CompanyKnowledgeAnalysisReview(data_root=get_settings().AGENT_DATA_DIR).view(db,
+        principal=principal, proposal=proposal))
+
+
+@router.post("/proposals/{proposal_id}/analysis/retry")
+async def retry_proposal_analysis(
+    proposal_id: uuid.UUID, body: ProposalSubmit, tenant_id: uuid.UUID | None = Query(None),
+    db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_user),
+):
+    target = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
+    principal = _principal(current_user, target)
+    proposal = await _call(_service()._locked_proposal(db, tenant_id=target, proposal_id=proposal_id,
+        expected_state_version=body.expected_state_version))
+    result = await _call(CompanyKnowledgeAnalyzer(data_root=get_settings().AGENT_DATA_DIR).retry(db,
+        principal=principal, proposal=proposal, trace_id=body.trace_id))
+    await db.commit()
+    return result
+
+
+@router.post("/proposals/{proposal_id}/analysis/override")
+async def override_proposal_analysis(
+    proposal_id: uuid.UUID, body: AnalysisOverride, tenant_id: uuid.UUID | None = Query(None),
+    db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_user),
+):
+    target = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
+    principal = _principal(current_user, target)
+    proposal = await _call(_service()._locked_proposal(db, tenant_id=target, proposal_id=proposal_id,
+        expected_state_version=body.expected_state_version))
+    await _call(CompanyKnowledgeAnalysisReview(data_root=get_settings().AGENT_DATA_DIR).override(db,
+        principal=principal, proposal=proposal, reason=body.reason, trace_id=body.trace_id))
+    await db.commit()
+    return _payload(proposal)
+
+
 @router.post("/proposals/{proposal_id}/submit")
 async def submit_proposal(
     proposal_id: uuid.UUID,
@@ -1309,6 +1407,55 @@ async def publish_proposal(
     )
     await db.commit()
     return _payload(publication)
+
+
+async def _projection_publication(db, *, tenant_id, publication_id, lock=False):
+    query = select(CompanyKnowledgePublication).where(CompanyKnowledgePublication.tenant_id == tenant_id,
+        CompanyKnowledgePublication.id == publication_id)
+    row = await db.scalar(query.with_for_update() if lock else query)
+    if row is None:
+        raise HTTPException(status_code=404, detail="company_knowledge_publication_not_found")
+    return row
+
+
+@router.get("/publications/{publication_id}/projection")
+async def get_publication_projection(
+    publication_id: uuid.UUID, tenant_id: uuid.UUID | None = Query(None),
+    db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_user),
+):
+    target = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
+    publication = await _projection_publication(db, tenant_id=target, publication_id=publication_id)
+    return await _call(CompanyKnowledgeProjector(data_root=get_settings().AGENT_DATA_DIR).view(db,
+        principal=_principal(current_user, target), publication=publication))
+
+
+@router.post("/publications/{publication_id}/analysis/backfill")
+async def backfill_publication_analysis(
+    publication_id: uuid.UUID, body: ProjectionBackfill, tenant_id: uuid.UUID | None = Query(None),
+    db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_user),
+):
+    target = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
+    publication = await _projection_publication(db, tenant_id=target, publication_id=publication_id, lock=True)
+    result = await _call(CompanyKnowledgeProjector(data_root=get_settings().AGENT_DATA_DIR).backfill(db,
+        principal=_principal(current_user, target), publication=publication, trace_id=body.trace_id))
+    await db.commit()
+    return result
+
+
+@router.post("/publications/{publication_id}/projection/confirm-types")
+async def confirm_publication_projection_types(
+    publication_id: uuid.UUID, body: ProjectionTypeConfirmation, tenant_id: uuid.UUID | None = Query(None),
+    db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_user),
+):
+    target = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
+    publication = await _projection_publication(db, tenant_id=target, publication_id=publication_id, lock=True)
+    result = await _call(CompanyKnowledgeProjector(data_root=get_settings().AGENT_DATA_DIR).confirm_types(db,
+        principal=_principal(current_user, target), publication=publication, candidate_hash=body.candidate_hash,
+        content_hash=body.content_hash, activation_id=body.activation_id,
+        mapping={"entity_types": body.entity_types, "property_refs": body.property_refs, "link_types": body.link_types},
+        reason=body.reason, trace_id=body.trace_id))
+    await db.commit()
+    return _payload(result)
 
 
 @router.get("/publications")

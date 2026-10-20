@@ -5262,6 +5262,40 @@
       "actionProposalRequiresCompleted": "A proposal can be created once the import completes.",
       "actionAdminRequired": "A company admin must perform this action.",
       "actionUnknown": "The action could not be completed."
+    },
+    "analysis": {
+      "title": "Evidence analysis",
+      "outputLimit": "Analysis reached the configured output budget. Increase the model budget or request authorized manual review. No larger generation was sent automatically.",
+      "legacyReview": "This review started before automatic analysis was introduced. Its original human review is retained; graph analysis requires an explicit backfill.",
+      "ready": "Analysis is ready for human review.",
+      "waiting": "Analysis must finish before review. Check the model configuration, retry safely, or request an authorized exception.",
+      "overridden": "Analysis was explicitly skipped. The original may be published; graph projection remains skipped. Reason:",
+      "unknown": "The model request has an unknown outcome. It will not be sent again automatically. You can wait or request an explicit exception.",
+      "coverage": "Analysis covers {{count}} authorized evidence sources.",
+      "comparisonScope": "Conflict and duplicate findings cover the retrieved publications only, not the entire company.",
+      "conflicts": "Unresolved conflicts",
+      "resolved": "Resolved conflicts",
+      "duplicates": "Possible duplicates",
+      "noneReported": "None reported in the analyzed evidence.",
+      "retry": "Retry analysis safely",
+      "refresh": "Refresh analysis",
+      "overrideReason": "Reason for skipping analysis",
+      "override": "Record exception and allow review"
+    },
+    "projection": {
+      "title": "Knowledge graph",
+      "active": "The approved graph projection is available.",
+      "pending": "The original publication remains available. Its graph projection needs analysis or schema confirmation.",
+      "unavailable": "The graph state could not be opened with current access.",
+      "contextDenied": "Some analysis sources are outside your current access. The original publication is still governed by its own read permissions.",
+      "backfill": "Analyze this existing publication",
+      "confirmDescription": "Confirm how the retained candidates map to the installed schema. This authorizes formal graph materialization for this exact publication and analysis.",
+      "installSchema": "An administrator must install and activate an appropriate domain schema before confirming types.",
+      "schema": "Installed schema",
+      "selectSchema": "Choose an active schema",
+      "selectType": "Choose an existing type or property",
+      "reason": "Reason for this schema confirmation",
+      "confirm": "Confirm types and build graph"
     }
   },
   "workflows": {

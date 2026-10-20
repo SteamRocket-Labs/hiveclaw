@@ -58,6 +58,13 @@ async def test_company_knowledge_import_recovery_is_drained_by_live_daemon(monke
             calls.append(("index",))
             return SimpleNamespace(claimed=2, completed=2, failed=0)
 
+    class _Analyzer:
+        async def recover_due(self, session, *, session_factory, limit):
+            assert session is fake_db
+            assert session_factory is fake_session and limit == 10
+            calls.append(("recover-analysis",))
+            return {"attempted": 0, "completed": 0, "held": 0}
+
     monkeypatch.setattr("app.database.async_session", fake_session)
     monkeypatch.setattr("app.database.enter_rls_bypass", fake_bypass)
     monkeypatch.setattr(
@@ -68,6 +75,7 @@ async def test_company_knowledge_import_recovery_is_drained_by_live_daemon(monke
         "app.services.company_knowledge_indexer.CompanyKnowledgeIndexer",
         lambda: _Indexer(),
     )
+    monkeypatch.setattr("app.services.company_knowledge_analysis.CompanyKnowledgeAnalyzer", lambda **kwargs: _Analyzer())
 
     summary = await evolution_daemon._drain_company_kb_jobs()
 
@@ -78,6 +86,7 @@ async def test_company_knowledge_import_recovery_is_drained_by_live_daemon(monke
         "session",
         "bypass",
         "recover",
+        "recover-analysis",
         "discover-index",
         "index",
     ]

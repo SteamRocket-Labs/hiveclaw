@@ -149,6 +149,10 @@ class CompanyOntologyGateway:
                 ),
                 action="query",
             )
+            if release.publication_id is not None:
+                from app.services.company_knowledge_projection import derived_publication_permission
+
+                decision = await derived_publication_permission(session, principal=principal, release=release, action="query")
             await self._audit_permission(
                 session,
                 principal=principal,
@@ -670,6 +674,10 @@ class CompanyOntologyGateway:
                 ),
                 action="query",
             )
+            if release.publication_id is not None:
+                from app.services.company_knowledge_projection import derived_publication_permission
+
+                decision = await derived_publication_permission(session, principal=principal, release=release, action="query")
             await self._audit_permission(
                 session,
                 principal=principal,
@@ -715,6 +723,8 @@ class CompanyOntologyGateway:
     ) -> None:
         definitions: list[dict[str, Any]] = []
         for release in releases:
+            if release.publication_id is not None:
+                continue
             version = (
                 await session.execute(
                     select(CompanyOntologyPackageVersion).where(
@@ -745,6 +755,10 @@ class CompanyOntologyGateway:
         resource_type: str,
         resource_key: str,
     ) -> dict[str, Any]:
+        if release.publication_id is not None:
+            from app.services.company_knowledge_projection import derived_publication_permission
+
+            return (await derived_publication_permission(session, principal=principal, release=release, action=action)).evidence()
         if not source_refs:
             return {
                 "schema": "hive.company_knowledge_permission_decision.v1",

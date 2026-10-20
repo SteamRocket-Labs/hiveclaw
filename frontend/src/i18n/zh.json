@@ -5262,6 +5262,40 @@
       "actionProposalRequiresCompleted": "导入完成后即可创建提案。",
       "actionAdminRequired": "需要公司管理员执行此操作。",
       "actionUnknown": "操作未能完成。"
+    },
+    "analysis": {
+      "title": "证据分析",
+      "outputLimit": "分析已达到配置的输出预算。请增加模型预算，或申请获准的人工审核。系统没有自动发起更大预算的生成请求。",
+      "legacyReview": "此审核在自动分析上线前已开始。既有人工审核继续保留；图谱分析需要显式回填。",
+      "ready": "分析已完成，等待人工审核。",
+      "waiting": "分析完成后才能审核。请检查模型配置、安全重试，或申请获准的例外。",
+      "overridden": "已显式跳过分析。原文可以发布，图谱投影保持跳过状态。理由：",
+      "unknown": "模型请求的执行结果未知，系统不会自动重发。可以等待或申请显式例外。",
+      "coverage": "分析覆盖了 {{count}} 个获准证据来源。",
+      "comparisonScope": "冲突与重复判断仅覆盖本次检索到的发布物，不代表全公司知识已查完。",
+      "conflicts": "未解决的冲突",
+      "resolved": "已解决的冲突",
+      "duplicates": "疑似重复",
+      "noneReported": "本次分析未报告此类发现。",
+      "retry": "安全重试分析",
+      "refresh": "刷新分析",
+      "overrideReason": "跳过分析的理由",
+      "override": "记录例外并允许审核"
+    },
+    "projection": {
+      "title": "知识图谱",
+      "active": "已批准的图谱投影可以使用。",
+      "pending": "原发布物仍可使用；图谱投影需要完成分析或类型确认。",
+      "unavailable": "当前权限无法打开图谱状态。",
+      "contextDenied": "部分分析来源不在当前访问范围内。原文继续按自身的读取权限提供访问。",
+      "backfill": "分析这份历史发布物",
+      "confirmDescription": "请确认保留候选与已安装类型的对应关系。此操作仅授权为当前这份发布物及分析结果建立正式图谱。",
+      "installSchema": "管理员需要先安装并激活适用的领域类型包，才能确认类型。",
+      "schema": "已安装的类型定义",
+      "selectSchema": "选择已激活的类型定义",
+      "selectType": "选择已有类型或属性",
+      "reason": "本次类型确认的理由",
+      "confirm": "确认类型并建立图谱"
     }
   },
   "workflows": {

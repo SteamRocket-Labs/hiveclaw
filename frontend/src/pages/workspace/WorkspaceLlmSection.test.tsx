@@ -120,6 +120,8 @@ describe('WorkspaceLlmSection', () => {
             model: 'claude-sonnet',
             label: 'Claude Sonnet',
             enabled: true,
+            is_default: true,
+            default_is_explicit: false,
             supports_vision: true,
             base_url: 'https://api.anthropic.com',
           },
@@ -164,11 +166,13 @@ describe('WorkspaceLlmSection', () => {
         onToggleModel={() => {}}
         onEditModel={() => {}}
         onDeleteModel={() => {}}
+        onSetDefaultModel={() => {}}
       />,
     );
 
     expect(markup).toContain('Add Model');
     expect(markup).toContain('Claude Sonnet');
+    expect(markup).toContain('Set as Default');
     expect(markup).toContain('Vision');
   });
 });

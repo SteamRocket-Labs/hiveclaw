@@ -1359,6 +1359,8 @@ class CompanyOntologyService:
         ).scalar_one_or_none()
         if run is None:
             raise LookupError("company_ontology_curation_run_not_found")
+        if "project_publication" in (run.requested_operations_json or []):
+            raise ValueError("company_ontology_publication_lifecycle_required")
         if run.status != "completed" or dict(run.acceptance_result_json or {}).get("passed") is not True:
             raise ValueError("company_ontology_completed_curation_required")
         activation = (
@@ -1453,6 +1455,8 @@ class CompanyOntologyService:
             tenant_id=principal.tenant_id,
             release_id=release_id,
         )
+        if release.publication_id is not None:
+            raise ValueError("company_ontology_publication_lifecycle_required")
         if release.status == "retired":
             return release
         if release.status != "active":
@@ -1512,6 +1516,8 @@ class CompanyOntologyService:
             tenant_id=principal.tenant_id,
             release_id=release_id,
         )
+        if source_release.publication_id is not None:
+            raise ValueError("company_ontology_publication_lifecycle_required")
         if source_release.status not in {"retired", "superseded"}:
             raise ValueError("company_ontology_retired_or_superseded_release_required")
         if request.approved_proposal_id is None or request.valid_from is None:
@@ -1852,9 +1858,11 @@ class CompanyOntologyService:
         trace_id: str,
         policy: dict[str, Any],
         restored_from_release_id: uuid.UUID | None,
+        publication_id: uuid.UUID | None = None,
     ) -> CompanyOntologyRelease:
         if valid_until is not None and valid_until <= valid_from:
             raise ValueError("company_ontology_release_validity_invalid")
+        await _lock_ontology_scope(session, tenant_id=principal.tenant_id, scope=f"namespace:{activation.namespace}")
         active_releases = (
             (
                 await session.execute(
@@ -1863,6 +1871,8 @@ class CompanyOntologyService:
                         CompanyOntologyRelease.tenant_id == principal.tenant_id,
                         CompanyOntologyRelease.namespace == activation.namespace,
                         CompanyOntologyRelease.status == "active",
+                        (CompanyOntologyRelease.publication_id == publication_id if publication_id
+                            else CompanyOntologyRelease.publication_id.is_(None)),
                     )
                     .with_for_update()
                 )
@@ -1905,6 +1915,7 @@ class CompanyOntologyService:
             raise OntologyEngineUnavailable("company_ontology_engine_unavailable") from exc
         release = CompanyOntologyRelease(
             tenant_id=principal.tenant_id,
+            publication_id=publication_id,
             namespace=activation.namespace,
             version=version,
             activation_id=activation.id,
@@ -1975,9 +1986,10 @@ class CompanyOntologyService:
             **dict(release.projection_rebuild_plan_json or {}),
             "materialization_receipt": projection,
         }
-        proposal.status = next_company_proposal_status(proposal.status, "begin_publish")
-        proposal.status = next_company_proposal_status(proposal.status, "publish_succeeded")
-        proposal.state_version += 2
+        if publication_id is None:
+            proposal.status = next_company_proposal_status(proposal.status, "begin_publish")
+            proposal.status = next_company_proposal_status(proposal.status, "publish_succeeded")
+            proposal.state_version += 2
         await append_company_knowledge_event_with_outbox(
             session,
             event_input=_event_input(

@@ -10,6 +10,8 @@ export interface LLMModel {
   model: string;
   label: string;
   enabled: boolean;
+  is_default?: boolean;
+  default_is_explicit?: boolean;
   supports_vision: boolean;
   tenant_id?: string;
   base_url?: string;

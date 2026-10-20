@@ -87,6 +87,7 @@ For the execution path and source map, read [ENGINEERING.md](ENGINEERING.md).
 | --- | --- |
 | Find a guide or design document | [Documentation index](docs/README.md) |
 | Develop or debug HiveClaw | [Engineering guide](ENGINEERING.md) |
+| Review company evidence and build its graph | [Company Knowledge analysis](docs/company-knowledge-analysis.md) |
 | Understand the product direction | [Product goals](docs/hive-sota-master-goal.md) |
 | Check what has changed | [Changelog](CHANGELOG.md) |
 | Inspect acceptance evidence and remaining limits | [Acceptance index](docs/acceptance/2026-08-30-weekend-rc/README.md) |

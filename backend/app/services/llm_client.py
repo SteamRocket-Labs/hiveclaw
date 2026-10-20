@@ -536,6 +536,7 @@ class _CapAwareLLMClient(LLMClient):
         max_tokens: int | None = None,
         **kwargs: Any,
     ) -> LLMResponse:
+        allow_output_escalation = kwargs.pop("_allow_output_cap_escalation", True)
         response = await self._inner.complete(
             messages=messages,
             tools=tools,
@@ -555,7 +556,7 @@ class _CapAwareLLMClient(LLMClient):
         )
 
         escalate_ceiling = get_provider_output_ceiling(self.provider)
-        if tools or (max_tokens is not None and max_tokens >= escalate_ceiling):
+        if not allow_output_escalation or tools or (max_tokens is not None and max_tokens >= escalate_ceiling):
             return response
 
         retry_response = await self._inner.complete(

@@ -28,6 +28,8 @@ COMPANY_KNOWLEDGE_TENANT_TABLES: tuple[str, ...] = (
     "company_knowledge_sources",
     "company_knowledge_evidence",
     "company_knowledge_import_jobs",
+    "company_knowledge_analysis_jobs",
+    "company_knowledge_extractions",
     "company_knowledge_proposals",
     "company_knowledge_reviews",
     "company_knowledge_publications",

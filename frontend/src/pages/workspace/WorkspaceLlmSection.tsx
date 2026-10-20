@@ -10,6 +10,7 @@ export interface WorkspaceLlmModel {
   enabled: boolean;
   supports_vision?: boolean;
   is_default?: boolean;
+  default_is_explicit?: boolean;
   base_url?: string;
   api_key_masked?: string;
   max_output_tokens?: number | null;
@@ -467,7 +468,7 @@ export default function WorkspaceLlmSection({
                     <span className="ws-llm-toggle-knob" />
                   </button>
                   {model.supports_vision ? <span className="badge badge-info">Vision</span> : null}
-                  {model.is_default ? (
+                  {model.is_default && model.default_is_explicit !== false ? (
                     <span className="badge badge-success">{t('enterprise.llm.default', 'Default')}</span>
                   ) : onSetDefaultModel ? (
                     <button className="btn btn-ghost ws-llm-set-default" onClick={() => onSetDefaultModel(model.id)}>{t('enterprise.llm.setDefault', 'Set as Default')}</button>

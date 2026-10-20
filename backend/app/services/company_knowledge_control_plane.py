@@ -56,6 +56,7 @@ _ACTIONS = frozenset(
         "propose",
         "review",
         "approve",
+        "override_analysis_gate",
         "publish",
         "retire",
         "restore",

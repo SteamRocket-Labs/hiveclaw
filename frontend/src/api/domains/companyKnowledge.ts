@@ -94,6 +94,34 @@ export interface CompanyKnowledgeReviewWorkspace extends CompanyKnowledgeReview 
   evidenceRefs: string[];
   candidateTitle: string;
   candidateMarkdown: string;
+  analysis: CompanyAnalysisView | null;
+}
+
+export interface CompanyAnalysisFinding {
+  summary: string;
+  reason: string;
+  source_refs: string[];
+  publication_ids: string[];
+}
+
+export interface CompanyAnalysisView {
+  legacy_review?: boolean;
+  job: { id: string; status: string; error_code: string | null; can_retry: boolean; model_execution: string } | null;
+  error_code?: string;
+  override: { reason: string } | null;
+  can_override: boolean;
+  candidate_hash: string | null;
+  candidate: {
+    entities: Array<{ key: string; type_ref: string; display_name: string; properties: Record<string, unknown> }>;
+    assertions: Array<{ predicate_ref: string }>;
+    links: Array<{ type_ref: string }>;
+    covered_source_refs: string[];
+    unresolved_conflicts: CompanyAnalysisFinding[];
+    resolved_conflicts: CompanyAnalysisFinding[];
+    duplicate_candidates: CompanyAnalysisFinding[];
+    unresolved_questions: string[];
+  } | null;
+  comparison_coverage?: { scope: string; search_status: string; warnings: string[] };
 }
 
 export interface CompanyKnowledgeAccessRule {
@@ -106,6 +134,21 @@ export interface CompanyKnowledgeAccessRule {
   active: boolean;
   expiresAt: string | null;
 }
+
+export interface CompanyProjectionView {
+  publication_id: string;
+  content_hash: string;
+  status: string;
+  job: CompanyAnalysisView['job'];
+  candidate: CompanyAnalysisView['candidate'];
+  candidate_hash: string | null;
+  context_access?: 'denied';
+  can_manage: boolean;
+  can_reanalyze?: boolean;
+  schemas: Array<{ activation_id: string; namespace: string; entity_types: string[]; property_refs: string[]; link_types: string[] }>;
+}
+
+export type CompanyProjectionMapping = Record<'entity_types' | 'property_refs' | 'link_types', Record<string, string>>;
 
 export interface CompanyKnowledgeAudience {
   kind: 'role' | 'user' | 'agent';
@@ -489,6 +532,9 @@ export const companyKnowledgeApi = {
     const raw = await get<Record<string, unknown>>(
       `/knowledge/company/proposals/${encodeURIComponent(review.reviewKey)}`,
     );
+    const analysis = review.kind === 'ontology' ? null : await get<CompanyAnalysisView>(
+      `/knowledge/company/proposals/${encodeURIComponent(review.reviewKey)}/analysis`,
+    );
     const linkedIntake = intakes.find((item) => item.reviewKey === review.reviewKey);
     let candidate: Record<string, unknown> = {};
     if (linkedIntake) {
@@ -510,6 +556,7 @@ export const companyKnowledgeApi = {
       candidateTitle: String(candidate.title || review.title),
       candidateMarkdown: String(candidate.markdown || rawCandidateMarkdown(patch)),
       materialized: Boolean(raw.materialized_document_id || review.materialized),
+      analysis,
     };
   },
 
@@ -543,12 +590,42 @@ export const companyKnowledgeApi = {
     });
   },
 
+  async recoverAnalysis(workspace: CompanyKnowledgeReviewWorkspace, reason?: string): Promise<void> {
+    const suffix = reason === undefined ? 'retry' : 'override';
+    await post(`/knowledge/company/proposals/${encodeURIComponent(workspace.reviewKey)}/analysis/${suffix}`, {
+      expected_state_version: workspace.stateVersion,
+      trace_id: requestRef(`company-analysis-${suffix}`),
+      ...(reason === undefined ? {} : { reason: reason.trim() }),
+    });
+  },
+
   async publishReview(workspace: CompanyKnowledgeReviewWorkspace): Promise<void> {
     await post(`/knowledge/company/proposals/${encodeURIComponent(workspace.reviewKey)}/publish`, {
       expected_state_version: workspace.stateVersion,
       valid_from: new Date().toISOString(),
       valid_until: null,
       trace_id: requestRef('company-review-publish'),
+    });
+  },
+
+  async getProjection(publicationKey: string): Promise<CompanyProjectionView> {
+    return get(`/knowledge/company/publications/${encodeURIComponent(publicationKey)}/projection`);
+  },
+
+  async backfillProjection(publicationKey: string): Promise<void> {
+    await post(`/knowledge/company/publications/${encodeURIComponent(publicationKey)}/analysis/backfill`, {
+      trace_id: requestRef('company-publication-analysis'),
+    });
+  },
+
+  async confirmProjection(view: CompanyProjectionView, activationKey: string, mapping: CompanyProjectionMapping, reason: string): Promise<void> {
+    await post(`/knowledge/company/publications/${encodeURIComponent(view.publication_id)}/projection/confirm-types`, {
+      content_hash: view.content_hash,
+      candidate_hash: view.candidate_hash,
+      activation_id: activationKey,
+      ...mapping,
+      reason: reason.trim(),
+      trace_id: requestRef('company-projection-types'),
     });
   },
 

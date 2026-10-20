@@ -273,8 +273,10 @@ class CompanyOntologyRelease(Base):
             "tenant_id",
             "namespace",
             unique=True,
-            postgresql_where=text("status = 'active'"),
+            postgresql_where=text("status = 'active' AND publication_id IS NULL"),
         ),
+        Index("ix_company_ontology_publication_active", "tenant_id", "publication_id", unique=True,
+            postgresql_where=text("status = 'active' AND publication_id IS NOT NULL")),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -297,6 +299,8 @@ class CompanyOntologyRelease(Base):
     proposal_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("company_knowledge_proposals.id", ondelete="RESTRICT"), nullable=False
     )
+    publication_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True),
+        ForeignKey("company_knowledge_publications.id", ondelete="RESTRICT"), index=True)
     release_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     review_set_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     source_coverage_json: Mapped[dict] = mapped_column(JSONB, nullable=False)

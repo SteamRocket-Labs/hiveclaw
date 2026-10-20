@@ -31,6 +31,7 @@ import {
   type LegacyKnowledgeCandidate,
 } from '../api/domains/companyKnowledge';
 import './CompanyKnowledgeControlPlane.css';
+import CompanyKnowledgeProjectionPanel from './CompanyKnowledgeProjectionPanel';
 
 type ControlLane = 'intake' | 'review' | 'access' | 'lifecycle';
 
@@ -275,6 +276,7 @@ export function KnowledgeLifecycleView({
         <article key={publication.publicationKey} className="company-control-row">
           <div>
             <strong>{publication.title}</strong>
+            {publication.status === 'active' && <CompanyKnowledgeProjectionPanel publicationKey={publication.publicationKey} />}
             <small>
               {t('companyKnowledge.publishedVersion', 'Published version')} {publication.version}
             </small>
@@ -487,6 +489,7 @@ function ReviewWorkspace({
   onMaterialize,
   onDecision,
   onPublish,
+  onRecoverAnalysis,
 }: {
   workspace: CompanyKnowledgeReviewWorkspace | null;
   loading: boolean;
@@ -496,18 +499,21 @@ function ReviewWorkspace({
   onMaterialize: (title: string, markdown: string) => void;
   onDecision: (decision: 'approve' | 'reject' | 'request_changes', reason: string) => void;
   onPublish: () => void;
+  onRecoverAnalysis: (reason?: string) => void;
 }) {
   const { t } = useTranslation();
   const [title, setTitle] = useState('');
   const [markdown, setMarkdown] = useState('');
   const [reason, setReason] = useState('');
   const [attested, setAttested] = useState(false);
+  const [overrideReason, setOverrideReason] = useState('');
 
   useEffect(() => {
     setTitle(workspace?.candidateTitle ?? '');
     setMarkdown(workspace?.candidateMarkdown ?? '');
     setReason('');
     setAttested(false);
+    setOverrideReason('');
   }, [workspace]);
 
   if (loading) {
@@ -531,7 +537,10 @@ function ReviewWorkspace({
     );
   }
   const requiresContent = workspace.needsMaterialization && !workspace.materialized;
-  const canReview = !requiresContent && workspace.status !== 'approved';
+  const analysis = workspace.analysis;
+  const analysisReady = workspace.kind === 'ontology' || Boolean(analysis?.override) || Boolean(analysis?.legacy_review) ||
+    Boolean(analysis?.job?.status === 'completed' && analysis.candidate && !analysis.error_code);
+  const canReview = !requiresContent && workspace.status !== 'approved' && analysisReady;
 
   return (
     <section className="company-review-workspace">
@@ -540,6 +549,51 @@ function ReviewWorkspace({
         <h2>{workspace.title}</h2>
         {workspace.reason && <p>{workspace.reason}</p>}
       </div>
+      {!requiresContent && workspace.kind !== 'ontology' && (
+        <div className="company-control-form">
+          <strong>{t('companyKnowledge.analysis.title')}</strong>
+          <p>{analysis?.legacy_review ? t('companyKnowledge.analysis.legacyReview') : analysis?.override ?
+            t('companyKnowledge.analysis.overridden') :
+            t(analysisReady ? 'companyKnowledge.analysis.ready' : 'companyKnowledge.analysis.waiting')}</p>
+          {analysis?.override && <p role="status">{analysis.override.reason}</p>}
+          {analysis?.job?.model_execution === 'unknown' && <p role="alert">{t('companyKnowledge.analysis.unknown')}</p>}
+          {analysis?.job?.error_code === 'company_analysis_output_incomplete' && <p role="alert">{t('companyKnowledge.analysis.outputLimit')}</p>}
+          {analysis?.candidate && (
+            <>
+              <p>{t('companyKnowledge.analysis.coverage', { count: analysis.candidate.covered_source_refs.length })}</p>
+              <p>{t('companyKnowledge.analysis.comparisonScope')}</p>
+              {[
+                { label: t('companyKnowledge.analysis.conflicts'), findings: analysis.candidate.unresolved_conflicts },
+                { label: t('companyKnowledge.analysis.resolved'), findings: analysis.candidate.resolved_conflicts },
+                { label: t('companyKnowledge.analysis.duplicates'), findings: analysis.candidate.duplicate_candidates },
+              ].map(({ label, findings }) => (
+                <div key={label}>
+                  <strong>{label}</strong>
+                  {findings.length ? findings.map((item, index) => (
+                      <p key={index}>{item.summary} — {item.reason}</p>
+                    )) : <p>{t('companyKnowledge.analysis.noneReported')}</p>}
+                </div>
+              ))}
+              {analysis.candidate.unresolved_questions.map((question, index) => <p key={index}>{question}</p>)}
+            </>
+          )}
+          {!analysisReady && (
+            <div className="company-control-actions">
+              <button type="button" className="btn btn-secondary btn-sm" disabled={busy} onClick={() => onRecoverAnalysis()}>
+                {t(analysis?.job?.can_retry ? 'companyKnowledge.analysis.retry' : 'companyKnowledge.analysis.refresh')}
+              </button>
+              {analysis?.can_override && (
+                <label>
+                  <span>{t('companyKnowledge.analysis.overrideReason')}</span>
+                  <textarea value={overrideReason} maxLength={10000} rows={3} onChange={(event) => setOverrideReason(event.target.value)} />
+                  <button type="button" className="btn btn-secondary btn-sm" disabled={busy || !overrideReason.trim()}
+                    onClick={() => onRecoverAnalysis(overrideReason)}>{t('companyKnowledge.analysis.override')}</button>
+                </label>
+              )}
+            </div>
+          )}
+        </div>
+      )}
       {requiresContent && (
         <>
           <label>
@@ -1454,6 +1508,11 @@ export default function CompanyKnowledgeControlPlane() {
       companyKnowledgeApi.publishReview(workspace),
     onSuccess: invalidateCompanyKnowledge,
   });
+  const analysisMutation = useMutation({
+    mutationFn: ({ workspace, reason }: { workspace: CompanyKnowledgeReviewWorkspace; reason?: string }) =>
+      companyKnowledgeApi.recoverAnalysis(workspace, reason),
+    onSuccess: invalidateCompanyKnowledge,
+  });
   const grantMutation = useMutation({
     mutationFn: companyKnowledgeApi.grantAccess,
     onSuccess: invalidateCompanyKnowledge,
@@ -1676,12 +1735,12 @@ export default function CompanyKnowledgeControlPlane() {
               loading={workspaceQuery.isLoading}
               error={workspaceQuery.isError ? workspaceQuery.error : null}
               actionError={
-                materializeMutation.error || decisionMutation.error || publishMutation.error
+                materializeMutation.error || decisionMutation.error || publishMutation.error || analysisMutation.error
               }
               busy={
                 materializeMutation.isPending ||
                 decisionMutation.isPending ||
-                publishMutation.isPending
+                publishMutation.isPending || analysisMutation.isPending
               }
               onMaterialize={(title, markdown) => {
                 if (workspaceQuery.data) {
@@ -1695,6 +1754,14 @@ export default function CompanyKnowledgeControlPlane() {
               }}
               onPublish={() => {
                 if (workspaceQuery.data) publishMutation.mutate(workspaceQuery.data);
+              }}
+              onRecoverAnalysis={(reason) => {
+                if (!workspaceQuery.data) return;
+                if (reason !== undefined || workspaceQuery.data.analysis?.job?.can_retry || !workspaceQuery.data.analysis?.job) {
+                  analysisMutation.mutate({ workspace: workspaceQuery.data, reason });
+                } else {
+                  void workspaceQuery.refetch();
+                }
               }}
             />
           </section>

@@ -88,7 +88,7 @@ def test_company_knowledge_authority_models_are_distinct_from_personal_knowledge
     } <= {constraint.name for constraint in inspect(CompanyKnowledgeImportJob).local_table.foreign_key_constraints}
 
 
-def test_company_ontology_models_keep_release_authority_separate_from_knowledge_publications() -> None:
+def test_company_ontology_models_retain_manual_releases_and_bind_publication_projections() -> None:
     expected_tables = {
         CompanyOntologyPackage: "company_ontology_packages",
         CompanyOntologyPackageVersion: "company_ontology_package_versions",
@@ -131,7 +131,9 @@ def test_company_ontology_models_keep_release_authority_separate_from_knowledge_
         "permission_resource_ref",
         "status",
     } <= assertion_columns
-    assert "publication_id" not in {column.key for column in inspect(CompanyOntologyRelease).columns}
+    publication_column = inspect(CompanyOntologyRelease).columns.publication_id
+    assert publication_column.nullable
+    assert {fk.target_fullname for fk in publication_column.foreign_keys} == {"company_knowledge_publications.id"}
 
 
 def test_resource_permission_supports_company_deny_expiry_and_runtime_binding_contract() -> None:

@@ -508,6 +508,12 @@ class CompanyKnowledgePublication(Base):
     )
     rollback_ref: Mapped[str] = mapped_column(String(1000), nullable=False)
     companion_release_ref: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    graph_projection_status: Mapped[str] = mapped_column(String(40), nullable=False,
+        default="not_analyzed", server_default="not_analyzed")
+    graph_projection_receipt_json: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict,
+        server_default="{}")
+    analysis_extraction_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True),
+        ForeignKey("company_knowledge_extractions.id", ondelete="RESTRICT"))
     published_by_user_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False
     )

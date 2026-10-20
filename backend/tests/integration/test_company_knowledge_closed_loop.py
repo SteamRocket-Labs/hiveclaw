@@ -48,6 +48,7 @@ from app.services.company_knowledge_service import (
     CompanyKnowledgeReviewRequest,
     CompanyKnowledgeService,
 )
+from app.services.company_knowledge_analysis import CompanyKnowledgeAnalysisReview
 from app.tools.runtime import ToolExecutionContext, ToolExecutionRequest
 
 
@@ -301,6 +302,8 @@ async def test_company_document_ingest_review_publish_index_retire_restore_close
             expected_state_version=proposal.state_version,
             trace_id="trace-submit",
         )
+        await CompanyKnowledgeAnalysisReview(data_root=tmp_path).override(db, principal=principal,
+            proposal=submitted, reason="Manually reviewed original source without automatic analysis", trace_id="trace-manual-analysis-override")
         reviewed = await service.record_review(
             db,
             principal=principal,
@@ -502,6 +505,8 @@ async def test_company_document_ingest_review_publish_index_retire_restore_close
                 trace_id="trace-review-materialized-agent-proposal-receipt-drift",
             )
         materialized.materialization_receipt_json = original_receipt
+        await CompanyKnowledgeAnalysisReview(data_root=tmp_path).override(db, principal=principal,
+            proposal=materialized, reason="Manually reviewed the full materialized update", trace_id="trace-materialized-analysis-override")
         reviewed_update = await service.record_review(
             db,
             principal=principal,
@@ -516,6 +521,8 @@ async def test_company_document_ingest_review_publish_index_retire_restore_close
             expected_state_version=materialized.state_version,
             trace_id="trace-review-materialized-agent-proposal",
         )
+        first_review_subject = service._review_subject_hash(reviewed_update)
+        assert first_review_subject != first_materialization_hash
         rematerialized = await service.materialize_proposal(
             db,
             principal=principal,
@@ -543,6 +550,8 @@ async def test_company_document_ingest_review_publish_index_retire_restore_close
                 valid_until=None,
                 trace_id="trace-publish-with-stale-review",
             )
+        await CompanyKnowledgeAnalysisReview(data_root=tmp_path).override(db, principal=principal,
+            proposal=rematerialized, reason="Manually reviewed the revised full document", trace_id="trace-rematerialized-analysis-override")
         reviewed_update = await service.record_review(
             db,
             principal=principal,
@@ -605,9 +614,10 @@ async def test_company_document_ingest_review_publish_index_retire_restore_close
             .all()
         )
         assert review_subjects == [
-            first_materialization_hash,
-            rematerialized.materialization_content_hash,
+            first_review_subject,
+            service._review_subject_hash(rematerialized),
         ]
+        assert len(set(review_subjects)) == 2
         assert (
             await db.scalar(
                 select(func.count(CompanyKnowledgePublication.id)).where(
@@ -1359,6 +1369,10 @@ async def test_existing_in_review_proposal_with_platform_admin_approval_reaches_
         )
         db.add(historical_review)
         submitted.status = "in_review"
+        # The analysis migration preserves this pre-existing review subject.
+        submitted.ontology_mapping_json = {**dict(submitted.ontology_mapping_json or {}), "analysis_legacy_review": {
+            "revision": "company_knowledge_analysis_1020", "candidate_hash": submitted.proposed_content_hash,
+            "materialized_hash": submitted.materialization_content_hash}}
         submitted.state_version += 1
         await db.commit()
         stuck_state_version = submitted.state_version

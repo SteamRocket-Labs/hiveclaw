@@ -231,6 +231,11 @@ async def test_personal_and_legacy_promotion_use_recoverable_evidence_to_review_
 
     async with owner_sessionmaker() as db:
         personal_proposal = await db.get(CompanyKnowledgeProposal, processed_personal.proposal_id)
+        from app.models.company_knowledge_analysis import CompanyKnowledgeAnalysisJob
+
+        assert await db.scalar(select(func.count()).select_from(CompanyKnowledgeAnalysisJob).where(
+            CompanyKnowledgeAnalysisJob.tenant_id == tenant_id,
+            CompanyKnowledgeAnalysisJob.evidence_id == processed_personal.evidence_id)) == 1
         assert personal_proposal is not None
         assert personal_proposal.proposal_kind == "personal_promotion"
         assert personal_proposal.status == "submitted"
@@ -273,6 +278,10 @@ async def test_personal_and_legacy_promotion_use_recoverable_evidence_to_review_
             expected_state_version=personal_proposal.state_version,
             trace_id="trace-personal-promotion-materialized",
         )
+        from app.services.company_knowledge_analysis import CompanyKnowledgeAnalysisReview
+
+        await CompanyKnowledgeAnalysisReview(data_root=tmp_path).override(db, principal=principal, proposal=materialized,
+            reason="Manually reviewed the complete promoted candidate", trace_id="promotion-analysis-override")
         reviewed = await company_service.record_review(
             db,
             principal=principal,
@@ -373,6 +382,9 @@ async def test_personal_and_legacy_promotion_use_recoverable_evidence_to_review_
 
     async with owner_sessionmaker() as db:
         legacy_proposal = await db.get(CompanyKnowledgeProposal, processed_legacy.proposal_id)
+        assert await db.scalar(select(func.count()).select_from(CompanyKnowledgeAnalysisJob).where(
+            CompanyKnowledgeAnalysisJob.tenant_id == tenant_id,
+            CompanyKnowledgeAnalysisJob.evidence_id == processed_legacy.evidence_id)) == 1
         assert legacy_proposal is not None
         assert legacy_proposal.proposal_kind == "legacy_import"
         assert legacy_proposal.status == "submitted"

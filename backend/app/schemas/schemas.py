@@ -435,6 +435,7 @@ class LLMModelOut(BaseModel):
     provider_options: dict | None = None
     created_at: datetime
     is_default: bool = False
+    default_is_explicit: bool = False
 
     model_config = {"from_attributes": True}
 

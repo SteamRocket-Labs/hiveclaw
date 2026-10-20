@@ -347,7 +347,12 @@ async def test_pdf_docx_txt_markdown_direct_import_vertical_evidence(complete_sc
 
     # Per-format proof: each document's own segments carry its distinct marker.
     async with owner_sessionmaker() as session:
+        from app.models.company_knowledge_analysis import CompanyKnowledgeAnalysisJob
+
         for key, marker in (("pdf", MARKER_PDF), ("docx", MARKER_DOCX), ("txt", MARKER_TXT), ("md", MARKER_ZH)):
+            assert await session.scalar(select(func.count()).select_from(CompanyKnowledgeAnalysisJob).where(
+                CompanyKnowledgeAnalysisJob.tenant_id == tenant_id,
+                CompanyKnowledgeAnalysisJob.evidence_id == jobs[key].evidence_id)) == 1
             document = (
                 await session.execute(select(KnowledgeDocument).where(KnowledgeDocument.id == jobs[key].document_id))
             ).scalar_one()
@@ -421,6 +426,13 @@ async def test_pdf_docx_txt_markdown_direct_import_vertical_evidence(complete_sc
     # Review → publish through the existing authority (normal risk: one
     # org_admin approval is enough).
     async with owner_sessionmaker() as session:
+        from app.services.company_knowledge_analysis import CompanyKnowledgeAnalysisReview
+        from app.models.company_knowledge import CompanyKnowledgeProposal
+
+        proposal = await session.get(CompanyKnowledgeProposal, proposal.id)
+        await CompanyKnowledgeAnalysisReview(data_root=tmp_path).override(session,
+            principal=_principal(tenant_id=tenant_id, user_id=admin_id), proposal=proposal,
+            reason="Manually reviewed all converted document segments", trace_id="direct-import-analysis-override")
         reviewed = await service.record_review(
             session,
             principal=_principal(tenant_id=tenant_id, user_id=admin_id),

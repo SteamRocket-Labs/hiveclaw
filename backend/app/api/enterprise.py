@@ -323,6 +323,7 @@ async def list_llm_models(
     effective_default = default_model_id or first_model_id
     for out in models:
         out.is_default = str(out.id) == effective_default
+        out.default_is_explicit = str(out.id) == default_model_id
 
     return models
 

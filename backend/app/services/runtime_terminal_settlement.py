@@ -64,7 +64,9 @@ async def lock_runtime_task_with_session_authority(
     ``append_session_events``' own advisory) afterwards — the exact edge that
     kills a concurrent transcript append of the same session. This helper
     reads the row's immutable session binding unlocked, acquires that session
-    advisory, and only then takes the row lock.
+    advisory, and only then takes the row lock. Refresh existing identity-map
+    entries: another writer may have committed while this caller held no lock.
+    The query's autoflush preserves any valid pending writes before that read.
     """
 
     from app.services.chat_transcript import lock_transcript_session
@@ -78,7 +80,8 @@ async def lock_runtime_task_with_session_authority(
     if binding is not None and session_id_raw and binding.parent_agent_id is not None:
         await lock_transcript_session(db, session_id=uuid.UUID(session_id_raw))
     task = (
-        await db.execute(select(RuntimeTask).where(RuntimeTask.id == task_id).with_for_update())
+        await db.execute(select(RuntimeTask).where(RuntimeTask.id == task_id)
+            .with_for_update().execution_options(populate_existing=True))
     ).scalar_one_or_none()
     if task is not None and session_id_raw and str(getattr(task, "parent_session_id", "") or "") != session_id_raw:
         raise RuntimeTaskSessionBindingConflict(f"runtime task {task_id} session binding changed under lock")

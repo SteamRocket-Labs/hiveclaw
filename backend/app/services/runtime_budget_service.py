@@ -2154,6 +2154,15 @@ class RuntimeBudgetService:
                 # Preserve the journal and leave read/cancel/reconcile reachable.
                 task.status = "needs_reconciliation"
                 task.budget_terminal_reason = terminal_reason
+                from copy import deepcopy
+                from app.services.remote_a2a_observation import pause
+
+                remote = deepcopy(remote)
+                pause(remote, "runtime_budget_stopped")
+                operation = remote["operations"][-1]
+                if operation.get("automatic_observation") and operation["phase"] == "pending":
+                    operation.update(phase="not_started", not_started_reason="runtime_budget_stopped")
+                task.scheduled_at = None
                 task.metadata_json = {**metadata, "remote_a2a": {**remote,
                     "error_code": "remote_a2a_runtime_budget_stopped"}}
                 continue

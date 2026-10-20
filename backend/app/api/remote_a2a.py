@@ -113,7 +113,7 @@ async def select_runtime(
 
 class RemoteTaskOperationIn(RemoteConnectionFrame):
     operation_id: uuid.UUID
-    action: Literal["refresh", "cancel", "send_message", "abandon", "retry"]
+    action: Literal["refresh", "cancel", "send_message", "abandon", "retry", "observe", "pause_observation"]
     params: dict = Field(default_factory=dict)
 
 

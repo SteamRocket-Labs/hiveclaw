@@ -75,9 +75,19 @@ it('sends and reads a complete remote result in the actual original work', async
       expect((await original(new URL('/__remote-test/wait', base))).status).toBe(200);
       fireEvent.click(controls.getByText('Read saved state'));
     }
+    if (process.env.HIVE_M3S_OBSERVE === '1') {
+      await controls.findByText('Start automatic checks');
+      fireEvent.change(controls.getByLabelText('Maximum automatic checks'), { target: { value: '2' } });
+      fireEvent.change(controls.getByLabelText('Check interval in seconds'), { target: { value: '1' } });
+      fireEvent.change(controls.getByLabelText('Stop starting checks after seconds'), { target: { value: '10' } });
+      fireEvent.click(controls.getByText('Start automatic checks'));
+      expect((await original(new URL('/__remote-test/wait', base))).status).toBe(200);
+      fireEvent.click(controls.getByText('Read saved state'));
+      expect((await controls.findAllByText('Remote reports completion')).length).toBeGreaterThan(0);
+    }
     const saved = await controls.findByText(/NATIVE_REMOTE_FULL_RESULT/);
     const observation = JSON.parse(saved.textContent || '{}');
-    expect(observation.task.artifacts[0].parts[0].text).toBe('NATIVE_REMOTE_FULL_RESULT\n'.repeat(4000));
+    expect((observation.task || observation).artifacts[0].parts[0].text).toBe('NATIVE_REMOTE_FULL_RESULT\n'.repeat(4000));
     expect(controls.getByText('External cost: unknown. Internal action control: unverified.')).toBeTruthy();
     if (process.env.HIVE_M3P_FILE_RETURN === '1') {
       fireEvent.click(controls.getByText('Recover files from saved replies'));

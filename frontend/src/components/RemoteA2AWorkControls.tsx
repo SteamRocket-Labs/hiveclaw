@@ -36,6 +36,12 @@ function Work({ agentId, sessionId, actorId, tenantId }: { agentId: string; sess
   const [unknown, setUnknown] = useState(false);
   const [error, setError] = useState(false);
   const [selected, setSelected] = useState<RemoteA2ATask | null>(null);
+  const [observationLimit, setObservationLimit] = useState('20');
+  const [observationInterval, setObservationInterval] = useState('5');
+  const [observationDuration, setObservationDuration] = useState('300');
+  const observationLimits = { max_observations: Number(observationLimit), interval_seconds: Number(observationInterval),
+    duration_seconds: Number(observationDuration) };
+  const observationValid = Object.values(observationLimits).every((value) => Number.isInteger(value) && value > 0 && value <= 2147483647);
   const [files, setFiles] = useState<{ taskId: string; available: number; unavailable: number; conflicts: number } | null>(null);
   const pending = useRef<Pending | null>(null);
   const current = useRef(true);
@@ -62,8 +68,12 @@ function Work({ agentId, sessionId, actorId, tenantId }: { agentId: string; sess
     if (!matches() || result.isError) return;
     const request = pending.current;
     const nonce = request && ('request_id' in request.body ? request.body.request_id : request.body.operation_id);
-    const accepted = result.data?.items.find((task) => task.request_id === nonce || task.latest_operation_id === nonce);
-    if (accepted) { pending.current = null;setUnknown(false);setText('');await read(accepted.id); }
+    const accepted = nonce ? result.data?.items.find((task) => task.request_id === nonce || task.latest_operation_id === nonce || task.latest_observation_command_id === nonce) : undefined;
+    if (accepted && request) {
+      pending.current = null;setUnknown(false);
+      if (!request.taskId || (request.body as RemoteA2ATaskOperation).action === 'send_message') setText('');
+      await read(accepted.id);
+    }
     else if (selected) await read(selected.id);
   }
   async function recoverFiles() {
@@ -90,7 +100,10 @@ function Work({ agentId, sessionId, actorId, tenantId }: { agentId: string; sess
         : await remoteA2AApi.startTask(agentId, request.body as RemoteA2ATaskInput);
       if (!matches()) return;
       if (task.agent_id !== agentId || task.source_session_id !== sessionId) throw new Error('Remote work scope changed');
-      pending.current = null;setUnknown(false);setText('');setSelected(task);setEffects(false);setCost(false);
+      pending.current = null;setUnknown(false);setSelected(task);
+      if (!request.taskId || (request.body as RemoteA2ATaskOperation).action === 'send_message') {
+        setText('');setEffects(false);setCost(false);
+      }
       await query.refetch();
     } catch (failure) {
       if (!matches()) return;
@@ -111,7 +124,7 @@ function Work({ agentId, sessionId, actorId, tenantId }: { agentId: string; sess
   function operate(action: RemoteA2ATaskOperation['action']) {
     if (!selected || pending.current) return;
     const params = action === 'send_message' ? { message: { messageId: crypto.randomUUID(), role: 'ROLE_USER',
-      taskId: selected.remote_task_id, contextId: selected.remote_context_id, parts: [{ text }] } } : {};
+      taskId: selected.remote_task_id, contextId: selected.remote_context_id, parts: [{ text }] } } : action === 'observe' ? observationLimits : {};
     void submit({ taskId: selected.id, body: { ...frame(), expected_version: selected.configuration_version,
       operation_id: crypto.randomUUID(), action, params } });
   }
@@ -120,6 +133,7 @@ function Work({ agentId, sessionId, actorId, tenantId }: { agentId: string; sess
     if (task.status === 'suspended' && task.remote_state === 'TASK_STATE_AUTH_REQUIRED' && !task.error_code) return t('remoteWork.authRequired', 'Remote authorization required');
     const labels: Record<string, string> = {
       pending: t('remoteWork.queued', 'Queued'), running: t('remoteWork.contacting', 'Contacting remote endpoint'),
+      resumable: t('remoteWork.waiting', 'Remote task waiting'),
       suspended: t('remoteWork.waiting', 'Remote task waiting'), completed: t('remoteWork.completed', 'Remote reports completion'),
       failed: t('remoteWork.reportedFailure', 'Remote reports failure'), killed: t('remoteWork.cancelConfirmed', 'Remote cancellation confirmed'),
       skipped: t('remoteWork.abandoned', 'Locally abandoned'), needs_reconciliation: t('remoteWork.unconfirmed', 'Remote state unconfirmed'),
@@ -156,7 +170,22 @@ function Work({ agentId, sessionId, actorId, tenantId }: { agentId: string; sess
       <p>{status(selected)}</p>
       <p>{t('remoteWork.costUnknown', 'External cost: unknown. Internal action control: unverified.')}</p>
       {selected.error_code && <p role="alert"><code>{selected.error_code}</code></p>}
+      {selected.automatic_observation && <p role="status">{t('remoteWork.observationStatus',
+        'Automatic checks: {{count}}/{{limit}}. Deadline: {{deadline}}. State: {{state}}.',
+        { count: selected.automatic_observation.started, limit: selected.automatic_observation.max_observations,
+          deadline: selected.automatic_observation.deadline, state: selected.automatic_observation.status === 'active'
+            ? t('remoteWork.observationActive', 'Running') : t('remoteWork.observationPaused', 'Paused') })}
+        {selected.automatic_observation.reason && <code>{selected.automatic_observation.reason}</code>}</p>}
+      {selected.recovery_actions.includes('observe') && <fieldset disabled={busy || unknown || !!pending.current}>
+        <legend>{t('remoteWork.observationLimits', 'Automatic task checks')}</legend>
+        <label>{t('remoteWork.observationCount', 'Maximum automatic checks')}<input type="number" min="1" step="1" max="2147483647" value={observationLimit} onChange={(event) => setObservationLimit(event.target.value)} /></label>
+        <label>{t('remoteWork.observationInterval', 'Check interval in seconds')}<input type="number" min="1" step="1" max="2147483647" value={observationInterval} onChange={(event) => setObservationInterval(event.target.value)} /></label>
+        <label>{t('remoteWork.observationDuration', 'Stop starting checks after seconds')}<input type="number" min="1" step="1" max="2147483647" value={observationDuration} onChange={(event) => setObservationDuration(event.target.value)} /></label>
+        <p>{t('remoteWork.observationBoundary', 'These limits cover automatic status requests. A request already in progress may finish later. Remote charges remain unknown.')}</p>
+        <button type="button" className="btn-primary" disabled={!observationValid} onClick={() => operate('observe')}>{t('remoteWork.observe', 'Start automatic checks')}</button>
+      </fieldset>}
       <div>
+        {selected.recovery_actions.includes('pause_observation') && <button type="button" className="btn-secondary" disabled={busy || unknown} onClick={() => operate('pause_observation')}>{t('remoteWork.pauseObservation', 'Pause automatic checks')}</button>}
         <button type="button" className="btn-secondary" disabled={busy} onClick={() => { void recoverFiles(); }}>{t('remoteWork.recoverFiles', 'Recover files from saved replies')}</button>
         {selected.recovery_actions.includes('retry') && <button type="button" className="btn-primary" disabled={busy || unknown} onClick={() => operate('retry')}>{t('remoteWork.retryUnstarted', 'Retry saved operation after access repair')}</button>}
         {selected.recovery_actions.includes('refresh') && <button type="button" className="btn-secondary" disabled={busy || unknown} onClick={() => operate('refresh')}>{t('remoteWork.refresh', 'Check remote task')}</button>}

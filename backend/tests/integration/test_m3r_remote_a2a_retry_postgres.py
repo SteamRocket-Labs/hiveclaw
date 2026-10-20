@@ -1,7 +1,7 @@
 """Only locally proven pre-HTTP denials permit an explicit saved-operation retry."""
 
 from datetime import datetime, timezone
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 
@@ -76,8 +76,9 @@ async def test_local_authority_repair_retries_exact_saved_operation_in_original_
         assert len(remote.requests) == count + 1
 
 
+@pytest.mark.parametrize("mode", ["retry", "observe"])
 async def test_original_work_ui_repairs_and_retries_through_real_http_and_worker(
-    remote_work, app_user_sessionmaker, monkeypatch, tmp_path
+    remote_work, app_user_sessionmaker, monkeypatch, tmp_path, mode
 ):
     import asyncio
     from fastapi import FastAPI
@@ -103,10 +104,14 @@ async def test_original_work_ui_repairs_and_retries_through_real_http_and_worker
         for attempt in range(2):
             try:
                 task_id = await asyncio.wait_for(queued.get(), 30)
-                if attempt == 0:
+                if attempt == 0 and mode == "retry":
                     async with tenant_scoped_session(seed["tenant"], session_factory=app_user_sessionmaker) as db:
                         (await db.get(Agent, seed["agent"])).deactivated_at = datetime.now(timezone.utc)
                         await db.commit()
+                if mode == "observe" and attempt == 1:
+                    async with tenant_scoped_session(seed["tenant"], session_factory=app_user_sessionmaker) as db:
+                        scheduled = (await db.get(RuntimeTask, UUID(task_id))).scheduled_at
+                    await asyncio.sleep(max(0, (scheduled - datetime.now(timezone.utc)).total_seconds()))
                 await original.execute(seed, task_id, app_user_sessionmaker)
             except BaseException as exc:
                 failures.append(exc)
@@ -131,17 +136,19 @@ async def test_original_work_ui_repairs_and_retries_through_real_http_and_worker
     monkeypatch.setattr(runtime_task_worker, "notify_runtime_task_worker", wake)
     with remote_server() as remote:
         await original.configure(seed, api, remote)
-        remote.reply = lambda request: {"task": {"id": "repaired-task", "status": {"state": "TASK_STATE_COMPLETED"},
-            "artifacts": [{"artifactId": "report", "parts": [{"text": "NATIVE_REMOTE_FULL_RESULT\n" * 4000}]}]}}
+        remote.reply = lambda request: {"task": {"id": "repaired-task", "status": {"state": "TASK_STATE_WORKING" if mode == "observe" and request["method"] == "SendMessage" else "TASK_STATE_COMPLETED"},
+            "artifacts": [{"artifactId": "report", "parts": [{"text": "NATIVE_REMOTE_FULL_RESULT\n" * 4000}]}]}} if request["method"] == "SendMessage" else {"id": "repaired-task", "status": {"state": "TASK_STATE_COMPLETED"},
+                "artifacts": [{"artifactId": "report", "parts": [{"text": "NATIVE_REMOTE_FULL_RESULT\n" * 4000}]}]}
         worker = asyncio.create_task(consume())
         try:
             await _exercise_dom_bridge(web, {"user_id": seed["owner"], "tenant_id": seed["tenant"], "agent_id": seed["agent"]},
                 tmp_path, entry_file="e2e/remote-a2a-work-native.tsx",
-                extra_env={"HIVE_M3N_TOKEN": seed["user_token"], "HIVE_M3O_SESSION_ID": str(_session_id), "HIVE_M3R_RETRY": "1"})
+                extra_env={"HIVE_M3N_TOKEN": seed["user_token"], "HIVE_M3O_SESSION_ID": str(_session_id), "HIVE_M3R_RETRY": "1" if mode == "retry" else "0", "HIVE_M3S_OBSERVE": "1" if mode == "observe" else "0"})
             await asyncio.wait_for(worker, 5)
             assert not failures
             posts = [row[3] for row in remote.requests if row[0] == "POST"]
-            assert len(posts) == 1 and posts[0]["params"]["message"]["parts"][0]["text"] == "Prepare the complete remote report."
+            assert [post["method"] for post in posts] == (["SendMessage"] if mode == "retry" else ["SendMessage", "GetTask"])
+            assert posts[0]["params"]["message"]["parts"][0]["text"] == "Prepare the complete remote report."
             async with tenant_scoped_session(seed["tenant"], session_factory=app_user_sessionmaker) as db:
                 task = await db.scalar(select(RuntimeTask).where(RuntimeTask.tenant_id == seed["tenant"], RuntimeTask.task_type == "remote_a2a"))
                 assert task.status == "completed" and len(task.metadata_json["remote_a2a"]["operations"]) == 2

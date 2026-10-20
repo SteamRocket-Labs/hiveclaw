@@ -173,7 +173,7 @@ async def test_remote_runtime_selection_requires_current_explicit_administrator_
         assert len(remote.requests) == 1
 
 
-@pytest.mark.parametrize("flow", ["completed", "unknown", "cancel", "source_changed", "grant_changed", "budget_denied", "budget_stopped", "budget_orphan", "budget_race", "recipient_denied", "recipient_granted", "recipient_revoked", "recipient_retry", "recipient_retry_revoked", "recipient_retry_budget", "recipient_retry_runtime", "source_hex_session", "source_principal_lost", "executor_mismatch", "unselected_remote"])
+@pytest.mark.parametrize("flow", ["completed", "unknown", "cancel", "source_changed", "grant_changed", "budget_denied", "budget_stopped", "budget_orphan", "budget_race", "recipient_denied", "recipient_granted", "recipient_revoked", "recipient_retry", "recipient_retry_revoked", "recipient_retry_budget", "recipient_retry_runtime", "source_hex_session", "source_principal_lost", "executor_mismatch", "unselected_remote", "observe_unchanged", "observe_exhausted"])
 async def test_governed_employee_delegation_uses_real_remote_worker_and_original_work(
     owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, flow
 ):
@@ -366,9 +366,12 @@ async def test_governed_employee_delegation_uses_real_remote_worker_and_original
                 task.metadata_json = metadata
                 await db.commit()
         remote.reply = lambda request: ({"task": {"id": "employee-report", "status": {
-            "state": "TASK_STATE_WORKING" if flow in {"cancel", "budget_stopped"} else "TASK_STATE_COMPLETED"},
+            "state": "TASK_STATE_WORKING" if flow in {"cancel", "budget_stopped", "observe_unchanged", "observe_exhausted"} else "TASK_STATE_COMPLETED"},
             "artifacts": [{"artifactId": "report", "parts": [{"filename": "report.txt", "text": text}]}]}}
-            if request["method"] == "SendMessage" else {"id": "employee-report", "status": {"state": "TASK_STATE_CANCELED"}})
+            if request["method"] == "SendMessage" else {"id": "employee-report", "status": {"state": (
+                "TASK_STATE_COMPLETED" if flow == "observe_unchanged" and sum(r[0] == "POST" and r[3]["method"] == "GetTask" for r in remote.requests) >= 3 else "TASK_STATE_WORKING")},
+                "artifacts": [{"artifactId": "report", "parts": [{"filename": "report.txt", "text": text}]}]}
+                if flow.startswith("observe_") else {"id": "employee-report", "status": {"state": "TASK_STATE_CANCELED"}})
         if flow == "unknown":
             from app.services.remote_a2a_transport import RemoteA2AEndpoint, RemoteA2AError
             rpc = RemoteA2AEndpoint.rpc
@@ -385,7 +388,7 @@ async def test_governed_employee_delegation_uses_real_remote_worker_and_original
             assert page["status"] in {"source_access_denied", "source_unavailable"} and "content" not in page, page
             return
         assert checked["status"] == ("needs_reconciliation" if (flow in {"unknown", "grant_changed", "recipient_denied", "recipient_revoked"} or flow.startswith("recipient_retry"))
-            else "suspended" if flow in {"cancel", "budget_stopped"} else "completed"), checked
+            else "suspended" if flow in {"cancel", "budget_stopped", "observe_unchanged", "observe_exhausted"} else "completed"), checked
         page = await tool("read_runtime_result", {"result_ref": checked["result_refs"][0], "limit": 12000})
         assert page["status"] == "ok" and page["dependency_coverage"]["complete"] is True, page
         assert page["remote_internal_source_coverage"] == "unknown" and page["remote_business_acceptance"] == "unverified"
@@ -478,12 +481,48 @@ async def test_governed_employee_delegation_uses_real_remote_worker_and_original
                     await import_packet(db, tenant_id=source["tenant_id"], result_id=record.id, sha256=record.sha256,
                         user=await db.get(User, source["user_id"]))
             return
+        if flow.startswith("observe_"):
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://local",
+                headers={"Authorization": "Bearer " + create_access_token(str(source["user_id"]), "org_admin", str(source["tenant_id"]))}) as api:
+                observed = await api.post(path + "/tasks/" + returned["task_id"] + "/operations", json={
+                    "expected_user_id": str(source["user_id"]), "expected_tenant_id": str(source["tenant_id"]),
+                    "expected_version": 1, "operation_id": str(uuid4()), "action": "observe",
+                    "params": {"max_observations": 3, "interval_seconds": 3600, "duration_seconds": 18000}})
+                assert observed.status_code == 200, observed.text
+            for index in range(3):
+                async with tenant_scoped_session(source["tenant_id"], session_factory=app_user_sessionmaker) as db:
+                    (await db.get(RuntimeTask, UUID(returned["task_id"]))).scheduled_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+                    await db.commit()
+                await original.execute(seed, returned["task_id"], app_user_sessionmaker)
+                checked = await tool("check_async_task", {"task_id": returned["task_id"]})
+                assert checked["status"] == (("completed" if flow == "observe_unchanged" else "suspended") if index == 2 else "resumable"), checked
+                assert len(checked["result_refs"]) == index + 2
+                assert (await tool("read_runtime_result", {"result_ref": checked["result_refs"][-1]}))["status"] == "ok"
+            async with tenant_scoped_session(source["tenant_id"], session_factory=app_user_sessionmaker) as db:
+                rows = list(await db.scalars(select(RuntimeNotificationOutbox).where(
+                    RuntimeNotificationOutbox.tenant_id == source["tenant_id"], RuntimeNotificationOutbox.source_kind == "remote_a2a",
+                    RuntimeNotificationOutbox.source_run_id.startswith(returned["task_id"] + ":")).order_by(RuntimeNotificationOutbox.created_at)))
+                assert [row.delivery_mode for row in rows] == ["parent_continuation", "parent_continuation", "session_projection", "parent_continuation"]
+            assert [r[3]["method"] for r in remote.requests if r[0] == "POST"] == ["SendMessage", "GetTask", "GetTask", "GetTask"]
+            return
         if flow == "budget_stopped":
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://local",
+                headers={"Authorization": "Bearer " + create_access_token(str(source["user_id"]), "org_admin", str(source["tenant_id"]))}) as api:
+                observing = await api.post(path + "/tasks/" + returned["task_id"] + "/operations", json={
+                    "expected_user_id": str(source["user_id"]), "expected_tenant_id": str(source["tenant_id"]),
+                    "expected_version": 1, "operation_id": str(uuid4()), "action": "observe",
+                    "params": {"max_observations": 2, "interval_seconds": 3600, "duration_seconds": 7200}})
+                assert observing.status_code == 200 and observing.json()["status"] == "resumable", observing.text
             await budget_service.cancel_run(tenant_id=source["tenant_id"], budget_run_id=budget.id,
                 reason="Stop new remote work without claiming external cancellation", actor_user_id=source["user_id"])
             stopped = await tool("check_async_task", {"task_id": returned["task_id"]})
             assert stopped["status"] == "needs_reconciliation" and stopped["remote_state"] == "TASK_STATE_WORKING", stopped
             assert "cancel" in stopped["recovery_actions"] and len(remote.requests) == 2
+            assert stopped["automatic_observation"]["status"] == "paused"
+            assert stopped["automatic_observation"]["reason"] == "runtime_budget_stopped"
+            from app.services.runtime_task_claim_service import RuntimeTaskClaimService
+            async with tenant_scoped_session(source["tenant_id"], session_factory=app_user_sessionmaker) as db:
+                assert not await RuntimeTaskClaimService(db=db, worker_id="stopped-observation", task_types=("remote_a2a",)).claim_available()
         if flow in {"cancel", "budget_stopped"}:
             cancelled = await tool("cancel_async_task", {"task_id": returned["task_id"]})
             assert cancelled["status"] == "pending", cancelled

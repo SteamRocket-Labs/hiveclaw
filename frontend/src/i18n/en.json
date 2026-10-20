@@ -5697,6 +5697,16 @@
     "retryRuntime": "Retry same executor selection"
   },
   "remoteWork": {
+    "observationActive": "Running",
+    "observationPaused": "Paused",
+    "observationStatus": "Automatic checks: {{count}}/{{limit}}. Deadline: {{deadline}}. State: {{state}}.",
+    "observationLimits": "Automatic task checks",
+    "observationCount": "Maximum automatic checks",
+    "observationInterval": "Check interval in seconds",
+    "observationDuration": "Stop starting checks after seconds",
+    "observationBoundary": "These limits cover automatic status requests. A request already in progress may finish later. Remote charges remain unknown.",
+    "observe": "Start automatic checks",
+    "pauseObservation": "Pause automatic checks",
     "inputRequired": "Remote reply needed",
     "authRequired": "Remote authorization required",
     "queued": "Queued",

@@ -5697,6 +5697,16 @@
     "retryRuntime": "重试同一次执行方式选择"
   },
   "remoteWork": {
+    "observationActive": "进行中",
+    "observationPaused": "已暂停",
+    "observationStatus": "自动检查：{{count}}/{{limit}}。截止时间：{{deadline}}。状态：{{state}}。",
+    "observationLimits": "自动检查任务状态",
+    "observationCount": "最多自动检查次数",
+    "observationInterval": "检查间隔（秒）",
+    "observationDuration": "停止发起新检查的时限（秒）",
+    "observationBoundary": "这些限制适用于自动状态请求。已发出的请求可能稍后才返回，远程费用仍未知。",
+    "observe": "开始自动检查",
+    "pauseObservation": "暂停自动检查",
     "title": "在本工作中发起远程 A2A 请求",
     "boundary": "通过此员工配置的远程端点发送明确请求。这里无法拦截对方内部动作，外部费用仍为未知。员工原先选择的本地模型保持不变。",
     "failed": "请求被拒绝，或暂时无法读取已保存状态。请检查权限、连接与原工作身份。",

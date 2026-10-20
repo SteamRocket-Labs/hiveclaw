@@ -48,13 +48,20 @@ def _locally_unstarted(task, state):
 
 def _view(task):
     state = task.metadata_json["remote_a2a"]
+    from app.services import remote_a2a_observation
+
     observation = state.get("observation")
+    automatic = remote_a2a_observation.view(task, state)
     actions = ["read"]
+    if automatic and automatic["status"] == "active":
+        actions.append("pause_observation")
     if task.status not in TERMINAL and task.status not in {"pending", "running"}:
         actions.append("abandon")
         if _locally_unstarted(task, state):
             actions.append("retry")
         if state.get("remote_task_id"):
+            if not automatic or automatic["status"] != "active":
+                actions.append("observe")
             actions.extend(["refresh", "cancel"])
             if not state.get("error_code"):
                 actions.append("send_message")
@@ -62,6 +69,7 @@ def _view(task):
         "id": str(task.id),
         "request_id": state["operations"][0]["id"],
         "latest_operation_id": state["operations"][-1]["id"],
+        "latest_observation_command_id": (state.get("observation_commands") or [{}])[-1].get("id"),
         "agent_id": str(task.child_agent_id),
         "configuration_version": state["configuration_version"],
         "source_session_id": task.parent_session_id,
@@ -72,6 +80,7 @@ def _view(task):
         "remote_state": state.get("remote_state"),
         "error_code": state.get("error_code"),
         "observation": observation,
+        "automatic_observation": automatic,
         "operations": state["operations"],
         "cost_metering": "unknown",
         "effect_control": "unverified",
@@ -376,10 +385,21 @@ async def operate_task(
     task = await get_task(db, agent_id=agent_id, task_id=task_id, actor=actor, lock=True)
     _frame(task, actor, expected_user_id, expected_tenant_id)
     state = deepcopy(task.metadata_json["remote_a2a"])
+    if action in {"observe", "pause_observation"}:
+        from app.services.remote_a2a_observation import operate
+
+        return await operate(db, task=task, actor=actor, state=state, expected_version=expected_version,
+            operation_id=operation_id, action=action, params=params)
+    if any(command["id"] == str(operation_id) for command in state.get("observation_commands", [])):
+        raise HTTPException(409, detail={"code": "remote_a2a_request_conflict"})
     if action == "abandon":
         if task.status in {"pending", "running"}:
             raise HTTPException(409, detail={"code": "remote_a2a_operation_in_progress"})
         state["abandoned"] = True
+        from app.services.remote_a2a_observation import pause
+
+        pause(state, "locally_abandoned")
+        task.scheduled_at = None
         task.status = "skipped"
         task.metadata_json = {**task.metadata_json, "remote_a2a": state}
         await db.commit()
@@ -438,7 +458,11 @@ async def operate_task(
         }
     )
     state.pop("error_code", None)
-    task.status, task.completed_at = "pending", None
+    task.status, task.completed_at, task.scheduled_at = "pending", None, None
+    if method == "CancelTask":
+        from app.services.remote_a2a_observation import pause
+
+        pause(state, "owner_cancel_requested")
     task.metadata_json = {**task.metadata_json, "remote_a2a": state}
     await db.commit()
     from app.services.runtime_task_worker import notify_runtime_task_worker
@@ -449,25 +473,36 @@ async def operate_task(
 
 async def _record(db, task, state):
     """Preserve the full remote observation and original-work return atomically."""
+    from app.services import remote_a2a_observation
+
+    operation = state["operations"][-1]
     task.metadata_json = {**task.metadata_json, "remote_a2a": state}
     if task.status in TERMINAL or task.status == "needs_reconciliation":
         task.completed_at = datetime.now(timezone.utc)
     task.claimed_by = task.claim_expires_at = None
     result = {k: v for k, v in _view(task).items() if k != "operations"}
-    result["operation_observation"] = state["operations"][-1].get("observation")
+    result["operation_observation"] = operation.get("observation")
+    remote_a2a_observation.schedule(task, state)
+    result["automatic_observation"] = remote_a2a_observation.view(task, state)
+    control = result["automatic_observation"] or {}
+    packet_hash = _digest({"observation": operation.get("observation"), "phase": operation["phase"],
+        "status": result["status"], "error_code": result["error_code"],
+        "observation_status": control.get("status"), "observation_reason": control.get("reason")})
+    unchanged = operation["method"] == "GetTask" and packet_hash == state.get("last_returned_packet_hash")
+    state["last_returned_packet_hash"] = packet_hash
     await enqueue_completion_notification(
         db,
         CompletionNotification(
             tenant_id=task.tenant_id,
             source_kind="remote_a2a",
-            source_run_id=f"{task.id}:{state['operations'][-1]['id']}",
+            source_run_id=f"{task.id}:{operation['id']}",
             parent_session_id=task.parent_session_id,
             parent_agent_id=task.parent_agent_id,
             parent_user_id=task.root_user_id,
             root_runtime_task_id=task.root_runtime_task_id,
             terminal_status=task.status,
             task_type=TASK_TYPE,
-            delivery_mode="parent_continuation" if state.get("dispatch_kind") == "employee" else "session_projection",
+            delivery_mode="parent_continuation" if state.get("dispatch_kind") == "employee" and not unchanged else "session_projection",
             summary=json.dumps({"remote_a2a": result}, ensure_ascii=False),
             metadata={
                 "runtime_task_id": str(task.id),
@@ -478,6 +513,7 @@ async def _record(db, task, state):
             },
         ),
     )
+    task.metadata_json = {**task.metadata_json, "remote_a2a": state}
     await db.commit()
 
 
@@ -503,6 +539,11 @@ async def execute_claimed_task(task_id):
             task.status = "needs_reconciliation"
             await _record(db, task, state)
             return
+        from app.services import remote_a2a_observation
+
+        if not remote_a2a_observation.before_dispatch(task, state, operation):
+            await _record(db, task, state)
+            return
         try:
             actor = await db.get(User, task.root_user_id, populate_existing=True)
             if actor is None or not actor.is_active:
@@ -520,12 +561,17 @@ async def execute_claimed_task(task_id):
                 db, agent=agent, version=state["configuration_version"], owner_scope=state["owner_scope"]
             )
             await _employee_send_authority(db, task=task, state=state, agent=agent, operation=operation)
+            if operation.get("automatic_observation"):
+                await remote_a2a_observation.authorize(db, task=task, state=state, agent=agent)
         except HTTPException:
             state["error_code"], operation["phase"] = "remote_a2a_authority_unavailable", "not_started"
             task.status = "needs_reconciliation"
             await _record(db, task, state)
             return
         operation["phase"] = "dispatching"
+        if operation.get("automatic_observation"):
+            state["observation_control"]["started"] += 1
+            state.pop("error_code", None)
         task.metadata_json = {**task.metadata_json, "remote_a2a": state}
         await db.commit()
         observation, error = None, None
@@ -557,6 +603,8 @@ async def execute_claimed_task(task_id):
                 db, agent=agent, version=state["configuration_version"], owner_scope=state["owner_scope"]
             )
             await _employee_send_authority(db, task=task, state=state, agent=agent, operation=operation)
+            if operation.get("automatic_observation"):
+                await remote_a2a_observation.authorize(db, task=task, state=state, agent=agent)
         except HTTPException:
             authority_changed = True
         if error:
@@ -568,7 +616,9 @@ async def execute_claimed_task(task_id):
             operation["phase"], operation["observation"] = "received", observation
             state["observation"] = observation
             remote_task = observation.get("task", observation)
-            if remote_task.get("id"):
+            if state.get("remote_task_id") and not observation.get("message") and remote_task.get("id") != state["remote_task_id"]:
+                state["error_code"] = "remote_a2a_task_identity_mismatch"
+            elif remote_task.get("id"):
                 state["remote_task_id"] = remote_task["id"]
                 context = remote_task.get("contextId")
                 if state.get("remote_context_id") and context and state["remote_context_id"] != context:

@@ -149,3 +149,48 @@ it('does not offer a saved-operation retry for an unknown external outcome', asy
   await screen.findByLabelText('Saved remote receipt');
   expect(screen.queryByText('Retry saved operation after access repair')).toBeNull();
 });
+
+it('keeps bounded observation tied to the saved task and reconciles a lost scheduling receipt', async () => {
+  const saved = task({ recovery_actions: ['read', 'observe', 'cancel'] });
+  vi.mocked(remoteA2AApi.tasks).mockResolvedValue({ ...page(), items: [saved] });
+  vi.mocked(remoteA2AApi.task).mockResolvedValue(saved);
+  const operate = vi.spyOn(remoteA2AApi, 'operateTask').mockRejectedValueOnce(new Error('Scheduling reply lost'));
+  await mount();fireEvent.click(await screen.findByText('transport-task'));
+  await screen.findByText('Start automatic checks');
+  fireEvent.change(screen.getByLabelText('Maximum automatic checks'), { target: { value: '3' } });
+  fireEvent.change(screen.getByLabelText('Check interval in seconds'), { target: { value: '2' } });
+  fireEvent.change(screen.getByLabelText('Stop starting checks after seconds'), { target: { value: '30' } });
+  fireEvent.change(screen.getByLabelText('Remote request or reply'), { target: { value: 'Preserve the unsent reply during receipt recovery.' } });
+  fireEvent.click(screen.getByText('Start automatic checks'));
+  await screen.findByText('Retry exact request');
+  const body = operate.mock.calls[0][2];
+  expect(body).toMatchObject({ action: 'observe', expected_version: 1,
+    params: { max_observations: 3, interval_seconds: 2, duration_seconds: 30 } });
+  const active = task({ status: 'resumable', latest_operation_id: 'scheduled-get', latest_observation_command_id: body.operation_id,
+    recovery_actions: ['read', 'pause_observation'], automatic_observation: { status: 'active', started: 0, max_observations: 3,
+      deadline: '2026-10-20T12:00:00Z', next_at: '2026-10-20T11:59:32Z', reason: null } });
+  vi.mocked(remoteA2AApi.tasks).mockResolvedValue({ ...page(), items: [active] });
+  vi.mocked(remoteA2AApi.task).mockResolvedValue(active);
+  fireEvent.click(screen.getByText('Read saved state'));
+  await screen.findByText('Pause automatic checks');
+  expect(screen.queryByText('Retry exact request')).toBeNull();
+  expect(operate).toHaveBeenCalledOnce();
+  expect((screen.getByLabelText('Remote request or reply') as HTMLTextAreaElement).value).toBe('Preserve the unsent reply during receipt recovery.');
+});
+
+it('pauses automatic checks without replacing or clearing a draft reply', async () => {
+  const active = task({ status: 'resumable', recovery_actions: ['read', 'pause_observation', 'cancel'] });
+  vi.mocked(remoteA2AApi.tasks).mockResolvedValue({ ...page(), items: [active] });
+  vi.mocked(remoteA2AApi.task).mockResolvedValue(active);
+  const operate = vi.spyOn(remoteA2AApi, 'operateTask').mockResolvedValue(task({ recovery_actions: ['read', 'observe'] }));
+  await mount();fireEvent.click(await screen.findByText('transport-task'));
+  await screen.findByText('Pause automatic checks');
+  fireEvent.change(screen.getByLabelText('Remote request or reply'), { target: { value: 'Keep this draft reply.' } });
+  fireEvent.click(screen.getByText('Pause automatic checks'));
+  await waitFor(() => expect(operate).toHaveBeenCalledOnce());
+  expect(operate.mock.calls[0][2]).toMatchObject({ action: 'pause_observation', params: {} });
+  expect((screen.getByLabelText('Remote request or reply') as HTMLTextAreaElement).value).toBe('Keep this draft reply.');
+  fireEvent.click(screen.getByText('Read saved state'));
+  await waitFor(() => expect(remoteA2AApi.task).toHaveBeenCalledTimes(2));
+  expect((screen.getByLabelText('Remote request or reply') as HTMLTextAreaElement).value).toBe('Keep this draft reply.');
+});

@@ -104,8 +104,10 @@ async def _finish_deferred_business_task_quarantines(task_ids: list[UUID]) -> No
 def _remote_recovery_control_condition():
     # Only the trusted journal's read/cancel operations may run after a root
     # budget stops. This cannot admit another SendMessage or native inference.
-    return and_(RuntimeTask.task_type == "remote_a2a",
-        RuntimeTask.metadata_json["remote_a2a"]["operations"][-1]["method"].as_string().in_(("GetTask", "CancelTask")))
+    operation = RuntimeTask.metadata_json["remote_a2a"]["operations"][-1]
+    return and_(RuntimeTask.task_type == "remote_a2a", or_(operation["method"].as_string() == "CancelTask",
+        and_(operation["method"].as_string() == "GetTask",
+            operation["automatic_observation"].as_boolean().is_not(True))))
 
 
 def _runtime_task_claim_conditions(*, claim_now: datetime):

@@ -71,6 +71,32 @@ afterEach(() => {
 describe.each(['en', 'zh'] as const)('committed deletion recovery (%s)', (locale) => {
   const words = (locale === 'en' ? en : zh);
 
+  it.each(['org_admin', 'member'])('makes HR retirement recovery actionable for %s without auto-deleting', async (role) => {
+    api.role = role;
+    api.listMine.mockResolvedValue([{
+      blueprint_id: 'draft-retirement', hr_agent_id: 'original-hr', session_id: 'original-work',
+      requested_by_user_id: 'admin', draft_status: 'failed', blueprint: { name: 'Unfinished employee' },
+      recovery: { can_abandon: true, can_retry: false },
+    }]);
+    api.abandon.mockRejectedValueOnce(new ApiError(409, 'External work needs reconciliation', {
+      code: 'agent_retirement_required', recovery: { employee_id: 'retiring-employee',
+        management_path: '/enterprise/digital-employees', can_manage_retirement: role === 'org_admin', retry_after_retirement: true },
+    }));
+    await mount('hr', locale);
+    fireEvent.click(await screen.findByRole('button', { name: words.employees.hrRecovery.remove }));
+    await screen.findByText(words.employees.hrRecovery.retirementRequired);
+    if (role === 'org_admin') {
+      expect(screen.getByRole('link', { name: words.employees.hrRecovery.reviewRetirement }).getAttribute('href'))
+        .toBe('/enterprise/digital-employees');
+    } else {
+      expect(screen.queryByRole('link', { name: words.employees.hrRecovery.reviewRetirement })).toBeNull();
+      expect(screen.getByText(words.employees.hrRecovery.retirementAdministrator)).toBeTruthy();
+    }
+    expect(screen.getByRole('button', { name: words.employees.hrRecovery.remove })).toBeTruthy();
+    expect(api.abandon).toHaveBeenCalledWith('original-hr', 'draft-retirement');
+    expect(api.remove).not.toHaveBeenCalled();
+  });
+
   it('recovers employee cleanup through the same DELETE after a fresh mount', async () => {
     const employee = { id: 'employee-1', name: 'Recovery employee', status: 'idle' };
     const pending = { id: employee.id, name: employee.name, deleted_at: '2026-09-10T00:00:00Z' };

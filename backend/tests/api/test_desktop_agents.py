@@ -8,6 +8,7 @@ from uuid import uuid4
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from unittest.mock import AsyncMock, patch
+import pytest
 
 import app.api.desktop_agents as agents_mod
 from app.api.desktop_agents import router
@@ -51,6 +52,18 @@ _FAKE_PLATFORM_ADMIN_USER = SimpleNamespace(
     is_active=True,
 )
 
+
+@pytest.fixture(autouse=True)
+def _desktop_retirement_dependencies():
+    # Controller tests retain their scope and original soft-delete assertions.
+    # Native app-role journeys cover preparation, withdrawal and file archival.
+    with (
+        patch.object(agents_mod, "prepare_agent_retirement", new_callable=AsyncMock),
+        patch.object(agents_mod, "perform_pending_agent_cleanup", new_callable=AsyncMock,
+            return_value={"performed": True, "archive_ok": True}),
+    ):
+        yield
+
 _FAKE_MAIN_AGENT = SimpleNamespace(
     id=_MAIN_AGENT_ID,
     name="主Agent",
@@ -93,7 +106,13 @@ class _FakeDB:
         return _ScalarResult(self._main_agent)
 
     async def get(self, model, pk):
-        return self._agents_by_id.get(pk)
+        value = self._agents_by_id.get(pk)
+        if value is not None and not hasattr(value, "tenant_id"):
+            value.tenant_id = _TENANT_ID
+        return value
+
+    async def commit(self):
+        pass
 
     def add(self, obj):
         # Simulate DB assignment for flush

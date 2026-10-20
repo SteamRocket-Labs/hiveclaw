@@ -3,8 +3,10 @@ import { useTranslation } from 'react-i18next';
 import { Link } from 'react-router-dom';
 
 import { hrCreationApi, type HrCreationDraft } from '../../api/domains/hrCreation';
+import { ApiError } from '../../api/core';
 import { requestAppConfirm, showAppToast } from '../../components/AppDialogs';
 import { useAuthStore } from '../../stores';
+import { isAdministratorRole } from '../../roles';
 import { useAssistantTenant } from '../assistant/assistantScope';
 import { blueprintStatusLabel } from '../agent-detail/hrCreationStatus';
 
@@ -60,6 +62,11 @@ export default function HrCreationRecoveryPanel() {
     onSettled: refresh,
     onError: (error: Error) => showAppToast(error.message, 'error'),
   });
+  const errorData = abandonMutation.error instanceof ApiError ? abandonMutation.error.data : null;
+  const retirementRecovery = errorData !== null && typeof errorData === 'object' && 'code' in errorData
+    && (errorData.code === 'agent_retirement_required' || errorData.code === 'agent_retirement_pending')
+    && 'recovery' in errorData && errorData.recovery !== null && typeof errorData.recovery === 'object'
+    ? errorData.recovery : null;
 
   if (draftsError) return (
     <section className="hr-recovery-panel" role="alert">
@@ -105,6 +112,8 @@ export default function HrCreationRecoveryPanel() {
           const failure = firstTaskRecovery
             ? t('employees.hrRecovery.firstTaskPending', 'The employee is ready; its first task needs recovery.')
             : draftFailure(draft);
+          const retirementError = abandonMutation.variables?.blueprint_id === draft.blueprint_id
+            ? retirementRecovery : null;
           return (
             <article className="hr-recovery-item" key={draft.blueprint_id} data-status={draft.draft_status}>
               <div>
@@ -118,6 +127,13 @@ export default function HrCreationRecoveryPanel() {
                   <p>{t('employees.hrRecovery.cleanupPending', 'Removal is committed. Retry only the remaining file archival; the employee will not be removed again.')}</p>
                 )}
                 {failure && <p role={recovery?.requires_operator ? 'alert' : undefined}>{failure}</p>}
+                {retirementError && <div role="alert">
+                  <p>{t('employees.hrRecovery.retirementRequired', 'This employee has unresolved external work. Complete retirement before retrying removal of the unfinished creation. The employee and files are retained.')}</p>
+                  {'can_manage_retirement' in retirementError && retirementError.can_manage_retirement === true
+                    && isAdministratorRole(user?.role)
+                    ? <Link to="/enterprise/digital-employees">{t('employees.hrRecovery.reviewRetirement', 'Review employee retirement')}</Link>
+                    : <p>{t('employees.hrRecovery.retirementAdministrator', 'Ask a company administrator to review this employee’s retirement, then retry removal here.')}</p>}
+                </div>}
                 {recovery?.requires_operator && (
                   <small>{t('employees.hrRecovery.operatorRequired', 'Operator reconciliation is required before retry.')}</small>
                 )}

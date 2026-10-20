@@ -13,7 +13,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.permissions import effective_agent_owner_id
+from app.core.permissions import effective_agent_owner_id, is_scoped_business_admin
 from app.core.security import get_current_user
 from app.database import get_db
 from app.models.agent import Agent
@@ -22,8 +22,10 @@ from app.schemas.schemas import SmartModelRoutingConfig
 from app.services.agent_identity_lifecycle import (
     ensure_agent_identity,
     get_agent_lifecycle_block_reason,
+    perform_pending_agent_cleanup,
     soft_delete_agent,
 )
+from app.services.agent_retirement import history_available, prepare as prepare_agent_retirement
 from app.services.auto_provision import ensure_main_agent
 from app.services.sync_service import bump_sync_version
 
@@ -92,12 +94,13 @@ async def _get_admin_deletable_sub_agent(db: AsyncSession, user: User, agent_id:
     agent = await db.get(Agent, agent_id)
     if not agent:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found")
-    if get_agent_lifecycle_block_reason(agent):
+    if (get_agent_lifecycle_block_reason(agent) and getattr(agent, "deleted_at", None) is None
+        and not history_available(agent)):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found")
     if agent.parent_agent_id is None:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Desktop can only delete sub-agents")
     agent_tenant_id = getattr(agent, "tenant_id", None)
-    if agent_tenant_id is not None and agent_tenant_id != user.tenant_id:
+    if agent_tenant_id is not None and not is_scoped_business_admin(user, resource_tenant_id=agent_tenant_id):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found")
     return agent
 
@@ -203,18 +206,30 @@ async def delete_sub_agent(
         )
     agent = await _get_admin_deletable_sub_agent(db, current_user, agent_id)
 
-    await soft_delete_agent(db, agent, actor_id=current_user.id, reason="desktop_delete_sub_agent")
-    await db.flush()
+    if getattr(agent, "deleted_at", None) is None:
+        await prepare_agent_retirement(db, agent=agent, actor=current_user)
+        from app.services.runtime_terminal_settlement import (
+            RuntimeTaskLateAdmissionConflict, RuntimeTaskSessionBindingConflict,
+        )
 
-    from app.services.ai_assets import register_agent_asset
+        try:
+            await soft_delete_agent(db, agent, actor_id=current_user.id, reason="desktop_delete_sub_agent")
+            await db.flush()
 
-    await register_agent_asset(
-        db,
-        agent,
-        change_source="revoke",
-        actor_user_id=current_user.id,
-        change_message="Desktop Sub-Agent soft-deleted",
-    )
+            from app.services.ai_assets import register_agent_asset
 
-    if current_user.tenant_id:
-        await bump_sync_version(db, current_user.tenant_id)
+            await register_agent_asset(db, agent, change_source="revoke", actor_user_id=current_user.id,
+                change_message="Desktop Sub-Agent soft-deleted")
+            await bump_sync_version(db, agent.tenant_id)
+            await db.commit()
+        except (RuntimeTaskLateAdmissionConflict, RuntimeTaskSessionBindingConflict) as exc:
+            await db.rollback()
+            binding_conflict = isinstance(exc, RuntimeTaskSessionBindingConflict)
+            raise HTTPException(409, detail={
+                "code": "agent_delete_session_binding_conflict" if binding_conflict else "agent_delete_late_admission_conflict",
+                "message": str(exc), "retryable": not binding_conflict,
+            }) from exc
+    cleanup = await perform_pending_agent_cleanup(agent.tenant_id, agent.id)
+    if not cleanup["archive_ok"]:
+        raise HTTPException(503, detail={"code": "agent_cleanup_pending", "retryable": True,
+            "message": "Deletion is committed. File archival is pending; retry this deletion to finish cleanup."})

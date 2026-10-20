@@ -1052,6 +1052,14 @@ async def _resolve_runtime_metadata_context(
         _runtime_kwargs["tenant_id"] = tenant_id
     if "session_id" in _runtime_sig and request.session_context is not None:
         _runtime_kwargs["session_id"] = request.session_context.session_id
+    if "runtime_principal" in _runtime_sig:
+        from app.services.personal_knowledge_access import AgentRuntimePrincipal
+
+        autonomous = getattr(request.execution_identity, "identity_type", None) == "agent_bot"
+        _runtime_kwargs["runtime_principal"] = AgentRuntimePrincipal(agent_id=request.agent_id,
+            requester_user_id=request.user_id, session_id=request.session_context.session_id if request.session_context else None,
+            runtime_task_id=str(metadata.get("runtime_task_id") or metadata.get("task_id") or ""),
+            purpose="autonomous_agent" if autonomous else "interactive_session", autonomous=autonomous)
     runtime_context = await build_agent_runtime_context(request.agent_id, **_runtime_kwargs)
     if not runtime_context:
         return ""

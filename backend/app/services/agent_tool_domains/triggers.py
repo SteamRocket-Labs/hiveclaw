@@ -623,6 +623,9 @@ async def _handle_set_trigger(
                     )
                 existing.reply_context = _capture_reply_context()
                 # Keep fire_count and last_fired_at — they are cumulative stats
+                from app.services.trigger_context_sources import record_trigger_configuration
+
+                await record_trigger_configuration(db, trigger=existing, changed_fields={"type", "config", "reason"})
                 await db.commit()
                 return f"✅ Trigger '{name}' re-enabled with new configuration ({ttype}, fired {existing.fire_count} times so far)"
 
@@ -662,6 +665,9 @@ async def _handle_set_trigger(
                     trigger_type=ttype,
                 ),
             }
+            from app.services.trigger_context_sources import record_trigger_configuration
+
+            await record_trigger_configuration(db, trigger=trigger, changed_fields={"name", "type", "config", "reason"})
             await db.commit()
 
         # Activity log
@@ -844,6 +850,10 @@ async def _handle_update_trigger(
                 trigger.reply_context = fresh_ctx
                 changes.append(f"reply_context refreshed ({fresh_ctx.get('channel')})")
 
+            from app.services.trigger_context_sources import record_trigger_configuration
+
+            await record_trigger_configuration(db, trigger=trigger,
+                changed_fields={field for field in ("config", "reason") if arguments.get(field) is not None})
             await db.commit()
 
         try:
@@ -1051,6 +1061,9 @@ async def _handle_schedule_wakeup(
         )
         db.add(trigger)
         await db.flush()
+        from app.services.trigger_context_sources import record_trigger_configuration
+
+        await record_trigger_configuration(db, trigger=trigger, changed_fields={"name", "type", "config", "reason"})
         payload = {
             "ok": True,
             "status": "scheduled",

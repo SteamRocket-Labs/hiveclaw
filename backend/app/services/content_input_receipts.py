@@ -130,6 +130,21 @@ async def _validate_input_dependency_batch(db, tenant_id: uuid.UUID, dependencie
 
             await validate_remote_dependency(db, tenant_id, dependency, user=user, runtime_request=runtime_request)
             continue
+        if dependency["source_kind"] == "trigger_write":
+            from app.services.trigger_context_sources import validate_trigger_write
+
+            await validate_trigger_write(db, tenant_id, dependency, user=user, runtime_request=runtime_request)
+            continue
+        if dependency["source_kind"] == "trigger_snapshot":
+            from app.services.trigger_context_sources import validate_trigger_snapshot
+
+            await validate_trigger_snapshot(db, tenant_id, dependency, user=user, runtime_request=runtime_request)
+            continue
+        if dependency["source_kind"] == "native_trigger_context":
+            from app.services.native_trigger_context import validate_native_trigger_context_source
+
+            await validate_native_trigger_context_source(db, tenant_id, dependency, user=user, runtime_request=runtime_request)
+            continue
         if dependency["source_kind"] == "delegation_context":
             from app.services.delegation_context_sources import validate_delegation_context_source
 

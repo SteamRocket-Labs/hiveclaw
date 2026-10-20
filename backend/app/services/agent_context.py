@@ -285,6 +285,8 @@ async def _build_runtime_metadata_sections(
     triggers_budget_chars: int = 3000,
     source_unbound: list[str] | None = None,
     runtime_facts: dict[str, str] | None = None,
+    source_refs: list[dict[str, str]] | None = None,
+    runtime_principal=None,
 ) -> list[str]:
     parts: list[str] = []
 
@@ -325,6 +327,30 @@ async def _build_runtime_metadata_sections(
                 )
             )
             triggers = result.scalars().all()
+            if runtime_principal is not None:
+                from app.services.content_input_receipts import ContentInputReceiptError, _runtime_input_actor
+                from app.services.trigger_resource_authority import filter_authorized_triggers
+                from app.services.trigger_context_sources import observe_trigger_context
+
+                _principal, reader = await _runtime_input_actor(db, _trigger_tenant_id, runtime_principal)
+                authorized = await filter_authorized_triggers(db, reader, agent_id=agent_id, triggers=list(triggers))
+                triggers, unavailable = [], set()
+                for trigger, _decision in authorized:
+                    try:
+                        reference = await observe_trigger_context(db, trigger=trigger, principal=runtime_principal)
+                        if reference is None:
+                            unavailable.add("trigger_context_sources_incomplete")
+                            continue
+                    except ContentInputReceiptError as exc:
+                        unavailable.add(exc.code)
+                        continue
+                    triggers.append(trigger)
+                    if source_refs is not None:
+                        source_refs.append(reference)
+                if unavailable:
+                    parts.append("\nSome trigger configuration sources are unavailable (" + ", ".join(sorted(unavailable))
+                        + "). Restore source access or revise those schedules from authorized inputs. Other work can continue.")
+
             if triggers:
                 from app.runtime.prompt_sections import build_triggers_section
 
@@ -339,7 +365,7 @@ async def _build_runtime_metadata_sections(
                 ]
                 trigger_section = build_triggers_section(trigger_rows, budget_chars=triggers_budget_chars)
                 if trigger_section:
-                    if source_unbound is not None:
+                    if source_unbound is not None and runtime_principal is None:
                         source_unbound.append("runtime_trigger_sources_unbound")
                     parts.append("\n" + trigger_section)
     except Exception as exc:
@@ -549,6 +575,7 @@ async def build_agent_runtime_context(
     source_unbound: list[str] | None = None,
     runtime_facts: dict[str, str] | None = None,
     source_refs: list[dict[str, str]] | None = None,
+    runtime_principal=None,
 ) -> str:
     """Build volatile runtime context that should be refreshed every round."""
     triggers_budget = budget_profile.runtime_triggers_budget_chars if budget_profile else 3000
@@ -557,7 +584,7 @@ async def build_agent_runtime_context(
         current_user_name=current_user_name,
         triggers_budget_chars=triggers_budget,
         source_unbound=source_unbound,
-        runtime_facts=runtime_facts,
+        runtime_facts=runtime_facts, source_refs=source_refs, runtime_principal=runtime_principal,
     )
     try:
         team_context = await build_prompt_facing_team_context(

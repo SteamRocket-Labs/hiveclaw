@@ -449,6 +449,7 @@ class EnvironmentCommandFrame:
     user_id: uuid.UUID | str | None
     runtime_task_id: uuid.UUID | str | None
     source_binding: Any = field(default=None, repr=False, compare=False)
+    tool_call_id: str | None = None
 
 
 _COMMAND_FRAME: ContextVar[EnvironmentCommandFrame | None] = ContextVar("environment_command_frame", default=None)
@@ -463,9 +464,23 @@ def _command_frame(context):
         and all(str(getattr(parent, key)) == str(getattr(context, key)) for key in ("tenant_id", "user_id"))
     ):
         binding = parent.source_binding
+    tool_call_id = getattr(context, "tool_call_id", None)
+    if tool_call_id is None and parent is not None:
+        try:
+            same_effect = all((uuid.UUID(str(getattr(parent, key))) if getattr(parent, key) is not None else None)
+                == (uuid.UUID(str(getattr(context, key))) if getattr(context, key) is not None else None)
+                for key in ("tenant_id", "agent_id", "user_id", "runtime_task_id"))
+        except (ValueError, TypeError):
+            same_effect = False
+        if same_effect:
+            tool_call_id = parent.tool_call_id
     return EnvironmentCommandFrame(
-        context.tenant_id, context.agent_id, context.user_id, context.runtime_task_id, binding
+        context.tenant_id, context.agent_id, context.user_id, context.runtime_task_id, binding, tool_call_id
     )
+
+
+def current_command_frame():
+    return _COMMAND_FRAME.get()
 
 
 @contextmanager
@@ -529,11 +544,7 @@ async def environment_command_scope(context, invocation_key):
         source_binding=frame.source_binding,
     )
     token = _COMMAND_SCOPE.set(scope)
-    frame_token = _COMMAND_FRAME.set(
-        EnvironmentCommandFrame(
-            scope.tenant_id, scope.agent_id, scope.user_id, scope.runtime_task_id, scope.source_binding
-        )
-    )
+    frame_token = _COMMAND_FRAME.set(frame)
     try:
         yield scope
     finally:

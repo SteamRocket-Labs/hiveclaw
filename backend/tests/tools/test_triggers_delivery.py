@@ -172,6 +172,9 @@ class _FakeScopedSession:
     def add(self, value):
         self.added.append(value)
 
+    async def get(self, model, identity, **_kwargs):
+        return next((item for item in self.added if isinstance(item, model) and item.id == identity), None)
+
     async def flush(self):
         self.flushes += 1
 
@@ -224,6 +227,11 @@ async def test_handle_set_trigger_persists_same_session_delivery(monkeypatch):
     assert stored.config["created_by"] == str(user_id)
     assert stored.config["root_session_id"] == session_id
     assert stored.type == "interval"
+    from app.models.invocation_span import InvocationSpan
+
+    source = next(item for item in session.added if isinstance(item, InvocationSpan))
+    assert source.span_type == "trigger_configuration_pointer"
+    assert all(origin == {"kind": "unknown"} for origin in source.metadata_json["configuration"]["sources"].values())
 
 
 @pytest.mark.asyncio

@@ -525,6 +525,11 @@ async def _origin_dependencies(db, *, tenant_id, agent_id, ref):
             return _unique_dependencies([*dependencies, *sources]), inherited_complete
         except (ContentInputReceiptError, ValueError, TypeError):
             return _unique_dependencies(dependencies), False
+    if invocation.tool_name in {"set_trigger", "update_trigger", "schedule_wakeup"}:
+        from app.services.trigger_context_sources import trigger_tool_result_sources
+
+        sources, complete = await trigger_tool_result_sources(db, tenant_id=tenant_id, agent_id=agent_id, invocation=invocation)
+        return _unique_dependencies([*dependencies, *sources]), inherited_complete and complete
     metadata = payload.get("metadata")
     if not isinstance(metadata, dict):
         return _unique_dependencies(dependencies), False

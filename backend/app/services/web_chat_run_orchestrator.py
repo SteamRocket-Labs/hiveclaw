@@ -843,6 +843,17 @@ async def _prepare_pending_suffix(state: _WebChatRunState) -> str:
             "follow-up, call the trigger tool normally. Do not add opt-out fields to tool arguments, and do "
             "not use this opt-out for long tasks, delegation, or other high-risk actions.",
         )
+    frame = getattr(state, "native_trigger_frame", None)
+    if frame is not None and frame.context_refs:
+        from app.models.runtime_task import RuntimeTask
+        from app.services.native_trigger_context import capture_native_trigger_context
+
+        async with state.ports.runtime.tenant_scoped_session(state.agent.tenant_id) as db:
+            task = await db.get(RuntimeTask, state.run_uuid, populate_existing=True)
+            context, reference = await capture_native_trigger_context(db, task=task, frame=frame)
+            await db.commit()
+        suffix = _join_suffix(suffix, context)
+        source_refs.append(reference)
     _configure_turn_policy(state, trusted_decline)
     from app.runtime.context import ensure_runtime_assembly_state
 
@@ -1102,6 +1113,9 @@ async def _prepare_session_model_request(state: _WebChatRunState, **payload: Any
                 if (model is None or model.id != state.llm_model.id
                     or model.provider != payload.get("provider") or model.model != payload.get("model")):
                     raise ExecutionAuthorityUnavailable(code="native_trigger_model_unavailable", task=task, effect="model_request")
+            from app.services.native_trigger_context import revalidate_native_trigger_context
+
+            await revalidate_native_trigger_context(db, task=task, frame=frame, effect="model_request")
         if getattr(state.user, 'machine_credential_id', None) is not None:
             from app.models.chat_session import ChatSession
             from app.models.runtime_task import RuntimeTask

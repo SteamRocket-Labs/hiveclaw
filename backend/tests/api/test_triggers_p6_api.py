@@ -48,6 +48,12 @@ class _QueuedDB:
     def add(self, obj):
         self.added.append(obj)
 
+    async def get(self, model, identity, **_kwargs):
+        return next((item for item in self.added if isinstance(item, model) and item.id == identity), None)
+
+    async def flush(self):
+        return None
+
     async def commit(self):
         self.committed = True
 
@@ -227,3 +233,9 @@ def test_create_scheduled_trigger_defaults_class_and_returns_display(monkeypatch
     assert payload["display_kind"] == "scheduled_job"
     assert payload["display_title"] == "Send daily report"
     assert payload.get("diagnostics") is None
+    from app.models.invocation_span import InvocationSpan
+
+    source = next(item for item in db.added if isinstance(item, InvocationSpan))
+    assert source.span_type == "trigger_configuration_pointer"
+    assert all(origin == {"kind": "human", "user_id": str(_user.id)}
+        for origin in source.metadata_json["configuration"]["sources"].values())

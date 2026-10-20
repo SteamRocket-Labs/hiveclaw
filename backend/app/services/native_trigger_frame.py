@@ -15,6 +15,7 @@ class NativeTriggerFrame:
     model_id: uuid.UUID | None
     allowed_tools: tuple[str, ...]
     excluded_tools: tuple[str, ...]
+    context_refs: tuple = ()
 
     def allowed_with(self, session_tools):
         if not session_tools:
@@ -58,11 +59,7 @@ async def _load_native_trigger_frame(db, *, task, session, for_effect):
         raise HTTPException(409, detail={"code": "native_trigger_origin_unavailable"})
     command = await db.get(SessionCommand, uuid.UUID(actual["command_id"]))
     options = command.target_json["runtime_metadata"].get("native_trigger_options") or {}
-    if options.get("context_from"):
-        # Cross-session evidence needs the semantic source adapter, not copied
-        # plaintext promoted to a user-authored command.
-        raise HTTPException(409, detail={"code": "native_trigger_context_unavailable"})
     model_id = options.get("model_id")
     return NativeTriggerFrame(model_id=uuid.UUID(model_id) if model_id else None,
         allowed_tools=tuple(options.get("allowed_tool_names") or ()),
-        excluded_tools=tuple(options.get("excluded_tool_names") or ()))
+        excluded_tools=tuple(options.get("excluded_tool_names") or ()), context_refs=tuple(options.get("context_from") or ()))

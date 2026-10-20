@@ -993,6 +993,10 @@ async def _execute_tool(state: _ToolExecutionState) -> Any:
                     raise HTTPException(403, detail={"code": "native_trigger_tool_principal_mismatch"})
                 if frame is not None and not frame.permits(request.tool_name):
                     raise HTTPException(403, detail={"code": "native_trigger_tool_out_of_scope"})
+                if frame is not None:
+                    from app.services.native_trigger_context import revalidate_native_trigger_context
+
+                    await revalidate_native_trigger_context(db, task=task, frame=frame, effect="tool_execution")
         except (HTTPException, ExecutionAuthorityUnavailable) as exc:
             reason = (exc.code if isinstance(exc, ExecutionAuthorityUnavailable) else
                 exc.detail.get("code", "native_trigger_authority_unavailable") if isinstance(exc.detail, dict) else

@@ -389,6 +389,9 @@ async def create_trigger(
             return _trigger_response(existing, authority_source="resource_owner")
     else:
         db.add(trigger)
+    from app.services.trigger_context_sources import record_trigger_configuration
+
+    await record_trigger_configuration(db, trigger=trigger, actor=current_user, changed_fields={"name", "type", "config", "reason"})
     await db.commit()
     if hasattr(db, "refresh"):
         await db.refresh(trigger)
@@ -536,6 +539,10 @@ async def update_trigger(
                 raise HTTPException(status_code=400, detail=f"Invalid workflow_ref: {ref_error}")
         trigger.config = config
 
+    from app.services.trigger_context_sources import record_trigger_configuration
+
+    await record_trigger_configuration(db, trigger=trigger, actor=current_user,
+        changed_fields={field for field in ("config", "reason") if getattr(body, field) is not None})
     await db.commit()
 
     return {

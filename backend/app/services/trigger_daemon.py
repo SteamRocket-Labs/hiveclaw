@@ -1922,11 +1922,6 @@ async def _deliver_batch_to_source_session(
             from app.services.trigger_preflight import collect_trigger_runtime_options, select_trigger_model
 
             options = collect_trigger_runtime_options(triggers)
-            if options["context_from"]:
-                await _skip_trigger_runtime_task(runtime_task_id, skip_reason="native_trigger_context_unavailable",
-                    result_summary="Cross-session scheduled context requires a recoverable semantic source binding.",
-                    settlement_overrides={str(trigger.id): "release" for trigger in triggers})
-                return True
             model_metadata = {}
             if any((trigger.config or {}).get("model_id") for trigger in triggers):
                 _model, model_metadata, error = await select_trigger_model(db, agent, triggers)

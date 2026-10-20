@@ -350,29 +350,50 @@ async def get_task(db, *, agent_id, task_id, actor, lock=False):
         from app.services.session_v2_persistence import resolve_session_mutation_authority
 
         await _session_principal(db, task=task, state=task.metadata_json["remote_a2a"], for_effect=False)
-        await resolve_session_mutation_authority(db, user=actor, agent_id=session.agent_id,
-            session_id=session.id, action="mutate_session_input", audit=False)
+        from app.services.agent_retirement import history_available
+
+        source = await db.get(Agent, session.agent_id, populate_existing=True)
+        if source is not None and history_available(source):
+            from app.services.shared_group_history import authorize_group_history_reader
+
+            await authorize_group_history_reader(db, session=session, user=actor)
+        else:
+            await resolve_session_mutation_authority(db, user=actor, agent_id=session.agent_id,
+                session_id=session.id, action="mutate_session_input", audit=False)
     return task
 
 
-async def list_tasks(db, *, agent_id, source_session_id, actor):
+async def list_tasks(db, *, agent_id, source_session_id, actor, source_work=False):
     from app.services.business_teams import _acting_tenant_id
 
     session = await db.get(ChatSession, source_session_id, populate_existing=True)
     if session is None or (session.audience_kind != "group" and session.user_id != actor.id) or session.tenant_id != _acting_tenant_id(actor):
         raise HTTPException(404, detail={"code": "remote_a2a_source_work_unavailable"})
+    if source_work and session.agent_id != agent_id:
+        raise HTTPException(404, detail={"code": "remote_a2a_source_work_unavailable"})
+    # The exact requester may still inspect their saved private work after
+    # deactivation. Its session/root/tenant bindings above authorize status
+    # reads, never another dispatch; packet content rechecks its own sources.
     if session.audience_kind == "group":
         from app.services.session_v2_persistence import resolve_session_mutation_authority
 
-        await resolve_session_mutation_authority(db, user=actor, agent_id=session.agent_id,
-            session_id=session.id, action="mutate_session_input", audit=False)
+        from app.services.agent_retirement import history_available
+
+        source = await db.get(Agent, session.agent_id, populate_existing=True)
+        if source is not None and history_available(source):
+            from app.services.shared_group_history import authorize_group_history_reader
+
+            await authorize_group_history_reader(db, session=session, user=actor)
+        else:
+            await resolve_session_mutation_authority(db, user=actor, agent_id=session.agent_id,
+                session_id=session.id, action="mutate_session_input", audit=False)
     tasks = list(
         await db.scalars(
             select(RuntimeTask)
             .where(
                 RuntimeTask.metadata_json["schema"].as_string() == SCHEMA,
                 RuntimeTask.tenant_id == session.tenant_id,
-                RuntimeTask.child_agent_id == agent_id,
+                *([] if source_work else [RuntimeTask.child_agent_id == agent_id]),
                 RuntimeTask.parent_agent_id == session.agent_id,
                 RuntimeTask.parent_session_id == str(session.id),
                 RuntimeTask.root_user_id == actor.id,
@@ -538,7 +559,8 @@ async def _record(db, task, state):
             root_runtime_task_id=task.root_runtime_task_id,
             terminal_status=task.status,
             task_type=TASK_TYPE,
-            delivery_mode="parent_continuation" if state.get("dispatch_kind") == "employee" and not unchanged else "session_projection",
+            delivery_mode="parent_continuation" if state.get("dispatch_kind") == "employee"
+                and not (state.get("connection_withdrawal") or {}).get("retirement_audit_id") and not unchanged else "session_projection",
             summary=json.dumps({"remote_a2a": result}, ensure_ascii=False),
             metadata={
                 "runtime_task_id": str(task.id),

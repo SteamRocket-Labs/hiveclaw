@@ -19,6 +19,7 @@ from app.core.permissions import (
     authorize_agent_operator_inspection,
     authorize_loaded_session_access,
     check_agent_access,
+    check_agent_history_access,
     check_agent_operator_reachability,
     is_scoped_business_admin,
     reject_non_executing_agent_access,
@@ -148,7 +149,7 @@ class SessionOut(BaseModel):
 
 
 def _session_view_flags(
-    session: ChatSession, current_user: User, *, resource_tenant_id: uuid.UUID | None = None
+    session: ChatSession, current_user: User, *, resource_tenant_id: uuid.UUID | None = None, retirement_history: bool = False
 ) -> dict[str, bool]:
     is_current_user_session = str(getattr(session, "user_id", "")) == str(getattr(current_user, "id", ""))
     source_channel = str(getattr(session, "source_channel", "") or "").lower()
@@ -161,7 +162,7 @@ def _session_view_flags(
     can_write = is_current_user_session or is_scoped_business_admin(current_user, resource_tenant_id=resource_tenant_id)
     return {
         "is_current_user_session": is_current_user_session,
-        "read_only": (not can_write) or is_agent_session,
+        "read_only": retirement_history or (not can_write) or is_agent_session,
     }
 
 
@@ -1015,7 +1016,10 @@ async def _get_run_session_and_agent(
     agent, access_level = await (
         check_agent_operator_reachability(db, current_user, agent_id)
         if operator_view and not require_writable
-        else check_agent_access(db, current_user, agent_id)
+        else (check_agent_history_access(db, current_user, agent_id)
+            if action in {"read_workbench", "read_session_index", "read_active_run", "read_session_approval", "read_context_usage", "read_lineage", "read_branches", "read_thread", "export_session"}
+            and not require_writable and not require_execution
+            else check_agent_access(db, current_user, agent_id))
     )
     if require_execution:
         reject_non_executing_agent_access(access_level)
@@ -1131,7 +1135,7 @@ async def list_sessions(
     agent, _access_level = await (
         check_agent_operator_reachability(db, current_user, agent_id)
         if scope == "all"
-        else check_agent_access(db, current_user, agent_id)
+        else check_agent_history_access(db, current_user, agent_id)
     )
 
     if scope == "groups":
@@ -1235,7 +1239,7 @@ async def list_sessions(
                     created_at=session.created_at.isoformat(),
                     last_message_at=session.last_message_at.isoformat() if session.last_message_at else None,
                     message_count=count,
-                    **_session_view_flags(session, current_user, resource_tenant_id=getattr(agent, "tenant_id", None)),
+                    **_session_view_flags(session, current_user, resource_tenant_id=agent.tenant_id, retirement_history=agent.deactivated_at is not None),
                     peer_agent_id=peer_agent_id,
                     peer_agent_name=peer_agent_name,
                     participant_type=participant_type,
@@ -1308,7 +1312,7 @@ async def list_sessions(
                     created_at=session.created_at.isoformat(),
                     last_message_at=session.last_message_at.isoformat() if session.last_message_at else None,
                     message_count=count,
-                    **_session_view_flags(session, current_user),
+                    **_session_view_flags(session, current_user, retirement_history=agent.deactivated_at is not None),
                     peer_agent_id=peer_agent_id,
                     peer_agent_name=peer_agent_name,
                     participant_type=participant_type,
@@ -2417,7 +2421,7 @@ async def resolve_session_approval(
 
     session, agent, _authority = await _get_run_session_and_agent(
         db=db, agent_id=agent_id, session_id=session_id, current_user=current_user,
-        action="read_session_approval",
+        action="read_session_approval", require_execution=True,
     )
     approval = await load_session_approval(db, session=session, approval_id=approval_id, for_update=True)
     if approval is None:
@@ -2569,7 +2573,7 @@ async def get_session_transcript(
     agent, access_level = await (
         check_agent_operator_reachability(db, current_user, agent_id)
         if operator_view is True
-        else check_agent_access(db, current_user, agent_id)
+        else check_agent_history_access(db, current_user, agent_id)
     )
     group_history = getattr(session, "audience_kind", None) == "group"
     if group_history and operator_view is not True:
@@ -2853,7 +2857,7 @@ async def get_session_messages(
     agent, access_level = await (
         check_agent_operator_reachability(db, current_user, agent_id)
         if operator_view is True
-        else check_agent_access(db, current_user, agent_id)
+        else check_agent_history_access(db, current_user, agent_id)
     )
     await _authorize_loaded_session(
         db=db,

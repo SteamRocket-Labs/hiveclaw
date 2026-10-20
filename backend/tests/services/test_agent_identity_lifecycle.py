@@ -288,6 +288,12 @@ async def test_soft_delete_agent_preserves_identity_and_disables_execution_entry
 
     monkeypatch.setattr(runtime_terminal_settlement, "settle_and_enqueue_runtime_task_terminal", fake_settle)
     db = _LifecycleDb(runtime_tasks=(runtime_task,))
+    external_checks = []
+
+    async def no_external_work(db_arg, agent_arg):
+        external_checks.append((db_arg, agent_arg))
+
+    monkeypatch.setattr("app.services.agent_retirement.require_settled", no_external_work)
 
     await soft_delete_agent(db, agent, actor_id=uuid4(), reason="owner offboarded")
 
@@ -303,6 +309,7 @@ async def test_soft_delete_agent_preserves_identity_and_disables_execution_entry
     assert "UPDATE agent_schedules SET is_enabled" in sql
     assert "FROM runtime_tasks" in sql
     assert "status IN" in sql
+    assert external_checks == [(db, agent), (db, agent)]
     assert runtime_task.status == "killed"
     assert runtime_task.claim_version == 5
     assert runtime_task.claimed_by is None

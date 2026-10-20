@@ -36,7 +36,7 @@ export const remoteA2AApi = {
   discover: (agentId: string, body: RemoteA2AFrame) => post<RemoteA2AConnection>(`${path(agentId)}/discover`, body),
   disable: (agentId: string, body: RemoteA2AFrame) => post<RemoteA2AConnection>(`${path(agentId)}/disable`, body),
   selectRuntime: (agentId: string, body: RemoteRuntimeSelection) => post<RemoteA2AConnection>(`${path(agentId)}/runtime`, body),
-  tasks: (agentId: string, sessionId: string) => get<RemoteA2ATasks>(`${path(agentId)}/tasks?source_session_id=${encodeURIComponent(sessionId)}`),
+  tasks: (agentId: string, sessionId: string, sourceWork = false) => get<RemoteA2ATasks>(`${path(agentId)}/tasks?source_session_id=${encodeURIComponent(sessionId)}${sourceWork ? '&source_work=true' : ''}`),
   task: (agentId: string, taskId: string) => get<RemoteA2ATask>(`${path(agentId)}/tasks/${encodeURIComponent(taskId)}`),
   startTask: (agentId: string, body: RemoteA2ATaskInput) => post<RemoteA2ATask>(`${path(agentId)}/tasks`, body),
   operateTask: (agentId: string, taskId: string, body: RemoteA2ATaskOperation) => post<RemoteA2ATask>(`${path(agentId)}/tasks/${encodeURIComponent(taskId)}/operations`, body),

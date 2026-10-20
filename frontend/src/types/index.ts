@@ -27,7 +27,9 @@ export interface Agent {
     status: 'creating' | 'running' | 'idle' | 'stopped' | 'error';
     creator_id: string;
     owner_user_id?: string;
-    access_level?: 'use' | 'manage' | 'operator';
+    deactivated_at?: string | null;
+    deactivation_reason?: string | null;
+    access_level?: 'use' | 'manage' | 'read' | 'operator';
     is_owner?: boolean;
     action_capabilities?: {
         can_use: boolean;

@@ -83,6 +83,12 @@ def _endpoint_harness(monkeypatch, *, deleted_at, cleanup_outcome) -> tuple[list
 
     monkeypatch.setattr(permissions, "load_deleted_agent_for_cleanup", cleanup_lookup)
     monkeypatch.setattr(api, "check_agent_access", access)
+    monkeypatch.setattr(permissions, "check_agent_history_access", access)
+
+    async def no_external_retirement(*args, **kwargs):
+        pass
+
+    monkeypatch.setattr("app.services.agent_retirement.prepare", no_external_retirement)
     monkeypatch.setattr(api, "soft_delete_agent", soft_delete)
     monkeypatch.setattr(lifecycle, "perform_pending_agent_cleanup", perform)
     monkeypatch.setattr(ai_assets, "register_projection", projection)

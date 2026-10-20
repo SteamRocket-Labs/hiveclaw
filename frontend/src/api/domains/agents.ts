@@ -15,6 +15,14 @@ export interface AgentCreateParams {
   execution_mode?: 'standard' | 'coordinator' | 'coordinator_strict';
 }
 
+export interface AgentRetirementPending {
+  id: string;
+  name: string;
+  remote_work_count: number;
+  local_work_count: number;
+  external_execution: 'unknown' | 'tracking_settled';
+}
+
 export interface AgentCleanupPending {
   id: string;
   name: string;
@@ -155,6 +163,9 @@ export interface AgentChannelCapability {
 
 export const agentApi = {
   getHrAgent: () => get<HrAgentInfo>('/agents/system/hr'),
+  listPendingRetirement: (tenantId?: string) => get<AgentRetirementPending[]>(
+    `/agents/retirement-pending${tenantId ? `?tenant_id=${encodeURIComponent(tenantId)}` : ''}`,
+  ),
   listPendingCleanup: (tenantId?: string) => get<AgentCleanupPending[]>(
     `/agents/cleanup-pending${tenantId ? `?tenant_id=${encodeURIComponent(tenantId)}` : ''}`,
   ),

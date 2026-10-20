@@ -25,7 +25,7 @@ export default function RemoteA2AWorkControls({ agentId, sessionId }: { agentId:
     agentId={agentId} sessionId={sessionId} actorId={user.id} tenantId={tenantId} />;
 }
 
-type Pending = { taskId?: string; body: RemoteA2ATaskInput | RemoteA2ATaskOperation };
+type Pending = { taskId?: string; targetAgentId?: string; body: RemoteA2ATaskInput | RemoteA2ATaskOperation };
 function Work({ agentId, sessionId, actorId, tenantId }: { agentId: string; sessionId: string; actorId: string; tenantId: string }) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
@@ -51,16 +51,16 @@ function Work({ agentId, sessionId, actorId, tenantId }: { agentId: string; sess
   const query = useQuery({ queryKey: ['remote-a2a-work', actorId, tenantId, agentId, sessionId],
     enabled: open, retry: false, refetchOnWindowFocus: false,
     queryFn: async () => {
-      const result = await remoteA2AApi.tasks(agentId, sessionId);
+      const result = await remoteA2AApi.tasks(agentId, sessionId, true);
       if (!matches() || result.agent_id !== agentId || result.source_session_id !== sessionId) throw new Error('Remote work scope changed');
       return result;
     } });
   const frame = () => ({ expected_user_id: actorId, expected_tenant_id: tenantId,
     expected_version: query.data?.connection.version ?? null });
-  async function read(taskId: string) {
+  async function read(taskId: string, targetAgentId = query.data?.items.find((item) => item.id === taskId)?.agent_id || selected?.agent_id || agentId) {
     try {
-      const task = await remoteA2AApi.task(agentId, taskId);
-      if (matches() && task.agent_id === agentId && task.source_session_id === sessionId) setSelected(task);
+      const task = await remoteA2AApi.task(targetAgentId, taskId);
+      if (matches() && task.agent_id === targetAgentId && task.source_session_id === sessionId) setSelected(task);
     } catch { if (matches()) setError(true); }
   }
   async function refresh() {
@@ -81,10 +81,10 @@ function Work({ agentId, sessionId, actorId, tenantId }: { agentId: string; sess
     const taskId = selected.id;
     setBusy(true);setError(false);
     try {
-      const result = await remoteA2AApi.recoverArtifacts(agentId, taskId, {
+      const result = await remoteA2AApi.recoverArtifacts(selected.agent_id, taskId, {
         expected_user_id: actorId, expected_tenant_id: tenantId });
       if (!matches()) return;
-      if (result.agent_id !== agentId || result.task_id !== taskId || result.source_session_id !== sessionId) throw new Error('Remote file scope changed');
+      if (result.agent_id !== selected.agent_id || result.task_id !== taskId || result.source_session_id !== sessionId) throw new Error('Remote file scope changed');
       setFiles({ taskId, available: result.parts.length,
         unavailable: result.file_returns.filter((file) => file.status === 'unavailable').length,
         conflicts: result.file_returns.filter((file) => file.status === 'preserved_conflict').length });
@@ -96,10 +96,10 @@ function Work({ agentId, sessionId, actorId, tenantId }: { agentId: string; sess
     pending.current = request;setBusy(true);setError(false);
     try {
       const task = request.taskId
-        ? await remoteA2AApi.operateTask(agentId, request.taskId, request.body as RemoteA2ATaskOperation)
+        ? await remoteA2AApi.operateTask(request.targetAgentId || agentId, request.taskId, request.body as RemoteA2ATaskOperation)
         : await remoteA2AApi.startTask(agentId, request.body as RemoteA2ATaskInput);
       if (!matches()) return;
-      if (task.agent_id !== agentId || task.source_session_id !== sessionId) throw new Error('Remote work scope changed');
+      if (task.agent_id !== (request.targetAgentId || agentId) || task.source_session_id !== sessionId) throw new Error('Remote work scope changed');
       pending.current = null;setUnknown(false);setSelected(task);
       if (!request.taskId || (request.body as RemoteA2ATaskOperation).action === 'send_message') {
         setText('');setEffects(false);setCost(false);
@@ -125,7 +125,7 @@ function Work({ agentId, sessionId, actorId, tenantId }: { agentId: string; sess
     if (!selected || pending.current) return;
     const params = action === 'send_message' ? { message: { messageId: crypto.randomUUID(), role: 'ROLE_USER',
       taskId: selected.remote_task_id, contextId: selected.remote_context_id, parts: [{ text }] } } : action === 'observe' ? observationLimits : {};
-    void submit({ taskId: selected.id, body: { ...frame(), expected_version: selected.configuration_version,
+    void submit({ taskId: selected.id, targetAgentId: selected.agent_id, body: { ...frame(), expected_version: selected.configuration_version,
       operation_id: crypto.randomUUID(), action, params } });
   }
   function status(task: RemoteA2ATask) {
@@ -163,14 +163,14 @@ function Work({ agentId, sessionId, actorId, tenantId }: { agentId: string; sess
         </fieldset>
       </form>
       <ul>{query.data.items.map((task) => <li key={task.id}>
-        <button type="button" className="btn-secondary" disabled={busy} onClick={() => { void read(task.id); }}>{task.id}</button>
+        <button type="button" className="btn-secondary" disabled={busy} onClick={() => { void read(task.id, task.agent_id); }}>{task.id}</button>
         {' · '}{status(task)}
       </li>)}</ul>
     </>}
     {selected && <section aria-label={t('remoteWork.receipt', 'Saved remote receipt')}>
       <p>{status(selected)}</p>
       <p>{t('remoteWork.costUnknown', 'External cost: unknown. Internal action control: unverified.')}</p>
-      {selected.connection_withdrawal && <p role="status">{t('remoteA2A.withdrawalWorkBoundary', 'This work’s original connection was withdrawn. Remote protocol reports do not verify internal side effects.')}
+      {selected.connection_withdrawal && <p role="status">{t('remoteA2A.withdrawalWorkBoundary', 'New execution for this work was withdrawn. Remote protocol reports do not verify internal side effects.')}
         {' '}{['unknown', 'pending', 'unavailable', 'waiting_remote_identity'].includes(selected.connection_withdrawal.status)
           && t('remoteA2A.withdrawalRecovery', 'Inspect the saved receipt in the original work or verify it with the remote service. Abandoning local tracking does not stop the remote host.')}</p>}
       {selected.error_code && <p role="alert"><code>{selected.error_code}</code></p>}

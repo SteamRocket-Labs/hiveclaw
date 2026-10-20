@@ -1214,9 +1214,10 @@ function AgentChatSection({
 
   const isReadOnlySession = !!activeSession && !shouldUseWritableSessionSurface(activeSession as any, currentUser?.id);
   const isDraftSession = isDraftHumanChatSession(activeSession as any);
-  const canMutateSession = Boolean(activeSession) && !isReadOnlySession;
+  const canMutateSession = Boolean(activeSession) && !isReadOnlySession && agent?.action_capabilities?.can_use !== false;
   const canAnswerQuestion = canMutateSession || (activeSession?.session_kind === 'delegation_run'
     && !activeSession.operator_view && !!currentUser?.id && activeSession.user_id === currentUser.id && !agentExpired
+    && agent?.action_capabilities?.can_use !== false
     && ['manage', 'use'].includes(agentPermissions?.access_level || agent?.access_level || ''));
   const baseCanUseComposer = canMutateSession && !agentExpired;
   const activeSessionId = activeSession?.id ? String(activeSession.id) : null;
@@ -2384,7 +2385,9 @@ function AgentChatSection({
                   operatorView={Boolean(activeSession.operator_view)} operatorReason={operatorReason}
                 />
               )}
-              {canUseComposer && !operatorView && effectiveAgentId && activeSession?.id && !isDraftSession && (
+              {!operatorView && effectiveAgentId && activeSession?.id && !isDraftSession
+                && (canUseComposer || (agent?.deactivation_reason === 'retirement_pending'
+                  && (activeSession.user_id === currentUser?.id || activeSession.audience_kind === 'group'))) && (
                 <RemoteA2AWorkControls agentId={effectiveAgentId} sessionId={String(activeSession.id)} />
               )}
               {operatorReadEnabled && artifactPreview && (

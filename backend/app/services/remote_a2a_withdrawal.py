@@ -56,6 +56,10 @@ async def capture(db, *, agent, actor, connection):
 
 
 async def _trusted(db, *, task, marker, lock=False, for_effect=True):
+    if marker.get("retirement_audit_id"):
+        from app.services.agent_retirement import withdrawal_scope
+
+        return await withdrawal_scope(db, task=task, marker=marker, for_effect=for_effect)
     statement = select(RemoteA2AConnection).where(RemoteA2AConnection.agent_id == task.child_agent_id,
         RemoteA2AConnection.tenant_id == task.tenant_id).execution_options(populate_existing=True)
     connection = await db.scalar(statement.with_for_update() if lock else statement)
@@ -66,12 +70,22 @@ async def _trusted(db, *, task, marker, lock=False, for_effect=True):
         or str(task.id) not in proof["task_ids"] or state.get("configuration_version") != proof["configuration_version"]
         or state.get("owner_scope") != proof["owner_scope"]):
         raise HTTPException(409, detail={"code": "remote_a2a_withdrawal_scope_changed"})
+    if for_effect:
+        from app.models.agent import Agent
+        from app.services.machine_identity_service import _owner_scope
+
+        agent = await db.get(Agent, task.child_agent_id, populate_existing=True)
+        if agent is None or agent.deleted_at is not None:
+            raise HTTPException(409, detail={"code": "remote_a2a_withdrawal_scope_changed"})
+        scope = await _owner_scope(db, agent)
+        if [str(scope[0]), scope[1]] != proof["owner_scope"]:
+            raise HTTPException(409, detail={"code": "remote_a2a_withdrawal_scope_changed"})
     return connection, proof
 
 
 async def refresh_summary(db, *, task, state):
     marker = state.get("connection_withdrawal")
-    if not isinstance(marker, dict):
+    if not isinstance(marker, dict) or marker.get("retirement_audit_id"):
         return
     try:
         connection, proof = await _trusted(db, task=task, marker=marker, lock=True, for_effect=False)

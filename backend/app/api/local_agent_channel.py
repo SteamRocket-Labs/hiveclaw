@@ -22,7 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.local_bridge import get_bridge_auth_context
 from app.config import get_settings
-from app.core.permissions import check_agent_access, is_scoped_business_admin
+from app.core.permissions import check_agent_access, check_agent_history_access, is_scoped_business_admin
 from app.core.security import get_current_user
 from app.database import get_db
 from app.models.user import User
@@ -809,7 +809,7 @@ async def list_agent_local_agent_channel_sessions(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    agent, _access_level = await check_agent_access(db, current_user, agent_id)
+    agent, _access_level = await check_agent_history_access(db, current_user, agent_id)
     host_owner_user_id = _local_agent_host_user_id(agent)
     tenant_id = getattr(agent, "tenant_id", None) or getattr(current_user, "tenant_id", None)
     # A scoped business administrator (PDEC-013) reads the managed business
@@ -864,7 +864,7 @@ async def resolve_local_agent_channel_session(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    agent, _access_level = await check_agent_access(db, current_user, agent_id)
+    agent, _access_level = await check_agent_history_access(db, current_user, agent_id)
     host_owner_user_id = _local_agent_host_user_id(agent)
     tenant_id = getattr(agent, "tenant_id", None) or getattr(current_user, "tenant_id", None)
     admin_business_view = is_scoped_business_admin(current_user, resource_tenant_id=getattr(agent, "tenant_id", None))
@@ -994,7 +994,7 @@ async def list_local_agent_channel_events(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    agent, _access_level = await check_agent_access(db, current_user, agent_id)
+    agent, _access_level = await check_agent_history_access(db, current_user, agent_id)
     host_owner_user_id = _local_agent_host_user_id(agent)
     tenant_id = getattr(agent, "tenant_id", None) or getattr(current_user, "tenant_id", None)
     admin_business_view = is_scoped_business_admin(current_user, resource_tenant_id=getattr(agent, "tenant_id", None))
@@ -1029,7 +1029,7 @@ async def download_agent_local_agent_channel_workspace_file(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    agent, _access_level = await check_agent_access(db, current_user, agent_id)
+    agent, _access_level = await check_agent_history_access(db, current_user, agent_id)
     host_owner_user_id = _local_agent_host_user_id(agent)
     tenant_id = getattr(agent, "tenant_id", None) or getattr(current_user, "tenant_id", None)
     admin_business_view = is_scoped_business_admin(current_user, resource_tenant_id=getattr(agent, "tenant_id", None))

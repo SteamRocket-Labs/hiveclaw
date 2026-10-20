@@ -2484,7 +2484,7 @@ async def list_channel_requests(
                 dispositions[span.request_id] = disposition
             if span.span_type == "remote_action":
                 origins.setdefault(span.request_id, span)
-            elif span.name in {"local_agent.cancel", "local_agent.revoke_connection"}:
+            elif span.name in {"local_agent.cancel", "local_agent.revoke_connection", "local_agent.retire_agent"}:
                 metadata = span.metadata_json if isinstance(span.metadata_json, dict) else {}
                 receipt = metadata.get("control")
                 if not isinstance(receipt, dict):
@@ -2653,7 +2653,7 @@ async def _withdraw_locked_message(
     actor_user_id: uuid.UUID,
     control_id: uuid.UUID,
     command_hash: str,
-    action: Literal["cancel", "revoke_connection"],
+    action: Literal["cancel", "revoke_connection", "retire_agent"],
     connection_id: uuid.UUID | None = None,
 ) -> dict:
     """Settle exact dispatch facts after the caller establishes control authority and locks the row."""

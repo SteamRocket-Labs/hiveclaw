@@ -356,6 +356,8 @@ export default function LocalAgentChatSection({ agentId, agent, agentPermissions
   const [error, setError] = useState<string | null>(null);
   const [localPlanModeRequested, setLocalPlanModeRequested] = useState(false);
   const routeSessionId = pathSessionId ?? routeSessionIdFromSearch(location.search);
+  const retirementPending = agent?.deactivation_reason === 'retirement_pending';
+  const canExecute = !retirementPending && agent?.action_capabilities?.can_use !== false;
 
   const routeSessionQuery = useQuery({
     queryKey: ['local-agent-detail-route-session', agentId, routeSessionId],
@@ -365,8 +367,10 @@ export default function LocalAgentChatSection({ agentId, agent, agentPermissions
   });
 
   const defaultSessionQuery = useQuery({
-    queryKey: ['local-agent-detail-default-session', agentId],
-    queryFn: () => localBridgeApi.getAgentDefaultChannelSession(agentId),
+    queryKey: ['local-agent-detail-default-session', agentId, retirementPending],
+    queryFn: async () => retirementPending
+      ? (await localBridgeApi.listAgentChannelSessions(agentId))[0] ?? null
+      : localBridgeApi.getAgentDefaultChannelSession(agentId),
     enabled: Boolean(agentId && !routeSessionId),
     retry: false,
   });
@@ -511,7 +515,7 @@ export default function LocalAgentChatSection({ agentId, agent, agentPermissions
 
   const sendMessage = async () => {
     const rawContent = input.trim();
-    if (!channelSessionId || sending || (!rawContent && attachments.length === 0)) return;
+    if (!canExecute || !channelSessionId || sending || (!rawContent && attachments.length === 0)) return;
     const content = localPlanModeRequested && rawContent
       ? `${t('localAgents.planPrefix', 'Plan first: ')}${rawContent}`
       : rawContent;
@@ -542,7 +546,7 @@ export default function LocalAgentChatSection({ agentId, agent, agentPermissions
   };
 
   const loading = routeSessionQuery.isLoading || defaultSessionQuery.isLoading || timelineQuery.isLoading;
-  const disabled = !channelSessionId || sending || uploading;
+  const disabled = !canExecute || !channelSessionId || sending || uploading;
   const permissionBadgeLabel = getLocalPermissionBadgeLabel(agentPermissions, t);
   const composerIntentLabel = localPlanModeRequested ? t('agent.chat.composer.planModeActive', 'Plan Mode') : null;
   const runtimeBadgeLabel = getLocalRuntimeBadgeLabel(agent, 'Hive Connect');

@@ -50,8 +50,8 @@ def _platform_admin_selection_allows_agent(user, agent_tenant_id) -> bool:
     return selected_tenant_id is not None and str(selected_tenant_id) == str(agent_tenant_id)
 
 
-async def _load_agent_for_user(db: AsyncSession, user: User, agent_id: uuid.UUID) -> Agent:
-    """Load an active Agent after the exact tenant/RLS boundary is pinned."""
+async def _load_agent_for_user(db: AsyncSession, user: User, agent_id: uuid.UUID, *, retirement_history: bool = False) -> Agent:
+    """Load inside the exact tenant/RLS boundary; retirement reads stay explicit."""
 
     # The lookup joins the Agent's Tenant liveness so an Agent whose company
     # is retired or missing resolves exactly like a missing row — the same
@@ -92,7 +92,9 @@ async def _load_agent_for_user(db: AsyncSession, user: User, agent_id: uuid.UUID
     lifecycle_reason = get_agent_lifecycle_block_reason(agent)
     if lifecycle_reason == "deleted":
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found")
-    if lifecycle_reason:
+    from app.services.agent_retirement import history_available
+
+    if lifecycle_reason and not (retirement_history and history_available(agent)):
         raise HTTPException(
             status_code=status.HTTP_410_GONE,
             detail=f"Agent is not active: {lifecycle_reason}",
@@ -390,14 +392,14 @@ async def require_agent_execution_access(
     return agent, access_level
 
 
-async def check_agent_access(db: AsyncSession, user: User, agent_id: uuid.UUID) -> Tuple[Agent, str]:
+async def check_agent_access(db: AsyncSession, user: User, agent_id: uuid.UUID, *, _retirement_history: bool = False) -> Tuple[Agent, str]:
     """Check whether a user may use or manage a specific Agent.
 
     Operator inspection is deliberately excluded. Read-only operator surfaces
     must call :func:`check_agent_operator_reachability` explicitly.
     """
 
-    agent = await _load_agent_for_user(db, user, agent_id)
+    agent = await _load_agent_for_user(db, user, agent_id, retirement_history=_retirement_history)
 
     # Scoped administrators (PDEC-013): organization administrators manage
     # every agent in their own tenant, platform administrators every agent
@@ -584,6 +586,19 @@ async def has_agent_operator_inspect(
     return agent_id in await load_agent_operator_inspection_ids(db, user=user, agent_ids=[agent_id])
 
 
+async def check_agent_history_access(db: AsyncSession, user: User, agent_id: uuid.UUID) -> Tuple[Agent, str]:
+    """Keep existing read authority while retirement waits for external work.
+
+    This does not grant access to deleted employees or bypass the Agent's live
+    company, current resource grants, private session or source disclosure gates.
+    Mutations and new execution continue through the ordinary active loader.
+    """
+    from app.services.agent_retirement import history_available
+
+    agent, level = await check_agent_access(db, user, agent_id, _retirement_history=True)
+    return agent, "read" if history_available(agent) else level
+
+
 async def check_agent_operator_reachability(
     db: AsyncSession,
     user: User,
@@ -592,12 +607,12 @@ async def check_agent_operator_reachability(
     """Resolve a read-only Agent shell without widening generic Agent access."""
 
     try:
-        return await check_agent_access(db, user, agent_id)
+        return await check_agent_history_access(db, user, agent_id)
     except HTTPException as exc:
         if exc.status_code != status.HTTP_403_FORBIDDEN:
             raise
 
-    agent = await _load_agent_for_user(db, user, agent_id)
+    agent = await _load_agent_for_user(db, user, agent_id, retirement_history=True)
     if await has_agent_operator_inspect(db, user=user, agent_id=agent_id):
         return agent, "operator"
     raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="No access to this agent")

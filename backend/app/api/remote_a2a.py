@@ -157,13 +157,14 @@ async def list_tasks(
     agent_id: uuid.UUID,
     source_session_id: uuid.UUID,
     response: Response,
+    source_work: bool = False,
     actor: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     from app.services import remote_a2a_tasks
 
     response.headers["Cache-Control"] = "private, no-store"
-    return await remote_a2a_tasks.list_tasks(db, agent_id=agent_id, source_session_id=source_session_id, actor=actor)
+    return await remote_a2a_tasks.list_tasks(db, agent_id=agent_id, source_session_id=source_session_id, actor=actor, source_work=source_work)
 
 
 @router.post("/tasks/{task_id}/operations")

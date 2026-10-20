@@ -211,6 +211,9 @@ async def soft_delete_agent(
     reason: str = "agent_deleted",
 ) -> None:
     """Soft-delete an agent while preserving audit/chat/participant history."""
+    from app.services.agent_retirement import require_settled
+
+    await require_settled(db, agent)
     now = datetime.now(timezone.utc)
     agent.deleted_at = agent.deleted_at or now
     agent.deactivated_at = agent.deactivated_at or agent.deleted_at
@@ -257,6 +260,9 @@ async def soft_delete_agent(
             RuntimeTask.status.in_(_ACTIVE_RUNTIME_TASK_STATUSES),
         ),
     )
+    # Recheck after canonical batch locking: a late external admission must
+    # never be converted into a native stop receipt or lose its HTTP fence.
+    await require_settled(db, agent)
     for task in runtime_tasks:
         task.status = "killed"
         task.completed_at = now

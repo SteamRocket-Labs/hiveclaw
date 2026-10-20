@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
 import React from 'react';
+import { useAuthStore } from '../../stores';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -470,4 +471,21 @@ describe('AgentChatSection operator child-state lifetime', () => {
       { operatorView: true, reason: 'Reason B' },
     );
   });
+});
+
+it('keeps original history visible but disables a cached writable composer during retirement', async () => {
+  const base = props('Audit', false, 'retirement-session');
+  const send = vi.fn();
+  useAuthStore.setState({ user: { id: 'operator-user', tenant_id: 'company' } as any });
+  render(<AgentChatSection {...base} agent={{ ...base.agent, access_level: 'read', deactivation_reason: 'retirement_pending', action_capabilities: { can_use: false } }}
+    chatScope="mine" activeSession={{ ...base.activeSession, user_id: 'operator-user', read_only: false, operator_view: false, is_current_user_session: true }}
+    currentUser={{ id: 'operator-user' }} historyMsgs={[{ id: 'retained-result', role: 'assistant', content: 'Retained original result' }]}
+    chatMessagesSessionId="retirement-session" chatMessages={[{ id: 'retained-result', role: 'assistant', content: 'Retained original result' }]}
+    onSendMessage={send} />);
+  expect(screen.getByText('Retained original result')).toBeTruthy();
+  const composer = screen.queryByTestId('session-composer-shell');
+  expect(!composer || composer.querySelector('textarea')?.disabled).toBe(true);
+  expect(screen.getByText('Remote A2A requests in this work')).toBeTruthy();
+  expect(send).not.toHaveBeenCalled();
+  useAuthStore.setState({ user: null });
 });

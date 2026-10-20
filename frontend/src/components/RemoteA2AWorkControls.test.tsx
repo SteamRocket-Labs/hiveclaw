@@ -224,3 +224,20 @@ it('pauses automatic checks without replacing or clearing a draft reply', async 
   await waitFor(() => expect(remoteA2AApi.task).toHaveBeenCalledTimes(2));
   expect((screen.getByLabelText('Remote request or reply') as HTMLTextAreaElement).value).toBe('Keep this draft reply.');
 });
+
+it('reads and abandons an outgoing recipient task from its original source work', async () => {
+  const saved = task({ agent_id: 'independent-recipient', status: 'needs_reconciliation',
+    configuration_version: 7, recovery_actions: ['read', 'abandon'],
+    connection_withdrawal: { receipt_id: 'retirement', status: 'unknown', actor_user_id: 'manager' } });
+  vi.mocked(remoteA2AApi.tasks).mockResolvedValue({ ...page(), connection: { ready: false, version: null }, items: [saved] });
+  vi.mocked(remoteA2AApi.task).mockResolvedValue(saved);
+  const operation = vi.spyOn(remoteA2AApi, 'operateTask').mockResolvedValue({ ...saved, status: 'skipped', local_abandoned: true });
+  await mount();
+  fireEvent.click(await screen.findByText(saved.id));
+  await screen.findByLabelText('Saved remote receipt');
+  expect(remoteA2AApi.tasks).toHaveBeenCalledWith('employee', 'original-work', true);
+  expect(remoteA2AApi.task).toHaveBeenCalledWith('independent-recipient', saved.id);
+  fireEvent.click(screen.getByText('Abandon locally; remote effects remain unconfirmed'));
+  await waitFor(() => expect(operation).toHaveBeenCalledOnce());
+  expect(operation.mock.calls[0]).toMatchObject(['independent-recipient', saved.id, { action: 'abandon', expected_version: 7 }]);
+});

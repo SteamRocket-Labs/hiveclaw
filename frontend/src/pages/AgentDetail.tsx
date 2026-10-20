@@ -2584,6 +2584,10 @@ function AgentDetailInner() {
     return (
         <>
             <div className={sessionWorkbenchMode ? 'agent-detail-session-only' : undefined}>
+                {agent?.deactivation_reason === 'retirement_pending' && <div className="workbench-panel" role="status">
+                    {t('workspace.digitalEmployees.retirementPending', 'New execution is disabled. External work is still unconfirmed; review it in its original work before retrying retirement. Files are retained. Ending local tracking does not confirm that the external runner stopped.')}
+                </div>}
+
                 {!sessionWorkbenchMode && (
                     <AgentDetailHeader
                         agent={agent}

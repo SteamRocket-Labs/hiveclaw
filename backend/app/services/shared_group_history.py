@@ -9,14 +9,13 @@ from app.services.session_model_inputs import _origin_dependencies, _unique_depe
 
 
 async def authorize_group_history_reader(db, *, session, user, audit=True):
-    from app.core.permissions import authorize_session_action, check_agent_access, is_scoped_business_admin
+    from app.core.permissions import authorize_loaded_session_access, check_agent_history_access, is_scoped_business_admin
     from app.services.shared_group_authority import require_current_group_member
 
-    await check_agent_access(db, user, session.agent_id)
+    agent, level = await check_agent_history_access(db, user, session.agent_id)
     if is_scoped_business_admin(user, resource_tenant_id=session.tenant_id):
-        decision = await authorize_session_action(db, user, agent_id=session.agent_id,
-            session_id=session.id, action="read_group_history", audit=audit)
-        return decision.authority_source
+        return await authorize_loaded_session_access(db, user, agent=agent, session=session,
+            access_level=level, action="read_group_history", audit=audit)
     await require_current_group_member(db, session=session, user=user)
     return "shared_group_member"
 

@@ -14,6 +14,7 @@ import zh from '../../i18n/zh.json';
 const api = vi.hoisted(() => ({
   list: vi.fn(),
   listPendingCleanup: vi.fn(),
+  listPendingRetirement: vi.fn(),
   remove: vi.fn(),
   listMine: vi.fn(),
   abandon: vi.fn(),
@@ -58,6 +59,7 @@ beforeEach(() => {
   api.confirm.mockResolvedValue(true);
   api.list.mockResolvedValue([]);
   api.listPendingCleanup.mockResolvedValue([]);
+  api.listPendingRetirement.mockResolvedValue([]);
   api.listMine.mockResolvedValue([]);
 });
 afterEach(() => {
@@ -139,4 +141,26 @@ it('shows a retryable load error instead of hiding the cleanup inventory', async
   fireEvent.click(screen.getByRole('button', { name: en.common.retry }));
   await waitFor(() => expect(screen.queryByRole('alert')).toBeNull());
   expect(api.listPendingCleanup).toHaveBeenCalledTimes(2);
+});
+
+
+describe.each(['en', 'zh'] as const)('pending retirement recovery (%s)', (locale) => {
+  it('keeps a pending employee reachable after reload and retries the same lifecycle command', async () => {
+    const words = (locale === 'en' ? en : zh).workspace.digitalEmployees as any;
+    const row = { id: 'retiring-employee', name: 'Pending external work', remote_work_count: 1, local_work_count: 0 };
+    api.listPendingRetirement.mockResolvedValue([row]);
+    api.remove.mockRejectedValueOnce(new ApiError(409, 'External execution unknown', { code: 'agent_retirement_pending' }));
+    const first = await mount('admin', locale);
+    expect((await screen.findByRole('link', { name: row.name })).getAttribute('href')).toBe('/agents/retiring-employee');
+    fireEvent.click(await screen.findByRole('button', { name: words.retryRetirement || 'Retry retirement' }));
+    await waitFor(() => expect(api.remove).toHaveBeenCalledWith(row.id));
+    expect(api.toast).not.toHaveBeenCalledWith(words.employeeDeleted, 'success');
+    expect(api.toast).toHaveBeenCalledWith(words.retirementPending, 'error');
+    first.unmount();
+    api.remove.mockImplementationOnce(async () => { api.listPendingRetirement.mockResolvedValue([]); });
+    await mount('admin', locale);
+    fireEvent.click(await screen.findByRole('button', { name: words.retryRetirement || 'Retry retirement' }));
+    await waitFor(() => expect(screen.queryByRole('link', { name: row.name })).toBeNull());
+    expect(api.remove).toHaveBeenCalledTimes(2);
+  });
 });

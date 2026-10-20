@@ -360,6 +360,32 @@ async def list_pending_agent_cleanups(
     ]
 
 
+@router.get("/retirement-pending")
+async def list_pending_agent_retirements(
+    tenant_id: uuid.UUID | None = None,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Recover retirement without publishing another requester's work contents."""
+    from app.models.tenant import Tenant
+    from app.services.agent_retirement import PENDING_REASON, external_work
+
+    if current_user.role not in ("org_admin", "platform_admin"):
+        raise HTTPException(403, detail="Only an admin can retire an employee.")
+    scope = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
+    if await db.scalar(select(Tenant.id).where(Tenant.id == scope, Tenant.is_active.is_(True))) is None:
+        raise HTTPException(404, detail="Company not found")
+    agents = list(await db.scalars(select(Agent).where(Agent.tenant_id == scope,
+        Agent.deleted_at.is_(None), Agent.deactivated_at.is_not(None), Agent.deactivation_reason == PENDING_REASON,
+        Agent.agent_class != "internal_system").order_by(Agent.deactivated_at, Agent.id)))
+    rows = []
+    for agent in agents:
+        remote, local = await external_work(db, agent)
+        rows.append({"id": str(agent.id), "name": agent.name, "remote_work_count": len(remote),
+            "local_work_count": len(local), "external_execution": "unknown" if remote or local else "tracking_settled"})
+    return rows
+
+
 @router.get("/", response_model=list[AgentOut | AgentOperatorListShellOut])
 async def list_agents(
     tenant_id: uuid.UUID | None = None,
@@ -1072,8 +1098,8 @@ async def get_agent(
     out["action_capabilities"] = _agent_action_capabilities(
         access_level,
         is_owner=is_owner,
-        can_manage_permissions=is_owner
-        or is_scoped_business_admin(current_user, resource_tenant_id=getattr(agent, "tenant_id", None)),
+        can_manage_permissions=access_level == "manage" and (is_owner
+        or is_scoped_business_admin(current_user, resource_tenant_id=getattr(agent, "tenant_id", None))),
         can_operator_inspect=await has_agent_operator_inspect(
             db,
             user=current_user,
@@ -1312,11 +1338,13 @@ async def get_agent_permissions(
     db: AsyncSession = Depends(get_db),
 ):
     """Get agent permission scope."""
-    agent, access_level = await check_agent_access(db, current_user, agent_id)
+    from app.core.permissions import check_agent_history_access
+
+    agent, access_level = await check_agent_history_access(db, current_user, agent_id)
     is_owner = effective_agent_owner_id(agent) == current_user.id
-    can_manage_permissions = is_owner or is_scoped_business_admin(
+    can_manage_permissions = access_level == "manage" and (is_owner or is_scoped_business_admin(
         current_user, resource_tenant_id=getattr(agent, "tenant_id", None)
-    )
+    ))
     if not can_manage_permissions:
         return {
             "scope_type": "effective",
@@ -1920,7 +1948,11 @@ async def delete_agent(
             raise _cleanup_pending_error()
         return None
 
-    agent, _access = await check_agent_access(db, current_user, agent_id)
+    from app.core.permissions import check_agent_history_access
+    from app.services.agent_retirement import prepare
+
+    agent, _access = await check_agent_history_access(db, current_user, agent_id)
+    await prepare(db, agent=agent, actor=current_user)
 
     # The destructive file archival is deferred PAST the transaction commit:
     # the durable retry truth is the soft-deleted Agent row plus its still

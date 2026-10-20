@@ -56,6 +56,16 @@ def _content_receipt_http_error(exc) -> HTTPException:
     })
 
 
+async def _authorize_team_workspace(db, tenant_id, user, workspace_key, *, write=False):
+    from app.services.content_input_receipts import ContentInputReceiptError
+    from app.services.team_memory_authority import authorize_workspace
+
+    try:
+        return await authorize_workspace(db, tenant_id, workspace_key, user=user, write=write)
+    except ContentInputReceiptError as exc:
+        raise _content_receipt_http_error(exc) from exc
+
+
 async def _verified_team_memory_entries(db, tenant_id, user, workspace_key, entries):
     from app.services.content_input_receipts import (
         ContentInputReceiptError, latest_team_memory_receipts, validate_team_memory_receipt,
@@ -71,6 +81,7 @@ async def _verified_team_memory_entries(db, tenant_id, user, workspace_key, entr
                 raise _content_receipt_http_error(exc) from exc
             continue
         verified.append(asdict(entry))
+    await _authorize_team_workspace(db, tenant_id, user, workspace_key)
     return verified
 
 
@@ -280,6 +291,23 @@ async def get_session_summary(
     }
 
 
+@router.get("/shared-workspaces")
+async def list_team_memory_workspaces(
+    agent_id: uuid.UUID | None = None,
+    tenant_id: str | None = None,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    from app.services.content_input_receipts import ContentInputReceiptError
+    from app.services.team_memory_authority import available_workspaces
+
+    target_tenant_id = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
+    try:
+        return await available_workspaces(db, target_tenant_id, user=current_user, agent_id=agent_id)
+    except ContentInputReceiptError as exc:
+        raise _content_receipt_http_error(exc) from exc
+
+
 @router.get("/shared")
 async def list_team_memory(
     workspace_key: str,
@@ -292,6 +320,7 @@ async def list_team_memory(
     from app.services.team_memory import TeamMemoryStore
 
     target_tenant_id = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
+    await _authorize_team_workspace(db, target_tenant_id, current_user, workspace_key)
     store = TeamMemoryStore()
     entries = store.list_entries(str(target_tenant_id), workspace_key, include_deleted=include_deleted)
     return await _verified_team_memory_entries(db, target_tenant_id, current_user, workspace_key, entries)
@@ -310,6 +339,7 @@ async def search_team_memory(
     from app.services.team_memory import TeamMemoryStore
 
     target_tenant_id = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
+    await _authorize_team_workspace(db, target_tenant_id, current_user, workspace_key)
     store = TeamMemoryStore()
     entries = store.search_entries(str(target_tenant_id), workspace_key, query, include_deleted=include_deleted)
     return await _verified_team_memory_entries(db, target_tenant_id, current_user, workspace_key, entries)
@@ -328,6 +358,7 @@ async def get_team_memory_entry(
     from app.services.team_memory import TeamMemoryStore
 
     target_tenant_id = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
+    await _authorize_team_workspace(db, target_tenant_id, current_user, workspace_key)
     store = TeamMemoryStore()
     entry = store.get_entry(str(target_tenant_id), workspace_key, entry_key, include_deleted=include_deleted)
     if entry is None:
@@ -341,6 +372,7 @@ async def get_team_memory_entry(
         await validate_team_memory_receipt(db, target_tenant_id, current_user, workspace_key, entry, receipts)
     except ContentInputReceiptError as exc:
         raise _content_receipt_http_error(exc) from exc
+    await _authorize_team_workspace(db, target_tenant_id, current_user, workspace_key)
     return asdict(entry)
 
 
@@ -368,6 +400,14 @@ async def upsert_team_memory(
     )
 
     target_tenant_id = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
+    await _authorize_team_workspace(db, target_tenant_id, current_user, data.workspace_key, write=True)
+
+    async def before_write():
+        from app.services.content_input_receipts import validate_browser_input_dependencies
+
+        await validate_browser_input_dependencies(db, target_tenant_id, current_user, dependencies)
+        await _authorize_team_workspace(db, target_tenant_id, current_user, data.workspace_key, write=True)
+
     try:
         exact_secret_boundary = await _load_team_memory_secret_boundary(target_tenant_id)
     except Exception as exc:
@@ -404,6 +444,7 @@ async def upsert_team_memory(
             base_revision=data.base_revision,
             sync_token=data.sync_token,
             verified_base=(previous.revision, previous.checksum) if previous else (0, ""),
+            before_write=before_write,
         )
     except SecretScanError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -423,6 +464,7 @@ async def upsert_team_memory(
             await validate_browser_input_dependencies(db, target_tenant_id, current_user, dependencies)
         except ContentInputReceiptError as source_exc:
             raise _content_receipt_http_error(source_exc) from source_exc
+        await _authorize_team_workspace(db, target_tenant_id, current_user, data.workspace_key)
         raise HTTPException(status_code=409, detail=_team_memory_conflict_detail(exc)) from exc
     except TeamMemoryBaseChangedError as exc:
         raise HTTPException(status_code=409, detail={"code": "team_memory_unverified", "message": str(exc), "retryable": False}) from exc
@@ -437,6 +479,7 @@ async def upsert_team_memory(
         from app.services.content_input_receipts import validate_browser_input_dependencies
 
         await validate_browser_input_dependencies(db, target_tenant_id, current_user, dependencies)
+        await _authorize_team_workspace(db, target_tenant_id, current_user, data.workspace_key, write=True)
         record_team_memory_receipt(db, target_tenant_id, data.workspace_key, entry, dependencies)
         await db.commit()
     except Exception as exc:
@@ -445,6 +488,7 @@ async def upsert_team_memory(
             "code": "team_memory_save_unknown", "outcome": "unknown", "retryable": False,
             "message": "The file may be saved but its receipt could not be committed. Keep the draft and reconcile before saving again.",
         }) from exc
+    await _authorize_team_workspace(db, target_tenant_id, current_user, data.workspace_key)
     return asdict(entry)
 
 
@@ -467,6 +511,7 @@ async def delete_team_memory(
     )
 
     target_tenant_id = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
+    await _authorize_team_workspace(db, target_tenant_id, current_user, workspace_key, write=True)
     store = TeamMemoryStore()
     try:
         await lock_team_memory_write(db, target_tenant_id, workspace_key, entry_key)
@@ -475,6 +520,7 @@ async def delete_team_memory(
         if previous is not None:
             receipts = await latest_team_memory_receipts(db, target_tenant_id, workspace_key, [previous])
             receipt = await validate_team_memory_receipt(db, target_tenant_id, current_user, workspace_key, previous, receipts)
+        await _authorize_team_workspace(db, target_tenant_id, current_user, workspace_key, write=True)
         deleted = store.delete_entry(
             str(target_tenant_id),
             workspace_key,
@@ -484,6 +530,7 @@ async def delete_team_memory(
             sync_token=sync_token,
         )
     except TeamMemoryConflictError as exc:
+        await _authorize_team_workspace(db, target_tenant_id, current_user, workspace_key)
         raise HTTPException(status_code=409, detail=_team_memory_conflict_detail(exc)) from exc
     except ContentInputReceiptError as exc:
         raise _content_receipt_http_error(exc) from exc
@@ -503,4 +550,5 @@ async def delete_team_memory(
             "code": "team_memory_save_unknown", "outcome": "unknown", "retryable": False,
             "message": "Deletion could not be confirmed. Reconcile before retrying.",
         }) from exc
+    await _authorize_team_workspace(db, target_tenant_id, current_user, workspace_key)
     return {"deleted": deleted, "key": entry_key, "workspace_key": workspace_key}

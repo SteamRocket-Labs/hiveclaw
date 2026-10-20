@@ -79,6 +79,12 @@ def _unit_receipt_database(monkeypatch):
     monkeypatch.setattr("app.services.content_input_receipts.latest_team_memory_receipts", latest)
     monkeypatch.setattr("tests.api.test_memory_api._receipt_database", database)
 
+    async def reference_workspace(_db, _tenant, _user, workspace_key, **_kwargs):
+        # Storage/protocol unit seam. Live membership is exercised by native M4-E.
+        return {"workspace_key": workspace_key, "can_write": True}
+
+    monkeypatch.setattr("app.api.memory._authorize_team_workspace", reference_workspace)
+
 
 async def _receipt_database():
     raise AssertionError("The HTTP unit receipt dependency was not initialized")

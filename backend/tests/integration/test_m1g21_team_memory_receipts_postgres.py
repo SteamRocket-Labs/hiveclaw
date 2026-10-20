@@ -24,16 +24,25 @@ async def memory_clients(owner_sessionmaker, app_user_sessionmaker, monkeypatch,
     from app.database import get_db
     from app.models.tenant import Tenant
     from app.models.user import User
+    from app.models.org import OrgMember  # noqa: F401
+    from app.models.organization_identity import BusinessTeam, BusinessTeamMembership
     from tests.api.test_memory_api import _review_team_memory_semantics
 
     _review_team_memory_semantics.__wrapped__(monkeypatch)
     tenant = uuid.uuid4()
+    team_id = uuid.uuid4()
+    monkeypatch.setattr(__import__(__name__, fromlist=["TEAM_WORKSPACE_KEY"]), "TEAM_WORKSPACE_KEY", f"business_team:{team_id}")
     users = [User(id=uuid.uuid4(), tenant_id=tenant, username=f"receipt-{uuid.uuid4().hex}",
         email=f"{uuid.uuid4().hex}@fixture.test", password_hash="fixture", display_name="Fixture member", role="member", is_active=True) for _ in range(2)]
     async with owner_sessionmaker() as db:
         db.add(Tenant(id=tenant, name="Receipt fixture", slug=f"receipt-{tenant.hex}"))
         await db.flush()
         db.add_all(users)
+        await db.flush()
+        db.add(BusinessTeam(id=team_id, tenant_id=tenant, name="Receipt team", created_by_user_id=users[0].id))
+        await db.flush()
+        db.add_all([BusinessTeamMembership(tenant_id=tenant, business_team_id=team_id,
+            user_id=user.id, role="member", status="active") for user in users])
         await db.commit()
     from app.config import get_settings
 
@@ -61,8 +70,11 @@ async def memory_clients(owner_sessionmaker, app_user_sessionmaker, monkeypatch,
         await client.aclose()
 
 
+TEAM_WORKSPACE_KEY = "business_team:00000000-0000-0000-0000-000000000001"
+
+
 def body(content="Team result", **kwargs):
-    return {"workspace_key": "business_team:00000000-0000-0000-0000-000000000001", "key": "report", "title": "Weekly result", "content": content, **kwargs}
+    return {"workspace_key": TEAM_WORKSPACE_KEY, "key": "report", "title": "Weekly result", "content": content, **kwargs}
 
 
 async def test_plain_http_write_without_an_agent_has_a_readable_committed_receipt(memory_clients, app_user_sessionmaker):

@@ -5,6 +5,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const mutationConfigs: Array<Record<string, unknown>> = [];
 const queryKeys: unknown[][] = [];
 
+vi.mock('../../stores', () => ({ useAuthStore: (select: (state: unknown) => unknown) =>
+  select({ user: { id: 'user', tenant_id: 'tenant' } }) }));
+vi.mock('../assistant/assistantScope', () => ({ useAssistantTenant: () => 'tenant' }));
+
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
     t: (key: string, fallbackOrOptions?: string | Record<string, unknown>, options?: Record<string, unknown>) => {
@@ -23,6 +27,10 @@ vi.mock('react-i18next', () => ({
 vi.mock('@tanstack/react-query', () => ({
   useQuery: (config: { queryKey: unknown[] }) => {
     queryKeys.push(config.queryKey);
+    if (String(config.queryKey[0]) === 'team-memory-workspaces') return { data: {
+      tenant_id: 'tenant', user_id: 'user', workspaces: [{ workspace_key: 'workspace', name: 'Team',
+        kind: 'business_team', can_write: true, can_delete: true, status: 'active' }], unavailable: false,
+    } };
     if (String(config.queryKey[0]) === 'team-memory-entry') {
       return {
         data: {
@@ -93,9 +101,10 @@ describe('TeamMemorySummaryCard helpers', () => {
       formatTeamMemoryMutationError,
     } = await import('./TeamMemorySummaryCard');
 
-    expect(buildTeamMemoryQueryKey('workspace')).toEqual(['team-memory', 'workspace']);
-    expect(buildTeamMemoryEntryQueryKey('workspace', 'deploy-playbook')).toEqual([
+    expect(buildTeamMemoryQueryKey('workspace', 'user:tenant')).toEqual(['team-memory', 'user:tenant', 'workspace']);
+    expect(buildTeamMemoryEntryQueryKey('workspace', 'deploy-playbook', 'user:tenant')).toEqual([
       'team-memory-entry',
+      'user:tenant',
       'workspace',
       'deploy-playbook',
     ]);

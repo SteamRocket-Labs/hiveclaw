@@ -25,6 +25,22 @@ export interface TeamMemoryUpsertRequest {
   base_revision?: number | null;
 }
 
+export interface TeamMemoryWorkspace {
+  workspace_key: string;
+  kind: 'business_team' | 'agent_team';
+  name: string;
+  status: string;
+  can_write: boolean;
+  can_delete: boolean;
+}
+
+export interface TeamMemoryWorkspaces {
+  tenant_id: string;
+  user_id: string;
+  workspaces: TeamMemoryWorkspace[];
+  unavailable: boolean;
+}
+
 function buildQueryString(params: Record<string, string | undefined>): string {
   const searchParams = new URLSearchParams();
   for (const [key, value] of Object.entries(params)) {
@@ -37,6 +53,8 @@ function buildQueryString(params: Record<string, string | undefined>): string {
 }
 
 export const memoryApi = {
+  listWorkspaces: (agentId: string, tenantId: string) =>
+    get<TeamMemoryWorkspaces>(`/enterprise/memory/shared-workspaces${buildQueryString({ agent_id: agentId, tenant_id: tenantId })}`),
   listShared: (workspaceKey: string, tenantId?: string) =>
     get<TeamMemoryEntry[]>(`/enterprise/memory/shared${buildQueryString({ workspace_key: workspaceKey, tenant_id: tenantId })}`),
   getShared: (entryKey: string, workspaceKey: string, tenantId?: string) =>
@@ -53,8 +71,9 @@ export const memoryApi = {
     ),
   upsertShared: (data: TeamMemoryUpsertRequest, tenantId?: string) =>
     put<TeamMemoryEntry>(`/enterprise/memory/shared${buildQueryString({ tenant_id: tenantId })}`, data),
-  deleteShared: (entryKey: string, workspaceKey: string, tenantId?: string) =>
+  deleteShared: (entryKey: string, workspaceKey: string, tenantId?: string, baseRevision?: number) =>
     del<{ deleted: boolean; key: string; workspace_key: string }>(
-      `/enterprise/memory/shared/${encodeURIComponent(entryKey)}${buildQueryString({ workspace_key: workspaceKey, tenant_id: tenantId })}`,
+      `/enterprise/memory/shared/${encodeURIComponent(entryKey)}${buildQueryString({ workspace_key: workspaceKey, tenant_id: tenantId,
+        base_revision: baseRevision?.toString() })}`,
     ),
 };

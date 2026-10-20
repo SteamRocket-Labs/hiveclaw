@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -294,6 +295,7 @@ class TeamMemoryStore:
         base_revision: int | None = None,
         sync_token: str | None = None,
         verified_base: tuple[int, str] | None = None,
+        before_write: Callable[[], Awaitable[None]] | None = None,
     ) -> TeamMemoryEntry:
         if mode not in {"replace", "append"}:
             raise InvalidTeamMemoryModeError(f"Unsupported team memory mode: {mode}")
@@ -305,6 +307,8 @@ class TeamMemoryStore:
             content=content,
             updated_by=updated_by,
         )
+        if before_write is not None:
+            await before_write()
         return self._upsert_prepared_entry(
             tenant_id=tenant_id,
             workspace_key=workspace_key,

@@ -67,6 +67,12 @@ def _view(task):
             actions.extend(["refresh", "cancel"])
             if not state.get("error_code") and state.get("dispatch_kind") != "session":
                 actions.append("send_message")
+    withdrawal = state.get("connection_withdrawal")
+    if withdrawal:
+        # Cleared credentials and the withdrawn configuration cannot perform
+        # ordinary protocol operations. Reading/abandoning local tracking is
+        # still available under the original work's own authority.
+        actions = [action for action in actions if action in {"read", "abandon", "pause_observation"}]
     return {
         "id": str(task.id),
         "request_id": state["operations"][0]["id"],
@@ -82,6 +88,7 @@ def _view(task):
         "remote_state": state.get("remote_state"),
         "error_code": state.get("error_code"),
         "source_error": state.get("source_error"),
+        "connection_withdrawal": withdrawal,
         "observation": observation,
         "automatic_observation": automatic,
         "operations": state["operations"],
@@ -557,6 +564,9 @@ async def _record(db, task, state):
             schedule_cancel(task, state)
             await schedule_input(db, task=task, state=state)
     task.metadata_json = {**task.metadata_json, "remote_a2a": deepcopy(state)}
+    from app.services.remote_a2a_withdrawal import refresh_summary
+
+    await refresh_summary(db, task=task, state=state)
     await db.commit()
     if state.get("dispatch_kind") == "session":
         from app.services.web_chat_runtime import broadcast_web_chat_event
@@ -702,6 +712,10 @@ async def execute_claimed_task(task_id):
         if authority_changed:
             state["error_code"] = "remote_a2a_authority_changed"
             task.status = "needs_reconciliation"
+        from app.services.remote_a2a_withdrawal import after_reply
+
+        if await after_reply(db, task=task, state=state, endpoint=endpoint):
+            return
         await _record(db, task, state)
 
 

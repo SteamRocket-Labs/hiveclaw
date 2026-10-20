@@ -39,6 +39,36 @@ beforeEach(() => {
 });
 afterEach(() => { cleanup();clients.splice(0).forEach((c) => c.clear());vi.restoreAllMocks();localStorage.clear(); });
 
+it('does not call a local pre-dispatch withdrawal a remote cancellation report', async () => {
+  const saved = task({ status: 'killed', remote_task_id: null, remote_state: null, recovery_actions: ['read'],
+    connection_withdrawal: { receipt_id: 'withdrawal', status: 'not_started', actor_user_id: 'manager' } });
+  vi.mocked(remoteA2AApi.tasks).mockResolvedValue({ ...page(), connection: { ready: false, version: 2 }, items: [saved] });
+  vi.mocked(remoteA2AApi.task).mockResolvedValue(saved);
+  await mount();
+  expect(await screen.findByText(/Withdrawn before dispatch/)).toBeTruthy();
+  expect(screen.queryByText(/Remote cancellation confirmed/)).toBeNull();
+  fireEvent.click(screen.getByText('transport-task'));
+  expect(await screen.findByLabelText('Saved remote receipt')).toBeTruthy();
+  expect(screen.getAllByText(/Withdrawn before dispatch/)).toHaveLength(2);
+  expect(screen.queryByText(/Remote cancellation confirmed/)).toBeNull();
+});
+
+it('offers local abandonment for unknown withdrawn work without another remote send', async () => {
+  const saved = task({ status: 'needs_reconciliation', recovery_actions: ['read', 'abandon'],
+    connection_withdrawal: { receipt_id: 'withdrawal', status: 'unknown', actor_user_id: 'manager' } });
+  vi.mocked(remoteA2AApi.tasks).mockResolvedValue({ ...page(), connection: { ready: false, version: 2 }, items: [saved] });
+  vi.mocked(remoteA2AApi.task).mockResolvedValue(saved);
+  const operate = vi.spyOn(remoteA2AApi, 'operateTask').mockResolvedValue({ ...saved, status: 'skipped', local_abandoned: true, recovery_actions: ['read'] });
+  const start = vi.spyOn(remoteA2AApi, 'startTask');
+  await mount();
+  fireEvent.click(await screen.findByText('transport-task'));
+  expect(await screen.findByText(/Abandoning local tracking does not stop the remote host/)).toBeTruthy();
+  fireEvent.click(screen.getByText('Abandon locally; remote effects remain unconfirmed'));
+  await waitFor(() => expect(operate).toHaveBeenCalledOnce());
+  expect(operate.mock.calls[0][2].action).toBe('abandon');
+  expect(start).not.toHaveBeenCalled();
+});
+
 it('loads the actual work controls under StrictMode', async () => {
   await mount(true);
   expect(await screen.findByLabelText('Remote request or reply')).toBeTruthy();

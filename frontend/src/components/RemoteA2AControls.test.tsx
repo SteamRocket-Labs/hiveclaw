@@ -30,6 +30,21 @@ beforeEach(() => {
 });
 afterEach(() => { cleanup();clients.splice(0).forEach((client) => client.clear());vi.restoreAllMocks();localStorage.clear(); });
 
+it.each([true, false])('keeps unresolved withdrawal visible without blocking a later configuration: current=%s', async (current) => {
+  vi.spyOn(remoteA2AApi, 'get').mockResolvedValue({ ...page({ state: current ? 'disabled' : 'configured', version: current ? 2 : 3 }), withdrawal: {
+    schema: 'hive.remote_connection_withdrawal.v1', receipt_id: 'withdrawal', status: 'needs_reconciliation',
+    current_connection_withdrawn: current,
+    task_count: 3, not_started_count: 1, cancel_reported_count: 1, peer_terminal_count: 0,
+    unknown_count: 1, waiting_remote_identity_count: 0, unavailable_count: 0,
+    effect_control: 'unverified', cost_metering: 'unknown',
+  } });
+  mount();
+  expect(await screen.findByText(/Unconfirmed remote work: 1/)).toBeTruthy();
+  expect(screen.getByText(/Reported cancellations: 1/)).toBeTruthy();
+  expect(screen.getByText(/Abandoning local tracking does not stop the remote host/)).toBeTruthy();
+  if (!current) expect(screen.getByText(/A previous connection configuration was withdrawn/)).toBeTruthy();
+});
+
 it('saves a separate credential outside global caches and preserves truthful activation limits', async () => {
   const get = vi.spyOn(remoteA2AApi, 'get').mockResolvedValue(page());
   const configure = vi.spyOn(remoteA2AApi, 'configure').mockImplementation(async (_agent, body) => {

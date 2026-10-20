@@ -5,6 +5,7 @@ import hashlib
 import hmac
 import ipaddress
 import json
+import uuid
 from urllib.parse import urlsplit
 
 from fastapi import HTTPException
@@ -28,6 +29,7 @@ def _frame(agent, actor, expected_user_id, expected_tenant_id):
 
 def _view(agent, actor, connection, scope):
     from app.services.remote_a2a_runtime import authorization_valid
+    from app.services.remote_a2a_withdrawal import public_withdrawal
 
     state = connection.state if connection else "not_configured"
     if connection and state != "disabled":
@@ -55,6 +57,7 @@ def _view(agent, actor, connection, scope):
         "protocol_binding": "JSONRPC",
         "effect_control": "unverified",
         "cost_metering": "unknown",
+        "withdrawal": public_withdrawal(connection),
         "runtime_activation": ("activated" if authorization_valid(agent, connection, scope)
             else "authorization_required" if agent.agent_type == "remote_a2a" else "not_activated"),
         "runtime_revision": (connection.runtime_authorization or {}).get("revision") if connection else None,
@@ -293,8 +296,15 @@ async def disable_connection(db, *, agent_id, actor, expected_user_id, expected_
     agent = await require_agent_owner_or_admin(db, actor, agent_id, lock=True)
     _frame(agent, actor, expected_user_id, expected_tenant_id)
     connection = await _connection(db, agent, lock=True)
+    from app.services.remote_a2a_withdrawal import capture, process
+
+    previous = (connection.runtime_authorization or {}).get("withdrawal") if connection else None
+    if (connection and connection.state == "disabled" and isinstance(previous, dict)
+        and expected_version in {previous.get("configuration_version"), connection.version}):
+        return _view(agent, actor, connection, None)
     if not connection or connection.version != expected_version:
         raise HTTPException(409, detail={"code": "remote_a2a_version_conflict"})
+    withdrawal, endpoint = await capture(db, agent=agent, actor=actor, connection=connection)
     connection.state, connection.version = "disabled", connection.version + 1
     connection.credential_config = {}
     connection.credential_configured = False
@@ -306,8 +316,11 @@ async def disable_connection(db, *, agent_id, actor, expected_user_id, expected_
             agent_id=agent.id,
             user_id=actor.id,
             action="remote_a2a:disabled",
-            details={"version": connection.version},
+            details={"version": connection.version, "withdrawal": withdrawal},
         )
     )
     await db.commit()
+    for task_id in withdrawal["task_ids"]:
+        await process(db, task_id=uuid.UUID(task_id), receipt_id=withdrawal["id"], endpoint=endpoint)
+    await db.refresh(connection)
     return _view(agent, actor, connection, None)

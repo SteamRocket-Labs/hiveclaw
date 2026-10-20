@@ -17,6 +17,12 @@ def _digest(value):
     return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
+def _authorization_hash(value):
+    # This exact field records withdrawal of older work; it grants no new
+    # runtime capability. All standing authority fields remain hash-bound.
+    return _digest({key: item for key, item in value.items() if key != "withdrawal"})
+
+
 def authorization_valid(agent, connection, scope):
     authorization = connection.runtime_authorization if connection else None
     return bool(agent.agent_type == "remote_a2a" and isinstance(authorization, dict)
@@ -35,9 +41,9 @@ async def require_runtime_authorization(db, *, agent, expected_hash=None):
     if not authorization_valid(agent, connection, scope):
         raise HTTPException(409, detail={"code": "remote_a2a_runtime_authorization_required"})
     authorization = connection.runtime_authorization
-    if expected_hash is not None and _digest(authorization) != expected_hash:
+    if expected_hash is not None and _authorization_hash(authorization) != expected_hash:
         raise HTTPException(409, detail={"code": "remote_a2a_runtime_authorization_changed"})
-    return connection, authorization, _digest(authorization)
+    return connection, authorization, _authorization_hash(authorization)
 
 
 async def select_runtime(db, *, agent_id, actor, expected_user_id, expected_tenant_id, expected_version,
@@ -87,6 +93,10 @@ async def select_runtime(db, *, agent_id, actor, expected_user_id, expected_tena
         "request_id": str(request_id), "request_hash": request_hash, "enabled": enabled,
         "previous_runtime": prior_runtime, "revision": (expected_runtime_revision or 0) + 1,
         "selected_at": datetime.now(timezone.utc).isoformat()}
+    if isinstance(previous.get("withdrawal"), dict):
+        # Restoring an executor does not revoke an already committed request
+        # to cancel old remote work or erase its unresolved control receipts.
+        authorization["withdrawal"] = previous["withdrawal"]
     connection.runtime_authorization = authorization
     agent.agent_type = "remote_a2a" if enabled else prior_runtime
     db.add(AuditLog(tenant_id=agent.tenant_id, agent_id=agent.id, user_id=current.id,

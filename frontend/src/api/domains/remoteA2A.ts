@@ -1,5 +1,12 @@
 import { get, post, put } from '../core';
 
+export interface RemoteConnectionWithdrawal {
+  schema: 'hive.remote_connection_withdrawal.v1'; receipt_id: string; status: string; task_count: number;
+  current_connection_withdrawn: boolean;
+  not_started_count: number; cancel_reported_count: number; peer_terminal_count: number; unknown_count: number;
+  waiting_remote_identity_count: number; unavailable_count: number; effect_control: 'unverified'; cost_metering: 'unknown';
+}
+
 export interface RemoteA2AConnection {
   agent_id: string; state: string; version: number | null; request_id: string | null;
   can_configure: boolean; can_disable: boolean; card_url: string | null; rpc_url: string | null;
@@ -7,6 +14,7 @@ export interface RemoteA2AConnection {
   timeout_seconds: number; discovered_at: string | null; discovery_error: string | null;
   agent_card: { name?: string; description?: string } | null;
   effect_control: 'unverified'; cost_metering: 'unknown';
+  withdrawal?: RemoteConnectionWithdrawal | null;
   runtime_activation: 'not_activated' | 'activated' | 'authorization_required';
   runtime_revision?: number | null; runtime_request_id?: string | null; previous_runtime?: 'native' | 'local_agent' | null;
 }
@@ -50,6 +58,7 @@ export interface RemoteA2ATask {
     deadline: string; next_at: string | null; reason: string | null } | null;
   status: string; remote_task_id: string | null; remote_context_id: string | null; remote_state: string | null;
   error_code: string | null; observation?: Record<string, unknown> | null; operations?: Record<string, unknown>[];
+  connection_withdrawal?: { receipt_id: string; status: string; actor_user_id: string } | null;
   cost_metering: 'unknown'; effect_control: 'unverified'; local_abandoned: boolean; recovery_actions: string[];
 }
 export interface RemoteA2ATasks {

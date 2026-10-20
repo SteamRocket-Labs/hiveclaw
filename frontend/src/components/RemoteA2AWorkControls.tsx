@@ -129,6 +129,7 @@ function Work({ agentId, sessionId, actorId, tenantId }: { agentId: string; sess
       operation_id: crypto.randomUUID(), action, params } });
   }
   function status(task: RemoteA2ATask) {
+    if (task.connection_withdrawal?.status === 'not_started') return t('remoteA2A.notStartedCount', 'Withdrawn before dispatch');
     if (task.status === 'suspended' && task.remote_state === 'TASK_STATE_INPUT_REQUIRED' && !task.error_code) return t('remoteWork.inputRequired', 'Remote reply needed');
     if (task.status === 'suspended' && task.remote_state === 'TASK_STATE_AUTH_REQUIRED' && !task.error_code) return t('remoteWork.authRequired', 'Remote authorization required');
     const labels: Record<string, string> = {
@@ -169,6 +170,9 @@ function Work({ agentId, sessionId, actorId, tenantId }: { agentId: string; sess
     {selected && <section aria-label={t('remoteWork.receipt', 'Saved remote receipt')}>
       <p>{status(selected)}</p>
       <p>{t('remoteWork.costUnknown', 'External cost: unknown. Internal action control: unverified.')}</p>
+      {selected.connection_withdrawal && <p role="status">{t('remoteA2A.withdrawalWorkBoundary', 'This work’s original connection was withdrawn. Remote protocol reports do not verify internal side effects.')}
+        {' '}{['unknown', 'pending', 'unavailable', 'waiting_remote_identity'].includes(selected.connection_withdrawal.status)
+          && t('remoteA2A.withdrawalRecovery', 'Inspect the saved receipt in the original work or verify it with the remote service. Abandoning local tracking does not stop the remote host.')}</p>}
       {selected.error_code && <p role="alert"><code>{selected.error_code}</code></p>}
       {selected.automatic_observation && <p role="status">{t('remoteWork.observationStatus',
         'Automatic checks: {{count}}/{{limit}}. Deadline: {{deadline}}. State: {{state}}.',

@@ -5665,6 +5665,14 @@
     "revoke": "撤销此设备的访问权限"
   },
   "remoteA2A": {
+    "previousWithdrawal": "之前的连接配置已撤销，其工作可能仍需核对。",
+    "withdrawalWorkBoundary": "此工作的原连接已撤销。远程协议回执不能证明其内部副作用已受控。",
+    "withdrawalBoundary": "新请求已撤销。远程协议回执不能证明其内部副作用已受控。",
+    "notStartedCount": "派发前已撤销",
+    "cancelReportedCount": "远程报告已取消",
+    "terminalReportedCount": "其他终态报告",
+    "unknownCount": "尚未确认的远程工作",
+    "withdrawalRecovery": "请在原工作检查已保存的回执，或向远程服务核实。放弃本地跟踪不会停止远程主机。",
     "endpointCredentialRequired": "更换地址时，请重新提供机器凭据，或明确移除已保存的凭据。",
     "credentialUnavailable": "已保存的机器凭据无法读取，请替换凭据或停用连接。",
     "title": "远程 A2A 连接",

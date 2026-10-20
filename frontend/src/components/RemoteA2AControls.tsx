@@ -161,6 +161,16 @@ function Connection({ agentId, actorId, tenantId }: { agentId: string; actorId: 
     {endpointCredentialRequired && <p role="alert">{t('remoteA2A.endpointCredentialRequired', 'Provide a machine credential again for the changed addresses, or remove the saved credential.')}</p>}
     {query.data && <>
       <p>{states[query.data.state] || states.unavailable}</p>
+      {query.data.withdrawal && <div role="status">
+        <p>{query.data.withdrawal.current_connection_withdrawn
+          ? t('remoteA2A.withdrawalBoundary', 'New requests are withdrawn. Remote protocol reports do not verify internal side effects.')
+          : t('remoteA2A.previousWithdrawal', 'A previous connection configuration was withdrawn. Its work may still need reconciliation.')}</p>
+        <p>{t('remoteA2A.notStartedCount', 'Withdrawn before dispatch')}: {query.data.withdrawal.not_started_count}
+          {' · '}{t('remoteA2A.cancelReportedCount', 'Reported cancellations')}: {query.data.withdrawal.cancel_reported_count}
+          {' · '}{t('remoteA2A.terminalReportedCount', 'Other terminal reports')}: {query.data.withdrawal.peer_terminal_count}
+          {' · '}{t('remoteA2A.unknownCount', 'Unconfirmed remote work')}: {query.data.withdrawal.unknown_count}</p>
+        {query.data.withdrawal.unknown_count > 0 && <p>{t('remoteA2A.withdrawalRecovery', 'Inspect the saved receipt in the original work or verify it with the remote service. Abandoning local tracking does not stop the remote host.')}</p>}
+      </div>}
       {query.data.discovery_error && <p role="alert">{t('remoteA2A.discoveryFailed', 'Check the endpoint, credential and approved network ranges.')} <code>{query.data.discovery_error}</code></p>}
       {query.data.agent_card && <p>{query.data.agent_card.name} · {query.data.agent_card.description}</p>}
       <p role="status">{query.data.runtime_activation === 'activated'

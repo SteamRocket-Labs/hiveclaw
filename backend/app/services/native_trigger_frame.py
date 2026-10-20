@@ -57,6 +57,10 @@ async def _load_native_trigger_frame(db, *, task, session, for_effect):
         or str(task.root_runtime_task_id) != actual["root_runtime_task_id"]
         or task.root_external_principal_id is not None or task.machine_credential_id is not None):
         raise HTTPException(409, detail={"code": "native_trigger_origin_unavailable"})
+    if metadata.get("session_v2_command_id") != actual["command_id"] or metadata.get("native_trigger_answer") is not None:
+        from app.services.native_trigger_answers import revalidate_native_trigger_answer
+
+        await revalidate_native_trigger_answer(db, task=task, session=session)
     command = await db.get(SessionCommand, uuid.UUID(actual["command_id"]))
     options = command.target_json["runtime_metadata"].get("native_trigger_options") or {}
     model_id = options.get("model_id")

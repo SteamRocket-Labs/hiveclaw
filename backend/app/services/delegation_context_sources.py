@@ -186,6 +186,16 @@ async def bind_native_recovery_context(db, *, task, session):
     session.metadata.pop("_native_recovery_context_source", None)
     pointer = (task.metadata_json or {}).get("native_recovery_context_source")
     if not isinstance(pointer, dict):
+        answer = (task.metadata_json or {}).get("native_trigger_answer")
+        if isinstance(answer, dict):
+            from app.models.chat_session import ChatSession
+            from app.services.native_trigger_answers import revalidate_native_trigger_answer
+
+            original_session = await db.get(ChatSession, session_id)
+            await revalidate_native_trigger_answer(db, task=task, session=original_session)
+            original = await db.get(RuntimeTask, uuid.UUID(answer["source_run_id"]))
+            await bind_native_recovery_context(db, task=original, session=session)
+            return
         if getattr(task, "task_type", "delegation") != "delegation" and (task.metadata_json or {}).get("integration_page_id"):
             from app.models.audit import ApprovalRequest
             from app.models.chat_session import ChatSession

@@ -12,7 +12,8 @@ from app.models.session_v2 import SessionModelResult, SessionToolInvocation
 from app.services.content_input_receipts import ContentInputReceiptError, _authorize_session_input_source, _validate_input_dependencies, group_source_read
 from app.services.session_model_inputs import _hash, _model_dependencies
 
-_TRIGGER_SOURCES = frozenset({"trigger_snapshot", "trigger_write", "trigger_read", "native_trigger_input", "native_trigger_context"})
+_NATIVE_LIVE_SOURCES = frozenset({"trigger_snapshot", "trigger_write", "trigger_read", "native_trigger_input",
+    "native_trigger_context", "knowledge_document"})
 
 
 async def readable_trigger_definitions(db, *, triggers, request):
@@ -113,7 +114,7 @@ async def validate_native_trigger_model_sources(db, *, task, dependencies, effec
         return
     from app.services.native_trigger_context import _principal
 
-    protected = [ref for ref in dependencies if ref.get("source_kind") in _TRIGGER_SOURCES]
+    protected = [ref for ref in dependencies if ref.get("source_kind") in _NATIVE_LIVE_SOURCES]
     try:
         with group_source_read():
             await _validate_input_dependencies(db, task.tenant_id, protected, runtime_request=_principal(task))

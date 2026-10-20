@@ -966,7 +966,8 @@ async def _invoke_model(state: _WebChatRunState, callbacks: _WebChatCallbacks, s
             if invocation.session_context is not None:
                 invocation.session_context.metadata.pop("_native_recovery_context_source", None)
             recovery_metadata = getattr(state.runtime_task, "metadata_json", None) or {}
-            if recovery_metadata.get("native_recovery_context_source") or recovery_metadata.get("integration_page_id"):
+            if (recovery_metadata.get("native_recovery_context_source") or recovery_metadata.get("integration_page_id")
+                or recovery_metadata.get("native_trigger_answer")):
                 async with state.ports.runtime.tenant_scoped_session(state.agent.tenant_id) as db:
                     await bind_native_recovery_context(db, task=state.runtime_task, session=invocation.session_context)
             return await state.ports.runtime.invoke_agent(invocation)

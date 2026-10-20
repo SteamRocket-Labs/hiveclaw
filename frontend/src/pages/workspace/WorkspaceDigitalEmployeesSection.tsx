@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { Link } from 'react-router-dom';
 
-import { agentApi, type AgentOwnerCandidate } from '../../api/domains/agents';
+import { agentApi, type AgentOwnerCandidate, type AgentRetirementPending } from '../../api/domains/agents';
 import { usersApi } from '../../api/domains/users';
 import { requestAppConfirm, showAppToast } from '../../components/AppDialogs';
 import { Modal } from '../../components/ui';
@@ -116,6 +116,30 @@ export default function WorkspaceDigitalEmployeesSection({ selectedTenantId }: W
             );
         },
     });
+
+    const endTrackingMutation = useMutation({
+        mutationFn: (employee: AgentRetirementPending) => agentApi.endRetirementTracking(employee.id, {
+            request_id: crypto.randomUUID(),
+            expected_user_id: currentUser!.id,
+            expected_tenant_id: selectedTenantId,
+            expected_tracking_version: employee.tracking_version!,
+            external_execution_remains_unknown: true,
+        }),
+        onSuccess: () => showAppToast(t('workspace.digitalEmployees.trackingEnded', 'Local tracking ended. External execution is still unknown. Retirement can now be reviewed again.'), 'success'),
+        onError: (error: any) => showAppToast(error?.message || t('workspace.digitalEmployees.trackingChanged', 'The work or requester changed. Review the refreshed status before deciding again.'), 'error'),
+        onSettled: () => queryClient.invalidateQueries({ queryKey: retirementQueryKey }),
+    });
+
+    const endInactiveTracking = async (employee: AgentRetirementPending) => {
+        if (!currentUser || !employee.tracking_version) return;
+        if (await requestAppConfirm({
+            title: t('workspace.digitalEmployees.endInactiveTracking', 'End tracking for inactive requesters'),
+            message: t('workspace.digitalEmployees.endInactiveTrackingConfirm', 'End local tracking of {{count}} unresolved requests for {{name}} whose original requesters are inactive? External execution remains unknown. This records your management decision without transferring private work or credentials. Retry retirement separately after reviewing the result.',
+                { count: employee.inactive_requester_work_count, name: employee.name }),
+            confirmLabel: t('workspace.digitalEmployees.endInactiveTracking', 'End tracking for inactive requesters'),
+            danger: true,
+        })) endTrackingMutation.mutate(employee);
+    };
 
     const isSystemProtectedAgent = (agent: Agent) => agent.id === hrAgent?.id || agent.name === '__system_hr__';
 
@@ -242,6 +266,11 @@ export default function WorkspaceDigitalEmployeesSection({ selectedTenantId }: W
                             onClick={() => deleteAgentMutation.mutate(employee.id)}>
                             {t('workspace.digitalEmployees.retryRetirement', 'Retry retirement')}
                         </button>
+                        {!!employee.inactive_requester_work_count && employee.tracking_version && <button type="button"
+                            className="btn btn-secondary" disabled={endTrackingMutation.isPending}
+                            onClick={() => void endInactiveTracking(employee)}>
+                            {t('workspace.digitalEmployees.endInactiveTracking', 'End tracking for inactive requesters')}
+                        </button>}
                     </li>)}</ul>
                 </section>}
 

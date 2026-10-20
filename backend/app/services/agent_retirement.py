@@ -2,10 +2,12 @@
 
 from copy import deepcopy
 from datetime import datetime, timezone
+import hashlib
+import json
 import uuid
 
 from fastapi import HTTPException
-from sqlalchemy import or_, select, update
+from sqlalchemy import func, or_, select, update
 
 from app.models.agent import Agent
 from app.models.audit import AuditLog
@@ -17,6 +19,35 @@ from app.models.schedule import AgentSchedule
 from app.models.trigger import AgentTrigger
 
 PENDING_REASON = "retirement_pending"
+TRACKING_SCHEMA = "hive.agent_retirement_tracking.v1"
+
+
+def _hash(value):
+    return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+def _tracking_binding(kind, item):
+    return {"kind": kind, "id": str(item.id),
+        "requester_id": str(item.root_user_id if kind == "remote" else item.sender_user_id or item.owner_user_id),
+        "request_hash": item.config_snapshot_hash if kind == "remote" else item.request_hash}
+
+
+async def guard_remote_admission(db, *, agent_ids, retiring=False):
+    """Keep new remote work and final retirement in separate transactions.
+
+    Admissions share the fence; deletion needs it exclusively. Never wait on
+    this fence: callers can already own session/task or lifecycle row locks.
+    A conflict is retryable without introducing a new lock-order edge.
+    """
+    bind = db.get_bind() if hasattr(db, "get_bind") else None
+    if getattr(getattr(bind, "dialect", None), "name", "") != "postgresql":
+        return
+    lock = func.pg_try_advisory_xact_lock if retiring else func.pg_try_advisory_xact_lock_shared
+    with db.no_autoflush:
+        for agent_id in sorted(set(agent_ids), key=lambda value: value.bytes):
+            key = uuid.uuid5(agent_id, "hive.remote_admission_retirement.v1")
+            if not await db.scalar(select(lock(int.from_bytes(key.bytes[:8], "big", signed=True)))):
+                raise HTTPException(409, detail={"code": "agent_remote_admission_in_progress", "retryable": True})
 
 
 def history_available(agent):
@@ -37,7 +68,72 @@ async def external_work(db, agent):
         LocalAgentChannelMessage.direction == "hive_to_local",
         LocalAgentChannelMessage.status.in_(["pending", "waiting_approval", "delivered", "needs_reconciliation"]))))
     local = [message for message in local if await _find_work_disposition(db, message) is None]
+    dispositions = await db.scalars(select(AuditLog).where(AuditLog.tenant_id == agent.tenant_id,
+        AuditLog.agent_id == agent.id, AuditLog.action == "agent:retirement_tracking_ended"))
+    ended = { _hash(binding) for audit in dispositions
+        if audit.user_id is not None and (audit.details or {}).get("schema") == TRACKING_SCHEMA
+        for binding in (audit.details or {}).get("work_bindings", []) }
+    remote = [task for task in remote if _hash(_tracking_binding("remote", task)) not in ended]
+    local = [message for message in local if _hash(_tracking_binding("local", message)) not in ended]
     return remote, local
+
+
+async def tracking_recovery(db, agent, *, lock_requesters=False):
+    """Return a management version and exact inactive-requester work, never its contents."""
+    from app.services.runtime_user_identity import load_runtime_user
+
+    remote, local = await external_work(db, agent)
+    candidates = [(kind, item) for kind, items in (("remote", remote), ("local", local)) for item in items
+        if item.status == "needs_reconciliation"]
+    eligible, checked = [], {}
+    for kind, item in candidates:
+        binding = _tracking_binding(kind, item)
+        requester_id = uuid.UUID(binding["requester_id"])
+        if requester_id not in checked:
+            requester = await load_runtime_user(db, requester_id, include_inactive=True, lock=lock_requesters)
+            checked[requester_id] = requester is not None and requester.is_active is False
+        if checked[requester_id]:
+            eligible.append(binding)
+    eligible.sort(key=lambda binding: (binding["kind"], binding["id"]))
+    version = _hash({"agent_id": str(agent.id), "deactivated_at": agent.deactivated_at.isoformat(), "work": eligible})
+    return {"inactive_requester_work_count": len(eligible), "tracking_version": version}, eligible
+
+
+async def end_inactive_requester_tracking(db, *, agent, actor, request_id, expected_tracking_version):
+    """Record a manager's local disposition without impersonation or remote effects."""
+    from app.core.permissions import is_scoped_business_admin
+    from app.services.runtime_user_identity import load_runtime_user
+    from sqlalchemy.exc import DBAPIError
+
+    actor = await load_runtime_user(db, actor.id)
+    if actor is None or not is_scoped_business_admin(actor, resource_tenant_id=agent.tenant_id):
+        raise HTTPException(403, detail={"code": "agent_retirement_administrator_required"})
+    await guard_remote_admission(db, agent_ids=[agent.id], retiring=True)
+    agent = await db.get(Agent, agent.id, populate_existing=True)
+    receipt_id = uuid.uuid5(agent.id, f"retirement-tracking:{request_id}")
+    expected = {"schema": TRACKING_SCHEMA, "tracking_version": expected_tracking_version,
+        "local_tracking": "ended", "external_execution": "unknown"}
+    previous = await db.get(AuditLog, receipt_id)
+    if previous is not None:
+        if (previous.action != "agent:retirement_tracking_ended" or previous.tenant_id != agent.tenant_id
+            or previous.user_id != actor.id or any((previous.details or {}).get(key) != value for key, value in expected.items())):
+            raise HTTPException(409, detail={"code": "agent_retirement_tracking_request_conflict"})
+        return {"receipt_id": str(receipt_id), **expected}
+    if not history_available(agent):
+        raise HTTPException(409, detail={"code": "agent_retirement_scope_changed", "retryable": True})
+    try:
+        inventory, bindings = await tracking_recovery(db, agent, lock_requesters=True)
+    except DBAPIError as exc:
+        if getattr(exc.orig, "sqlstate", None) != "55P03":
+            raise
+        raise HTTPException(409, detail={"code": "agent_retirement_requester_changed", "retryable": True}) from exc
+    if not bindings or inventory["tracking_version"] != expected_tracking_version:
+        raise HTTPException(409, detail={"code": "agent_retirement_tracking_changed", "retryable": True})
+    db.add(AuditLog(id=receipt_id, tenant_id=agent.tenant_id, agent_id=agent.id, user_id=actor.id,
+        action="agent:retirement_tracking_ended", details={**expected, "work_bindings": bindings,
+            "reason": "original_requester_inactive"}))
+    await db.commit()
+    return {"receipt_id": str(receipt_id), **expected}
 
 
 def pending_error(remote, local, agent):
@@ -107,8 +203,10 @@ async def prepare(db, *, agent, actor):
                 expected_tenant_id=agent.tenant_id, expected_version=connection.version)
         else:
             proof = (connection.runtime_authorization or {}).get("withdrawal") or {}
+            remaining = {str(task.id) for task in remote}
             for task_id in proof.get("task_ids", []):
-                await process(db, task_id=uuid.UUID(task_id), receipt_id=proof["id"], endpoint=None)
+                if task_id in remaining:
+                    await process(db, task_id=uuid.UUID(task_id), receipt_id=proof["id"], endpoint=None)
     for task in remote:
         if task.child_agent_id != agent.id:
             await withdraw_source_work(db, task_id=task.id, retiring_agent=agent, actor=actor)

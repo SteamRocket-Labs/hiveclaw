@@ -21,6 +21,8 @@ export interface AgentRetirementPending {
   remote_work_count: number;
   local_work_count: number;
   external_execution: 'unknown' | 'tracking_settled';
+  inactive_requester_work_count?: number;
+  tracking_version?: string;
 }
 
 export interface AgentCleanupPending {
@@ -165,6 +167,15 @@ export const agentApi = {
   getHrAgent: () => get<HrAgentInfo>('/agents/system/hr'),
   listPendingRetirement: (tenantId?: string) => get<AgentRetirementPending[]>(
     `/agents/retirement-pending${tenantId ? `?tenant_id=${encodeURIComponent(tenantId)}` : ''}`,
+  ),
+  endRetirementTracking: (id: string, body: {
+    request_id: string;
+    expected_user_id: string;
+    expected_tenant_id: string;
+    expected_tracking_version: string;
+    external_execution_remains_unknown: true;
+  }) => post<{ receipt_id: string; local_tracking: 'ended'; external_execution: 'unknown' }>(
+    `/agents/${id}/retirement-tracking`, body,
   ),
   listPendingCleanup: (tenantId?: string) => get<AgentCleanupPending[]>(
     `/agents/cleanup-pending${tenantId ? `?tenant_id=${encodeURIComponent(tenantId)}` : ''}`,

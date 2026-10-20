@@ -223,6 +223,15 @@ async def start_task(
     required_controls,
     _runtime_dispatch=None,
 ):
+    from app.services.agent_retirement import guard_remote_admission
+
+    source_session = await db.get(ChatSession, source_session_id, populate_existing=True)
+    employee_ids = {agent_id}
+    if source_session is not None:
+        employee_ids.add(source_session.agent_id)
+    await guard_remote_admission(db, agent_ids=employee_ids)
+    for employee_id in employee_ids:
+        await db.get(Agent, employee_id, populate_existing=True)
     agent, _level = await require_agent_execution_access(db, actor, agent_id)
     _frame(agent, actor, expected_user_id, expected_tenant_id)
     if not uncontrolled_effects_acknowledged or not unknown_cost_acknowledged:

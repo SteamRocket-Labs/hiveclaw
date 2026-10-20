@@ -368,7 +368,7 @@ async def list_pending_agent_retirements(
 ):
     """Recover retirement without publishing another requester's work contents."""
     from app.models.tenant import Tenant
-    from app.services.agent_retirement import PENDING_REASON, external_work
+    from app.services.agent_retirement import PENDING_REASON, external_work, tracking_recovery
 
     if current_user.role not in ("org_admin", "platform_admin"):
         raise HTTPException(403, detail="Only an admin can retire an employee.")
@@ -382,8 +382,38 @@ async def list_pending_agent_retirements(
     for agent in agents:
         remote, local = await external_work(db, agent)
         rows.append({"id": str(agent.id), "name": agent.name, "remote_work_count": len(remote),
-            "local_work_count": len(local), "external_execution": "unknown" if remote or local else "tracking_settled"})
+            "local_work_count": len(local), "external_execution": "unknown" if remote or local else "tracking_settled",
+            **(await tracking_recovery(db, agent))[0]})
     return rows
+
+
+class AgentRetirementTrackingIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    request_id: uuid.UUID
+    expected_user_id: uuid.UUID
+    expected_tenant_id: uuid.UUID
+    expected_tracking_version: str = Field(pattern=r"^[a-f0-9]{64}$")
+    external_execution_remains_unknown: Literal[True]
+
+
+@router.post("/{agent_id}/retirement-tracking")
+async def end_retirement_tracking(
+    agent_id: uuid.UUID,
+    body: AgentRetirementTrackingIn,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    from app.core.permissions import check_agent_history_access
+    from app.services.agent_retirement import end_inactive_requester_tracking
+
+    if body.expected_user_id != current_user.id:
+        raise HTTPException(409, detail={"code": "agent_retirement_scope_changed"})
+    await resolve_and_pin_tenant_scope(db, current_user, body.expected_tenant_id)
+    agent, _access = await check_agent_history_access(db, current_user, agent_id)
+    if agent.tenant_id != body.expected_tenant_id:
+        raise HTTPException(404, detail="Agent not found")
+    return await end_inactive_requester_tracking(db, agent=agent, actor=current_user,
+        request_id=body.request_id, expected_tracking_version=body.expected_tracking_version)
 
 
 @router.get("/", response_model=list[AgentOut | AgentOperatorListShellOut])

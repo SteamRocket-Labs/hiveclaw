@@ -211,8 +211,9 @@ async def soft_delete_agent(
     reason: str = "agent_deleted",
 ) -> None:
     """Soft-delete an agent while preserving audit/chat/participant history."""
-    from app.services.agent_retirement import require_settled
+    from app.services.agent_retirement import guard_remote_admission, require_settled
 
+    await guard_remote_admission(db, agent_ids=[agent.id], retiring=True)
     await require_settled(db, agent)
     now = datetime.now(timezone.utc)
     agent.deleted_at = agent.deleted_at or now

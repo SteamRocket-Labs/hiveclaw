@@ -15,6 +15,7 @@ const api = vi.hoisted(() => ({
   list: vi.fn(),
   listPendingCleanup: vi.fn(),
   listPendingRetirement: vi.fn(),
+  endRetirementTracking: vi.fn(),
   remove: vi.fn(),
   listMine: vi.fn(),
   abandon: vi.fn(),
@@ -145,6 +146,32 @@ it('shows a retryable load error instead of hiding the cleanup inventory', async
 
 
 describe.each(['en', 'zh'] as const)('pending retirement recovery (%s)', (locale) => {
+  it('requires an explicit management decision and keeps retirement a separate action', async () => {
+    const words = (locale === 'en' ? en : zh).workspace.digitalEmployees;
+    const row = { id: 'retiring-employee', name: 'Pending external work', remote_work_count: 1,
+      local_work_count: 0, inactive_requester_work_count: 1, tracking_version: 'a'.repeat(64) };
+    api.listPendingRetirement.mockResolvedValue([row]);
+    api.endRetirementTracking.mockImplementation(async () => {
+      api.listPendingRetirement.mockResolvedValue([{ ...row, inactive_requester_work_count: 0, remote_work_count: 0 }]);
+      return { local_tracking: 'ended', external_execution: 'unknown', receipt_id: 'receipt' };
+    });
+    api.confirm.mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+    await mount('admin', locale);
+    fireEvent.click(await screen.findByRole('button', { name: words.endInactiveTracking }));
+    await waitFor(() => expect(api.confirm).toHaveBeenCalledTimes(1));
+    expect(api.endRetirementTracking).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: words.endInactiveTracking }));
+    await waitFor(() => expect(api.endRetirementTracking).toHaveBeenCalledWith(row.id, {
+      request_id: expect.any(String), expected_user_id: 'admin', expected_tenant_id: 'tenant-1',
+      expected_tracking_version: row.tracking_version, external_execution_remains_unknown: true,
+    }));
+    await waitFor(() => expect(screen.queryByRole('button', { name: words.endInactiveTracking })).toBeNull());
+    expect(screen.getByRole('button', { name: words.retryRetirement })).toBeTruthy();
+    expect(api.remove).not.toHaveBeenCalled();
+    expect(api.toast).toHaveBeenCalledWith(words.trackingEnded, 'success');
+    expect(api.confirm.mock.calls[1][0].message).toContain(locale === 'en' ? 'External execution remains unknown' : '外部执行仍然未知');
+  });
+
   it('keeps a pending employee reachable after reload and retries the same lifecycle command', async () => {
     const words = (locale === 'en' ? en : zh).workspace.digitalEmployees as any;
     const row = { id: 'retiring-employee', name: 'Pending external work', remote_work_count: 1, local_work_count: 0 };

@@ -2,6 +2,7 @@
 
 import argparse
 import asyncio
+import base64
 from contextlib import asynccontextmanager
 import hashlib
 import json
@@ -28,7 +29,8 @@ async def serve(fd, directory, strict):
     origin = f'http://127.0.0.1:{listener.getsockname()[1]}'
     card = ParseDict({'name': 'Controlled SDK context receiver', 'version': '1', 'capabilities': {},
         'supportedInterfaces': [{'url': origin + '/rpc', 'protocolBinding': 'JSONRPC', 'protocolVersion': '1.0'}],
-        'defaultInputModes': ['text/plain'], 'defaultOutputModes': ['text/plain']}, protocol.AgentCard())
+        'defaultInputModes': ['text/plain', 'application/octet-stream'],
+        'defaultOutputModes': ['text/plain']}, protocol.AgentCard())
 
     class Executor(AgentExecutor):
         async def execute(self, context, event_queue):
@@ -47,12 +49,19 @@ async def serve(fd, directory, strict):
                 await updater.failed(new_text_message('SDK text input has no complete context.'))
                 return
             number = len(list(directory.glob('consumed-*.json')))
+            files = []
+            for binding in record.get('attachments', []):
+                part = context.message.parts[binding['wire_part_index']]
+                files.append({'input_id': binding['input_id'], 'part_index': binding['part_index'],
+                    'filename': part.filename, 'media_type': part.media_type,
+                    'sha256': hashlib.sha256(part.raw).hexdigest(),
+                    'body': base64.b64encode(part.raw).decode()})
             captured = {'sdk_input': text, 'context': record, 'task_id': context.task_id,
                 'context_id': context.context_id, 'pid': __import__('os').getpid(),
-                'message': MessageToDict(context.message)}
+                'message': MessageToDict(context.message), 'files': files}
             (directory / f'consumed-{number}.json').write_text(json.dumps(captured, ensure_ascii=False))
             report = json.dumps({'instruction': instruction, 'context_sha256': hashlib.sha256(encoded.encode()).hexdigest(),
-                'soul': record['resources']['soul'], 'messages': record['messages']}, ensure_ascii=False)
+                'soul': record['resources']['soul'], 'messages': record['messages'], 'files': files}, ensure_ascii=False)
             (directory / f'report-{number}.txt').write_text(report)
             await updater.add_artifact([protocol.Part(text=report, filename='sdk-report.txt')], name='sdk-report.txt')
             await updater.complete(new_text_message(report))

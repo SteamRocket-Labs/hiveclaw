@@ -91,10 +91,6 @@ async def prepare_send(db, *, task, state, agent, endpoint):
         round_id=str(operation_id), model_request_snapshot_ref=f"remote-a2a-input://{operation_id}")
     if not rows:
         raise HTTPException(409, detail={"code": "remote_a2a_canonical_input_unavailable"})
-    # Reference-only files are not transferable evidence. Keep them intact and
-    # visibly recoverable until the file adapter can deliver authorized bytes.
-    if any(part.get("type") == "attachment_ref" for row in rows for part in row.content_parts_json):
-        raise HTTPException(409, detail={"code": "remote_a2a_attachment_transfer_unavailable"})
     history = await load_session_semantic_history(db, tenant_id=task.tenant_id, agent_id=agent.id,
         session_id=session_id)
     # Include prior rounds in this same remote work. Only the newly bound
@@ -110,6 +106,10 @@ async def prepare_send(db, *, task, state, agent, endpoint):
     if bindings.get("dependency_coverage", {}).get("complete") is not True:
         raise HTTPException(409, detail={"code": "remote_a2a_history_sources_unbound"})
     dependencies = list(bindings["dependencies"])
+    from app.services.remote_a2a_inputs import conversation_files
+
+    file_bindings, file_parts = await conversation_files(db, task=task, principal=principal, messages=messages)
+    dependencies.extend(binding["source"] for binding in file_bindings)
     identity = agent_context.agent_identity_content(agent.name, agent.role_description)
     dependencies.append({"source_kind": "agent_identity", "source_id": f"{agent.id}\nidentity",
         "source_version": canonical_content_hash(identity)})
@@ -140,7 +140,8 @@ async def prepare_send(db, *, task, state, agent, endpoint):
         "inputs": [{"input_id": str(row.id), "command_id": str(row.command_id), "revision": row.revision,
             "parts": deepcopy(row.content_parts_json)} for row in rows], "principal": principal.evidence(),
         "runtime_task_id": str(task.id), "budget_run_id": str(task.budget_run_id),
-        "history_receipt": history.receipt, "dependencies": dependencies}
+        "history_receipt": history.receipt, "dependencies": dependencies,
+        **({"attachments": file_bindings} if file_bindings else {})}
     text = "\n".join(str(message["content"]) for message in input_parts_to_runtime_messages(rows))
     # Standard SDK text adapters ignore DataPart. Expose the complete record
     # once as text, retaining its schema and exact digest for structured readers.
@@ -151,7 +152,7 @@ async def prepare_send(db, *, task, state, agent, endpoint):
     context_text = json.dumps(context, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
     params = {"message": {"messageId": str(operation_id), "role": "ROLE_USER", "parts": [
         {"text": text}, {"text": context_text, "metadata": {
-            "hiveContextSchema": context["schema"], "hiveContextSha256": context_hash}}]}}
+            "hiveContextSchema": context["schema"], "hiveContextSha256": context_hash}}, *file_parts]}}
     if state.get("remote_task_id"):
         params["message"]["taskId"] = state["remote_task_id"]
     if state.get("remote_context_id"):

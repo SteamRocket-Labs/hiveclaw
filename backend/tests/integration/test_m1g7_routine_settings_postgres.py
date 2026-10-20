@@ -224,7 +224,7 @@ async def test_profile_and_native_schedule_replacements_preserve_the_original_wo
         assert stored.reason == "Compare updated sources."
 
 
-@pytest.mark.parametrize("fault", [None, "claim_revoked", "provider_revoked", "model_disabled", "origin_tamper", "tool_revoked", "tool_scope", "context", "allowed_tool", "context_revoked", "context_deleted", "context_tool_revoked", "context_kb", "context_kb_denied", "context_kb_revoked"])
+@pytest.mark.parametrize("fault", [None, "claim_revoked", "provider_revoked", "model_disabled", "origin_tamper", "tool_revoked", "tool_scope", "context", "allowed_tool", "context_revoked", "context_deleted", "context_tool_revoked", "context_kb", "context_kb_denied", "context_kb_revoked", "context_kb_command_revoked", "context_kb_command", "instruction_tamper"])
 async def test_enabled_routine_uses_native_tool_edits_and_returns_once_to_its_source_worker(
     owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, fault, scoped_runtime_factories,
 ):
@@ -258,6 +258,7 @@ async def test_enabled_routine_uses_native_tool_edits_and_returns_once_to_its_so
 
     context_fault = str(fault).startswith("context")
     kb_fault = str(fault).startswith("context_kb")
+    derived_trigger_fault = fault in {"context_kb", "context_kb_command_revoked", "context_kb_command"}
     outbound = []
 
     async def no_provider_transport(_transport, request):
@@ -559,13 +560,13 @@ async def test_enabled_routine_uses_native_tool_edits_and_returns_once_to_its_so
         if kb_fault:
             llm.script.append({"tool_calls": [{"id": "read-context-private", "type": "function", "function": {
                 "name": "read_personal_kb", "arguments": json.dumps({"document_id": str(document_id)})}}], "finish_reason": "tool_calls"})
-        if fault == "context_kb":
+        if derived_trigger_fault:
             llm.script.append({"tool_calls": [{"id": "derive-routine-private", "type": "function", "function": {
                 "name": "update_trigger", "arguments": json.dumps({"name": "source_comparison",
                     "reason": "G7_COMPARE_CURRENT_SOURCES: " + private_body})}}], "finish_reason": "tool_calls"})
         llm.script.append({"content": "CONTEXT_ASSISTANT_RESULT", "finish_reason": "stop"})
         await asyncio.wait_for(web_chat_runtime.execute_web_chat_run(source_run), 20)
-        assert len(llm.requests) == (5 if fault == "context_kb" else 4 if kb_fault else 3)
+        assert len(llm.requests) == (5 if derived_trigger_fault else 4 if kb_fault else 3)
         if kb_fault:
             assert private_body in json.dumps(llm.requests[3]["messages"])
         async with owner_sessionmaker() as db:
@@ -574,6 +575,30 @@ async def test_enabled_routine_uses_native_tool_edits_and_returns_once_to_its_so
             await bridge_transcript_event_to_t0(transcript_event_id=event_id, attempts=1)
         context_boundary = await runtime_task_worker.drain_web_terminal_boundary_outbox_once(worker_id="g7-source-boundary", session_factory=scoped)
         assert context_boundary["delivered"] == 1
+    if fault in {"context_kb_command_revoked", "context_kb_command"}:
+        from datetime import datetime, timezone
+        from app.models.knowledge import KnowledgeGrant
+
+        async with owner_sessionmaker() as db:
+            config = dict((await db.get(AgentTrigger, uuid.UUID(trigger_id))).config)
+        config.pop("context_from")
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://routine.test") as client:
+            edited = await client.patch(endpoint + "/triggers/" + trigger_id, json={"config": config})
+            assert edited.status_code == 200, edited.text
+            recommendation = await client.post(endpoint + "/plan-recommendations", json={
+                "original_request": "Run the revised routine without additional context references.",
+                "session_id": str(seed["session_id"]), "source": "agent_aware",
+                "action_kind": "enable_autonomous_wake", "tool_name": "trigger_rest"})
+            assert recommendation.status_code == 201, recommendation.text
+            declined = await client.post(endpoint + "/plan-recommendations/" + recommendation.json()["id"] + "/decline")
+            assert declined.status_code == 200, declined.text
+            enabled = await client.patch(endpoint + "/triggers/" + trigger_id, json={"is_enabled": True,
+                "plan_mode_decision": "declined", "plan_recommendation_id": declined.json()["id"]})
+            assert enabled.status_code == 200, enabled.text
+        if fault == "context_kb_command_revoked":
+            async with owner_sessionmaker() as db:
+                (await db.get(KnowledgeGrant, grant_id)).revoked_at = datetime.now(timezone.utc)
+                await db.commit()
     fire = await trigger_daemon.fire_trigger_once_now(seed["agent_id"], trigger_id)
     assert fire["fired"], fire
     wrapper_id = uuid.UUID(fire["runtime_task_id"])
@@ -613,6 +638,16 @@ async def test_enabled_routine_uses_native_tool_edits_and_returns_once_to_its_so
             trigger = await db.get(AgentTrigger, uuid.UUID(trigger_id))
             trigger.config = {**trigger.config, "authority_state": "quarantined"}
             await db.commit()
+    if fault == "instruction_tamper":
+        from app.models.invocation_span import InvocationSpan
+
+        async with owner_sessionmaker() as db:
+            witness = await db.scalar(select(InvocationSpan).where(InvocationSpan.runtime_task_id == wrapper_id,
+                InvocationSpan.span_type == "native_trigger_input"))
+            assert witness is not None
+            witness.metadata_json = {"native_trigger_input": {
+                **witness.metadata_json["native_trigger_input"], "input_sha256": "0" * 64}}
+            await db.commit()
     if fault in {"allowed_tool", "context_tool_revoked"}:
         llm.script.append({"tool_calls": [{"id": "scheduled-allowed-tool", "type": "function", "function": {
             "name": "list_triggers", "arguments": "{}"}}], "finish_reason": "tool_calls"})
@@ -621,11 +656,11 @@ async def test_enabled_routine_uses_native_tool_edits_and_returns_once_to_its_so
             "name": "read_file", "arguments": json.dumps({"path": "workspace/never-read.txt"})}}], "finish_reason": "tool_calls"})
     llm.script.append({"content": "Synthetic evidence comparison:23*7=161.", "finish_reason": "stop"})
     await asyncio.wait_for(web_chat_runtime.execute_web_chat_run(successor), 20)
-    expected_requests = 2 if fault in {"claim_revoked", "provider_revoked", "model_disabled", "origin_tamper"} else 4 if fault in {"tool_scope", "allowed_tool"} else 4 if fault == "context" else 3
+    expected_requests = 2 if fault in {"claim_revoked", "provider_revoked", "model_disabled", "origin_tamper", "instruction_tamper"} else 4 if fault in {"tool_scope", "allowed_tool"} else 4 if fault == "context" else 3
     if context_fault:
-        expected_requests = 3 if fault in {"context_revoked", "context_deleted"} else 4 if fault in {"context_tool_revoked", "context_kb_denied", "context_kb_revoked"} else 6 if fault == "context_kb" else 4
+        expected_requests = 5 if fault == "context_kb_command_revoked" else 3 if fault in {"context_revoked", "context_deleted"} else 4 if fault in {"context_tool_revoked", "context_kb_denied", "context_kb_revoked"} else 6 if fault in {"context_kb", "context_kb_command"} else 4
     assert len(llm.requests) == expected_requests
-    assert effects == (["update_trigger", "read_personal_kb", "update_trigger"] if fault == "context_kb" else ["update_trigger", "read_personal_kb"] if kb_fault else ["update_trigger", "list_triggers"] if fault == "allowed_tool" else ["update_trigger"])
+    assert effects == (["update_trigger", "read_personal_kb", "update_trigger"] if derived_trigger_fault else ["update_trigger", "read_personal_kb"] if kb_fault else ["update_trigger", "list_triggers"] if fault == "allowed_tool" else ["update_trigger"])
     if fault in {"claim_revoked", "context_kb_denied"}:
         assert len(invocation_receipts) == (2 if kb_fault else 1)
     else:
@@ -637,7 +672,7 @@ async def test_enabled_routine_uses_native_tool_edits_and_returns_once_to_its_so
         assert scheduled["allowed"] == (("list_triggers",) if fault in {"allowed_tool", "context_tool_revoked"} else ("update_trigger",)) and scheduled["excluded"] == ("read_file",)
         assert selected_models[0] == "fake-4.1"
         assert selected_models[-1] == "fake-scheduled-native"
-        if fault not in {"provider_revoked", "model_disabled", "origin_tamper", "context_revoked", "context_deleted", "context_kb_revoked"}:
+        if fault not in {"provider_revoked", "model_disabled", "origin_tamper", "context_revoked", "context_deleted", "context_kb_revoked", "context_kb_command_revoked", "instruction_tamper"}:
             assert [tool["function"]["name"] for tool in llm.requests[-1]["tools"]] == (["list_triggers"] if fault in {"allowed_tool", "context_tool_revoked"} else ["update_trigger"])
         if fault == "allowed_tool":
             assert "source_comparison" in json.dumps(llm.requests[3]["messages"])
@@ -649,11 +684,14 @@ async def test_enabled_routine_uses_native_tool_edits_and_returns_once_to_its_so
             "model_id": str(scheduled["model_id"]), "allowed": scheduled["allowed"], "excluded": scheduled["excluded"],
             "selected_models": selected_models, "model_routing_locked": scheduled["locked"], "fault": fault,
             "actual_provider_requests": len(llm.requests), "executor_entries": effects}, indent=2))
-    if fault not in {"claim_revoked", "provider_revoked", "model_disabled", "origin_tamper", "context_kb_denied", "context_kb_revoked", "context_revoked", "context_deleted"}:
+    if fault not in {"claim_revoked", "provider_revoked", "model_disabled", "origin_tamper", "context_kb_denied", "context_kb_revoked", "context_revoked", "context_deleted", "context_kb_command_revoked", "instruction_tamper"}:
         wire = json.dumps(llm.requests[-1]["messages"])
-        if context_fault:
+        if context_fault and fault != "context_kb_command":
             assert context_text in wire and "CONTEXT_ASSISTANT_RESULT" in wire
             assert "Context from Explicit source work" in wire
+        if fault == "context_kb_command":
+            assert private_body in wire and context_text not in wire
+            assert "Context from Explicit source work" not in wire
         assert "workspace/routine" in wire
         assert "G7_COMPARE_CURRENT_SOURCES" in wire and "Old routine instructions" not in wire
     async with owner_sessionmaker() as db:
@@ -661,10 +699,10 @@ async def test_enabled_routine_uses_native_tool_edits_and_returns_once_to_its_so
         task = await db.get(RuntimeTask, successor)
         events = (await db.scalars(select(ChatTranscriptEvent).where(ChatTranscriptEvent.run_id == successor))).all()
         assert row.target_run_id == successor
-        failed = fault not in {None, "tool_scope", "allowed_tool", "context", "context_kb"}
+        failed = fault not in {None, "tool_scope", "allowed_tool", "context", "context_kb", "context_kb_command"}
         assert task.status == ("failed" if failed else "completed") and task.root_user_id == seed["user_id"]
         assert task.root_session_id == str(seed["session_id"])
-        if fault in {"context_revoked", "context_deleted", "context_kb_denied", "context_kb_revoked"}:
+        if fault in {"context_revoked", "context_deleted", "context_kb_denied", "context_kb_revoked", "context_kb_command_revoked", "instruction_tamper"}:
             from app.models.session_v2 import SessionModelResult
 
             blocked_models = list(await db.scalars(select(SessionModelResult).where(SessionModelResult.run_id == successor)))
@@ -679,19 +717,23 @@ async def test_enabled_routine_uses_native_tool_edits_and_returns_once_to_its_so
                 "model_disabled": "native_trigger_model_unavailable", "origin_tamper": "native_trigger_origin_unavailable",
                 "tool_revoked": "trigger_input_origin_unavailable", "context_revoked": "content_source_access_denied",
                 "context_tool_revoked": "content_source_access_denied", "context_deleted": "native_trigger_context_unavailable",
-                "context_kb_denied": "content_source_access_denied", "context_kb_revoked": "content_source_access_denied"}
+                "context_kb_denied": "content_source_access_denied", "context_kb_revoked": "content_source_access_denied",
+                "context_kb_command_revoked": "content_source_access_denied", "instruction_tamper": "native_trigger_input_sources_unavailable"}
             assert task.metadata_json["error_code"] == codes[fault]
             assert task.metadata_json["terminal_reason"] == "turn_abort"
             assert task.metadata_json["blocked_effect"]["effect_state"] == "not_started"
             assert task.metadata_json["blocked_effect"]["next_action"] == "restore_authority_or_revise_schedule"
             assert any(e.item_kind == "runtime_failure" for e in events), [(e.item_kind, e.content) for e in events]
-        if fault in {"context", "context_kb"}:
+        if fault in {"context", "context_kb", "context_kb_command"}:
             from app.models.session_v2 import SessionModelResult
 
             models = list(await db.scalars(select(SessionModelResult).where(SessionModelResult.run_id == successor)))
             assert models and all(model.model_request_snapshot_json["input_bindings"]["dependency_coverage"]["complete"] for model in models)
-            assert any(dependency["source_kind"] == "native_trigger_context" for model in models
+            assert any(dependency["source_kind"] == "native_trigger_input" for model in models
                 for dependency in model.model_request_snapshot_json["input_bindings"]["dependencies"])
+            if fault != "context_kb_command":
+                assert any(dependency["source_kind"] == "native_trigger_context" for model in models
+                    for dependency in model.model_request_snapshot_json["input_bindings"]["dependencies"])
         if fault == "context":
             from app.services.content_input_receipts import validate_browser_input_dependencies
 
@@ -708,6 +750,48 @@ async def test_enabled_routine_uses_native_tool_edits_and_returns_once_to_its_so
         await bridge_transcript_event_to_t0(transcript_event_id=event_id, attempts=1)
     final_boundary = await runtime_task_worker.drain_web_terminal_boundary_outbox_once(worker_id="g7-final-boundary", session_factory=scoped)
     assert final_boundary["delivered"] == 1, final_boundary
+    if fault == "context_kb_command":
+        from datetime import datetime, timezone
+        from app.models.agent import Agent
+        from app.models.knowledge import KnowledgeGrant
+        from app.models.session_v2 import SessionCommand
+        from app.services.content_input_receipts import ContentInputReceiptError, _validate_input_dependencies
+        from app.services.personal_knowledge_access import AgentRuntimePrincipal
+        from app.services.trigger_instruction_sources import native_trigger_input_sources
+
+        principal = AgentRuntimePrincipal(agent_id=seed["agent_id"], requester_user_id=seed["user_id"],
+            session_id=str(seed["session_id"]), runtime_task_id=str(successor), purpose="autonomous_agent", autonomous=True)
+        dependencies = models[0].model_request_snapshot_json["input_bindings"]["dependencies"]
+        command_ref = next(ref for ref in dependencies if ref["source_kind"] == "session_command"
+            and ref["source_id"] == task.metadata_json["trigger_origin"]["command_id"])
+        witness_ref = next(ref for ref in dependencies if ref["source_kind"] == "native_trigger_input")
+        async with scoped() as db:
+            original_input = await db.get(SessionTurnInput, expected_input)
+            original_command = await db.get(SessionCommand, original_input.command_id)
+            savepoint = await db.begin_nested()
+            employee = await db.get(Agent, seed["agent_id"])
+            employee.agent_type = "remote_a2a"
+            await db.flush()
+            refs, complete = await native_trigger_input_sources(db, tenant_id=seed["tenant_id"], agent_id=seed["agent_id"],
+                row=original_input, command=original_command)
+            assert complete and refs == [witness_ref]
+            await savepoint.rollback()
+            trigger = await db.get(AgentTrigger, uuid.UUID(trigger_id))
+            trigger.is_enabled = False
+            trigger.config = {**trigger.config, "minutes": 99}
+            await db.flush()
+            await _validate_input_dependencies(db, seed["tenant_id"], [command_ref, witness_ref], runtime_request=principal)
+        async with owner_sessionmaker() as db:
+            (await db.get(KnowledgeGrant, grant_id)).revoked_at = datetime.now(timezone.utc)
+            await db.commit()
+        async with scoped() as db:
+            for ref in (command_ref, witness_ref):
+                with pytest.raises(ContentInputReceiptError) as denial:
+                    await _validate_input_dependencies(db, seed["tenant_id"], [ref], runtime_request=principal)
+                assert denial.value.code == "content_source_access_denied"
+        (tmp_path / "instruction-source-readback.json").write_text(json.dumps({"canonical_command": command_ref,
+            "witness": witness_ref, "complete": True, "executor_change_preserves_sources": True,
+            "historical_config_read": True, "command_only_revocation_denied": True, "witness_revocation_denied": True}, indent=2))
     if fault == "context_kb":
         from datetime import datetime, timezone
         from app.models.knowledge import KnowledgeGrant

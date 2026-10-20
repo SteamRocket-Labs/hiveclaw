@@ -1918,6 +1918,7 @@ async def _deliver_batch_to_source_session(
         if wake_content is not None:
             content = wake_content
         native_options = {}
+        native_employee = getattr(agent, "agent_type", None) == "native"
         if getattr(agent, "agent_type", None) != "remote_a2a":
             from app.services.trigger_preflight import collect_trigger_runtime_options, select_trigger_model
 
@@ -1972,6 +1973,13 @@ async def _deliver_batch_to_source_session(
                     raise RuntimeError(f"same-session input admission: {payload.get('admission_state')}")
                 delivered_run_id = str((payload.get("run") or {}).get("run_id") or "") or None
                 queued = delivered_run_id is None
+                if not reflection and native_employee:
+                    from app.services.trigger_instruction_sources import record_native_trigger_input
+
+                    agent = await db.get(Agent, agent_id, populate_existing=True)
+                    session = await db.get(ChatSession, session_uuid, populate_existing=True)
+                    await record_native_trigger_input(db, agent=agent, session=session, wrapper_id=runtime_task_id,
+                        input_id=child_run_id, triggers=triggers)
         except HTTPException as exc:
             logger.warning(
                 "[TriggerDaemon] same_session delivery rejected for session {}: {}",

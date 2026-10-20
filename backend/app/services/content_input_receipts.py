@@ -140,6 +140,11 @@ async def _validate_input_dependency_batch(db, tenant_id: uuid.UUID, dependencie
 
             await validate_trigger_snapshot(db, tenant_id, dependency, user=user, runtime_request=runtime_request)
             continue
+        if dependency["source_kind"] == "native_trigger_input":
+            from app.services.trigger_instruction_sources import validate_native_trigger_input
+
+            await validate_native_trigger_input(db, tenant_id, dependency, user=user, runtime_request=runtime_request)
+            continue
         if dependency["source_kind"] == "native_trigger_context":
             from app.services.native_trigger_context import validate_native_trigger_context_source
 
@@ -533,6 +538,18 @@ async def _validate_session_dependency(db, tenant_id, dependency, *, user, runti
             and source.principal_type == "user" and isinstance(context, ToolExecutionContext)
             and source.principal_id == context.user_id
             and SESSION_COMMAND_AUTHORITY_STAMP_KEY not in (source.target_json or {})))
+    if model is SessionCommand and ((source.target_json or {}).get("runtime_metadata") or {}).get("source") == "loop_same_session":
+        from app.models.session_v2 import SessionTurnInput
+        from app.services.trigger_instruction_sources import native_trigger_input_sources
+
+        input_row = await db.scalar(select(SessionTurnInput).where(SessionTurnInput.command_id == source.id,
+            SessionTurnInput.tenant_id == tenant_id, SessionTurnInput.session_id == session.id))
+        references, complete = await native_trigger_input_sources(db, tenant_id=tenant_id, agent_id=session.agent_id,
+            row=input_row, command=source)
+        if not complete:
+            raise ContentInputReceiptError("native_trigger_input_sources_unavailable", "The scheduled input lacks its original sources.", 503)
+        await _validate_input_dependencies(db, tenant_id, references, user=user, runtime_request=runtime_request,
+            active_workspace_receipts=active_workspace_receipts or frozenset())
     if model is SessionToolInvocation:
         from app.services.feishu_read_receipts import FEISHU_RESULT_TOOLS, load_feishu_result
 

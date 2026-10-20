@@ -123,6 +123,9 @@ async def capture_native_trigger_context(db, *, task, frame):
 
 
 async def revalidate_native_trigger_context(db, *, task, frame, effect):
+    from app.services.trigger_instruction_sources import revalidate_native_trigger_input
+
+    await revalidate_native_trigger_input(db, task=task, effect=effect)
     if not frame.context_refs:
         return
     try:

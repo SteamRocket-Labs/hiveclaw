@@ -91,31 +91,37 @@ async def record_trigger_configuration(db, *, trigger, changed_fields, actor=Non
     await db.flush()
 
 
-async def observe_trigger_context(db, *, trigger, principal):
+async def capture_trigger_context(db, *, trigger, session_id, runtime_task_id):
     pointer = await db.get(InvocationSpan, uuid.uuid5(trigger.id, "trigger-configuration-pointer"), populate_existing=True)
     proof = (pointer.metadata_json or {}).get("configuration") if pointer else None
     if (not isinstance(proof, dict) or proof.get("fields") != _facts(trigger)
         or proof.get("owner_user_id") != str(trigger_owner_user_id(trigger))):
         return None
-    session = await db.get(ChatSession, uuid.UUID(str(principal.session_id)))
-    task = await db.get(RuntimeTask, uuid.UUID(str(principal.runtime_task_id)))
-    if (session is None or task is None or task.tenant_id != trigger.tenant_id or task.parent_agent_id != trigger.agent_id
-        or task.parent_session_id != str(session.id) or task.root_user_id != principal.requester_user_id):
-        return None
     captured = {"schema": "hive.trigger_snapshot.v1", "configuration": proof,
-        "session_id": str(session.id), "run_id": str(task.id), "observed_fields": {
+        "session_id": str(session_id), "run_id": str(runtime_task_id), "observed_fields": {
             "name": trigger.name, "type": trigger.type, "config": dict(trigger.config or {}), "reason": trigger.reason or ""}}
     digest = _hash(captured)
     identity = uuid.uuid5(trigger.id, f"trigger-snapshot:{digest}")
     row = await db.get(InvocationSpan, identity)
     if row is None:
         row = _span(identity=identity, trigger=trigger, kind="trigger_snapshot", proof={"snapshot": captured})
-        row.session_id, row.runtime_task_id = str(session.id), task.id
+        row.session_id, row.runtime_task_id = str(session_id), runtime_task_id
         db.add(row)
     elif row.metadata_json != {"snapshot": captured}:
         return None
     await db.flush()
-    reference = {"source_kind": "trigger_snapshot", "source_id": str(identity), "source_version": digest}
+    return {"source_kind": "trigger_snapshot", "source_id": str(identity), "source_version": digest}
+
+
+async def observe_trigger_context(db, *, trigger, principal):
+    session = await db.get(ChatSession, uuid.UUID(str(principal.session_id)))
+    task = await db.get(RuntimeTask, uuid.UUID(str(principal.runtime_task_id)))
+    if (session is None or task is None or task.tenant_id != trigger.tenant_id or task.parent_agent_id != trigger.agent_id
+        or task.parent_session_id != str(session.id) or task.root_user_id != principal.requester_user_id):
+        return None
+    reference = await capture_trigger_context(db, trigger=trigger, session_id=session.id, runtime_task_id=task.id)
+    if reference is None:
+        return None
     with group_source_read():
         await validate_trigger_snapshot(db, trigger.tenant_id, reference, user=None, runtime_request=principal)
     return reference
@@ -135,20 +141,31 @@ async def trigger_tool_result_sources(db, *, tenant_id, agent_id, invocation):
     return ([{"source_kind": "trigger_write", "source_id": str(identity), "source_version": _hash(proof)}], True) if valid else ([], False)
 
 
-async def _validate_field_sources(db, tenant_id, agent_id, sources, *, user, runtime_request):
+async def trigger_field_dependencies(db, tenant_id, agent_id, sources, *, allow_empty=False):
+    if not isinstance(sources, dict) or (set(sources) != set(_FIELDS) and not (allow_empty and not sources)):
+        return [], False
+    dependencies = []
     for origin in {_hash(value): value for value in sources.values()}.values():
         if origin["kind"] == "human":
             actor = await db.get(User, uuid.UUID(origin["user_id"]))
             if actor is None or actor.tenant_id != tenant_id:
                 raise ValueError("trigger_writer_unavailable")
         elif origin["kind"] == "tool":
-            dependencies, complete = await _origin_dependencies(db, tenant_id=tenant_id,
+            refs, complete = await _origin_dependencies(db, tenant_id=tenant_id,
                 agent_id=agent_id, ref="session-tool-result:" + origin["invocation_id"])
             if not complete:
-                raise ContentInputReceiptError("trigger_context_sources_incomplete", "The trigger write lacks complete inputs.", 503)
-            await _validate_input_dependencies(db, tenant_id, dependencies, user=user, runtime_request=runtime_request)
+                return [], False
+            dependencies.extend(refs)
         else:
-            raise ContentInputReceiptError("trigger_context_sources_incomplete", "The trigger configuration requires source recovery.", 503)
+            return [], False
+    return dependencies, True
+
+
+async def _validate_field_sources(db, tenant_id, agent_id, sources, *, user, runtime_request, allow_empty=False):
+    dependencies, complete = await trigger_field_dependencies(db, tenant_id, agent_id, sources, allow_empty=allow_empty)
+    if not complete:
+        raise ContentInputReceiptError("trigger_context_sources_incomplete", "The trigger configuration requires source recovery.", 503)
+    await _validate_input_dependencies(db, tenant_id, dependencies, user=user, runtime_request=runtime_request)
 
 
 async def validate_trigger_write(db, tenant_id, dependency, *, user, runtime_request):
@@ -167,7 +184,8 @@ async def validate_trigger_write(db, tenant_id, dependency, *, user, runtime_req
         await _authorize_session_input_source(db, tenant_id, session, user=user, runtime_request=runtime_request)
         token = _ACTIVE.set(_ACTIVE.get() | {identity})
         try:
-            await _validate_field_sources(db, tenant_id, row.agent_id, proof["previous_sources"], user=user, runtime_request=runtime_request)
+            await _validate_field_sources(db, tenant_id, row.agent_id, proof["previous_sources"],
+                user=user, runtime_request=runtime_request, allow_empty=True)
         finally:
             _ACTIVE.reset(token)
     except ContentInputReceiptError:

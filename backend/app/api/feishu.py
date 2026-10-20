@@ -2070,6 +2070,7 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
                     durable_run=True,
                     durable_session=_sess,
                     durable_user=runtime_actor,
+                    attachments=[{"path": path} for path in upload_refs],
                 )
             except Exception as _llm_err:
                 logger.error(f"[Feishu] LLM invocation failed for agent {agent_id}: {_llm_err}")

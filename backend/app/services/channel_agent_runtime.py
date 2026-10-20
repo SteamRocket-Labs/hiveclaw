@@ -501,6 +501,7 @@ async def call_agent_llm(
     durable_session: Any = None,
     durable_user: Any = None,
     ingress_event_id: uuid.UUID | str | None = None,
+    attachments: list[dict[str, Any]] | None = None,
 ) -> str:
     """Call the agent runtime from an external channel turn."""
     from app.api.websocket import call_llm
@@ -629,6 +630,7 @@ async def call_agent_llm(
                 user=durable_user,
                 session=durable_session,
                 content=user_text,
+                attachments=attachments,
                 source=session_channel or session_source or "channel",
                 input_id=canonical_ingress_id,
                 idempotency_key=(

@@ -1,5 +1,6 @@
 """Verified tenant Feishu input runs the selected remote and returns on the same bot."""
 
+import base64
 import json
 from uuid import uuid4
 from copy import deepcopy
@@ -48,8 +49,8 @@ def _texts(value):
         (True, 'unknown', False), (True, 'revoked', False), (True, 'installation', False),
         (True, 'origin_tamper', False), (True, 'delivery_rebound', False), (True, 'source_changed', False),
         (True, 'notice_tamper', False), (True, 'notice_stale', False), (True, 'no_run', False),
-        (True, 'no_run_revoked', False)] + [(True, flow, True) for flow in (
-            'completed', 'web', 'private_context', 'input_required', 'unknown', 'source_changed', 'member_left', 'delivery_audience_changed')])
+        (True, 'no_run_revoked', False), (True, 'file', False)] + [(True, flow, True) for flow in (
+            'completed', 'web', 'private_context', 'input_required', 'unknown', 'source_changed', 'member_left', 'delivery_audience_changed', 'file')])
 async def test_verified_feishu_runs_selected_remote_with_real_principal_and_original_delivery(
     remote_work, app_user_sessionmaker, monkeypatch, tmp_path, strict, flow, shared
 ):
@@ -66,6 +67,12 @@ async def test_verified_feishu_runs_selected_remote_with_real_principal_and_orig
         api._transport.app.include_router(router)
     await original.prepare_employee(seed, app_user_sessionmaker, monkeypatch, tmp_path)
     sent, returned_files = [], []
+    upload_bodies = {'remote-file-first': b'FEISHU_BINARY_SOURCE\x00\xff\r\n' * 2000,
+        'remote-file-member': b'MEMBER_FILE_SOURCE\x00\xfe\r\n' * 500}
+    async def download(_self, app_id, _secret, message_id, resource_key, resource_type, **_kwargs):
+        assert app_id == config.app_id and resource_key == message_id and resource_type == 'file'
+        return upload_bodies[message_id]
+    monkeypatch.setattr(FeishuService, 'download_message_resource', download)
     members = {'ou_remote_owner', 'ou_remote_member'}
     async def membership(*_args, **_kwargs):
         return set(members)
@@ -169,11 +176,11 @@ async def test_verified_feishu_runs_selected_remote_with_real_principal_and_orig
                         await changed.commit()
                 raise HTTPException(409, detail={'code': 'controlled_admission_unavailable'})
             monkeypatch.setattr(remote_a2a_chat, 'capture_executor', denied_admission)
-        async def accept(key, text, *, subject="ou_remote_owner"):
+        async def accept(key, text, *, subject="ou_remote_owner", file=False):
             body = {'header': {'event_id': key, 'event_type': 'im.message.receive_v1', 'token': 'synthetic-callback'},
                 'event': {'sender': {'sender_id': {'open_id': subject, 'user_id': 'remote-member' if subject == 'ou_remote_owner' else 'remote-other'}},
-                    'message': {'message_id': key, 'message_type': 'text', 'chat_type': 'group' if shared else 'p2p', 'chat_id': 'oc_remote',
-                        'content': json.dumps({'text': text})}}}
+                    'message': {'message_id': key, 'message_type': 'file' if file else 'text', 'chat_type': 'group' if shared else 'p2p', 'chat_id': 'oc_remote',
+                        'content': json.dumps({'file_key': key, 'file_name': key + '.bin'} if file else {'text': text})}}}
             async with httpx.AsyncClient(transport=httpx.ASGITransport(app=web), base_url='http://test') as client:
                 for _replay in range(2):
                     accepted = await client.post(f"/api/channel/feishu/tenant/{seed['tenant']}/webhook", json=body)
@@ -183,9 +190,47 @@ async def test_verified_feishu_runs_selected_remote_with_real_principal_and_orig
             async with tenant_scoped_session(seed['tenant'], session_factory=app_user_sessionmaker) as db:
                 event = await db.scalar(select(ChannelIngressEvent).where(ChannelIngressEvent.tenant_id == seed['tenant'],
                     ChannelIngressEvent.provider_event_id == key))
-                if flow not in {'no_run', 'no_run_revoked'}:
+                if not file and flow not in {'no_run', 'no_run_revoked'}:
                     assert event.result_runtime_task_id is not None, event.processing_receipt_json
                 return event
+        async def upload_input(key, *, subject="ou_remote_owner"):
+            from app.core.resource_authority import workspace_resource_id
+            from app.models.workspace_resource import WorkspaceResourceManifest
+
+            uploaded = await accept(key, '', subject=subject, file=True)
+            assert uploaded.result_session_id is not None and uploaded.result_runtime_task_id is None
+            async with tenant_scoped_session(seed['tenant'], session_factory=app_user_sessionmaker) as db:
+                manifest = await db.scalar(select(WorkspaceResourceManifest).where(
+                    WorkspaceResourceManifest.agent_id == seed['agent'],
+                    WorkspaceResourceManifest.path.endswith('/' + key + '.bin')))
+                assert manifest is not None and manifest.source == 'feishu_upload'
+                expected_owner = seed['owner'] if subject == 'ou_remote_owner' else member.id
+                assert manifest.owner_user_id == expected_owner
+                if shared:
+                    from app.models.security_audit import ResourcePermission
+
+                    reader_id = member.id if subject == 'ou_remote_owner' else seed['owner']
+                    db.add(ResourcePermission(id=uuid4(), tenant_id=seed['tenant'], principal_type='user', principal_id=reader_id,
+                        resource_type='workspace_file', resource_id=workspace_resource_id(seed['agent'], manifest.path),
+                        actions=['read'], effect='allow'))
+                previous_runs = set(await db.scalars(select(RuntimeTask.id).where(RuntimeTask.parent_agent_id == seed['agent'])))
+                event = await db.get(ChannelIngressEvent, uploaded.id)
+                # Recover the real crash window after the upload commit and
+                # before its inbox acknowledgment, without inventing a task.
+                event.status, event.processing_receipt_json, event.result_session_id = 'received', None, None
+                await db.commit()
+            recovered = await ChannelIngressInboxService(session_factory=app_user_sessionmaker).drain_once(worker_id='upload-recovery')
+            assert recovered['processed'] == 1, recovered
+            async with tenant_scoped_session(seed['tenant'], session_factory=app_user_sessionmaker) as db:
+                event = await db.get(ChannelIngressEvent, uploaded.id)
+                assert event.result_runtime_task_id is None and event.result_session_id == uploaded.result_session_id
+                assert set(await db.scalars(select(RuntimeTask.id).where(RuntimeTask.parent_agent_id == seed['agent']))) == previous_runs
+            return uploaded
+        if flow == 'file':
+            await upload_input('remote-file-first')
+            assert not (receiver.directory / 'consumed-0.json').exists()
+            async with tenant_scoped_session(seed['tenant'], session_factory=app_user_sessionmaker) as db:
+                assert await db.scalar(select(RuntimeTask.id).where(RuntimeTask.parent_agent_id == seed['agent'])) is None
         event = await accept('remote-channel-first', 'Complete this original channel assignment.')
         if flow in {'no_run', 'no_run_revoked'}:
             assert event.result_runtime_task_id is None
@@ -223,6 +268,10 @@ async def test_verified_feishu_runs_selected_remote_with_real_principal_and_orig
         if flow in {'source_changed', 'notice_tamper', 'notice_stale'}:
             (tmp_path / str(seed['agent']) / 'soul.md').write_text('Protected source replacement')
         await original.execute_chat(seed, str(run_id), app_user_sessionmaker)
+        if flow == 'file':
+            consumed = json.loads((receiver.directory / 'consumed-0.json').read_text())
+            assert len(consumed['files']) == 1, consumed['files']
+            assert base64.b64decode(consumed['files'][0]['body'], validate=True) == upload_bodies['remote-file-first']
         if flow in {'revoked', 'installation', 'origin_tamper', 'member_left'}:
             assert not (receiver.directory / 'consumed-0.json').exists()
             async with tenant_scoped_session(seed['tenant'], session_factory=app_user_sessionmaker) as db:
@@ -350,7 +399,7 @@ async def test_verified_feishu_runs_selected_remote_with_real_principal_and_orig
         await ChannelDeliveryOutboxService(session_factory=app_user_sessionmaker).drain_once(worker_id='channel-return-replay')
         assert (len(sent), len(returned_files)) == before
         await original.settle_boundary(seed, app_user_sessionmaker, tmp_path, str(run_id))
-        if shared and flow in {'completed', 'web', 'private_context'}:
+        if shared and flow in {'completed', 'web', 'private_context', 'file'}:
             from app.core.security import create_access_token
             from app.models.chat_session import ChatSession
             async with tenant_scoped_session(seed['tenant'], session_factory=app_user_sessionmaker) as db:
@@ -378,6 +427,10 @@ async def test_verified_feishu_runs_selected_remote_with_real_principal_and_orig
                 assert reply.status_code == 201 and reply.json().get('run_id'), reply.text
                 second_id = reply.json()['run_id']
             else:
+                if flow == 'file':
+                    uploaded = await upload_input('remote-file-member', subject='ou_remote_member')
+                    assert uploaded.result_session_id == session_id
+                    assert len(list(receiver.directory.glob('consumed-*.json'))) == 1
                 second = await accept('remote-group-member', 'Continue the same shared work.', subject='ou_remote_member')
                 assert second.result_session_id == session_id and second.result_runtime_task_id != run_id
                 second_id = str(second.result_runtime_task_id)
@@ -385,6 +438,9 @@ async def test_verified_feishu_runs_selected_remote_with_real_principal_and_orig
             consumed = json.loads((receiver.directory / 'consumed-1.json').read_text())
             assert consumed['context']['principal']['requester_user_id'] == str(member.id)
             assert 'PRIVATE_REMOTE_CHANNEL_CANARY' not in consumed['sdk_input']
+            if flow == 'file':
+                assert len(consumed['files']) == 2, consumed['files']
+                assert {base64.b64decode(item['body'], validate=True) for item in consumed['files']} == set(upload_bodies.values())
             if flow == 'private_context':
                 first = json.loads((receiver.directory / 'consumed-0.json').read_text())
                 assert 'PRIVATE_REMOTE_MEMORY_CANARY' in first['sdk_input']

@@ -43,10 +43,23 @@ async def _file(db, *, task, principal, row, part_index, attachment):
     key = {'input_id': str(row.id), 'input_revision': row.revision, 'part_index': part_index,
         'input_sha256': _digest(row.content_parts_json), 'path': path}
     if span is not None:
+        from fastapi import HTTPException
+        from app.models.runtime_task import RuntimeTask
+        from app.services.remote_a2a_chat import _principal, _session_principal, is_remote_task
+
         proof = (span.metadata_json or {}).get('attachment')
-        captured_principal = {**principal.evidence(), 'runtime_task_id': str(span.runtime_task_id)}
+        captured = await db.get(RuntimeTask, span.runtime_task_id, populate_existing=True)
+        if (captured is None or not is_remote_task(captured) or captured.tenant_id != task.tenant_id
+            or captured.parent_agent_id != task.parent_agent_id or captured.parent_session_id != task.parent_session_id):
+            raise _unavailable()
+        captured_state = captured.metadata_json['remote_a2a']
+        try:
+            captured_principal = _principal(captured, captured_state).evidence()
+            await _session_principal(db, task=captured, state=captured_state, for_effect=False)
+        except HTTPException as exc:
+            raise _unavailable() from exc
         if (span.tenant_id != task.tenant_id or span.agent_id != task.parent_agent_id
-            or span.user_id != task.root_user_id or span.session_id != task.parent_session_id
+            or span.user_id != captured.root_user_id or span.session_id != task.parent_session_id
             or span.span_type != 'remote_chat_attachment' or span.status != 'captured'
             or not isinstance(proof, dict) or proof.get('schema') != 'hive.remote_chat_attachment.v1'
             or any(proof.get(name) != value for name, value in key.items())
@@ -70,6 +83,8 @@ async def _file(db, *, task, principal, row, part_index, attachment):
         or dependency != {'source_kind': 'workspace_artifact', 'source_id': str(receipt.id),
             'source_version': receipt.content_sha256}):
         raise _unavailable()
+    # The saved capture keeps its original requester and pinned version;
+    # every new consumption uses the current requester's own live authority.
     await _validate_input_dependencies(db, task.tenant_id, [dependency], runtime_request=principal)
 
     if span is None:

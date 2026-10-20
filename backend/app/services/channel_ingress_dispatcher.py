@@ -62,6 +62,14 @@ async def _resume_materialized_user_message(
 ) -> dict[str, Any] | None:
     """Close the crash window after user-message commit but before run staging."""
 
+    payload = getattr(item, "payload", {}) or {}
+    body = payload.get("body") or payload
+    if (getattr(item, "handler_key", None) == "feishu.event"
+        and (body.get("event") or {}).get("message", {}).get("message_type") == "file"):
+        # A file upload is context awaiting an assignment. Its idempotent
+        # handler restores storage/receipts without admitting a user turn.
+        return None
+
     message = (
         await db.execute(
             select(ChatMessage).where(
@@ -304,10 +312,10 @@ async def dispatch_channel_ingress_event(item: ClaimedChannelIngressEvent) -> di
             recovered = await _resume_materialized_user_message(db, item)
             result = recovered or await _dispatch_verified_payload(db, item)
 
-        if context.runtime_task_id is not None:
+        if context.runtime_task_id is not None or context.session_id is not None:
             result = {
                 **result,
-                "runtime_task_id": str(context.runtime_task_id),
+                "runtime_task_id": str(context.runtime_task_id) if context.runtime_task_id else None,
                 "session_id": str(context.session_id) if context.session_id else None,
             }
         if context.external_principal_id is not None:

@@ -2047,6 +2047,11 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
             if cardkit_card_id or msg_id_for_patch:
                 _heartbeat_task = asyncio.create_task(_heartbeat())
 
+            # Keep identifiers across durable admission's commit/rollback boundary.
+            from app.services.channel_ingress_inbox import channel_installation_ref
+
+            reply_config_type, reply_config_id = type(config), config.id
+            reply_installation = channel_installation_ref(config, fallback=f"feishu:{agent_id}")
             # Call LLM with history and streaming callback
             try:
                 reply_text = await call_agent_llm(
@@ -2081,6 +2086,34 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
                 _cfso.reset(_cfso_token)
                 _cdt.reset(_cdt_token)
             logger.info(f"[Feishu] LLM reply: {reply_text[:100]}")
+
+            # Durable admission can roll back and expire every caller ORM object.
+            # Reload the exact original installation and requester before any reply.
+            from app.models.external_principal import ExternalPrincipal
+            from app.services.external_principal_service import load_external_runtime_actor
+
+            config = await db.scalar(select(reply_config_type).where(reply_config_type.id == reply_config_id,
+                reply_config_type.tenant_id == agent_tenant_id).execution_options(populate_existing=True))
+            principal = await db.get(ExternalPrincipal, external_principal_id, populate_existing=True)
+            _sess = await db.get(ChatSession, uuid.UUID(session_conv_id), populate_existing=True)
+            if (config is None or not config.is_configured or principal is None or principal.status != "active"
+                or (principal.tenant_channel_config_id if isinstance(config, TenantChannelConfig)
+                    else principal.channel_config_id) != reply_config_id
+                or channel_installation_ref(config, fallback=f"feishu:{agent_id}") != reply_installation
+                or (principal.tenant_id, principal.provider, principal.installation_ref, principal.subject_id) != (
+                    agent_tenant_id, "feishu", reply_installation, sender_subject_id)
+                or _sess is None or (_sess.tenant_id, _sess.agent_id) != (agent_tenant_id, agent_id)):
+                return {"code": 0, "msg": "reply authority changed"}
+            current_actor = await load_external_runtime_actor(db, tenant_id=agent_tenant_id,
+                principal_id=external_principal_id, expected_user_id=platform_user_id)
+            if (current_actor.id != platform_user_id or current_actor.authority_bound != runtime_actor.authority_bound
+                or (_sess.audience_kind != "group" and (_sess.user_id, _sess.external_principal_id) != (
+                    platform_user_id, external_principal_id))):
+                return {"code": 0, "msg": "reply requester changed"}
+            if _sess.audience_kind == "group":
+                from app.services.shared_group_authority import require_current_group_member
+
+                await require_current_group_member(db, session=_sess, principal=principal)
 
             # Send final card update or fallback text
             if cardkit_card_id:

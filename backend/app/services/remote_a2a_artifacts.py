@@ -37,7 +37,7 @@ from app.services.workspace_resource_authority import (
 )
 
 
-async def load_packet(db, tenant_id, dependency, *, user=None, runtime_request=None, allow_unconfirmed=False):
+async def _load_packet_frame(db, tenant_id, dependency, *, user=None, runtime_request=None, allow_unconfirmed=False):
     """Revalidate immutable bytes, exact source operation and original requester."""
     from app.services.content_input_receipts import _runtime_input_actor
     from app.services.remote_a2a_tasks import SCHEMA
@@ -89,23 +89,42 @@ async def load_packet(db, tenant_id, dependency, *, user=None, runtime_request=N
         ).limit(1))
         if route is None:
             raise ValueError("remote_packet_route_unavailable")
-        from app.services.remote_a2a_delegation import validate_instruction_sources
-        from fastapi import HTTPException
-
-        try:
-            state = task.metadata_json["remote_a2a"]
-            # Later queued inputs do not change the causal inputs of this packet.
-            end = state["operations"].index(operation) + 1
-            # Reading the owner's saved packet does not authorize a new channel effect.
-            await validate_instruction_sources(db, task=task,
-                state={**state, "operations": state["operations"][:end]}, for_effect=False)
-        except HTTPException as exc:
-            raise ContentInputReceiptError("remote_a2a_instruction_source_unavailable",
-                "The remote result's known local inputs are no longer available.", exc.status_code) from exc
-        return task, result, session, view["operation_observation"]
+        return task, result, session, view, operation
     except (ValueError, KeyError, TypeError, StopIteration, AttributeError) as exc:
         raise ContentInputReceiptError("remote_a2a_source_unavailable",
             "The exact remote packet, original work or requester cannot be verified.", 403) from exc
+
+
+async def load_packet(db, tenant_id, dependency, *, user=None, runtime_request=None, allow_unconfirmed=False):
+    task, result, session, view, operation = await _load_packet_frame(db, tenant_id, dependency,
+        user=user, runtime_request=runtime_request, allow_unconfirmed=allow_unconfirmed)
+    from app.services.remote_a2a_delegation import validate_instruction_sources
+    from fastapi import HTTPException
+
+    try:
+        state = task.metadata_json["remote_a2a"]
+        # Later queued inputs do not change the causal inputs of this packet.
+        end = state["operations"].index(operation) + 1
+        # Reading the owner's saved packet does not authorize a new channel effect.
+        await validate_instruction_sources(db, task=task,
+            state={**state, "operations": state["operations"][:end]}, for_effect=False)
+    except HTTPException as exc:
+        raise ContentInputReceiptError("remote_a2a_instruction_source_unavailable",
+            "The remote result's known local inputs are no longer available.", exc.status_code) from exc
+    except (ValueError, KeyError, TypeError, StopIteration, AttributeError) as exc:
+        raise ContentInputReceiptError("remote_a2a_source_unavailable",
+            "The exact remote packet, original work or requester cannot be verified.", 403) from exc
+    return task, result, session, view["operation_observation"]
+
+
+async def load_status_packet(db, tenant_id, dependency, *, user):
+    """Verify host status and route without granting access to packet/input content."""
+    task, result, session, view, operation = await _load_packet_frame(db, tenant_id, dependency,
+        user=user, allow_unconfirmed=True)
+    if (not view.get('error_code') or operation.get('phase') not in {'not_started', 'unknown', 'received'}
+        or view['status'] != task.status or view['error_code'] != task.metadata_json['remote_a2a'].get('error_code')):
+        raise ContentInputReceiptError('remote_a2a_status_unavailable', 'No verified recovery status is available.', 403)
+    return task, result, session, view, operation
 
 
 async def validate_remote_dependency(db, tenant_id, dependency, *, user=None, runtime_request=None):

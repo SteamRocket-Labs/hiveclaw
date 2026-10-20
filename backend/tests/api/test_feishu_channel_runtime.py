@@ -305,6 +305,7 @@ async def test_process_feishu_event_text_approval_resolves_latest_pending_withou
 async def test_process_feishu_event_text_binds_execution_identity_and_session_contract(monkeypatch):
     import app.api.feishu as feishu_api
     from app.core.execution_context import clear_execution_identity
+    from app.models.channel_config import ChannelConfig
     from app.services.channel_delivery_service import channel_delivery_target
 
     agent_id = uuid4()
@@ -314,6 +315,13 @@ async def test_process_feishu_event_text_binds_execution_identity_and_session_co
     agent = SimpleNamespace(id=agent_id, creator_id=uuid4(), tenant_id=tenant_id, name="飞书助手")
     principal_resolution = _principal_resolution(platform_user_id=platform_user_id)
     captured: dict[str, object] = {}
+    config = ChannelConfig(id=uuid4(), agent_id=agent_id, tenant_id=tenant_id, channel_type="feishu",
+        app_id="app", app_secret="secret", is_configured=True)
+    principal_resolution.principal.__dict__.update(tenant_id=tenant_id, provider="feishu",
+        installation_ref=str(config.id), subject_id="ou_123", status="active", channel_config_id=config.id)
+    session = SimpleNamespace(id=session_id, tenant_id=tenant_id, agent_id=agent_id,
+        user_id=platform_user_id, external_principal_id=principal_resolution.principal.id,
+        audience_kind="private", last_message_at=None, title="Session")
 
     db = _SequenceDB(
         [
@@ -323,6 +331,21 @@ async def test_process_feishu_event_text_binds_execution_identity_and_session_co
         ]
     )
 
+    async def reload_config(_statement):
+        return config
+
+    async def reload_row(model, identifier, **_kwargs):
+        assert identifier in {session.id, principal_resolution.principal.id}
+        return session if model.__name__ == "ChatSession" else principal_resolution.principal
+
+    async def reload_actor(_db, *, tenant_id, principal_id, expected_user_id):
+        assert (tenant_id, principal_id, expected_user_id) == (
+            agent.tenant_id, principal_resolution.principal.id, platform_user_id)
+        return principal_resolution.actor
+
+    db.scalar, db.get = reload_config, reload_row
+    monkeypatch.setattr("app.services.external_principal_service.load_external_runtime_actor", reload_actor)
+
     async def fake_compute_history_limit_for_agent(_agent_id):
         return 10
 
@@ -330,9 +353,8 @@ async def test_process_feishu_event_text_binds_execution_identity_and_session_co
         captured["external_conv_id"] = external_conv_id
         captured["session_delivery_target"] = dict(delivery_target or {})
         captured["session_kwargs"] = _kwargs
-        return SimpleNamespace(
-            id=session_id, last_message_at=None, delivery_target_json=delivery_target, title="Session"
-        )
+        session.delivery_target_json = delivery_target
+        return session
 
     async def fake_call_agent_llm(_db, _agent_id, _user_text, **kwargs):
         from app.core.execution_context import get_execution_identity
@@ -398,7 +420,7 @@ async def test_process_feishu_event_text_binds_execution_identity_and_session_co
             },
         },
         db,
-        tenant_channel_config=SimpleNamespace(app_id="app", app_secret="secret"),
+        tenant_channel_config=config,
     )
 
     assert result == {"code": 0, "msg": "ok"}

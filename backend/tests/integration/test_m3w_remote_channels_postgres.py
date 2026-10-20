@@ -34,7 +34,8 @@ pytestmark = pytest.mark.usefixtures('migrated_pg_url')
 
 @pytest.mark.parametrize(('strict', 'flow'), [(False, 'completed'), (True, 'completed'),
     (True, 'input_required'), (True, 'unknown'), (True, 'revoked'), (True, 'installation'),
-    (True, 'origin_tamper'), (True, 'delivery_rebound')])
+    (True, 'origin_tamper'), (True, 'delivery_rebound'), (True, 'source_changed'),
+    (True, 'notice_tamper'), (True, 'notice_stale'), (True, 'no_run'), (True, 'no_run_revoked')])
 async def test_verified_feishu_runs_selected_remote_with_real_principal_and_original_delivery(
     remote_work, app_user_sessionmaker, monkeypatch, tmp_path, strict, flow
 ):
@@ -90,6 +91,18 @@ async def test_verified_feishu_runs_selected_remote_with_real_principal_and_orig
     async with sdk_receiver(tmp_path / 'receiver', strict, input_required=flow == 'input_required') as receiver:
         path = await original.original.configure(seed, api, receiver)
         assert (await api.post(path + '/runtime', json=selection(seed))).status_code == 200
+        if flow in {'no_run', 'no_run_revoked'}:
+            from app.services import remote_a2a_chat
+            from fastapi import HTTPException
+            async def denied_admission(db, **_kwargs):
+                if flow == 'no_run_revoked':
+                    async with tenant_scoped_session(seed['tenant'], session_factory=app_user_sessionmaker) as changed:
+                        principal = await changed.scalar(select(ExternalPrincipal).where(
+                            ExternalPrincipal.tenant_id == seed['tenant']))
+                        principal.status = 'revoked'
+                        await changed.commit()
+                raise HTTPException(409, detail={'code': 'controlled_admission_unavailable'})
+            monkeypatch.setattr(remote_a2a_chat, 'capture_executor', denied_admission)
         async def accept(key, text):
             body = {'header': {'event_id': key, 'event_type': 'im.message.receive_v1', 'token': 'synthetic-callback'},
                 'event': {'sender': {'sender_id': {'open_id': 'ou_remote_owner', 'user_id': 'remote-member'}},
@@ -104,9 +117,21 @@ async def test_verified_feishu_runs_selected_remote_with_real_principal_and_orig
             async with tenant_scoped_session(seed['tenant'], session_factory=app_user_sessionmaker) as db:
                 event = await db.scalar(select(ChannelIngressEvent).where(ChannelIngressEvent.tenant_id == seed['tenant'],
                     ChannelIngressEvent.provider_event_id == key))
-                assert event.result_runtime_task_id is not None, event.processing_receipt_json
+                if flow not in {'no_run', 'no_run_revoked'}:
+                    assert event.result_runtime_task_id is not None, event.processing_receipt_json
                 return event
         event = await accept('remote-channel-first', 'Complete this original channel assignment.')
+        if flow in {'no_run', 'no_run_revoked'}:
+            assert event.result_runtime_task_id is None
+            async with tenant_scoped_session(seed['tenant'], session_factory=app_user_sessionmaker) as db:
+                assert await db.scalar(select(RuntimeTask.id).where(RuntimeTask.parent_agent_id == seed['agent'])) is None
+                principal = await db.get(ExternalPrincipal, event.external_principal_id)
+                assert principal.status == ('revoked' if flow == 'no_run_revoked' else 'active')
+            assert not (receiver.directory / 'consumed-0.json').exists() and not returned_files
+            texts = [json.loads(item['content']).get('text', '') for item in sent]
+            warning = '消息已记录，尚未确认启动任务。请在原工作中查看处理状态；需要修复时继续处理这条消息。'
+            assert texts == ([warning] if flow == 'no_run' else []), texts
+            return
         run_id, session_id, principal_id = event.result_runtime_task_id, event.result_session_id, event.external_principal_id
         if flow == 'unknown':
             from app.services.remote_a2a_transport import RemoteA2AEndpoint, RemoteA2AError
@@ -127,6 +152,8 @@ async def test_verified_feishu_runs_selected_remote_with_real_principal_and_orig
                     changed['remote_a2a']['channel_origin']['ingress_event_id'] = str(uuid4())
                     task.metadata_json = changed
                 await db.commit()
+        if flow in {'source_changed', 'notice_tamper', 'notice_stale'}:
+            (tmp_path / str(seed['agent']) / 'soul.md').write_text('Protected source replacement')
         await original.execute_chat(seed, str(run_id), app_user_sessionmaker)
         if flow in {'revoked', 'installation', 'origin_tamper'}:
             assert not (receiver.directory / 'consumed-0.json').exists()
@@ -144,13 +171,23 @@ async def test_verified_feishu_runs_selected_remote_with_real_principal_and_orig
             await original.execute_chat(seed, str(run_id), app_user_sessionmaker)
         async with tenant_scoped_session(seed['tenant'], session_factory=app_user_sessionmaker) as db:
             task = await db.get(RuntimeTask, run_id)
-            assert task.status == ('needs_reconciliation' if flow == 'unknown' else 'completed'), task.metadata_json
+            assert task.status == ('needs_reconciliation' if flow in {'unknown', 'source_changed', 'notice_tamper', 'notice_stale'} else 'completed'), task.metadata_json
             assert task.root_user_id == seed['owner'] and task.root_external_principal_id == principal_id
             assert task.metadata_json['remote_a2a']['channel_origin']['ingress_event_id'] == str(event.id)
             assert task.metadata_json['budget_interactive'] is False
-        report = (receiver.directory / ('report-1.txt' if flow == 'input_required' else 'report-0.txt')).read_text()
+        report = '' if flow in {'source_changed', 'notice_tamper', 'notice_stale'} else (receiver.directory / ('report-1.txt' if flow == 'input_required' else 'report-0.txt')).read_text()
         notifications = await RuntimeNotificationOutboxService(session_factory=app_user_sessionmaker).drain_once(worker_id='channel-result')
         assert notifications['delivered'] >= 1, notifications
+        if flow == 'notice_stale':
+            abandoned = await api.post(path + f'/tasks/{run_id}/operations', json={
+                'expected_user_id': str(seed['owner']), 'expected_tenant_id': str(seed['tenant']),
+                'expected_version': 1, 'operation_id': str(uuid4()), 'action': 'abandon', 'params': {}})
+            assert abandoned.status_code == 200 and abandoned.json()['local_abandoned'], abandoned.text
+        if flow == 'notice_tamper':
+            async with tenant_scoped_session(seed['tenant'], session_factory=app_user_sessionmaker) as db:
+                pending = await db.scalar(select(ChannelDeliveryOutbox).where(ChannelDeliveryOutbox.runtime_task_id == run_id))
+                pending.text_content = 'Protected source replacement'
+                await db.commit()
         if flow == 'delivery_rebound':
             async with tenant_scoped_session(seed['tenant'], session_factory=app_user_sessionmaker) as db:
                 user_id = uuid4()
@@ -160,6 +197,7 @@ async def test_verified_feishu_runs_selected_remote_with_real_principal_and_orig
                 (await db.get(ExternalPrincipal, principal_id)).linked_user_id = user_id
                 await db.commit()
             before = len(sent), len(returned_files)
+        before_delivery = len(sent), len(returned_files)
         delivery = await ChannelDeliveryOutboxService(session_factory=app_user_sessionmaker).drain_once(worker_id='channel-return')
         async with tenant_scoped_session(seed['tenant'], session_factory=app_user_sessionmaker) as db:
             outbox = await db.scalar(select(ChannelDeliveryOutbox).where(ChannelDeliveryOutbox.runtime_task_id == run_id)
@@ -167,7 +205,9 @@ async def test_verified_feishu_runs_selected_remote_with_real_principal_and_orig
             assert outbox is not None, delivery
             assert outbox.channel_config_id == config.id and outbox.session_id == session_id
             assert outbox.user_id == seed['owner'] and outbox.external_principal_id == principal_id
-            if flow == 'delivery_rebound':
+            if flow in {'notice_tamper', 'notice_stale'}:
+                assert outbox.status == 'dead_letter', (delivery, outbox.last_error)
+            elif flow == 'delivery_rebound':
                 artifact = await db.scalar(select(ChatArtifact).where(ChatArtifact.runtime_task_id == run_id))
                 artifact_id = artifact.id
             else:
@@ -178,10 +218,30 @@ async def test_verified_feishu_runs_selected_remote_with_real_principal_and_orig
             local = await api.get(f"/agents/{seed['agent']}/files/artifacts/{artifact_id}/content")
             assert local.status_code == 200 and local.json()['content'] == report, local.text
             return
+        if flow in {'source_changed', 'notice_tamper', 'notice_stale'}:
+            assert not (receiver.directory / 'consumed-0.json').exists() and not returned_files
+            texts = [json.loads(item['content']).get('text', '') for item in sent]
+            assert 'Protected source replacement' not in texts
+            if flow == 'source_changed':
+                assert '远端任务尚未启动。请在 Hive 原工作中查看状态和可用的恢复操作。' in texts
+                assert outbox.metadata_json['remote_recovery_notice'] is True
+            else:
+                assert (len(sent), len(returned_files)) == before_delivery
+            before_replay = len(sent), len(returned_files)
+            await ChannelDeliveryOutboxService(session_factory=app_user_sessionmaker).drain_once(worker_id='notice-replay')
+            assert (len(sent), len(returned_files)) == before_replay
+            # A status notice never grants permission to read the protected packet.
+            from app.services.remote_a2a_artifacts import load_packet
+            from app.services.content_input_receipts import ContentInputReceiptError
+            async with tenant_scoped_session(seed['tenant'], session_factory=app_user_sessionmaker) as db:
+                with pytest.raises(ContentInputReceiptError):
+                    await load_packet(db, seed['tenant'], outbox.metadata_json['remote_result'],
+                        user=await db.get(User, seed['owner']), allow_unconfirmed=True)
+            return
         if flow == 'unknown':
             texts = [json.loads(item['content']).get('text', '') for item in sent]
             assert not returned_files and all(report not in text for text in texts)
-            assert '远端运行需要对账。请在 Hive 原工作中查看状态，再选择继续、取消或放弃。' in texts
+            assert '远端运行结果尚未确认。请在 Hive 原工作中查看状态和可用的恢复操作。' in texts
             assert outbox.terminal_status == 'needs_reconciliation' and outbox.metadata_json['remote_recovery_notice'] is True
             assert len(list(receiver.directory.glob('consumed-*.json'))) == 1
             return

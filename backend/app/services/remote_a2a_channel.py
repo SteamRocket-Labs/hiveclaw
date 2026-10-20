@@ -70,6 +70,13 @@ async def validate_origin(db, *, task, state, session):
         raise _denied() from exc
 
 
+def _recovery_text(view, operation):
+    unstarted = (view.get('error_code') == 'remote_a2a_authority_unavailable'
+        and operation.get('phase') == 'not_started')
+    status = '远端任务尚未启动。' if unstarted else '远端运行结果尚未确认。'
+    return status + '请在 Hive 原工作中查看状态和可用的恢复操作。'
+
+
 async def deliver_packet(db, *, task, result, view, parts):
     from app.services.channel_delivery_outbox import enqueue_terminal_delivery_for_task
     from app.services.remote_a2a_chat import reply_text
@@ -79,12 +86,13 @@ async def deliver_packet(db, *, task, result, view, parts):
         return
     notice = bool(view.get('error_code'))
     packet = view.get('operation_observation') or {}
-    text = ('远端运行需要对账。请在 Hive 原工作中查看状态，再选择继续、取消或放弃。' if notice else reply_text(packet))
+    operation = next(op for op in task.metadata_json['remote_a2a']['operations'] if op['id'] == view['latest_operation_id'])
+    text = _recovery_text(view, operation) if notice else reply_text(packet)
     if not text:
         return
     terminal = view['status'] in TERMINAL
     await enqueue_terminal_delivery_for_task(db, task=task, content=text, terminal_status=view['status'],
-        artifact_parts=parts, delivery_kind='terminal_result' if terminal else 'interactive_prompt',
+        artifact_parts=[] if notice else parts, delivery_kind='terminal_result' if terminal else 'interactive_prompt',
         prompt_item_id=None if terminal else uuid.uuid5(task.id,
             f"remote-channel:{view['status']}:{view.get('error_code')}:{_digest(packet)}"),
         external_principal_id=task.root_external_principal_id,
@@ -95,15 +103,21 @@ async def deliver_packet(db, *, task, result, view, parts):
 async def validate_delivery(db, *, item):
     from app.models.user import User
     from app.services.content_input_receipts import ContentInputReceiptError
-    from app.services.remote_a2a_artifacts import load_packet
+    from app.services.remote_a2a_artifacts import load_packet, load_status_packet
     from app.services.channel_delivery_outbox import ChannelDeliveryPermanentError
 
     if item.metadata.get('source') != 'remote_a2a_chat':
         return
     user = await db.get(User, item.user_id, populate_existing=True)
     try:
-        task, _result, session, _packet = await load_packet(db, item.tenant_id, item.metadata.get('remote_result'),
-            user=user, allow_unconfirmed=item.metadata.get('remote_recovery_notice') is True)
+        if item.metadata.get('remote_recovery_notice') is True:
+            task, _result, session, view, operation = await load_status_packet(db, item.tenant_id,
+                item.metadata.get('remote_result'), user=user)
+            if item.text != _recovery_text(view, operation) or item.artifact_ids or item.terminal_status != view['status']:
+                raise _denied()
+        else:
+            task, _result, session, _packet = await load_packet(db, item.tenant_id,
+                item.metadata.get('remote_result'), user=user)
         if (task.id, task.parent_agent_id, task.parent_session_id, task.root_user_id) != (
             item.runtime_task_id, item.agent_id, str(item.session_id), item.user_id):
             raise _denied()

@@ -261,7 +261,7 @@ async def enqueue_terminal_delivery_for_task(
             .all()
         )
     task_metadata = dict(getattr(task, "metadata_json", None) or {})
-    resolved_external_principal_id = (
+    resolved_external_principal_id = None if getattr(session, "audience_kind", None) == "group" else (
         external_principal_id
         or task_metadata.get("external_principal_id")
         or getattr(session, "external_principal_id", None)

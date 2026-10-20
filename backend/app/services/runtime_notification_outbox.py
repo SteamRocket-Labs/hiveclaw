@@ -1723,7 +1723,12 @@ class RuntimeNotificationOutboxService:
 
                 rows = list(await db.scalars(select(RuntimeNotificationOutbox).where(
                     RuntimeNotificationOutbox.integration_page_id == page.id)))
-                requester = await group_approval_return_actor(db, session=parent_session, rows=rows)
+                if page.delivery_mode == "session_projection" and rows and all(row.source_kind == "remote_a2a" for row in rows):
+                    from app.services.remote_a2a_artifacts import group_projection_actor
+
+                    requester = await group_projection_actor(db, session=parent_session, rows=rows)
+                else:
+                    requester = await group_approval_return_actor(db, session=parent_session, rows=rows)
                 if requester.id != owner.id:
                     raise PermissionError("group_approval_return_requester_mismatch")
             elif parent_session.user_id != owner.id:

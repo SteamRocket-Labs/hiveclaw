@@ -45,7 +45,7 @@ async def validate_origin(db, *, task, state, session):
     try:
         if (not isinstance(origin, dict) or origin.get('schema') != 'hive.remote_channel_origin.v1'
             or origin.get('external_principal_id') != str(task.root_external_principal_id)
-            or session.external_principal_id != task.root_external_principal_id
+            or (session.audience_kind != "group" and session.external_principal_id != task.root_external_principal_id)
             or origin.get('ingress_event_id') != task.metadata_json.get('channel_ingress_event_id')
             or origin.get('command_id') != task.metadata_json.get('session_v2_command_id')):
             raise _denied()
@@ -95,7 +95,7 @@ async def deliver_packet(db, *, task, result, view, parts):
         artifact_parts=[] if notice else parts, delivery_kind='terminal_result' if terminal else 'interactive_prompt',
         prompt_item_id=None if terminal else uuid.uuid5(task.id,
             f"remote-channel:{view['status']}:{view.get('error_code')}:{_digest(packet)}"),
-        external_principal_id=task.root_external_principal_id,
+        external_principal_id=None if task.metadata_json["remote_a2a"].get("shared_session") else task.root_external_principal_id,
         metadata={'source': 'remote_a2a_chat', 'remote_recovery_notice': notice,
             'remote_result': {'source_kind': 'remote_a2a_result', 'source_id': str(result.id), 'source_version': result.sha256}})
 
@@ -103,26 +103,32 @@ async def deliver_packet(db, *, task, result, view, parts):
 async def validate_delivery(db, *, item):
     from app.models.user import User
     from app.services.content_input_receipts import ContentInputReceiptError
-    from app.services.remote_a2a_artifacts import load_packet, load_status_packet
+    from app.services.remote_a2a_artifacts import load_packet, load_status_packet, _load_packet_frame, _status_view
     from app.services.channel_delivery_outbox import ChannelDeliveryPermanentError
 
     if item.metadata.get('source') != 'remote_a2a_chat':
         return
     user = await db.get(User, item.user_id, populate_existing=True)
     try:
+        task, _result, session, view, operation = await _load_packet_frame(db, item.tenant_id,
+            item.metadata.get('remote_result'), allow_unconfirmed=True)
+        shared = session.audience_kind == 'group'
         if item.metadata.get('remote_recovery_notice') is True:
-            task, _result, session, view, operation = await load_status_packet(db, item.tenant_id,
-                item.metadata.get('remote_result'), user=user)
+            if shared:
+                _status_view(task, view, operation)
+            else:
+                task, _result, session, view, operation = await load_status_packet(db, item.tenant_id,
+                    item.metadata.get('remote_result'), user=user)
             if item.text != _recovery_text(view, operation) or item.artifact_ids or item.terminal_status != view['status']:
                 raise _denied()
-        else:
+        elif not shared:
             task, _result, session, _packet = await load_packet(db, item.tenant_id,
                 item.metadata.get('remote_result'), user=user)
         if (task.id, task.parent_agent_id, task.parent_session_id, task.root_user_id) != (
             item.runtime_task_id, item.agent_id, str(item.session_id), item.user_id):
             raise _denied()
         state = task.metadata_json['remote_a2a']
-        if state.get('channel_origin') is not None:
+        if not shared and state.get('channel_origin') is not None:
             await validate_origin(db, task=task, state=state, session=session)
     except (ContentInputReceiptError, HTTPException) as exc:
         raise ChannelDeliveryPermanentError('The remote result source or original requester is no longer authorized.') from exc

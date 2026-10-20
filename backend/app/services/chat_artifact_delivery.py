@@ -986,9 +986,14 @@ async def create_chat_artifacts_for_message(
     selection_model_result_id: uuid.UUID | None = None,
     execution_evidence_ref: str | None = None,
     tool_invocation_id: uuid.UUID | None = None,
+    source_validation_session: AsyncSession | None = None,
 ) -> list[dict[str, Any]]:
     """Create artifact rows for safe candidate paths and return message parts."""
+    from contextlib import nullcontext
     from app.database import tenant_scoped_session
+
+    # Trusted tenant-scoped callers can retain their transaction's identity
+    # locks; all other callers keep an independent source session by default.
     from app.services.content_input_receipts import (
         ContentInputReceiptError, validate_artifact_content_receipt, validate_browser_workspace_receipt,
         validate_runtime_workspace_receipt,
@@ -1041,12 +1046,15 @@ async def create_chat_artifacts_for_message(
             try:
                 # A sealed read snapshot recovers its original reader, without starting another Agent effect.
                 task = await db.get(RuntimeTask, runtime_uuid) if runtime_uuid else None
-                if source == "workspace_read" and selection_model_result_id is not None:
+                from app.services.remote_a2a_chat import is_remote_task
+
+                saved_remote = source == "remote_a2a_return" and task is not None and is_remote_task(task)
+                if (source == "workspace_read" and selection_model_result_id is not None) or saved_remote:
                     actor = await _load_shared_group_task_actor(db, task=task, session=authority_session)
                 else:
                     actor = await load_shared_group_runtime_actor(db, task=task, session=authority_session)
                 owner_user_id = actor.id
-                if owner_user_id is not None and source != "workspace_read":
+                if owner_user_id is not None and source != "workspace_read" and not saved_remote:
                     runtime_principal = AgentRuntimePrincipal(agent_id=agent_id, requester_user_id=owner_user_id,
                         session_id=str(session_uuid), runtime_task_id=str(runtime_uuid))
             except HTTPException as exc:
@@ -1118,7 +1126,10 @@ async def create_chat_artifacts_for_message(
             if handled:
                 if native_artifact is not None:
                     try:
-                        async with tenant_scoped_session(tenant_id) as source_db:
+                        async with (
+                            nullcontext(source_validation_session) if source_validation_session is not None
+                            else tenant_scoped_session(tenant_id)
+                        ) as source_db:
                             await validate_artifact_content_receipt(source_db, tenant_id, authority_user, native_artifact,
                                 runtime_principal=runtime_principal)
                         with captured_chat_artifact_file(native_artifact, workspace_root) as (captured, _source):
@@ -1186,7 +1197,10 @@ async def create_chat_artifacts_for_message(
                 and receipt.carrier_ref == workspace_artifact_ref(agent_id, candidate["path"])
                 and receipt.content_sha256 == candidate["content_hash"]) else None
             try:
-                async with tenant_scoped_session(tenant_id) as source_db:
+                async with (
+                    nullcontext(source_validation_session) if source_validation_session is not None
+                    else tenant_scoped_session(tenant_id)
+                ) as source_db:
                     source_receipt = receipt if candidate["snapshot"]["content_input_receipt_id"] is not None else None
                     if runtime_principal is not None:
                         await validate_runtime_workspace_receipt(source_db, tenant_id, runtime_principal,
@@ -1252,7 +1266,10 @@ async def create_chat_artifacts_for_message(
                 await db.flush()
             if isinstance(db, AsyncSession):
                 try:
-                    async with tenant_scoped_session(tenant_id) as source_db:
+                    async with (
+                        nullcontext(source_validation_session) if source_validation_session is not None
+                        else tenant_scoped_session(tenant_id)
+                    ) as source_db:
                         await validate_artifact_content_receipt(source_db, tenant_id, authority_user, existing,
                             runtime_principal=runtime_principal)
                 except ContentInputReceiptError as exc:

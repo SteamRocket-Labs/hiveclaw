@@ -37,9 +37,8 @@ from app.services.workspace_resource_authority import (
 )
 
 
-async def _load_packet_frame(db, tenant_id, dependency, *, user=None, runtime_request=None, allow_unconfirmed=False):
+async def _load_packet_frame(db, tenant_id, dependency, *, allow_unconfirmed=False):
     """Revalidate immutable bytes, exact source operation and original requester."""
-    from app.services.content_input_receipts import _runtime_input_actor
     from app.services.remote_a2a_tasks import SCHEMA
     from app.services.remote_a2a_chat import is_remote_task
 
@@ -64,17 +63,10 @@ async def _load_packet_frame(db, tenant_id, dependency, *, user=None, runtime_re
                 or not isinstance(view.get("operation_observation"), dict)))):
             raise ValueError("remote_packet_operation_mismatch")
         session = await db.get(ChatSession, uuid.UUID(task.parent_session_id), populate_existing=True)
-        if (session is None or (session.tenant_id, session.agent_id, session.user_id) != (
-            tenant_id, task.parent_agent_id, task.root_user_id)
+        if (session is None or (session.tenant_id, session.agent_id) != (tenant_id, task.parent_agent_id)
+            or (session.audience_kind != "group" and session.user_id != task.root_user_id)
             or str(session.root_session_id or session.id) != task.root_session_id):
             raise ValueError("remote_packet_work_mismatch")
-        if runtime_request is not None:
-            principal, user = await _runtime_input_actor(db, tenant_id, runtime_request)
-            if principal.agent_id != task.parent_agent_id or str(principal.session_id) != task.parent_session_id:
-                raise ValueError("remote_packet_runtime_work_mismatch")
-        reader = await db.get(User, user.id, populate_existing=True) if user is not None else None
-        if reader is None or not reader.is_active or (reader.id, reader.tenant_id) != (task.root_user_id, tenant_id):
-            raise ValueError("remote_packet_reader_mismatch")
         route = await db.scalar(select(RuntimeNotificationOutbox.id).where(
             RuntimeNotificationOutbox.tenant_id == tenant_id,
             RuntimeNotificationOutbox.source_kind == "remote_a2a",
@@ -84,20 +76,78 @@ async def _load_packet_frame(db, tenant_id, dependency, *, user=None, runtime_re
             RuntimeNotificationOutbox.result_size_bytes == result.size_bytes,
             RuntimeNotificationOutbox.parent_agent_id == task.parent_agent_id,
             RuntimeNotificationOutbox.parent_session_id == session.id,
-            RuntimeNotificationOutbox.parent_user_id == reader.id,
+            RuntimeNotificationOutbox.parent_user_id == task.root_user_id,
             RuntimeNotificationOutbox.root_runtime_task_id == task.root_runtime_task_id,
         ).limit(1))
         if route is None:
             raise ValueError("remote_packet_route_unavailable")
+        if session.audience_kind == "group":
+            from app.services.remote_a2a_chat import _session_principal
+
+            await _session_principal(db, task=task, state=task.metadata_json["remote_a2a"], for_effect=False)
         return task, result, session, view, operation
     except (ValueError, KeyError, TypeError, StopIteration, AttributeError) as exc:
         raise ContentInputReceiptError("remote_a2a_source_unavailable",
             "The exact remote packet, original work or requester cannot be verified.", 403) from exc
 
 
+async def group_projection_actor(db, *, session, rows):
+    """Bind saved remote returns to their requester without authorizing inference."""
+    requester = None
+    for row in rows:
+        task, _result, original, _view, _op = await _load_packet_frame(db, session.tenant_id,
+            {"source_id": str(row.result_object_id), "source_version": row.result_sha256}, allow_unconfirmed=True)
+        if (row.source_kind != "remote_a2a" or row.delivery_mode != "session_projection"
+            or original.id != session.id or row.parent_user_id != task.root_user_id
+            or (requester is not None and requester.id != task.root_user_id)):
+            raise ContentInputReceiptError("remote_a2a_source_unavailable", "The shared return route changed.", 403)
+        requester = await db.get(User, task.root_user_id, populate_existing=True)
+    if requester is None or not requester.is_active:
+        raise ContentInputReceiptError("remote_a2a_source_unavailable", "The original requester is unavailable.", 403)
+    return requester
+
+
+async def group_event_ref(db, *, session, event, user):
+    from app.services.remote_a2a_chat import reply_text, reply_message
+
+    metadata = event.metadata_json or {}
+    task, result, original, packet = await load_packet(db, session.tenant_id, metadata.get("remote_result"), user=user)
+    if original.id != session.id or event.run_id != task.id:
+        raise ContentInputReceiptError("remote_a2a_source_unavailable", "The returned event belongs to another work.", 403)
+    if metadata.get("source") == "remote_a2a_chat" and (event.content != reply_text(packet)
+        or metadata.get("remote_message") != reply_message(packet)):
+        raise ContentInputReceiptError("remote_a2a_source_unavailable", "The returned message differs from its saved packet.", 403)
+    if metadata.get("source") == "remote_a2a_return" and event.causation_id != result.id:
+        raise ContentInputReceiptError("remote_a2a_source_unavailable", "The file return differs from its saved packet.", 403)
+    return f"remote-chat-result:{result.id}"
+
+
+async def _packet_reader(db, tenant_id, *, task, session, user=None, runtime_request=None):
+    from app.services.content_input_receipts import _runtime_input_actor, _authorize_session_input_source
+
+    if runtime_request is not None:
+        principal, user = await _runtime_input_actor(db, tenant_id, runtime_request)
+        if principal.agent_id != task.parent_agent_id or str(principal.session_id) != task.parent_session_id:
+            raise ContentInputReceiptError("remote_a2a_source_unavailable", "The exact remote packet, original work or requester cannot be verified.", 403)
+    reader = await db.get(User, user.id, populate_existing=True) if user is not None else None
+    if (reader is None or not reader.is_active or reader.tenant_id != tenant_id
+        or (session.audience_kind != "group" and reader.id != task.root_user_id)):
+        raise ContentInputReceiptError("remote_a2a_source_unavailable", "The exact remote packet, original work or requester cannot be verified.", 403)
+    if session.audience_kind == "group":
+        await _authorize_session_input_source(db, tenant_id, session, user=reader, runtime_request=None)
+    return reader
+
+
+def _status_view(task, view, operation):
+    if (not view.get('error_code') or operation.get('phase') not in {'not_started', 'unknown', 'received'}
+        or view['status'] != task.status or view['error_code'] != task.metadata_json['remote_a2a'].get('error_code')):
+        raise ContentInputReceiptError('remote_a2a_status_unavailable', 'No verified recovery status is available.', 403)
+
+
 async def load_packet(db, tenant_id, dependency, *, user=None, runtime_request=None, allow_unconfirmed=False):
     task, result, session, view, operation = await _load_packet_frame(db, tenant_id, dependency,
-        user=user, runtime_request=runtime_request, allow_unconfirmed=allow_unconfirmed)
+        allow_unconfirmed=allow_unconfirmed)
+    reader = await _packet_reader(db, tenant_id, task=task, session=session, user=user, runtime_request=runtime_request)
     from app.services.remote_a2a_delegation import validate_instruction_sources
     from fastapi import HTTPException
 
@@ -107,7 +157,7 @@ async def load_packet(db, tenant_id, dependency, *, user=None, runtime_request=N
         end = state["operations"].index(operation) + 1
         # Reading the owner's saved packet does not authorize a new channel effect.
         await validate_instruction_sources(db, task=task,
-            state={**state, "operations": state["operations"][:end]}, for_effect=False)
+            state={**state, "operations": state["operations"][:end]}, for_effect=False, reader=reader)
     except HTTPException as exc:
         raise ContentInputReceiptError("remote_a2a_instruction_source_unavailable",
             "The remote result's known local inputs are no longer available.", exc.status_code) from exc
@@ -120,10 +170,9 @@ async def load_packet(db, tenant_id, dependency, *, user=None, runtime_request=N
 async def load_status_packet(db, tenant_id, dependency, *, user):
     """Verify host status and route without granting access to packet/input content."""
     task, result, session, view, operation = await _load_packet_frame(db, tenant_id, dependency,
-        user=user, allow_unconfirmed=True)
-    if (not view.get('error_code') or operation.get('phase') not in {'not_started', 'unknown', 'received'}
-        or view['status'] != task.status or view['error_code'] != task.metadata_json['remote_a2a'].get('error_code')):
-        raise ContentInputReceiptError('remote_a2a_status_unavailable', 'No verified recovery status is available.', 403)
+        allow_unconfirmed=True)
+    await _packet_reader(db, tenant_id, task=task, session=session, user=user)
+    _status_view(task, view, operation)
     return task, result, session, view, operation
 
 
@@ -248,6 +297,7 @@ async def import_packet(db, *, tenant_id, result_id, sha256, user):
                 tenant_id=tenant_id, session_id=session.id, message_id=message_id, runtime_task_id=task.id,
                 paths=[path], workspace_root=Path(get_settings().AGENT_DATA_DIR) / str(task.parent_agent_id),
                 source="remote_a2a_return", action="created" if receipt.revision == 1 else "updated",
+                source_validation_session=db if session.audience_kind == "group" else None,
                 source_agent_id=task.child_agent_id, download_agent_id=task.parent_agent_id,
                 source_receipt_ids={path: receipt.id}, expected_content_hashes={path: receipt.content_sha256},
                 publication_errors=errors)
@@ -263,7 +313,8 @@ async def import_packet(db, *, tenant_id, result_id, sha256, user):
         actor_type="system", event_type="remote_a2a_artifacts", role="system", content=content,
         user_id=user.id, runtime_task_id=task.id, message_id=message_id, materialize_chat_message=False,
         root_session_id=session.root_session_id or session.id, parts=parts,
-        metadata={"causation_id": str(result.id), "file_returns": returns, "remote_untrusted_data": True},
+        metadata={"causation_id": str(result.id), "file_returns": returns, "remote_untrusted_data": True,
+            "remote_result": dependency},
         source="remote_a2a_return")
     return {"parts": parts, "file_returns": returns}
 

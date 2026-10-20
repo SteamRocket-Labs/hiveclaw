@@ -706,6 +706,7 @@ async def load_session_semantic_history(
     agent_id: uuid.UUID,
     session_id: uuid.UUID,
     current_run_id: uuid.UUID | None = None,
+    reader_run_id: uuid.UUID | None = None,
 ) -> SessionSemanticHistory:
     """Load every authorized committed semantic entry for one provider turn.
 
@@ -713,7 +714,9 @@ async def load_session_semantic_history(
     as compact): no run-scoped exclusion applies, so every admitted user
     checkpoint and every committed provider round is prior context, except
     unapplied successor inputs which remain queued work. Authority and seal
-    checks are identical to the provider-turn path."""
+    checks are identical to the provider-turn path. ``reader_run_id`` applies
+    shared-reader authority independently of excluding the current run, so
+    external executors retain their same-run protocol history."""
 
     try:
         views, branch_receipt = await _load_event_views(
@@ -774,13 +777,14 @@ async def load_session_semantic_history(
             message.id,
         )
     )
-    if current_run_id is not None:
+    reader_run = reader_run_id or current_run_id
+    if reader_run is not None:
         session = await db.scalar(select(ChatSession).where(ChatSession.id == session_id,
             ChatSession.tenant_id == tenant_id, ChatSession.agent_id == agent_id))
         if session is not None and session.audience_kind == "group":
             from app.services.shared_group_authority import read_shared_group_history
 
-            messages, source_holds = await read_shared_group_history(db, session=session, messages=messages, run_id=current_run_id)
+            messages, source_holds = await read_shared_group_history(db, session=session, messages=messages, run_id=reader_run)
             held_items.extend(source_holds)
             visible = {message.id for message in messages}
             users = [message for message in users if message.id in visible]

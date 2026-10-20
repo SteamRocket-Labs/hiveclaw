@@ -27,8 +27,9 @@ async def capture_executor(db, *, agent, user, session, run_id, interactive, met
     from app.services.remote_a2a_runtime import require_runtime_authorization
     from app.services.remote_a2a_tasks import _work
 
-    if (session.audience_kind not in {None, "private"}
-        or user.id is None or session.user_id != user.id
+    shared = session.audience_kind == "group"
+    if (session.audience_kind not in {None, "private", "group"}
+        or user.id is None or (not shared and session.user_id != user.id)
         or getattr(user, "machine_credential_id", None) is not None):
         raise HTTPException(409, detail={"code": "remote_a2a_session_principal_unavailable"})
     origin = None
@@ -36,11 +37,13 @@ async def capture_executor(db, *, agent, user, session, run_id, interactive, met
         from app.services.remote_a2a_channel import capture_origin
 
         origin = await capture_origin(db, agent=agent, user=user, session=session, metadata=metadata or {})
-    await _work(db, actor=user, session_id=session.id, target=agent)
+    await _work(db, actor=user, session_id=session.id, target=agent, shared=shared)
     connection, authority, authority_hash = await require_runtime_authorization(db, agent=agent)
     return {"dispatch_kind": "session", "configuration_version": connection.version,
         "owner_scope": authority["owner_scope"], "runtime_authorization_hash": authority_hash,
         **({"channel_origin": origin} if origin else {}),
+        **({"shared_session": {"session_id": str(session.id), "installation_ref": session.group_installation_ref,
+            "subject_id": session.group_subject_id}} if shared else {}),
         "source_read_principal": AgentRuntimePrincipal(agent_id=agent.id, requester_user_id=user.id,
             session_id=str(session.id), runtime_task_id=str(run_id), purpose="interactive_session",
             autonomous=False).evidence(),
@@ -71,8 +74,25 @@ def _principal(task, state):
 
 async def _session_principal(db, *, task, state, for_effect=True):
     session = await db.get(ChatSession, uuid.UUID(task.parent_session_id), populate_existing=True)
-    if (session is None or session.audience_kind not in {None, "private"}
-        or session.user_id != task.root_user_id or task.machine_credential_id):
+    shared = session is not None and session.audience_kind == "group"
+    if session is None or task.machine_credential_id:
+        raise HTTPException(409, detail={"code": "remote_a2a_session_principal_unavailable"})
+    if shared:
+        from app.services.shared_group_authority import load_shared_group_task_origin, load_shared_group_runtime_actor
+
+        expected = {"session_id": str(session.id), "installation_ref": session.group_installation_ref,
+            "subject_id": session.group_subject_id}
+        if session.user_id is not None or session.external_principal_id is not None or state.get("shared_session") != expected:
+            raise HTTPException(409, detail={"code": "remote_a2a_session_principal_unavailable"})
+        try:
+            await load_shared_group_task_origin(db, task=task, session=session)
+            if for_effect:
+                actor = await load_shared_group_runtime_actor(db, task=task, session=session)
+                if actor.id != task.root_user_id:
+                    raise PermissionError("remote_shared_requester_changed")
+        except PermissionError as exc:
+            raise HTTPException(409, detail={"code": "remote_a2a_session_principal_unavailable"}) from exc
+    elif session.audience_kind not in {None, "private"} or session.user_id != task.root_user_id or state.get("shared_session"):
         raise HTTPException(409, detail={"code": "remote_a2a_session_principal_unavailable"})
     if state.get("channel_origin") is not None:
         from app.services.remote_a2a_channel import validate_origin
@@ -80,7 +100,7 @@ async def _session_principal(db, *, task, state, for_effect=True):
         origin = state["channel_origin"]
         if (not isinstance(origin, dict) or origin.get("schema") != "hive.remote_channel_origin.v1"
             or origin.get("external_principal_id") != str(task.root_external_principal_id)
-            or session.external_principal_id != task.root_external_principal_id
+            or (not shared and session.external_principal_id != task.root_external_principal_id)
             or origin.get("command_id") != task.metadata_json.get("session_v2_command_id")
             or origin.get("ingress_event_id") != task.metadata_json.get("channel_ingress_event_id")):
             raise HTTPException(409, detail={"code": "remote_a2a_session_principal_unavailable"})
@@ -88,6 +108,7 @@ async def _session_principal(db, *, task, state, for_effect=True):
             await validate_origin(db, task=task, state=state, session=session)
     elif task.root_external_principal_id:
         raise HTTPException(409, detail={"code": "remote_a2a_session_principal_unavailable"})
+    return session
 
 
 async def prepare_send(db, *, task, state, agent, endpoint):
@@ -119,7 +140,7 @@ async def prepare_send(db, *, task, state, agent, endpoint):
     if not rows:
         raise HTTPException(409, detail={"code": "remote_a2a_canonical_input_unavailable"})
     history = await load_session_semantic_history(db, tenant_id=task.tenant_id, agent_id=agent.id,
-        session_id=session_id)
+        session_id=session_id, reader_run_id=task.id)
     # Include prior rounds in this same remote work. Only the newly bound
     # inputs are replaced by their lossless current mailbox projection.
     current_refs = {f"session-input:{row.id}" for row in rows}
@@ -131,7 +152,9 @@ async def prepare_send(db, *, task, state, agent, endpoint):
     bindings = await build_model_input_bindings(db, tenant_id=task.tenant_id, agent_id=agent.id,
         session_id=session_id, messages=messages, wire_messages=wire)
     if bindings.get("dependency_coverage", {}).get("complete") is not True:
-        raise HTTPException(409, detail={"code": "remote_a2a_history_sources_unbound"})
+        raise HTTPException(409, detail={"code": "remote_a2a_history_sources_unbound",
+            "input_sources": [{key: entry.get(key) for key in ("source_ref", "status", "dependency_status")}
+                for entry in bindings.get("messages", [])]})
     dependencies = list(bindings["dependencies"])
     from app.services.remote_a2a_inputs import conversation_files
 
@@ -193,6 +216,16 @@ async def prepare_send(db, *, task, state, agent, endpoint):
             if is_remote_task(previous) and saved.get("dispatch_kind") == "session":
                 if (saved.get("runtime_authorization_hash") == state["runtime_authorization_hash"]
                     and saved.get("remote_context_id")):
+                    if state.get("shared_session"):
+                        from app.models.user import User
+
+                        try:
+                            await validate_sources(db, task=previous, state=saved, for_effect=False,
+                                reader=await db.get(User, task.root_user_id))
+                        except (HTTPException, ContentInputReceiptError):
+                            # A remote context may retain every prior input,
+                            # including sources held from this new requester.
+                            break
                     state["remote_context_id"] = saved["remote_context_id"]
                     params["message"]["contextId"] = state["remote_context_id"]
                 break
@@ -211,13 +244,13 @@ async def prepare_send(db, *, task, state, agent, endpoint):
     await db.flush()
 
 
-async def validate_sources(db, *, task, state, for_effect=True):
+async def validate_sources(db, *, task, state, for_effect=True, reader=None):
     """Recheck data access; a new effect also requires the live channel authority."""
     from app.services.content_input_receipts import ContentInputReceiptError, _validate_input_dependencies
     from app.services.remote_a2a_tasks import _digest
 
     principal = _principal(task, state)
-    await _session_principal(db, task=task, state=state, for_effect=for_effect)
+    session = await _session_principal(db, task=task, state=state, for_effect=for_effect)
     for operation in state["operations"]:
         if operation["method"] != "SendMessage":
             continue
@@ -236,7 +269,10 @@ async def validate_sources(db, *, task, state, for_effect=True):
             or proof.get("sha256") != _digest({k: v for k, v in proof.items() if k != "sha256"})):
             raise HTTPException(409, detail={"code": "remote_a2a_input_receipt_unavailable"})
         try:
-            await _validate_input_dependencies(db, task.tenant_id, proof["dependencies"], runtime_request=principal)
+            if not for_effect and session.audience_kind == "group" and reader is not None:
+                await _validate_input_dependencies(db, task.tenant_id, proof["dependencies"], user=reader)
+            else:
+                await _validate_input_dependencies(db, task.tenant_id, proof["dependencies"], runtime_request=principal)
         except ContentInputReceiptError as exc:
             raise HTTPException(exc.status_code, detail={"code": "remote_a2a_instruction_source_unavailable",
                 "source_reason_code": exc.code}) from exc
@@ -304,8 +340,16 @@ async def history_messages(db, *, tenant_id, agent_id, current_run_id, views):
             continue
         try:
             original = await db.get(ChatSession, event.session_id)
-            user = await db.get(User, original.user_id) if original is not None else None
-            _task, result, _session, packet = await load_packet(db, tenant_id, metadata["remote_result"], user=user)
+            if original is not None and original.audience_kind == "group":
+                # Canonical inventory verifies bytes/route. The shared history
+                # reader subsequently checks every source for its actual actor.
+                from app.services.remote_a2a_artifacts import _load_packet_frame
+
+                _task, result, _session, saved, _op = await _load_packet_frame(db, tenant_id, metadata["remote_result"])
+                packet = saved["operation_observation"]
+            else:
+                user = await db.get(User, original.user_id) if original is not None else None
+                _task, result, _session, packet = await load_packet(db, tenant_id, metadata["remote_result"], user=user)
             if event.agent_id != agent_id or reply_text(packet) != event.content or reply_message(packet) != metadata.get("remote_message"):
                 raise ValueError("remote_message_mismatch")
         except Exception as exc:

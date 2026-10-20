@@ -96,7 +96,8 @@ async def read_task_view(db, task):
     from app.services.remote_a2a_delegation import validate_instruction_sources
 
     try:
-        await validate_instruction_sources(db, task=task, state=task.metadata_json["remote_a2a"])
+        await validate_instruction_sources(db, task=task, state=task.metadata_json["remote_a2a"],
+            for_effect=False, reader=await db.get(User, task.root_user_id))
         return _view(task)
     except HTTPException:
         return {**{key: value for key, value in _view(task).items() if key not in {"operations", "observation"}},
@@ -128,10 +129,17 @@ async def _send_policy(db, *, tenant_id, source_agent_id):
         raise HTTPException(409, detail={"code": "remote_a2a_required_control_unavailable"})
 
 
-async def _work(db, *, actor, session_id, target, new_effect=True):
+async def _work(db, *, actor, session_id, target, new_effect=True, shared=False):
     session = await db.get(ChatSession, session_id, populate_existing=True)
-    if session is None or session.tenant_id != target.tenant_id or session.user_id != actor.id:
+    if session is None or session.tenant_id != target.tenant_id or (session.audience_kind != "group" and session.user_id != actor.id):
         raise HTTPException(404, detail={"code": "remote_a2a_source_work_unavailable"})
+    if session.audience_kind == "group":
+        if not shared:
+            raise HTTPException(409, detail={"code": "remote_a2a_shared_session_executor_required"})
+        from app.services.session_v2_persistence import resolve_session_mutation_authority
+
+        await resolve_session_mutation_authority(db, user=actor, agent_id=session.agent_id,
+            session_id=session.id, action="mutate_session_input", audit=False)
     source, _level = await require_agent_execution_access(db, actor, session.agent_id)
     if new_effect:
         await _send_policy(db, tenant_id=session.tenant_id, source_agent_id=session.agent_id)
@@ -325,11 +333,18 @@ async def get_task(db, *, agent_id, task_id, actor, lock=False):
     session = await db.get(ChatSession, uuid.UUID(task.parent_session_id), populate_existing=True)
     if (
         session is None
-        or session.user_id != actor.id
+        or (session.audience_kind != "group" and session.user_id != actor.id)
         or session.tenant_id != task.tenant_id
         or session.agent_id != task.parent_agent_id
     ):
         raise HTTPException(404, detail={"code": "remote_a2a_source_work_unavailable"})
+    if session.audience_kind == "group":
+        from app.services.remote_a2a_chat import _session_principal
+        from app.services.session_v2_persistence import resolve_session_mutation_authority
+
+        await _session_principal(db, task=task, state=task.metadata_json["remote_a2a"], for_effect=False)
+        await resolve_session_mutation_authority(db, user=actor, agent_id=session.agent_id,
+            session_id=session.id, action="mutate_session_input", audit=False)
     return task
 
 
@@ -337,8 +352,13 @@ async def list_tasks(db, *, agent_id, source_session_id, actor):
     from app.services.business_teams import _acting_tenant_id
 
     session = await db.get(ChatSession, source_session_id, populate_existing=True)
-    if session is None or session.user_id != actor.id or session.tenant_id != _acting_tenant_id(actor):
+    if session is None or (session.audience_kind != "group" and session.user_id != actor.id) or session.tenant_id != _acting_tenant_id(actor):
         raise HTTPException(404, detail={"code": "remote_a2a_source_work_unavailable"})
+    if session.audience_kind == "group":
+        from app.services.session_v2_persistence import resolve_session_mutation_authority
+
+        await resolve_session_mutation_authority(db, user=actor, agent_id=session.agent_id,
+            session_id=session.id, action="mutate_session_input", audit=False)
     tasks = list(
         await db.scalars(
             select(RuntimeTask)
@@ -356,7 +376,7 @@ async def list_tasks(db, *, agent_id, source_session_id, actor):
     ready, version = False, None
     try:
         agent, _level = await require_agent_execution_access(db, actor, agent_id)
-        await _work(db, actor=actor, session_id=session.id, target=agent)
+        await _work(db, actor=actor, session_id=session.id, target=agent, shared=session.audience_kind == "group")
         connection = await _connection(db, agent)
         if connection is not None:
             version = connection.version
@@ -444,7 +464,7 @@ async def operate_task(
         await _active_employee_budget(db, task)
     agent, _level = await require_agent_execution_access(db, actor, agent_id)
     await _work(
-        db, actor=actor, session_id=uuid.UUID(task.parent_session_id), target=agent, new_effect=method == "SendMessage"
+        db, actor=actor, session_id=uuid.UUID(task.parent_session_id), target=agent, new_effect=method == "SendMessage", shared=bool(state.get("shared_session"))
     )
     endpoint, _scope = await _endpoint(db, agent=agent, version=expected_version, owner_scope=state["owner_scope"])
     if action == "retry":
@@ -587,7 +607,7 @@ async def execute_claimed_task(task_id):
                 actor=actor,
                 session_id=uuid.UUID(task.parent_session_id),
                 target=agent,
-                new_effect=operation["method"] == "SendMessage",
+                new_effect=operation["method"] == "SendMessage", shared=bool(state.get("shared_session")),
             )
             endpoint, _scope = await _endpoint(
                 db, agent=agent, version=state["configuration_version"], owner_scope=state["owner_scope"]
@@ -636,7 +656,7 @@ async def execute_claimed_task(task_id):
                 actor=actor,
                 session_id=uuid.UUID(task.parent_session_id),
                 target=agent,
-                new_effect=operation["method"] == "SendMessage",
+                new_effect=operation["method"] == "SendMessage", shared=bool(state.get("shared_session")),
             )
             await _connection_scope(
                 db, agent=agent, version=state["configuration_version"], owner_scope=state["owner_scope"]
@@ -690,7 +710,9 @@ async def _employee_send_authority(db, *, task, state, agent, operation, recipie
 
     await require_runtime_authorization(db, agent=agent, expected_hash=state["runtime_authorization_hash"])
     await _active_employee_budget(db, task)
-    await validate_instruction_sources(db, task=task, state=state, recipient=recipient)
+    await validate_instruction_sources(db, task=task, state=state, recipient=recipient,
+        for_effect=recipient or not state.get("shared_session"),
+        reader=await db.get(User, task.root_user_id) if not recipient and state.get("shared_session") else None)
 
 
 async def _active_employee_budget(db, task):

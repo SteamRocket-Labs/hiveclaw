@@ -55,7 +55,12 @@ async def _group_event_access(db, *, session, events, user):
         try:
             if (event.tenant_id, event.agent_id, event.session_id) != (session.tenant_id, session.agent_id, session.id):
                 raise ContentInputReceiptError("group_history_scope_mismatch", "The event belongs to another work.", 403)
-            if event.schema_version != 2:
+            remote_ref = None
+            if (event.metadata_json or {}).get("source") in {"remote_a2a_chat", "remote_a2a_return"}:
+                from app.services.remote_a2a_artifacts import group_event_ref
+
+                remote_ref = await group_event_ref(db, session=session, event=event, user=user)
+            if event.schema_version != 2 and remote_ref is None:
                 raise ContentInputReceiptError("group_history_sources_unavailable", "The legacy event has no canonical source binding.", 503)
             if event.item_kind == "run" and event.lifecycle == "completed":
                 from app.models.runtime_task import RuntimeTask
@@ -71,9 +76,11 @@ async def _group_event_access(db, *, session, events, user):
                     access[event.id] = {"schema": "hive.source_access_receipt.v1", "status": "allowed",
                         "code": "group_runtime_status", "reason_code": "company_approval_required"}
                     continue
-            refs = []
+            refs = [remote_ref] if remote_ref else []
             origin = None
-            if event.item_kind == "human_input" and event.input_id is not None:
+            if remote_ref:
+                pass
+            elif event.item_kind == "human_input" and event.input_id is not None:
                 origin = await db.get(SessionTurnInput, event.input_id)
                 refs = [f"session-input:{event.input_id}"]
             elif event.item_kind == "control_input" and (event.metadata_json or {}).get("v2_payload", {}).get("kind") == "permission_response":

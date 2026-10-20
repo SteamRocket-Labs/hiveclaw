@@ -230,7 +230,8 @@ async def _enqueue_origin_continuation(
     parent_user_id = session.user_id if session else None
     root_runtime_task_id = None
     machine_budget_run_id = None
-    machine_return = session is not None and session.user_id is None and approval.requested_by_external_principal_id is not None
+    machine_return = (session is not None and session.audience_kind != "group"
+        and session.user_id is None and approval.requested_by_external_principal_id is not None)
     if machine_return:
         from app.services.machine_runtime_authority import machine_approval_origin
 

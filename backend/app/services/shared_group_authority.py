@@ -266,11 +266,10 @@ async def _permission_execution_matches(db, *, task, session):
         and invocation.permission_state == "approved")
 
 
-async def _load_shared_group_task_actor(db, *, task, session):
-    """Rebuild request identity from immutable inputs, independently of a worker claim."""
+async def load_shared_group_task_origin(db, *, task, session):
+    """Verify saved canonical provenance without borrowing the original actor's live authority."""
     from app.models.session_v2 import SessionCommand, SessionTurnInput
     from app.services.session_model_inputs import _hash
-    from app.services.session_v2_persistence import resolve_session_command_authority
     from app.services.web_chat_runtime import EXECUTABLE_CHAT_TASK_TYPES
 
     metadata = task.metadata_json or {}
@@ -291,6 +290,20 @@ async def _load_shared_group_task_actor(db, *, task, session):
         or command.request_hash != _hash({"command_kind": command.command_kind, "request": command.request_json})
         or command.target_hash != _hash(command.target_json)):
         raise PermissionError("shared_group_runtime_origin_mismatch")
+    if (str(metadata.get("user_id") or "") != str(task.root_user_id or "")
+        or str(metadata.get("external_principal_id") or "") != str(task.root_external_principal_id or "")
+        or command.principal_type not in {"user", "external_principal"}
+        or command.principal_id != (task.root_user_id if command.principal_type == "user" else task.root_external_principal_id)):
+        raise PermissionError("shared_group_runtime_actor_mismatch")
+    return command
+
+
+async def _load_shared_group_task_actor(db, *, task, session):
+    """Rebuild the live requester for a new effect from its canonical command."""
+    from app.services.session_v2_persistence import resolve_session_command_authority
+
+    command = await load_shared_group_task_origin(db, task=task, session=session)
+    metadata = task.metadata_json or {}
     context = await resolve_session_command_authority(db, command=command, session=session, action="mutate_session_input")
     actor = context.actor
     if (task.root_user_id != actor.id or str(metadata.get("user_id") or "") != str(actor.id or "")
@@ -542,16 +555,21 @@ async def validate_shared_group_delivery(db, *, item, session):
                     principal_id=principal.id, expected_user_id=principal.linked_user_id)
                 if not actor.authority_bound:
                     raise HTTPException(403, detail={"code": "group_recipient_identity_changed"})
-        result = await db.scalar(select(SessionModelResult).join(ChatTranscriptEvent,
-            ChatTranscriptEvent.id == SessionModelResult.round_committed_event_id).where(
-            SessionModelResult.tenant_id == session.tenant_id, ChatTranscriptEvent.tenant_id == session.tenant_id,
-            ChatTranscriptEvent.agent_id == session.agent_id, ChatTranscriptEvent.session_id == session.id,
-            ChatTranscriptEvent.run_id == item.runtime_task_id,
-            SessionModelResult.session_id == session.id, SessionModelResult.run_id == item.runtime_task_id,
-            SessionModelResult.state == "round_committed").order_by(ChatTranscriptEvent.sequence.desc()).limit(1))
-        dependencies, complete = _model_dependencies(result)
-        if not complete:
-            raise ContentInputReceiptError("group_output_sources_unavailable", "The group output lacks its complete source receipt.", 503)
+        if item.metadata.get("source") == "remote_a2a_chat":
+            # Remote packets have their own exact operation/input receipts.
+            # They never acquire a native-model result seal.
+            dependencies = [] if item.metadata.get("remote_recovery_notice") is True else [item.metadata["remote_result"]]
+        else:
+            result = await db.scalar(select(SessionModelResult).join(ChatTranscriptEvent,
+                ChatTranscriptEvent.id == SessionModelResult.round_committed_event_id).where(
+                SessionModelResult.tenant_id == session.tenant_id, ChatTranscriptEvent.tenant_id == session.tenant_id,
+                ChatTranscriptEvent.agent_id == session.agent_id, ChatTranscriptEvent.session_id == session.id,
+                ChatTranscriptEvent.run_id == item.runtime_task_id,
+                SessionModelResult.session_id == session.id, SessionModelResult.run_id == item.runtime_task_id,
+                SessionModelResult.state == "round_committed").order_by(ChatTranscriptEvent.sequence.desc()).limit(1))
+            dependencies, complete = _model_dependencies(result)
+            if not complete:
+                raise ContentInputReceiptError("group_output_sources_unavailable", "The group output lacks its complete source receipt.", 503)
         for user_id in {row.linked_user_id for row in principals}:
             user = await db.scalar(select(User).where(User.id == user_id, User.tenant_id == session.tenant_id,
                 User.is_active.is_(True)).execution_options(populate_existing=True))

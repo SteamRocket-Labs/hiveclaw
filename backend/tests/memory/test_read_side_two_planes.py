@@ -400,6 +400,9 @@ def test_legacy_threshold_rerank_machinery_is_retired() -> None:
 async def test_build_memory_context_prepends_resident_untrimmed(tmp_path: Path, monkeypatch) -> None:
     from app.memory.activation import ActivationContext
     from app.services import memory_service
+    from tests.memory.authority_fixtures import reference_explicit_memory_authority
+
+    reference_explicit_memory_authority(monkeypatch)
 
     agent_id = uuid4()
     tenant_id = uuid4()
@@ -436,7 +439,7 @@ async def test_build_memory_context_prepends_resident_untrimmed(tmp_path: Path, 
         lambda: type("S", (), {"AGENT_DATA_DIR": str(tmp_path), "MEMORY_RESIDENT_BUDGET_CHARS": 20_000.0})(),
     )
 
-    context = await memory_service.build_memory_context(agent_id, tenant_id, query="rollup 扩容")
+    context = await memory_service.build_memory_context(agent_id, tenant_id, query="rollup 扩容", current_user_id=uuid4())
 
     assert "需求含糊时爱自己猜" in context  # active failure mode on top
     assert "偏好简洁中文汇报" in context  # profiles whole

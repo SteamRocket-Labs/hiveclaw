@@ -604,6 +604,9 @@ async def test_build_memory_context_omits_pl3_for_non_owner(monkeypatch, tmp_pat
     from app.memory.md_store import ensure_t3_layout
     from app.services import memory_service
     from app.services.agency_charter import build_default_accountability_context
+    from tests.memory.authority_fixtures import reference_explicit_memory_authority
+
+    reference_explicit_memory_authority(monkeypatch)
 
     agent_id = uuid4()
     tenant_id = uuid4()

@@ -286,6 +286,13 @@ async def authorize_resource_action(
             except ContentInputReceiptError as exc:
                 raise HTTPException(status_code=exc.status_code, detail={"code": exc.code, "message": str(exc)}) from exc
         try:
+            # Source inspection can write its own tenant audit. Finish that
+            # scoped transaction before path inspection takes the request's
+            # audit-chain lock; nested writers would wait on their own caller.
+            # Source readers still never inherit an ambient administrator bypass.
+            async with tenant_scoped_session(agent.tenant_id) as source_db:
+                await validate_artifact_content_receipt(source_db, agent.tenant_id, user, artifact,
+                    runtime_principal=runtime_principal)
             # A snapshot or a session owner cannot enlarge its source audience.
             await authorize_workspace_path(
                 db, user, agent_id=agent_id, path=artifact.path, action="read", path_exists=True,
@@ -293,10 +300,6 @@ async def authorize_resource_action(
                 agent_access=(agent, access_level),
                 runtime_principal=runtime_principal,
             )
-            # Source readers must not inherit an administrator's ambient RLS bypass.
-            async with tenant_scoped_session(agent.tenant_id) as source_db:
-                await validate_artifact_content_receipt(source_db, agent.tenant_id, user, artifact,
-                    runtime_principal=runtime_principal)
         except WorkspaceAuthorityError as exc:
             raise HTTPException(status_code=403, detail={"code": exc.code, "message": exc.message}) from exc
         except ContentInputReceiptError as exc:

@@ -127,6 +127,16 @@ async def _validate_input_dependency_batch(db, tenant_id: uuid.UUID, dependencie
             await _validate_workspace_dependency(db, tenant_id, dependency, user=user, runtime_request=runtime_request,
                 active_receipts=active_workspace_receipts)
             continue
+        if dependency["source_kind"] == "explicit_memory":
+            from app.services.explicit_memory_authority import validate_explicit_memory_dependency, validate_browser_memory_dependency
+
+            if runtime_request is None:
+                await validate_browser_memory_dependency(db, tenant_id, dependency, user=user,
+                    active_receipts=active_workspace_receipts)
+            else:
+                await validate_explicit_memory_dependency(db, tenant_id, dependency, request=runtime_request,
+                    active_receipts=active_workspace_receipts)
+            continue
         if dependency["source_kind"] == "session_actor_identity":
             await _validate_session_actor_identity(db, tenant_id, dependency, user=user, runtime_request=runtime_request)
             continue
@@ -936,6 +946,10 @@ async def authorize_workspace_receipt_read(request):
     context = request.context
     try:
         path = normalize_workspace_resource_path(str(request.arguments.get("path") or ""))
+        if path == "memory/explicit" or path.startswith("memory/explicit/"):
+            from app.services.explicit_memory_authority import authorize_explicit_memory_file_read
+
+            return await authorize_explicit_memory_file_read(request, path)
         if not path.startswith("workspace/"):
             return None
         scope = context.workspace_authority_scope
@@ -1129,11 +1143,19 @@ async def persist_workspace_execution_evidence(*, context, tool_name, tool_call_
                 proof.pop("states")
                 proof.pop("lineage")
                 proof.pop("errors")
+                carrier_kind = getattr(input_read, "carrier_kind", "workspace_artifact")
+                carrier_ref = workspace_artifact_ref(context.agent_id, input_read.path)
+                if carrier_kind == "explicit_memory":
+                    from app.services.explicit_memory_authority import memory_ref
+
+                    carrier_ref = memory_ref(context.agent_id, Path(input_read.path).stem)
                 proof.update(schema="hive.workspace_input_evidence.v1",
                     content_input_receipt_id=str(input_read.receipt_id),
-                    carrier_ref=workspace_artifact_ref(context.agent_id, input_read.path),
+                    carrier_ref=carrier_ref,
                     revision=input_read.revision, content_sha256=input_read.content_sha256,
                     dependencies_hash=input_read.dependencies_hash, observed_sha256=input_read.observed_sha256)
+                if carrier_kind != "workspace_artifact":
+                    proof["carrier_kind"] = carrier_kind
                 channel, metadata_key = "workspace-input", "workspace_input_evidence"
             evidence_id = uuid.uuid5(invocation.id, f"{channel}-evidence")
             if skill_read is not None:
@@ -1377,10 +1399,19 @@ async def load_workspace_input_evidence(db, *, agent_id, invocation, model_resul
     try:
         receipt_id = uuid.UUID(proof["content_input_receipt_id"])
         carrier_ref = workspace_artifact_ref(agent_id, arguments.get("path", ""))
+        carrier_kind = proof.get("carrier_kind", "workspace_artifact")
+        if carrier_kind == "explicit_memory":
+            from app.services.explicit_memory_authority import memory_ref
+
+            carrier_ref = memory_ref(agent_id, Path(arguments.get("path", "")).stem)
+            if arguments.get("path") != f"memory/explicit/entries/{Path(arguments['path']).stem}.md":
+                raise ValueError("explicit_memory_path_mismatch")
+        elif carrier_kind != "workspace_artifact":
+            raise ValueError("workspace_input_carrier_unsupported")
     except (KeyError, TypeError, ValueError) as exc:
         raise ContentInputReceiptError("workspace_input_evidence_invalid", "The input receipt identity is invalid.") from exc
     receipt = await db.scalar(select(ContentInputReceipt).where(ContentInputReceipt.id == receipt_id,
-        ContentInputReceipt.tenant_id == invocation.tenant_id, ContentInputReceipt.carrier_kind == "workspace_artifact",
+        ContentInputReceipt.tenant_id == invocation.tenant_id, ContentInputReceipt.carrier_kind == carrier_kind,
         ContentInputReceipt.carrier_ref == carrier_ref))
     if receipt is None or proof.get("carrier_ref") != carrier_ref or (
         receipt.revision != proof.get("revision") or receipt.content_sha256 != proof.get("content_sha256")

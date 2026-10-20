@@ -93,6 +93,7 @@ def test_minimal_kernel_tool_set_stays_small_and_explicit():
         "save_memory",
         "update_memory",
         "retire_memory",
+        "reconcile_memory_write",
         "submit_t3_consolidation_pitch",
         "submit_t3_memory_gate_review",
         "submit_t3_revised_patch",

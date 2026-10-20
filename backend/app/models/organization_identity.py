@@ -266,12 +266,12 @@ class IdentityCutoverJournal(Base):
 
 
 class ContentInputReceipt(Base):
-    """Receipt for one verified team-memory or workspace-artifact write."""
+    """Source and authority receipt for one exact durable content version."""
 
     __tablename__ = "content_input_receipts"
     __table_args__ = (
         CheckConstraint(
-            "carrier_kind IN ('team_memory','workspace_artifact')",
+            "carrier_kind IN ('team_memory','workspace_artifact','explicit_memory')",
             name="ck_content_input_receipts_carrier_kind",
         ),
         CheckConstraint("carrier_ref <> ''", name="ck_content_input_receipts_carrier_ref"),
@@ -304,6 +304,9 @@ class ContentInputReceipt(Base):
     content_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
     dependencies_json: Mapped[list] = mapped_column(
         JSONB, nullable=False, default=list, server_default=text("'[]'::jsonb")
+    )
+    authority_json: Mapped[dict] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
     )
 
 

@@ -255,6 +255,7 @@ async def _build_memory_context_result(
             agent_id=agent_id,
             data_root=data_root,
             budget_chars=float(getattr(settings, "MEMORY_RESIDENT_BUDGET_CHARS", DEFAULT_RESIDENT_BUDGET_CHARS)),
+            include_overlay=legacy_compatibility,
         )
     except Exception as exc:
         logger.error("Resident profile unavailable for agent %s: %s", agent_id, type(exc).__name__)
@@ -290,15 +291,6 @@ async def _build_memory_context_result(
             error_class="ResidentReadError",
         )
     degraded_components.extend(resident.read_errors)
-    resident_unbound = tuple(f"resident_source_unverified:{ref['source_id']}" for ref in resident.source_refs
-        if ref["source_kind"] != "agent_resident_memory" or ref["source_id"] != f"{agent_id}\nmemory/self/self.md")
-
-    try:
-        await check_resident_budget(agent_id=agent_id, data_root=data_root, resident=resident)
-    except Exception as budget_exc:  # noqa: BLE001 - budget telemetry must not block prompt assembly
-        logger.warning("Resident budget check failed for %s: %s", agent_id, budget_exc)
-        degraded_components.append("resident_budget_telemetry")
-
     items = None
     retrieval_error: Exception | None = None
     retriever = None
@@ -334,6 +326,33 @@ async def _build_memory_context_result(
             )
             if attempts < 2:
                 await asyncio.sleep(0)
+
+    # Selection can await a provider. Resolve the resident index only after
+    # that boundary so stale previews cannot bypass the scoped full loader.
+    if not legacy_compatibility:
+        try:
+            from app.memory.explicit_overlay import load_explicit_overlay_entries
+            from app.memory.profile_plane import with_explicit_memory_index
+            from app.services.explicit_memory_authority import authorized_explicit_entries, source_dependency
+            from app.services.personal_knowledge_access import AgentRuntimePrincipal
+
+            principal = AgentRuntimePrincipal(agent_id=agent_id, requester_user_id=uuid.UUID(str(current_user_id)),
+                session_id=str(session_id), purpose="interactive_session")
+            authorized = await authorized_explicit_entries(tenant_id=tenant_id, agent_id=agent_id, request=principal,
+                entries=load_explicit_overlay_entries(data_root, agent_id))
+            resident = with_explicit_memory_index(resident, [entry for entry, _receipt in authorized],
+                {entry.entry_id: (source_dependency(receipt),) for entry, receipt in authorized})
+        except Exception as exc:
+            logger.warning("Resident explicit source authority unavailable: %s", type(exc).__name__)
+            degraded_components.append("explicit_memory_source_authority")
+    resident_unbound = tuple(f"resident_source_unverified:{ref['source_id']}" for ref in resident.source_refs
+        if ref["source_kind"] != "explicit_memory" and (
+            ref["source_kind"] != "agent_resident_memory" or ref["source_id"] != f"{agent_id}\nmemory/self/self.md"))
+    try:
+        await check_resident_budget(agent_id=agent_id, data_root=data_root, resident=resident)
+    except Exception as budget_exc:
+        logger.warning("Resident budget check failed for %s: %s", agent_id, type(budget_exc).__name__)
+        degraded_components.append("resident_budget_telemetry")
 
     if retrieval_error is not None or items is None:
         return MemoryContextResult(
@@ -383,6 +402,13 @@ async def _build_memory_context_result(
         assembler = MemoryAssembler()
         retrieval_budget = max(0, int(retrieval_profile.memory_budget_chars - resident.chars))
         assembled_sources = []
+        assembled_unbound = []
+
+        def observe_memory_source(item):
+            refs = getattr(item, "source_refs", ())
+            assembled_sources.extend(refs)
+            if not refs:
+                assembled_unbound.append(f"recalled_memory_source_unbound:{item.source}")
 
         def _render_selected_memory(remaining_session_bytes: int) -> str:
             assemble_kwargs = {}
@@ -390,7 +416,9 @@ async def _build_memory_context_result(
             if "budget_chars" in parameters:
                 assemble_kwargs["budget_chars"] = min(retrieval_budget, max(0, remaining_session_bytes))
             if "source_observer" in parameters:
-                assemble_kwargs["source_observer"] = lambda item: assembled_sources.extend(item.source_refs)
+                assemble_kwargs["source_observer"] = observe_memory_source
+            elif items:
+                assembled_unbound.append("recalled_memory_source_observer_unavailable")
             return assembler.assemble(items, **assemble_kwargs) or ""
 
         surfacing = surface_with_session_budget(
@@ -429,7 +457,7 @@ async def _build_memory_context_result(
         "auto_surface_selected_count": len(items),
         "selection_receipt": selection_receipt,
         "source_refs": (*resident.source_refs, *assembled_sources),
-        "source_unbound": (*resident_unbound, *(("recalled_memory_sources_unbound",) if assembled else ())),
+        "source_unbound": (*resident_unbound, *dict.fromkeys(assembled_unbound)),
     }
     if selection_status in {"model_unavailable", "failed"}:
         return MemoryContextResult(

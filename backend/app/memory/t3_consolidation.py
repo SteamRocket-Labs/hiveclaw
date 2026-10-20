@@ -40,6 +40,7 @@ class T3ConsolidationBatchResult:
 class PendingT3Sources:
     package_dirs: tuple[Path, ...]
     explicit_entry_ids: tuple[str, ...]
+    held_explicit_entry_ids: tuple[str, ...] = ()
 
     @property
     def has_sources(self) -> bool:
@@ -54,10 +55,16 @@ def discover_pending_t3_sources(
     root = Path(data_root)
     resolved_agent_id = uuid.UUID(str(agent_id)) if not isinstance(agent_id, uuid.UUID) else agent_id
     package_dirs = _discover_reviewed_t2_packages(root=root, agent_id=resolved_agent_id)
-    explicit_ids = [
-        entry.entry_id for entry in load_explicit_overlay_entries(root, resolved_agent_id) if entry.status == "active"
-    ]
-    return PendingT3Sources(package_dirs=tuple(package_dirs), explicit_entry_ids=tuple(explicit_ids))
+    entries = [entry for entry in load_explicit_overlay_entries(root, resolved_agent_id) if entry.status == "active"]
+    return PendingT3Sources(package_dirs=tuple(package_dirs),
+        explicit_entry_ids=tuple(entry.entry_id for entry in entries if not _source_scoped_entry(entry)),
+        held_explicit_entry_ids=tuple(entry.entry_id for entry in entries if _source_scoped_entry(entry)))
+
+
+def _source_scoped_entry(entry):
+    # These receipts retain a requester and recursive current-source authority.
+    # An unscoped T3 file cannot preserve that audience or later withdrawal.
+    return bool(entry.metadata.get("authority_schema") or entry.metadata.get("source_receipt_id"))
 
 
 def build_t3_consolidation_batch(
@@ -76,6 +83,7 @@ def build_t3_consolidation_batch(
     job_dir.mkdir(parents=True, exist_ok=True)
 
     issues: list[str] = []
+    source_holds: list[dict[str, str]] = []
     packages = [
         _load_package(root=root, agent_id=resolved_agent_id, package_dir=Path(path), issues=issues)
         for path in package_dirs
@@ -86,6 +94,7 @@ def build_t3_consolidation_batch(
         agent_id=resolved_agent_id,
         explicit_entry_ids=explicit_entry_ids,
         issues=issues,
+        source_holds=source_holds,
     )
     if not packages and not explicit_entries:
         issues.append("T3 batch requires at least one reviewed T2 package or explicit overlay entry")
@@ -96,6 +105,7 @@ def build_t3_consolidation_batch(
         "agent_id": str(resolved_agent_id),
         "source_packages": packages,
         "explicit_overlay_entries": explicit_entries,
+        "held_explicit_memory": source_holds,
         "source_signature": _source_signature(packages=packages, explicit_entries=explicit_entries),
         "allowed_target_files": [*PROFILE_PLANE_TARGETS, *DYNAMIC_TARGET_PATTERNS],
         "created_at": _now(),
@@ -131,6 +141,7 @@ def build_t3_consolidation_batch(
         "job_id": resolved_job_id,
         "status": "held" if issues else "staged",
         "issues": issues,
+        "source_holds": source_holds,
         "source_signature": _source_signature(packages=packages, explicit_entries=explicit_entries),
         "files": [
             "source_bundle.json",
@@ -179,7 +190,7 @@ def stage_pending_t3_consolidation_job(
         agent_id=resolved_agent_id,
         data_root=root,
         package_dirs=pending.package_dirs,
-        explicit_entry_ids=pending.explicit_entry_ids,
+        explicit_entry_ids=(*pending.explicit_entry_ids, *pending.held_explicit_entry_ids),
         job_id=job_id,
     )
 
@@ -422,6 +433,7 @@ def _load_explicit_overlay_sources(
     agent_id: uuid.UUID,
     explicit_entry_ids: list[str] | tuple[str, ...] | None,
     issues: list[str],
+    source_holds: list[dict[str, str]],
 ) -> list[dict[str, Any]]:
     wanted = {str(entry_id).strip() for entry_id in (explicit_entry_ids or []) if str(entry_id).strip()}
     if not wanted:
@@ -435,6 +447,9 @@ def _load_explicit_overlay_sources(
             continue
         if entry.status != "active":
             issues.append(f"explicit overlay entry must be active: {entry_id}")
+            continue
+        if _source_scoped_entry(entry):
+            source_holds.append({"id": entry_id, "status": "held", "code": "scope_preserving_consolidation_required"})
             continue
         sources.append(_explicit_overlay_source(entry))
     return sources

@@ -430,6 +430,12 @@ async def _origin_dependencies(db, *, tenant_id, agent_id, ref):
     # The call's own audience remains a source, including empty searches and private query arguments.
     dependencies = [*dependencies, {"source_kind": "session_tool_invocation", "source_id": str(invocation.id),
         "source_version": payload["content_hash"]}]
+    from app.services.explicit_memory_tool_sources import MEMORY_RESULT_TOOLS, memory_result_sources
+
+    if invocation.tool_name in MEMORY_RESULT_TOOLS:
+        sources, complete = await memory_result_sources(db, tenant_id=tenant_id, agent_id=agent_id,
+            invocation=invocation, model=model, content_hash=payload["content_hash"])
+        return _unique_dependencies([*dependencies, *sources]), inherited_complete and complete
     from app.services.feishu_read_receipts import FEISHU_RESULT_TOOLS, load_feishu_result
 
     if invocation.tool_name in FEISHU_RESULT_TOOLS and invocation.effect_state in {"effect_committed", "failed"}:
@@ -582,7 +588,7 @@ async def _origin_dependencies(db, *, tenant_id, agent_id, ref):
             if inherited is None:
                 return _unique_dependencies(dependencies), False
             # Keep upstream refs behind their exact carrier's audience and recursive source reader.
-            dependencies.append({"source_kind": "workspace_artifact", "source_id": str(receipt.id),
+            dependencies.append({"source_kind": receipt.carrier_kind, "source_id": str(receipt.id),
                 "source_version": receipt.content_sha256})
             return _unique_dependencies(dependencies), inherited_complete
         except (ContentInputReceiptError, ValueError, TypeError, AttributeError):

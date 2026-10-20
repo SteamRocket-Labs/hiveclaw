@@ -128,6 +128,8 @@ class MemoryRetriever:
         )
         items = await self._filter_episodic_sources(items, agent_id=agent_id, tenant_id=tenant_id,
             session_id=session_id, activation_context=activation_context)
+        items = await self._filter_explicit_sources(items, agent_id=agent_id, tenant_id=tenant_id,
+            session_id=session_id, activation_context=activation_context)
         selected = await self._select_candidates(
             items,
             agent_id=agent_id,
@@ -136,8 +138,45 @@ class MemoryRetriever:
             model_config=rerank_model_config,
         )
         # Selection can await a provider; recheck before releasing bodies to the main prompt.
-        return await self._filter_episodic_sources(selected, agent_id=agent_id, tenant_id=tenant_id,
+        selected = await self._filter_episodic_sources(selected, agent_id=agent_id, tenant_id=tenant_id,
             session_id=session_id, activation_context=activation_context)
+        return await self._filter_explicit_sources(selected, agent_id=agent_id, tenant_id=tenant_id,
+            session_id=session_id, activation_context=activation_context)
+
+    async def _filter_explicit_sources(self, items, *, agent_id, tenant_id, session_id, activation_context):
+        from app.memory.explicit_overlay import load_explicit_overlay_entries_by_ids
+        from app.services.explicit_memory_authority import authorized_explicit_entries, source_dependency
+        from app.services.personal_knowledge_access import AgentRuntimePrincipal
+
+        explicit = [item for item in items if item.metadata.get("source_type") == "explicit_overlay"]
+        if not explicit:
+            return items
+        allowed = {}
+        self.last_explicit_source_status = "unavailable"
+        try:
+            requester = activation_context.principal_stack.current_user if activation_context else None
+            principal = AgentRuntimePrincipal(agent_id=agent_id, requester_user_id=uuid.UUID(str(requester.id)),
+                session_id=str(session_id), purpose="interactive_session")
+            entries = load_explicit_overlay_entries_by_ids(self.data_root, agent_id,
+                [item.metadata["entry_id"] for item in explicit])
+            allowed = {entry.entry_id: (entry, receipt) for entry, receipt in await authorized_explicit_entries(
+                tenant_id=uuid.UUID(str(tenant_id)), agent_id=agent_id, request=principal, entries=entries)}
+            self.last_explicit_source_status = "ready"
+        except Exception as exc:
+            logger.warning("Explicit memory source authority unavailable: %s", type(exc).__name__)
+        result = []
+        for item in items:
+            if item.metadata.get("source_type") != "explicit_overlay":
+                result.append(item)
+                continue
+            entry, receipt = allowed.get(item.metadata.get("entry_id"), (None, None))
+            if entry is not None and item.content == f"[explicit_overlay][{entry.category}] {entry.content}":
+                dependency = source_dependency(receipt)
+                previous = [ref for ref in item.source_refs if ref.get("source_kind") == "explicit_memory"]
+                if previous and previous != [dependency]:
+                    continue
+                result.append(replace(item, source_refs=(dependency,)))
+        return result
 
     async def _filter_episodic_sources(self, items, *, agent_id, tenant_id, session_id, activation_context):
         from sqlalchemy import or_, select

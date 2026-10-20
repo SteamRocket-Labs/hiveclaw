@@ -123,56 +123,12 @@ async def write_explicit_memory_overlay(
                 content=duplicate.content,
             )
 
-        created_at = _now()
-        entry_id = _explicit_entry_id(created_at=created_at, category=decision.category, content=decision.content)
-        relative_path = f"memory/explicit/entries/{entry_id}.md"
-        metadata = {
-            **decision.metadata,
-            **{str(key): str(value) for key, value in (extra_metadata or {}).items() if value is not None},
-            "id": entry_id,
-            "origin": origin,
-            "category": decision.category,
-            "target_hint": resolved_target_hint,
-            "status": "active",
-            "sensitivity": decision.sensitivity,
-            "created_at": created_at,
-            "source_refs": ",".join(refs),
-        }
-        rendered_entry = _render_entry_md(
-            entry_id=entry_id,
-            origin=origin,
-            category=decision.category,
-            target_hint=resolved_target_hint,
-            status="active",
-            sensitivity=decision.sensitivity,
-            created_at=created_at,
-            source_refs=refs,
-            user_words=decision.content,
-            normalized_memory=decision.content,
-            why_it_matters="User explicitly asked this to be remembered across sessions.",
-            extra_metadata={str(key): str(value) for key, value in (extra_metadata or {}).items() if value is not None},
+        prepared = prepare_explicit_memory_entry(
+            agent_id=agent_id, data_root=root, decision=decision, source_refs=refs,
+            target_hint=resolved_target_hint, origin=origin, extra_metadata=extra_metadata,
         )
-        transaction.stage_text(relative_path, rendered_entry)
-        transaction.append_text(
-            "memory/explicit/manifest.jsonl",
-            json.dumps(metadata, ensure_ascii=False, sort_keys=True) + "\n",
-        )
-        entries = load_explicit_overlay_entries(root, agent_id)
-        entries.append(
-            ExplicitMemoryOverlayEntry(
-                entry_id=entry_id,
-                status="active",
-                category=decision.category,
-                target_hint=resolved_target_hint,
-                content=_extract_tag(rendered_entry, "normalized_memory"),
-                source_refs=tuple(refs),
-                sensitivity=decision.sensitivity,
-                path=agent_root / relative_path,
-                created_at=created_at,
-                metadata=metadata,
-            )
-        )
-        transaction.stage_text("memory/explicit/MEMORY.md", _render_memory_index(entries))
+        stage_explicit_memory_entry(transaction, prepared)
+        entry_id = prepared.entry.entry_id
         transaction.commit()
     return ExplicitMemoryOverlayResult(
         status="active",
@@ -183,6 +139,68 @@ async def write_explicit_memory_overlay(
         target_hint=resolved_target_hint,
         content=decision.content,
     )
+
+
+@dataclass(frozen=True, slots=True)
+class PreparedExplicitMemoryEntry:
+    entry: ExplicitMemoryOverlayEntry
+    rendered: str
+
+
+def prepare_explicit_memory_entry(
+    *, agent_id, data_root, decision, source_refs, target_hint, origin,
+    extra_metadata=None, entry_id=None, created_at=None,
+) -> PreparedExplicitMemoryEntry:
+    """Render the exact planned write before a durable source receipt is staged."""
+    created_at = created_at or _now()
+    entry_id = entry_id or _explicit_entry_id(
+        created_at=created_at, category=decision.category, content=decision.content
+    )
+    if Path(entry_id).name != entry_id or entry_id in {".", ".."}:
+        raise ValueError("explicit_memory_entry_id_invalid")
+    relative_path = f"memory/explicit/entries/{entry_id}.md"
+    metadata = {
+        **decision.metadata,
+        **{str(key): str(value) for key, value in (extra_metadata or {}).items() if value is not None},
+        "id": entry_id, "origin": origin, "category": decision.category,
+        "target_hint": target_hint, "status": "active", "sensitivity": decision.sensitivity,
+        "created_at": created_at, "source_refs": ",".join(source_refs),
+    }
+    rendered = _render_entry_md(
+        entry_id=entry_id, origin=origin, category=decision.category, target_hint=target_hint,
+        status="active", sensitivity=decision.sensitivity, created_at=created_at,
+        source_refs=source_refs, user_words=decision.content, normalized_memory=decision.content,
+        why_it_matters="User explicitly asked this to be remembered across sessions.",
+        extra_metadata={str(key): str(value) for key, value in (extra_metadata or {}).items() if value is not None},
+    )
+    return PreparedExplicitMemoryEntry(
+        entry=ExplicitMemoryOverlayEntry(
+            entry_id=entry_id, status="active", category=decision.category, target_hint=target_hint,
+            content=_extract_tag(rendered, "normalized_memory"), source_refs=tuple(source_refs),
+            sensitivity=decision.sensitivity,
+            path=Path(data_root) / str(agent_id) / relative_path, created_at=created_at,
+            metadata=metadata, source_sha256=hashlib.sha256(rendered.encode("utf-8")).hexdigest(),
+        ), rendered=rendered,
+    )
+
+
+def stage_explicit_memory_entry(transaction, prepared: PreparedExplicitMemoryEntry) -> None:
+    """Stage canonical content, lifecycle manifest and index in one asset commit."""
+    if transaction.is_replay:
+        return
+    entry = prepared.entry
+    relative_path = f"memory/explicit/entries/{entry.entry_id}.md"
+    current = transaction.read_bytes(relative_path)
+    if current is not None and current != prepared.rendered.encode("utf-8"):
+        raise ValueError("explicit_memory_prepared_bytes_changed")
+    transaction.stage_text(relative_path, prepared.rendered)
+    transaction.append_text("memory/explicit/manifest.jsonl",
+        json.dumps(entry.metadata, ensure_ascii=False, sort_keys=True) + "\n")
+    entries = load_explicit_overlay_entries(transaction.agent_root.parent,
+        transaction.agent_root.name, transaction=transaction)
+    entries = [candidate for candidate in entries if candidate.entry_id != entry.entry_id]
+    entries.append(entry)
+    transaction.stage_text("memory/explicit/MEMORY.md", _render_memory_index(entries))
 
 
 def explicit_overlay_dir(data_root: Path, agent_id: uuid.UUID | str) -> Path:
@@ -279,12 +297,13 @@ def search_explicit_overlay_entries(
     *,
     limit: int | None = None,
     source_observer=None,
+    authorized_entries=None,
 ) -> list[dict]:
     needle = (query or "").strip()
     manifest_sources = []
-    entries = [entry for entry in load_explicit_overlay_entries(data_root, agent_id,
+    entries = [entry for entry in (authorized_entries if authorized_entries is not None else load_explicit_overlay_entries(data_root, agent_id,
         source_observer=lambda path, digest: manifest_sources.append({"source_kind": "agent_memory_file",
-            "source_id": f"{agent_id}\n{path}", "source_version": digest})) if entry.status == "active"]
+            "source_id": f"{agent_id}\n{path}", "source_version": digest}))) if entry.status == "active"]
     scored = [
         (
             _simple_score(needle, f"{entry.category} {entry.target_hint} {entry.content}") if needle else 0.0,

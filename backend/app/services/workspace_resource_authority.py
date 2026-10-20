@@ -58,6 +58,15 @@ async def authorize_browser_session_source(
     operator_view: bool = False, operator_reason: str | None = None,
 ) -> str | None:
     normalized = normalize_workspace_resource_path(path)
+    if (normalized == "memory/explicit" or normalized.startswith("memory/explicit/")
+        or normalized == "runtime_artifacts/asset_transactions" or normalized.startswith("runtime_artifacts/asset_transactions/")):
+        from app.services.content_input_receipts import ContentInputReceiptError
+        from app.services.explicit_memory_authority import authorize_browser_memory_path
+
+        try:
+            return await authorize_browser_memory_path(db, user, agent_id=agent_id, path=normalized)
+        except ContentInputReceiptError as exc:
+            raise HTTPException(status_code=exc.status_code, detail={"code": exc.code, "message": str(exc)}) from exc
     source_id = None
     for root in ("memory/t0/sessions/", "memory/t2/sessions/", "memory/sessions/"):
         if normalized.startswith(root):
@@ -334,6 +343,7 @@ class WorkspaceInputRead:
     content_sha256: str
     dependencies_hash: str
     observed_sha256: str | None = None
+    carrier_kind: str = "workspace_artifact"
 
     def verify(self, data: bytes) -> None:
         self.verify_digest(hashlib.sha256(data).hexdigest())
@@ -444,6 +454,10 @@ class WorkspaceAuthorityScope:
         normalized = normalize_workspace_resource_path(path)
         if is_recovery_manifest_storage_path(normalized):
             return False
+        if normalized == "runtime_artifacts/asset_transactions" or normalized.startswith("runtime_artifacts/asset_transactions/"):
+            return action == "read" and self.operator_view
+        if normalized == "memory/explicit" or normalized.startswith("memory/explicit/"):
+            return action == "read" and self.can_read(normalized)
         if action == "read":
             return self.can_read(normalized)
         if not _is_workspace_path(normalized):
@@ -464,6 +478,11 @@ class WorkspaceAuthorityScope:
         if self.operator_view:
             return True
         normalized = normalize_workspace_resource_path(path)
+        if normalized == "memory/explicit" or normalized.startswith("memory/explicit/"):
+            observed = self.input_read(normalized)
+            return observed is not None and observed.carrier_kind == "explicit_memory"
+        if normalized == "runtime_artifacts/asset_transactions" or normalized.startswith("runtime_artifacts/asset_transactions/"):
+            return False
         if not _is_workspace_path(normalized):
             return True
         if normalized == "workspace":
@@ -488,6 +507,10 @@ class WorkspaceAuthorityScope:
             return True
         parent_path = normalize_workspace_resource_path(parent)
         child = normalize_workspace_resource_path(f"{parent_path}/{child_name}" if parent_path else child_name)
+        if child == "memory/explicit" or child.startswith("memory/explicit/"):
+            return self.can_read(child)
+        if child == "runtime_artifacts/asset_transactions" or child.startswith("runtime_artifacts/asset_transactions/"):
+            return False
         if not _is_workspace_path(child):
             return True
         if child == "workspace":

@@ -32,7 +32,10 @@ def agent_id() -> uuid.UUID:
 
 
 @pytest.fixture()
-def retriever(data_root: Path) -> MemoryRetriever:
+def retriever(data_root: Path, monkeypatch) -> MemoryRetriever:
+    from tests.memory.authority_fixtures import reference_explicit_memory_authority
+
+    reference_explicit_memory_authority(monkeypatch)
     return MemoryRetriever(data_root=data_root)
 
 

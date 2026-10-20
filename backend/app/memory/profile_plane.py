@@ -25,7 +25,7 @@ import io
 import logging
 import re
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -148,6 +148,19 @@ def load_resident_memory(
         read_errors=tuple(read_errors),
         source_refs=tuple(source_refs),
     )
+
+
+def with_explicit_memory_index(resident: ResidentMemory, entries, sources) -> ResidentMemory:
+    """Attach a caller-authorized index with the exact shown source versions."""
+    shown_sources = []
+    index = _render_resident_explicit_index(entries,
+        source_observer=lambda entry: shown_sources.extend(sources.get(entry.entry_id, ())))
+    if not index:
+        return resident
+    header = resident.text or "[Profile Plane — Resident Memory]"
+    content = f"{header}\n\n### Explicit Memory Index (active)\n{index}"
+    return replace(resident, text=content, chars=len(content), over_budget=len(content) > resident.budget_chars,
+        sections=(*resident.sections, "explicit_overlay"), source_refs=(*resident.source_refs, *shown_sources))
 
 
 def _render_resident_explicit_index(entries, *, source_observer=None) -> str:

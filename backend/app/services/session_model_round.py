@@ -625,6 +625,10 @@ async def prepare_model_request(
 
     await validate_model_sources(db, task=await db.get(RuntimeTask, run_id),
         dependencies=input_bindings["dependencies"], effect="model_request")
+    from app.services.explicit_memory_authority import validate_memory_model_sources
+
+    await validate_memory_model_sources(db, task=await db.get(RuntimeTask, run_id), agent_id=agent_id,
+        session_id=session_id, dependencies=input_bindings["dependencies"])
     snapshot = {
         "provider": provider,
         "model": model,

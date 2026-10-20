@@ -634,12 +634,17 @@ async def submit_live_cancel_input(
         )
         await db.commit()
         if receipt.status == "applying" and not receipt.replayed:
-            await signal_web_chat_cancel(
-                run_id=run_uuid,
-                agent_id=agent.id,
-                session_id=session.id,
-                user_id=user.id,
-            )
+            from app.services.remote_a2a_chat import is_remote_task, signal_cancel
+            from app.services.runtime_terminal_settlement import lock_runtime_task_with_session_authority
+
+            target = await lock_runtime_task_with_session_authority(db, task_id=run_uuid)
+            if target is not None and is_remote_task(target):
+                await signal_cancel(db, task=target, control_id=control_uuid)
+                await db.commit()
+            else:
+                await db.commit()
+                await signal_web_chat_cancel(run_id=run_uuid, agent_id=agent.id,
+                    session_id=session.id, user_id=user.id)
     return {"schema": "hive.control_input_receipt", "schema_version": 2, **asdict(receipt)}
 
 

@@ -1105,6 +1105,10 @@ def _terminal_status_from_transcript_event(event: ChatTranscriptEvent) -> str | 
     if event_type not in _TERMINAL_TRANSCRIPT_EVENT_TYPES:
         return None
     metadata = getattr(event, "metadata_json", None) or {}
+    if metadata.get("source") == "remote_a2a_chat":
+        # A protocol progress/input-required message is conversation data.
+        # Remote terminal truth is committed from the protocol task status.
+        return None
     status = str(metadata.get("status") or "").lower()
     if status in _TERMINAL_STATUSES:
         return status
@@ -2699,9 +2703,6 @@ async def start_web_chat_run(
 ) -> dict[str, Any]:
     if is_agent_expired(agent):
         raise HTTPException(status_code=403, detail="Agent has expired")
-    if agent.agent_type == "remote_a2a":
-        raise HTTPException(409, detail={"code": "remote_a2a_entrypoint_unavailable",
-            "recovery_actions": ["use_remote_requests_in_original_work", "restore_previous_runtime"]})
     if not content:
         raise HTTPException(status_code=400, detail="content is required")
     if not is_executable_chat_task_type(runtime_task_type):
@@ -2820,6 +2821,10 @@ async def start_web_chat_run(
         assert_session_tool_effects_settled,
     )
 
+    if isinstance(db, AsyncSession):
+        from app.services.remote_a2a_chat import assert_session_effects_settled
+
+        await assert_session_effects_settled(db, agent=agent, session=session)
     try:
         await assert_session_tool_effects_settled(
             db,
@@ -2944,6 +2949,17 @@ async def start_web_chat_run(
             **supplied_metadata,
         },
     )
+    # Executor metadata is written only from the authenticated live selection.
+    runtime_task.metadata_json.pop("remote_a2a", None)
+    if getattr(agent, "agent_type", None) == "remote_a2a":
+        from app.services.remote_a2a_chat import capture_executor
+        from app.services.remote_a2a_tasks import SCHEMA as REMOTE_TASK_SCHEMA
+
+        remote = await capture_executor(db, agent=agent, user=user, session=session,
+            run_id=run_uuid, interactive=budget_interactive and runtime_task_type == WEB_CHAT_TURN_TASK_TYPE
+                and root_item_intent is None)
+        runtime_task.metadata_json = {**runtime_task.metadata_json, "schema": REMOTE_TASK_SCHEMA,
+            "remote_a2a": remote}
     if budget_run_id:
         runtime_task.metadata_json["budget_run_id"] = str(budget_run_id)
     if append_user_message:
@@ -5691,6 +5707,8 @@ async def _load_runtime_context(
         )
         metadata = dict(runtime_task.metadata_json or {})
 
+        if getattr(agent, "agent_type", None) == "remote_a2a":
+            raise HTTPException(409, detail={"code": "remote_a2a_executor_binding_required"})
         primary_model, fallback_model = await _resolve_runtime_models_for_task(
             db,
             agent=agent,

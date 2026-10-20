@@ -53,7 +53,7 @@ async def authorize(db, *, task, state, agent):
     # Automatic continuation spends the standing delegation grant. Explicit
     # read/cancel recovery stays separate and does not acquire this grant.
     await _send_policy(db, tenant_id=task.tenant_id, source_agent_id=task.parent_agent_id)
-    if state.get("dispatch_kind") == "employee":
+    if state.get("dispatch_kind") in {"employee", "session"}:
         await require_runtime_authorization(db, agent=agent, expected_hash=state["runtime_authorization_hash"])
         await validate_instruction_sources(db, task=task, state=state)
 

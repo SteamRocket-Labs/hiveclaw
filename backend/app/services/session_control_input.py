@@ -1330,7 +1330,16 @@ async def recover_stale_cancel_control_inputs_once(
             key: value for key, value in signal.items() if key not in {"control_id", "command_id", "attempt_version"}
         }
         try:
-            result = await signal_callback(**callback_payload)
+            from app.services.remote_a2a_chat import is_remote_task, signal_cancel
+            from app.services.runtime_terminal_settlement import lock_runtime_task_with_session_authority
+
+            target = await lock_runtime_task_with_session_authority(db, task_id=uuid.UUID(str(signal["run_id"])))
+            if target is not None and is_remote_task(target):
+                result = await signal_cancel(db, task=target, control_id=signal["control_id"])
+                await db.commit()
+            else:
+                await db.commit()
+                result = await signal_callback(**callback_payload)
         except Exception as exc:  # noqa: BLE001 - delivery failures are durable, typed, and retryable.
             local_delivered = bool(getattr(exc, "local_delivered", False))
             error_class = str(getattr(exc, "error_class", None) or type(exc).__name__)

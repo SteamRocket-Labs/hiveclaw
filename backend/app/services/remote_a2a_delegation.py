@@ -26,6 +26,11 @@ def _same_uuid(left, right):
 
 async def validate_instruction_sources(db, *, task, state, recipient=False):
     """Recheck known local inputs without claiming remote internal source coverage."""
+    if state.get("dispatch_kind") == "session":
+        from app.services.remote_a2a_chat import validate_sources
+
+        await validate_sources(db, task=task, state=state)
+        return
     if state.get("dispatch_kind") != "employee":
         return
     source = await db.get(RuntimeTask, uuid.UUID(state["source_runtime_task_id"]), populate_existing=True)

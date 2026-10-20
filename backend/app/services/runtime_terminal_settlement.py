@@ -299,7 +299,8 @@ async def settle_and_enqueue_runtime_task_terminal(
         # ``_phase_for_terminal_status``) presents a killed run as cancelled,
         # so the terminal transcript event uses that same legal lifecycle
         # while the task row keeps its exact ``killed`` status.
-        terminal_lifecycle = "cancelled" if str(task.status) == "killed" else str(task.status)
+        # Local abandonment reconciles this Run; it proves no remote cancel.
+        terminal_lifecycle = {"killed": "cancelled", "skipped": "reconciled"}.get(str(task.status), str(task.status))
         event_type = f"run.{terminal_lifecycle}"
         terminal_event = await db.scalar(
             select(ChatTranscriptEvent.id)
@@ -335,7 +336,9 @@ async def settle_and_enqueue_runtime_task_terminal(
                             "run_id": str(task.id),
                         },
                         actor={"type": "runtime"},
-                        payload={"reason_code": str(root_reason_code or terminal_source)},
+                        payload={"reason_code": str(root_reason_code or terminal_source),
+                            **({"runtime_status": "skipped", "local_abandoned": bool(
+                                (metadata.get("remote_a2a") or {}).get("abandoned"))} if task.status == "skipped" else {})},
                     )
                 ],
             )

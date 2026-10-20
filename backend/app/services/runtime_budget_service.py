@@ -2147,7 +2147,9 @@ class RuntimeBudgetService:
         terminal_at = completed_at or datetime.now(UTC)
         for task in tasks:
             metadata = dict(task.metadata_json or {})
-            remote = metadata.get("remote_a2a") if task.task_type == "remote_a2a" else None
+            from app.services.remote_a2a_chat import is_remote_task
+
+            remote = metadata.get("remote_a2a") if is_remote_task(task) else None
             if isinstance(remote, dict) and (remote.get("remote_task_id") or any(
                 operation.get("phase") in {"dispatching", "unknown"} for operation in remote.get("operations") or [])):
                 # Stopping local dispatch is not a remote cancellation receipt.

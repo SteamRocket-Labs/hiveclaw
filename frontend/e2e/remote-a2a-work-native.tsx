@@ -54,6 +54,23 @@ it('sends and reads a complete remote result in the actual original work', async
     const mounted = render(<I18nextProvider i18n={language}><QueryClientProvider client={client}>
       <AgentChatSection {...props} />
     </QueryClientProvider></I18nextProvider>);
+    if (process.env.HIVE_M3T_CHAT === '1') {
+      const run = await chatApi.startSessionRun(agentId, sessionId, { content: 'Prepare the original work with all authorized context.',
+        input_id: globalThis.crypto.randomUUID(), idempotency_key: 'native-ordinary-remote-chat' });
+      expect('run_id' in run).toBe(true);
+      expect((await original(new URL('/__remote-test/wait', base))).status).toBe(200);
+      for (const schemaVersion of [undefined, 2] as const) {
+        const events = await chatApi.getSessionTranscript(agentId, sessionId, { schemaVersion });
+        const messages = hydrateSessionTranscriptEvents(events).messages;
+        const replies = messages.filter(message => message.role === 'assistant' && message.content === 'COMPLETE_REMOTE_CHAT_RESPONSE\n'.repeat(1500));
+        expect(replies).toHaveLength(1);
+        mounted.rerender(<I18nextProvider i18n={language}><QueryClientProvider client={client}>
+          <AgentChatSection {...props} chatMessages={messages} />
+        </QueryClientProvider></I18nextProvider>);
+        expect((await screen.findAllByText(/COMPLETE_REMOTE_CHAT_RESPONSE/)).length).toBeGreaterThan(0);
+      }
+      return;
+    }
     const summary = await screen.findByText('Remote A2A requests in this work');
     const details = summary.closest('details')!;
     fireEvent.click(summary);

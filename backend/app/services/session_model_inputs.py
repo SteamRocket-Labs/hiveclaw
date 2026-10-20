@@ -355,6 +355,14 @@ async def _origin_dependencies(db, *, tenant_id, agent_id, ref):
         ):
             return [], False
         return [{"source_kind": "session_command", "source_id": str(command.id), "source_version": command.request_hash}], True
+    if kind == "remote-chat-result":
+        from app.models.runtime_result import RuntimeResultObject
+
+        result = await db.get(RuntimeResultObject, source_id, populate_existing=True)
+        if result is None or result.tenant_id != tenant_id or result.source_kind != "remote_a2a":
+            return [], False
+        return [{"source_kind": "remote_a2a_result", "source_id": str(result.id),
+            "source_version": result.sha256}], True
     if kind == "session-model-result":
         result = await db.scalar(select(SessionModelResult).join(ChatSession, ChatSession.id == SessionModelResult.session_id)
             .where(SessionModelResult.id == source_id, SessionModelResult.tenant_id == tenant_id,

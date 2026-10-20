@@ -1044,7 +1044,9 @@ async def recover_terminal_target_session_inputs_once(
 
 
 def _dispatch_claimed_task(task: RuntimeTask) -> bool:
-    if task.task_type == "remote_a2a":
+    from app.services.remote_a2a_chat import is_remote_task
+
+    if is_remote_task(task):
         from app.services.remote_a2a_tasks import execute_claimed_task
 
         return _dispatch_async_runtime_task(task, execute_claimed_task(task.id), task_type="remote_a2a")

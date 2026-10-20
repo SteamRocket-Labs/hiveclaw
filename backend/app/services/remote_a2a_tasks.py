@@ -22,6 +22,7 @@ from app.services.remote_a2a_connections import _connection, _credentials, _fram
 from app.services.machine_identity_service import _owner_scope
 from app.services.remote_a2a_transport import RemoteA2AEndpoint, RemoteA2AError
 from app.services.runtime_notification_outbox import CompletionNotification, enqueue_completion_notification
+from app.services.remote_a2a_chat import is_remote_task
 from app.services.runtime_task_fence import assert_runtime_task_fence, current_runtime_task_fence
 from app.services.runtime_terminal_settlement import lock_runtime_task_with_session_authority
 
@@ -43,7 +44,8 @@ def _locally_unstarted(task, state):
     # Transport errors, expired dispatches and observed remote states do not.
     return (task.status == "needs_reconciliation"
         and state.get("error_code") == "remote_a2a_authority_unavailable"
-        and state["operations"][-1].get("phase") == "not_started")
+        and state["operations"][-1].get("phase") == "not_started"
+        and (state.get("dispatch_kind") != "session" or bool(state["operations"][-1].get("input_receipt"))))
 
 
 def _view(task):
@@ -63,7 +65,7 @@ def _view(task):
             if not automatic or automatic["status"] != "active":
                 actions.append("observe")
             actions.extend(["refresh", "cancel"])
-            if not state.get("error_code"):
+            if not state.get("error_code") and state.get("dispatch_kind") != "session":
                 actions.append("send_message")
     return {
         "id": str(task.id),
@@ -79,6 +81,7 @@ def _view(task):
         "remote_context_id": state.get("remote_context_id"),
         "remote_state": state.get("remote_state"),
         "error_code": state.get("error_code"),
+        "source_error": state.get("source_error"),
         "observation": observation,
         "automatic_observation": automatic,
         "operations": state["operations"],
@@ -313,7 +316,7 @@ async def get_task(db, *, agent_id, task_id, actor, lock=False):
     )
     if (
         task is None
-        or task.task_type != TASK_TYPE
+        or not is_remote_task(task)
         or task.child_agent_id != agent_id
         or task.root_user_id != actor.id
         or task.tenant_id != _acting_tenant_id(actor)
@@ -340,7 +343,7 @@ async def list_tasks(db, *, agent_id, source_session_id, actor):
         await db.scalars(
             select(RuntimeTask)
             .where(
-                RuntimeTask.task_type == TASK_TYPE,
+                RuntimeTask.metadata_json["schema"].as_string() == SCHEMA,
                 RuntimeTask.tenant_id == session.tenant_id,
                 RuntimeTask.child_agent_id == agent_id,
                 RuntimeTask.parent_agent_id == session.agent_id,
@@ -402,7 +405,10 @@ async def operate_task(
         task.scheduled_at = None
         task.status = "skipped"
         task.metadata_json = {**task.metadata_json, "remote_a2a": state}
-        await db.commit()
+        if state.get("dispatch_kind") == "session":
+            await _record(db, task, state)
+        else:
+            await db.commit()
         return await read_task_view(db, task)
     if action == "retry":
         if params:
@@ -455,6 +461,9 @@ async def operate_task(
             "request_hash": _digest(params),
             "control_hash": digest,
             **({"retry_of": previous["id"]} if previous is not None else {}),
+            **({"input_receipt": previous["input_receipt"],
+                "input_round_id": previous.get("input_round_id", previous["id"])}
+                if previous is not None and previous.get("input_receipt") else {}),
         }
     )
     state.pop("error_code", None)
@@ -476,7 +485,7 @@ async def _record(db, task, state):
     from app.services import remote_a2a_observation
 
     operation = state["operations"][-1]
-    task.metadata_json = {**task.metadata_json, "remote_a2a": state}
+    task.metadata_json = {**task.metadata_json, "remote_a2a": deepcopy(state)}
     if task.status in TERMINAL or task.status == "needs_reconciliation":
         task.completed_at = datetime.now(timezone.utc)
     task.claimed_by = task.claim_expires_at = None
@@ -490,7 +499,7 @@ async def _record(db, task, state):
         "observation_status": control.get("status"), "observation_reason": control.get("reason")})
     unchanged = operation["method"] == "GetTask" and packet_hash == state.get("last_returned_packet_hash")
     state["last_returned_packet_hash"] = packet_hash
-    await enqueue_completion_notification(
+    outbox_id = await enqueue_completion_notification(
         db,
         CompletionNotification(
             tenant_id=task.tenant_id,
@@ -513,12 +522,35 @@ async def _record(db, task, state):
             },
         ),
     )
-    task.metadata_json = {**task.metadata_json, "remote_a2a": state}
+    if state.get("dispatch_kind") == "session":
+        from app.services.remote_a2a_chat import project_reply, schedule_cancel, schedule_input
+        from app.services.runtime_terminal_settlement import settle_and_enqueue_runtime_task_terminal
+
+        await project_reply(db, task=task, state=state, operation=operation, outbox_id=outbox_id)
+        if task.status in TERMINAL or task.status == "needs_reconciliation":
+            await settle_and_enqueue_runtime_task_terminal(db, task, terminal_source="remote_a2a_chat")
+        else:
+            # A reply/cancel admitted during the HTTP gap stays on this Run.
+            schedule_cancel(task, state)
+            await schedule_input(db, task=task, state=state)
+    task.metadata_json = {**task.metadata_json, "remote_a2a": deepcopy(state)}
     await db.commit()
+    if state.get("dispatch_kind") == "session":
+        from app.services.web_chat_runtime import broadcast_web_chat_event
+        from app.services.chat_message_parts import build_done_event
+        from app.services.remote_a2a_chat import reply_text
+
+        event = build_done_event(reply_text(operation.get("observation") or {})) if task.status == "completed" else {
+            "type": "run_updated", "status": task.status, "remote_state": state.get("remote_state"),
+            "error_code": state.get("error_code")}
+        await broadcast_web_chat_event(task.parent_agent_id, uuid.UUID(task.parent_session_id),
+            {**event, "run_id": str(task.id), "execution_target": "remote_a2a"})
 
 
 async def execute_claimed_task(task_id):
     from app.services.tenant_resolver import resolve_tenant_for_runtime_task
+    from app.services.session_semantic_history import SessionSemanticHistoryUnavailable
+    from app.services.content_input_receipts import ContentInputReceiptError
 
     tenant_id = await resolve_tenant_for_runtime_task(task_id)
     if tenant_id is None:
@@ -528,7 +560,7 @@ async def execute_claimed_task(task_id):
         raise RuntimeError("remote_a2a_worker_fence_required")
     async with tenant_scoped_session(tenant_id) as db:
         task = await lock_runtime_task_with_session_authority(db, task_id=task_id)
-        if task is None or task.task_type != TASK_TYPE or task.status != "running":
+        if task is None or not is_remote_task(task) or task.status != "running":
             return
         assert_runtime_task_fence(task)
         state = deepcopy(task.metadata_json["remote_a2a"])
@@ -560,10 +592,17 @@ async def execute_claimed_task(task_id):
             endpoint, _scope = await _endpoint(
                 db, agent=agent, version=state["configuration_version"], owner_scope=state["owner_scope"]
             )
+            from app.services.remote_a2a_chat import prepare_send
+
+            await prepare_send(db, task=task, state=state, agent=agent, endpoint=endpoint)
             await _employee_send_authority(db, task=task, state=state, agent=agent, operation=operation)
             if operation.get("automatic_observation"):
                 await remote_a2a_observation.authorize(db, task=task, state=state, agent=agent)
-        except HTTPException:
+        except (HTTPException, SessionSemanticHistoryUnavailable, ContentInputReceiptError) as exc:
+            detail = getattr(exc, "detail", None)
+            state["source_error"] = detail if isinstance(detail, dict) else {
+                "code": getattr(exc, "code", "remote_a2a_context_unavailable"),
+                "status_code": getattr(exc, "status_code", 503)}
             state["error_code"], operation["phase"] = "remote_a2a_authority_unavailable", "not_started"
             task.status = "needs_reconciliation"
             await _record(db, task, state)
@@ -644,7 +683,7 @@ async def execute_claimed_task(task_id):
 
 
 async def _employee_send_authority(db, *, task, state, agent, operation, recipient=True):
-    if state.get("dispatch_kind") != "employee" or operation["method"] != "SendMessage":
+    if state.get("dispatch_kind") not in {"employee", "session"} or operation["method"] != "SendMessage":
         return
     from app.services.remote_a2a_delegation import validate_instruction_sources
     from app.services.remote_a2a_runtime import require_runtime_authorization

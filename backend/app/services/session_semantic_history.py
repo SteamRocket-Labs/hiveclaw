@@ -616,7 +616,8 @@ async def _legacy_messages(
     message_ids: set[uuid.UUID] = set()
     for view in views:
         source = view.source
-        if source.schema_version == 2 or _source_scope_run_id(source) == current_run_id:
+        if (source.schema_version == 2 or _source_scope_run_id(source) == current_run_id
+            or (source.metadata_json or {}).get("source") == "remote_a2a_chat"):
             continue
         candidates.append(view)
         if source.message_id is not None:
@@ -741,6 +742,10 @@ async def load_session_semantic_history(
             current_run_id=current_run_id,
             views=views,
         )
+        from app.services.remote_a2a_chat import history_messages
+
+        remote = await history_messages(db, tenant_id=tenant_id, agent_id=agent_id,
+            current_run_id=current_run_id, views=views)
         legacy = await _legacy_messages(
             db,
             tenant_id=tenant_id,
@@ -761,7 +766,7 @@ async def load_session_semantic_history(
             evidence_refs=("chat_transcript_events", "session_model_results", "session_tool_invocations"),
         ) from exc
 
-    messages = [*users, *rounds, *legacy]
+    messages = [*users, *rounds, *legacy, *remote]
     messages.sort(
         key=lambda message: (
             message.sequence_start,
@@ -785,7 +790,7 @@ async def load_session_semantic_history(
     receipt = {
         "schema": "hive.session_semantic_history_receipt.v1",
         "status": status,
-        "truth_source": "chat_transcript_events+session_model_results",
+        "truth_source": "chat_transcript_events+session_model_results" + ("+runtime_result_objects" if remote else ""),
         "session_id": str(session_id),
         "current_run_id": str(current_run_id) if current_run_id is not None else None,
         "mechanical_message_limit_applied": False,
@@ -796,6 +801,7 @@ async def load_session_semantic_history(
             "committed_provider_messages": sum(1 for message in rounds if message.role == "assistant"),
             "settled_tool_results": sum(1 for message in rounds if message.role == "tool"),
             "anchored_legacy_messages": len(legacy),
+            "remote_protocol_messages": len(remote),
             "ignored_physical_continuation_results": ignored_continuations,
         },
         "excluded_current_run_input_ids": sorted(str(value) for value in current_input_ids),

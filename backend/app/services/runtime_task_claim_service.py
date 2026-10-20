@@ -105,7 +105,13 @@ def _remote_recovery_control_condition():
     # Only the trusted journal's read/cancel operations may run after a root
     # budget stops. This cannot admit another SendMessage or native inference.
     operation = RuntimeTask.metadata_json["remote_a2a"]["operations"][-1]
-    return and_(RuntimeTask.task_type == "remote_a2a", or_(operation["method"].as_string() == "CancelTask",
+    from app.services.remote_a2a_tasks import SCHEMA
+    from app.services.web_chat_runtime import EXECUTABLE_CHAT_TASK_TYPES
+
+    return and_(RuntimeTask.metadata_json["schema"].as_string() == SCHEMA,
+        or_(RuntimeTask.task_type == "remote_a2a", and_(RuntimeTask.task_type.in_(EXECUTABLE_CHAT_TASK_TYPES),
+            RuntimeTask.metadata_json["remote_a2a"]["dispatch_kind"].as_string() == "session")),
+        or_(operation["method"].as_string() == "CancelTask",
         and_(operation["method"].as_string() == "GetTask",
             operation["automatic_observation"].as_boolean().is_not(True))))
 

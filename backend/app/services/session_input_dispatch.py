@@ -137,7 +137,7 @@ def _tool_effect_reconciliation_detail(exc: HTTPException) -> dict[str, Any] | N
     if (
         exc.status_code != 409
         or not isinstance(detail, dict)
-        or str(detail.get("code") or "") != _TOOL_EFFECT_RECONCILIATION_CODE
+        or str(detail.get("code") or "") not in {_TOOL_EFFECT_RECONCILIATION_CODE, "remote_a2a_reconciliation_required"}
         or detail.get("retryable") is not False
     ):
         return None
@@ -159,16 +159,19 @@ async def _hold_input_dispatch_for_tool_effect(
     durable, while the admission becomes an explicit no-replay recovery item.
     """
 
+    reason_code = str(detail["code"])
     settlement_ref = f"session-input:{row.id}:tool-effect-reconciliation"
     receipt = {
         "kind": "needs_reconciliation",
-        "code": _TOOL_EFFECT_RECONCILIATION_CODE,
+        "code": reason_code,
         "input_id": str(row.id),
         "session_id": str(authority.session_id),
         "retryable": False,
         "replay_allowed": False,
         "settlement_ref": settlement_ref,
     }
+    if detail.get("recovery_actions"):
+        receipt["recovery_actions"] = list(detail["recovery_actions"])
     admission.state = "needs_reconciliation"
     admission.dispatch_state = "needs_reconciliation"
     admission.dispatch_receipt_json = receipt
@@ -203,7 +206,7 @@ async def _hold_input_dispatch_for_tool_effect(
                 payload={
                     "admission_id": str(admission.id),
                     "input_id": str(row.id),
-                    "reason_code": _TOOL_EFFECT_RECONCILIATION_CODE,
+                    "reason_code": reason_code,
                     "recovery_owner": _TOOL_EFFECT_DISPATCH_RECOVERY_OWNER,
                     "state_version": admission.version,
                     "retryable": False,
@@ -227,7 +230,7 @@ async def _hold_input_dispatch_for_tool_effect(
                 payload={
                     "input_id": str(row.id),
                     "intent": row.intent,
-                    "reason_code": _TOOL_EFFECT_RECONCILIATION_CODE,
+                    "reason_code": reason_code,
                     "recovery_owner": _TOOL_EFFECT_DISPATCH_RECOVERY_OWNER,
                     "settlement_ref": settlement_ref,
                     "retryable": False,
@@ -577,6 +580,10 @@ async def _dispatch_one(
         from app.services.session_human_input import queue_admitted_human_input
 
         mailbox = await queue_admitted_human_input(db, authority=authority, input_id=row.id)
+        from app.services.remote_a2a_chat import wake_input
+
+        if row.intent != "queue_next_turn" and row.target_run_id is not None:
+            await wake_input(db, run_id=row.target_run_id)
         await db.commit()
         row = await db.get(SessionTurnInput, row.id)
         assert row is not None

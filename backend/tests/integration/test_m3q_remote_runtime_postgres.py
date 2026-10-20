@@ -26,8 +26,9 @@ remote_work = original.remote_work
 pytestmark = pytest.mark.usefixtures("migrated_pg_url")
 
 
+@pytest.mark.parametrize("dispatch_kind", ["employee", "session"])
 async def test_completed_remote_employee_history_refuses_an_incompatible_reader_downgrade(
-    remote_work, owner_sessionmaker
+    remote_work, owner_sessionmaker, dispatch_kind
 ):
     import importlib.util
     from pathlib import Path
@@ -47,9 +48,9 @@ async def test_completed_remote_employee_history_refuses_an_incompatible_reader_
             # gate. Roll back every fixture change, including on regression.
             await db.execute(text("UPDATE agents SET agent_type='native'"))
             await db.execute(text("UPDATE runtime_tasks SET metadata_json=metadata_json::jsonb #- '{remote_a2a,dispatch_kind}' WHERE task_type='remote_a2a'"))
-            db.add(RuntimeTask(id=uuid4(), tenant_id=seed["tenant"], task_type="remote_a2a", status="completed",
+            db.add(RuntimeTask(id=uuid4(), tenant_id=seed["tenant"], task_type="remote_a2a" if dispatch_kind == "employee" else "web_chat_turn", status="completed",
                 parent_agent_id=seed["agent"], child_agent_id=seed["agent"], root_user_id=seed["owner"],
-                parent_session_id=str(session_id), metadata_json={"remote_a2a": {"dispatch_kind": "employee"}}))
+                parent_session_id=str(session_id), metadata_json={"remote_a2a": {"dispatch_kind": dispatch_kind}}))
             await db.flush()
             def downgrade(session):
                 migration.op = Operations(MigrationContext.configure(session.connection()))
@@ -95,12 +96,14 @@ async def test_explicit_remote_selection_is_idempotent_preserves_native_configur
             from app.services.model_resolution import resolve_agent_runtime_models
             from app.services.web_chat_runtime import start_web_chat_run
             from app.models.chat_session import ChatSession
-            from fastapi import HTTPException
             assert (await resolve_agent_runtime_models(db, agent, override_model_id=uuid4())).status == "remote_runtime_selected"
-            with pytest.raises(HTTPException) as unavailable:
-                await start_web_chat_run(db=db, agent=agent, user=await db.get(User, seed["owner"]),
-                    session=await db.get(ChatSession, _session_id), content="Do not invoke a native model")
-            assert unavailable.value.status_code == 409 and unavailable.value.detail["code"] == "remote_a2a_entrypoint_unavailable"
+            run = await start_web_chat_run(db=db, agent=agent, user=await db.get(User, seed["owner"]),
+                session=await db.get(ChatSession, _session_id), content="Do not invoke a native model")
+            captured = await db.get(RuntimeTask, UUID(run["run_id"]))
+            assert run["status"] == "pending" and captured.task_type == "web_chat_turn"
+            assert captured.metadata_json["remote_a2a"]["dispatch_kind"] == "session"
+            assert captured.metadata_json["remote_a2a"]["runtime_authorization_hash"]
+            assert captured.budget_run_id is not None
         from app.runtime import invoker
         from types import SimpleNamespace
         def no_native_client(**_kwargs):

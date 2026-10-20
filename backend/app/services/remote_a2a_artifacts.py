@@ -40,7 +40,8 @@ from app.services.workspace_resource_authority import (
 async def load_packet(db, tenant_id, dependency, *, user=None, runtime_request=None, allow_unconfirmed=False):
     """Revalidate immutable bytes, exact source operation and original requester."""
     from app.services.content_input_receipts import _runtime_input_actor
-    from app.services.remote_a2a_tasks import SCHEMA, TASK_TYPE
+    from app.services.remote_a2a_tasks import SCHEMA
+    from app.services.remote_a2a_chat import is_remote_task
 
     try:
         result_id = uuid.UUID(dependency["source_id"])
@@ -52,7 +53,7 @@ async def load_packet(db, tenant_id, dependency, *, user=None, runtime_request=N
         task_id, operation_id = result.source_run_id.split(":")
         task = await db.get(RuntimeTask, uuid.UUID(task_id), populate_existing=True)
         view = json.loads(decode_runtime_result_payload(result.payload_bytes)["summary"])["remote_a2a"]
-        if (task is None or task.tenant_id != tenant_id or task.task_type != TASK_TYPE
+        if (task is None or task.tenant_id != tenant_id or not is_remote_task(task)
             or task.metadata_json.get("schema") != SCHEMA or (view.get("error_code") and not allow_unconfirmed)
             or view["id"] != str(task.id) or view["agent_id"] != str(task.child_agent_id)
             or view["source_session_id"] != task.parent_session_id or view["latest_operation_id"] != operation_id):
@@ -92,7 +93,11 @@ async def load_packet(db, tenant_id, dependency, *, user=None, runtime_request=N
         from fastapi import HTTPException
 
         try:
-            await validate_instruction_sources(db, task=task, state=task.metadata_json["remote_a2a"])
+            state = task.metadata_json["remote_a2a"]
+            # Later queued inputs do not change the causal inputs of this packet.
+            end = state["operations"].index(operation) + 1
+            await validate_instruction_sources(db, task=task,
+                state={**state, "operations": state["operations"][:end]})
         except HTTPException as exc:
             raise ContentInputReceiptError("remote_a2a_instruction_source_unavailable",
                 "The remote result's known local inputs are no longer available.", exc.status_code) from exc

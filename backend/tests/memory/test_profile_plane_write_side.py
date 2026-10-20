@@ -4,9 +4,8 @@
 (self-signal, per-plane nutrients, milestone criteria hits) — two logical
 steps, one LLM call. 工序 3 teaching lives in HEARTBEAT.md: operation patches
 with an evidence-based motif/scenario/edge-case balance chosen by the model,
-plus counter-example demotion on negative feedback. Feedback itself reaches the batch through the
-explicit overlay (session_feedback → overlay → T3 batch) — pinned here as the
-production wiring for demotion input.
+plus counter-example demotion on negative feedback. Explicit user corrections reach the batch through the
+explicit overlay; ordinary session ratings remain evaluation records.
 """
 
 from __future__ import annotations
@@ -150,11 +149,11 @@ def test_heartbeat_template_teaches_profile_entries() -> None:
 
 
 @pytest.mark.asyncio
-async def test_feedback_overlay_reaches_t3_batch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Production demotion input: session feedback → overlay → T3 batch."""
+async def test_explicit_user_correction_reaches_t3_batch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """An explicit durable correction remains available to T3 consolidation."""
     from app.memory.t3_consolidation import build_t3_consolidation_batch, discover_pending_t3_sources
     from app.memory.write_gate import MemoryWriteDecision
-    from app.services.session_feedback import write_session_feedback_overlay
+    from app.memory.explicit_overlay import write_explicit_memory_overlay
 
     async def accept_reviewed_memory(content: str, *, category: str, **_kwargs) -> MemoryWriteDecision:
         return MemoryWriteDecision(
@@ -171,12 +170,11 @@ async def test_feedback_overlay_reaches_t3_batch(tmp_path: Path, monkeypatch: py
     )
 
     agent_id = uuid4()
-    await write_session_feedback_overlay(
+    await write_explicit_memory_overlay(
         agent_id,
         category="feedback",
-        content="Owner marked an agent session misleading. 猜测了需求导致返工。",
+        content="Never guess unspecified requirements; ask me before deciding.",
         source_refs="fb-decision-123",
-        evidence="misleading",
         data_root=tmp_path,
     )
 
@@ -191,4 +189,4 @@ async def test_feedback_overlay_reaches_t3_batch(tmp_path: Path, monkeypatch: py
     )
     bundle = json.loads((result.job_dir / "source_bundle.json").read_text(encoding="utf-8"))
     entries = bundle["explicit_overlay_entries"]
-    assert any("misleading" in str(entry.get("content", "")) for entry in entries)
+    assert any("Never guess unspecified requirements" in str(entry.get("content", "")) for entry in entries)

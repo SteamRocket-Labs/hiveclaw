@@ -177,23 +177,32 @@ def load_working_set(data_root: Path, agent_id: uuid.UUID | str, session_id: str
         return SessionWorkingSet()
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError) as exc:
-        logger.warning("[working_set] unreadable state for session %s: %s", session_id, exc)
+        if (
+            not isinstance(payload, dict)
+            or payload.get("schema") != WORKING_SET_SCHEMA
+            or payload.get("session_id") != str(session_id)
+            or not isinstance(payload.get("items"), list)
+        ):
+            raise ValueError("working_set_binding_mismatch")
+        items = []
+        for item in payload["items"]:
+            if not isinstance(item, dict):
+                raise ValueError("working_set_item_invalid")
+            if not str(item.get("ref") or "").strip():
+                continue
+            entry = {
+                "ref": str(item.get("ref") or ""),
+                "strength": float(item.get("strength") or 0.0),
+                "last_turn": int(item.get("last_turn") or 0),
+                "ts": str(item.get("ts") or ""),
+            }
+            if item.get("pinned"):
+                entry["pinned"] = True
+            items.append(entry)
+        return SessionWorkingSet(turn_index=int(payload.get("turn_index") or 0), items=items)
+    except (OSError, TypeError, ValueError) as exc:
+        logger.warning("[working_set] unreadable state for session %s: %s", session_id, type(exc).__name__)
         return SessionWorkingSet(load_error=type(exc).__name__)
-    items = []
-    for item in payload.get("items") or []:
-        if not str(item.get("ref") or "").strip():
-            continue
-        entry = {
-            "ref": str(item.get("ref") or ""),
-            "strength": float(item.get("strength") or 0.0),
-            "last_turn": int(item.get("last_turn") or 0),
-            "ts": str(item.get("ts") or ""),
-        }
-        if item.get("pinned"):
-            entry["pinned"] = True
-        items.append(entry)
-    return SessionWorkingSet(turn_index=int(payload.get("turn_index") or 0), items=items)
 
 
 def save_working_set(

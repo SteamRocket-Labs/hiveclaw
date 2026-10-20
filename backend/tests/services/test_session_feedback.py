@@ -18,18 +18,8 @@ class _FakeDB:
         self.flushed = True
 
 
-def test_session_feedback_default_writer_is_explicit_overlay_not_t3_adapter() -> None:
-    from app.services.session_feedback import record_session_feedback
-
-    writer = record_session_feedback.__kwdefaults__["append_memory"]
-
-    assert writer.__name__ == "write_session_feedback_overlay"
-    assert writer.__module__ == "app.services.session_feedback"
-
-
 @pytest.mark.asyncio
 async def test_decision_linked_feedback_defaults_to_request_scoped_sql_store(tmp_path, monkeypatch) -> None:
-    from types import SimpleNamespace as T3AppendResult
 
     import app.services.session_feedback as session_feedback
 
@@ -58,8 +48,6 @@ async def test_decision_linked_feedback_defaults_to_request_scoped_sql_store(tmp
             calls.append(("feedback", kwargs))
             return SimpleNamespace(id=str(uuid.uuid4()))
 
-    async def fake_append_memory(*_args, **_kwargs):
-        return T3AppendResult(status="overlay", category="feedback", entry_id="decision-feedback")
 
     monkeypatch.setattr(session_feedback, "SqlDecisionTraceStore", FakeSqlDecisionTraceStore, raising=False)
 
@@ -72,7 +60,6 @@ async def test_decision_linked_feedback_defaults_to_request_scoped_sql_store(tmp
         reason="The approval boundary was correct.",
         decision_id=decision_id,
         data_root=tmp_path,
-        append_memory=fake_append_memory,
     )
 
     assert calls[0] == ("session", db)
@@ -123,56 +110,34 @@ async def test_decision_linked_feedback_requires_exact_tenant_agent_and_session_
 
 
 @pytest.mark.asyncio
-async def test_record_useful_session_feedback_persists_event_audit_and_t3(tmp_path) -> None:
-    from types import SimpleNamespace as T3AppendResult
+async def test_record_useful_session_feedback_persists_evaluation_and_audit(tmp_path) -> None:
     from app.models.audit import AuditLog
     from app.models.session_feedback import SessionFeedbackEvent
     from app.services.session_feedback import record_session_feedback
 
     db = _FakeDB()
-    agent_id = uuid.uuid4()
-    tenant_id = uuid.uuid4()
-    session_id = uuid.uuid4()
-    user_id = uuid.uuid4()
-    calls = []
-
-    async def fake_append_memory(*args, **kwargs):
-        calls.append((args, kwargs))
-        return T3AppendResult(
-            status="overlay",
-            category="feedback",
-            entry_id="explicit-feedback-1",
-            path="memory/explicit/entries/explicit-feedback-1.md",
-        )
-
+    agent, tenant, session, user = (uuid.uuid4() for _ in range(4))
+    message = uuid.uuid4()
+    reason = "The answer gave the exact deployment checklist."
     result = await record_session_feedback(
-        db,
-        agent=SimpleNamespace(id=agent_id, tenant_id=tenant_id),
-        session=SimpleNamespace(id=session_id, agent_id=agent_id, tenant_id=tenant_id, source_channel="web"),
-        current_user=SimpleNamespace(id=user_id),
-        label="useful",
-        reason="The answer gave the exact deployment checklist.",
-        message_id=uuid.uuid4(),
-        data_root=tmp_path,
-        append_memory=fake_append_memory,
+        db, agent=SimpleNamespace(id=agent, tenant_id=tenant),
+        session=SimpleNamespace(id=session, source_channel="web"),
+        current_user=SimpleNamespace(id=user), label="useful", reason=reason,
+        message_id=message, data_root=tmp_path,
     )
-
-    assert db.flushed is True
-    assert any(isinstance(row, SessionFeedbackEvent) for row in db.added)
+    assert db.flushed
+    row = next(row for row in db.added if isinstance(row, SessionFeedbackEvent))
+    assert (row.user_id, row.reason, row.label) == (user, reason, "useful")
+    assert row.attribution_json["source_refs"] == [f"session:{session}", f"message:{message}"]
     assert any(isinstance(row, AuditLog) and row.action == "session_feedback.recorded" for row in db.added)
-    assert calls[0][1]["evidence"] == "user_stated"
-    assert calls[0][1]["proposed_by"] == "owner_feedback"
-    assert calls[0][1]["category"] == "feedback"
-    assert calls[0][1]["data_root"] == tmp_path
-    assert "deployment checklist" in calls[0][1]["content"]
-    assert result["label"] == "useful"
-    assert result["calibration_result"]["t3_status"] == "overlay"
-    assert result["calibration_result"]["entry_id"] == "explicit-feedback-1"
+    assert result["calibration_result"]["memory_status"] == "not_requested"
+    assert result["calibration_result"]["t3_status"] == "not_requested"
+    assert not result["calibration_result"]["entry_id"]
+    assert not (tmp_path / str(agent) / "memory/explicit").exists()
 
 
 @pytest.mark.asyncio
 async def test_record_session_feedback_writes_activation_credit_sidecar(tmp_path) -> None:
-    from types import SimpleNamespace as T3AppendResult
     from app.services.session_feedback import record_session_feedback
 
     db = _FakeDB()
@@ -181,13 +146,6 @@ async def test_record_session_feedback_writes_activation_credit_sidecar(tmp_path
     session_id = uuid.uuid4()
     user_id = uuid.uuid4()
 
-    async def fake_append_memory(*_args, **_kwargs):
-        return T3AppendResult(
-            status="overlay",
-            category="feedback",
-            entry_id="explicit-feedback-heat",
-            path="memory/explicit/entries/explicit-feedback-heat.md",
-        )
 
     result = await record_session_feedback(
         db,
@@ -197,7 +155,6 @@ async def test_record_session_feedback_writes_activation_credit_sidecar(tmp_path
         label="misleading",
         reason="The recalled deployment fact was stale.",
         data_root=tmp_path,
-        append_memory=fake_append_memory,
     )
 
     calibration = result["calibration_result"]
@@ -207,7 +164,7 @@ async def test_record_session_feedback_writes_activation_credit_sidecar(tmp_path
 
     assert activation_event["schema"] == "hive.ccplus.activation_event.v1"
     assert activation_event["event_type"] == "owner_feedback_misleading"
-    assert activation_event["candidate_ref"]["candidate_id"] == "feedback_overlay:explicit-feedback-heat"
+    assert activation_event["candidate_ref"]["candidate_id"] == f"session_feedback:{result['id']}"
     assert activation_event["feedback"]["signal"] == "owner_feedback"
     assert activation_event["feedback"]["credit"] < 0
     assert sidecar["schema"] == "hive.ccplus.activation_feedback_sidecar.v1"
@@ -262,7 +219,6 @@ def test_activation_feedback_sidecar_read_model_filters_session_and_skips_bad_li
 @pytest.mark.asyncio
 async def test_activation_feedback_sidecar_writer_prunes_to_retention_limit(tmp_path, monkeypatch) -> None:
     from datetime import UTC, datetime
-    from types import SimpleNamespace as T3AppendResult
 
     import app.services.session_feedback as session_feedback
 
@@ -273,8 +229,6 @@ async def test_activation_feedback_sidecar_writer_prunes_to_retention_limit(tmp_
     tenant_id = uuid.uuid4()
     user_id = uuid.uuid4()
 
-    async def fake_append_memory(*_args, **_kwargs):
-        return T3AppendResult(status="overlay", category="feedback", entry_id=f"feedback-{uuid.uuid4().hex[:8]}")
 
     for label in ("useful", "misleading", "useful"):
         await session_feedback.record_session_feedback(
@@ -290,8 +244,7 @@ async def test_activation_feedback_sidecar_writer_prunes_to_retention_limit(tmp_
             current_user=SimpleNamespace(id=user_id),
             label=label,
             data_root=tmp_path,
-            append_memory=fake_append_memory,
-        )
+            )
 
     result = session_feedback.read_activation_feedback_sidecar(tmp_path, agent_id, newest_first=False, limit=10)
 
@@ -302,7 +255,6 @@ async def test_activation_feedback_sidecar_writer_prunes_to_retention_limit(tmp_
 
 @pytest.mark.asyncio
 async def test_record_session_feedback_links_to_verified_decision_trace(tmp_path) -> None:
-    from types import SimpleNamespace as T3AppendResult
     from app.models.session_feedback import SessionFeedbackEvent
     from app.services.session_feedback import record_session_feedback
     from tests.decision_trace_fake import InMemoryDecisionTraceStore
@@ -328,11 +280,7 @@ async def test_record_session_feedback_links_to_verified_decision_trace(tmp_path
         session_id=str(session_id),
         tool_name="send_feishu_message",
     )
-    calls = []
 
-    async def fake_append_memory(*args, **kwargs):
-        calls.append((args, kwargs))
-        return T3AppendResult(status="overlay", category="feedback", entry_id="explicit-feedback-1")
 
     result = await record_session_feedback(
         db,
@@ -342,21 +290,19 @@ async def test_record_session_feedback_links_to_verified_decision_trace(tmp_path
         label="useful",
         reason="Asking first was correct.",
         data_root=tmp_path,
-        append_memory=fake_append_memory,
         decision_id=decision.id,
         decision_trace_store=decision_store,
     )
 
     feedback_row = next(row for row in db.added if isinstance(row, SessionFeedbackEvent))
     assert feedback_row.decision_trace_id == decision.id
-    assert f"decision/{decision.id}" in calls[0][1]["source_refs"]
+    assert f"decision/{decision.id}" in feedback_row.attribution_json["source_refs"]
     assert result["attribution"]["decision_ref"] == f"decision/{decision.id}"
     assert decision_store.feedback_for_decision(decision.id)[0].reaction == "useful"
 
 
 @pytest.mark.asyncio
 async def test_record_session_feedback_rejects_cross_session_decision_trace(tmp_path) -> None:
-    from types import SimpleNamespace as T3AppendResult
     from app.services.session_feedback import record_session_feedback
     from tests.decision_trace_fake import InMemoryDecisionTraceStore
 
@@ -381,8 +327,6 @@ async def test_record_session_feedback_rejects_cross_session_decision_trace(tmp_
         tool_name="send_feishu_message",
     )
 
-    async def fake_append_memory(*args, **kwargs):
-        return T3AppendResult(status="accepted", category="feedback", entry_id="t3-feedback-1")
 
     with pytest.raises(ValueError, match="decision_id does not belong to this session"):
         await record_session_feedback(
@@ -392,47 +336,28 @@ async def test_record_session_feedback_rejects_cross_session_decision_trace(tmp_
             current_user=SimpleNamespace(id=user_id),
             label="useful",
             data_root=tmp_path,
-            append_memory=fake_append_memory,
-            decision_id=decision.id,
+                decision_id=decision.id,
             decision_trace_store=decision_store,
         )
 
 
 @pytest.mark.asyncio
-async def test_record_misleading_session_feedback_marks_harmful_calibration(tmp_path) -> None:
-    from types import SimpleNamespace as T3AppendResult
+async def test_record_misleading_session_feedback_preserves_negative_evaluation(tmp_path) -> None:
+    from app.models.session_feedback import SessionFeedbackEvent
     from app.services.session_feedback import record_session_feedback
 
     db = _FakeDB()
-    agent_id = uuid.uuid4()
-    tenant_id = uuid.uuid4()
-    calls = []
-
-    async def fake_append_memory(*args, **kwargs):
-        calls.append((args, kwargs))
-        return T3AppendResult(
-            status="duplicate",
-            category="feedback",
-            entry_id="t3-feedback-1",
-            similar={"counter_delta": {"harmful_count": "1"}},
-        )
-
+    agent, tenant, user = (uuid.uuid4() for _ in range(3))
+    reason = "The answer hid a failed migration."
     result = await record_session_feedback(
-        db,
-        agent=SimpleNamespace(id=agent_id, tenant_id=tenant_id),
-        session=SimpleNamespace(id=uuid.uuid4(), agent_id=agent_id, tenant_id=tenant_id, source_channel="web"),
-        current_user=SimpleNamespace(id=uuid.uuid4()),
-        label="misleading",
-        reason="The answer hid a failed migration.",
-        data_root=tmp_path,
-        append_memory=fake_append_memory,
+        db, agent=SimpleNamespace(id=agent, tenant_id=tenant), session=SimpleNamespace(id=uuid.uuid4()),
+        current_user=SimpleNamespace(id=user), label="misleading", reason=reason, data_root=tmp_path,
     )
-
-    assert calls[0][1]["evidence"] == "misleading"
-    assert "calibration warning" in calls[0][1]["content"]
-    assert result["label"] == "misleading"
-    assert result["calibration_result"]["t3_status"] == "duplicate"
-    assert result["calibration_result"]["counter_delta"]["harmful_count"] == "1"
+    row = next(row for row in db.added if isinstance(row, SessionFeedbackEvent))
+    assert (row.label, row.reason, row.user_id) == ("misleading", reason, user)
+    assert result["calibration_result"]["activation_event"]["feedback"]["credit"] < 0
+    assert result["calibration_result"]["memory_status"] == "not_requested"
+    assert not (tmp_path / str(agent) / "memory/explicit").exists()
 
 
 @pytest.mark.asyncio
@@ -441,7 +366,6 @@ async def test_feedback_credit_reaches_recently_activated_sidecar_entries(tmp_pa
     of memories activated during this session — and only those — closing the
     heat_delta write-only loop. Sidecar-only: no MD prose touched."""
     from datetime import UTC, datetime, timedelta
-    from types import SimpleNamespace as T3AppendResult
 
     from app.memory.lifecycle_store import (
         MemoryLifecycleStore,
@@ -464,14 +388,10 @@ async def test_feedback_credit_reaches_recently_activated_sidecar_entries(tmp_pa
     store.create_active("recalled long ago", entry_id="usr-stale")
     bump_access_telemetry(tmp_path, agent_id, entry_id="usr-in-session", now=session_started + timedelta(minutes=5))
     bump_access_telemetry(tmp_path, agent_id, entry_id="usr-stale", now=session_started - timedelta(days=3))
+    from app.memory.session_working_set import advance_working_set, save_working_set
 
-    async def fake_append_memory(*_args, **_kwargs):
-        return T3AppendResult(
-            status="overlay",
-            category="feedback",
-            entry_id="explicit-feedback-credit",
-            path="memory/explicit/entries/explicit-feedback-credit.md",
-        )
+    save_working_set(tmp_path, agent_id, str(session_id), advance_working_set(None, ["usr-in-session"]))
+
 
     result = await record_session_feedback(
         db,
@@ -487,7 +407,6 @@ async def test_feedback_credit_reaches_recently_activated_sidecar_entries(tmp_pa
         label="useful",
         reason="The deployment memory was exactly right.",
         data_root=tmp_path,
-        append_memory=fake_append_memory,
     )
 
     sidecar = result["calibration_result"]["heat_decay_sidecar"]
@@ -511,7 +430,76 @@ async def test_feedback_credit_reaches_recently_activated_sidecar_entries(tmp_pa
         label="misleading",
         reason="Actually that was stale.",
         data_root=tmp_path,
-        append_memory=fake_append_memory,
     )
     assert negative["calibration_result"]["heat_decay_sidecar"]["credited_entry_ids"] == ["usr-in-session"]
     assert MemoryLifecycleStore(lifecycle_path(tmp_path, agent_id)).get("usr-in-session").credit == pytest.approx(0.0)
+
+
+@pytest.mark.asyncio
+async def test_feedback_credit_is_limited_to_its_own_sessions_recorded_working_set(tmp_path):
+    from datetime import UTC, datetime, timedelta
+    from app.memory.lifecycle_store import MemoryLifecycleStore, bump_access_telemetry, lifecycle_path
+    from app.memory.session_working_set import advance_working_set, save_working_set
+    from app.services.session_feedback import record_session_feedback
+
+    agent, tenant, session = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+    now = datetime.now(UTC)
+    store = MemoryLifecycleStore(lifecycle_path(tmp_path, agent))
+    store.create_active("Used by the rated session", entry_id="rated-session-memory")
+    store.create_active("Used simultaneously by another member", entry_id="other-session-memory")
+    for entry_id in ["rated-session-memory", "other-session-memory"]:
+        bump_access_telemetry(tmp_path, agent, entry_id=entry_id, now=now)
+    save_working_set(tmp_path, agent, str(session), advance_working_set(None, ["rated-session-memory"]))
+
+
+    result = await record_session_feedback(
+        _FakeDB(), agent=SimpleNamespace(id=agent, tenant_id=tenant),
+        session=SimpleNamespace(id=session, created_at=now - timedelta(minutes=1)),
+        current_user=SimpleNamespace(id=uuid.uuid4()), label="useful", data_root=tmp_path,
+    )
+    store = MemoryLifecycleStore(lifecycle_path(tmp_path, agent))
+    assert store.get("rated-session-memory").credit > 0
+    assert store.get("other-session-memory").credit == 0, "Concurrent sessions shared feedback credit"
+    assert result["calibration_result"]["heat_decay_sidecar"]["credited_entry_ids"] == ["rated-session-memory"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("state", ["missing", "corrupt", "foreign_session", "wrong_schema", "malformed"])
+async def test_missing_or_unbound_working_set_does_not_fall_back_to_global_recent_memories(tmp_path, state):
+    from datetime import UTC, datetime
+    import json
+    from app.memory.lifecycle_store import MemoryLifecycleStore, bump_access_telemetry, lifecycle_path
+    from app.memory.session_working_set import advance_working_set, save_working_set
+    from app.services.session_feedback import record_session_feedback
+
+    agent, tenant, session = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+    store = MemoryLifecycleStore(lifecycle_path(tmp_path, agent))
+    store.create_active("Another session's recently used memory", entry_id="other-session-memory")
+    bump_access_telemetry(tmp_path, agent, entry_id="other-session-memory")
+    if state != "missing":
+        save_working_set(tmp_path, agent, str(session), advance_working_set(None, ["other-session-memory"]))
+        path = tmp_path / str(agent) / "memory/control/working_sets" / f"{session}.json"
+        payload = json.loads(path.read_text())
+        if state == "corrupt":
+            path.write_text("{invalid")
+        elif state == "foreign_session":
+            payload["session_id"] = str(uuid.uuid4())
+            path.write_text(json.dumps(payload))
+        elif state == "malformed":
+            payload["items"] = ["not a working-set item"]
+            path.write_text(json.dumps(payload))
+        else:
+            payload["schema"] = "unrecognized.schema"
+            path.write_text(json.dumps(payload))
+        retained = path.read_bytes()
+    result = await record_session_feedback(
+        _FakeDB(), agent=SimpleNamespace(id=agent, tenant_id=tenant),
+        session=SimpleNamespace(id=session, created_at=datetime.now(UTC)),
+        current_user=SimpleNamespace(id=uuid.uuid4()), label="useful", data_root=tmp_path,
+    )
+    sidecar = result["calibration_result"]["heat_decay_sidecar"]
+    assert sidecar["credited_entry_ids"] == []
+    assert MemoryLifecycleStore(lifecycle_path(tmp_path, agent)).get("other-session-memory").credit == 0
+    if state != "missing":
+        assert sidecar["credit_status"] == "working_set_unavailable"
+        assert path.read_bytes() == retained

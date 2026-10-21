@@ -140,7 +140,8 @@ async def _runtime_actor(
         from app.services.channel_ingress_inbox import channel_installation_ref
         from app.services.tenant_feishu import resolve_tenant_feishu_identity
 
-        config = await db.get(TenantChannelConfig, principal.tenant_channel_config_id) if principal.tenant_channel_config_id else None
+        config = await db.get(TenantChannelConfig, principal.tenant_channel_config_id,
+            populate_existing=True) if principal.tenant_channel_config_id else None
         proof = await resolve_tenant_feishu_identity(db, config=config, sender={"open_id": principal.subject_id})
         bound = bool(config is not None and principal.installation_ref == channel_installation_ref(config, fallback="")
             and proof is not None and proof[0].id == user.id)
@@ -249,7 +250,7 @@ async def load_external_runtime_actor(
             select(ExternalPrincipal).where(
                 ExternalPrincipal.id == principal_uuid,
                 ExternalPrincipal.tenant_id == tenant_uuid,
-            )
+            ).execution_options(populate_existing=True)
         )
     ).scalar_one_or_none()
     if principal is None:

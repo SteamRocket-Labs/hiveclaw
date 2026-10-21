@@ -31,7 +31,8 @@ async def resolve_tenant_feishu_identity(db, *, config, sender):
         .join(IdentityProvider, IdentityProvider.id == ExternalIdentity.provider_id)
         .where(User.tenant_id == config.tenant_id, User.is_active.is_(True),
             IdentityProvider.tenant_id == config.tenant_id, IdentityProvider.provider_type == "feishu",
-            IdentityProvider.is_active.is_(True), ExternalIdentity.provider_open_id == sender["open_id"]))).one_or_none()
+            IdentityProvider.is_active.is_(True), ExternalIdentity.provider_open_id == sender["open_id"])
+        .execution_options(populate_existing=True))).one_or_none()
     if row is None or not config.app_id or not _same_application(row[2], config):
         return None
     if any(sender.get(key) and getattr(row[1], column) and sender[key] != getattr(row[1], column)

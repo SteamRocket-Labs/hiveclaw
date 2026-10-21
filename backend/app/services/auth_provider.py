@@ -6,7 +6,7 @@ import secrets
 import uuid
 
 import httpx
-from sqlalchemy import and_, or_, select
+from sqlalchemy import and_, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
@@ -182,15 +182,20 @@ class FeishuAuthProvider:
         tenant_id: uuid.UUID | None,
     ) -> IdentityProvider:
         config = await self._load_provider_config(db, tenant_id)
-        result = await db.execute(
-            select(IdentityProvider)
-            .where(
-                IdentityProvider.provider_type == self.provider_type,
-                IdentityProvider.tenant_id == tenant_id,
-            )
-            .limit(1)
-        )
-        provider = result.scalar_one_or_none()
+        query = select(IdentityProvider).where(
+            IdentityProvider.provider_type == self.provider_type,
+            IdentityProvider.tenant_id == tenant_id,
+        ).limit(1)
+        provider = (await db.execute(query)).scalar_one_or_none()
+        if provider is None:
+            # NULL tenant namespaces are not protected by the composite unique
+            # constraint. Serialize only cold initialization and recheck after
+            # the preceding callback commits or rolls back.
+            with db.no_autoflush:
+                await db.execute(text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"), {
+                    "key": f"hive.identity_provider.init.v1:{self.provider_type}:{tenant_id or 'global'}",
+                })
+            provider = (await db.execute(query.execution_options(populate_existing=True))).scalar_one_or_none()
         if provider:
             if provider.is_active is not True or provider.sso_login_enabled is not True:
                 raise FeishuIdentityConflict("provider_disabled", PROVIDER_DISABLED)

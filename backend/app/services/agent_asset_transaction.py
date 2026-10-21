@@ -851,6 +851,40 @@ def recover_agent_asset_transactions(agent_root: Path | str) -> list[AssetCommit
         _unlock(handle)
 
 
+def committed_asset_file_snapshot(
+    agent_root: Path | str,
+    relative_path: str,
+) -> tuple[bytes, AssetCommitReceipt] | None:
+    """Read current bytes only when a committed native writer witnessed them."""
+    root = Path(agent_root).resolve()
+    handle = _lock(root)
+    try:
+        path = _normalize_relative_path(relative_path)
+        target = _target_path(root, path)
+        if not target.is_file():
+            return None
+        content = target.read_bytes()
+        digest = _sha256_bytes(content)
+        matching = []
+        for journal_path in _transactions_root(root).glob("*/journal.json"):
+            journal = _read_json(journal_path)
+            if journal.get("schema_version") != SCHEMA_VERSION or journal.get("status") != "committed":
+                continue
+            if any(op.get("path") == path and op.get("action") == "write" and op.get("desired_sha256") == digest
+                for op in journal.get("operations", [])):
+                matching.append((int(journal["next_revision"]), journal_path, journal))
+        if not matching:
+            return None
+        revision, journal_path, journal = max(matching, key=lambda item: item[0])
+        if revision > read_agent_asset_revision(root):
+            raise AssetTransactionCorruptionError("native file witness precedes its revision commit")
+        receipt = AssetCommitReceipt(transaction_id=journal["transaction_id"], operation=journal["operation"],
+            revision=revision, changed_paths=tuple(op["path"] for op in journal["operations"]), journal_path=journal_path)
+        return content, receipt
+    finally:
+        _unlock(handle)
+
+
 def _finalize_journal_locked(
     journal_path: Path,
     *,

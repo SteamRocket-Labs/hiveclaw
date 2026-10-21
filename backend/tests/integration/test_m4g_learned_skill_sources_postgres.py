@@ -11,6 +11,31 @@ from tests.integration.test_m1g24_workspace_artifact_authority_postgres import n
 pytestmark = pytest.mark.usefixtures("migrated_pg_url")
 
 
+async def _assert_native_asset_state(n, session_factory, *, evolution_state, lifecycle_status):
+    from sqlalchemy import select
+    from app.api import ai_assets
+    from app.models.ai_asset import AIAssetRecord
+
+    if not getattr(n, "asset_api_registered", False):
+        n.client._transport.app.include_router(ai_assets.router)
+        n.asset_api_registered = True
+    async with tenant_scoped_session(n.tenant, session_factory=session_factory) as db:
+        asset = await db.scalar(select(AIAssetRecord).where(AIAssetRecord.tenant_id == n.tenant,
+            AIAssetRecord.native_key == f"skill:agent:{n.agent}:{n.first_learned_skill_path.split('/')[1]}"))
+        identity = str(asset.id)
+    response = await n.client.get(f"/enterprise/ai-assets/{identity}")
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["asset"]["compatibility"]["evolution_state"] == evolution_state, payload
+    assert payload["asset"]["lifecycle_status"] == lifecycle_status, payload
+    assert payload["asset"]["projection"]["status"] == "applied", payload
+    revision = await n.client.get(f"/enterprise/ai-assets/{identity}/revisions/{payload['active_revision']['version']}")
+    assert revision.status_code == 200, revision.text
+    assert revision.json()["content"]["control"]["evolution_state"] == evolution_state, revision.text
+    assert "EVIDENCE_METHOD_VERSION_ONE" in revision.text, revision.text
+    return payload
+
+
 @pytest.fixture(autouse=True)
 def controlled_provider_boundary(monkeypatch):
     def unexpected_provider(*_args, **_kwargs):
@@ -68,6 +93,8 @@ async def learned_skill(shared_memory, app_user_sessionmaker, owner_sessionmaker
     args = {"name": "Evidence Review", "description": "Compare a requested result with its primary evidence.",
         "instructions": "Read the source, compare the claim, and record EVIDENCE_METHOD_VERSION_ONE.",
         "folder_name": "evidence-review"}
+    if mode == "crlf":
+        args["instructions"] += "\r\nPreserve the original evidence bytes.\r\nReport the comparison."
     invocation = None
     if mode != "workflow":
         submitted, invocation = await memory_call(n, app_user_sessionmaker, "save_skill", args,
@@ -105,6 +132,21 @@ async def learned_skill(shared_memory, app_user_sessionmaker, owner_sessionmaker
     assert target.startswith("skills/") and target.endswith("/SKILL.md"), outcome
     assert "EVIDENCE_METHOD_VERSION_ONE" in (n.root / target).read_text()
     return s, invocation
+
+
+@pytest.mark.parametrize("learned_skill", ["crlf"], indirect=True)
+async def test_learned_package_projection_preserves_reviewed_line_endings(
+    learned_skill, app_user_sessionmaker,
+):
+    s, _invocation = learned_skill
+    n = s.n
+    body = (n.root / n.first_learned_skill_path).read_bytes()
+    assert b"\r\nPreserve the original evidence bytes.\r\n" in body
+    payload = await _assert_native_asset_state(n, app_user_sessionmaker, evolution_state="provisional", lifecycle_status="active")
+    response = await n.client.get(f"/enterprise/ai-assets/{payload['asset']['id']}/revisions/{payload['active_revision']['version']}")
+    assert response.status_code == 200, response.text
+    files = response.json()["content"]["files"]
+    assert next(file["content"].encode() for file in files if file["path"] == "SKILL.md") == body
 
 
 async def _seal_workflow_reply(n, session_factory, *, session, run, content):
@@ -824,13 +866,14 @@ async def test_trial_rollback_stops_discovery_and_preserves_exact_prior_work_sou
         assert "EVIDENCE_METHOD_VERSION_ONE" in payload["candidate_content"]
         return {"decision": "rollback", "reason": "Controlled reviewer rejects future use while retaining historical evidence."}
 
-    outcome = await review_pending_provisional_trials(n.root, reviewer=rollback)
+    outcome = await review_pending_provisional_trials(n.root, reviewer=rollback, agent_id=n.agent, tenant_id=n.tenant)
     assert outcome["reviewed"] == 1 and len(inspected) == 1, outcome
     assert target.exists() and target.read_bytes() == before
     entry = get_skill_evolution_entry(n.root, n.first_learned_skill_path)
     trial = load_provisional_trial(n.root, entry["last_candidate_id"])
     assert entry["state"] == trial["state"] == "rolled_back"
     assert trial["rollback"]["action"] == "retire"
+    await _assert_native_asset_state(n, app_user_sessionmaker, evolution_state="rolled_back", lifecycle_status="deprecated")
     next_load, _invocation = await memory_call(n, app_user_sessionmaker, "load_skill", {"name": "Evidence Review"}, include_history=True)
     assert "EVIDENCE_METHOD_VERSION_ONE" not in next_load, next_load
     history, _invocation = await memory_call(n, app_user_sessionmaker, "save_memory",
@@ -844,7 +887,7 @@ async def test_trial_rollback_stops_discovery_and_preserves_exact_prior_work_sou
 
 @pytest.mark.parametrize("withdrawal", ["none", "before_review", "during_review"])
 async def test_background_trial_review_keeps_current_source_authority_and_can_resume(
-    learned_skill, owner_sessionmaker, monkeypatch, withdrawal,
+    learned_skill, owner_sessionmaker, app_user_sessionmaker, monkeypatch, withdrawal,
 ):
     from app.models.chat_session import ChatSession
     from app.services.provisional_trial import load_provisional_trial, record_provisional_trial_signal, review_pending_provisional_trials_with_model
@@ -884,6 +927,7 @@ async def test_background_trial_review_keeps_current_source_authority_and_can_re
     if withdrawal == "none":
         assert report["reviewed"] == 1 and trial["state"] == "promoted", report
         assert len(requests) == 1 and "EVIDENCE_METHOD_VERSION_ONE" in repr(requests), requests
+        await _assert_native_asset_state(n, app_user_sessionmaker, evolution_state="active", lifecycle_status="active")
     else:
         assert report["reviewed"] == 0 and trial["state"] == "provisional", report
         assert report["errors"] and report["errors"][0]["outcome"] == "denied", report
@@ -1034,6 +1078,7 @@ async def test_curator_archive_and_restore_retain_native_skill_history_without_p
     assert archived["applied"] == [{"slug": path.split("/")[1], "decision": "archive"}], archived
     assert (n.root / path).is_file() and (n.root / path).read_bytes() == before
     assert get_skill_evolution_entry(n.root, path)["state"] == "archived"
+    await _assert_native_asset_state(n, app_user_sessionmaker, evolution_state="archived", lifecycle_status="deprecated")
     denied, _invocation = await memory_call(n, app_user_sessionmaker, "load_skill", {"name": "Evidence Review"}, include_history=True)
     assert "EVIDENCE_METHOD_VERSION_ONE" not in denied, denied
     historical, _invocation = await memory_call(n, app_user_sessionmaker, "save_memory", {
@@ -1044,8 +1089,254 @@ async def test_curator_archive_and_restore_retain_native_skill_history_without_p
     assert restored["applied"] == [{"slug": path.split("/")[1], "decision": "restore"}], restored
     assert (n.root / path).read_bytes() == before
     assert get_skill_evolution_entry(n.root, path)["state"] == "provisional"
+    await _assert_native_asset_state(n, app_user_sessionmaker, evolution_state="provisional", lifecycle_status="active")
     current, _invocation = await memory_call(n, app_user_sessionmaker, "load_skill", {"name": "Evidence Review"}, include_history=True)
     assert "EVIDENCE_METHOD_VERSION_ONE" in current, current
+
+
+@pytest.mark.parametrize("failure", ["before_commit", "after_commit"])
+async def test_lifecycle_projection_commit_failure_is_reconciled_without_repeating_native_work_or_model(
+    learned_skill, app_user_sessionmaker, monkeypatch, failure,
+):
+    from contextlib import asynccontextmanager
+    from sqlalchemy import select
+    from app.api import ai_assets
+    from app.models.ai_asset import AIAssetRecord
+    from app.services import learned_skill_lifecycle as lifecycle
+    from app.services.agent_asset_transaction import read_agent_asset_revision
+    from app.services.provisional_trial import record_provisional_trial_signal, review_pending_provisional_trials_with_model
+
+    s, _submission = learned_skill
+    n = s.n
+    path = n.first_learned_skill_path
+    record_provisional_trial_signal(n.root, skill_name=path, kind="negative",
+        signal={"runtime_task_id": str(n.run), "session_id": str(n.session), "status": "failed"})
+    native_scope = lifecycle.tenant_scoped_session
+    faults, model_calls = [], []
+    class CommitResponseFault:
+        def __init__(self, db):
+            self.db = db
+
+        def __getattr__(self, name):
+            return getattr(self.db, name)
+
+        async def commit(self):
+            if not faults and failure == "before_commit":
+                faults.append("before_commit")
+                raise OSError("Controlled interrupted projection commit")
+            await self.db.commit()
+            if not faults and failure == "after_commit":
+                faults.append("after_commit")
+                raise OSError("Controlled committed projection response loss")
+
+    @asynccontextmanager
+    async def faulty_scope(*args, **kwargs):
+        async with native_scope(*args, **kwargs) as db:
+            yield CommitResponseFault(db)
+
+    class ControlledPromotion:
+        async def complete(self, **_kwargs):
+            model_calls.append(True)
+            return SimpleNamespace(content='{"decision":"promote","reason":"Controlled exact native decision."}')
+
+        async def close(self):
+            pass
+
+    monkeypatch.setattr(lifecycle, "tenant_scoped_session", faulty_scope)
+    monkeypatch.setattr("app.services.llm_client.create_llm_client_from_config", lambda *_args, **_kwargs: ControlledPromotion())
+    result = await review_pending_provisional_trials_with_model(n.root, agent_id=n.agent, tenant_id=n.tenant,
+        model=SimpleNamespace(provider="synthetic", model="controlled-trial-review", api_key="synthetic", base_url="http://127.0.0.1:1"))
+    assert result["reviewed"] == 1 and faults == [failure] and model_calls == [True], result
+    after_native = read_agent_asset_revision(n.root)
+    if failure == "before_commit":
+        assert result["errors"][0]["reason_code"] == "skill_lifecycle_projection_pending", result
+        assert result["errors"][0]["outcome"] == "unknown", result
+        n.client._transport.app.include_router(ai_assets.router)
+        n.asset_api_registered = True
+        async with tenant_scoped_session(n.tenant, session_factory=app_user_sessionmaker) as db:
+            record = await db.scalar(select(AIAssetRecord).where(AIAssetRecord.tenant_id == n.tenant,
+                AIAssetRecord.native_key == f"skill:agent:{n.agent}:{path.split('/')[1]}"))
+            identity = str(record.id)
+        stale = await n.client.get(f"/enterprise/ai-assets/{identity}")
+        assert stale.status_code == 200 and stale.json()["asset"]["projection"]["status"] == "drifted", stale.text
+        from app.services import evolution_daemon
+
+        async def no_model(*_args, **_kwargs):
+            return None
+        async def no_enhancement(*_args, **_kwargs):
+            return SimpleNamespace(synced=0, skipped=0, reason="Controlled unrelated lane without mutations")
+        monkeypatch.setattr(evolution_daemon, "_resolve_agent_model", no_model)
+        monkeypatch.setattr("app.memory.enhancement.sync_t3_to_memory_enhancement", no_enhancement)
+        restored = await evolution_daemon.run_heartbeat_evolution_maintenance(agent_id=n.agent, tenant_id=n.tenant,
+            outcome_type=None, current_session_id=str(n.session))
+        assert restored["skill_lifecycle_projection"]["applied"] == 1, restored
+        assert restored["skill_curator"]["reason"] == "model_unavailable", restored
+    else:
+        assert not result["errors"], result
+    payload = await _assert_native_asset_state(n, app_user_sessionmaker, evolution_state="active", lifecycle_status="active")
+    assert payload["active_revision"]["version"] == 2, payload
+    repeated = await lifecycle.reconcile_agent_lifecycles(workspace=n.root, agent_id=n.agent, tenant_id=n.tenant)
+    assert repeated["applied"] == 0, repeated
+    again = await _assert_native_asset_state(n, app_user_sessionmaker, evolution_state="active", lifecycle_status="active")
+    assert again["active_revision"]["version"] == 2
+    assert model_calls == [True] and read_agent_asset_revision(n.root) == after_native
+
+
+@pytest.mark.parametrize("reader", ["owner_admin", "other_admin_inspection", "other_admin_recipient"])
+async def test_existing_native_lifecycle_drift_has_a_source_checked_idempotent_reconcile_entry(
+    learned_skill, app_user_sessionmaker, owner_sessionmaker, monkeypatch, reader,
+):
+    from sqlalchemy import select
+    from app.api import ai_assets
+    from app.core.security import get_current_user
+    from app.core.source_read_purpose import source_recipient_read
+    from contextlib import nullcontext
+    from app.models.ai_asset import AIAssetRecord
+    from app.models.user import User
+    from app.services import learned_skill_lifecycle as lifecycle
+    from app.services.agent_asset_transaction import read_agent_asset_revision
+    from app.services.provisional_trial import record_provisional_trial_signal, review_pending_provisional_trials_with_model
+
+    s, _submission = learned_skill
+    n = s.n
+    path = n.first_learned_skill_path
+    record_provisional_trial_signal(n.root, skill_name=path, kind="negative",
+        signal={"runtime_task_id": str(n.run), "session_id": str(n.session), "status": "failed"})
+    model_calls = []
+    class LegacyPromotion:
+        async def complete(self, **_kwargs):
+            model_calls.append(True)
+            return SimpleNamespace(content='{"decision":"promote","reason":"Controlled native-only historical transition."}')
+
+        async def close(self):
+            pass
+
+    async def native_only(**_kwargs):
+        return {"status": "needs_reconciliation", "outcome": "unknown", "reason_code": "controlled_native_only_transition"}
+    monkeypatch.setattr(lifecycle, "synchronize_after_native", native_only)
+    monkeypatch.setattr("app.services.llm_client.create_llm_client_from_config", lambda *_args, **_kwargs: LegacyPromotion())
+    promoted = await review_pending_provisional_trials_with_model(n.root, agent_id=n.agent, tenant_id=n.tenant,
+        model=SimpleNamespace(provider="synthetic", model="controlled-trial-review", api_key="synthetic", base_url="http://127.0.0.1:1"))
+    assert promoted["reviewed"] == 1 and model_calls == [True], promoted
+    native_revision = read_agent_asset_revision(n.root)
+    actor = n.user if reader == "owner_admin" else n.foreign
+    async with owner_sessionmaker() as db:
+        # This exercises the existing administrator route with actual persisted test authorization.
+        (await db.get(User, actor)).role = "org_admin"
+        await db.commit()
+    if reader != "owner_admin":
+        async def other_user():
+            async with tenant_scoped_session(n.tenant, session_factory=app_user_sessionmaker) as db:
+                return await db.get(User, n.foreign)
+        monkeypatch.setitem(n.client._transport.app.dependency_overrides, get_current_user, other_user)
+    n.client._transport.app.include_router(ai_assets.router)
+    n.asset_api_registered = True
+    async with tenant_scoped_session(n.tenant, session_factory=app_user_sessionmaker) as db:
+        record = await db.scalar(select(AIAssetRecord).where(AIAssetRecord.tenant_id == n.tenant,
+            AIAssetRecord.native_key == f"skill:agent:{n.agent}:{path.split('/')[1]}"))
+        identity, original_revision = str(record.id), record.active_revision_id
+    purpose = source_recipient_read(session_id=s.second_session, user_id=n.foreign) if reader == "other_admin_recipient" else nullcontext()
+    with purpose:
+        response = await n.client.post(f"/enterprise/ai-assets/{identity}/reconcile")
+    if reader != "other_admin_recipient":
+        assert response.status_code == 200 and response.json()["status"] == "applied", response.text
+        repeated = await n.client.post(f"/enterprise/ai-assets/{identity}/reconcile")
+        assert repeated.status_code == 200 and repeated.json()["status"] == "applied", repeated.text
+        payload = await _assert_native_asset_state(n, app_user_sessionmaker, evolution_state="active", lifecycle_status="active")
+        assert payload["active_revision"]["version"] == 2
+    else:
+        assert response.status_code == 403 and "EVIDENCE_METHOD_VERSION_ONE" not in response.text, response.text
+        async with tenant_scoped_session(n.tenant, session_factory=app_user_sessionmaker) as db:
+            current = await db.get(AIAssetRecord, record.id, populate_existing=True)
+            assert current.active_revision_id == original_revision and current.compatibility_json["evolution_state"] == "provisional"
+    assert model_calls == [True] and read_agent_asset_revision(n.root) == native_revision
+
+
+async def test_lifecycle_repair_confirms_the_error_status_commit_without_creating_a_revision(
+    learned_skill, app_user_sessionmaker, monkeypatch,
+):
+    from contextlib import asynccontextmanager
+    from sqlalchemy import select
+    from app.models.ai_asset import AIAssetRecord
+    from app.services import learned_skill_lifecycle as lifecycle
+    from app.services.agent_asset_transaction import read_agent_asset_revision
+
+    s, _submission = learned_skill
+    n = s.n
+    async with tenant_scoped_session(n.tenant, session_factory=app_user_sessionmaker) as db:
+        record = await db.scalar(select(AIAssetRecord).where(AIAssetRecord.tenant_id == n.tenant,
+            AIAssetRecord.native_key == f"skill:agent:{n.agent}:{n.first_learned_skill_path.split('/')[1]}"))
+        record.projection_status, record.projection_error = "failed", "Controlled earlier projection failure"
+        await db.commit()
+    native_scope, faults = lifecycle.tenant_scoped_session, []
+    native_revision = read_agent_asset_revision(n.root)
+
+    class CommitFault:
+        def __init__(self, db):
+            self.db = db
+
+        def __getattr__(self, name):
+            return getattr(self.db, name)
+
+        async def commit(self):
+            if not faults:
+                faults.append(True)
+                raise OSError("Controlled interrupted error-state repair")
+            await self.db.commit()
+
+    @asynccontextmanager
+    async def faulty_scope(*args, **kwargs):
+        async with native_scope(*args, **kwargs) as db:
+            yield CommitFault(db)
+
+    monkeypatch.setattr(lifecycle, "tenant_scoped_session", faulty_scope)
+    first = await lifecycle.reconcile_agent_lifecycles(workspace=n.root, agent_id=n.agent, tenant_id=n.tenant)
+    assert first["status"] == "needs_reconciliation" and first["applied"] == 0, first
+    assert first["held"][0]["outcome"] == "unknown", first
+    second = await lifecycle.reconcile_agent_lifecycles(workspace=n.root, agent_id=n.agent, tenant_id=n.tenant)
+    assert second["status"] == "applied" and second["applied"] == 1, second
+    payload = await _assert_native_asset_state(n, app_user_sessionmaker, evolution_state="provisional", lifecycle_status="active")
+    assert payload["active_revision"]["version"] == 1 and read_agent_asset_revision(n.root) == native_revision
+
+
+async def test_unreceipted_lifecycle_file_cannot_become_an_applied_asset_projection(
+    learned_skill, app_user_sessionmaker, owner_sessionmaker,
+):
+    import json
+    from sqlalchemy import select
+    from app.api import ai_assets
+    from app.models.ai_asset import AIAssetRecord
+    from app.models.user import User
+
+    s, _submission = learned_skill
+    n = s.n
+    registry = n.root / "evolution/skill_registry.json"
+    before = registry.read_bytes()
+    edited = json.loads(before)
+    entry = next(value for value in edited["skills"].values() if value["target_path"] == n.first_learned_skill_path)
+    entry["state"] = "active"
+    registry.write_text(json.dumps(edited))
+    async with owner_sessionmaker() as db:
+        (await db.get(User, n.user)).role = "org_admin"
+        await db.commit()
+    n.client._transport.app.include_router(ai_assets.router)
+    n.asset_api_registered = True
+    async with tenant_scoped_session(n.tenant, session_factory=app_user_sessionmaker) as db:
+        record = await db.scalar(select(AIAssetRecord).where(AIAssetRecord.tenant_id == n.tenant,
+            AIAssetRecord.native_key == f"skill:agent:{n.agent}:{n.first_learned_skill_path.split('/')[1]}"))
+        identity, revision = str(record.id), record.active_revision_id
+    observed = await n.client.get(f"/enterprise/ai-assets/{identity}")
+    assert observed.status_code == 200 and observed.json()["asset"]["projection"]["status"] == "unavailable", observed.text
+    refused = await n.client.post(f"/enterprise/ai-assets/{identity}/reconcile")
+    assert refused.status_code == 503 and refused.json()["detail"]["code"] == "skill_lifecycle_native_unverified", refused.text
+    async with tenant_scoped_session(n.tenant, session_factory=app_user_sessionmaker) as db:
+        current = await db.get(AIAssetRecord, record.id, populate_existing=True)
+        assert current.active_revision_id == revision and current.compatibility_json["evolution_state"] == "provisional"
+    registry.write_bytes(before)
+    restored = await n.client.post(f"/enterprise/ai-assets/{identity}/reconcile")
+    assert restored.status_code == 200 and restored.json()["status"] == "applied", restored.text
+    payload = await _assert_native_asset_state(n, app_user_sessionmaker, evolution_state="provisional", lifecycle_status="active")
+    assert payload["active_revision"]["version"] == 1
 
 
 @pytest.mark.parametrize("reader", ["author", "other_member"])

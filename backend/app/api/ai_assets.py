@@ -80,8 +80,15 @@ async def get_ai_asset(
     )
     active = history[0] if history else None
     await _readable_asset(db, current_user, asset_id)
+    from app.services.learned_skill_lifecycle import asset_payload_for_reader
+    from app.services.content_input_receipts import ContentInputReceiptError
+
+    try:
+        payload = await asset_payload_for_reader(db, record, user=current_user)
+    except ContentInputReceiptError as exc:
+        raise HTTPException(status_code=exc.status_code, detail={"code": exc.code, "message": str(exc)}) from exc
     return {
-        "asset": ai_asset_service.asset_payload(record),
+        "asset": payload,
         "active_revision": active,
         "history": history,
         "usage_events": usage_events,
@@ -185,14 +192,21 @@ async def reconcile_ai_asset(
 ) -> dict:
     _require_admin(current_user)
     tenant_id, actor_user_id = _tenant_id(current_user), current_user.id
+    await _readable_asset(db, current_user, asset_id)
+    from app.services.content_input_receipts import ContentInputReceiptError
+
     try:
         result = await ai_asset_service.reconcile_asset(
             db,
             tenant_id=tenant_id,
             asset_id=asset_id,
+            user=current_user,
         )
         await db.commit()
         return result
+    except ContentInputReceiptError as exc:
+        await db.rollback()
+        raise HTTPException(status_code=exc.status_code, detail={"code": exc.code, "message": str(exc)}) from exc
     except Exception as exc:
         await db.rollback()
         await ai_asset_service.record_projection_failure(

@@ -413,6 +413,7 @@ async def review_skill_lifecycle(
         effective_now = effective_now.replace(tzinfo=timezone.utc)
     from app.services.content_input_receipts import ContentInputReceiptError
     from app.services.learned_skill_sources import current_review, recheck_review_inputs, recheck_maintenance_effect
+    from app.services.learned_skill_lifecycle import synchronize_after_native
 
     evidence = build_skill_lifecycle_review_evidence(workspace, now=effective_now,
         source_authorizer=source_authorizer, source_observer=source_observer)
@@ -459,6 +460,7 @@ async def review_skill_lifecycle(
     blocked: list[dict[str, str]] = []
     held: list[dict[str, str]] = []
     seen: set[str] = set()
+    source_frame = current_review()
 
     with AgentAssetTransaction(
         workspace,
@@ -591,10 +593,15 @@ async def review_skill_lifecycle(
             },
             transaction=transaction,
         )
-        transaction.commit()
+        receipt = transaction.commit()
+
+    paths = [f"skills/{item['slug']}/SKILL.md" for item in applied
+        if source_frame is not None and f"skills/{item['slug']}/SKILL.md" in source_frame.skill_capture.learned_files]
+    projection = await synchronize_after_native(workspace=workspace, frame=source_frame, paths=paths, receipt=receipt)
 
     return {
-        "status": "reviewed",
+        "status": "needs_reconciliation" if projection["status"] == "needs_reconciliation" else "reviewed",
+        "projection": projection,
         "scanned": len(evidence["skills"]),
         "applied": applied,
         "blocked": blocked,
@@ -737,6 +744,9 @@ async def review_skill_lifecycle_with_model(
                         result[key].extend(report.get(key, []))
                     if report["status"] == "held":
                         result["held"].append({"source_ref": target["source_ref"], "reason": report["reason"]})
+                    elif report["status"] == "needs_reconciliation":
+                        result["status"] = "needs_reconciliation"
+                        result["held"].append({"source_ref": target["source_ref"], **report["projection"]})
             except ContentInputReceiptError as exc:
                 result["held"].append({"source_ref": target["source_ref"], "reason": exc.code})
         return result

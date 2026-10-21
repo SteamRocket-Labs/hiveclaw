@@ -158,6 +158,10 @@ async def run_heartbeat_evolution_maintenance(
                 runtime_config.tenant_resolution_error,
             )
         else:
+            from app.services.learned_skill_lifecycle import reconcile_agent_lifecycles
+
+            report["skill_lifecycle_projection"] = await reconcile_agent_lifecycles(
+                workspace=workspace, agent_id=agent_id, tenant_id=tenant_id)
             model = await _resolve_agent_model(agent_id, tenant_id)
             if model is not None:
                 from app.services.provisional_trial import review_pending_provisional_trials_with_model

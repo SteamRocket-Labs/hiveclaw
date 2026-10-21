@@ -895,6 +895,7 @@ async def review_pending_provisional_trials(
 
     from app.services.content_input_receipts import ContentInputReceiptError
     from app.services.learned_skill_sources import skill_maintenance_inputs, recheck_maintenance_effect
+    from app.services.learned_skill_lifecycle import synchronize_after_native
 
     stamp = occurred_at or _now_iso()
     reviewed = 0
@@ -909,7 +910,7 @@ async def review_pending_provisional_trials(
             continue
         try:
             async with skill_maintenance_inputs(workspace=workspace, agent_id=agent_id, tenant_id=tenant_id,
-                target_path=trial_snapshot["target_path"], candidate_id=candidate_id):
+                target_path=trial_snapshot["target_path"], candidate_id=candidate_id) as source_frame:
                 payload = _trial_review_payload(workspace, trial_snapshot)
                 raw_review = await reviewer(payload)
                 if not isinstance(raw_review, dict):
@@ -958,7 +959,11 @@ async def review_pending_provisional_trials(
                     occurred_at=stamp,
                     transaction=transaction,
                 )
-                transaction.commit()
+                receipt = transaction.commit()
+                # The native state is already committed; projection recovery must not repeat this review.
+                if source_frame is not None:
+                    errors.append({"candidate_id": candidate_id, "reason_code": "skill_lifecycle_projection_pending",
+                        "outcome": "unavailable", "native_transaction_id": receipt.transaction_id})
                 reviewed += 1
                 decisions["hold"] += 1
                 continue
@@ -1017,9 +1022,13 @@ async def review_pending_provisional_trials(
                     },
                     transaction=transaction,
                 )
-            transaction.commit()
-            reviewed += 1
-            decisions[decision] += 1
+            receipt = transaction.commit()
+        projection = await synchronize_after_native(workspace=workspace, frame=source_frame,
+            paths=[target_path], receipt=receipt)
+        if projection["status"] == "needs_reconciliation":
+            errors.append({"candidate_id": candidate_id, **projection})
+        reviewed += 1
+        decisions[decision] += 1
 
     return {
         "reviewed": reviewed,

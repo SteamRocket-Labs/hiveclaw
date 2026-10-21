@@ -240,7 +240,7 @@ def load_flywheel_skill_candidate_drafts(workspace: Path, *, limit: int | None =
     ]
     for skill_path in sorted(candidate_files, key=lambda path: path.stat().st_mtime, reverse=True):
         try:
-            content = skill_path.read_text(encoding="utf-8", errors="replace")
+            content = skill_path.read_bytes().decode("utf-8", errors="replace")
         except OSError:
             continue
         manifest: dict[str, Any] = {}

@@ -53,7 +53,7 @@ def collect_skill_package_files(root: Path) -> list[dict[str, str]]:
         if not path.is_file():
             continue
         rel = path.relative_to(root).as_posix()
-        files.append({"path": rel, "content": path.read_text(encoding="utf-8", errors="replace")})
+        files.append({"path": rel, "content": path.read_bytes().decode("utf-8", errors="replace")})
     return files
 
 

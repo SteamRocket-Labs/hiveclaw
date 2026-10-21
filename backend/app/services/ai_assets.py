@@ -216,12 +216,13 @@ async def list_assets(
         return [asset_payload(row) for row in rows]
     from app.services.learned_skill_sources import authorize_learned_asset_read
     from app.services.content_input_receipts import ContentInputReceiptError
+    from app.services.learned_skill_lifecycle import asset_payload_for_reader
 
     visible = []
     for row in rows:
         try:
             await authorize_learned_asset_read(db, row, user=user)
-            visible.append(asset_payload(row))
+            visible.append(await asset_payload_for_reader(db, row, user=user))
         except ContentInputReceiptError:
             continue
     return visible
@@ -370,11 +371,18 @@ async def reconcile_asset(
     *,
     tenant_id: uuid.UUID,
     asset_id: uuid.UUID,
+    user: Any | None = None,
 ) -> dict[str, Any]:
     record = await get_asset_record(db, tenant_id=tenant_id, asset_id=asset_id, for_update=True)
     if record is None:
         raise ValueError("AI asset not found")
     try:
+        if user is not None:
+            from app.services.learned_skill_lifecycle import synchronize_lifecycle
+
+            reconciled = await synchronize_lifecycle(db, record, user=user, recover=True)
+            if reconciled is not None:
+                return reconciled
         projection = await load_native_projection(db, record)
         actual_hash = config_versioning.canonical_content_hash(projection.content)
         expected_hash = record.content_hash

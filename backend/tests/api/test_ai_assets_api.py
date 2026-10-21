@@ -113,6 +113,8 @@ async def test_failed_reconcile_persists_exact_asset_failure_after_rollback(monk
 
     tenant_id, asset_id, user_id = uuid4(), uuid4(), uuid4()
     db = AsyncMock()
+    monkeypatch.setattr(api.ai_asset_service, "get_asset_record", AsyncMock(
+        return_value=SimpleNamespace(id=asset_id, asset_type="agent", native_locator_json={})))
     monkeypatch.setattr(api.ai_asset_service, "reconcile_asset", AsyncMock(side_effect=failure))
     mark_failure = AsyncMock(return_value=True)
     monkeypatch.setattr(api.ai_asset_service, "record_projection_failure", mark_failure)

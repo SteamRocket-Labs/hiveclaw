@@ -253,3 +253,11 @@ turn a degraded component into a healthy one. Finally check the signed-in work
 paths, older files, approvals and worker recovery before reopening ingress.
 Native migration and source observation do not constitute Linux/container,
 clean-machine, rollback or full enterprise acceptance.
+
+## Storage retention
+
+Company administrators can open **Workspace → Company Management → Storage and retention** to pause periodic cleanup or change the retention period. Saving records a versioned company policy; the next employee maintenance pass reads it. Saving does not start an immediate purge. Reload the saved policy after a conflict or lost response before saving again. Without a company policy, `CHAT_ARTIFACT_SNAPSHOT_RETENTION_DAYS` supplies the installation default (30 days).
+
+Cleanup covers expired, unreferenced delivery snapshots and orphan Office previews. Published artifact versions, active work, work awaiting reconciliation and pending approval evidence stay protected. Publishing and cleanup share a per-employee transaction lock, so an uncommitted delivery cannot be collected as an orphan. This policy does not remove workspace source files, company knowledge, memory, runtime databases or backups. A corrupt policy pauses this cleanup until repaired; disabling cleanup also preserves orphan previews.
+
+Platform administrators can see total, used and free capacity of the runtime's shared employee volume on this page. These are physical volume figures, not company usage or quotas. Organization administrators manage their own policy without receiving shared capacity figures. An unavailable volume returns an unavailable state; the no-volume API does not substitute its own filesystem. Keep verified backups under a separate operator retention policy.

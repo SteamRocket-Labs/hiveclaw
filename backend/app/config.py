@@ -244,8 +244,8 @@ class Settings(BaseSettings):
     # never deleted; refs keep resolving through the reference index.
     MEMORY_RETENTION_ARCHIVE_AFTER_DAYS: float = 30.0
     # Chat artifact delivery snapshots are opened from delivery-time copies.
-    # Referenced snapshots are never deleted; unreferenced files older than
-    # this threshold are removed by heartbeat maintenance.
+    # Installation default, overridden by the company's versioned retention policy.
+    # Referenced, active and pending-approval snapshots are preserved by maintenance.
     CHAT_ARTIFACT_SNAPSHOT_RETENTION_DAYS: float = 30.0
     # Resident profile-plane budget (read side, memory-system-spec §4.2):
     # self + profiles + explicit overlay load whole into the prompt; going

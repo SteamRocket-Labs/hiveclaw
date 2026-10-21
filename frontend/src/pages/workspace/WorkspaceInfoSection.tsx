@@ -3,6 +3,7 @@ import type { ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import './WorkspaceInfoSection.css';
+import WorkspaceStorageSection from './WorkspaceStorageSection';
 
 interface WorkspaceInfoSectionProps {
   selectedTenantId: string;
@@ -69,6 +70,7 @@ export default function WorkspaceInfoSection({
           </div>
 
           {legacyCompanyFilesCard}
+          <WorkspaceStorageSection key={selectedTenantId} selectedTenantId={selectedTenantId} />
           {broadcastSection}
         </>
       ) : (

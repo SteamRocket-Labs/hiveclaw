@@ -3667,6 +3667,21 @@
     "retryDelivery": "Retry delivery"
   },
   "enterprise": {
+    "storage": {
+      "title": "Storage and retention",
+      "scope": "Remove expired, unreferenced delivery snapshots and orphan Office previews. Published results, active work and work awaiting reconciliation or approval remain protected. This policy does not delete employee workspaces or company knowledge.",
+      "default": "Using the installation default.",
+      "version": "Company policy · version {{version}}",
+      "enabled": "Enable periodic cleanup",
+      "days": "Keep unreferenced snapshots for this many days",
+      "effective": "Saved changes apply to the next maintenance pass. Saving does not start a cleanup. Pausing also keeps orphan Office previews.",
+      "capacity": "Shared employee volume: {{used}} / {{total}} GiB used · {{free}} GiB free. This is shared physical capacity, not a company quota.",
+      "capacityUnavailable": "Volume capacity is temporarily unavailable. Reload to retry.",
+      "saveUnknown": "The policy may have changed or the save response was lost. Reload the saved policy and review it before saving again.",
+      "loadFailed": "Could not load the saved policy. Reload to retry.",
+      "saved": "Policy saved. It will be used by the next maintenance pass.",
+      "reload": "Reload saved policy"
+    },
     "title": "Company Admin",
     "dangerZone": "Danger Zone",
     "deleteCompanyDesc": "Permanently delete this company and all its data, including employees, models, tools, and skills. This cannot be undone.",

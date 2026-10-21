@@ -931,43 +931,37 @@ async def _run_t2_retention(agent_id: uuid.UUID):
 async def _run_chat_artifact_snapshot_retention(agent_id: uuid.UUID, *, db=None) -> dict:
     """Remove expired unreferenced chat artifact snapshots on the heartbeat cadence."""
     from app.config import get_settings
-    from app.services.chat_artifact_delivery import (
-        DEFAULT_CHAT_ARTIFACT_SNAPSHOT_RETENTION_DAYS,
-        cleanup_chat_artifact_snapshots_for_agent,
-    )
+    from app.services.chat_artifact_delivery import cleanup_chat_artifact_snapshots_for_agent
+    from app.models.agent import Agent
+    from app.services.storage_retention import read_retention_policy
 
     settings = get_settings()
+
+    async def run(scoped_db):
+        agent = await scoped_db.get(Agent, agent_id)
+        if agent is None:
+            return {"schema": "chat_artifact_snapshot_gc.v1", "skipped": "agent_unavailable"}
+        try:
+            policy = await read_retention_policy(scoped_db, agent.tenant_id)
+        except ValueError:
+            return {"schema": "chat_artifact_snapshot_gc.v1", "skipped": "storage_retention_policy_unavailable",
+                "retryable": True, "recovery_action": "repair_company_retention_policy"}
+        if not policy["enabled"]:
+            return {"schema": "chat_artifact_snapshot_gc.v1", "skipped": "company_retention_paused", "policy": policy}
+        report = await cleanup_chat_artifact_snapshots_for_agent(db=scoped_db, agent_id=agent_id,
+            workspace_root=Path(settings.AGENT_DATA_DIR) / str(agent_id), retention_days=policy["retention_days"])
+        report["policy"] = policy
+        return report
+
     if db is not None:
         if not isinstance(db, AsyncSession):
             return {"schema": "chat_artifact_snapshot_gc.v1", "skipped": "non_async_session"}
-        return await cleanup_chat_artifact_snapshots_for_agent(
-            db=db,
-            agent_id=agent_id,
-            workspace_root=Path(settings.AGENT_DATA_DIR) / str(agent_id),
-            retention_days=float(
-                getattr(
-                    settings,
-                    "CHAT_ARTIFACT_SNAPSHOT_RETENTION_DAYS",
-                    DEFAULT_CHAT_ARTIFACT_SNAPSHOT_RETENTION_DAYS,
-                )
-            ),
-        )
+        return await run(db)
     async with (
         tenant_scoped_session(None) as db,
         enter_rls_bypass(db, reason="chat artifact snapshot retention across tenants"),
     ):
-        return await cleanup_chat_artifact_snapshots_for_agent(
-            db=db,
-            agent_id=agent_id,
-            workspace_root=Path(settings.AGENT_DATA_DIR) / str(agent_id),
-            retention_days=float(
-                getattr(
-                    settings,
-                    "CHAT_ARTIFACT_SNAPSHOT_RETENTION_DAYS",
-                    DEFAULT_CHAT_ARTIFACT_SNAPSHOT_RETENTION_DAYS,
-                )
-            ),
-        )
+        return await run(db)
 
 
 async def _run_convergence_dirtiness_refresh(agent_id: uuid.UUID):

@@ -73,6 +73,19 @@ export interface SystemSetting {
   value: Record<string, any>;
 }
 
+export interface StorageRetention {
+  policy: { enabled: boolean; retention_days: number; version: number; source: 'company_admin' | 'installation_default' };
+  capacity: {
+    status: 'available' | 'operator_only' | 'unavailable';
+    scope: 'shared_agent_volume';
+    total_bytes?: number;
+    used_bytes?: number;
+    free_bytes?: number;
+  };
+  applies_to: 'unreferenced_chat_artifact_snapshots_and_orphan_office_previews';
+  effective_on: 'next_maintenance_pass';
+}
+
 export interface LegacyCompanyFilesStatus {
   available: boolean;
   file_count: number;
@@ -410,6 +423,10 @@ export const enterpriseApi = {
   exportInvitationCodesCsv: () => getBlob('/enterprise/invitation-codes/export'),
 
   /** System settings */
+  getStorageRetention: (tenantId: string) =>
+    get<StorageRetention>(`/enterprise/storage-retention?tenant_id=${encodeURIComponent(tenantId)}`),
+  updateStorageRetention: (tenantId: string, data: { enabled: boolean; retention_days: number; expected_version: number }) =>
+    put<StorageRetention>(`/enterprise/storage-retention?tenant_id=${encodeURIComponent(tenantId)}`, data),
   getSetting: (key: string, tenantId?: string) =>
     get<SystemSetting>(`/enterprise/system-settings/${key}${tenantId ? `?tenant_id=${tenantId}` : ''}`),
   updateSetting: (key: string, value: Record<string, unknown>, tenantId?: string) =>

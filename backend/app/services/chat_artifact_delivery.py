@@ -310,6 +310,7 @@ def cleanup_chat_artifact_snapshots(
     *,
     workspace_root: Path,
     referenced_snapshot_paths: list[str] | tuple[str, ...] | set[str],
+    protected_runtime_task_ids: set[uuid.UUID] | None = None,
     retention_days: float = DEFAULT_CHAT_ARTIFACT_SNAPSHOT_RETENTION_DAYS,
     now: datetime | None = None,
 ) -> dict[str, Any]:
@@ -319,8 +320,15 @@ def cleanup_chat_artifact_snapshots(
     root = Path(workspace_root)
     snapshot_root = root / CHAT_ARTIFACT_SNAPSHOT_DIR
     current_time = now or datetime.now(timezone.utc)
-    retention_days = max(float(retention_days), 0.0)
-    cutoff = current_time - timedelta(days=retention_days)
+    import math
+
+    retention_days = float(retention_days)
+    if not math.isfinite(retention_days) or retention_days < 0:
+        raise ValueError("Snapshot retention must be finite and nonnegative")
+    try:
+        cutoff = current_time - timedelta(days=retention_days)
+    except OverflowError:
+        cutoff = datetime.min.replace(tzinfo=timezone.utc)
     referenced_paths: set[str] = set()
     for raw_path in referenced_snapshot_paths:
         rel = _safe_snapshot_relative_path(raw_path)
@@ -331,6 +339,7 @@ def cleanup_chat_artifact_snapshots(
     removed_paths: list[str] = []
     removed_bytes = 0
     kept_referenced_count = 0
+    kept_active_count = 0
     kept_recent_count = 0
     kept_unsafe_count = 0
     pruned_empty_dirs = 0
@@ -346,6 +355,14 @@ def cleanup_chat_artifact_snapshots(
                     rel_display = (CHAT_ARTIFACT_SNAPSHOT_DIR / current / name).as_posix()
                     if rel_display in referenced_paths:
                         kept_referenced_count += 1
+                        continue
+                    parts = PurePosixPath(rel_display).parts[len(CHAT_ARTIFACT_SNAPSHOT_DIR.parts):]
+                    try:
+                        run_id = uuid.UUID(parts[1]) if len(parts) >= 3 else None
+                    except ValueError:
+                        run_id = None
+                    if run_id is not None and run_id in (protected_runtime_task_ids or set()):
+                        kept_active_count += 1
                         continue
                     try:
                         info = os.stat(name, dir_fd=directory, follow_symlinks=False)
@@ -381,12 +398,22 @@ def cleanup_chat_artifact_snapshots(
         "removed_bytes": removed_bytes,
         "removed_paths": removed_paths[:200],
         "kept_referenced_count": kept_referenced_count,
+        "kept_active_count": kept_active_count,
         "kept_recent_count": kept_recent_count,
         "kept_unsafe_count": kept_unsafe_count,
         "pruned_empty_dirs": pruned_empty_dirs,
     }
     _write_snapshot_gc_report(root, report)
     return report
+
+
+async def _lock_artifact_publication(db: AsyncSession, agent_id: uuid.UUID) -> None:
+    """Hold through commit so GC cannot observe an uncommitted publication as an orphan."""
+    if isinstance(db, AsyncSession) and db.get_bind().dialect.name == "postgresql":
+        from sqlalchemy import text
+
+        key = int.from_bytes(hashlib.sha256(b"chat_artifact_retention:" + agent_id.bytes).digest()[:8], signed=True)
+        await db.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": key})
 
 
 async def cleanup_chat_artifact_snapshots_for_agent(
@@ -397,6 +424,26 @@ async def cleanup_chat_artifact_snapshots_for_agent(
     retention_days: float = DEFAULT_CHAT_ARTIFACT_SNAPSHOT_RETENTION_DAYS,
     now: datetime | None = None,
 ) -> dict[str, Any]:
+    await _lock_artifact_publication(db, agent_id)
+    protected_runs: set[uuid.UUID] = set()
+    if isinstance(db, AsyncSession):
+        from sqlalchemy import or_
+        from app.models.runtime_task import RuntimeTask
+        from app.models.audit import ApprovalRequest
+
+        protected_runs.update((await db.scalars(select(RuntimeTask.id).where(
+            or_(RuntimeTask.parent_agent_id == agent_id, RuntimeTask.child_agent_id == agent_id),
+            RuntimeTask.status.not_in(("completed", "failed", "killed", "skipped"))))).all())
+        envelopes = (await db.scalars(select(ApprovalRequest.execution_envelope).where(
+            ApprovalRequest.agent_id == agent_id,
+            or_(ApprovalRequest.status == "pending", ApprovalRequest.execution_status == "needs_reconciliation",
+                (ApprovalRequest.status == "approved") & ApprovalRequest.execution_status.in_(
+                    ("pending", "approved", "queued", "executing", "needs_reapproval")))))).all()
+        for envelope in envelopes:
+            try:
+                protected_runs.add(uuid.UUID(str(envelope.get("runtime_task_id"))))
+            except (AttributeError, ValueError):
+                continue
     result = await db.execute(
         select(ChatArtifact.id, ChatArtifact.snapshot_json).where(ChatArtifact.agent_id == agent_id)
     )
@@ -411,6 +458,7 @@ async def cleanup_chat_artifact_snapshots_for_agent(
     report = cleanup_chat_artifact_snapshots(
         workspace_root=workspace_root,
         referenced_snapshot_paths=referenced_paths,
+        protected_runtime_task_ids=protected_runs,
         retention_days=retention_days,
         now=now,
     )
@@ -1103,6 +1151,7 @@ async def create_chat_artifacts_for_message(
             authority_state=authority_state if is_machine_runtime_actor(authority_user) else None,
         )
 
+    await _lock_artifact_publication(db, agent_id)
     for path in paths:
         if _safe_workspace_relative_path(path) is None:
             continue

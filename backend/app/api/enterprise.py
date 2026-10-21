@@ -42,6 +42,7 @@ from app.services.enterprise_approval_visibility import enterprise_visible_appro
 from app.services.enterprise_sync import enterprise_sync_service
 from app.services.llm_client import get_provider_manifest
 from app.services.secrets_provider import get_secrets_provider
+from app.services.storage_retention import RetentionPolicyUpdate
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -49,6 +50,45 @@ settings = get_settings()
 router = APIRouter(prefix="/enterprise", tags=["enterprise"])
 TENANT_SYSTEM_SETTING_KEYS = {"agent_permission_default", "feishu_org_sync"}
 PLATFORM_SYSTEM_SETTING_KEYS = {"notification_bar", "platform"}
+
+
+def _storage_policy_response(policy: dict, current_user: User) -> dict:
+    from app.services.storage_retention import runtime_volume_capacity
+
+    return {"policy": policy, "capacity": runtime_volume_capacity(operator=current_user.role == "platform_admin"),
+        "applies_to": "unreferenced_chat_artifact_snapshots_and_orphan_office_previews",
+        "effective_on": "next_maintenance_pass"}
+
+
+@router.get("/storage-retention")
+async def get_storage_retention(tenant_id: uuid.UUID | None = Query(None),
+    current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    from app.services.storage_retention import read_retention_policy
+
+    _require_org_admin(current_user)
+    target = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
+    try:
+        policy = await read_retention_policy(db, target)
+    except ValueError:
+        raise HTTPException(503, detail={"code": "storage_retention_policy_unavailable", "retryable": True})
+    return _storage_policy_response(policy, current_user)
+
+
+@router.put("/storage-retention")
+async def update_storage_retention(data: RetentionPolicyUpdate, tenant_id: uuid.UUID | None = Query(None),
+    current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    from app.services.storage_retention import RetentionPolicyConflict, save_retention_policy
+
+    _require_org_admin(current_user)
+    target = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
+    try:
+        policy = await save_retention_policy(db, target, current_user.id, data)
+    except RetentionPolicyConflict:
+        raise HTTPException(409, detail={"code": "storage_retention_version_conflict", "recovery_action": "reload_policy"})
+    except ValueError:
+        raise HTTPException(503, detail={"code": "storage_retention_policy_unavailable", "retryable": True})
+    await db.commit()
+    return _storage_policy_response(policy, current_user)
 
 
 def _require_org_admin(current_user: User) -> None:

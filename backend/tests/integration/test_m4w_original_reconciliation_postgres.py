@@ -142,7 +142,10 @@ async def test_missing_changed_or_unavailable_original_preserves_unknown_intent(
             remote.mode = "corrupt" if condition == "corrupt" else "denied"
     else:
         root = d.root.parent / ".storage_objects/durable"
-        target = root / str(d.tenant) / hashlib.sha256(BODY).hexdigest()
+        async with app_user_sessionmaker() as db:
+            await pin_rls_tenant_context(db, d.tenant)
+            stored = await db.get(StorageBlob, blob_id)
+            target = d.root.parent / ".storage_objects" / stored.bucket / stored.object_key
         if condition == "missing":
             target.unlink()
         elif condition == "corrupt":

@@ -36,6 +36,9 @@ async def delivered(owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_
     target.parent.mkdir(parents=True)
     target.write_bytes(b"AAAA")
     monkeypatch.setattr(get_settings(), "AGENT_DATA_DIR", str(tmp_path))
+    # Settings tests may rebuild the cached factory after this router imported
+    # its process settings. Pin the real consumer's volume as well as producers.
+    monkeypatch.setattr(files.settings, "AGENT_DATA_DIR", str(tmp_path))
     monkeypatch.setattr("app.database.async_session", app_user_sessionmaker)
     async with owner_sessionmaker() as db:
         user = await db.get(User, user_id)

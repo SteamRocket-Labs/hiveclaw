@@ -7,6 +7,8 @@ import re
 import tempfile
 import uuid
 
+from app.services.original_blob_identity import original_object_key
+
 
 def remote_objects(args, sql):
     import json
@@ -24,6 +26,12 @@ def remote_objects(args, sql):
     )
 
 
+def has_generational_objects(args, sql):
+    return (sql(args, "SELECT to_regclass('public.storage_blobs') IS NOT NULL") == "t"
+        and sql(args, "SELECT EXISTS(SELECT 1 FROM storage_blobs WHERE kind='chat_upload' "
+            "AND object_key <> tenant_id::text || '/' || content_sha256)") == "t")
+
+
 def object_path(row):
     if (
         not isinstance(row, dict)
@@ -37,10 +45,11 @@ def object_path(row):
         raise ValueError("Invalid remote object recovery identity")
     if str(uuid.UUID(row["tenant_id"])) != row["tenant_id"] or str(uuid.UUID(row["id"])) != row["id"]:
         raise ValueError("Invalid remote object recovery identity")
-    key = f"{row['tenant_id']}/{row['content_sha256']}"
-    if row.get("object_key") != key:
+    keys = {original_object_key(row["tenant_id"], row["content_sha256"]),
+        original_object_key(row["tenant_id"], row["content_sha256"], generation_id=row["id"])}
+    if row.get("object_key") not in keys:
         raise ValueError("Invalid remote object recovery namespace")
-    return ".storage_objects/durable/" + key
+    return ".storage_objects/durable/" + row["object_key"]
 
 
 def export_objects(rows, profile, archive, existing, file_tree):

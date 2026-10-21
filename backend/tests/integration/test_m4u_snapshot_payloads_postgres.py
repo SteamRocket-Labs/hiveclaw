@@ -133,6 +133,13 @@ async def test_format_downgrade_preserves_shared_artifacts_and_server_references
 
     d = delivered
     owner_url = owner_sessionmaker.kw["bind"].url.render_as_string(hide_password=False)
+    # Test this reader boundary at its own revision. The migration runner commits
+    # compatible preceding revisions independently; they are not this guard.
+    prepared = subprocess.run([sys.executable, "-B", "-m", "alembic", "downgrade", "chat_snapshot_payload_refs_1021"],
+        cwd=ROOT / "backend", env={**os.environ, "DATABASE_URL": owner_url}, capture_output=True, timeout=30)
+    assert prepared.returncode == 0
+    async with owner_sessionmaker() as db:
+        original_head = await db.scalar(text("SELECT version_num FROM alembic_version"))
     marker = {"type": "artifact", "snapshot_payload_schema": PAYLOAD_SCHEMA, "artifact_id": str(d.first.id)}
 
     def downgrade():
@@ -143,7 +150,7 @@ async def test_format_downgrade_preserves_shared_artifacts_and_server_references
         result = downgrade()
         assert result.returncode != 0 and b"chat_snapshot_payloads_require_recovery_before_downgrade" in result.stderr
         async with owner_sessionmaker() as db:
-            assert await db.scalar(text("SELECT version_num FROM alembic_version")) == "chat_snapshot_payload_refs_1021"
+            assert await db.scalar(text("SELECT version_num FROM alembic_version")) == original_head
 
     await refused()
     async with owner_sessionmaker() as db:

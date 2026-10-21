@@ -132,6 +132,22 @@ objects. Existing backup profiles without remote objects remain supported.
 Bundles with remote objects use backup schema v2, which older recovery tools
 reject rather than restoring references without their required provider mapping.
 
+New originals bind their physical key to an immutable blob generation as well
+as the company and content hash. Repeated active uploads still reuse one
+payload; an upload after an inactive generation creates a fresh object and
+attachment reference. Old effects remain bound to the old key and cannot
+reach the new upload. Historical generation rows stay recorded; filenames
+and equal content hashes do not restore previous ownership.
+
+Legacy company/hash object keys remain readable at their saved locations.
+The `original_blob_generations_1021` reader revision permits only one uploading
+or available generation per company/hash and refuses downgrade while newer
+keys or duplicate generation history remain. Use a verified compatible backup
+for data rollback. Backups containing newer generations use schema v3 and
+preserve their exact keys through filesystem recovery; older recovery tools
+must reject that format. Legacy v1/v2 bundles remain supported. These identities
+prepare physical reclamation; they do not themselves enable quarantine or sweep.
+
 Current validation covers the Compose CLI model/build plan and owned macOS native
 processes with PostgreSQL 17/SCRAM and authenticated Redis. The recipe reuses the
 repository's PostgreSQL 15/Redis 7 container baselines; their container execution,

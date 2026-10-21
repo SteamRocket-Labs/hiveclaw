@@ -131,12 +131,25 @@ async def test_backup_restore_restarts_real_auth_files_approvals_and_encrypted_c
         port = unused_port()
         log_path = work / (name + ".log")
         storage_values = values if database == source.database else installer.read_profile(target_profile)
+        module, extra = "app.main:app", {}
+        if snapshot_layout == "legacy" and name == "source":
+            # Author old-compatible data through the real source HTTP path. This
+            # fixture changes only the physical key format, not the runtime API.
+            fixture = work / "legacy_original_runtime.py"
+            fixture.write_text("from app.services import upload_originals\n"
+                "from app.services.blob_store import BlobLocation\n"
+                "def location(tenant,digest,provider='filesystem',bucket='durable',**kwargs):\n"
+                "    return BlobLocation(provider,bucket,f'{tenant}/{digest}')\n"
+                "upload_originals._location=location\n"
+                "from app.main import app\n")
+            module = "legacy_original_runtime:app"
+            extra["PYTHONPATH"] = str(work) + os.pathsep + common.get("PYTHONPATH", "")
         with log_path.open("w") as log:
-            process = await asyncio.create_subprocess_exec(sys.executable, "-B", "-m", "uvicorn", "app.main:app",
+            process = await asyncio.create_subprocess_exec(sys.executable, "-B", "-m", "uvicorn", module,
                 "--host", "127.0.0.1", "--port", str(port), "--no-access-log", cwd=ROOT / "backend",
                 env={**common, "DATABASE_URL": runtime.set(database=database).render_as_string(hide_password=False),
                     "AGENT_DATA_DIR": str(agents), "HIVE_PROCESS_ROLE": role,
-                    **{key: value for key, value in storage_values.items() if key.startswith("BLOB_")}}, stdout=log, stderr=log)
+                    **{key: value for key, value in storage_values.items() if key.startswith("BLOB_")}, **extra}, stdout=log, stderr=log)
         processes.append((process, log_path))
         origin = f"http://127.0.0.1:{port}"
         await wait_ready(origin, process, log_path)
@@ -194,15 +207,15 @@ async def test_backup_restore_restarts_real_auth_files_approvals_and_encrypted_c
         configuration.set_main_option("script_location", str(ROOT / "backend/alembic"))
         graph = ScriptDirectory.from_config(configuration)
         current_head = graph.get_current_head()
-        legacy_head = graph.get_revision(current_head).down_revision
+        legacy_head = graph.get_revision("chat_snapshot_payload_refs_1021").down_revision
         downgraded = subprocess.run([sys.executable, "-B", "-m", "alembic", "downgrade", legacy_head],
             cwd=ROOT / "backend", env={**grant_env, "DATABASE_URL": owner_url}, capture_output=True, timeout=30)
         if snapshot_layout == "legacy":
             assert downgraded.returncode == 0, "The actual old catalog must preserve the authored work without bypassing downgrade checks"
-            expected_migrations = [current_head]
+            expected_migrations = [step.revision for step in reversed(list(graph.iterate_revisions(current_head, legacy_head)))]
         else:
             assert downgraded.returncode != 0
-            assert b"chat_snapshot_payloads_require_recovery_before_downgrade" in downgraded.stderr
+            assert b"original_generations_require_recovery_before_downgrade" in downgraded.stderr
             expected_migrations = []
             assert d.first.snapshot_json["snapshot_payload_schema"] == "hive.chat_artifact_snapshot_payload.v1"
         assert s3_server.writes == 1 and not (tmp_path / ".storage_objects").exists()

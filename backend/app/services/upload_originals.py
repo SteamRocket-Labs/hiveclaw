@@ -9,7 +9,7 @@ import uuid
 from weakref import WeakKeyDictionary
 
 from fastapi import HTTPException
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.engine import Engine
@@ -20,6 +20,7 @@ from app.core.resource_authority import authorize_resource_action
 from app.models.storage_blob import StorageBlob, StorageBlobRef
 from app.models.user import User
 from app.services.blob_store import BlobIntegrityError, BlobLocation, BlobPutRequest, BlobStoreError, FilesystemBlobStore
+from app.services.original_blob_identity import original_object_key
 
 REF_SCHEMA = "hive.chat_upload_original.v1"
 _INTENT_LOCKS = WeakKeyDictionary()
@@ -39,13 +40,18 @@ def _store(provider=None, *, metadata=None, bucket=None):
     return FilesystemBlobStore(Path(get_settings().AGENT_DATA_DIR) / ".storage_objects")
 
 
-def _location(tenant_id, digest, provider="filesystem", bucket="durable"):
-    return BlobLocation(provider=provider, bucket=bucket, object_key=f"{tenant_id}/{digest}")
+def _location(tenant_id, digest, provider="filesystem", bucket="durable", *, generation_id=None):
+    return BlobLocation(provider=provider, bucket=bucket,
+        object_key=original_object_key(tenant_id, digest, generation_id=generation_id))
 
 
 def _recorded_store(blob, tenant_id):
-    if (blob.provider not in {"filesystem", "s3"}
-        or blob.object_key != f"{tenant_id}/{blob.content_sha256}"
+    try:
+        keys = {original_object_key(tenant_id, blob.content_sha256),
+            original_object_key(tenant_id, blob.content_sha256, generation_id=blob.id)}
+    except (ValueError, TypeError):
+        raise BlobStoreError("Original attachment location requires reconciliation") from None
+    if (blob.provider not in {"filesystem", "s3"} or blob.object_key not in keys
         or (blob.provider == "filesystem" and blob.bucket != "durable")):
         raise BlobStoreError("Original attachment location requires reconciliation")
     return _store(blob.provider, metadata=blob.metadata_json if blob.provider == "s3" else None, bucket=blob.bucket)
@@ -68,17 +74,26 @@ async def _commit_upload_intent(db, *, tenant_id, digest, size):
             async with async_sessionmaker(independent, expire_on_commit=False)() as intent:
                 await pin_rls_tenant_context(intent, tenant_id)
                 existing = await intent.scalar(select(StorageBlob.id).where(StorageBlob.tenant_id == tenant_id,
-                    StorageBlob.content_sha256 == digest))
+                    StorageBlob.content_sha256 == digest, StorageBlob.state.in_(("uploading", "available"))))
                 if existing is None:
                     store = _store()
                     provider = get_settings().BLOB_STORAGE_PROVIDER
-                    location = _location(tenant_id, digest, provider, store.bucket if provider == "s3" else "durable")
-                    await intent.execute(insert(StorageBlob).values(id=uuid.uuid4(), tenant_id=tenant_id, scope_type="tenant",
+                    generation_id = uuid.uuid4()
+                    location = _location(tenant_id, digest, provider, store.bucket if provider == "s3" else "durable",
+                        generation_id=generation_id)
+                    existing = await intent.scalar(insert(StorageBlob).values(id=generation_id, tenant_id=tenant_id, scope_type="tenant",
                         kind="chat_upload", retention_class="original", state="uploading", provider=location.provider,
                         bucket=location.bucket, object_key=location.object_key, content_sha256=digest, size_bytes=size,
                         metadata_json=store.identity if provider == "s3" else {})
-                        .on_conflict_do_nothing(index_elements=[StorageBlob.tenant_id, StorageBlob.content_sha256]))
+                        .on_conflict_do_nothing(index_elements=[StorageBlob.tenant_id, StorageBlob.content_sha256],
+                            index_where=text("state IN ('uploading','available')")).returning(StorageBlob.id))
+                    if existing is None:
+                        existing = await intent.scalar(select(StorageBlob.id).where(StorageBlob.tenant_id == tenant_id,
+                            StorageBlob.content_sha256 == digest, StorageBlob.state.in_(("uploading", "available"))))
+                if existing is None:
+                    raise BlobStoreError("Original attachment generation requires reconciliation")
                 await intent.commit()
+                return existing
         except SQLAlchemyError:
             raise BlobStoreError("Durable original attachment intent is unavailable") from None
         finally:
@@ -88,12 +103,12 @@ async def _commit_upload_intent(db, *, tenant_id, digest, size):
 async def archive_upload(db: AsyncSession, *, tenant_id: uuid.UUID, user_id: uuid.UUID,
     agent_id: uuid.UUID | None, filename: str, body: bytes) -> StorageBlobRef:
     digest = hashlib.sha256(body).hexdigest()
-    await _commit_upload_intent(db, tenant_id=tenant_id, digest=digest, size=len(body))
+    blob_id = await _commit_upload_intent(db, tenant_id=tenant_id, digest=digest, size=len(body))
     # The unique digest and row lock also serialize two first-time uploads until
     # their actual metadata/reference commit; no filename proves ownership.
     blob = await db.scalar(select(StorageBlob).where(StorageBlob.tenant_id == tenant_id,
-        StorageBlob.content_sha256 == digest).with_for_update().execution_options(populate_existing=True))
-    if blob.state not in {"uploading", "available"} or blob.size_bytes != len(body):
+        StorageBlob.id == blob_id).with_for_update().execution_options(populate_existing=True))
+    if blob is None or blob.state not in {"uploading", "available"} or blob.size_bytes != len(body):
         raise BlobStoreError("Original attachment requires storage reconciliation")
     store = _recorded_store(blob, tenant_id)
     location = BlobLocation(blob.provider, blob.bucket, blob.object_key)

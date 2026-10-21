@@ -91,6 +91,11 @@ def s3_server():
                     self.send_response(200)
                     self.end_headers()
                     return
+                if self.command == "DELETE":
+                    state.objects.pop(self.path, None)
+                    self.send_response(204)
+                    self.end_headers()
+                    return
                 if state.mode == "redirect":
                     self.send_response(307)
                     self.send_header("Location", state.endpoint + "/credential-sink")
@@ -108,7 +113,7 @@ def s3_server():
                 self.end_headers()
                 self.wfile.write(result)
 
-        do_PUT = do_GET = handle_object
+        do_PUT = do_GET = do_DELETE = handle_object
 
     server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     state.endpoint = f"http://127.0.0.1:{server.server_port}"

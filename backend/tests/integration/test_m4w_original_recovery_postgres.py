@@ -67,7 +67,13 @@ async def test_offline_recovery_preserves_reconciled_unreferenced_original_and_r
     receipt = invoke("backup", "--offline", "--profile", profile, "--agents", d.root.parent, "--output", backup, "--pg-bin", binary)
     assert receipt["status"] == "backed_up"
     manifest = json.loads((backup / "manifest.json").read_text())
+    assert manifest["schema"] == "hive.self_hosted_backup.v3"
     assert len(manifest["remote_objects"]) == int(selected == "s3")
+    if selected == "s3":
+        from app.scripts import self_hosted_recovery as recovery
+
+        with pytest.raises(recovery.RecoveryError, match="backup_generation_schema_required"):
+            recovery.verify_contents(backup, {**manifest, "schema": recovery.REMOTE_SCHEMA})
     remote.stop()
     target_profile = installer.configure(work / "target-profile", public_origin="http://127.0.0.1:3014", port=3014,
         recovery_profile=backup / "installation.env")

@@ -3,7 +3,6 @@
 import uuid
 import asyncio
 from datetime import datetime, timezone
-import hashlib
 
 from fastapi import FastAPI, Request
 from httpx import ASGITransport, AsyncClient
@@ -174,8 +173,9 @@ async def test_concurrent_same_body_uploads_reuse_one_payload_with_independent_w
     assert len({(path.stat().st_dev, path.stat().st_ino) for path in files}) == 3
 
 
-async def test_same_body_in_different_tenants_has_separate_objects_and_invisible_foreign_refs(original_api, owner_sessionmaker):
+async def test_same_body_in_different_tenants_has_separate_objects_and_invisible_foreign_refs(original_api, owner_sessionmaker, app_user_sessionmaker):
     from app.core.security import create_access_token
+    from app.models.storage_blob import StorageBlob
     from tests.services.test_session_input_control_v2 import _seed_session
 
     d, client = original_api
@@ -190,8 +190,14 @@ async def test_same_body_in_different_tenants_has_separate_objects_and_invisible
         refs.append(result.json()["original_attachment"]["id"])
     foreign = await client.get(f"/chat/attachments/{refs[1]}/download")
     assert foreign.status_code == 404 and body not in foreign.content, foreign.text
-    digest = hashlib.sha256(body).hexdigest()
-    first, second = [d.root.parent / ".storage_objects/durable" / str(company) / digest for company in (d.tenant, tenant)]
+    paths = []
+    for company in (d.tenant, tenant):
+        async with app_user_sessionmaker() as db:
+            await pin_rls_tenant_context(db, company)
+            blob = await db.scalar(select(StorageBlob).where(StorageBlob.tenant_id == company))
+            assert blob.provider == "filesystem"
+            paths.append(d.root.parent / ".storage_objects" / blob.bucket / blob.object_key)
+    first, second = paths
     assert first.read_bytes() == second.read_bytes() == body
     assert first.stat().st_ino != second.stat().st_ino
 
@@ -206,7 +212,10 @@ async def test_unavailable_original_never_falls_back_to_mutable_workspace(origin
         data={"agent_id": str(d.agent), "skip_personal_kb": "true"})
     assert result.status_code == 200, result.text
     projection = result.json()
-    path = d.root.parent / ".storage_objects/durable" / str(d.tenant) / hashlib.sha256(body).hexdigest()
+    async with app_user_sessionmaker() as db:
+        await pin_rls_tenant_context(db, d.tenant)
+        blob = await db.scalar(select(StorageBlob).where(StorageBlob.tenant_id == d.tenant))
+        path = d.root.parent / ".storage_objects" / blob.bucket / blob.object_key
     if damage == "missing":
         path.unlink()
     elif damage == "corrupt":

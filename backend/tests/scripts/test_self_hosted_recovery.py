@@ -123,6 +123,7 @@ def test_maintenance_image_python_layout_has_no_application_dependency(bundle, t
         ("backend/app/scripts/self_hosted_recovery.py", "backend/app/scripts/self_hosted_recovery.py"),
         ("backend/app/scripts/object_storage_recovery.py", "backend/app/scripts/object_storage_recovery.py"),
         ("backend/app/services/blob_store.py", "backend/app/services/blob_store.py"),
+        ("backend/app/services/original_blob_identity.py", "backend/app/services/original_blob_identity.py"),
         ("backend/app/services/s3_blob_store.py", "backend/app/services/s3_blob_store.py")):
         destination = image / target
         destination.parent.mkdir(parents=True, exist_ok=True)

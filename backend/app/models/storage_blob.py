@@ -17,6 +17,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     func,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
@@ -30,7 +31,8 @@ class StorageBlob(Base):
     __tablename__ = "storage_blobs"
     __table_args__ = (
         UniqueConstraint("tenant_id", "id", name="uq_storage_blobs_tenant_id_id"),
-        UniqueConstraint("tenant_id", "content_sha256", name="uq_storage_blobs_tenant_digest"),
+        Index("uq_storage_blobs_active_digest", "tenant_id", "content_sha256", unique=True,
+            postgresql_where=text("state IN ('uploading','available')")),
         UniqueConstraint("provider", "bucket", "object_key", name="uq_storage_blobs_provider_location"),
         CheckConstraint("scope_type IN ('tenant','system')", name="ck_storage_blobs_scope_type"),
         CheckConstraint(

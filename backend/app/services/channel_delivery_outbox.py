@@ -540,14 +540,68 @@ class ChannelDeliveryOutboxService:
                 resolved.append((artifact_id, absolute, Path(artifact.path).name))
             return resolved
 
+    async def _private_delivery_reader(self, db: AsyncSession, item: ClaimedChannelDelivery, session: ChatSession):
+        from fastapi import HTTPException
+        from app.services.external_principal_service import load_external_runtime_actor
+        from app.services.runtime_user_identity import load_scoped_runtime_user
+
+        user = await load_scoped_runtime_user(db, item.user_id, tenant_id=item.tenant_id) if item.user_id else None
+        if item.user_id is not None and (user is None or session.user_id != item.user_id):
+            raise HTTPException(403, detail={"code": "artifact_delivery_reader_unavailable"})
+        if item.external_principal_id is not None:
+            actor = await load_external_runtime_actor(db, tenant_id=item.tenant_id,
+                principal_id=item.external_principal_id, expected_user_id=item.user_id)
+            if item.user_id is not None and (not actor.authority_bound or actor.id != item.user_id):
+                raise HTTPException(403, detail={"code": "artifact_delivery_binding_changed"})
+        return user
+
+    async def _authorize_native_result_text(self, db: AsyncSession, item: ClaimedChannelDelivery) -> None:
+        from app.core.source_read_purpose import source_recipient_read
+        from app.models.session_v2 import SessionModelResult, SessionRunOutcome
+        from app.services.content_input_receipts import ContentInputReceiptError, _validate_input_dependencies
+        from app.services.session_model_inputs import _model_dependencies
+
+        if item.metadata.get("source") not in {"session_terminal_outcome", "session_terminal_outcome_recovery"}:
+            return
+        session = await db.get(ChatSession, item.session_id, populate_existing=True)
+        if session is None or session.tenant_id != item.tenant_id or session.agent_id != item.agent_id:
+            raise ContentInputReceiptError("native_result_source_unavailable", "The original work is unavailable.", 503)
+        if session.audience_kind == "group":
+            return  # The current group recipient/source closure has its own release gate.
+        try:
+            outcome_id = uuid.UUID(str(item.metadata.get("outcome_id")))
+        except (ValueError, TypeError, AttributeError) as exc:
+            raise ContentInputReceiptError("native_result_source_unavailable", "The result reference is unavailable.", 503) from exc
+        row = (await db.execute(select(SessionRunOutcome, SessionModelResult).join(SessionModelResult,
+            SessionModelResult.id == SessionRunOutcome.terminal_result_id).where(
+                SessionRunOutcome.id == outcome_id, SessionRunOutcome.tenant_id == item.tenant_id,
+                SessionRunOutcome.session_id == item.session_id, SessionRunOutcome.run_id == item.runtime_task_id,
+                SessionRunOutcome.state == "terminal_committed", SessionModelResult.tenant_id == item.tenant_id,
+                SessionModelResult.session_id == item.session_id, SessionModelResult.run_id == item.runtime_task_id,
+                SessionModelResult.state == "round_committed").execution_options(populate_existing=True))).first()
+        if row is None:
+            raise ContentInputReceiptError("native_result_source_unavailable", "The committed result is unavailable.", 503)
+        _outcome, result = row
+        if (item.text != str((result.seal_json or {}).get("semantic_content") or "").strip()
+            or (item.metadata.get("terminal_result_id") is not None
+                and str(result.id) != str(item.metadata["terminal_result_id"]))):
+            raise ContentInputReceiptError("native_result_source_changed", "The result no longer matches its delivery.", 403)
+        dependencies, complete = _model_dependencies(result)
+        if not complete:
+            raise ContentInputReceiptError("native_result_sources_unavailable", "The result lacks its complete source receipt.", 503)
+        user = await self._private_delivery_reader(db, item, session)
+        if user is None:
+            await _validate_input_dependencies(db, item.tenant_id, dependencies, user=None)
+        else:
+            with source_recipient_read(session_id=session.id, user_id=user.id):
+                await _validate_input_dependencies(db, item.tenant_id, dependencies, user=user)
+
     async def _authorize_artifact_part(self, db: AsyncSession, item: ClaimedChannelDelivery,
         artifact_id: uuid.UUID) -> ChatArtifact:
         from fastapi import HTTPException
         from app.core.resource_authority import authorize_resource_action
         from app.core.source_read_purpose import source_recipient_read
         from app.services.content_input_receipts import validate_artifact_content_receipt
-        from app.services.external_principal_service import load_external_runtime_actor
-        from app.services.runtime_user_identity import load_scoped_runtime_user
 
         artifact = await db.scalar(select(ChatArtifact).where(ChatArtifact.id == artifact_id,
             ChatArtifact.tenant_id == item.tenant_id, ChatArtifact.agent_id == item.agent_id,
@@ -565,14 +619,7 @@ class ChannelDeliveryOutboxService:
                 with source_recipient_read(session_id=session.id, user_id=user.id):
                     await validate_artifact_content_receipt(db, item.tenant_id, user, artifact)
         else:
-            user = await load_scoped_runtime_user(db, item.user_id, tenant_id=item.tenant_id) if item.user_id else None
-            if item.user_id is not None and (user is None or session.user_id != item.user_id):
-                raise HTTPException(403, detail={"code": "artifact_delivery_reader_unavailable"})
-            if item.external_principal_id is not None:
-                actor = await load_external_runtime_actor(db, tenant_id=item.tenant_id,
-                    principal_id=item.external_principal_id, expected_user_id=item.user_id)
-                if item.user_id is not None and (not actor.authority_bound or actor.id != item.user_id):
-                    raise HTTPException(403, detail={"code": "artifact_delivery_binding_changed"})
+            user = await self._private_delivery_reader(db, item, session)
             if user is not None:
                 with source_recipient_read(session_id=session.id, user_id=user.id):
                     await authorize_resource_action(db, user, agent_id=item.agent_id, resource_kind="chat_artifact",
@@ -603,7 +650,20 @@ class ChannelDeliveryOutboxService:
             return
         idempotency_key = f"{item.id}:{part_key}"
         with contextlib.ExitStack() as captured_files:
-            if part_key != "text":
+            if part_key == "text":
+                from fastapi import HTTPException
+                from app.services.content_input_receipts import ContentInputReceiptError
+
+                try:
+                    await self._authorize_native_result_text(sender_kwargs["db"], item)
+                except (HTTPException, ContentInputReceiptError) as exc:
+                    detail = getattr(exc, "detail", None)
+                    code = getattr(exc, "code", None) or (detail.get("code") if isinstance(detail, dict) else None)
+                    error_type = (ChannelDeliveryRetryableError if exc.status_code >= 500 else ChannelDeliveryPermanentError)
+                    raise error_type(f"native_result_source_unavailable:{code or 'source_access_denied'}") from exc
+                except Exception as exc:
+                    raise ChannelDeliveryRetryableError(f"native_result_authority_unavailable:{type(exc).__name__}") from exc
+            else:
                 from fastapi import HTTPException
                 from app.services.chat_artifact_delivery import captured_chat_artifact_file
                 from app.services.content_input_receipts import ContentInputReceiptError

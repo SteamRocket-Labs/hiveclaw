@@ -115,7 +115,7 @@ def original_upload_projection(ref):
         "content_sha256": ref.metadata_json["content_sha256"], "size_bytes": ref.metadata_json["size_bytes"]}
 
 
-async def capture_original_download(db: AsyncSession, user: User, ref_id: uuid.UUID):
+async def resolve_original_download(db: AsyncSession, user: User, ref_id: uuid.UUID, *, runtime_principal=None):
     row = (await db.execute(select(StorageBlobRef, StorageBlob).join(StorageBlob,
         (StorageBlob.id == StorageBlobRef.blob_id) & (StorageBlob.tenant_id == StorageBlobRef.tenant_id)).where(
             StorageBlobRef.id == ref_id, StorageBlobRef.tenant_id == user.tenant_id,
@@ -127,13 +127,18 @@ async def capture_original_download(db: AsyncSession, user: User, ref_id: uuid.U
     if ref.owner_type == "channel_upload":
         from app.services.channel_originals import authorize_channel_original
 
-        await authorize_channel_original(db, user=user, ref=ref)
-        return await capture_original_body(blob, metadata, user.tenant_id)
-    await authorize_upload_original(db, user, ref)
+        await authorize_channel_original(db, user=user, ref=ref, runtime_principal=runtime_principal)
+    else:
+        await authorize_upload_original(db, user, ref, runtime_principal=runtime_principal)
+    return blob, dict(metadata)
+
+
+async def capture_original_download(db: AsyncSession, user: User, ref_id: uuid.UUID):
+    blob, metadata = await resolve_original_download(db, user, ref_id)
     return await capture_original_body(blob, metadata, user.tenant_id)
 
 
-async def authorize_upload_original(db, user, ref):
+async def authorize_upload_original(db, user, ref, *, runtime_principal=None):
     metadata = ref.metadata_json
     try:
         if not isinstance(metadata, dict) or metadata.get("schema") != REF_SCHEMA:
@@ -146,7 +151,7 @@ async def authorize_upload_original(db, user, ref):
         raise BlobStoreError("Original attachment authority is unavailable")
     if agent is not None:
         await authorize_resource_action(db, user, agent_id=agent, resource_kind="upload_attachment",
-            resource_id=ref.id, action="read", owner_user_id=owner, authority_state="owned")
+            resource_id=ref.id, action="read", owner_user_id=owner, authority_state="owned", runtime_principal=runtime_principal)
     elif owner != user.id:
         raise HTTPException(403, "Original attachment access denied")
 

@@ -184,6 +184,18 @@ source and current authority, then retain separate pins for each input revision
 and source. Revising or cancelling an input preserves its historical references.
 Client-supplied owner, digest or path fields do not establish source authority.
 
+The native `read_file`, `read_document` and `fs_read` tools accept an optional
+`original_attachment_id` from that recorded source. Keep its canonical `path`;
+omitting the option reads the working copy as before. An explicit original read
+never substitutes a mutable file when the original is missing or corrupt.
+Images retain their image blocks and original documents return complete Markdown.
+Successful original tool reads frame the complete content as data in a structured
+receipt; text resembling executor messages does not change the read's status.
+Source IDs grant no access: current requester and source permissions still apply,
+including revocation before later model or artifact consumption. Recorded native
+reads retain a separate work reference. Temporary original bytes and conversion
+files are removed after reading; they do not publish temporary cache links.
+
 Explicitly removing an unused upload from the composer asks
 `DELETE /api/v1/chat/attachments/{ref_id}/draft?expected_content_sha256=...`
 to release that owner's draft reference. Holds, recorded work/history and

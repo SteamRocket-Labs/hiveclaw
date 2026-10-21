@@ -13,7 +13,7 @@ from app.services.content_input_receipts import ContentInputReceiptError, _autho
 from app.services.session_model_inputs import _hash, _model_dependencies
 
 _NATIVE_LIVE_SOURCES = frozenset({"trigger_snapshot", "trigger_write", "trigger_read", "native_trigger_input",
-    "native_trigger_context", "knowledge_document"})
+    "native_trigger_context", "knowledge_document", "original_attachment"})
 
 
 async def readable_trigger_definitions(db, *, triggers, request):

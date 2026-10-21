@@ -105,6 +105,11 @@ async def _validate_input_dependency_batch(db, tenant_id: uuid.UUID, dependencie
 
         published_user, published = await published_creation_seed_sources(db, tenant_id=tenant_id, request=runtime_request)
     for dependency in dependencies:
+        if dependency["source_kind"] == "original_attachment":
+            from app.services.original_tool_sources import validate_original_dependency
+
+            await validate_original_dependency(db, tenant_id, dependency, user=user, runtime_request=runtime_request)
+            continue
         if dependency["source_kind"] == "skill_evolution_observation":
             from app.services.skill_evolution_sources import validate_observation
 
@@ -976,6 +981,10 @@ async def authorize_workspace_receipt_read(request):
     if request.tool_name not in {"read_file", "read_document", "exit_plan_mode"} and not (
         request.tool_name == "fs_read" and str(request.arguments.get("mode") or "text").strip().lower() in {"text", "document"}
     ):
+        return None
+    if request.tool_name != "exit_plan_mode" and "original_attachment_id" in request.arguments:
+        # The original reader authorizes its own exact source and records an
+        # invocation-bound receipt. A mutable work-copy receipt is unrelated.
         return None
     context = request.context
     try:

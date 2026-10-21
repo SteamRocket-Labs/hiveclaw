@@ -522,6 +522,13 @@ async def _origin_dependencies(db, *, tenant_id, agent_id, ref):
         dependency = _channel_context_dependency(agent_id, content,
             invocation.effective_arguments_json or invocation.provider_arguments_json)
         return _unique_dependencies([*dependencies, *([dependency] if dependency else [])]), bool(dependency) and inherited_complete
+    arguments = invocation.effective_arguments_json or invocation.provider_arguments_json
+    if invocation.tool_name in {"read_file", "read_document", "fs_read"} and "original_attachment_id" in arguments:
+        from app.services.original_tool_sources import original_tool_result_sources
+
+        sources, complete = await original_tool_result_sources(db, tenant_id=tenant_id, agent_id=agent_id,
+            invocation=invocation, content_hash=payload["content_hash"])
+        return _unique_dependencies([*dependencies, *sources]), inherited_complete and complete
     if invocation.tool_name == "read_runtime_result":
         from app.services.runtime_result_sources import runtime_result_tool_sources
 

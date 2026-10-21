@@ -331,7 +331,14 @@ def _read_file(
     tool_name: str = "read_file",
     authority_scope=None,
     permission_profile=None,
+    typed_errors: bool = False,
 ) -> "str | ToolContentEnvelope":
+    def _typed_failure(value):
+        return ToolContentEnvelope(text=value, metadata={"filesystem_read_error": True}) if typed_errors else value
+
+    def _failure(*args, **kwargs):
+        return _typed_failure(_workspace_error(*args, **kwargs))
+
     # Storage reserved for authority-bound recovery refs is denied regardless of
     # existence; every other workspace read decides KNOWN FOREIGN OWNERSHIP from
     # the trusted manifest registry before touching the filesystem, then checks
@@ -340,9 +347,9 @@ def _read_file(
     # requester may own (e.g. a fresh Plan Mode plan file) is an honest
     # ``not_found``. An EXISTING file the requester cannot read stays denied.
     if is_recovery_manifest_storage_path(rel_path):
-        return _workspace_error(tool_name, "auth_or_permission", "Access denied for this resource owner.")
+        return _failure(tool_name, "auth_or_permission", "Access denied for this resource owner.")
     if _authority_known_foreign_path(authority_scope, rel_path):
-        return _workspace_error(tool_name, "auth_or_permission", "Access denied for this resource owner.")
+        return _failure(tool_name, "auth_or_permission", "Access denied for this resource owner.")
     profile = permission_profile_snapshot(permission_profile)
     profile_snapshot = profile.get("capability_policy_snapshot")
     exact_scope = isinstance(profile_snapshot, dict) and profile_snapshot.get("session_exact_scope") is True
@@ -350,10 +357,10 @@ def _read_file(
     if exact_scope:
         file_path = _resolved_workspace_path(ws, rel_path, permission_profile)
         if file_path is None:
-            return _workspace_error(tool_name, "auth_or_permission", "Access denied for this path.")
+            return _failure(tool_name, "auth_or_permission", "Access denied for this path.")
     elif rel_path and rel_path.startswith("enterprise_info"):
         if not company_context_path_allowed(rel_path):
-            return _workspace_error(tool_name, "auth_or_permission", "Only generated company context is available.")
+            return _failure(tool_name, "auth_or_permission", "Only generated company context is available.")
         if tenant_id:
             enterprise_root = WORKSPACE_ROOT / f"enterprise_info_{tenant_id}"
         else:
@@ -362,24 +369,24 @@ def _read_file(
         read_root, read_path = enterprise_root, sub
         file_path = (enterprise_root / sub).resolve() if sub else enterprise_root
         if not _is_within_path(file_path, enterprise_root):
-            return _workspace_error(tool_name, "auth_or_permission", "Access denied for this path.")
+            return _failure(tool_name, "auth_or_permission", "Access denied for this path.")
     else:
         file_path = _resolved_workspace_path(ws, rel_path, permission_profile)
         if file_path is None:
-            return _workspace_error(tool_name, "auth_or_permission", "Access denied for this path.")
+            return _failure(tool_name, "auth_or_permission", "Access denied for this path.")
 
     authority_path = file_path.relative_to(ws.resolve()).as_posix() if _is_within_path(file_path, ws) else rel_path
     if _authority_known_foreign_path(authority_scope, authority_path):
-        return _workspace_error(tool_name, "auth_or_permission", "Access denied for this resource owner.")
+        return _failure(tool_name, "auth_or_permission", "Access denied for this resource owner.")
     if not file_path.exists():
-        return _workspace_error(
+        return _failure(
             tool_name,
             "not_found",
             f"File not found: {rel_path}",
             actionable_hint="Check the path or use glob_search/list_files to discover the correct file first.",
         )
     if not _authority_allows_path(authority_scope, authority_path):
-        return _workspace_error(tool_name, "auth_or_permission", "Access denied for this resource owner.")
+        return _failure(tool_name, "auth_or_permission", "Access denied for this resource owner.")
     # Image files → typed image block (CC Read parity): vision-capable models see
     # the image natively; the text fallback names the file for text-only providers.
     image_media = _IMAGE_MEDIA_TYPES.get(file_path.suffix.lower())
@@ -389,7 +396,7 @@ def _read_file(
 
             raw = _read_receipted_workspace_bytes(read_root, read_path, authority_scope, rel_path)
             if len(raw) > _MAX_IMAGE_BYTES:
-                return _workspace_error(
+                return _failure(
                     tool_name,
                     "operation_failed",
                     f"Image too large ({len(raw)} bytes; max {_MAX_IMAGE_BYTES}).",
@@ -406,9 +413,9 @@ def _read_file(
                 data=base64.b64encode(raw).decode("ascii"),
             )
         except WorkspaceAuthorityError as exc:
-            return _workspace_storage_error(tool_name, exc)
+            return _typed_failure(_workspace_storage_error(tool_name, exc))
         except Exception as e:
-            return _workspace_error(tool_name, "operation_failed", f"Image read failed: {e}")
+            return _failure(tool_name, "operation_failed", f"Image read failed: {e}")
 
     try:
         raw = _read_receipted_workspace_bytes(read_root, read_path, authority_scope, rel_path)
@@ -418,9 +425,9 @@ def _read_file(
             content = sanitize_managed_credential_guidance(content)
         return _append_workspace_provenance_hint(content, ws, rel_path, directory=False)
     except WorkspaceAuthorityError as exc:
-        return _workspace_storage_error(tool_name, exc)
+        return _typed_failure(_workspace_storage_error(tool_name, exc))
     except Exception as e:
-        return _workspace_error(tool_name, "operation_failed", f"Read failed: {e}")
+        return _failure(tool_name, "operation_failed", f"Read failed: {e}")
 
 
 def _is_skill_instruction_file(ws: Path, file_path: Path) -> bool:

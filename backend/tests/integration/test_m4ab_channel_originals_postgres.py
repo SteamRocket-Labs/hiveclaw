@@ -35,6 +35,7 @@ async def test_channel_bytes_have_stable_private_refs_and_survive_work_copy_chan
     original_api, provider, app_user_sessionmaker, channel,  # noqa: F811
 ):
     from app.models.storage_blob import StorageBlob, StorageBlobRef
+    from app.models.workspace_resource import WorkspaceResourceManifest
 
     d, client = original_api
     async with app_user_sessionmaker() as db:
@@ -48,18 +49,31 @@ async def test_channel_bytes_have_stable_private_refs_and_survive_work_copy_chan
     ref = result.json()
     assert ref["content_sha256"] == hashlib.sha256(BODY).hexdigest() and ref["size_bytes"] == len(BODY)
     assert "synthetic-provider-capability" not in result.text
-    (d.root / first).write_bytes(b"EDITED_WORK_COPY")
+    edited = await d.client.put(f"/agents/{d.agent}/files/content", params={"path": first},
+        json={"content": "EDITED_WORK_COPY", "expected_current_hash": hashlib.sha256(BODY).hexdigest()})
+    assert edited.status_code == 200, edited.text
     (d.root / second).unlink()
     for path in (first, second):
-        found = (await client.get("/chat/attachments/workspace-original", params={"agent_id": str(d.agent), "path": path})).json()
+        discovered = await client.get("/chat/attachments/workspace-original", params={"agent_id": str(d.agent), "path": path})
+        assert discovered.status_code == 200, discovered.text
+        found = discovered.json()
         downloaded = await client.get(f"/chat/attachments/{found['id']}/download")
         assert downloaded.status_code == 200 and downloaded.content == BODY, downloaded.text
     assert (d.root / first).read_bytes() == b"EDITED_WORK_COPY"
+    from tests.integration.test_m4ad_original_tool_reads_postgres import context, read
+
+    native = await read(await context(d, app_user_sessionmaker),
+        {"workspace_path": first, "original_attachment": ref})
+    assert json.loads(str(native))["content"] == BODY.decode()
     async with app_user_sessionmaker() as db:
         await pin_rls_tenant_context(db, d.tenant)
         rows = (await db.scalars(select(StorageBlob).where(StorageBlob.tenant_id == d.tenant, StorageBlob.kind == "chat_upload"))).all()
         refs = (await db.scalars(select(StorageBlobRef).where(StorageBlobRef.tenant_id == d.tenant, StorageBlobRef.owner_type == "channel_upload"))).all()
         assert len(rows) == 1 and len(refs) == 2 and all(row.blob_id == rows[0].id for row in refs)
+        manifest = await db.scalar(select(WorkspaceResourceManifest).where(WorkspaceResourceManifest.agent_id == d.agent,
+            WorkspaceResourceManifest.path == first))
+        assert manifest.source == "workspace_api_write"
+        assert all(row.metadata_json["source"] == f"{channel}_upload" for row in refs)
         assert rows[0].state == "available" and all("synthetic-provider-capability" not in str(row.metadata_json) for row in refs)
     if provider[0] == "s3":
         assert provider[1].writes == 1

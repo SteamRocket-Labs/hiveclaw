@@ -8,6 +8,9 @@ from pathlib import Path
 from app.tools.decorator import RESULT_CHARS_UNLIMITED, ToolMeta, tool
 from app.tools.result_envelope import ToolContentEnvelope, render_tool_error
 
+_ORIGINAL_ATTACHMENT_PARAMETER = {"type": "string", "format": "uuid",
+    "description": "Optional original_attachment.id from an uploaded source. Read its verified original bytes instead of the editable path; current source authority is required."}
+
 
 async def _maybe_await_tool_result(value):
     if inspect.isawaitable(value):
@@ -80,6 +83,7 @@ def list_files(workspace: Path, arguments: dict, tenant_id: str | None = None, a
         parameters={
             "type": "object",
             "properties": {
+                "original_attachment_id": _ORIGINAL_ATTACHMENT_PARAMETER,
                 "path": {
                     "type": "string",
                     "description": "File path, e.g.: tasks.json, soul.md, memory/self/self.md, skills/my-skill/SKILL.md, enterprise_info/company_profile.md",
@@ -102,7 +106,12 @@ def read_file(
     tenant_id: str | None = None,
     authority_scope=None,
     permission_profile=None,
+    execution_context=None,
 ) -> "str | ToolContentEnvelope":
+    if "original_attachment_id" in arguments:
+        from app.services.original_tool_reads import read_original_for_tool
+
+        return read_original_for_tool(workspace, arguments, tenant_id, execution_context=execution_context, tool_name="read_file")
     from app.services.agent_tool_domains.workspace import _read_file
 
     return _read_file(
@@ -394,6 +403,7 @@ def delete_file(workspace: Path, arguments: dict, tenant_id: str | None = None, 
                     "type": "string",
                     "description": "Document file path, e.g.: workspace/knowledge_base/report.pdf",
                 },
+                "original_attachment_id": _ORIGINAL_ATTACHMENT_PARAMETER,
                 "mode": {
                     "type": "string",
                     "enum": ["auto", "fast", "ocr", "layout", "vision"],
@@ -430,7 +440,12 @@ def delete_file(workspace: Path, arguments: dict, tenant_id: str | None = None, 
         adapter="workspace_args",
     )
 )
-async def read_document(workspace: Path, arguments: dict, tenant_id: str | None = None, authority_scope=None) -> str:
+async def read_document(workspace: Path, arguments: dict, tenant_id: str | None = None, authority_scope=None, execution_context=None) -> str:
+    if "original_attachment_id" in arguments:
+        from app.services.original_tool_reads import read_original_for_tool
+
+        return await read_original_for_tool(workspace, arguments, tenant_id, execution_context=execution_context,
+            tool_name="read_document", document=True)
     from app.services.agent_tool_domains.workspace import _read_document
 
     raw_max_chars = arguments.get("max_chars")
@@ -628,6 +643,7 @@ async def run_command(workspace: Path, arguments: dict, tenant_id: str | None = 
                     "description": "Read mode (default text)",
                 },
                 "path": {"type": "string", "description": "File or directory path"},
+                "original_attachment_id": _ORIGINAL_ATTACHMENT_PARAMETER,
                 "pattern": {
                     "type": "string",
                     "description": "Glob pattern or regex (used by glob/grep modes)",
@@ -645,8 +661,16 @@ async def run_command(workspace: Path, arguments: dict, tenant_id: str | None = 
         adapter="workspace_args",
     )
 )
-def fs_read(workspace: Path, arguments: dict, tenant_id: str | None = None, authority_scope=None) -> str:
+def fs_read(workspace: Path, arguments: dict, tenant_id: str | None = None, authority_scope=None, execution_context=None) -> str:
     mode = (arguments.get("mode") or "text").strip().lower()
+    if "original_attachment_id" in arguments:
+        from app.services.original_tool_reads import read_original_for_tool
+
+        if mode not in {"text", "document"}:
+            return render_tool_error(tool_name="fs_read", error_class="bad_arguments",
+                message="An original attachment requires text or document mode.")
+        return read_original_for_tool(workspace, arguments, tenant_id,
+            execution_context=execution_context, tool_name="fs_read", document=mode == "document")
     if mode == "text":
         return _call_with_optional_authority(
             read_file,

@@ -79,6 +79,8 @@ async def adapt_and_call(
                 context_kwargs["authority_scope"] = request.context.workspace_authority_scope
             if "permission_profile" in signature.parameters:
                 context_kwargs["permission_profile"] = request.context.permission_profile
+            if "execution_context" in signature.parameters:
+                context_kwargs["execution_context"] = request.context
             result = fn(
                 request.context.workspace,
                 request.arguments,

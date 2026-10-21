@@ -5,35 +5,16 @@ import argparse
 import json
 import os
 from pathlib import Path
-import re
 import secrets
 import shlex
-import stat
 import tempfile
+import sys
 from urllib.parse import urlsplit
 import uuid
 
 ROOT = Path(__file__).resolve().parents[1]
-SECRET_KEYS = ("HIVE_INSTALL_SCHEMA_PASSWORD", "HIVE_INSTALL_RUNTIME_PASSWORD", "HIVE_INSTALL_REDIS_PASSWORD",
-    "HIVE_INSTALL_SECRET_KEY", "HIVE_INSTALL_JWT_SECRET_KEY", "HIVE_INSTALL_SECRETS_MASTER_KEY")
-
-
-def read_profile(path: Path) -> dict[str, str]:
-    """Read only the literal private profile format emitted by this command."""
-    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
-    with os.fdopen(descriptor, "r", encoding="utf-8") as handle:
-        info = os.fstat(handle.fileno())
-        if not stat.S_ISREG(info.st_mode) or info.st_mode & 0o077 or info.st_size > 64 * 1024:
-            raise ValueError("Installation profiles must be private and bounded")
-        values = {}
-        for line in handle:
-            match = re.fullmatch(r"([A-Z][A-Z0-9_]*)='((?:\\'|[^'])*)'\n?", line)
-            if not match or match[1] in values:
-                raise ValueError("Invalid installation profile")
-            values[match[1]] = match[2].replace("\\'", "'")
-        if any(not re.fullmatch(r"[a-f0-9]{32,128}", values.get(key, "")) for key in SECRET_KEYS):
-            raise ValueError("Invalid installation secrets")
-        return values
+sys.path.insert(0, str(ROOT / "backend"))
+from app.scripts.self_hosted_recovery import SECRET_KEYS, read_profile  # noqa: E402
 
 
 def configure(directory: Path, *, public_origin: str, port: int, recovery_profile: Path | None = None) -> Path:

@@ -159,3 +159,97 @@ business acceptance. Returning to an older application image cannot reverse sche
 or data changes: keep the original recovery point and its approved source before
 an upgrade. Container execution, clean-machine recovery and a full upgrade/rollback
 journey remain separate acceptance checks while Linux testing is deferred.
+
+## Upgrade preflight and source verification
+
+Keep the original approved source, image IDs and recovery point before building
+candidate images. Do not prune original images during the procedure. Building a
+candidate does not update the running containers. Record each service separately;
+a public backend health response cannot establish the API or frontend source.
+
+The frontend build emits `build-identity.json` from its source files, paths and
+modes. Backend health already exposes the corresponding server-derived source
+identity. These are source identities, not signed image attestations or business
+acceptance. A time-stamped version label alone is insufficient.
+
+Use a private operator directory outside the Agent volume. With `dc` and the
+profile from the preceding sections, build the candidate from the reviewed source
+and package its frontend and backend identities without starting application
+entrypoints:
+
+```bash
+HIVE_UPGRADE_RECORDS=/secure/upgrade-records
+mkdir -p "$HIVE_UPGRADE_RECORDS"
+chmod 700 "$HIVE_UPGRADE_RECORDS"
+dc images --format json > "$HIVE_UPGRADE_RECORDS/original-images.json"
+dc build backend frontend
+dc run --rm -T --no-deps --entrypoint cat frontend \
+  /usr/share/nginx/html/build-identity.json > "$HIVE_UPGRADE_RECORDS/frontend-identity.json"
+dc run --rm -T --no-deps --volume "$HIVE_UPGRADE_RECORDS:/upgrade" \
+  --entrypoint python prepare -m app.scripts.self_hosted_upgrade package \
+  --frontend-identity /upgrade/frontend-identity.json --output /upgrade/release.json
+```
+
+Review and retain the reported release SHA-256. Stop all writers and take a new
+verified offline backup using the preceding backup procedure. The backup must
+contain the original keys and exactly the current Agent files. A catalog head is
+not a fingerprint of all database rows: the operator must also prevent database
+and filesystem writes between backup, preflight and migration.
+
+Mount the same verified backup and operator directory for preflight and apply:
+
+```bash
+dc run --rm -T --no-deps \
+  --volume "$HIVE_RECOVERY_BACKUPS:/backups:ro" \
+  --volume "$HIVE_UPGRADE_RECORDS:/upgrade" --entrypoint python prepare \
+  -m app.scripts.self_hosted_upgrade preflight --offline \
+  --release /upgrade/release.json --release-sha256 REVIEWED_RELEASE_SHA256 \
+  --backup /backups/snapshot --backup-sha256 VERIFIED_BACKUP_SHA256 \
+  --output /upgrade/plan.json
+```
+
+Preflight checks the current candidate source, exact backup and keys, full file
+inventory, database target, known Alembic revision path and supported Session
+writer generations. An unversioned database, unknown revision, unsupported writer,
+live client or changed files requires reconciliation before proceeding. It does
+not replace a recovery rehearsal or judge task quality. The output lists the
+actual migration revisions; review its plan SHA-256 before applying.
+
+```bash
+dc run --rm -T --no-deps \
+  --volume "$HIVE_RECOVERY_BACKUPS:/backups:ro" \
+  --volume "$HIVE_UPGRADE_RECORDS:/upgrade" --entrypoint python prepare \
+  -m app.scripts.self_hosted_upgrade apply --offline \
+  --release /upgrade/release.json --release-sha256 REVIEWED_RELEASE_SHA256 \
+  --backup /backups/snapshot --backup-sha256 VERIFIED_BACKUP_SHA256 \
+  --plan /upgrade/plan.json --plan-sha256 REVIEWED_PLAN_SHA256 \
+  --receipt /upgrade/attempt.json
+```
+
+Apply repeats preflight before effects, creates the attempt receipt without
+overwriting an earlier attempt, then invokes the same canonical preparation used
+for first-run installation. Preparation verifies the migrated catalog and RLS
+before returning `prepared`. An interrupted attempt stays `unknown` or retains
+its `started` receipt; keep traffic stopped and inspect it rather than blindly
+replaying the command. The original recovery point remains available for a new,
+empty recovery project. No automatic data downgrade or old-image compatibility
+claim is made.
+
+After preparation succeeds, start all three candidate services and verify them
+from the Compose network:
+
+```bash
+dc up -d backend-api backend frontend
+dc run --rm -T --no-deps --volume "$HIVE_UPGRADE_RECORDS:/upgrade" \
+  --entrypoint python prepare -m app.scripts.self_hosted_upgrade observe \
+  --release /upgrade/release.json --release-sha256 REVIEWED_RELEASE_SHA256 \
+  --backend-url http://backend:8000 --api-url http://backend-api:8000 \
+  --frontend-url http://frontend --output /upgrade/observed.json
+```
+
+The observer requires the exact packaged source on every service and the correct
+runtime/API roles. It records health separately, so `source_verified` does not
+turn a degraded component into a healthy one. Finally check the signed-in work
+paths, older files, approvals and worker recovery before reopening ingress.
+Native migration and source observation do not constitute Linux/container,
+clean-machine, rollback or full enterprise acceptance.

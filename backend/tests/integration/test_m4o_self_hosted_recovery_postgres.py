@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import signal
 import subprocess
 import sys
 import uuid
@@ -87,15 +88,17 @@ async def test_backup_restore_restarts_real_auth_files_approvals_and_encrypted_c
     await owner_sessionmaker.kw["bind"].dispose()
     await app_user_sessionmaker.kw["bind"].dispose()
     processes = []
+    frontend = None
+    frontend_banner = b""
 
-    async def launch(database, agents, name):
+    async def launch(database, agents, name, role="runtime"):
         port = unused_port()
         log_path = work / (name + ".log")
         with log_path.open("w") as log:
             process = await asyncio.create_subprocess_exec(sys.executable, "-B", "-m", "uvicorn", "app.main:app",
                 "--host", "127.0.0.1", "--port", str(port), "--no-access-log", cwd=ROOT / "backend",
                 env={**common, "DATABASE_URL": runtime.set(database=database).render_as_string(hide_password=False),
-                    "AGENT_DATA_DIR": str(agents)}, stdout=log, stderr=log)
+                    "AGENT_DATA_DIR": str(agents), "HIVE_PROCESS_ROLE": role}, stdout=log, stderr=log)
         processes.append((process, log_path))
         origin = f"http://127.0.0.1:{port}"
         await wait_ready(origin, process, log_path)
@@ -127,6 +130,19 @@ async def test_backup_restore_restarts_real_auth_files_approvals_and_encrypted_c
         assert refused.returncode == 3 and detail["code"] == "database_writers_must_be_stopped", detail
         assert not (work / "active-refused").exists()
         await stop(process, log)
+        # Exercise the actual reversible catalog before the current head, with
+        # existing receipted work retained. No revision is stamped by the test.
+        from alembic.config import Config
+        from alembic.script import ScriptDirectory
+
+        configuration = Config(str(ROOT / "backend/alembic.ini"))
+        configuration.set_main_option("script_location", str(ROOT / "backend/alembic"))
+        graph = ScriptDirectory.from_config(configuration)
+        current_head = graph.get_current_head()
+        legacy_head = graph.get_revision(current_head).down_revision
+        downgraded = subprocess.run([sys.executable, "-B", "-m", "alembic", "downgrade", legacy_head],
+            cwd=ROOT / "backend", env={**grant_env, "DATABASE_URL": owner_url}, capture_output=True, timeout=30)
+        assert downgraded.returncode == 0, "The actual old catalog must preserve the authored work without bypassing downgrade checks"
         backup_dir = work / "backup"
         backed_up, receipt = command("backup", "--offline", "--profile", profile, "--agents", tmp_path,
             "--output", backup_dir, "--pg-bin", binary)
@@ -150,12 +166,54 @@ async def test_backup_restore_restarts_real_auth_files_approvals_and_encrypted_c
             "--manifest-sha256", fingerprint, "--agents", target_agents, "--pg-bin", binary,
             "--uid", os.getuid(), "--gid", os.getgid(), database=target_database)
         assert repeated.returncode == 3 and detail["code"] == "restore_database_not_empty", detail
-        prepared = subprocess.run([sys.executable, "-B", "-m", "app.scripts.prepare_self_hosted"], cwd=ROOT / "backend",
-            env={**grant_env, "DATABASE_URL": runtime.set(database=target_database).render_as_string(hide_password=False),
-                "SCHEMA_DATABASE_URL": source.set(database=target_database).render_as_string(hide_password=False),
-                "AGENT_DATA_DIR": str(target_agents)}, capture_output=True, text=True, timeout=120)
-        assert prepared.returncode == 0, prepared.stdout
+        upgrade_env = {**grant_env, "DATABASE_URL": runtime.set(database=target_database).render_as_string(hide_password=False),
+            "SCHEMA_DATABASE_URL": source.set(database=target_database).render_as_string(hide_password=False),
+            "AGENT_DATA_DIR": str(target_agents)}
+
+        def upgrade(*arguments):
+            result = subprocess.run([sys.executable, "-B", "-m", "app.scripts.self_hosted_upgrade", *map(str, arguments)],
+                cwd=ROOT / "backend", env=upgrade_env, capture_output=True, text=True, timeout=180)
+            return result, json.loads(result.stdout)
+
+        dist = Path(os.environ["HIVE_TEST_M4P_FRONTEND_BUILD"])
+        release_file, plan_file = work / "release.json", work / "upgrade-plan.json"
+        packaged, package_receipt = upgrade("package", "--frontend-identity", dist / "build-identity.json", "--output", release_file)
+        assert packaged.returncode == 0 and package_receipt["status"] == "packaged", package_receipt
+        upgrade_args = ["--offline", "--release", release_file, "--release-sha256", package_receipt["release_sha256"],
+            "--backup", backup_dir, "--backup-sha256", fingerprint]
+        drift = target_agents / "new-unbacked-file.txt"
+        drift.write_bytes(b"NEW_UNBACKED_STATE")
+        stale, detail = upgrade("preflight", *upgrade_args, "--output", plan_file)
+        assert stale.returncode == 3 and detail["code"] == "upgrade_recovery_files_changed", detail
+        assert not plan_file.exists()
+        drift.unlink()
+        checked, checked_receipt = upgrade("preflight", *upgrade_args, "--output", plan_file)
+        assert checked.returncode == 0 and checked_receipt["migration_revisions"] == [current_head], checked_receipt
+        upgrade_receipt = work / "upgrade-receipt.json"
+        applied, applied_receipt = upgrade("apply", *upgrade_args, "--plan", plan_file,
+            "--plan-sha256", checked_receipt["plan_sha256"], "--receipt", upgrade_receipt)
+        assert applied.returncode == 0 and applied_receipt["status"] == "prepared", applied_receipt
+        replay, replay_receipt = upgrade("apply", *upgrade_args, "--plan", plan_file,
+            "--plan-sha256", checked_receipt["plan_sha256"], "--receipt", work / "replayed-upgrade.json")
+        assert replay.returncode == 3 and replay_receipt["code"] == "upgrade_plan_stale", replay_receipt
+        assert not (work / "replayed-upgrade.json").exists()
         origin, process, log = await launch(target_database, target_agents, "restored")
+        api_origin, _api_process, _api_log = await launch(target_database, target_agents, "restored-api", role="api")
+        frontend_port = unused_port()
+        frontend = await asyncio.create_subprocess_exec(sys.executable, "-B", "-m", "http.server", str(frontend_port),
+            "--bind", "127.0.0.1", "--directory", str(dist), env=common, stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT)
+        frontend_banner = await asyncio.wait_for(frontend.stdout.readline(), 10)
+        assert b"Serving HTTP" in frontend_banner
+        frontend_origin = f"http://127.0.0.1:{frontend_port}"
+        observed, observation = upgrade("observe", "--release", release_file, "--release-sha256", package_receipt["release_sha256"],
+            "--backend-url", origin, "--api-url", api_origin, "--frontend-url", frontend_origin, "--output", work / "source-observation.json")
+        assert observed.returncode == 0 and observation["status"] == "source_verified", observation
+        assert set(observation["services"]) == {"backend", "backend-api", "frontend"}
+        wrong_role, wrong = upgrade("observe", "--release", release_file, "--release-sha256", package_receipt["release_sha256"],
+            "--backend-url", origin, "--api-url", origin, "--frontend-url", frontend_origin, "--output", work / "wrong-role.json")
+        assert wrong_role.returncode == 3 and wrong["code"] == "upgrade_service_role_mismatch", wrong
+        assert not (work / "wrong-role.json").exists()
         async with httpx.AsyncClient(timeout=30, trust_env=False) as client:
             headers = {"Authorization": "Bearer " + token}
             again = await client.post(origin + "/api/auth/login", json={"username": username, "password": password})
@@ -197,7 +255,23 @@ asyncio.run(check())
         (work / "recovery-consumption.json").write_text(json.dumps({"manifest_sha256": fingerprint,
             "login": 200, "old_jwt": "accepted", "content_download_bytes": "AAAA", "other_member": 403,
             "approval_status": "pending", "credential_consumer": "decrypted", "runtime_role": "nonprivileged",
-            "second_restore": "refused_nonempty", "provider_inference": "unverified"}, indent=2))
+            "second_restore": "refused_nonempty", "provider_inference": "unverified",
+            "upgrade_from": legacy_head, "upgrade_to": current_head, "source_observation": observation,
+            "upgrade_drift": "refused", "upgrade_replay": "refused_stale_plan"}, indent=2))
     finally:
+        failures = []
+        if frontend is not None:
+            try:
+                if frontend.returncode is None:
+                    frontend.terminate()
+                remaining = await asyncio.wait_for(frontend.communicate(), 10)
+                (work / "frontend-static.log").write_bytes(frontend_banner + remaining[0])
+                assert frontend.returncode in (0, -signal.SIGTERM)
+            except Exception as exc:
+                failures.append(type(exc).__name__)
         for process, log in reversed(processes):
-            await stop(process, log)
+            try:
+                await stop(process, log)
+            except Exception as exc:
+                failures.append(type(exc).__name__)
+        assert not failures, failures

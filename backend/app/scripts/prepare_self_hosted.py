@@ -12,21 +12,26 @@ from sqlalchemy.exc import ArgumentError
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
 
 
+def preparation_configuration():
+    owner = make_url(os.environ["SCHEMA_DATABASE_URL"])
+    runtime = make_url(os.environ["DATABASE_URL"])
+    if (owner.get_backend_name() != "postgresql" or runtime.get_backend_name() != "postgresql"
+        or (owner.host, owner.port, owner.database) != (runtime.host, runtime.port, runtime.database)
+        or owner.username == runtime.username or runtime.username != "app_rls"
+        or runtime.password != os.environ["RLS_APP_PASSWORD"]):
+        raise ValueError("Separate schema owner and app_rls must address the same PostgreSQL database")
+    workspace = Path(os.environ["AGENT_DATA_DIR"])
+    if not workspace.is_absolute():
+        raise ValueError("Workspace path must be absolute")
+    for key in ("RLS_APP_PASSWORD", "SECRET_KEY", "JWT_SECRET_KEY", "SECRETS_MASTER_KEY"):
+        if len(os.environ[key]) < 32:
+            raise ValueError("Installation secrets must be explicitly configured")
+    return owner, runtime, workspace
+
+
 def main() -> int:
     try:
-        owner = make_url(os.environ["SCHEMA_DATABASE_URL"])
-        runtime = make_url(os.environ["DATABASE_URL"])
-        if (owner.get_backend_name() != "postgresql" or runtime.get_backend_name() != "postgresql"
-            or (owner.host, owner.port, owner.database) != (runtime.host, runtime.port, runtime.database)
-            or owner.username == runtime.username or runtime.username != "app_rls"
-            or runtime.password != os.environ["RLS_APP_PASSWORD"]):
-            raise ValueError("Separate schema owner and app_rls must address the same PostgreSQL database")
-        workspace = Path(os.environ["AGENT_DATA_DIR"])
-        if not workspace.is_absolute():
-            raise ValueError("Workspace path must be absolute")
-        for key in ("RLS_APP_PASSWORD", "SECRET_KEY", "JWT_SECRET_KEY", "SECRETS_MASTER_KEY"):
-            if len(os.environ[key]) < 32:
-                raise ValueError("Installation secrets must be explicitly configured")
+        owner, runtime, workspace = preparation_configuration()
     except (KeyError, ValueError, ArgumentError):
         print(json.dumps({"stage": "configuration", "status": "failed", "code": "installation_configuration_invalid"}))
         return 2

@@ -5,7 +5,10 @@ import importlib
 import json
 import os
 from pathlib import Path
+import shutil
 import stat
+import subprocess
+import sys
 import tarfile
 from types import SimpleNamespace
 
@@ -17,7 +20,7 @@ ROOT = Path(__file__).resolve().parents[3]
 @pytest.fixture
 def recovery(monkeypatch):
     monkeypatch.syspath_prepend(str(ROOT / "scripts"))
-    return importlib.import_module("self_hosted_recovery")
+    return importlib.import_module("app.scripts.self_hosted_recovery")
 
 
 @pytest.fixture
@@ -104,3 +107,16 @@ def test_capture_refuses_shared_file_ownership_without_reinterpreting_it(tmp_pat
     os.link(source, root / "other.txt")
     with pytest.raises(recovery.RecoveryError, match="special_or_shared_file_unsupported"):
         recovery.file_tree(root)
+
+
+def test_maintenance_image_python_layout_has_no_application_dependency(bundle, tmp_path):
+    image = tmp_path / "maintenance-image/opt/hive"
+    for relative, target in (("scripts/self_hosted_recovery.py", "scripts/self_hosted_recovery.py"),
+        ("backend/app/scripts/self_hosted_recovery.py", "backend/app/scripts/self_hosted_recovery.py")):
+        destination = image / target
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(ROOT / relative, destination)
+    result = subprocess.run([sys.executable, "-I", "-B", str(image / "scripts/self_hosted_recovery.py"), "verify", str(bundle.path),
+        "--manifest-sha256", bundle.fingerprint], capture_output=True, text=True, timeout=10)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert json.loads(result.stdout)["status"] == "verified"

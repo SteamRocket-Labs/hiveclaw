@@ -9,7 +9,11 @@ describe('nginx browser security headers', () => {
     const config = readFileSync(nginxConfigPath, 'utf8');
     const cspOccurrences = config.match(/add_header Content-Security-Policy/g) || [];
 
-    // server default + location / + location /assets/
-    expect(cspOccurrences).toHaveLength(3);
+    // Server default, source identity, SPA and hashed assets.
+    expect(cspOccurrences).toHaveLength(4);
+    const identityLocation = config.match(/location = \/build-identity\.json \{([^}]+)\}/)?.[1];
+    expect(identityLocation).toContain('try_files $uri =404');
+    expect(identityLocation).toContain('add_header Cache-Control "no-store"');
+    expect(identityLocation).toContain('add_header Content-Security-Policy');
   });
 });

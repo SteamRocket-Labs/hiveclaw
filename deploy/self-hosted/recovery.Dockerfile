@@ -2,5 +2,6 @@
 FROM postgres:15-alpine
 USER root
 RUN apk add --no-cache python3
-COPY scripts/configure_self_hosted.py scripts/self_hosted_recovery.py /opt/hive/scripts/
+COPY scripts/self_hosted_recovery.py /opt/hive/scripts/
+COPY backend/app/scripts/self_hosted_recovery.py /opt/hive/backend/app/scripts/
 ENTRYPOINT ["python3", "/opt/hive/scripts/self_hosted_recovery.py"]

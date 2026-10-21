@@ -2,6 +2,7 @@ import { defineConfig } from 'vitest/config'
 import react from '@vitejs/plugin-react'
 import path from 'path'
 import fs from 'fs'
+import { frontendIdentityPlugin } from './scripts/build-identity'
 
 // Read version from local VERSION file first, fallback to root VERSION
 let majorVersion = '0.0.0'
@@ -20,7 +21,7 @@ const devBackendUrl = process.env.HIVE_DEV_BACKEND_URL || 'http://localhost:8008
 const devBackendWsUrl = devBackendUrl.replace(/^http/, 'ws')
 
 export default defineConfig({
-    plugins: [react()],
+    plugins: [react(), frontendIdentityPlugin(__dirname)],
     define: {
         __APP_VERSION__: JSON.stringify(version),
     },

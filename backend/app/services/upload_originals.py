@@ -130,6 +130,9 @@ async def resolve_original_download(db: AsyncSession, user: User, ref_id: uuid.U
         await authorize_channel_original(db, user=user, ref=ref, runtime_principal=runtime_principal)
     else:
         await authorize_upload_original(db, user, ref, runtime_principal=runtime_principal)
+    from app.services.original_source_lifecycle import audit_retained_original_inspection
+
+    await audit_retained_original_inspection(db, user=user, ref=ref, runtime_principal=runtime_principal)
     return blob, dict(metadata)
 
 
@@ -139,6 +142,9 @@ async def capture_original_download(db: AsyncSession, user: User, ref_id: uuid.U
 
 
 async def authorize_upload_original(db, user, ref, *, runtime_principal=None):
+    from app.services.original_source_lifecycle import require_original_source_active
+
+    require_original_source_active(ref, user=user, runtime_principal=runtime_principal)
     metadata = ref.metadata_json
     try:
         if not isinstance(metadata, dict) or metadata.get("schema") != REF_SCHEMA:

@@ -38,7 +38,10 @@ async def archive_channel_original(db, *, manifest, filename, body, external_pri
     return ref
 
 
-async def channel_original_source(db, *, tenant_id, ref):
+async def channel_original_source(db, *, tenant_id, ref, inspection_user=None, runtime_principal=None):
+    from app.services.original_source_lifecycle import require_original_source_active
+
+    require_original_source_active(ref, user=inspection_user, runtime_principal=runtime_principal)
     metadata = ref.metadata_json
     try:
         if not isinstance(metadata, dict) or metadata.get("schema") != SCHEMA:
@@ -65,7 +68,8 @@ async def channel_original_source(db, *, tenant_id, ref):
 
 
 async def authorize_channel_original(db, *, user, ref, runtime_principal=None):
-    manifest = await channel_original_source(db, tenant_id=user.tenant_id, ref=ref)
+    manifest = await channel_original_source(db, tenant_id=user.tenant_id, ref=ref, inspection_user=user,
+        runtime_principal=runtime_principal)
     await authorize_resource_action(db, user, agent_id=manifest.agent_id, resource_kind="workspace_file",
         resource_id=workspace_resource_id(manifest.agent_id, manifest.path), action="read", owner_user_id=manifest.owner_user_id,
         root_session_id=manifest.root_session_id, authority_state=manifest.authority_state, runtime_principal=runtime_principal)
@@ -81,5 +85,13 @@ async def find_channel_original(db, *, user, agent_id, path):
     ref = await db.get(StorageBlobRef, uuid.uuid5(manifest_id, "channel-original")) if manifest_id else None
     if ref is None or ref.tenant_id != user.tenant_id or ref.owner_type != "channel_upload" or ref.purpose != "original_attachment":
         raise HTTPException(404, detail={"code": "original_attachment_not_recorded", "retryable": False})
-    await authorize_channel_original(db, user=user, ref=ref)
+    if (isinstance(ref.metadata_json, dict) and ref.metadata_json.get("owner_user_id") == str(user.id)
+        and "withdrawal" in ref.metadata_json):
+        from app.services.original_source_lifecycle import original_reference_status
+
+        # The owner may still discover a withdrawn source's status, without
+        # restoring the content read or changing any workspace authority.
+        await original_reference_status(db, user=user, ref_id=ref.id)
+    else:
+        await authorize_channel_original(db, user=user, ref=ref)
     return {"id": str(ref.id), "content_sha256": ref.metadata_json["content_sha256"], "size_bytes": ref.metadata_json["size_bytes"]}

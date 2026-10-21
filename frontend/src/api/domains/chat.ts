@@ -7,6 +7,15 @@ import type { RequestOptions } from '../core/request';
 import type { ChatMessage } from '../../types';
 import type { ThreadItem } from './threadItems.generated';
 
+export interface OriginalReferenceStatus {
+  reference_id: string;
+  state: 'active' | 'withdrawn';
+  can_withdraw: boolean;
+  can_inspect_retained: boolean;
+  content_sha256: string;
+  size_bytes: number;
+}
+
 export interface ChatSession {
   id: string;
   agent_id: string;
@@ -333,6 +342,10 @@ export const chatApi = {
   uploadFile: (file: File, agentId?: string) =>
     upload<UploadedChatFile>('/chat/upload', file, agentId ? { agent_id: agentId } : undefined),
   downloadOriginalUpload: (refId: string) => getBlob(`/chat/attachments/${encodeURIComponent(refId)}/download`),
+  getOriginalReferenceStatus: (refId: string) => get<OriginalReferenceStatus>(`/chat/attachments/${encodeURIComponent(refId)}/status`),
+  withdrawOriginalUpload: (refId: string, digest: string) =>
+    post<{ reference_id: string; state: 'withdrawn'; withdrawn_at: string; physical_bytes_reclaimed: null }>(
+      `/chat/attachments/${encodeURIComponent(refId)}/withdraw`, { expected_content_sha256: digest }),
   findOriginalWorkspaceUpload: (agentId: string, path: string) =>
     get<{ id: string; content_sha256: string; size_bytes: number }>(`/chat/attachments/workspace-original?agent_id=${encodeURIComponent(agentId)}&path=${encodeURIComponent(path)}`),
   releaseOriginalUploadDraft: (refId: string, digest: string) =>

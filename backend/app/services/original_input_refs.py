@@ -108,6 +108,10 @@ async def bind_original_input_refs(db, *, authority, command, input_id, revision
             StorageBlobRef.owner_type.in_(("chat_upload", "channel_upload"))).with_for_update().execution_options(populate_existing=True))
         if ref is None:
             raise unavailable("original_reference_not_found", 409)
+        from app.services.original_source_lifecycle import require_original_source_active
+
+        # Admission is future employee source use, never browser inspection.
+        require_original_source_active(ref)
         metadata = ref.metadata_json
         try:
             if ref.owner_type == "channel_upload":

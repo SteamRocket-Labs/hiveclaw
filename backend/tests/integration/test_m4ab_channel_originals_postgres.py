@@ -250,6 +250,13 @@ async def test_mounted_file_card_consumes_native_original_api(original_api, prov
         assert code == 0, (work / "frontend.log").read_text()[-4000:]
         receipt = json.loads(output.read_text())
         assert receipt["digest"] == hashlib.sha256(BODY).hexdigest() and receipt["size"] == len(BODY)
+        assert receipt["source_withdrawn"] is True and len(receipt["calls"]) == 4
+        found = await client.get("/chat/attachments/workspace-original", params={"agent_id": str(d.agent), "path": path})
+        assert found.status_code == 200, found.text
+        source_id = found.json()["id"]
+        status = await client.get(f"/chat/attachments/{source_id}/status")
+        assert status.json()["state"] == "withdrawn" and status.json()["can_withdraw"] is False
+        assert (await client.get(f"/chat/attachments/{source_id}/download")).status_code == 410
         assert (d.root / path).read_bytes() == b"CURRENT_WORK_COPY"
     finally:
         if process.returncode is None:

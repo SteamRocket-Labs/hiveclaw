@@ -2551,7 +2551,15 @@
         "missingNoSnapshot": "这个文件已不在 workspace 中。",
         "emptyPending": "文件当前还是空的。会话权限通过或写入完成后，内容会显示在这里。",
         "downloadFailed": "下载失败：{{message}}",
-        "openNamed": "打开 {{name}}"
+        "openNamed": "打开 {{name}}",
+        "originalStatus": "原件状态",
+        "sourceActive": "原件未撤销",
+        "sourceWithdrawn": "原件已撤销，请重新选择有权使用的资料以继续。",
+        "withdrawOriginal": "撤销原件",
+        "withdrawOriginalConfirm": "撤销后，后续工作将不能使用这份原件。当前工作文件保持不变，历史与保留数据不会被删除。",
+        "withdrawOriginalFailed": "未能确认撤销，请先查看原件状态，再决定是否重试。",
+        "originalStatusFailed": "无法加载原件状态，请再次点击“原件状态”重试。",
+        "retainedOriginal": "核查保留原件"
       },
       "toolResults": {
         "retryFirstTask": "重试首任务",

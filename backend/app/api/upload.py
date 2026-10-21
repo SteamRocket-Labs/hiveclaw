@@ -18,6 +18,7 @@ from app.core.security import get_current_user
 from app.database import get_db, tenant_scoped_session
 from app.models.user import User
 from app.services.personal_knowledge_service import PersonalKnowledgeService
+from app.services.original_source_lifecycle import OriginalWithdrawalRequest
 
 router = APIRouter(prefix="/chat", tags=["chat"])
 
@@ -66,6 +67,25 @@ async def release_original_draft(ref_id: uuid.UUID,
     from app.services.original_input_refs import release_unused_original_draft
 
     result = await release_unused_original_draft(db, user=current_user, ref_id=ref_id, digest=expected_content_sha256)
+    await db.commit()
+    return result
+
+
+@router.get("/attachments/{ref_id}/status")
+async def original_source_status(ref_id: uuid.UUID, current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)):
+    from app.services.original_source_lifecycle import original_reference_status
+
+    return await original_reference_status(db, user=current_user, ref_id=ref_id)
+
+
+@router.post("/attachments/{ref_id}/withdraw")
+async def withdraw_original(ref_id: uuid.UUID, body: OriginalWithdrawalRequest,
+    current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    from app.services.original_source_lifecycle import withdraw_original_source
+
+    result = await withdraw_original_source(db, user=current_user, ref_id=ref_id,
+        expected_content_sha256=body.expected_content_sha256)
     await db.commit()
     return result
 

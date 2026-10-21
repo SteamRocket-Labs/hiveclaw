@@ -46,6 +46,9 @@ COMPLETION_OUTBOX_TASK_TYPES = (
     "trigger",
     "approval_execution",
 )
+# These outcomes cannot be reopened; reconciliation is deliberately excluded.
+SEALED_RUNTIME_TASK_STATUSES = ("completed", "failed", "killed", "skipped")
+
 COMPLETION_OUTBOX_TERMINAL_STATUSES = (
     "completed",
     "failed",

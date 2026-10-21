@@ -136,6 +136,7 @@ async def _seed_populated_session(owner_sessionmaker) -> dict:
 
         run = RuntimeTask(
             tenant_id=tenant_id,
+            status="completed",
             task_type="delegation",
             parent_agent_id=agent.id,
             parent_session_id=str(target_session.id),

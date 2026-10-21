@@ -37,13 +37,14 @@ at any step leaves the session fully intact.
 
 from __future__ import annotations
 
-from sqlalchemy import delete as sql_delete
+from sqlalchemy import delete as sql_delete, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.audit import ChatMessage
 from app.models.chat_artifact import ChatArtifact
 from app.models.chat_session import ChatSession
 from app.models.chat_transcript_event import ChatTranscriptEvent
+from app.models.runtime_task import RuntimeTask, SEALED_RUNTIME_TASK_STATUSES
 from app.models.session_feedback import SessionFeedbackEvent
 from app.models.session_v2 import (
     SessionCarryForward,
@@ -54,9 +55,29 @@ from app.models.session_v2 import (
 )
 
 
+class SessionWorkUnsettled(RuntimeError):
+    """Deleting this conversation would discard recoverable runtime evidence."""
+
+    code = "session_work_unsettled"
+
+
 async def delete_session_tree(db: AsyncSession, session: ChatSession) -> None:
     """Atomically delete one session with all dependent rows, then commit."""
     session_id = session.id
+    from app.services.chat_transcript import lock_transcript_session
+
+    # Join the same ordering used by input admission and canonical task writers.
+    # Sealed task outcomes cannot reopen; every other state needs its evidence.
+    await lock_transcript_session(db, session_id=session_id)
+    session_keys = (str(session_id), session_id.hex)
+    active = await db.scalar(select(RuntimeTask.id).where(
+        RuntimeTask.tenant_id == session.tenant_id,
+        RuntimeTask.status.not_in(SEALED_RUNTIME_TASK_STATUSES),
+        or_(RuntimeTask.parent_session_id.in_(session_keys), RuntimeTask.child_session_id.in_(session_keys),
+            RuntimeTask.root_session_id.in_(session_keys)),
+    ).limit(1))
+    if active is not None:
+        raise SessionWorkUnsettled(SessionWorkUnsettled.code)
     # Run outcomes reference terminal model results, so they go first.
     await db.execute(sql_delete(SessionRunOutcome).where(SessionRunOutcome.session_id == session_id))
     await db.execute(sql_delete(SessionModelResult).where(SessionModelResult.session_id == session_id))

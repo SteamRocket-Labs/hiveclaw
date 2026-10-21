@@ -11,7 +11,7 @@ from sqlalchemy import or_, select
 
 from app.database import async_session, enter_rls_bypass, tenant_scoped_session
 from app.models.audit import AuditLog
-from app.models.runtime_task import RuntimeTask
+from app.models.runtime_task import RuntimeTask, SEALED_RUNTIME_TASK_STATUSES
 from app.models.task import Task
 from app.models.trigger import AgentTrigger
 from app.runtime.tenant_admission import RuntimeTenantPreconditionError, raise_runtime_tenant_precondition
@@ -888,7 +888,7 @@ async def update_runtime_task_record(task_id: str, **fields: Any) -> bool:
 
             requested_status = str(fields.get("status") or "").strip()
             current_status = str(getattr(task, "status", "") or "").strip()
-            sealed_terminal_statuses = {"completed", "failed", "killed", "skipped"}
+            sealed_terminal_statuses = set(SEALED_RUNTIME_TASK_STATUSES)
             incoming_metadata = fields.get("metadata_json")
             if requested_status in _TERMINAL_STATUSES:
                 terminal_metadata = dict(incoming_metadata) if isinstance(incoming_metadata, dict) else {}

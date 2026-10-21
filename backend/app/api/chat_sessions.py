@@ -2825,10 +2825,16 @@ async def delete_session(
     # transcript-event foreign keys must go before the transcript itself.
     from sqlalchemy.exc import IntegrityError
 
-    from app.services.session_deletion import delete_session_tree
+    from app.services.session_deletion import SessionWorkUnsettled, delete_session_tree
 
     try:
         await delete_session_tree(db, session)
+    except SessionWorkUnsettled as exc:
+        await db.rollback()
+        raise HTTPException(status_code=409, detail={
+            "code": exc.code, "recovery_action": "resolve_session_work",
+            "message": "This conversation still has unfinished work. Resolve or cancel that work before deleting it.",
+        }) from exc
     except IntegrityError as exc:
         # Intentional restrict edges (workflow promotion proposals, session
         # goals, agent teams, local-agent channel sessions, other sessions

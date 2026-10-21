@@ -158,6 +158,17 @@ def _route_default_app_engine(migrated_pg_url):
 
 
 @pytest.fixture()
+def monkeypatch(_route_default_app_engine):
+    """Undo test-local factory patches before restoring the routed defaults.
+
+    Otherwise a later MonkeyPatch finalizer can resurrect a previous routed
+    factory after its integration scope has already restored the defaults.
+    """
+    with pytest.MonkeyPatch.context() as patch:
+        yield patch
+
+
+@pytest.fixture()
 async def owner_engine(migrated_pg_url):
     """Engine connected as the migration-running owner — mirrors production's
     single DATABASE_URL user (table owner)."""

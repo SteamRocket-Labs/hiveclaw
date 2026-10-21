@@ -186,6 +186,9 @@ async def revise_unbound_human_input(
         raise InputRevisionConflict(current_revision=row.revision)
     if not isinstance(content_parts, list):
         raise ValueError("content_parts must be an array")
+    from app.services.original_input_refs import bind_original_input_refs
+
+    await bind_original_input_refs(db, authority=authority, command=_command, input_id=input_uuid, revision=int(row.revision) + 1, parts=content_parts)
     from app.models.chat_session import ChatSession
     from app.services.team_task_context import validate_selection as validate_team_task_selection
 

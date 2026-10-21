@@ -67,6 +67,7 @@ import { ccParityApi } from '../api/domains/ccParity';
 import { ApiError } from '../api/core';
 import { uploadFileWithProgress } from '../api/core/upload-progress';
 import { useAuthStore } from '../stores';
+import { useOriginalDraftRemoval } from './agent-detail/useOriginalDraftRemoval';
 import EmployeeReadinessControls from '../components/EmployeeReadinessControls';
 import { parseSlashCommandInput } from './agent-detail/slashCommand';
 import {
@@ -2491,9 +2492,10 @@ function AgentDetailInner() {
         if (!routedSessionCommand) return;
         navigate(buildSessionCommandPanelNavigation(location.pathname, location.search, null), { replace: true });
     }, [location.pathname, location.search, navigate, routedSessionCommand]);
-    const handleRemoveAttachedFile = React.useCallback((index: number) => {
-        setAttachedFiles((prev) => prev.filter((_, i) => i !== index));
-    }, []);
+    const { remove: handleRemoveAttachedFile, removing: removingOriginalDraft } = useOriginalDraftRemoval({
+        files: attachedFiles, setFiles: setAttachedFiles, identity: `${readinessScopeKey}:${id || ''}`,
+        onError: () => showToast(t('agent.upload.removeFailed'), 'error'),
+    });
     const handleAbortGeneration = React.useCallback(async () => {
         if (!id || !activeSession?.id) return;
         const sessionId = String(activeSession.id);
@@ -2813,6 +2815,7 @@ function AgentDetailInner() {
                             fileInputRef={fileInputRef}
                             onHandleChatFile={handleChatFile}
                             uploading={uploading}
+                            attachmentRemovalPending={removingOriginalDraft}
                             uploadProgress={uploadProgress}
                             uploadAbortRef={uploadAbortRef}
                             chatInputRef={chatInputRef}

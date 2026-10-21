@@ -1417,6 +1417,9 @@ async def accept_human_input(
     existing_input = await db.get(SessionTurnInput, input_id)
     if existing_input is not None:
         raise ValueError("input_id already belongs to another command")
+    from app.services.original_input_refs import bind_original_input_refs
+
+    await bind_original_input_refs(db, authority=authority, command=command, input_id=input_id, revision=1, parts=content_parts)
     max_ordinal = int(
         await db.scalar(
             select(func.coalesce(func.max(SessionTurnInput.queue_ordinal), 0)).where(

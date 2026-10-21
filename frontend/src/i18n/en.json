@@ -3340,6 +3340,7 @@
     "upload": {
       "success": "Upload complete",
       "failed": "Upload failed — please try again",
+      "removeFailed": "Could not remove the attachment. Please try again.",
       "uploading": "Uploading...",
       "limit": "Limit of 10 attached files reached."
     },

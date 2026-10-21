@@ -3340,6 +3340,7 @@
     "upload": {
       "success": "上传完成",
       "failed": "上传失败，请重试",
+      "removeFailed": "无法移除附件，请重试。",
       "uploading": "上传中...",
       "limit": "最多只能添加 10 个附件。"
     },

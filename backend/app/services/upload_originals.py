@@ -104,7 +104,7 @@ async def archive_upload(db: AsyncSession, *, tenant_id: uuid.UUID, user_id: uui
     ref = StorageBlobRef(id=ref_id, tenant_id=tenant_id, blob_id=blob.id, owner_type="chat_upload",
         owner_id=str(ref_id), purpose="original_attachment", metadata_json={"schema": REF_SCHEMA,
             "owner_user_id": str(user_id), "agent_id": str(agent_id) if agent_id else None, "filename": filename,
-            "content_sha256": blob.content_sha256, "size_bytes": len(body)})
+            "content_sha256": blob.content_sha256, "size_bytes": len(body), "draft_state": "unbound"})
     db.add(ref)
     await db.flush()
     return ref
@@ -129,6 +129,12 @@ async def capture_original_download(db: AsyncSession, user: User, ref_id: uuid.U
 
         await authorize_channel_original(db, user=user, ref=ref)
         return await capture_original_body(blob, metadata, user.tenant_id)
+    await authorize_upload_original(db, user, ref)
+    return await capture_original_body(blob, metadata, user.tenant_id)
+
+
+async def authorize_upload_original(db, user, ref):
+    metadata = ref.metadata_json
     try:
         if not isinstance(metadata, dict) or metadata.get("schema") != REF_SCHEMA:
             raise ValueError()
@@ -143,7 +149,6 @@ async def capture_original_download(db: AsyncSession, user: User, ref_id: uuid.U
             resource_id=ref.id, action="read", owner_user_id=owner, authority_state="owned")
     elif owner != user.id:
         raise HTTPException(403, "Original attachment access denied")
-    return await capture_original_body(blob, metadata, user.tenant_id)
 
 
 async def capture_original_body(blob, metadata, tenant_id):

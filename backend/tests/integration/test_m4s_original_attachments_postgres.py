@@ -83,7 +83,11 @@ async def test_real_uploads_deduplicate_originals_and_download_after_workspace_c
         await pin_rls_tenant_context(db, d.tenant)
         blobs = (await db.scalars(select(StorageBlob).where(StorageBlob.tenant_id == d.tenant))).all()
         refs = (await db.scalars(select(StorageBlobRef).where(StorageBlobRef.tenant_id == d.tenant))).all()
-        assert len(blobs) == 1 and len(refs) == 2 and all(ref.blob_id == blobs[0].id for ref in refs)
+        assert len(blobs) == 1 and len(refs) == 4 and all(ref.blob_id == blobs[0].id for ref in refs)
+        assert len([ref for ref in refs if ref.owner_type == "chat_upload"]) == 2
+        pins = [ref for ref in refs if ref.owner_type == "session_input"]
+        assert len(pins) == 2 and {ref.metadata_json["source_ref_id"] for ref in pins} == {
+            result["original_attachment"]["id"] for result in results}
     for row in results:
         downloaded = await client.get(f"/chat/attachments/{row['original_attachment']['id']}/download")
         assert downloaded.status_code == 200 and downloaded.content == b"ORIGINAL\x00BYTES", downloaded.text

@@ -400,6 +400,7 @@ interface AgentChatSectionProps {
   fileInputRef: React.RefObject<HTMLInputElement | null>;
   onHandleChatFile: (e: React.ChangeEvent<HTMLInputElement>) => void;
   uploading: boolean;
+  attachmentRemovalPending?: boolean;
   uploadProgress: number;
   uploadAbortRef: React.RefObject<(() => void) | null>;
   chatInputRef: React.RefObject<HTMLTextAreaElement | null>;
@@ -1182,6 +1183,7 @@ function AgentChatSection({
   fileInputRef,
   onHandleChatFile,
   uploading,
+  attachmentRemovalPending = false,
   uploadProgress,
   uploadAbortRef,
   chatInputRef,
@@ -1363,6 +1365,7 @@ function AgentChatSection({
   );
 
   const sendFromComposer = React.useCallback(async () => {
+    if (attachmentRemovalPending) return;
     if (!selectedProjectContext) { onSendChatMsg(); return; }
     if (projectSending) return;
     if (chatInput.trim().startsWith('/')) { setProjectSendError(t('projects.contextCommandUnsupported')); return; }
@@ -1381,7 +1384,7 @@ function AgentChatSection({
     } catch { if (projectScopeRef.current === scope) setProjectSendError(t('projects.contextSendUnconfirmed')); }
     finally { if (projectScopeRef.current === scope) setProjectSending(false); }
   }, [onSendChatMsg, selectedProjectContext, projectSending, chatInput, attachedFiles, planModeRequested, goalModeRequested,
-    sessionPermissionMode, childAuthorityIdentity, activeSessionId, t]);
+    sessionPermissionMode, childAuthorityIdentity, activeSessionId, attachmentRemovalPending, t]);
 
   const composerPlaceholder =
     attachedFiles.length > 0
@@ -2445,7 +2448,7 @@ function AgentChatSection({
                 inputRef={chatInputRef}
                 fileInputRef={fileInputRef}
                 placeholder={composerPlaceholder}
-                disabled={!canUseComposer || projectSending}
+                disabled={!canUseComposer || projectSending || attachmentRemovalPending}
                 attachments={attachedFiles}
                 permissionMode={sessionPermissionMode}
                 permissionModeLabel={permissionModeLabel}

@@ -179,6 +179,20 @@ original. Missing, corrupt or rebound sources require reconciliation. Historical
 uploads without a recorded original are not inferred from their current files.
 Reading or revoking a source grant does not release its retention reference.
 
+New human inputs validate recorded original references against their canonical
+source and current authority, then retain separate pins for each input revision
+and source. Revising or cancelling an input preserves its historical references.
+Client-supplied owner, digest or path fields do not establish source authority.
+
+Explicitly removing an unused upload from the composer asks
+`DELETE /api/v1/chat/attachments/{ref_id}/draft?expected_content_sha256=...`
+to release that owner's draft reference. Holds, recorded work/history and
+unverifiable legacy references remain retained. A lost response keeps the
+attachment available for an explicit retry. This operation deletes neither the
+working file nor the stored object; the separate administrator retention policy
+still governs eventual retirement. Closing a tab, finishing work or revoking
+read access does not discard a reference.
+
 Operators can also read `GET /api/v1/enterprise/storage-original-catalog` with
 `state`, `unreferenced`, `limit` and `after` filters. The original pending-only
 `storage-originals` API remains unchanged. For a known operation,

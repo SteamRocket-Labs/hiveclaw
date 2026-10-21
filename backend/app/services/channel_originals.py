@@ -13,7 +13,7 @@ from app.services.blob_store import BlobStoreError
 SCHEMA = "hive.channel_upload_original.v1"
 
 
-async def archive_channel_original(db, *, manifest, filename, body):
+async def archive_channel_original(db, *, manifest, filename, body, external_principal_id=None):
     from app.services.upload_originals import archive_original_blob
 
     ref_id = uuid.uuid5(manifest.id, "channel-original")
@@ -31,19 +31,20 @@ async def archive_channel_original(db, *, manifest, filename, body):
             "owner_user_id": str(manifest.owner_user_id) if manifest.owner_user_id else None,
             "root_session_id": str(manifest.root_session_id) if manifest.root_session_id else None,
             "source": manifest.source, "filename": filename,
+            "external_principal_id": str(external_principal_id) if external_principal_id else None,
             "content_sha256": blob.content_sha256, "size_bytes": blob.size_bytes})
     db.add(ref)
     await db.flush()
     return ref
 
 
-async def authorize_channel_original(db, *, user, ref):
+async def channel_original_source(db, *, tenant_id, ref):
     metadata = ref.metadata_json
     try:
         if not isinstance(metadata, dict) or metadata.get("schema") != SCHEMA:
             raise ValueError()
         manifest_id = uuid.UUID(ref.owner_id)
-        if ref.id != uuid.uuid5(manifest_id, "channel-original") or ref.tenant_id != user.tenant_id:
+        if ref.id != uuid.uuid5(manifest_id, "channel-original") or ref.tenant_id != tenant_id:
             raise ValueError()
         agent_id = uuid.UUID(metadata["agent_id"])
         path = normalize_workspace_resource_path(metadata["path"])
@@ -52,14 +53,19 @@ async def authorize_channel_original(db, *, user, ref):
     except (KeyError, TypeError, ValueError):
         raise BlobStoreError("Channel original authority requires reconciliation") from None
     manifest = await db.scalar(select(WorkspaceResourceManifest).where(WorkspaceResourceManifest.id == manifest_id,
-        WorkspaceResourceManifest.tenant_id == user.tenant_id).execution_options(populate_existing=True))
+        WorkspaceResourceManifest.tenant_id == tenant_id).execution_options(populate_existing=True))
     if (manifest is None or manifest.deleted_at is not None or manifest.agent_id != agent_id or manifest.path != path
         or manifest.source != metadata.get("source") or manifest.source not in {"feishu_upload", "dingtalk_upload", "wecom_upload"}
         or (str(manifest.owner_user_id) if manifest.owner_user_id else None) != metadata.get("owner_user_id")
         or (str(manifest.root_session_id) if manifest.root_session_id else None) != metadata.get("root_session_id")):
         raise BlobStoreError("Channel original authority requires reconciliation")
-    await authorize_resource_action(db, user, agent_id=agent_id, resource_kind="workspace_file",
-        resource_id=workspace_resource_id(agent_id, path), action="read", owner_user_id=manifest.owner_user_id,
+    return manifest
+
+
+async def authorize_channel_original(db, *, user, ref):
+    manifest = await channel_original_source(db, tenant_id=user.tenant_id, ref=ref)
+    await authorize_resource_action(db, user, agent_id=manifest.agent_id, resource_kind="workspace_file",
+        resource_id=workspace_resource_id(manifest.agent_id, manifest.path), action="read", owner_user_id=manifest.owner_user_id,
         root_session_id=manifest.root_session_id, authority_state=manifest.authority_state)
 
 

@@ -335,6 +335,9 @@ export const chatApi = {
   downloadOriginalUpload: (refId: string) => getBlob(`/chat/attachments/${encodeURIComponent(refId)}/download`),
   findOriginalWorkspaceUpload: (agentId: string, path: string) =>
     get<{ id: string; content_sha256: string; size_bytes: number }>(`/chat/attachments/workspace-original?agent_id=${encodeURIComponent(agentId)}&path=${encodeURIComponent(path)}`),
+  releaseOriginalUploadDraft: (refId: string, digest: string) =>
+    del<{ status: 'released' | 'retained' | 'already_absent'; reference_id: string; reason?: string }>(
+      `/chat/attachments/${encodeURIComponent(refId)}/draft?expected_content_sha256=${encodeURIComponent(digest)}`),
 
   /** Session management */
   listSessions: (agentId: string, scope: 'mine' | 'groups' | 'all' = 'mine', options?: SessionOperatorOptions) => {

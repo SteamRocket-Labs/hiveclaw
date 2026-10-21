@@ -7,7 +7,7 @@ import subprocess
 import uuid
 from pathlib import Path
 
-from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, UploadFile, Form
+from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, UploadFile, Form, Query
 from fastapi.responses import FileResponse
 from starlette.background import BackgroundTask
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -57,6 +57,17 @@ async def discover_workspace_original(agent_id: uuid.UUID, path: str, current_us
         return await find_channel_original(db, user=current_user, agent_id=agent_id, path=path)
     except BlobStoreError:
         raise HTTPException(503, detail={"code": "original_attachment_unavailable", "retryable": True}) from None
+
+
+@router.delete("/attachments/{ref_id}/draft")
+async def release_original_draft(ref_id: uuid.UUID,
+    expected_content_sha256: str = Query(..., pattern=r"^[0-9a-f]{64}$"),
+    current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    from app.services.original_input_refs import release_unused_original_draft
+
+    result = await release_unused_original_draft(db, user=current_user, ref_id=ref_id, digest=expected_content_sha256)
+    await db.commit()
+    return result
 
 _settings = get_settings()
 WORKSPACE_ROOT = Path(_settings.AGENT_DATA_DIR)
@@ -317,7 +328,7 @@ async def save_upload_for_agent(
 
         # Receipt failure quarantines the copy. Its path may have changed while
         # awaiting the database, so it cannot safely authorize an unlink.
-        await register_workspace_path(
+        manifest = await register_workspace_path(
             db,
             tenant_id=uuid.UUID(str(tenant_id)),
             agent_id=uuid.UUID(str(agent_id)),
@@ -328,6 +339,9 @@ async def save_upload_for_agent(
             content_hash=hashlib.sha256(content).hexdigest(),
             allow_owner_rebind=False,
         )
+        if original is not None:
+            original.metadata_json = {**original.metadata_json, "workspace_path": workspace_path,
+                "workspace_manifest_id": str(manifest.id)}
         if isinstance(db, AsyncSession):
             from app.services.content_input_receipts import (
                 latest_workspace_receipt, lock_workspace_receipt_write, record_workspace_receipt,
@@ -342,6 +356,9 @@ async def save_upload_for_agent(
             record_workspace_receipt(db, tenant_id, agent_id, workspace_path,
                 hashlib.sha256(content).hexdigest(), previous)
             await db.flush()
+
+    if original is not None and agent_id is None:
+        original.metadata_json = {**original.metadata_json, "workspace_path": workspace_path}
 
     # Convert text/documents to canonical Markdown artifacts. Keep image handling
     # separate because vision-capable chat models still consume typed image parts.

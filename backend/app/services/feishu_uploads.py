@@ -118,7 +118,8 @@ async def save_channel_upload(db, *, actor, session, provider, message_id, resou
     from app.services.blob_store import BlobStoreError
 
     try:
-        await archive_channel_original(db, manifest=manifest, filename=name, body=content)
+        await archive_channel_original(db, manifest=manifest, filename=name, body=content,
+            external_principal_id=actor.external_principal_id)
     except (BlobStoreError, OSError):
         raise HTTPException(503, {"code": "original_attachment_storage_unavailable", "retryable": True}) from None
     _store_upload(root, (str(session.agent_id), *Path(path).parts), content)

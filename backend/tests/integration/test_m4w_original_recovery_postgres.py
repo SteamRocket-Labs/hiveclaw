@@ -46,6 +46,23 @@ async def test_offline_recovery_preserves_reconciled_unreferenced_original_and_r
         channel_path = await save_channel(db, d, "feishu")
         await db.commit()
     (d.root / channel_path).write_bytes(b"EDITED_CHANNEL_WORK_COPY")
+    bound_body = b"BOUND_WORK_ORIGINAL\x00BYTES"
+    uploaded = await client.post("/chat/upload", headers=pending[4], files={"file": ("bound.bin", bound_body)},
+        data={"agent_id": str(d.agent), "skip_personal_kb": "true"})
+    assert uploaded.status_code == 200, uploaded.text
+    bound = uploaded.json()
+    input_id = uuid.uuid4()
+    async with app_user_sessionmaker() as db:
+        from app.services.session_v2_persistence import accept_human_input, resolve_session_mutation_authority
+
+        await pin_rls_tenant_context(db, d.tenant)
+        frame = await resolve_session_mutation_authority(db, user=await db.get(User, d.user.id), agent_id=d.agent,
+            session_id=d.session, action="mutate_session_input")
+        await accept_human_input(db, authority=frame, intent={"kind": "queue_next_turn", "input_id": str(input_id),
+            "idempotency_key": f"backup-original:{input_id}", "session_id": str(d.session), "content_parts": [{"type": "attachment_ref",
+                "attachment": {"path": bound["workspace_path"], "original_attachment": bound["original_attachment"]}}]})
+        await db.commit()
+    (d.root / bound["workspace_path"]).write_bytes(b"EDITED_BOUND_WORK_COPY")
     operation = str(uuid.uuid4())
     result = await client.post(f"/enterprise/storage-originals/{blob_id}/reconcile", json={
         "operation_id": operation, "expected_content_sha256": hashlib.sha256(BODY).hexdigest(), "action": "recover"})
@@ -84,7 +101,7 @@ async def test_offline_recovery_preserves_reconciled_unreferenced_original_and_r
     assert receipt["status"] == "backed_up"
     manifest = json.loads((backup / "manifest.json").read_text())
     assert manifest["schema"] == ("hive.self_hosted_backup.v4" if original_state == "quarantined" else "hive.self_hosted_backup.v3")
-    assert len(manifest["remote_objects"]) == 2 * int(selected == "s3")
+    assert len(manifest["remote_objects"]) == 3 * int(selected == "s3")
     if selected == "s3":
         from app.scripts import self_hosted_recovery as recovery
 
@@ -160,6 +177,23 @@ async def test_offline_recovery_preserves_reconciled_unreferenced_original_and_r
             try:
                 assert exact.read_bytes() == CHANNEL_BODY and filename == "source.bin"
                 assert (target_agents / str(d.agent) / channel_path).read_bytes() == b"EDITED_CHANNEL_WORK_COPY"
+            finally:
+                lease.cleanup()
+            from app.models.session_v2 import SessionTurnInput
+            from app.services.original_input_refs import release_unused_original_draft
+
+            saved_input = await db.get(SessionTurnInput, input_id)
+            assert saved_input.content_parts_json[0]["attachment"]["original_attachment"] == bound["original_attachment"]
+            pins = (await db.scalars(select(StorageBlobRef).where(StorageBlobRef.owner_type == "session_input",
+                StorageBlobRef.metadata_json["input_id"].astext == str(input_id)))).all()
+            assert len(pins) == 1 and pins[0].metadata_json["source_ref_id"] == bound["original_attachment"]["id"]
+            ref_id = uuid.UUID(bound["original_attachment"]["id"])
+            retained = await release_unused_original_draft(db, user=reader, ref_id=ref_id, digest=hashlib.sha256(bound_body).hexdigest())
+            assert retained["status"] == "retained" and retained["reason"] == "work_reference"
+            lease, exact, filename = await capture_original_download(db, reader, ref_id)
+            try:
+                assert exact.read_bytes() == bound_body and filename == "bound.bin"
+                assert (target_agents / str(d.agent) / bound["workspace_path"]).read_bytes() == b"EDITED_BOUND_WORK_COPY"
             finally:
                 lease.cleanup()
             if original_state == "quarantined":

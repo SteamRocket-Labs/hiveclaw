@@ -10,7 +10,7 @@ from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
-from app.core.security import create_access_token, hash_password
+from app.core.security import _load_user_with_tenant_status, create_access_token, hash_password
 from app.models.identity import ExternalIdentity, IdentityProvider
 from app.models.org import OrgMember
 from app.models.organization_identity import OrgMemberUserLink
@@ -48,6 +48,21 @@ class FeishuIdentityConflict(Exception):
         super().__init__(message)
         self.code = code
         self.message = message
+
+
+def _verified_profile(profile: dict) -> dict:
+    """Require an opaque provider subject before account selection or writes."""
+    if not isinstance(profile, dict):
+        raise FeishuIdentityConflict("auth_failed", "Feishu returned no usable account identity.")
+    result = dict(profile)
+    for key, _column in _PROFILE_SUBJECTS:
+        value = profile.get(key)
+        if value is not None and not isinstance(value, str):
+            raise FeishuIdentityConflict("auth_failed", "Feishu returned an invalid account identity.")
+        result[key] = value.strip() or None if value is not None else None
+    if not any(result[key] for key, _column in _PROFILE_SUBJECTS):
+        raise FeishuIdentityConflict("auth_failed", "Feishu returned no usable account identity.")
+    return result
 
 
 def _get_runtime_settings():
@@ -119,7 +134,7 @@ class FeishuAuthProvider:
         tenant_id: uuid.UUID | None = None,
     ) -> tuple[User, str]:
         provider = await self._ensure_provider(db, tenant_id)
-        profile = await self._exchange_code_for_user(_runtime_config(db, provider), code)
+        profile = _verified_profile(await self._exchange_code_for_user(_runtime_config(db, provider), code))
         existing = await self._find_user_by_external_identity(db, provider, profile)
         if existing is not None and existing.is_active is not True:
             raise ValueError("User account is inactive")
@@ -127,7 +142,7 @@ class FeishuAuthProvider:
             user = await self._find_or_create_user(db, provider, profile, tenant_id)
             if user.is_active is not True:
                 raise ValueError("User account is inactive")
-            await self._finish_sign_in(db, provider, user, profile)
+            user = await self._finish_sign_in(db, provider, user, profile)
             token = create_access_token(
                 str(user.id),
                 user.role,
@@ -146,10 +161,10 @@ class FeishuAuthProvider:
         if user.is_active is not True:
             raise ValueError("User account is inactive")
         provider = await self._ensure_provider(db, user.tenant_id)
-        profile = await self._exchange_code_for_user(_runtime_config(db, provider), code)
+        profile = _verified_profile(await self._exchange_code_for_user(_runtime_config(db, provider), code))
         async with db.begin_nested():
             await self._link_existing_directory_members(db, provider, user, profile)
-            await self._finish_sign_in(db, provider, user, profile)
+            user = await self._finish_sign_in(db, provider, user, profile)
             await db.flush()
         return user
 
@@ -565,12 +580,23 @@ class FeishuAuthProvider:
         provider: IdentityProvider,
         user: User,
         profile: dict,
-    ) -> None:
+    ) -> User:
         """Write account subjects after the per-member advisory locks are done."""
 
         await self._apply_provider_runtime(db, provider)
+        row = await _load_user_with_tenant_status(db, user.id)
+        if row is None:
+            raise FeishuIdentityConflict("auth_failed", "The authenticated account is unavailable.")
+        user, tenant_active = row[0], row[1]
+        if user.is_active is not True:
+            raise ValueError("User account is inactive")
+        if user.tenant_id != provider.tenant_id:
+            raise FeishuIdentityConflict("contradictory_subjects", CONTRADICTORY_SUBJECTS)
+        if user.tenant_id is not None and tenant_active is not True:
+            raise FeishuIdentityConflict("provider_disabled", PROVIDER_DISABLED)
         self._write_through_user_fields(user, profile)
         await self._hydrate_user_profile(db, user, profile)
+        return user
 
     async def _reject_company_subject_on_global_login(
         self,

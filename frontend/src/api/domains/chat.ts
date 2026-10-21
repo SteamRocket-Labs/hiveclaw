@@ -66,7 +66,7 @@ export interface SessionApproval {
 
 export interface SessionPermissionResolutionReceipt {
   schema: 'hive.session_permission_resolution.v2';
-  status: 'resolved' | 'waiting_for_sibling_permissions' | 'needs_reconciliation';
+  status: 'resolved' | 'waiting_for_sibling_permissions' | 'awaiting_tool_result' | 'needs_reconciliation';
   permission_request_id: string;
   invocation_id: string;
   control_id: string;

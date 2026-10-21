@@ -2468,6 +2468,7 @@ async def resolve_session_permission(
         action="respond_tool_permission",
     )
     from app.services.session_permission_runtime import resolve_session_tool_permission
+    from app.services.permission_execution import PermissionExecutionUnavailable
     from app.services.session_v2_persistence import resolve_session_mutation_authority
 
     authority = await resolve_session_mutation_authority(
@@ -2484,6 +2485,12 @@ async def resolve_session_permission(
             permission_request_id=permission_request_id,
             decision=body.action,
         )
+    except PermissionExecutionUnavailable as exc:
+        await db.rollback()
+        raise HTTPException(status_code=503, detail={
+            "code": exc.code, "retryable": True, "recovery_action": "retry_permission_response",
+            "message": "Tool execution is temporarily unavailable. Retry the original permission response.",
+        }) from exc
     except IdempotencyConflict as exc:
         await db.rollback()
         raise HTTPException(

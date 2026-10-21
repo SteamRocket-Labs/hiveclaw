@@ -17,6 +17,11 @@ from app.models.runtime_task import RuntimeTask
 from app.models.session_v2 import SessionModelResult, SessionToolInvocation
 from app.runtime.ccplus_contracts import build_permission_profile
 from app.services.approval_ticket import hash_tool_input
+from app.services.permission_execution import (
+    PermissionExecutionLease,
+    PermissionExecutionUnavailable,
+    permission_execution_lease,
+)
 from app.services.session_v2_persistence import AuthenticatedSessionAuthority, SessionEventDraft, append_session_events
 
 
@@ -136,7 +141,9 @@ async def _settle_unstarted_batch_siblings(
     """Close never-started siblings truthfully; preserve other open approvals."""
 
     from app.services.session_tool_runtime import complete_tool_invocation, prepare_tool_invocation
+    from app.services.chat_transcript import lock_transcript_session
 
+    await lock_transcript_session(db, session_id=session_id)
     result = await _source_result(db, invocation)
     response = dict((result.seal_json or {}).get("response") or {})
     calls = list(response.get("tool_calls") or [])
@@ -576,6 +583,27 @@ async def resolve_session_tool_permission(
 ) -> SessionPermissionResolutionReceipt:
     """Resolve, execute if allowed, and continue the original RuntimeTask."""
 
+    if decision not in {"allow_once", "allow_session"}:
+        return await _resolve_session_tool_permission(
+            db, authority=authority, permission_request_id=permission_request_id, decision=decision,
+            execution_lease=None,
+        )
+    async with permission_execution_lease(db, permission_request_id) as lease:
+        return await _resolve_session_tool_permission(
+            db, authority=authority, permission_request_id=permission_request_id, decision=decision,
+            execution_lease=lease,
+        )
+
+
+async def _resolve_session_tool_permission(
+    db: AsyncSession,
+    *,
+    authority: AuthenticatedSessionAuthority,
+    permission_request_id: uuid.UUID,
+    decision: str,
+    execution_lease: PermissionExecutionLease | None,
+) -> SessionPermissionResolutionReceipt:
+
     from app.services.agent_tools import execute_session_permission_tool
     from app.services.session_control_input import (
         accept_tool_permission_response,
@@ -653,13 +681,48 @@ async def resolve_session_tool_permission(
         session.transcript_metadata_json = session_metadata
         await db.commit()
 
+    await lock_transcript_session(db, session_id=authority.session_id)
+    await db.refresh(invocation, with_for_update=True)
     if decision in {"allow_once", "allow_session"} and invocation.result_event_id is None:
+        if execution_lease is None:
+            raise PermissionExecutionUnavailable(PermissionExecutionUnavailable.code)
+        if not execution_lease.acquired:
+            task = await db.get(RuntimeTask, invocation.run_id)
+            if task is None:
+                raise RuntimeError("permission_runtime_task_missing")
+            receipt = SessionPermissionResolutionReceipt(
+                schema="hive.session_permission_resolution.v2", status="awaiting_tool_result",
+                permission_request_id=str(permission_request_id), invocation_id=str(invocation.id),
+                control_id=str(control_id), run_id=str(invocation.run_id), run_status=str(task.status),
+                result_event_id=None, retryable=False, recovery_action="read_tool_result",
+            )
+            await db.commit()
+            return receipt
+        if invocation.effect_state in {"effect_started", "needs_reconciliation"}:
+            source_result = await _source_result(db, invocation)
+            task = await _quarantine_same_run_for_reconciliation(
+                db, tenant_id=authority.tenant_id, agent_id=authority.agent_id,
+                session_id=authority.session_id, invocation=invocation, source_result=source_result,
+                reason_code="approved_tool_effect_owner_unavailable",
+            )
+            receipt = SessionPermissionResolutionReceipt(
+                schema="hive.session_permission_resolution.v2", status="needs_reconciliation",
+                permission_request_id=str(permission_request_id), invocation_id=str(invocation.id),
+                control_id=str(control_id), run_id=str(invocation.run_id), run_status=str(task.status),
+                result_event_id=None, retryable=False, recovery_action="reconcile_tool_effect",
+            )
+            await db.commit()
+            return receipt
+        await db.commit()
         trace: dict[str, Any] = {}
         invocation_id = invocation.id
+        effect_started = False
 
         async def _pre_effect(payload: dict[str, Any]) -> None:
+            nonlocal effect_started
             from app.services.shared_group_authority import authorize_group_tool_permission
 
+            await execution_lease.ensure_owned()
             await authorize_group_tool_permission(db, authority=authority, invocation=invocation)
             await mark_tool_effect_started(
                 db,
@@ -673,6 +736,7 @@ async def resolve_session_tool_permission(
                 permission_control_id=control_id,
             )
             await db.commit()
+            effect_started = True
 
         profile = build_permission_profile(
             {
@@ -694,6 +758,7 @@ async def resolve_session_tool_permission(
                 plan_token = set_interactive_plan_mode(await load_permission_plan_mode(
                     db, agent_id=authority.agent_id, invocation=invocation, result=source_result,
                 ))
+                await db.commit()
                 tool_result = await execute_session_permission_tool(
                     invocation.tool_name,
                     effective_arguments,
@@ -709,7 +774,12 @@ async def resolve_session_tool_permission(
                     pre_effect_callback=_pre_effect,
                     trace_metadata_sink=trace,
                 )
+            except PermissionExecutionUnavailable:
+                await db.rollback()
+                raise
             except Exception as exc:
+                if not effect_started:
+                    await execution_lease.ensure_owned()
                 # The callback is the only path that releases effect authority and
                 # commits that fact before executor entry.  If its durable state is
                 # still prepared, an aborted matching result is provable.  Once the
@@ -761,6 +831,8 @@ async def resolve_session_tool_permission(
                     invocation.effect_state,
                 )
             else:
+                if not effect_started:
+                    await execution_lease.ensure_owned()
                 await db.refresh(invocation)
                 evidence = _execution_evidence(trace)
                 typed_decision = evidence.get("tool_decision")

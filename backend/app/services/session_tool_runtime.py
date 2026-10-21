@@ -412,8 +412,6 @@ async def mark_tool_effect_started(
         raise RuntimeError("tool_invocation_not_found")
     if invocation.result_event_id is not None:
         raise RuntimeError("tool_effect_start_requires_unsettled_invocation")
-    if invocation.effect_state == "effect_started":
-        return []
     if invocation.effect_state != "prepared_not_started":
         raise RuntimeError("tool_effect_start_requires_prepared_invocation")
     effective_payload = _canonical(effective_arguments or invocation.provider_arguments_json or {})

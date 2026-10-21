@@ -391,6 +391,7 @@ async def try_resolve_channel_session_permission_from_text(
     from app.models.session_v2 import SessionToolInvocation
     from app.services.runtime_task_worker import notify_runtime_task_worker
     from app.services.session_permission_runtime import resolve_session_tool_permission
+    from app.services.permission_execution import PermissionExecutionUnavailable
     from app.services.session_v2_persistence import IdempotencyConflict, resolve_session_mutation_authority
 
     try:
@@ -444,6 +445,9 @@ async def try_resolve_channel_session_permission_from_text(
     except IdempotencyConflict as exc:
         await db.rollback()
         return f"该权限请求已经存在不同决定（command_id={exc.command_id}），未覆盖原决定。"
+    except PermissionExecutionUnavailable:
+        await db.rollback()
+        return "工具执行暂时不可用，请重试原权限答复；不会因此重复执行工具。"
     except ValueError as exc:
         await db.rollback()
         code = str(exc)
@@ -459,6 +463,8 @@ async def try_resolve_channel_session_permission_from_text(
     tool_label = f"：{invocation.tool_name}" if invocation.tool_name else ""
     if receipt.status == "needs_reconciliation":
         return f"权限决定已记录{tool_label}，但工具效果状态需要核对；原运行已冻结且不会重复执行。"
+    if receipt.status == "awaiting_tool_result":
+        return f"权限决定已记录{tool_label}，正在等待这次调用的原结果；没有重复执行。"
     if receipt.status == "waiting_for_sibling_permissions":
         return f"权限决定已记录{tool_label}；原运行仍在等待同一轮的其他权限请求。"
     if action == "deny":

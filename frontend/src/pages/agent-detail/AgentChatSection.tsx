@@ -1395,9 +1395,8 @@ function AgentChatSection({
       const sessionId = activeSession?.id ? String(activeSession.id) : null;
       if (!effectiveAgentId || !sessionId || !message.id) return;
       const messageId = String(message.id);
-      const input = buildMessageFeedbackInput(messageId, label);
-
       try {
+        const input = buildMessageFeedbackInput(messageId, label, message.sessionItem);
         await chatApi.recordSessionFeedback(effectiveAgentId, sessionId, input);
         showAppToast(t('agent.chat.feedback.recorded', 'Feedback recorded.'), 'success');
       } catch (error: any) {

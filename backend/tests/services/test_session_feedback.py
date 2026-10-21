@@ -111,6 +111,7 @@ async def test_decision_linked_feedback_requires_exact_tenant_agent_and_session_
 
 @pytest.mark.asyncio
 async def test_record_useful_session_feedback_persists_evaluation_and_audit(tmp_path) -> None:
+    from unittest.mock import AsyncMock
     from app.models.audit import AuditLog
     from app.models.session_feedback import SessionFeedbackEvent
     from app.services.session_feedback import record_session_feedback
@@ -118,6 +119,7 @@ async def test_record_useful_session_feedback_persists_evaluation_and_audit(tmp_
     db = _FakeDB()
     agent, tenant, session, user = (uuid.uuid4() for _ in range(4))
     message = uuid.uuid4()
+    db.scalar = AsyncMock(return_value=SimpleNamespace(id=message))
     reason = "The answer gave the exact deployment checklist."
     result = await record_session_feedback(
         db, agent=SimpleNamespace(id=agent, tenant_id=tenant),

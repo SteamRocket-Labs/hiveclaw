@@ -293,6 +293,14 @@ describe('buildMessageFeedbackInput', () => {
       message_id: '11111111-1111-4111-8111-111111111111',
     });
   });
+  it.each(['assistant_final', 'assistant_text'])('targets the canonical %s item instead of its render owner', (kind) => {
+    expect(buildMessageFeedbackInput('11111111-1111-4111-8111-111111111111', 'useful', {
+      id: '22222222-2222-5222-8222-222222222222', kind,
+    })).toEqual({ label: 'useful', item_id: '22222222-2222-5222-8222-222222222222' });
+    expect(() => buildMessageFeedbackInput('11111111-1111-4111-8111-111111111111', 'useful', {
+      id: 'not-persisted', kind: 'assistant_message',
+    })).toThrow('not ready for feedback');
+  });
 });
 
 describe('canonical card assistant supplements', () => {

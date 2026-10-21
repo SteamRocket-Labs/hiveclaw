@@ -1,6 +1,31 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 describe('chat API adapter', () => {
+  it.each([
+    null,
+    {},
+    { target: { schema: 'hive.session_feedback_target.v1', kind: 'session_item', item_id: 'other-item' } },
+    { target: { schema: 'hive.session_feedback_target.v1', kind: 'legacy_message', item_id: 'native-item' } },
+  ])('rejects an unconfirmed native feedback receipt: %j', async (receipt) => {
+    vi.doMock('../core', () => ({ post: vi.fn().mockResolvedValue(receipt) }));
+    const { chatApi } = await import('./chat');
+    await expect(chatApi.recordSessionFeedback('agent', 'work', { label: 'useful', item_id: 'native-item' }))
+      .rejects.toThrow('Feedback could not be confirmed for this response.');
+  });
+
+  it('consumes an exact native feedback receipt and retains legacy response compatibility', async () => {
+    const receipt = { target: { schema: 'hive.session_feedback_target.v1', kind: 'session_item', item_id: 'native-item' } };
+    vi.doMock('../core', () => ({ post: vi.fn().mockResolvedValue(receipt) }));
+    const { chatApi } = await import('./chat');
+    const { post } = await import('../core');
+    await expect(chatApi.recordSessionFeedback('agent', 'work', { label: 'useful', item_id: 'native-item' }))
+      .resolves.toEqual(receipt);
+    expect(post).toHaveBeenCalledWith('/agents/agent/sessions/work/feedback', { label: 'useful', item_id: 'native-item' });
+    vi.mocked(post).mockResolvedValue({ message_id: 'legacy' });
+    await expect(chatApi.recordSessionFeedback('agent', 'work', { label: 'useful', message_id: 'legacy' }))
+      .resolves.toEqual({ message_id: 'legacy' });
+  });
+
   it('binds an answer to the exact question using the durable input endpoint', async () => {
     vi.doMock('../core', () => ({ post: vi.fn().mockResolvedValue({ status: 'queued', admission_state: 'admitted' }) }));
     const { chatApi } = await import('./chat');

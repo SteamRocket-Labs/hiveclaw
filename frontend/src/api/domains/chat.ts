@@ -222,6 +222,7 @@ export interface RecordSessionFeedbackInput {
   label: 'useful' | 'misleading';
   reason?: string;
   message_id?: string | null;
+  item_id?: string | null;
   decision_id?: string | null;
 }
 
@@ -395,8 +396,17 @@ export const chatApi = {
     post<SessionStartResponse>(`/agents/${agentId}/sessions/${sessionId}/runs`, input),
   branchSession: (agentId: string, sessionId: string, input: BranchSessionInput) =>
     post<BranchSessionResponse>(`/agents/${agentId}/sessions/${sessionId}/branches`, input),
-  recordSessionFeedback: (agentId: string, sessionId: string, input: RecordSessionFeedbackInput) =>
-    post<unknown>(`/agents/${agentId}/sessions/${sessionId}/feedback`, input),
+  recordSessionFeedback: async (agentId: string, sessionId: string, input: RecordSessionFeedbackInput) => {
+    const result = await post<unknown>(`/agents/${agentId}/sessions/${sessionId}/feedback`, input);
+    if (input.item_id) {
+      const target = result && typeof result === 'object' && 'target' in result ? result.target : null;
+      if (!target || typeof target !== 'object' || !('schema' in target) || target.schema !== 'hive.session_feedback_target.v1'
+        || !('kind' in target) || target.kind !== 'session_item' || !('item_id' in target) || target.item_id !== input.item_id) {
+        throw new Error('Feedback could not be confirmed for this response.');
+      }
+    }
+    return result;
+  },
   listSessionDecisions: (agentId: string, sessionId: string, options?: SessionOperatorOptions) =>
     get<SessionDecisionTrace[]>(
       withSessionOperatorQuery(`/agents/${agentId}/sessions/${sessionId}/decisions`, options),

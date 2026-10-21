@@ -674,6 +674,7 @@ class RecordSessionFeedbackIn(BaseModel):
     label: Literal["useful", "misleading"]
     reason: str = ""
     message_id: Optional[uuid.UUID] = None
+    item_id: Optional[uuid.UUID] = None
     decision_id: Optional[str] = None
 
 
@@ -1513,6 +1514,10 @@ async def record_feedback_for_session(
         session_id=session_id,
         current_user=current_user,
     )
+    from app.services.content_input_receipts import ContentInputReceiptError
+
+    if body.item_id is not None and (body.message_id is not None or body.decision_id is not None):
+        raise HTTPException(status_code=422, detail={"code": "feedback_target_conflict", "message": "Choose one response to evaluate."})
     try:
         result = await record_session_feedback(
             db=db,
@@ -1522,8 +1527,11 @@ async def record_feedback_for_session(
             label=body.label,
             reason=body.reason,
             message_id=body.message_id,
+            item_id=body.item_id,
             decision_id=body.decision_id,
         )
+    except ContentInputReceiptError as exc:
+        raise HTTPException(status_code=exc.status_code, detail={"code": exc.code, "message": str(exc)}) from exc
     except (KeyError, ValueError) as exc:
         if body.decision_id is None:
             raise

@@ -10,6 +10,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.agent import Agent
@@ -26,6 +27,58 @@ _ACTIVATION_FEEDBACK_SIDECAR = Path("memory/control/activation_feedback.jsonl")
 _ACTIVATION_FEEDBACK_SIDECAR_MAX_ENTRIES = 5000
 _ACTIVATION_FEEDBACK_READ_SCHEMA = "hive.ccplus.activation_feedback_read_model.v1"
 _ACTIVATION_FEEDBACK_SIDECAR_SCHEMA = "hive.ccplus.activation_feedback_sidecar.v1"
+
+
+async def _resolve_feedback_target(db, *, agent, session, message_id, item_id):
+    from app.models.audit import ChatMessage
+    from app.models.chat_transcript_event import ChatTranscriptEvent
+    from app.models.session_v2 import SessionModelResult, SessionRunOutcome
+    from app.services.content_input_receipts import ContentInputReceiptError
+
+    if message_id is not None and item_id is not None:
+        raise ContentInputReceiptError("feedback_target_conflict", "Choose one response to evaluate.", 422)
+    if message_id is not None:
+        message = await db.scalar(select(ChatMessage).where(ChatMessage.tenant_id == agent.tenant_id,
+            ChatMessage.agent_id == agent.id, ChatMessage.conversation_id == str(session.id),
+            ChatMessage.id == message_id, ChatMessage.role == "assistant"))
+        if message is None:
+            raise ContentInputReceiptError("feedback_target_unavailable", "The response is not available in this work.", 404)
+        return f"message:{message.id}", {"schema": "hive.session_feedback_target.v1", "kind": "legacy_message",
+            "message_id": str(message.id)}
+    if item_id is None:
+        return None, None
+    event = await db.scalar(select(ChatTranscriptEvent).where(ChatTranscriptEvent.tenant_id == agent.tenant_id,
+        ChatTranscriptEvent.agent_id == agent.id, ChatTranscriptEvent.session_id == session.id,
+        ChatTranscriptEvent.item_id == item_id,
+        ChatTranscriptEvent.item_kind.in_(("assistant_text", "assistant_final")),
+        ChatTranscriptEvent.lifecycle == "completed").order_by(ChatTranscriptEvent.sequence.desc()).limit(1))
+    if event is None or event.result_id is None or event.run_id is None:
+        raise ContentInputReceiptError("feedback_target_unavailable", "The response is not available in this work.", 404)
+    result = await db.get(SessionModelResult, event.result_id, populate_existing=True)
+    if (result is None or result.state != "round_committed" or result.tenant_id != agent.tenant_id
+        or result.session_id != session.id or result.run_id != event.run_id):
+        raise ContentInputReceiptError("feedback_result_uncommitted", "Reconcile this response before recording feedback.", 409)
+    if event.item_kind == "assistant_final":
+        outcome = await db.scalar(select(SessionRunOutcome).where(SessionRunOutcome.tenant_id == agent.tenant_id,
+            SessionRunOutcome.session_id == session.id, SessionRunOutcome.run_id == event.run_id,
+            SessionRunOutcome.terminal_result_id == result.id, SessionRunOutcome.terminal_event_id == event.id))
+        if (outcome is None or outcome.state != "terminal_committed"
+            or (outcome.seal_json or {}).get("result_content_hash") != event.content_hash):
+            raise ContentInputReceiptError("feedback_result_uncommitted", "Reconcile this response before recording feedback.", 409)
+    from app.services.session_model_inputs import _hash
+
+    seal = result.seal_json or {}
+    if (_hash(result.model_request_snapshot_json) != result.model_request_hash
+        or seal.get("result_id") != str(result.id) or seal.get("run_id") != str(event.run_id)
+        or seal.get("content_hash") != _hash(seal.get("semantic_content"))
+        or (event.item_kind == "assistant_text" and (str(event.id) not in seal.get("live_visible_event_ids", [])
+            or event.content_hash != seal.get("content_hash")))):
+        raise ContentInputReceiptError("feedback_result_unverified", "Reconcile this response before recording feedback.", 409)
+    # Feedback is an annotation, not disclosure or a new source grant. Readers
+    # of the result must still revalidate its current upstream authority.
+    return f"session-item:{session.id}:{item_id}", {"schema": "hive.session_feedback_target.v1",
+        "kind": "session_item", "item_id": str(item_id), "event_id": str(event.id), "run_id": str(event.run_id),
+        "model_result_id": str(result.id), "content_hash": event.content_hash}
 
 
 def _normalize_label(label: str) -> str:
@@ -296,6 +349,7 @@ async def record_session_feedback(
     label: str,
     reason: str = "",
     message_id: uuid.UUID | None = None,
+    item_id: uuid.UUID | None = None,
     decision_id: str | None = None,
     data_root: Path | None = None,
     decision_trace_store: Any | None = None,
@@ -306,9 +360,9 @@ async def record_session_feedback(
     if data_root is None:
         data_root = _default_data_root()
 
-    source_refs = [f"session:{session.id}"]
-    if message_id:
-        source_refs.append(f"message:{message_id}")
+    target_ref, target = await _resolve_feedback_target(db, agent=agent, session=session,
+        message_id=message_id, item_id=item_id)
+    source_refs = [f"session:{session.id}", *([target_ref] if target_ref else [])]
     decision_ref = ""
     normalized_decision_id = ""
     if decision_id:
@@ -364,6 +418,8 @@ async def record_session_feedback(
         "source_channel": getattr(session, "source_channel", "web"),
         "source_refs": source_refs,
     }
+    if target is not None:
+        attribution["target"] = target
     if decision_ref:
         attribution["decision_ref"] = decision_ref
     row = SessionFeedbackEvent(
@@ -401,6 +457,7 @@ async def record_session_feedback(
         "agent_id": str(row.agent_id),
         "session_id": str(row.session_id),
         "message_id": str(row.message_id) if row.message_id else None,
+        "target": target,
         "decision_ref": decision_ref or None,
         "label": row.label,
         "reason": row.reason,

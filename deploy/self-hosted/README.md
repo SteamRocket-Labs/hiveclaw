@@ -154,6 +154,30 @@ administrator explicitly saves `enabled`, `retention_days`, `grace_days` and
 `expected_version` with `PUT` to the same route. Snapshot cleanup settings do
 not authorize original retention. Conflicting versions require a policy reload.
 
+The same company's **Storage and retention → Manage original attachments**
+opens the recorded-original catalog and this separate policy. Filter by state
+or current references and load further pages as needed. Inspect a record before
+recovering an upload, quarantining, restoring or reviewing an exact-generation
+deletion. The catalog shows logical payload sizes and reference counts, not
+physical usage or company quotas; historical files without catalog provenance
+are not included.
+
+The interface retains a submitted operation's identifier and reviewed body for
+the current actor/company in the current browser tab. After a lost response or
+reload, **Check submitted operation** reads the receipt without calling the
+provider again. A missing receipt does not prove the request stopped. An explicit
+resubmission keeps the same body and identifier and requires a new review;
+discarding local tracking does not cancel server work. Use read-only deletion
+verification before reviewing a predecessor-linked retry. Policy-save uncertainty
+requires reloading the saved version before another save.
+
+Operators can also read `GET /api/v1/enterprise/storage-original-catalog` with
+`state`, `unreferenced`, `limit` and `after` filters. The original pending-only
+`storage-originals` API remains unchanged. For a known operation,
+`GET /api/v1/enterprise/storage-originals/{blob_id}/operations/{family}/{operation_id}`
+returns its current actor's safe historical result (`reconciliation`, `retention`
+or `sweep`), without raw provider evidence or another provider request.
+
 For a recorded original, `POST /api/v1/enterprise/storage-originals/{blob_id}/retention`
 accepts `operation_id`, `expected_content_sha256`, `expected_policy_version`
 and `action` (`inspect`, `quarantine` or `restore`). Use a fresh operation UUID

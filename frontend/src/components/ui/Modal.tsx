@@ -4,6 +4,7 @@ export interface ModalProps {
     open: boolean;
     onClose: () => void;
     title?: ReactNode;
+    ariaLabel?: string;
     footer?: ReactNode;
     /** 面板宽度（px），默认 400。 */
     width?: number;
@@ -11,7 +12,7 @@ export interface ModalProps {
 }
 
 /** Modal 基座 — overlay 点击与 ESC 关闭；浮层才配阴影。 */
-export default function Modal({ open, onClose, title, footer, width, children }: ModalProps) {
+export default function Modal({ open, onClose, title, ariaLabel, footer, width, children }: ModalProps) {
     const panelRef = useRef<HTMLDivElement>(null);
 
     useEffect(() => {
@@ -37,6 +38,7 @@ export default function Modal({ open, onClose, title, footer, width, children }:
                 className="ui-modal"
                 role="dialog"
                 aria-modal="true"
+                aria-label={ariaLabel}
                 style={width ? { width: `${width}px` } : undefined}
             >
                 {title != null && <div className="ui-modal-header">{title}</div>}

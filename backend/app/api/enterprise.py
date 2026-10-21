@@ -47,6 +47,7 @@ from app.services.storage_retention import RetentionPolicyUpdate
 from app.services.original_reconciliation import OriginalReconciliationRequest
 from app.services.original_retention import OriginalRetentionPolicyUpdate, OriginalRetentionRequest
 from app.services.original_sweep import OriginalSweepRequest
+from app.services.original_catalog import OperationFamily, OriginalState
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -116,6 +117,28 @@ async def reconcile_pending_original(blob_id: uuid.UUID, data: OriginalReconcili
     result = await reconcile_original(db, tenant_id=target, actor_id=current_user.id, blob_id=blob_id, request=data)
     await db.commit()
     return result
+
+
+@router.get("/storage-original-catalog")
+async def get_original_catalog(tenant_id: uuid.UUID | None = Query(None), limit: int = Query(50, ge=1, le=200),
+    after: uuid.UUID | None = Query(None), state: OriginalState | None = Query(None), unreferenced: bool = Query(False),
+    current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    from app.services.original_catalog import original_catalog
+
+    _require_org_admin(current_user)
+    target = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
+    return await original_catalog(db, tenant_id=target, limit=limit, after=after, state=state, unreferenced=unreferenced)
+
+
+@router.get("/storage-originals/{blob_id}/operations/{family}/{operation_id}")
+async def get_original_operation(blob_id: uuid.UUID, family: OperationFamily, operation_id: uuid.UUID,
+    tenant_id: uuid.UUID | None = Query(None), current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    from app.services.original_catalog import read_original_operation
+
+    _require_org_admin(current_user)
+    target = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
+    return await read_original_operation(db, tenant_id=target, actor_id=current_user.id,
+        blob_id=blob_id, family=family, operation_id=operation_id)
 
 
 @router.get("/storage-original-retention")

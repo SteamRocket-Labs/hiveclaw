@@ -18,6 +18,14 @@
   margin-bottom: var(--space-6);
 }
 
+.ws-info-original-identity {
+  overflow-wrap: anywhere;
+}
+
+.ws-info-original-controls {
+  flex-wrap: wrap;
+}
+
 .ws-info-textarea {
   min-height: 200px;
   resize: vertical;

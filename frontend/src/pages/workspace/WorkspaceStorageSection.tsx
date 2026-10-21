@@ -1,7 +1,8 @@
-import { useEffect, useRef, useState } from 'react';
+import { lazy, Suspense, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { enterpriseApi, type StorageRetention } from '../../api/domains/enterprise';
+const WorkspaceOriginalStorageSection = lazy(() => import('./WorkspaceOriginalStorageSection'));
 
 export default function WorkspaceStorageSection({ selectedTenantId }: { selectedTenantId: string }) {
   const { t } = useTranslation();
@@ -14,6 +15,7 @@ export default function WorkspaceStorageSection({ selectedTenantId }: { selected
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<'load' | 'save' | null>(null);
   const [confirmed, setConfirmed] = useState(false);
+  const [originalsOpen, setOriginalsOpen] = useState(false);
   const current = saved?.tenantId === selectedTenantId ? saved.value : null;
 
   async function load() {
@@ -94,5 +96,11 @@ export default function WorkspaceStorageSection({ selectedTenantId }: { selected
     <button className="btn" disabled={busy || !selectedTenantId} onClick={() => void load()}>
       {t('enterprise.storage.reload')}
     </button>
+    <button className="btn" aria-expanded={originalsOpen} onClick={() => setOriginalsOpen((value) => !value)}>
+      {t('enterprise.originals.open')}
+    </button>
+    {originalsOpen ? <Suspense fallback={<p role="status">{t('common.loading')}</p>}>
+      <WorkspaceOriginalStorageSection selectedTenantId={selectedTenantId} />
+    </Suspense> : null}
   </section>;
 }

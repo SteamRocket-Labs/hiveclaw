@@ -86,6 +86,57 @@ export interface StorageRetention {
   effective_on: 'next_maintenance_pass';
 }
 
+export type OriginalState = 'uploading' | 'available' | 'quarantined' | 'deleting' | 'deleted' | 'failed';
+export type OriginalOperationFamily = 'reconciliation' | 'retention' | 'sweep';
+export interface OriginalPolicy {
+  enabled: boolean;
+  retention_days: number;
+  grace_days: number;
+  version: number;
+  source: 'unset' | 'company_admin';
+}
+export interface OriginalRecord {
+  blob_id: string;
+  provider: string;
+  content_sha256: string;
+  size_bytes: number;
+  state: OriginalState;
+  reference_count: number;
+  created_at: string;
+  verified_at: string | null;
+  quarantined_at: string | null;
+  delete_after: string | null;
+  deleted_at: string | null;
+  operation_conflict: boolean;
+  active_sweep: { operation_id: string; status: string; outcome: string | null; reconciled_outcome: string | null } | null;
+}
+export interface OriginalOperationRequest {
+  operation_id: string;
+  expected_content_sha256: string;
+  action: 'inspect' | 'recover' | 'quarantine' | 'restore' | 'sweep' | 'reconcile';
+  expected_policy_version?: number;
+  expected_manifest_sha256?: string;
+  retry_operation_id?: string;
+}
+export interface OriginalObservation {
+  operation_id: string;
+  blob_id: string;
+  state: OriginalState;
+  observed_at: string;
+  replayed: boolean;
+  recovery_action: string;
+  outcome?: string;
+  observation?: string | null;
+  recovered?: boolean;
+  changed?: boolean;
+  hold_reason?: string | null;
+  delete_after?: string | null;
+  policy_version?: number;
+  manifest_sha256?: string;
+  sweep_eligible?: boolean;
+  physical_bytes_reclaimed?: number | null;
+}
+
 export interface LegacyCompanyFilesStatus {
   available: boolean;
   file_count: number;
@@ -427,6 +478,22 @@ export const enterpriseApi = {
     get<StorageRetention>(`/enterprise/storage-retention?tenant_id=${encodeURIComponent(tenantId)}`),
   updateStorageRetention: (tenantId: string, data: { enabled: boolean; retention_days: number; expected_version: number }) =>
     put<StorageRetention>(`/enterprise/storage-retention?tenant_id=${encodeURIComponent(tenantId)}`, data),
+  getOriginalPolicy: (tenantId: string) =>
+    get<OriginalPolicy>(`/enterprise/storage-original-retention?tenant_id=${encodeURIComponent(tenantId)}`),
+  updateOriginalPolicy: (tenantId: string, data: { enabled: boolean; retention_days: number; grace_days: number; expected_version: number }) =>
+    put<OriginalPolicy>(`/enterprise/storage-original-retention?tenant_id=${encodeURIComponent(tenantId)}`, data),
+  listOriginals: (tenantId: string, options: { state?: OriginalState; after?: string; unreferenced?: boolean } = {}) => {
+    const query = new URLSearchParams({ tenant_id: tenantId, limit: '50' });
+    if (options.state) query.set('state', options.state);
+    if (options.after) query.set('after', options.after);
+    if (options.unreferenced) query.set('unreferenced', 'true');
+    return get<{ items: OriginalRecord[]; next_cursor: string | null }>(`/enterprise/storage-original-catalog?${query}`);
+  },
+  originalOperation: (tenantId: string, blobId: string, family: OriginalOperationFamily, data: OriginalOperationRequest) =>
+    post<OriginalObservation>(`/enterprise/storage-originals/${encodeURIComponent(blobId)}/${family === 'reconciliation' ? 'reconcile' : family}?tenant_id=${encodeURIComponent(tenantId)}`, data),
+  getOriginalOperation: (tenantId: string, blobId: string, family: OriginalOperationFamily, operationId: string) =>
+    get<{ operation_id: string; status: 'running' | 'completed' | 'partial' | 'failed'; result: OriginalObservation }>(
+      `/enterprise/storage-originals/${encodeURIComponent(blobId)}/operations/${family}/${encodeURIComponent(operationId)}?tenant_id=${encodeURIComponent(tenantId)}`),
   getSetting: (key: string, tenantId?: string) =>
     get<SystemSetting>(`/enterprise/system-settings/${key}${tenantId ? `?tenant_id=${tenantId}` : ''}`),
   updateSetting: (key: string, value: Record<string, unknown>, tenantId?: string) =>

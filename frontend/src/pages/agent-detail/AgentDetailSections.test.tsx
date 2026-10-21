@@ -1,6 +1,6 @@
 import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import AgentApprovalsSection from './AgentApprovalsSection';
 import AgentActivityLogSection from './AgentActivityLogSection';
@@ -383,6 +383,11 @@ describe('canonical card assistant supplements', () => {
 
 const queryKeyCalls = vi.hoisted(() => [] as unknown[][]);
 const queryOptionCalls = vi.hoisted(() => [] as Array<{ queryKey: unknown[]; enabled?: boolean }>);
+const memoryReader = vi.hoisted(() => ({
+  user: null as { id: string; tenant_id: string; role: string } | null,
+}));
+
+afterEach(() => { memoryReader.user = null; });
 
 function findElementByTestId(node: React.ReactNode, testId: string): React.ReactElement<Record<string, any>> {
   if (!React.isValidElement(node)) {
@@ -762,13 +767,31 @@ vi.mock('@tanstack/react-query', () => ({
         refetch: vi.fn(),
       };
     }
+    if (key === 'team-memory-workspaces') {
+      return {
+        data: {
+          tenant_id: 'tenant-1',
+          user_id: 'user-1',
+          unavailable: false,
+          workspaces: [{
+            workspace_key: 'business_team:00000000-0000-0000-0000-00000000000a',
+            name: 'Release team',
+            kind: 'business_team',
+            status: 'active',
+            can_write: false,
+            can_delete: false,
+          }],
+        },
+      };
+    }
     if (key === 'team-memory') {
       return {
         data: [
           {
             key: 'deploy-playbook',
             title: 'Deploy Playbook',
-            workspace_key: 'workspace',
+            tenant_id: 'tenant-1',
+            workspace_key: 'business_team:00000000-0000-0000-0000-00000000000a',
             updated_at: '2026-03-27T09:00:00Z',
             snippet: 'Use a canary rollout and verify logs before promoting globally.',
             path: 'shared_memory/tenant/workspace/deploy-playbook.md',
@@ -782,7 +805,8 @@ vi.mock('@tanstack/react-query', () => ({
         data: {
           key: 'deploy-playbook',
           title: 'Deploy Playbook',
-          workspace_key: 'workspace',
+          tenant_id: 'tenant-1',
+          workspace_key: 'business_team:00000000-0000-0000-0000-00000000000a',
           updated_at: '2026-03-27T09:00:00Z',
           snippet: 'Use a canary rollout and verify logs before promoting globally.',
           content: 'Use a canary rollout and verify logs before promoting globally.\nDocument rollback before the final promotion.',
@@ -1230,11 +1254,11 @@ vi.mock('@tanstack/react-query', () => ({
 }));
 
 vi.mock('../../stores', () => {
-  const useAuthStore = Object.assign(vi.fn(), {
-    getState: () => ({
-      user: null,
-      token: null,
-    }),
+  const state = () => ({ user: memoryReader.user, token: null });
+  const useAuthStore = Object.assign(vi.fn((selector?: (value: ReturnType<typeof state>) => unknown) => (
+    selector?.(state())
+  )), {
+    getState: state,
   });
   return { useAuthStore };
 });
@@ -2760,6 +2784,7 @@ describe('AgentDetail extracted sections', () => {
   });
 
   it('renders AgentAwareSection as a standalone aware module', async () => {
+    memoryReader.user = { id: 'user-1', tenant_id: 'tenant-1', role: 'member' };
     const markup = await renderWithLazyHrPreview(
       <AgentAwareSection
         agentId="agent-1"

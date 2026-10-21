@@ -146,7 +146,33 @@ keys or duplicate generation history remain. Use a verified compatible backup
 for data rollback. Backups containing newer generations use schema v3 and
 preserve their exact keys through filesystem recovery; older recovery tools
 must reject that format. Legacy v1/v2 bundles remain supported. These identities
-prepare physical reclamation; they do not themselves enable quarantine or sweep.
+prepare physical reclamation; they do not themselves enable sweep.
+
+Original attachment retention has its own company-admin policy at
+`GET /api/v1/enterprise/storage-original-retention`. It is disabled until an
+administrator explicitly saves `enabled`, `retention_days`, `grace_days` and
+`expected_version` with `PUT` to the same route. Snapshot cleanup settings do
+not authorize original retention. Conflicting versions require a policy reload.
+
+For a recorded original, `POST /api/v1/enterprise/storage-originals/{blob_id}/retention`
+accepts `operation_id`, `expected_content_sha256`, `expected_policy_version`
+and `action` (`inspect`, `quarantine` or `restore`). Use a fresh operation UUID
+for a fresh observation; an exact replay returns its original receipt. Every
+reference, including a pin, legal hold or unfamiliar source, preserves the
+original. Unresolved uploads and originals within their retention age also stay
+held. Quarantine records a grace deadline and retains bytes and history;
+`sweep_eligible` reports current metadata eligibility and does not delete bytes.
+Restore verifies the recorded provider's full content and remains available
+when retention is disabled. A newer active generation blocks restoring the old
+one; missing, changed or unavailable bytes retain quarantine with a recovery
+action. No operation creates attachment ownership or private download grants.
+
+Backups with quarantined originals use schema v4, including their bytes,
+policy, grace deadline and receipts. Remote bodies are materialized into the
+portable recovery volume, preserving quarantine until an explicit verified
+restore. Older recovery tools must reject v4 before importing data; current
+tools retain v1/v2/v3 compatibility. Keep disaster recovery copies under their
+own operator retention policy.
 
 Current validation covers the Compose CLI model/build plan and owned macOS native
 processes with PostgreSQL 17/SCRAM and authenticated Redis. The recipe reuses the

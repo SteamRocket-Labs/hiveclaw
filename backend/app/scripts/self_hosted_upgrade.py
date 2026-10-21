@@ -90,7 +90,7 @@ async def snapshot(args):
             marker = await db.scalar(text("SELECT value FROM system_settings WHERE key=:key"), {"key": RECOVERY_MARKER_KEY})
             restored = marker is not None and required_workspace_manifest(marker) == args.backup_sha256
             objects = (await db.execute(text("""SELECT id::text,tenant_id::text,provider,bucket,object_key,
-                content_sha256,size_bytes,metadata_json FROM storage_blobs WHERE id=ANY(:ids)"""),
+                content_sha256,size_bytes,metadata_json,state FROM storage_blobs WHERE id=ANY(:ids)"""),
                 {"ids": [UUID(row["id"]) for row in recovery["remote_objects"]]})).mappings().all()
             try:
                 expected_entries = upgrade_entries(recovery, [dict(row) for row in objects], restored=restored)

@@ -32,7 +32,9 @@ def migrated_pg_url(pg_container):
     return _migrated_pg_url.__wrapped__(pg_container)
 
 
-async def test_offline_recovery_preserves_reconciled_unreferenced_original_and_receipt(pending, owner_sessionmaker, tmp_path_factory):  # noqa: F811
+@pytest.mark.parametrize("original_state", ["available", "quarantined"])
+async def test_offline_recovery_preserves_reconciled_unreferenced_original_and_receipt(
+    pending, owner_sessionmaker, tmp_path_factory, monkeypatch, original_state):  # noqa: F811
     from app.models.storage_blob import StorageBlob, StorageBlobRef, StorageGCRun
 
     d, client, blob_id, (selected, remote), *_ = pending
@@ -40,6 +42,12 @@ async def test_offline_recovery_preserves_reconciled_unreferenced_original_and_r
     result = await client.post(f"/enterprise/storage-originals/{blob_id}/reconcile", json={
         "operation_id": operation, "expected_content_sha256": hashlib.sha256(BODY).hexdigest(), "action": "recover"})
     assert result.status_code == 200 and result.json()["recovered"] is True, result.text
+    if original_state == "quarantined":
+        from tests.integration.test_m4y_original_quarantine_postgres import apply, configure
+
+        await configure(client)
+        quarantined = await apply(client, blob_id, "quarantine")
+        assert quarantined.status_code == 200 and quarantined.json()["state"] == "quarantined", quarantined.text
     work = tmp_path_factory.mktemp("original-reconciliation-recovery")
     storage = work / "object-storage.json"
     storage.write_text(json.dumps({"endpoint": remote.endpoint, "region": "us-east-1", "bucket": "private-originals",
@@ -67,13 +75,17 @@ async def test_offline_recovery_preserves_reconciled_unreferenced_original_and_r
     receipt = invoke("backup", "--offline", "--profile", profile, "--agents", d.root.parent, "--output", backup, "--pg-bin", binary)
     assert receipt["status"] == "backed_up"
     manifest = json.loads((backup / "manifest.json").read_text())
-    assert manifest["schema"] == "hive.self_hosted_backup.v3"
+    assert manifest["schema"] == ("hive.self_hosted_backup.v4" if original_state == "quarantined" else "hive.self_hosted_backup.v3")
     assert len(manifest["remote_objects"]) == int(selected == "s3")
     if selected == "s3":
         from app.scripts import self_hosted_recovery as recovery
 
-        with pytest.raises(recovery.RecoveryError, match="backup_generation_schema_required"):
+        expected = "backup_quarantine_schema_required" if original_state == "quarantined" else "backup_generation_schema_required"
+        with pytest.raises(recovery.RecoveryError, match=expected):
             recovery.verify_contents(backup, {**manifest, "schema": recovery.REMOTE_SCHEMA})
+        if original_state == "quarantined":
+            with pytest.raises(recovery.RecoveryError, match="backup_quarantine_schema_required"):
+                recovery.verify_contents(backup, {**manifest, "schema": recovery.GENERATION_SCHEMA})
     remote.stop()
     target_profile = installer.configure(work / "target-profile", public_origin="http://127.0.0.1:3014", port=3014,
         recovery_profile=backup / "installation.env")
@@ -104,7 +116,7 @@ async def test_offline_recovery_preserves_reconciled_unreferenced_original_and_r
             await pin_rls_tenant_context(db, d.tenant)
             assert tuple((await db.execute(text("SELECT rolsuper,rolbypassrls FROM pg_roles WHERE rolname=current_user"))).one()) == (False, False)
             row = await db.get(StorageBlob, blob_id)
-            assert row.state == "available" and row.verified_at is not None and row.provider == "filesystem"
+            assert row.state == original_state and row.verified_at is not None and row.provider == "filesystem"
             assert row.content_sha256 == hashlib.sha256(BODY).hexdigest()
             assert (target_agents / ".storage_objects" / row.bucket / row.object_key).read_bytes() == BODY
             assert (await db.scalars(select(StorageBlobRef).where(StorageBlobRef.blob_id == blob_id))).all() == []
@@ -113,5 +125,18 @@ async def test_offline_recovery_preserves_reconciled_unreferenced_original_and_r
             assert ledger.receipt_json["result"] == result.json()
             assert ledger.receipt_json["evidence"]["observed"] == {
                 "available": True, "sha256": hashlib.sha256(BODY).hexdigest(), "size_bytes": len(BODY)}
+            if original_state == "quarantined":
+                from app.config import get_settings
+                from app.services.original_retention import OriginalRetentionRequest, apply_original_retention, read_original_retention
+
+                assert row.delete_after.isoformat() == quarantined.json()["delete_after"]
+                assert (await read_original_retention(db, d.tenant))["version"] == 1
+                monkeypatch.setattr(get_settings(), "AGENT_DATA_DIR", str(target_agents))
+                restored_original = await apply_original_retention(db, tenant_id=d.tenant,
+                    actor_id=uuid.UUID(ledger.receipt_json["request"]["actor_id"]), blob_id=blob_id,
+                    request=OriginalRetentionRequest(operation_id=uuid.uuid4(), expected_policy_version=1,
+                        expected_content_sha256=hashlib.sha256(BODY).hexdigest(), action="restore"))
+                assert restored_original["state"] == "available" and restored_original["observation"] == "present"
+                await db.commit()
     finally:
         await engine.dispose()

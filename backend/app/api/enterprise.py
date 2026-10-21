@@ -44,6 +44,7 @@ from app.services.llm_client import get_provider_manifest
 from app.services.secrets_provider import get_secrets_provider
 from app.services.storage_retention import RetentionPolicyUpdate
 from app.services.original_reconciliation import OriginalReconciliationRequest
+from app.services.original_retention import OriginalRetentionPolicyUpdate, OriginalRetentionRequest
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -111,6 +112,49 @@ async def reconcile_pending_original(blob_id: uuid.UUID, data: OriginalReconcili
     _require_org_admin(current_user)
     target = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
     result = await reconcile_original(db, tenant_id=target, actor_id=current_user.id, blob_id=blob_id, request=data)
+    await db.commit()
+    return result
+
+
+@router.get("/storage-original-retention")
+async def get_original_retention(tenant_id: uuid.UUID | None = Query(None),
+    current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    from app.services.original_retention import read_original_retention
+
+    _require_org_admin(current_user)
+    target = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
+    try:
+        return await read_original_retention(db, target)
+    except ValueError:
+        raise HTTPException(503, detail={"code": "original_retention_policy_unavailable", "recovery_action": "repair_policy"}) from None
+
+
+@router.put("/storage-original-retention")
+async def update_original_retention(data: OriginalRetentionPolicyUpdate, tenant_id: uuid.UUID | None = Query(None),
+    current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    from app.services.original_retention import save_original_retention
+
+    _require_org_admin(current_user)
+    target = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
+    try:
+        result = await save_original_retention(db, target, current_user.id, data)
+    except ValueError:
+        raise HTTPException(503, detail={"code": "original_retention_policy_unavailable", "recovery_action": "repair_policy"}) from None
+    await db.commit()
+    return result
+
+
+@router.post("/storage-originals/{blob_id}/retention")
+async def manage_original_retention(blob_id: uuid.UUID, data: OriginalRetentionRequest,
+    tenant_id: uuid.UUID | None = Query(None), current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    from app.services.original_retention import apply_original_retention
+
+    _require_org_admin(current_user)
+    target = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
+    try:
+        result = await apply_original_retention(db, tenant_id=target, actor_id=current_user.id, blob_id=blob_id, request=data)
+    except ValueError:
+        raise HTTPException(503, detail={"code": "original_retention_policy_unavailable", "recovery_action": "repair_policy"}) from None
     await db.commit()
     return result
 

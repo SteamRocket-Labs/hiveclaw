@@ -18,10 +18,12 @@ def remote_objects(args, sql):
     return json.loads(
         sql(
             args,
-            """SELECT coalesce(json_agg(json_build_object(
+            """SELECT coalesce(json_agg(jsonb_build_object(
         'id',id::text,'tenant_id',tenant_id::text,'provider',provider,'bucket',bucket,'object_key',object_key,
-        'content_sha256',content_sha256,'size_bytes',size_bytes,'metadata_json',metadata_json) ORDER BY id),'[]'::json)
-        FROM storage_blobs WHERE provider<>'filesystem' AND state='available'""",
+        'content_sha256',content_sha256,'size_bytes',size_bytes,'metadata_json',metadata_json)
+        || CASE WHEN state='quarantined' THEN jsonb_build_object('state',state) ELSE '{}'::jsonb END
+        ORDER BY id),'[]'::json)
+        FROM storage_blobs WHERE provider<>'filesystem' AND state IN ('available','quarantined')""",
         )
     )
 
@@ -30,6 +32,11 @@ def has_generational_objects(args, sql):
     return (sql(args, "SELECT to_regclass('public.storage_blobs') IS NOT NULL") == "t"
         and sql(args, "SELECT EXISTS(SELECT 1 FROM storage_blobs WHERE kind='chat_upload' "
             "AND object_key <> tenant_id::text || '/' || content_sha256)") == "t")
+
+
+def has_quarantined_objects(args, sql):
+    return (sql(args, "SELECT to_regclass('public.storage_blobs') IS NOT NULL") == "t"
+        and sql(args, "SELECT EXISTS(SELECT 1 FROM storage_blobs WHERE state='quarantined')") == "t")
 
 
 def object_path(row):
@@ -41,6 +48,7 @@ def object_path(row):
         or not re.fullmatch(r"[a-f0-9]{64}", str(row.get("content_sha256", "")))
         or type(row.get("size_bytes")) is not int
         or row["size_bytes"] < 0
+        or row.get("state", "available") not in {"available", "quarantined"}
     ):
         raise ValueError("Invalid remote object recovery identity")
     if str(uuid.UUID(row["tenant_id"])) != row["tenant_id"] or str(uuid.UUID(row["id"])) != row["id"]:
@@ -149,6 +157,10 @@ def upgrade_entries(manifest, actual_objects, *, restored):
             item.update(provider="filesystem", bucket="durable", metadata_json={
                 "restored_from": {key: row[key] for key in ("provider", "bucket", "object_key", "metadata_json")}})
         expected.append(item)
+    actual_objects = [dict(row) for row in actual_objects]
+    for row in actual_objects:
+        if row.get("state") == "available":
+            row.pop("state")
     if sorted(actual_objects, key=lambda row: row["id"]) != sorted(expected, key=lambda row: row["id"]):
         raise ValueError("Current object locations differ from the frozen recovery boundary")
     if restored:
@@ -176,6 +188,6 @@ def relocation_sql(rows):
             WHERE id={literal(row["id"])}::uuid AND tenant_id={literal(row["tenant_id"])}::uuid
             AND provider='s3' AND bucket={literal(row["bucket"])} AND object_key={literal(row["object_key"])}
             AND content_sha256={literal(row["content_sha256"])} AND size_bytes={row["size_bytes"]}
-            AND metadata_json={literal(metadata)}::jsonb AND state='available';
+            AND metadata_json={literal(metadata)}::jsonb AND state={literal(row.get("state", "available"))};
             IF NOT FOUND THEN RAISE EXCEPTION 'remote object restore identity mismatch'; END IF;""")
     return "BEGIN; DO $object_restore$ BEGIN " + "\n".join(updates) + " END $object_restore$; COMMIT;"

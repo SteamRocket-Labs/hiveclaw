@@ -40,6 +40,7 @@ def read_profile(path: Path) -> dict[str, str]:
 SCHEMA = "hive.self_hosted_backup.v1"
 REMOTE_SCHEMA = "hive.self_hosted_backup.v2"
 GENERATION_SCHEMA = "hive.self_hosted_backup.v3"
+QUARANTINE_SCHEMA = "hive.self_hosted_backup.v4"
 CONTROL = ".hive-recovery.json"
 RECOVERY_MARKER_KEY = "self_hosted_recovery_volume"
 
@@ -303,10 +304,11 @@ def backup(args):
         pg(args, ["pg_dump", "--no-password", "--format=custom"], output=output)
         output.flush()
         os.fsync(output.fileno())
-    from app.scripts.object_storage_recovery import has_generational_objects, remote_objects
+    from app.scripts.object_storage_recovery import has_generational_objects, has_quarantined_objects, remote_objects
 
     remote = remote_objects(args, sql)
     generations = has_generational_objects(args, sql)
+    quarantined = has_quarantined_objects(args, sql)
     tree = destination / "agents.tar.gz"
     with tree.open("xb") as output:
         os.chmod(tree, 0o600)
@@ -324,7 +326,7 @@ def backup(args):
         os.fsync(output.fileno())
     if local_entries != file_tree(agents) or remote != remote_objects(args, sql) or before != database_state(args):
         raise RecoveryError("backup_source_changed")
-    manifest = {"schema": GENERATION_SCHEMA if generations else REMOTE_SCHEMA if remote else SCHEMA,
+    manifest = {"schema": QUARANTINE_SCHEMA if quarantined else GENERATION_SCHEMA if generations else REMOTE_SCHEMA if remote else SCHEMA,
         "postgres_major": before["major"], "entries": entries,
         "remote_objects": remote,
         **({"source_volume_paths": [entry["path"] for entry in local_entries]} if remote else {}),
@@ -350,9 +352,9 @@ def verify(directory, expected=None):
 
 
 def verify_contents(directory, manifest):
-    if manifest.get("schema") not in {SCHEMA, REMOTE_SCHEMA, GENERATION_SCHEMA} or set(manifest.get("files", {})) != {"database.dump", "agents.tar.gz", "installation.env"}:
+    if manifest.get("schema") not in {SCHEMA, REMOTE_SCHEMA, GENERATION_SCHEMA, QUARANTINE_SCHEMA} or set(manifest.get("files", {})) != {"database.dump", "agents.tar.gz", "installation.env"}:
         raise RecoveryError("backup_manifest_invalid")
-    if manifest["schema"] == GENERATION_SCHEMA and not isinstance(manifest.get("remote_objects"), list):
+    if manifest["schema"] in {GENERATION_SCHEMA, QUARANTINE_SCHEMA} and not isinstance(manifest.get("remote_objects"), list):
         raise RecoveryError("backup_manifest_invalid")
     if manifest["schema"] == REMOTE_SCHEMA and not manifest.get("remote_objects"):
         raise RecoveryError("backup_remote_objects_invalid")
@@ -378,9 +380,11 @@ def verify_contents(directory, manifest):
             verify_objects(manifest["remote_objects"], entries, source_paths=manifest.get("source_volume_paths"))
         except (ValueError, TypeError, KeyError):
             raise RecoveryError("backup_remote_objects_invalid") from None
-        if manifest["remote_objects"] and manifest["schema"] not in {REMOTE_SCHEMA, GENERATION_SCHEMA}:
+        if manifest["remote_objects"] and manifest["schema"] not in {REMOTE_SCHEMA, GENERATION_SCHEMA, QUARANTINE_SCHEMA}:
             raise RecoveryError("backup_remote_schema_required")
-        if manifest["schema"] != GENERATION_SCHEMA and any(row["object_key"] !=
+        if manifest["schema"] != QUARANTINE_SCHEMA and any(row.get("state", "available") != "available" for row in manifest["remote_objects"]):
+            raise RecoveryError("backup_quarantine_schema_required")
+        if manifest["schema"] not in {GENERATION_SCHEMA, QUARANTINE_SCHEMA} and any(row["object_key"] !=
             f"{row['tenant_id']}/{row['content_sha256']}" for row in manifest["remote_objects"]):
             raise RecoveryError("backup_generation_schema_required")
     seen = set()

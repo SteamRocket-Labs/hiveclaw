@@ -61,7 +61,7 @@ class BlobStat:
 class BlobStore(Protocol):
     async def put_verified(self, request: BlobPutRequest) -> BlobReceipt: ...
 
-    async def stat(self, location: BlobLocation) -> BlobStat: ...
+    async def stat(self, location: BlobLocation, *, expected_size: int | None = None) -> BlobStat: ...
 
     def open_stream(self, location: BlobLocation) -> AsyncIterator[bytes]: ...
 
@@ -104,10 +104,12 @@ class FilesystemBlobStore:
                     raise BlobStoreError("Blob file has changed or shared ownership")
                 yield handle
 
-    def _stat(self, location: BlobLocation) -> BlobStat:
+    def _stat(self, location: BlobLocation, *, expected_size=None) -> BlobStat:
         try:
             with self._open(location) as handle:
                 size = os.fstat(handle.fileno()).st_size
+                if expected_size is not None and size > expected_size:
+                    raise BlobIntegrityError("Blob exceeds its authoritative size")
                 digest = hashlib.file_digest(handle, "sha256").hexdigest()
                 return BlobStat(location, available=True, size_bytes=size, sha256=digest)
         except BlobStoreError as exc:
@@ -179,8 +181,8 @@ class FilesystemBlobStore:
         """Use the same verified publication for synchronous snapshot producers."""
         return self._put(request)
 
-    async def stat(self, location: BlobLocation) -> BlobStat:
-        return await asyncio.to_thread(self._stat, location)
+    async def stat(self, location: BlobLocation, *, expected_size=None) -> BlobStat:
+        return await asyncio.to_thread(self._stat, location, expected_size=expected_size)
 
     async def open_stream(self, location: BlobLocation) -> AsyncIterator[bytes]:
         try:

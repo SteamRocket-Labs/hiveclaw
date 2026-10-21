@@ -43,6 +43,7 @@ from app.services.enterprise_sync import enterprise_sync_service
 from app.services.llm_client import get_provider_manifest
 from app.services.secrets_provider import get_secrets_provider
 from app.services.storage_retention import RetentionPolicyUpdate
+from app.services.original_reconciliation import OriginalReconciliationRequest
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -89,6 +90,29 @@ async def update_storage_retention(data: RetentionPolicyUpdate, tenant_id: uuid.
         raise HTTPException(503, detail={"code": "storage_retention_policy_unavailable", "retryable": True})
     await db.commit()
     return _storage_policy_response(policy, current_user)
+
+
+@router.get("/storage-originals")
+async def get_pending_originals(tenant_id: uuid.UUID | None = Query(None),
+    limit: int = Query(50, ge=1, le=200), after: uuid.UUID | None = Query(None),
+    current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    from app.services.original_reconciliation import pending_originals
+
+    _require_org_admin(current_user)
+    target = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
+    return await pending_originals(db, tenant_id=target, limit=limit, after=after)
+
+
+@router.post("/storage-originals/{blob_id}/reconcile")
+async def reconcile_pending_original(blob_id: uuid.UUID, data: OriginalReconciliationRequest,
+    tenant_id: uuid.UUID | None = Query(None), current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    from app.services.original_reconciliation import reconcile_original
+
+    _require_org_admin(current_user)
+    target = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
+    result = await reconcile_original(db, tenant_id=target, actor_id=current_user.id, blob_id=blob_id, request=data)
+    await db.commit()
+    return result
 
 
 def _require_org_admin(current_user: User) -> None:

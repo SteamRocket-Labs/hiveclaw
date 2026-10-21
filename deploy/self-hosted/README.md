@@ -87,6 +87,38 @@ Repair the recorded provider if needed and retry the original upload with the
 same bytes to reconcile it, then take a new backup. Do not erase the intent to
 make this check pass: a failed acknowledgement may already have stored bytes.
 
+Company administrators can inspect pending records through
+`GET /api/v1/enterprise/storage-originals?limit=50`; follow `next_cursor` as
+the next request's `after` value. This lists company-scoped metadata and does
+not enumerate the object bucket or disclose original bytes or credentials.
+For one listed `blob_id`, post to
+`/api/v1/enterprise/storage-originals/{blob_id}/reconcile` with:
+
+```json
+{
+  "operation_id": "a-new-UUID-for-this-operation",
+  "expected_content_sha256": "the-listed-64-character-content-hash",
+  "action": "recover"
+}
+```
+
+Use `inspect` to record only an observation, or `recover` to mark a fully
+verified original available. The operation reads the recorded provider and
+checks the complete hash and size. `present` can be recovered; `missing`,
+`changed` and `unknown` preserve the pending intent and return a next action.
+One missing-object response is not permission to erase the record or bytes.
+Repair the recorded provider/object or retry the original as directed.
+
+Keep the operation UUID for response recovery. Replaying the same company,
+administrator and request returns its original receipt without another object
+read; changed input with that UUID is refused. Use a new UUID to observe the
+object again. Recovery records the administrator and result in the GC receipt
+ledger and security audit; it creates no attachment ownership or download grant.
+Members cannot use this management API. Platform administrators use the normal
+explicit company scope. A verified available original can then be included in
+the next offline backup. This API does not delete objects or replace a storage
+quarantine/sweep policy.
+
 Offline backups include verified bytes for every available remote object along
 with the database and volume. Keep the source object service readable until the
 backup manifest is complete and verified; missing or corrupt objects fail the

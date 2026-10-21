@@ -206,8 +206,8 @@ class S3BlobStore:
     async def put_verified(self, request):
         return await asyncio.to_thread(self._put, request)
 
-    async def stat(self, location):
-        return await asyncio.to_thread(self._stat, location)
+    async def stat(self, location, *, expected_size=None):
+        return await asyncio.to_thread(self._stat, location, expected_size=expected_size)
 
     @contextmanager
     def open_verified_source(self, location):

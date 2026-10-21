@@ -14,7 +14,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlsplit
 from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 
-from app.services.blob_store import BlobIntegrityError, BlobReceipt, BlobStat, BlobStoreError
+from app.services.blob_store import BlobDeleteReceipt, BlobIntegrityError, BlobReceipt, BlobStat, BlobStoreError
 
 EMPTY_HASH = hashlib.sha256(b"").hexdigest()
 
@@ -155,7 +155,8 @@ class S3BlobStore:
                     if expected_size is not None and size > expected_size:
                         raise BlobIntegrityError("Remote object size mismatch")
                     digest.update(chunk)
-                return BlobStat(location, available=True, size_bytes=size, sha256=digest.hexdigest())
+                return BlobStat(location, available=True, size_bytes=size, sha256=digest.hexdigest(),
+                    provider_token=response.headers.get("ETag"))
         except (OSError, HTTPException, ValueError):
             raise BlobStoreError("Object storage read is unavailable") from None
 
@@ -242,8 +243,45 @@ class S3BlobStore:
             if entered:
                 await asyncio.to_thread(manager.__exit__, None, None, None)
 
-    async def delete(self, location, *, gc_receipt_id):
-        raise BlobStoreError("Remote object deletion requires a provider retention operation")
+    async def stat_for_delete(self, location, *, expected_size):
+        return await self.stat(location, expected_size=expected_size)
+
+    def _delete(self, location, *, gc_receipt_id, expected_sha256, expected_size):
+        if not str(gc_receipt_id or "").strip():
+            raise BlobStoreError("Blob delete requires a GC receipt id")
+        try:
+            observed = self._stat(location, expected_size=expected_size)
+            if not observed.available:
+                return BlobDeleteReceipt("absent")
+            if (observed.sha256, observed.size_bytes) != (expected_sha256, expected_size):
+                return BlobDeleteReceipt("changed")
+            if not re.fullmatch(r'"[!#-~]+"', observed.provider_token or ""):
+                return BlobDeleteReceipt("unavailable")
+        except BlobIntegrityError:
+            return BlobDeleteReceipt("changed")
+        except BlobStoreError:
+            return BlobDeleteReceipt("unavailable")
+        # Never fall back to '*' or an unconditional delete, and never repeat
+        # an ambiguous request. Current-key absence is not physical capacity.
+        try:
+            with self._request("DELETE", location, extra={"if-match": observed.provider_token}) as response:
+                status = response.status
+            if status in {403, 405, 501}:
+                return BlobDeleteReceipt("denied" if status == 403 else "unavailable")
+            if status in {409, 412}:
+                return BlobDeleteReceipt("changed")
+        except BlobStoreError:
+            pass
+        try:
+            if not self._stat(location, expected_size=expected_size).available:
+                return BlobDeleteReceipt("absent", True)
+        except BlobStoreError:
+            pass
+        return BlobDeleteReceipt("unknown", True)
+
+    async def delete(self, location, *, gc_receipt_id, expected_sha256, expected_size):
+        return await asyncio.to_thread(self._delete, location, gc_receipt_id=gc_receipt_id,
+            expected_sha256=expected_sha256, expected_size=expected_size)
 
 
 def s3_store_from_values(values):

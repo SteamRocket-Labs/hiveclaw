@@ -145,8 +145,8 @@ or available generation per company/hash and refuses downgrade while newer
 keys or duplicate generation history remain. Use a verified compatible backup
 for data rollback. Backups containing newer generations use schema v3 and
 preserve their exact keys through filesystem recovery; older recovery tools
-must reject that format. Legacy v1/v2 bundles remain supported. These identities
-prepare physical reclamation; they do not themselves enable sweep.
+must reject that format. Legacy v1/v2 bundles remain supported. Physical
+retirement uses an administrator's separate exact-generation sweep operation.
 
 Original attachment retention has its own company-admin policy at
 `GET /api/v1/enterprise/storage-original-retention`. It is disabled until an
@@ -173,6 +173,38 @@ portable recovery volume, preserving quarantine until an explicit verified
 restore. Older recovery tools must reject v4 before importing data; current
 tools retain v1/v2/v3 compatibility. Keep disaster recovery copies under their
 own operator retention policy.
+
+To retire a known original, first inspect its current retention state. Then
+`POST /api/v1/enterprise/storage-originals/{blob_id}/sweep` with a fresh
+`operation_id`, `expected_content_sha256`, `expected_policy_version`, the
+returned `expected_manifest_sha256` (from `manifest_sha256`) and `action: "sweep"`.
+The exact manifest binds generation, saved provider, content, quarantine and
+policy. Every current reference, active retention obligation and grace period
+is checked again. Increasing grace extends the effective deadline; reducing it
+does not shorten an already promised deadline. Administrator authentication is
+checked again before the effect, after waiting for current state.
+
+The catalog records a durable `deleting` intent before provider I/O. A repeated
+operation returns its historical receipt and never issues another delete. An
+unknown outcome retains that state and blocks restoring the old generation.
+Use a fresh operation with `action: "reconcile"` and the current inspection
+manifest to observe without deleting. Verified current-key absence finalizes
+the tombstone. If the original is still present, an explicit new `sweep` may
+name the uncertain `retry_operation_id` after reconciliation; it rechecks the
+current bytes and all authority, references, policy and grace. A failed retry
+does not make the old generation safe to restore. Same-content new uploads
+use different physical keys.
+
+Filesystem sweep verifies the unshared regular inode, full content and pinned
+parent before removal. S3 sweep requires full-content verification and the
+provider's opaque strong ETag in signed `If-Match`, with no unconditional
+fallback or automatic second request. Readback reports current-key absence;
+`physical_bytes_reclaimed` remains unknown. Versioned buckets can retain older
+versions behind a delete marker; see the [S3 DeleteObject contract](https://docs.aws.amazon.com/AmazonS3/latest/API/API_DeleteObject.html)
+and [conditional delete semantics](https://docs.aws.amazon.com/AmazonS3/latest/userguide/conditional-deletes.html).
+Unknown deletion intents prevent a new backup from being published until
+reconciled. Sweep retains catalog and audit history and does not delete portable
+backup copies; recover retired data from an independently verified backup.
 
 Current validation covers the Compose CLI model/build plan and owned macOS native
 processes with PostgreSQL 17/SCRAM and authenticated Redis. The recipe reuses the
@@ -210,8 +242,10 @@ Stop any other process that can write this database or Agent volume, including
 one-shot preparation and external filesystem writers. `--offline` is the
 operator's confirmation of that condition. The command also refuses other live
 database clients and prepared transactions, but that observation alone cannot
-prove that a filesystem writer has stopped. Do not copy a changing live volume
-and call it a consistent recovery point.
+prove an external file writer has stopped. Database writer refusals include
+backend PIDs, types and states without query text or credentials, so operators
+can identify the blockers before retrying. This does not bypass the offline gate.
+Do not copy a changing live volume and call it a consistent recovery point.
 
 ```bash
 dc --profile maintenance run --rm -T --no-deps \

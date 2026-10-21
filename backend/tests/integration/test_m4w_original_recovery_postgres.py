@@ -86,6 +86,22 @@ async def test_offline_recovery_preserves_reconciled_unreferenced_original_and_r
         if original_state == "quarantined":
             with pytest.raises(recovery.RecoveryError, match="backup_quarantine_schema_required"):
                 recovery.verify_contents(backup, {**manifest, "schema": recovery.GENERATION_SCHEMA})
+    if original_state == "quarantined":
+        from datetime import datetime, timedelta
+        from app.services import original_sweep
+        from tests.integration.test_m4z_original_sweep_postgres import sweep
+
+        class AfterGrace(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return datetime.now(tz) + timedelta(days=2)
+
+        with monkeypatch.context() as clock:
+            clock.setattr(original_sweep, "datetime", AfterGrace)
+            removed = await sweep(client, blob_id, quarantined.json())
+        assert removed.status_code == 200 and removed.json()["state"] == "deleted", removed.text
+        # The exact portable copy must recover the original even after the
+        # source object is retired; sweep never follows backup references.
     remote.stop()
     target_profile = installer.configure(work / "target-profile", public_origin="http://127.0.0.1:3014", port=3014,
         recovery_profile=backup / "installation.env")

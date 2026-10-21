@@ -207,11 +207,14 @@ def database_state(args, *, empty=False):
     value = json.loads(sql(args, """SELECT json_build_object(
         'major', current_setting('server_version_num')::int / 10000,
         'clients', (SELECT count(*) FROM pg_stat_activity WHERE datname=current_database() AND pid<>pg_backend_pid()),
+        'backends', (SELECT coalesce(json_agg(json_build_object('pid',pid,'backend_type',backend_type,'state',state) ORDER BY pid),'[]'::json)
+            FROM pg_stat_activity WHERE datname=current_database() AND pid<>pg_backend_pid()),
         'objects', (SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
                     WHERE n.nspname NOT IN ('pg_catalog','information_schema') AND n.nspname NOT LIKE 'pg_toast%'),
         'prepared', (SELECT count(*) FROM pg_prepared_xacts WHERE database=current_database()))"""))
     if value["clients"] or value["prepared"]:
-        raise RecoveryError("database_writers_must_be_stopped")
+        raise RecoveryError("database_writers_must_be_stopped", details={"backends": value["backends"],
+            "prepared_transactions": value["prepared"]})
     if empty and value["objects"]:
         raise RecoveryError("restore_database_not_empty")
     return value
@@ -273,6 +276,9 @@ def backup(args):
     if os.environ.get("PGPASSWORD") != profile["HIVE_INSTALL_SCHEMA_PASSWORD"]:
         raise RecoveryError("installation_database_credential_mismatch")
     before = database_state(args)
+    if (sql(args, "SELECT to_regclass('public.storage_blobs') IS NOT NULL") == "t"
+        and sql(args, "SELECT EXISTS(SELECT 1 FROM storage_blobs WHERE kind='chat_upload' AND state='deleting')") == "t"):
+        raise RecoveryError("original_delete_intents_require_reconciliation")
     if (sql(args, "SELECT to_regclass('public.storage_blobs') IS NOT NULL") == "t"
         and sql(args, "SELECT EXISTS(SELECT 1 FROM storage_blobs WHERE kind='chat_upload' "
             "AND provider<>'filesystem' AND state='uploading')") == "t"):

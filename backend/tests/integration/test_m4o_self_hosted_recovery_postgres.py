@@ -158,10 +158,35 @@ async def test_backup_restore_restarts_real_auth_files_approvals_and_encrypted_c
     pg_env = {**common, "PGHOST": source.host, "PGPORT": str(source.port), "PGDATABASE": source.database,
         "PGUSER": source.username, "PGPASSWORD": source.password}
 
+    def wait_owned_maintenance(backends, database_name, label):
+        pids = [int(row["pid"]) for row in backends]
+        wait_sql = """DO $wait$ DECLARE deadline timestamptz := clock_timestamp()+interval '30 seconds'; BEGIN
+            LOOP EXIT WHEN NOT EXISTS(SELECT FROM pg_stat_activity WHERE datname=current_database()
+            AND backend_type='autovacuum worker' AND pid=ANY(ARRAY[%s]));
+            IF clock_timestamp()>deadline THEN RAISE EXCEPTION 'owned maintenance wait expired'; END IF;
+            PERFORM pg_sleep(0.25); END LOOP; END $wait$;""" % ",".join(map(str, pids))
+        waited = subprocess.run([str(binary / "psql"), "-X", "-v", "ON_ERROR_STOP=1", "-c", wait_sql],
+            env={**pg_env, "PGDATABASE": database_name}, capture_output=True, timeout=35)
+        assert waited.returncode == 0, "Reported internal maintenance must actually finish before retry"
+        (work / (label + "-" + uuid.uuid4().hex + ".json")).write_text(json.dumps({
+            "reported_backends": backends, "wait_exit_code": waited.returncode, "action": "retry_after_pre_effect_refusal_once"}))
+
     def command(*args, database=None):
-        response = subprocess.run([sys.executable, "-B", str(ROOT / "scripts/self_hosted_recovery.py"), *map(str, args)],
-            env={**pg_env, "PGDATABASE": database or source.database}, capture_output=True, text=True, timeout=120)
-        return response, json.loads(response.stdout)
+        def invoke():
+            response = subprocess.run([sys.executable, "-B", str(ROOT / "scripts/self_hosted_recovery.py"), *map(str, args)],
+                env={**pg_env, "PGDATABASE": database or source.database}, capture_output=True, text=True, timeout=120)
+            return response, json.loads(response.stdout)
+        response, detail = invoke()
+        blockers = detail.get("details") or {}
+        backends = blockers.get("backends", [])
+        if (response.returncode == 3 and detail.get("code") == "database_writers_must_be_stopped"
+            and not blockers.get("prepared_transactions") and backends
+            and all(row["backend_type"] == "autovacuum worker" for row in backends)):
+            # This exact refusal is before database/volume effects. Never retry
+            # an unknown restore or disregard a client/prepared transaction.
+            wait_owned_maintenance(backends, database or source.database, "recovery-maintenance-wait")
+            response, detail = invoke()
+        return response, detail
 
     try:
         origin, process, log = await launch(source.database, tmp_path, "source")
@@ -196,6 +221,7 @@ async def test_backup_restore_restarts_real_auth_files_approvals_and_encrypted_c
         refused, detail = command("backup", "--offline", "--profile", profile, "--agents", tmp_path,
             "--output", work / "active-refused", "--pg-bin", binary)
         assert refused.returncode == 3 and detail["code"] == "database_writers_must_be_stopped", detail
+        assert any(row["backend_type"] == "client backend" for row in detail["details"]["backends"]), detail
         assert not (work / "active-refused").exists()
         await stop(process, log)
         # Exercise the actual reversible catalog before the current head, with
@@ -271,17 +297,7 @@ async def test_backup_restore_restarts_real_auth_files_approvals_and_encrypted_c
                 # Keep the production all-writer gate. This owned fixture may wait
                 # only for the exact reported internal process, then retry the
                 # read-only preflight once. A held client is never excluded.
-                pids = [int(row["pid"]) for row in backends]
-                wait_sql = """DO $wait$ DECLARE deadline timestamptz := clock_timestamp()+interval '30 seconds'; BEGIN
-                    LOOP EXIT WHEN NOT EXISTS(SELECT FROM pg_stat_activity WHERE datname=current_database()
-                    AND backend_type='autovacuum worker' AND pid=ANY(ARRAY[%s]));
-                    IF clock_timestamp()>deadline THEN RAISE EXCEPTION 'owned maintenance wait expired'; END IF;
-                    PERFORM pg_sleep(0.25); END LOOP; END $wait$;""" % ",".join(map(str, pids))
-                waited = subprocess.run([str(binary / "psql"), "-X", "-v", "ON_ERROR_STOP=1", "-c", wait_sql],
-                    env={**pg_env, "PGDATABASE": database_name or target_database}, capture_output=True, timeout=35)
-                assert waited.returncode == 0, "Reported internal maintenance must actually finish before preflight retries"
-                (work / ("maintenance-wait-" + uuid.uuid4().hex + ".json")).write_text(json.dumps({
-                    "reported_backends": backends, "wait_exit_code": waited.returncode, "action": "retry_read_only_preflight_once"}))
+                wait_owned_maintenance(backends, database_name or target_database, "upgrade-maintenance-wait")
                 result, detail = invoke()
             return result, detail
 

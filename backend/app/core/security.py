@@ -84,6 +84,7 @@ async def _load_user_with_tenant_status(db: AsyncSession, user_id: uuid.UUID):
         select(User, Tenant.is_active.label("tenant_is_active"))
         .outerjoin(Tenant, User.tenant_id == Tenant.id)
         .where(User.id == user_id)
+        .execution_options(populate_existing=True)
     )
     return result.first()
 

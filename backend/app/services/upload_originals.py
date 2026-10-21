@@ -1,19 +1,15 @@
 """Immutable original uploads with tenant-local payload reuse and private source refs."""
 
 from datetime import datetime, timezone
-import asyncio
 import hashlib
 from pathlib import Path
 import tempfile
 import uuid
-from weakref import WeakKeyDictionary
 
 from fastapi import HTTPException
 from sqlalchemy import select, text
 from sqlalchemy.dialects.postgresql import insert
-from sqlalchemy.exc import SQLAlchemyError
-from sqlalchemy.engine import Engine
-from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
 from app.core.resource_authority import authorize_resource_action
@@ -21,9 +17,9 @@ from app.models.storage_blob import StorageBlob, StorageBlobRef
 from app.models.user import User
 from app.services.blob_store import BlobIntegrityError, BlobLocation, BlobPutRequest, BlobStoreError, FilesystemBlobStore
 from app.services.original_blob_identity import original_object_key
+from app.services.storage_intents import durable_storage_intent
 
 REF_SCHEMA = "hive.chat_upload_original.v1"
-_INTENT_LOCKS = WeakKeyDictionary()
 
 
 def _store(provider=None, *, metadata=None, bucket=None):
@@ -58,46 +54,27 @@ def _recorded_store(blob, tenant_id):
 
 
 async def _commit_upload_intent(db, *, tenant_id, digest, size):
-    from app.database import pin_rls_tenant_context
-
-    # This transaction owns only mechanical intent, never the caller's pending
-    # workspace, authorship or permission changes. It precedes provider effects.
-    if not isinstance(db.bind, AsyncEngine):
-        raise BlobStoreError("Independent original attachment persistence is unavailable")
-    # Reserve at most one short-lived connection per bound engine. Sharing its
-    # request pool can deadlock when every request is holding a connection.
-    async with _INTENT_LOCKS.setdefault(db.bind, asyncio.Lock()):
-        source = db.bind.sync_engine
-        independent = AsyncEngine(Engine(source.pool.recreate(), source.dialect, source.url,
-            execution_options=source.get_execution_options(), hide_parameters=source.hide_parameters))
-        try:
-            async with async_sessionmaker(independent, expire_on_commit=False)() as intent:
-                await pin_rls_tenant_context(intent, tenant_id)
+    async with durable_storage_intent(db, tenant_id) as intent:
+        existing = await intent.scalar(select(StorageBlob.id).where(StorageBlob.tenant_id == tenant_id,
+            StorageBlob.content_sha256 == digest, StorageBlob.state.in_(("uploading", "available"))))
+        if existing is None:
+            store = _store()
+            provider = get_settings().BLOB_STORAGE_PROVIDER
+            generation_id = uuid.uuid4()
+            location = _location(tenant_id, digest, provider, store.bucket if provider == "s3" else "durable",
+                generation_id=generation_id)
+            existing = await intent.scalar(insert(StorageBlob).values(id=generation_id, tenant_id=tenant_id, scope_type="tenant",
+                kind="chat_upload", retention_class="original", state="uploading", provider=location.provider,
+                bucket=location.bucket, object_key=location.object_key, content_sha256=digest, size_bytes=size,
+                metadata_json=store.identity if provider == "s3" else {})
+                .on_conflict_do_nothing(index_elements=[StorageBlob.tenant_id, StorageBlob.content_sha256],
+                    index_where=text("state IN ('uploading','available')")).returning(StorageBlob.id))
+            if existing is None:
                 existing = await intent.scalar(select(StorageBlob.id).where(StorageBlob.tenant_id == tenant_id,
                     StorageBlob.content_sha256 == digest, StorageBlob.state.in_(("uploading", "available"))))
-                if existing is None:
-                    store = _store()
-                    provider = get_settings().BLOB_STORAGE_PROVIDER
-                    generation_id = uuid.uuid4()
-                    location = _location(tenant_id, digest, provider, store.bucket if provider == "s3" else "durable",
-                        generation_id=generation_id)
-                    existing = await intent.scalar(insert(StorageBlob).values(id=generation_id, tenant_id=tenant_id, scope_type="tenant",
-                        kind="chat_upload", retention_class="original", state="uploading", provider=location.provider,
-                        bucket=location.bucket, object_key=location.object_key, content_sha256=digest, size_bytes=size,
-                        metadata_json=store.identity if provider == "s3" else {})
-                        .on_conflict_do_nothing(index_elements=[StorageBlob.tenant_id, StorageBlob.content_sha256],
-                            index_where=text("state IN ('uploading','available')")).returning(StorageBlob.id))
-                    if existing is None:
-                        existing = await intent.scalar(select(StorageBlob.id).where(StorageBlob.tenant_id == tenant_id,
-                            StorageBlob.content_sha256 == digest, StorageBlob.state.in_(("uploading", "available"))))
-                if existing is None:
-                    raise BlobStoreError("Original attachment generation requires reconciliation")
-                await intent.commit()
-                return existing
-        except SQLAlchemyError:
-            raise BlobStoreError("Durable original attachment intent is unavailable") from None
-        finally:
-            await independent.dispose()
+        if existing is None:
+            raise BlobStoreError("Original attachment generation requires reconciliation")
+    return existing
 
 
 async def archive_upload(db: AsyncSession, *, tenant_id: uuid.UUID, user_id: uuid.UUID,

@@ -20,6 +20,36 @@ from app.services.upload_originals import _recorded_store
 POLICY_KEY = "original_attachment_retention"
 
 
+def original_manifest(blob, policy):
+    identity = {key: getattr(blob, key) for key in ("provider", "bucket", "object_key", "content_sha256", "size_bytes", "state", "metadata_json")}
+    identity.update(id=str(blob.id), tenant_id=str(blob.tenant_id), policy=policy)
+    for key in ("created_at", "verified_at", "quarantined_at", "delete_after"):
+        value = getattr(blob, key)
+        identity[key] = value.isoformat() if value is not None else None
+    return hashlib.sha256(json.dumps(identity, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+def original_grace_deadline(blob, policy):
+    if blob.quarantined_at is None or blob.delete_after is None:
+        return None
+    try:
+        return max(blob.delete_after, blob.quarantined_at + timedelta(days=policy["grace_days"]))
+    except OverflowError:
+        raise ValueError("Original retention grace is out of range") from None
+
+
+def original_retention_hold(blob, policy, *, referenced, now, states=("available", "quarantined")):
+    if not policy["enabled"]:
+        return "policy_disabled"
+    if referenced:
+        return "referenced"
+    if blob.state not in states or blob.verified_at is None:
+        return "unresolved_state"
+    if (now - max(blob.created_at, blob.verified_at)).total_seconds() < policy["retention_days"] * 86400:
+        return "retention_age"
+    return None
+
+
 class OriginalRetentionPolicy(BaseModel):
     model_config = ConfigDict(extra="forbid")
     enabled: StrictBool
@@ -142,25 +172,21 @@ async def apply_original_retention(db, *, tenant_id, actor_id, blob_id, request)
                 changed = True
             else:
                 hold = "provider_" + observation
-    elif not policy["enabled"]:
-        hold = "policy_disabled"
-    elif referenced:
-        hold = "referenced"
-    elif blob.state not in {"available", "quarantined"} or blob.verified_at is None:
-        hold = "unresolved_state"
-    elif (now - max(blob.created_at, blob.verified_at)).total_seconds() < policy["retention_days"] * 86400:
-        hold = "retention_age"
-    elif request.action == "quarantine" and blob.state == "available":
-        try:
-            deadline = now + timedelta(days=policy["grace_days"])
-        except OverflowError:
-            raise ValueError("Original retention grace is out of range") from None
-        blob.state, blob.quarantined_at, blob.delete_after = "quarantined", now, deadline
-        changed = True
-    eligible = not hold and blob.state == "quarantined" and blob.delete_after is not None and blob.delete_after <= now
+    else:
+        hold = original_retention_hold(blob, policy, referenced=referenced, now=now)
+        if not hold and request.action == "quarantine" and blob.state == "available":
+            try:
+                deadline = now + timedelta(days=policy["grace_days"])
+            except OverflowError:
+                raise ValueError("Original retention grace is out of range") from None
+            blob.state, blob.quarantined_at, blob.delete_after = "quarantined", now, deadline
+            changed = True
+    deadline = original_grace_deadline(blob, policy)
+    eligible = not hold and blob.state == "quarantined" and deadline is not None and deadline <= now
     result = {"operation_id": str(request.operation_id), "blob_id": str(blob_id), "state": blob.state,
         "policy_version": policy["version"], "changed": changed, "hold_reason": hold, "observation": observation,
-        "delete_after": blob.delete_after.isoformat() if blob.delete_after else None, "sweep_eligible": bool(eligible),
+        "delete_after": deadline.isoformat() if deadline else None, "sweep_eligible": bool(eligible),
+        "manifest_sha256": original_manifest(blob, policy),
         "observed_at": now.isoformat(), "replayed": False,
         "recovery_action": "reload_active_original" if hold == "active_generation_exists" else
             "repair_provider_and_retry" if hold and hold.startswith("provider_") else "inspect_with_new_operation" if hold else "none"}

@@ -19,6 +19,7 @@ def s3_server():
         objects={},
         requests=[],
         writes=0,
+        deletes=[],
         mode=None,
         lock=Lock(),
         access="SYNTHETIC_S3_ACCESS",
@@ -62,6 +63,8 @@ def s3_server():
                 assert hmac.compare_digest(
                     fields["Signature"], hmac.new(signing, string.encode(), hashlib.sha256).hexdigest()
                 )
+                if self.command == "DELETE" and self.headers.get("If-Match") is not None:
+                    assert "if-match" in signed.split(";")
             except (KeyError, ValueError, AttributeError, AssertionError):
                 self.send_response(403)
                 self.end_headers()
@@ -92,7 +95,25 @@ def s3_server():
                     self.end_headers()
                     return
                 if self.command == "DELETE":
+                    condition = self.headers.get("If-Match")
+                    state.deletes.append(condition)
+                    if state.mode == "delete_conflict":
+                        state.objects[self.path] = b"CONCURRENT_REPLACEMENT"
+                    existing = state.objects.get(self.path)
+                    tag = '"oracle-' + hashlib.sha256(existing).hexdigest() + '-2"' if existing is not None else None
+                    if condition is not None and condition != tag:
+                        self.send_response(412)
+                        self.end_headers()
+                        return
+                    if state.mode == "delete_unknown":
+                        self.connection.shutdown(socket.SHUT_RDWR)
+                        self.connection.close()
+                        return
                     state.objects.pop(self.path, None)
+                    if state.mode == "delete_lost_ack":
+                        self.connection.shutdown(socket.SHUT_RDWR)
+                        self.connection.close()
+                        return
                     self.send_response(204)
                     self.end_headers()
                     return
@@ -110,6 +131,8 @@ def s3_server():
                     result = b"CORRUPT_REMOTE_BYTES"
                 self.send_response(200)
                 self.send_header("Content-Length", str(len(result)))
+                if state.mode != "missing_etag":
+                    self.send_header("ETag", '"oracle-' + hashlib.sha256(result).hexdigest() + '-2"')
                 self.end_headers()
                 self.wfile.write(result)
 
@@ -146,6 +169,25 @@ def configured_store(server):
         secret_key=server.secret,
         session_token=server.token,
     )
+
+
+@pytest.mark.parametrize("mode,outcome,attempted", [(None, "absent", True), ("delete_lost_ack", "absent", True),
+    ("delete_unknown", "unknown", True), ("delete_conflict", "changed", False), ("missing_etag", "unavailable", False)])
+async def test_verified_conditional_delete_preserves_unknown_and_never_automatically_retries(s3_server, tmp_path, mode, outcome, attempted):
+    store = configured_store(s3_server)
+    source = tmp_path / "original"
+    source.write_bytes(b"EXACT_DELETE_ORIGINAL")
+    digest = hashlib.sha256(source.read_bytes()).hexdigest()
+    location = BlobLocation("s3", "private-originals", "tenant/generation")
+    await store.put_verified(BlobPutRequest("tenant", "chat_upload", "original", location, source, digest, source.stat().st_size))
+    s3_server.mode = mode
+    result = await store.delete(location, gc_receipt_id=str(__import__("uuid").uuid4()),
+        expected_sha256=digest, expected_size=source.stat().st_size)
+    assert (result.outcome, result.effect_attempted) == (outcome, attempted)
+    assert len(s3_server.deletes) == int(mode != "missing_etag")
+    assert all(tag.startswith('"oracle-') and tag.endswith('-2"') for tag in s3_server.deletes)
+    if outcome != "absent":
+        assert s3_server.objects, "Unproven deletion cannot remove a changed or still-current object"
 
 
 def test_signature_matches_published_aws_s3_get_oracle():

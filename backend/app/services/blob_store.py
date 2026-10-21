@@ -11,7 +11,7 @@ from collections.abc import AsyncIterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol
+from typing import Literal, Protocol
 
 
 
@@ -56,6 +56,13 @@ class BlobStat:
     available: bool
     size_bytes: int | None = None
     sha256: str | None = None
+    provider_token: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class BlobDeleteReceipt:
+    outcome: Literal["absent", "changed", "unknown", "denied", "unavailable"]
+    effect_attempted: bool = False
 
 
 class BlobStore(Protocol):
@@ -65,7 +72,10 @@ class BlobStore(Protocol):
 
     def open_stream(self, location: BlobLocation) -> AsyncIterator[bytes]: ...
 
-    async def delete(self, location: BlobLocation, *, gc_receipt_id: str) -> None: ...
+    async def stat_for_delete(self, location: BlobLocation, *, expected_size: int) -> BlobStat: ...
+
+    async def delete(self, location: BlobLocation, *, gc_receipt_id: str,
+        expected_sha256: str, expected_size: int) -> BlobDeleteReceipt: ...
 
 
 class FilesystemBlobStore:
@@ -192,17 +202,53 @@ class FilesystemBlobStore:
         except OSError as exc:
             raise BlobStoreError("Blob storage is unavailable or changed") from exc
 
-    async def delete(self, location: BlobLocation, *, gc_receipt_id: str) -> None:
+    def _stat_for_delete(self, location, *, expected_size):
+        # A missing mount or parent is unavailable, not evidence that an exact
+        # object disappeared. Retained parent directories anchor later readback.
+        with self._directory(self._relative(location)):
+            return self._stat(location, expected_size=expected_size)
+
+    async def stat_for_delete(self, location, *, expected_size):
+        return await asyncio.to_thread(self._stat_for_delete, location, expected_size=expected_size)
+
+    def _delete(self, location, *, gc_receipt_id, expected_sha256, expected_size):
         if not str(gc_receipt_id or "").strip():
             raise BlobStoreError("Blob delete requires a GC receipt id")
-        if not (await self.stat(location)).available:
-            return
+        attempted = False
         try:
             with self._directory(self._relative(location)) as (directory, name):
-                info = os.stat(name, dir_fd=directory, follow_symlinks=False)
-                if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
-                    raise BlobStoreError("Blob file has changed or shared ownership")
-                os.unlink(name, dir_fd=directory)
-                os.fsync(directory)
-        except OSError as exc:
-            raise BlobStoreError("Blob storage changed during removal") from exc
+                try:
+                    fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC, dir_fd=directory)
+                except FileNotFoundError:
+                    return BlobDeleteReceipt("absent")
+                with os.fdopen(fd, "rb") as source:
+                    before = os.fstat(source.fileno())
+                    if (not stat.S_ISREG(before.st_mode) or before.st_nlink != 1 or before.st_size != expected_size
+                        or hashlib.file_digest(source, "sha256").hexdigest() != expected_sha256):
+                        return BlobDeleteReceipt("changed")
+                    def signature(info):
+                        return (info.st_dev, info.st_ino, info.st_mode, info.st_nlink,
+                            info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+                    # Reopen the server-selected namespace before unlinking;
+                    # immutable private-directory writers cannot replace keys.
+                    with self._directory(self._relative(location)) as (check, _):
+                        if (os.fstat(check).st_dev, os.fstat(check).st_ino) != (os.fstat(directory).st_dev, os.fstat(directory).st_ino):
+                            return BlobDeleteReceipt("changed")
+                    if signature(os.stat(name, dir_fd=directory, follow_symlinks=False)) != signature(before):
+                        return BlobDeleteReceipt("changed")
+                    attempted = True
+                    os.unlink(name, dir_fd=directory)
+                    os.fsync(directory)
+                    try:
+                        os.stat(name, dir_fd=directory, follow_symlinks=False)
+                    except FileNotFoundError:
+                        pass
+                    else:
+                        return BlobDeleteReceipt("unknown", True)
+            return BlobDeleteReceipt("absent", True)
+        except (OSError, BlobStoreError):
+            return BlobDeleteReceipt("unknown" if attempted else "unavailable", attempted)
+
+    async def delete(self, location, *, gc_receipt_id, expected_sha256, expected_size):
+        return await asyncio.to_thread(self._delete, location, gc_receipt_id=gc_receipt_id,
+            expected_sha256=expected_sha256, expected_size=expected_size)

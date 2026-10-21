@@ -8,13 +8,14 @@ import uuid
 
 import anyio
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import and_, func, or_, select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.security import get_current_admin, get_current_user
+from app.core.security import get_current_admin, get_current_user, security
 from app.core.permissions import agent_owned_by_clause, is_scoped_business_admin
 from app.core.tenant_scope import resolve_and_pin_tenant_scope
 from app.config import get_settings
@@ -45,6 +46,7 @@ from app.services.secrets_provider import get_secrets_provider
 from app.services.storage_retention import RetentionPolicyUpdate
 from app.services.original_reconciliation import OriginalReconciliationRequest
 from app.services.original_retention import OriginalRetentionPolicyUpdate, OriginalRetentionRequest
+from app.services.original_sweep import OriginalSweepRequest
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -156,6 +158,37 @@ async def manage_original_retention(blob_id: uuid.UUID, data: OriginalRetentionR
     except ValueError:
         raise HTTPException(503, detail={"code": "original_retention_policy_unavailable", "recovery_action": "repair_policy"}) from None
     await db.commit()
+    return result
+
+
+@router.post("/storage-originals/{blob_id}/sweep")
+async def sweep_original_attachment(blob_id: uuid.UUID, data: OriginalSweepRequest, request: Request,
+    tenant_id: uuid.UUID | None = Query(None), current_user: User = Depends(get_current_user),
+    credentials=Depends(security), db: AsyncSession = Depends(get_db)):
+    from app.core.security import authenticate_request_user
+    from app.services.blob_store import BlobStoreError
+    from app.services.original_sweep import sweep_original
+
+    _require_org_admin(current_user)
+    target = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
+
+    async def authorize(transaction):
+        live = await authenticate_request_user(transaction, jwt_token=credentials.credentials,
+            requested_tenant=request.headers.get("x-tenant-id"), request=request)
+        _require_org_admin(live)
+        if live.id != current_user.id or await resolve_and_pin_tenant_scope(transaction, live, target) != target:
+            raise HTTPException(403, detail="Original retention authority changed")
+
+    try:
+        result = await sweep_original(db, tenant_id=target, actor_id=current_user.id, blob_id=blob_id, request=data, authorize=authorize)
+        await db.commit()
+    except ValueError:
+        raise HTTPException(503, detail={"code": "original_retention_policy_unavailable", "recovery_action": "repair_policy"}) from None
+    except BlobStoreError:
+        raise HTTPException(503, detail={"code": "original_sweep_intent_unavailable", "recovery_action": "inspect_original_and_policy"}) from None
+    except SQLAlchemyError:
+        await db.rollback()
+        raise HTTPException(503, detail={"code": "original_sweep_outcome_unknown", "recovery_action": "reconcile_with_new_operation"}) from None
     return result
 
 

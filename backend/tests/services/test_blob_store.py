@@ -48,7 +48,7 @@ async def test_filesystem_blob_store_put_stat_read_delete_is_verified(tmp_path: 
     assert stat.available is True and stat.size_bytes == len(content)
     assert restored == content
 
-    await store.delete(location, gc_receipt_id="gc-receipt-1")
+    await store.delete(location, gc_receipt_id="gc-receipt-1", expected_sha256=digest, expected_size=len(content))
     assert (await store.stat(location)).available is False
 
 
@@ -112,3 +112,28 @@ async def test_blob_provider_refuses_an_in_root_parent_alias(tmp_path):
     with pytest.raises(BlobStoreError):
         await FilesystemBlobStore(root).put_verified(request)
     assert not (retained / "foreign").exists()
+
+
+@pytest.mark.parametrize("condition", ["changed", "shared", "alias", "root_missing"])
+async def test_verified_delete_holds_changed_or_unavailable_local_ownership(tmp_path, condition):
+    from app.services.blob_store import BlobLocation, FilesystemBlobStore
+
+    root = tmp_path / "objects"
+    target = root / "durable/tenant/generation"
+    target.parent.mkdir(parents=True)
+    target.write_bytes(b"ORIGINAL")
+    if condition == "changed":
+        target.write_bytes(b"DIFFERENT")
+    elif condition == "shared":
+        __import__("os").link(target, tmp_path / "retained")
+    elif condition == "alias":
+        moved = target.parent.with_name("retained-tenant")
+        target.parent.rename(moved)
+        target.parent.symlink_to(moved, target_is_directory=True)
+    else:
+        root.rename(tmp_path / "retained-root")
+    receipt = await FilesystemBlobStore(root).delete(BlobLocation("filesystem", "durable", "tenant/generation"),
+        gc_receipt_id="exact-retirement", expected_sha256=hashlib.sha256(b"ORIGINAL").hexdigest(), expected_size=8)
+    assert receipt.outcome in {"changed", "unavailable"} and receipt.effect_attempted is False
+    retained = tmp_path / "retained-root/durable/tenant/generation" if condition == "root_missing" else target
+    assert retained.exists()

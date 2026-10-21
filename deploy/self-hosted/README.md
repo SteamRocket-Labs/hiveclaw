@@ -69,6 +69,24 @@ their provider, bucket, tenant namespace and recorded endpoint/region. A missing
 reader configuration, altered location or changed bytes is an unavailable
 original, with no substitution from its editable workspace copy.
 
+Before writing an original, the runtime commits a tenant-scoped intent containing
+its exact provider location, hash and size. Workspace, reference and permission
+changes stay in the upload request's transaction. If that request fails, the
+intent remains `uploading`; it grants no download authority and does not assert
+that bytes were verified. Retrying the same bytes verifies the recorded object
+and can commit a new private reference without creating another payload. Keep
+pending intents for reconciliation; do not treat them as disposable orphans.
+Intent persistence uses at most one temporary database connection per runtime
+engine, separately from its request pool. Reserve that connection when sizing
+database capacity. This does not automatically delete historical unindexed
+objects or provide a provider quarantine/sweep policy.
+
+Offline backup refuses unresolved remote upload intents with
+`remote_upload_intents_require_reconciliation` before creating its output.
+Repair the recorded provider if needed and retry the original upload with the
+same bytes to reconcile it, then take a new backup. Do not erase the intent to
+make this check pass: a failed acknowledgement may already have stored bytes.
+
 Offline backups include verified bytes for every available remote object along
 with the database and volume. Keep the source object service readable until the
 backup manifest is complete and verified; missing or corrupt objects fail the

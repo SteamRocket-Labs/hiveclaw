@@ -271,6 +271,10 @@ def backup(args):
     if os.environ.get("PGPASSWORD") != profile["HIVE_INSTALL_SCHEMA_PASSWORD"]:
         raise RecoveryError("installation_database_credential_mismatch")
     before = database_state(args)
+    if (sql(args, "SELECT to_regclass('public.storage_blobs') IS NOT NULL") == "t"
+        and sql(args, "SELECT EXISTS(SELECT 1 FROM storage_blobs WHERE kind='chat_upload' "
+            "AND provider<>'filesystem' AND state='uploading')") == "t"):
+        raise RecoveryError("remote_upload_intents_require_reconciliation")
     agents = args.agents.absolute()
     required_manifest = None
     if sql(args, "SELECT to_regclass('public.system_settings') IS NOT NULL") == "t":

@@ -703,6 +703,12 @@ async def complete_tool_invocation(
         destructive = is_destructive_tool(invocation.tool_name) or bool(
             _detect_destructive_delete(invocation.tool_name, effective_payload)
         )
+        from app.services.plan_mode_runtime_context import interactive_plan_mode_metadata
+
+        # Runtime protocol state belongs to this exact waiting invocation. A
+        # later permission request executes outside the original model context.
+        plan_mode = interactive_plan_mode_metadata()
+        runtime_context = {"plan_mode": plan_mode} if plan_mode.get("active") else {}
         waiting_events = await append_session_events(
             db,
             tenant_id=tenant_id,
@@ -721,6 +727,7 @@ async def complete_tool_invocation(
                         "decision_id": decision_id,
                         "approval_id": decision.get("approval_id"),
                         "retryable": retryable,
+                        "runtime_context": runtime_context,
                         "permission_request": {
                             "permission_request_id": str(permission_item_id),
                             "session_id": str(session_id),
@@ -883,7 +890,7 @@ async def complete_tool_invocation(
     knowledge_metadata = enrich_knowledge_event_metadata(
         event_type="tool_result", content={"name": invocation.tool_name, "result": content}, metadata={},
     )
-    if invocation.tool_name in {"read_file", "read_document", "fs_read"}:
+    if invocation.tool_name in {"read_file", "read_document", "fs_read", "exit_plan_mode"}:
         from app.services.content_input_receipts import ContentInputReceiptError, load_workspace_input_evidence
 
         try:
@@ -1217,6 +1224,33 @@ async def acknowledge_unresolved_tool_effects(
         invocation.version = int(invocation.version) + 1
     await db.flush()
     return events
+
+
+async def load_permission_plan_mode(
+    db: AsyncSession, *, agent_id: uuid.UUID, invocation: SessionToolInvocation, result: SessionModelResult,
+) -> dict[str, Any] | None:
+    """Recover planning protocol from the canonical waiting event, never tool args."""
+
+    event = await db.scalar(select(ChatTranscriptEvent).where(
+        ChatTranscriptEvent.tenant_id == invocation.tenant_id,
+        ChatTranscriptEvent.agent_id == agent_id,
+        ChatTranscriptEvent.session_id == invocation.session_id,
+        ChatTranscriptEvent.run_id == invocation.run_id,
+        ChatTranscriptEvent.result_id == result.id,
+        ChatTranscriptEvent.invocation_id == invocation.id,
+        ChatTranscriptEvent.item_id == invocation.permission_item_id,
+        ChatTranscriptEvent.item_kind == "tool_permission",
+        ChatTranscriptEvent.lifecycle == "waiting",
+        ChatTranscriptEvent.actor_type == "runtime",
+    ))
+    if event is None:
+        raise RuntimeError("tool_permission_waiting_event_missing")
+    payload = (event.metadata_json or {}).get("v2_payload") or {}
+    if event.content_hash != _sha256(payload):
+        raise RuntimeError("tool_permission_waiting_event_hash_mismatch")
+    context = payload.get("runtime_context") or {}
+    plan_mode = context.get("plan_mode")
+    return dict(plan_mode) if isinstance(plan_mode, dict) and plan_mode.get("active") else None
 
 
 async def apply_tool_permission_response(

@@ -322,6 +322,18 @@ def _context_message(*, role: str, content: str, kind: str, sections=(), sources
         kind=kind, role=role, content=content, sections=sections, sources=sources, unbound=unbound))
 
 
+def _runtime_reminder_message(request, item) -> LLMMessage:
+    sources, unbound = (), item.unbound
+    if item.source in {"plan_mode_full", "plan_mode_sparse"}:
+        from app.services.delegation_context_sources import PermissionContextSource
+
+        metadata = _span_session_metadata(request)
+        source = metadata.get("_session_permission_context_source")
+        if isinstance(source, PermissionContextSource) and source.matches(metadata, request.allowed_tool_names):
+            sources, unbound = (source.reference,), ()
+    return _context_message(role="system", content=item.text, kind="runtime_reminder", sources=sources, unbound=unbound)
+
+
 def _dynamic_suffix_notice(dynamic_suffix: str, *, sections=(), sources=(), unbound=("context_sources_unbound",)) -> LLMMessage | None:
     if not dynamic_suffix.strip():
         return None

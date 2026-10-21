@@ -1,5 +1,6 @@
 """Versioned trigger facts retain authenticated writes and model input sources."""
 
+import json
 import uuid
 from contextvars import ContextVar
 from datetime import datetime, timezone
@@ -32,7 +33,45 @@ def _span(*, identity, trigger, kind, proof):
         span_type=kind, name=kind, status="captured", duration_ms=0, started_at=datetime.now(timezone.utc), metadata_json=proof)
 
 
-async def record_trigger_configuration(db, *, trigger, changed_fields, actor=None):
+async def _confirmed_plan_configuration_origin(db, plan):
+    """Approval does not turn model-authored plan content into human authorship."""
+    from app.models.chat_transcript_event import ChatTranscriptEvent
+    from app.services.plan_mode_core import compute_plan_hash
+    from app.services.session_semantic_history import _event_payload
+
+    unknown = {"kind": "unknown", "plan_id": str(plan.id)}
+    try:
+        session_id = uuid.UUID(str(plan.session_id))
+    except (ValueError, TypeError, AttributeError):
+        return unknown
+    if plan.status != "confirmed" or not plan.plan_hash or compute_plan_hash(plan.plan_json) != plan.plan_hash:
+        return unknown
+    rows = await db.execute(select(SessionToolInvocation, ChatTranscriptEvent).join(
+        ChatTranscriptEvent, ChatTranscriptEvent.id == SessionToolInvocation.result_event_id).join(
+        RuntimeTask, RuntimeTask.id == SessionToolInvocation.run_id).where(
+        SessionToolInvocation.tenant_id == plan.tenant_id, SessionToolInvocation.session_id == session_id,
+        SessionToolInvocation.tool_name == "exit_plan_mode", SessionToolInvocation.effect_state == "effect_committed",
+        ChatTranscriptEvent.tenant_id == plan.tenant_id, ChatTranscriptEvent.agent_id == plan.agent_id,
+        ChatTranscriptEvent.session_id == session_id, ChatTranscriptEvent.run_id == SessionToolInvocation.run_id,
+        ChatTranscriptEvent.item_kind == "tool_result", ChatTranscriptEvent.lifecycle == "completed",
+        RuntimeTask.tenant_id == plan.tenant_id, RuntimeTask.parent_agent_id == plan.agent_id,
+        RuntimeTask.root_user_id == plan.requested_by_user_id).order_by(
+            ChatTranscriptEvent.sequence, SessionToolInvocation.id))
+    for invocation, event in rows:
+        content = _event_payload(event).get("content")
+        try:
+            payload = json.loads(content)
+        except (TypeError, ValueError):
+            continue
+        if (isinstance(payload, dict) and payload.get("item_type") == "plan_proposal"
+            and payload.get("status") == "needs_plan" and payload.get("plan_id") == str(plan.id)
+            and payload.get("plan_version") == plan.plan_version and payload.get("plan_hash") == plan.plan_hash
+            and payload.get("plan_json") == plan.plan_json):
+            return {"kind": "tool", "invocation_id": str(invocation.id)}
+    return unknown
+
+
+async def record_trigger_configuration(db, *, trigger, changed_fields, actor=None, plan=None):
     """Called in the actual REST/tool write transaction, never from supplied config."""
     if trigger.id is None:
         trigger.id = uuid.uuid4()
@@ -42,7 +81,9 @@ async def record_trigger_configuration(db, *, trigger, changed_fields, actor=Non
     sources = dict(previous.get("sources") or {}) if isinstance(previous, dict) else {}
     origin = {"kind": "unknown"}
     invocation = None
-    if actor is not None:
+    if plan is not None:
+        origin = await _confirmed_plan_configuration_origin(db, plan)
+    elif actor is not None:
         origin = {"kind": "human", "user_id": str(actor.id)}
     else:
         from app.services.execution_environments import current_command_frame

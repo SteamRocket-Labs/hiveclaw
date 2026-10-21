@@ -577,3 +577,47 @@ async def test_channel_permission_command_uses_canonical_pending_aggregate_and_r
         assert str(seed.permission_ids[0]) in ambiguous
         assert "权限决定已记录" in resolved
         assert "仍在等待同一轮的其他权限请求" in resolved
+
+
+@pytest.mark.parametrize("active,executor_error", [(True, False), (True, True), (False, False)])
+async def test_permission_effect_restores_only_its_recorded_plan_context(
+    owner_sessionmaker, monkeypatch, active, executor_error,
+) -> None:
+    from app.services import agent_tools
+    from app.services.plan_mode_runtime_context import (
+        interactive_plan_mode_metadata, reset_interactive_plan_mode, set_interactive_plan_mode,
+    )
+    from app.services.session_permission_runtime import resolve_session_tool_permission
+
+    recorded = {"active": True, "plan_file_path": "workspace/plans/proposed.md", "intent_type": "autonomous_wake"}
+    token = set_interactive_plan_mode(recorded if active else None)
+    try:
+        seed = await _seed_waiting_batch(owner_sessionmaker, tool_arguments={
+            "path": "workspace/input.md", "plan_mode": {"active": True, "plan_file_path": "untrusted.md"},
+        })
+    finally:
+        reset_interactive_plan_mode(token)
+    calls = _install_successful_executor(monkeypatch)
+    execute = agent_tools.execute_session_permission_tool
+    observed = []
+
+    async def inspect_context(*args, **kwargs):
+        observed.append(interactive_plan_mode_metadata())
+        if executor_error:
+            raise RuntimeError("controlled pre-effect interruption")
+        return await execute(*args, **kwargs)
+
+    monkeypatch.setattr(agent_tools, "execute_session_permission_tool", inspect_context)
+    ambient = {"active": True, "plan_file_path": "workspace/other-run.md"}
+    token = set_interactive_plan_mode(ambient)
+    try:
+        async with owner_sessionmaker() as db:
+            _user, authority = await _authority(db, seed)
+            receipt = await resolve_session_tool_permission(db, authority=authority,
+                permission_request_id=seed.permission_ids[0], decision="allow_once")
+        assert receipt.status == "resolved" and receipt.run_id == str(seed.run_id)
+        assert observed == [recorded if active else {}]
+        assert interactive_plan_mode_metadata() == ambient
+        assert calls == ([] if executor_error else [str(seed.run_id)])
+    finally:
+        reset_interactive_plan_mode(token)

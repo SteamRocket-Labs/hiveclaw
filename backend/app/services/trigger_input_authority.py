@@ -79,6 +79,17 @@ async def load_trigger_input_origin(db, *, tenant_id, agent_id, session, metadat
                 if trigger_owner_user_id(trigger) != user.id or trigger_execution_block_reason(trigger):
                     raise ValueError("scheduled_input_requester_changed")
                 await authorize_trigger_action(db, user, agent_id=agent_id, trigger=trigger, action="execute")
+                config = trigger.config or {}
+                if config.get("plan_id") and isinstance(config.get("plan_authorization"), dict):
+                    from app.services.plan_authorization_lease import (
+                        PlanAuthorizationLeaseError, verify_consumed_plan_authorization_lease,
+                    )
+
+                    try:
+                        await verify_consumed_plan_authorization_lease(db=db, tenant_id=tenant_id,
+                            agent_id=agent_id, plan_id=config["plan_id"], evidence=config["plan_authorization"])
+                    except PlanAuthorizationLeaseError as exc:
+                        raise HTTPException(403, detail={"code": "trigger_plan_authority_revoked"}) from exc
         return {"schema": "hive.trigger_input_origin.v1", "wrapper_id": str(wrapper.id),
             **({"authority_generations": wrapper.metadata_json["trigger_authority_generations"]}
                 if "trigger_authority_generations" in wrapper.metadata_json else {}),

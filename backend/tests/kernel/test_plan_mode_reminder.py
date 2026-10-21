@@ -9,6 +9,8 @@ which stays an engine concern.
 
 from __future__ import annotations
 
+import pytest
+
 from app.kernel.reminder_scheduler import (
     _PLAN_MODE_REMINDER_FULL,
     _PLAN_MODE_REMINDER_SPARSE,
@@ -110,3 +112,26 @@ def test_plan_file_hint_makes_file_the_plan_source():
 
 
 # Tool-intercept activation notices were removed with explicit-only Plan Mode.
+
+
+@pytest.mark.parametrize("name,drift", [("plan_mode_full", False), ("plan_mode_sparse", False),
+    ("plan_mode_full", True), ("unregistered_context", False)])
+def test_plan_reminders_keep_the_exact_authenticated_entry_source(name, drift):
+    from types import SimpleNamespace
+
+    from app.kernel.engine import _runtime_reminder_message
+    from app.kernel.reminder_scheduler import RuntimeReminderInjection
+    from app.services.delegation_context_sources import PermissionContextSource, _permission_inputs
+
+    reference = {"source_kind": "session_command", "source_id": "original-command", "source_version": "original-hash"}
+    metadata = {"plan_mode": {"active": True, "plan_file_path": "workspace/plans/current.md"}}
+    metadata["_session_permission_context_source"] = PermissionContextSource(reference, _permission_inputs(metadata), ())
+    if drift:
+        metadata["plan_mode"]["plan_file_path"] = "workspace/plans/another.md"
+    request = SimpleNamespace(session_context=SimpleNamespace(metadata=metadata), allowed_tool_names=())
+    item = RuntimeReminderInjection(text=_PLAN_MODE_REMINDER_FULL, source=name)
+    message = _runtime_reminder_message(request, item)
+    resolved = name in {"plan_mode_full", "plan_mode_sparse"} and not drift
+    assert message.content == item.text
+    assert message.context_origin.sources == ((reference,) if resolved else ())
+    assert message.context_origin.unbound == (() if resolved else item.unbound)

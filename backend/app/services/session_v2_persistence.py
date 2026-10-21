@@ -1291,7 +1291,7 @@ async def append_session_events(
             actor_type=str(draft.actor.get("type") or "system"),
             event_type=kind,
             visibility_scope=str(draft.visibility.get("audience") or "direct_user"),
-            listed_surface="chat",
+            listed_surface=allocation.session.listed_surface,
             content=str(content) if isinstance(content, str) else "",
             parts_json=list(parts) if isinstance(parts, list) else None,
             metadata_json={

@@ -24,6 +24,42 @@ async def _noop_terminal_hook(**_kwargs):
     return None
 
 
+@pytest.mark.parametrize("scheduled,fail", [(False, False), (True, False), (True, True)])
+async def test_scheduled_reply_default_requires_verified_frame_and_is_scoped_to_invocation(monkeypatch, scheduled, fail):
+    from app.services import plan_mode_core, web_chat_run_orchestrator as orchestrator, web_chat_runtime as runtime
+    from app.services.channel_delivery_service import channel_delivery_target
+
+    class InteractiveSignal(Exception):
+        pass
+
+    destination = {"channel": "feishu", "chat_id": "test-owned-recipient"}
+    observed = []
+
+    async def invoke(_request):
+        observed.append(channel_delivery_target.get(None))
+        if fail:
+            raise RuntimeError("controlled invocation failure")
+        return "result"
+
+    monkeypatch.setattr(orchestrator, "_agent_invocation_request", lambda *_args: SimpleNamespace(session_context=None))
+    state = SimpleNamespace(active_plan_mode_metadata=None, plan_mode_submitted=False,
+        native_trigger_frame=object() if scheduled else None, metadata={"source": "trigger_reflection"},
+        runtime_session_context=SimpleNamespace(source="trigger_reflection", metadata={}), prompt="Check this work.",
+        session=SimpleNamespace(audience_kind="private", delivery_target_json=destination),
+        runtime_task=SimpleNamespace(metadata_json={}), ports=SimpleNamespace(
+            context=SimpleNamespace(active_channel_delivery_target=runtime._active_channel_delivery_target_for_turn),
+            runtime=SimpleNamespace(invoke_agent=invoke, plan_mode_core=plan_mode_core),
+            events=SimpleNamespace(terminal_signal_type=InteractiveSignal)))
+    before = channel_delivery_target.get(None)
+    if fail:
+        with pytest.raises(RuntimeError, match="controlled invocation failure"):
+            await orchestrator._invoke_model(state, None, "")
+    else:
+        assert await orchestrator._invoke_model(state, None, "") == "result"
+    assert observed == [destination if scheduled else before]
+    assert channel_delivery_target.get(None) == before
+
+
 @pytest.mark.parametrize("contributor,reason", [
     ("public", None), ("pending", "pending_reply_sources_unbound"),
     ("continuation", "runtime_continuation_sources_unbound"), ("restart", "restart_context_sources_unbound"),

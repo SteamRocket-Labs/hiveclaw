@@ -161,16 +161,16 @@ async def test_invoke_agent_for_triggers_injects_confirmed_plan_into_first_messa
     owner_sessionmaker, tenant_id, agent_id, monkeypatch
 ):
     """Drive the REAL ``_invoke_agent_for_triggers`` (not a stub): a confirmed
-    plan-born trigger fire must land the approved plan body in the agent's first
-    (user) message — proving the helper is wired into the production path, not
-    dead code."""
+    plan-born trigger fire must land the approved plan body in its durable
+    scheduled input before the native worker runs."""
     import types
 
     from sqlalchemy import select
 
     import app.services.audit_logger as audit_logger
     import app.services.runtime_task_service as runtime_task_service
-    from app.models.audit import ChatMessage
+    from app.models.session_v2 import SessionCommand, SessionTurnInput
+    from app.models.runtime_budget import RuntimeBudgetRun
     from app.models.runtime_task import RuntimeTask
     from app.models.trigger import AgentTrigger
     from app.services.session_writer_epoch import assign_runtime_task_writer_generation
@@ -186,16 +186,25 @@ async def test_invoke_agent_for_triggers_injects_confirmed_plan_into_first_messa
             tenant_id=tenant_id,
             plan_markdown="## Marching orders\nShip the weekly funding digest.",
         )
+        budget_id = uuid.uuid4()
+        root_session_id = trigger_daemon._trigger_child_run_id(runtime_task_uuid, effect="reflection_session", discriminator="")
+        session.add(RuntimeBudgetRun(id=budget_id, tenant_id=tenant_id, root_run_kind="trigger_fire",
+            root_run_key=str(runtime_task_uuid), root_runtime_task_id=runtime_task_uuid, root_agent_id=agent_id,
+            root_user_id=owner_id, root_session_id=str(root_session_id), source="trigger", status="active"))
+        await session.flush()
+        trigger_id = uuid.uuid4()
         runtime_task = RuntimeTask(
             id=runtime_task_uuid,
             task_type="trigger",
             parent_agent_id=agent_id,
             tenant_id=tenant_id,
             status="running",
+            root_user_id=owner_id, root_session_id=str(root_session_id), root_runtime_task_id=runtime_task_uuid,
+            budget_run_id=budget_id, delegation_chain_json=[str(runtime_task_uuid)],
+            metadata_json={"trigger_ids": [str(trigger_id)]},
         )
         await assign_runtime_task_writer_generation(session, runtime_task)
         session.add(runtime_task)
-        trigger_id = uuid.uuid4()
         session.add(
             AgentTrigger(
                 id=trigger_id,
@@ -236,11 +245,7 @@ async def test_invoke_agent_for_triggers_injects_confirmed_plan_into_first_messa
 
     async def _fake_call_llm(**kwargs):
         captured.update(kwargs)
-        return types.SimpleNamespace(
-            content="ok",
-            terminal_reason="turn_stop",
-            response_complete_payload={"metadata": {"final_response": "ok"}},
-        )
+        raise AssertionError("Native scheduled work must use the durable worker")
 
     async def _noop(*args, **kwargs):
         return None
@@ -270,17 +275,16 @@ async def test_invoke_agent_for_triggers_injects_confirmed_plan_into_first_messa
     await trigger_daemon._invoke_agent_for_triggers(agent_id, [trig], runtime_task_id=runtime_task_id)
 
     async with tenant_scoped_session(str(tenant_id), session_factory=owner_sessionmaker) as session:
-        user_messages = (
+        inputs = (
             (
                 await session.execute(
-                    select(ChatMessage).where(ChatMessage.agent_id == agent_id, ChatMessage.role == "user")
+                    select(SessionTurnInput).where(SessionTurnInput.session_id == root_session_id)
                 )
             )
             .scalars()
             .all()
         )
-    assert any("Ship the weekly funding digest." in (m.content or "") for m in user_messages)
-    # P1-1: the trigger run must identify as source=trigger (not the "web" default),
-    # which drives the unattended Plan Mode lane and the trigger-*.md T0 bucket.
-    assert captured.get("session_source") == "trigger"
-    assert captured.get("session_channel") == "trigger"
+        commands = [await session.get(SessionCommand, row.command_id) for row in inputs]
+    assert any("Ship the weekly funding digest." in str(row.content_parts_json) for row in inputs)
+    assert commands and all(command.target_json["runtime_metadata"]["source"] == "trigger_reflection" for command in commands)
+    assert captured == {}

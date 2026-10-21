@@ -5002,6 +5002,9 @@ async def _persist_runtime_event(
     tenant_id = await resolve_tenant_for_agent(agent_id)
     async with tenant_scoped_session(tenant_id) as db:
         event_type = _runtime_event_storage_type(data)
+        event_session = await db.get(ChatSession, uuid.UUID(str(session_id)))
+        if event_session is None or event_session.tenant_id != tenant_id or event_session.agent_id != agent_id:
+            raise ValueError("runtime_event_session_unavailable")
         event_payload = build_session_native_event(data) if event_type in SESSION_NATIVE_EVENT_TYPES else data
         event_parts = [event_payload["part"]] if isinstance(event_payload.get("part"), dict) else None
         event_metadata = {
@@ -5018,6 +5021,7 @@ async def _persist_runtime_event(
             actor_type="system",
             event_type=event_type,
             role="system",
+            listed_surface=event_session.listed_surface,
             user_id=user_id,
             external_principal_id=external_principal_id,
             content=json.dumps(data, ensure_ascii=False),
@@ -5181,15 +5185,7 @@ def _provision_interactive_plan_file(agent_id: uuid.UUID, plan_file_path: str | 
         logger.warning("[WebChatRun] Failed to provision Plan Mode plan file {}: {}", plan_file_path, exc)
 
 
-def _activate_interactive_plan_mode(
-    runtime_session_context: Any | None,
-    *,
-    agent_id: uuid.UUID,
-    original_request: str,
-    routing_request: str | None = None,
-    decision: plan_mode_core.PlanModeEntryDecision,
-    session_id: str | None,
-) -> dict[str, Any]:
+def _interactive_plan_mode_state(*, original_request, decision, session_id):
     from app.runtime.session import PlanModeState
 
     if decision.action_kind == "create_enabled_trigger":
@@ -5200,7 +5196,6 @@ def _activate_interactive_plan_mode(
         # execution is opt-in (see plan_mode_session_handoff + the detached stub).
         handoff_target = "continue_current_session"
     plan_file_path = f"workspace/plans/{session_id}.plan.md" if session_id else None
-    _provision_interactive_plan_file(agent_id, plan_file_path)
     state = PlanModeState(
         active=True,
         original_request=original_request,
@@ -5212,6 +5207,20 @@ def _activate_interactive_plan_mode(
         plan_file_path=plan_file_path,
         source="web_chat",
     )
+    return state
+
+
+def _activate_interactive_plan_mode(
+    runtime_session_context: Any | None,
+    *,
+    agent_id: uuid.UUID,
+    original_request: str,
+    routing_request: str | None = None,
+    decision: plan_mode_core.PlanModeEntryDecision,
+    session_id: str | None,
+) -> dict[str, Any]:
+    state = _interactive_plan_mode_state(original_request=original_request, decision=decision, session_id=session_id)
+    _provision_interactive_plan_file(agent_id, state.plan_file_path)
     metadata = state.to_metadata()
     if runtime_session_context is not None:
         # Typed source of truth on a real SessionContext; the dict mirror keeps

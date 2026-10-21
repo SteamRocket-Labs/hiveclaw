@@ -483,227 +483,106 @@ def _route_scoped_session(monkeypatch, trigger_daemon, session_provider, *, tena
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("terminal_outcome", "terminal_reason", "mixed_workflow_hold"),
-    [
-        (True, "turn_stop", False),
-        (False, "turn_stop", False),
-        (RuntimeError("terminal write failed"), "turn_stop", False),
-        (True, "provider_error", False),
-        (True, "turn_stop", True),
-    ],
-)
-async def test_trigger_terminal_learning_waits_for_committed_outbox(
-    monkeypatch,
-    terminal_outcome,
-    terminal_reason,
-    mixed_workflow_hold,
+@pytest.mark.parametrize("terminal_outcome,mixed_workflow_hold", [(True, False), (False, False),
+    (RuntimeError("input commit failed"), False), (True, True)])
+async def test_native_trigger_wrapper_defers_model_work_and_learning_to_durable_input(
+    monkeypatch, terminal_outcome, mixed_workflow_hold,
 ):
     import app.api.websocket as websocket_api
     import app.runtime.hooks as runtime_hooks
     import app.services.auto_dream as auto_dream
     import app.services.dream_runtime as dream_runtime
-    import app.services.heartbeat as heartbeat
     import app.services.trigger_artifacts as trigger_artifacts
-    import app.services.trigger_daemon as trigger_daemon
+    import app.services.trigger_daemon as daemon
     import app.services.workflow_trigger as workflow_trigger
 
-    tenant_id = uuid4()
-    agent_id = uuid4()
-    creator_id = uuid4()
-    participant = SimpleNamespace(id=uuid4())
-    agent = SimpleNamespace(
-        id=agent_id,
-        name="Terminal Order Agent",
-        agent_type="native",
-        role_description="",
-        status="running",
-        creator_id=creator_id,
-        tenant_id=tenant_id,
-        primary_model_id=uuid4(),
-        fallback_model_id=None,
-    )
-    trigger = SimpleNamespace(
-        id=uuid4(),
-        name="daily",
-        type="cron",
-        reason="Run daily",
-        config={},
-        reply_context=None,
-    )
-    workflow_trigger_row = SimpleNamespace(
-        id=uuid4(),
-        name="held workflow",
-        type="cron",
-        reason="Run held workflow",
-        config={"workflow_ref": {"definition_name": "held-workflow"}},
-        reply_context=None,
-    )
-    workflow_run_id = uuid4()
-    workflow_session_id = uuid4()
-    model = SimpleNamespace(id=uuid4(), name="model")
-    order: list[str] = []
-    emitted: list[object] = []
-    terminal_updates: list[dict] = []
+    tenant_id, agent_id, owner_id, task_id = uuid4(), uuid4(), uuid4(), uuid4()
+    agent = SimpleNamespace(id=agent_id, tenant_id=tenant_id, name="Native routine", agent_type="native",
+        status="running", creator_id=owner_id, primary_model_id=uuid4(), fallback_model_id=None)
+    user = SimpleNamespace(id=owner_id, tenant_id=tenant_id, is_active=True)
+    trigger = SimpleNamespace(id=uuid4(), name="daily", type="cron", reason="Run daily", config={}, reply_context=None)
+    workflow = SimpleNamespace(id=uuid4(), name="held workflow", type="cron", reason="Run held workflow",
+        config={"workflow_ref": {"definition_name": "held-workflow"}}, reply_context=None)
+    order, deliveries, updates, forbidden = [], [], [], []
 
-    class _InvocationSession(_SequenceSession):
-        def add(self, _value):
-            return None
+    class InvocationSession(_SequenceSession):
+        def add(self, value):
+            assert value.session_kind == "trigger_run" and value.listed_surface == "task_updates"
+            self.session = value
 
         async def flush(self):
-            return None
+            pass
 
         async def commit(self):
-            order.append("transcript_commit")
-            await super().commit()
+            order.append("session:commit")
 
-    responsible_user = SimpleNamespace(id=creator_id, tenant_id=tenant_id, is_active=True)
-    sessions = [
-        _InvocationSession([_ScalarResult(agent), _ScalarResult(participant), _ScalarResult(responsible_user)]),
-        _InvocationSession([_ScalarResult(participant)]),
-    ]
+    db = InvocationSession([_ScalarResult(agent), _ScalarResult(SimpleNamespace(id=uuid4())), _ScalarResult(user)])
 
-    def scoped_session(*_args, **_kwargs):
-        if not sessions:
-            raise AssertionError("Unexpected tenant_scoped_session call")
-        return sessions.pop(0)
-
-    async def fake_admit(*_args, **_kwargs):
+    async def admit(*_args, **_kwargs):
         return SimpleNamespace(ok=True, tenant_id=tenant_id)
 
-    async def fake_select_model(*_args, **_kwargs):
-        return model, {}, None
+    async def model(*_args, **_kwargs):
+        return SimpleNamespace(id=uuid4()), {}, None
 
-    async def fake_append_session_event(**_kwargs):
-        return SimpleNamespace(message_id=None)
+    async def update(_task_id, **fields):
+        updates.append(fields)
+        order.append("runtime:" + fields["status"])
+        return True
 
-    async def fake_call_llm(**_kwargs):
-        assert _kwargs["return_result"] is True
-        return SimpleNamespace(
-            content="trigger result",
-            terminal_reason=terminal_reason,
-            response_complete_payload=(
-                {
-                    "agent_id": agent_id,
-                    "session_id": _kwargs["session_id"],
-                    "messages": _kwargs["messages"],
-                    "source": "trigger",
-                    "metadata": {
-                        "tenant_id": str(tenant_id),
-                        "final_response": "trigger result",
-                    },
-                }
-                if terminal_reason == "turn_stop"
-                else None
-            ),
-        )
-
-    async def fake_update_runtime_task_record(_task_id, **fields):
-        terminal_updates.append(fields)
-        order.append(f"runtime:{fields.get('status')}")
-        if fields.get("status") != "completed":
-            return True
+    async def deliver(actual_agent, actual_triggers, **kwargs):
+        assert actual_agent == agent_id and actual_triggers == [trigger]
+        assert kwargs["reflection"] is True and kwargs["source_session_id"] == str(db.session.id)
+        assert kwargs["runtime_task_id"] == str(task_id)
+        assert "Scheduled trigger: daily (cron)" in kwargs["wake_content"]
+        order.append("input:requested")
+        deliveries.append(kwargs)
         if isinstance(terminal_outcome, Exception):
             raise terminal_outcome
+        if terminal_outcome:
+            order.append("input:committed")
         return terminal_outcome
 
-    async def fake_emit_hook(event, **_kwargs):
-        emitted.append(event)
-        order.append(f"hook:{getattr(event, 'value', event)}")
-
-    async def noop_async(*_args, **_kwargs):
+    async def fire_workflow(**kwargs):
+        if mixed_workflow_hold and kwargs["trigger_id"] == workflow.id:
+            return workflow_trigger.WorkflowTriggerFireResult(status="needs_reconciliation", run_id=uuid4(),
+                run_status="completed", session_id=uuid4(), reason="workflow_asset_usage_evidence_commit_failed")
         return None
 
-    async def fake_fire_workflow(**_kwargs):
-        if mixed_workflow_hold and _kwargs["trigger_id"] == workflow_trigger_row.id:
-            return workflow_trigger.WorkflowTriggerFireResult(
-                status="needs_reconciliation",
-                run_id=workflow_run_id,
-                run_status="completed",
-                reason="workflow_asset_usage_evidence_commit_failed",
-                session_id=workflow_session_id,
-            )
+    async def no_target(*_args, **_kwargs):
         return None
 
-    def fake_record_session_end(_agent_id, **_kwargs):
-        order.append("dream:record")
+    async def no_inline(*_args, **_kwargs):
+        forbidden.append("inline_model_or_learning")
+        raise AssertionError("Native work belongs to its durable worker")
 
-    async def fake_enqueue_due_dream(*_args, **_kwargs):
-        order.append("dream:enqueue")
+    def no_artifact(*_args, **_kwargs):
+        forbidden.append("inline_artifact_or_learning")
+        raise AssertionError("The wrapper is a delivery receipt")
 
-    def fake_write_trigger_output_artifact(**_kwargs):
-        order.append("artifact:prepared")
-        return None
-
-    async def fake_resolve_tenant(*_args, **_kwargs):
-        return None
-
-    monkeypatch.setattr(trigger_daemon, "tenant_scoped_session", scoped_session)
-    monkeypatch.setattr(trigger_daemon, "resolve_tenant_for_agent", fake_resolve_tenant)
-    monkeypatch.setattr(trigger_daemon, "admit_agent_runtime_tenant", fake_admit)
-    monkeypatch.setattr(trigger_daemon, "select_trigger_model", fake_select_model)
-    monkeypatch.setattr(trigger_daemon, "update_runtime_task_record", fake_update_runtime_task_record)
-    monkeypatch.setattr(trigger_daemon, "_recover_reply_target_from_session", noop_async)
-    monkeypatch.setattr(workflow_trigger, "fire_workflow_for_trigger", fake_fire_workflow)
-    monkeypatch.setattr("app.services.chat_transcript.append_session_event", fake_append_session_event)
-    monkeypatch.setattr(websocket_api, "call_llm", fake_call_llm)
-    monkeypatch.setattr(auto_dream, "record_session_end", fake_record_session_end)
-    monkeypatch.setattr(dream_runtime, "enqueue_due_dream", fake_enqueue_due_dream)
-    monkeypatch.setattr(heartbeat, "_parse_heartbeat_outcome", lambda _reply: ("unknown", None))
-    monkeypatch.setattr(trigger_artifacts, "write_trigger_output_artifact", fake_write_trigger_output_artifact)
-    monkeypatch.setattr(runtime_hooks, "emit_hook", fake_emit_hook)
-
-    await trigger_daemon._invoke_agent_for_triggers(
-        agent_id,
-        [workflow_trigger_row, trigger] if mixed_workflow_hold else [trigger],
-        runtime_task_id=str(uuid4()),
-    )
-
-    if mixed_workflow_hold:
-        terminal_update = next(update for update in terminal_updates if update.get("completion_notification"))
-        notification = terminal_update["completion_notification"]
-        assert terminal_update["status"] == "needs_reconciliation"
-        assert terminal_update["metadata_json"]["trigger_artifact_input"]["triggers"] == [
-            {
-                "id": str(trigger.id),
-                "name": trigger.name,
-                "type": trigger.type,
-                "config": {"trigger_class": ""},
-            }
-        ]
-        assert terminal_update["metadata_json"]["trigger_artifact_input"]["final_reply"] == "trigger result"
-        assert notification.terminal_status == "needs_reconciliation"
-        assert notification.metadata["terminal_reason"] == "turn_stop"
-        assert notification.metadata["trigger_settlement_overrides"] == {
-            str(workflow_trigger_row.id): "hold",
-            str(trigger.id): "success",
-        }
-        assert notification.metadata["workflow_trigger_results"] == [
-            {
-                "trigger_id": str(workflow_trigger_row.id),
-                "trigger_name": workflow_trigger_row.name,
-                "status": "needs_reconciliation",
-                "run_id": str(workflow_run_id),
-                "run_status": "completed",
-                "session_id": str(workflow_session_id),
-                "reason": "workflow_asset_usage_evidence_commit_failed",
-            }
-        ]
-        assert "dream:record" not in order
-    elif terminal_reason != "turn_stop":
-        assert "runtime:completed" not in order
-        assert "runtime:failed" in order
-    elif terminal_outcome is True:
-        assert "runtime:completed" in order
-        assert "artifact:prepared" not in order
-        assert "dream:record" not in order
-        assert "dream:enqueue" not in order
+    monkeypatch.setattr(daemon, "tenant_scoped_session", lambda *_a, **_k: db)
+    monkeypatch.setattr(daemon, "admit_agent_runtime_tenant", admit)
+    monkeypatch.setattr(daemon, "select_trigger_model", model)
+    monkeypatch.setattr(daemon, "update_runtime_task_record", update)
+    monkeypatch.setattr(daemon, "_trigger_batch_reply_target", no_target)
+    monkeypatch.setattr(daemon, "_deliver_batch_to_source_session", deliver)
+    monkeypatch.setattr(workflow_trigger, "fire_workflow_for_trigger", fire_workflow)
+    monkeypatch.setattr(websocket_api, "call_llm", no_inline)
+    monkeypatch.setattr(runtime_hooks, "emit_hook", no_inline)
+    monkeypatch.setattr(auto_dream, "record_session_end", no_artifact)
+    monkeypatch.setattr(dream_runtime, "enqueue_due_dream", no_inline)
+    monkeypatch.setattr(trigger_artifacts, "write_trigger_output_artifact", no_artifact)
+    await daemon._invoke_agent_for_triggers(agent_id, [workflow, trigger] if mixed_workflow_hold else [trigger],
+        runtime_task_id=str(task_id), _authority_checked=True)
+    assert order[:3] == ["runtime:running", "session:commit", "input:requested"]
+    assert len(deliveries) == 1 and forbidden == []
+    assert not any(update["status"] == "completed" for update in updates)
+    if terminal_outcome is True:
+        assert "input:committed" in order and not any(update["status"] == "failed" for update in updates)
     else:
-        assert "artifact:prepared" not in order
-        assert "dream:record" not in order
-        assert "dream:enqueue" not in order
-    assert runtime_hooks.HookEvent.TRIGGER_END not in emitted
-    assert runtime_hooks.HookEvent.RESPONSE_COMPLETE not in emitted
+        assert "input:committed" not in order and updates[-1]["status"] == "failed"
+    if mixed_workflow_hold:
+        assert deliveries[0]["settlement_overrides"] == {str(workflow.id): "hold"}
+        assert deliveries[0]["workflow_results"][0]["reason"] == "workflow_asset_usage_evidence_commit_failed"
 
 
 def _disable_completed_focus_reconciler(monkeypatch, trigger_daemon):

@@ -211,6 +211,8 @@ async def _run_web_chat_stages(state: _WebChatRunState) -> None:
     if await _handle_pre_invocation_terminal(state):
         return
     callbacks = _WebChatCallbacks(state)
+    if await _consume_resumed_plan_submission(state, callbacks):
+        return
     pending_suffix = await _prepare_pending_suffix(state)
     result = await _invoke_model(state, callbacks, pending_suffix)
     if state.provider_reconciliation is not None:
@@ -780,6 +782,53 @@ def _tool_result_exits_plan_mode(data: dict[str, Any]) -> bool:
     return isinstance(payload, dict) and payload.get("status") in {"needs_plan", "planning_failed"}
 
 
+async def _consume_resumed_plan_submission(state: _WebChatRunState, callbacks: _WebChatCallbacks) -> bool:
+    """Consume a permission-approved plan card before issuing another model round."""
+
+    resume = state.metadata.get("session_permission_resume") or {}
+    if not resume:
+        return False
+    from app.models.chat_transcript_event import ChatTranscriptEvent
+    from app.models.session_v2 import SessionModelResult, SessionToolInvocation
+    from app.services.session_model_round import _root_round_index_from_id
+
+    async with state.ports.runtime.tenant_scoped_session(state.agent.tenant_id) as db:
+        invocation = await db.get(SessionToolInvocation, uuid.UUID(resume["permission_invocation_id"]))
+        if (invocation is None or invocation.tenant_id != state.agent.tenant_id
+            or invocation.session_id != uuid.UUID(state.session_id) or invocation.run_id != state.run_uuid
+            or invocation.tool_name != "exit_plan_mode" or invocation.permission_state != "approved"
+            or invocation.effect_state != "effect_committed" or invocation.result_event_id is None):
+            return False
+        result = await db.get(SessionModelResult, uuid.UUID(resume["source_result_id"]))
+        if (result is None or result.state != "round_committed" or result.tenant_id != invocation.tenant_id
+            or result.session_id != invocation.session_id or result.run_id != invocation.run_id
+            or result.provider_request_id != invocation.provider_request_id):
+            return False
+        rounds = await db.scalars(select(SessionModelResult.round_id).where(
+            SessionModelResult.tenant_id == result.tenant_id, SessionModelResult.run_id == result.run_id,
+            SessionModelResult.state == "round_committed"))
+        if any(_root_round_index_from_id(value) > _root_round_index_from_id(result.round_id) for value in rounds):
+            return False
+        event = await db.get(ChatTranscriptEvent, invocation.result_event_id)
+        if (event is None or event.tenant_id != invocation.tenant_id or event.agent_id != state.agent.id
+            or event.session_id != invocation.session_id or event.run_id != invocation.run_id
+            or event.result_id != result.id or event.invocation_id != invocation.id
+            or event.item_kind != "tool_result" or event.lifecycle != "completed"):
+            return False
+        data = {"name": invocation.tool_name, "status": "done", "result": event.content,
+            "tool_call_id": invocation.provider_tool_use_id}
+    if not _tool_result_exits_plan_mode(data):
+        return False
+    try:
+        await callbacks._consume_completed_tool(data)
+    except state.ports.events.terminal_signal_type:
+        pass
+    finally:
+        if state.plan_mode_submitted:
+            state.ports.terminal.clear_interactive_plan_mode(state.runtime_session_context)
+    return state.terminal_tool_card_finalized
+
+
 async def _prepare_pending_suffix(state: _WebChatRunState) -> str:
     suffix = ""
     source_refs, source_unbound = [], []
@@ -943,6 +992,13 @@ async def _invoke_model(state: _WebChatRunState, callbacks: _WebChatCallbacks, s
             session=state.session,
             prompt=state.prompt,
         )
+        if target is None and getattr(state, "native_trigger_frame", None) is not None:
+            # This frame was recovered from the admitted scheduled command.
+            # The destination is a default, not a grant to send: tool execution
+            # still checks the current trigger and channel effect authority.
+            saved = getattr(state.session, "delivery_target_json", None)
+            if isinstance(saved, dict) and saved.get("channel") not in {None, "", "web"}:
+                target = dict(saved)
         if target:
             from app.services.channel_delivery_service import channel_delivery_target
 

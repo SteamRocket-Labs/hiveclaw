@@ -54,7 +54,7 @@ class _Result:
 
 
 class _HandoffSession:
-    """In-memory stand-in. The handler only queries triggers by ``agent_id``."""
+    """In-memory triggers and configuration-source pointers for the handler."""
 
     def __init__(self, *, triggers=None):
         self.triggers = list(triggers or [])
@@ -81,6 +81,9 @@ class _HandoffSession:
 
     async def flush(self):
         self.flush_calls += 1
+
+    async def get(self, model, identity, **_kwargs):
+        return next((row for row in self.added if isinstance(row, model) and row.id == identity), None)
 
     async def commit(self):
         self.commit_calls += 1

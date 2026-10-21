@@ -2008,7 +2008,7 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                     stream_messages = _clone_api_messages(api_messages)
                     if _transient_reminders:
                         stream_messages = stream_messages + [
-                            _context_message(role="system", content=item.text, kind="runtime_reminder", unbound=item.unbound)
+                            support._runtime_reminder_message(request, item)
                             for item in _transient_reminder_injections
                         ]
                     dynamic_notice = _dynamic_suffix_notice(dynamic_prompt_suffix, sections=dynamic_context_section_ledger,

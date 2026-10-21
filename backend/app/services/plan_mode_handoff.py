@@ -210,6 +210,9 @@ async def _ensure_enabled_trigger(db: Any, agent: Any, plan: Any, *, force_once:
         existing.reason = payload["reason"]
         existing.is_enabled = True
         await db.flush()
+        from app.services.trigger_context_sources import record_trigger_configuration
+
+        await record_trigger_configuration(db, trigger=existing, changed_fields={"type", "config", "reason"}, plan=plan)
         return existing
 
     trigger = AgentTrigger(
@@ -224,6 +227,9 @@ async def _ensure_enabled_trigger(db: Any, agent: Any, plan: Any, *, force_once:
     )
     db.add(trigger)
     await db.flush()  # assign trigger.id
+    from app.services.trigger_context_sources import record_trigger_configuration
+
+    await record_trigger_configuration(db, trigger=trigger, changed_fields={"name", "type", "config", "reason"}, plan=plan)
     return trigger
 
 

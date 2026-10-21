@@ -581,7 +581,7 @@ async def resolve_session_tool_permission(
         accept_tool_permission_response,
         apply_permission_response_control_input,
     )
-    from app.services.session_tool_runtime import complete_tool_invocation, mark_tool_effect_started
+    from app.services.session_tool_runtime import complete_tool_invocation, load_permission_plan_mode, mark_tool_effect_started
     from app.tools.governance import _detect_destructive_delete
     from app.tools.registry import is_destructive_tool
 
@@ -683,7 +683,14 @@ async def resolve_session_tool_permission(
         from app.services.shared_group_authority import group_permission_execution
 
         with group_permission_execution(authority=authority, invocation=invocation, control_id=control_id):
+            plan_token = None
             try:
+                from app.services.plan_mode_runtime_context import set_interactive_plan_mode
+
+                source_result = await _source_result(db, invocation)
+                plan_token = set_interactive_plan_mode(await load_permission_plan_mode(
+                    db, agent_id=authority.agent_id, invocation=invocation, result=source_result,
+                ))
                 tool_result = await execute_session_permission_tool(
                     invocation.tool_name,
                     effective_arguments,
@@ -692,7 +699,7 @@ async def resolve_session_tool_permission(
                     session_id=str(authority.session_id),
                     permission_profile=profile,
                     tool_call_id=invocation.provider_tool_use_id,
-                    turn_id=(await _source_result(db, invocation)).turn_id,
+                    turn_id=source_result.turn_id,
                     runtime_task_id=str(invocation.run_id),
                     origin_channel=getattr(session, "source_channel", None) or "web",
                     round_state={"trace_id": f"permission:{control_id}"},
@@ -789,6 +796,11 @@ async def resolve_session_tool_permission(
                         else effective_arguments
                     ),
                 )
+            finally:
+                if plan_token is not None:
+                    from app.services.plan_mode_runtime_context import reset_interactive_plan_mode
+
+                    reset_interactive_plan_mode(plan_token)
             await db.commit()
             await db.refresh(invocation)
 

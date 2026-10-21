@@ -2078,11 +2078,18 @@ async def test_persist_runtime_event_writes_session_native_part(monkeypatch):
     import app.services.tenant_resolver as tenant_resolver
 
     captured: dict = {}
-    tenant_id = uuid4()
+    tenant_id, agent_id, session_id = uuid4(), uuid4(), uuid4()
+
+    class _EventDB(_FakeDB):
+        async def get(self, model, identity):
+            from app.models.chat_session import ChatSession
+
+            assert model is ChatSession and identity == session_id
+            return SimpleNamespace(id=session_id, tenant_id=tenant_id, agent_id=agent_id, listed_surface="chat")
 
     class _SessionCtx:
         async def __aenter__(self):
-            return _FakeDB()
+            return _EventDB()
 
         async def __aexit__(self, *_exc):
             return False
@@ -2112,9 +2119,9 @@ async def test_persist_runtime_event_writes_session_native_part(monkeypatch):
     )
 
     result = await runtime._persist_runtime_event(
-        agent_id=uuid4(),
+        agent_id=agent_id,
         user_id=uuid4(),
-        session_id=str(uuid4()),
+        session_id=str(session_id),
         data={
             "type": "hook_progress",
             "message": "Running PreToolUse hook",
@@ -2125,6 +2132,7 @@ async def test_persist_runtime_event_writes_session_native_part(monkeypatch):
         },
     )
 
+    assert captured["listed_surface"] == "chat"
     assert captured["event_type"] == "hook_progress"
     assert captured["role"] == "system"
     assert result == committed
@@ -2247,11 +2255,18 @@ async def test_session_context_runtime_event_persists_as_specific_context_event(
     import app.services.tenant_resolver as tenant_resolver
 
     captured: dict = {}
-    tenant_id = uuid4()
+    tenant_id, agent_id, session_id = uuid4(), uuid4(), uuid4()
+
+    class _EventDB(_FakeDB):
+        async def get(self, model, identity):
+            from app.models.chat_session import ChatSession
+
+            assert model is ChatSession and identity == session_id
+            return SimpleNamespace(id=session_id, tenant_id=tenant_id, agent_id=agent_id, listed_surface="chat")
 
     class _SessionCtx:
         async def __aenter__(self):
-            return _FakeDB()
+            return _EventDB()
 
         async def __aexit__(self, *_exc):
             return False
@@ -2293,12 +2308,13 @@ async def test_session_context_runtime_event_persists_as_specific_context_event(
     assert runtime._should_persist_runtime_event(data)
 
     await runtime._persist_runtime_event(
-        agent_id=uuid4(),
+        agent_id=agent_id,
         user_id=uuid4(),
-        session_id=str(uuid4()),
+        session_id=str(session_id),
         data=data,
     )
 
+    assert captured["listed_surface"] == "chat"
     assert captured["event_type"] == "context_window_status"
     assert captured["metadata"]["runtime_event_type"] == "context_window_status"
     assert captured["metadata"]["active_context_tokens"] == 120

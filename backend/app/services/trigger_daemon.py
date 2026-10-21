@@ -30,6 +30,7 @@ from app.core.events import get_redis
 from app.database import async_session, enter_rls_bypass, tenant_scoped_session
 from app.models.trigger import AgentTrigger
 from app.models.agent import Agent
+from app.models.runtime_task import TERMINAL_BOUNDARY_TERMINAL_STATUSES
 from app.services.agent_identity_lifecycle import agent_lifecycle_active_clause
 from app.services.daemon_liveness import mark_daemon_outcome
 from app.services.plan_mode_core import build_plan_execution_instruction
@@ -325,6 +326,10 @@ async def _create_trigger_runtime_task(
             or "trigger"
         )
         batch_root_user_id, batch_root_session_id = batch_trigger_authority(triggers)
+        if batch_root_user_id is not None and batch_root_session_id is None and _resolve_batch_same_session_target(triggers) is None:
+            # An independent fire owns a fresh durable work root from admission.
+            # The same reserved identity becomes its Reflection Session later.
+            batch_root_session_id = _trigger_child_run_id(task_id, effect="reflection_session", discriminator="")
         if tenant_id is not None:
             reservation_service = RuntimeBudgetService()
             budget_lookup = RuntimeBudgetPolicyLookup(
@@ -822,6 +827,18 @@ def _sendable_channel_target(value: dict | None) -> dict | None:
     target = dict(value)
     target["channel"] = channel
     return target
+
+
+async def _trigger_batch_reply_target(agent_id: uuid.UUID, triggers: list[AgentTrigger]) -> dict | None:
+    explicit = next((trigger.reply_context for trigger in triggers
+        if getattr(trigger, "reply_context", None) and trigger.reply_context.get("channel")), None)
+    if explicit is not None:
+        return _sendable_channel_target(explicit)
+    try:
+        return _sendable_channel_target(await _recover_reply_target_from_session(agent_id, triggers))
+    except Exception as exc:
+        logger.debug("[TriggerDaemon] reply_target recovery unavailable: {}", exc)
+        return None
 
 
 def _legacy_delivery_principal(trigger) -> uuid.UUID | None:
@@ -1777,7 +1794,8 @@ def _build_trigger_context(
             part += (
                 f"\nReply Channel: {ch}"
                 f"\nReply To: {user_label}"
-                "\n→ MUST use send_channel_message / send_channel_file for this reply target."
+                "\nWhen this authorized task requires a channel notification, use send_channel_message / "
+                "send_channel_file for this reply target. Do not send merely because the trigger fired."
             )
 
         context_parts.append(part)
@@ -1792,6 +1810,8 @@ def _build_trigger_context(
         + confirmed_plan_context
         + "\n\nExecute this trigger now. If you finish or get blocked, record the outcome "
         "with concrete evidence in your work ledger and memory."
+        "\nDecide whether the findings need attention under the owner's instructions. Keep nonactionable "
+        "checks quiet in work history; notify through authorized tools when the task calls for it."
         "\n==========================="
     )
     return trigger_context, trigger_names
@@ -1985,7 +2005,7 @@ async def _deliver_batch_to_source_session(
                     raise RuntimeError(f"same-session input admission: {payload.get('admission_state')}")
                 delivered_run_id = str((payload.get("run") or {}).get("run_id") or "") or None
                 queued = delivered_run_id is None
-                if not reflection and native_employee:
+                if native_employee:
                     from app.services.trigger_instruction_sources import record_native_trigger_input
 
                     agent = await db.get(Agent, agent_id, populate_existing=True)
@@ -2621,7 +2641,7 @@ async def _invoke_agent_for_triggers(
 
             explicit_context = ""
             context_refs = list(runtime_options.get("context_from") or [])
-            if context_refs:
+            if context_refs and agent.agent_type != "native":
                 from app.models.user import User
 
                 context_reader = await db.get(User, effect_user_id)
@@ -2659,7 +2679,7 @@ async def _invoke_agent_for_triggers(
             # own connection and needs FOR UPDATE on the same row, which
             # conflicts — the two connections would wait on each other inside a
             # single coroutine until statement_timeout fired.
-            session_id = uuid.uuid4()
+            session_id = _trigger_child_run_id(run_uuid, effect="reflection_session", discriminator="") or uuid.uuid4()
             if runtime_task_id:
                 await update_runtime_task_record(
                     runtime_task_id,
@@ -2686,18 +2706,20 @@ async def _invoke_agent_for_triggers(
                 listed_surface="task_updates",
                 runtime_task_id=run_uuid,
                 title=title[:200],
+                delivery_target_json=await _trigger_batch_reply_target(agent_id, triggers)
+                if agent.agent_type == "native" else None,
             )
             db.add(session)
             await db.flush()
 
-            if agent.agent_type == "remote_a2a":
+            if agent.agent_type in {"native", "remote_a2a"}:
                 await db.commit()
                 delivered = await _deliver_batch_to_source_session(agent_id, triggers,
                     source_session_id=str(session_id), runtime_task_id=runtime_task_id,
                     settlement_overrides=settlement_overrides, workflow_results=workflow_results,
                     reflection=True, wake_content=trigger_context)
                 if not delivered:
-                    raise RuntimeError("remote_a2a_reflection_delivery_unavailable")
+                    raise RuntimeError("trigger_reflection_delivery_unavailable")
                 return
 
             memory_messages = [{"role": "user", "content": trigger_context}]
@@ -2810,36 +2832,7 @@ async def _invoke_agent_for_triggers(
 
         from app.services.channel_delivery_service import channel_delivery_target
 
-        reply_target = next(
-            (
-                getattr(trigger, "reply_context", None)
-                for trigger in triggers
-                if getattr(trigger, "reply_context", None) and getattr(trigger, "reply_context", None).get("channel")
-            ),
-            None,
-        )
-
-        # Fallback: NULL reply_context may be filled only from the requesting
-        # principal's own channel session. An unavailable recovery is not a
-        # destination and must not be installed as the send target.
-        if reply_target is None:
-            try:
-                recovered = await _recover_reply_target_from_session(agent_id, triggers)
-                reply_target = _sendable_channel_target(recovered if isinstance(recovered, dict) else None)
-                if reply_target:
-                    logger.info(
-                        "[TriggerDaemon] Recovered reply_target from session for agent {}: channel={}",
-                        agent_id,
-                        reply_target.get("channel"),
-                    )
-                elif isinstance(recovered, dict) and recovered.get("status") == "unavailable":
-                    logger.info(
-                        "[TriggerDaemon] Reply target unavailable for agent {}: code={}",
-                        agent_id,
-                        recovered.get("code"),
-                    )
-            except Exception as _recover_err:
-                logger.debug("[TriggerDaemon] reply_target recovery failed: {}", _recover_err)
+        reply_target = await _trigger_batch_reply_target(agent_id, triggers)
 
         _delivery_token = None
         if reply_target:
@@ -3170,6 +3163,10 @@ async def execute_claimed_trigger_runtime_task(task_id: uuid.UUID | str) -> bool
     task_uuid = uuid.UUID(str(task_id))
     record = await get_runtime_task_record(task_uuid.hex)
     if not record or record.get("task_type") != "trigger":
+        return False
+    if record.get("status") in TERMINAL_BOUNDARY_TERMINAL_STATUSES:
+        # A repeated worker delivery observes the committed terminal receipt.
+        # It is not an interrupted invocation and must not bind another input.
         return False
     metadata = dict(record.get("metadata") or {})
 

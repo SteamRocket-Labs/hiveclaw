@@ -68,7 +68,7 @@ async def record_native_trigger_input(db, *, agent, session, wrapper_id, input_i
 
 async def native_trigger_input_sources(db, *, tenant_id, agent_id, row, command):
     metadata = (command.target_json or {}).get("runtime_metadata") or {}
-    if metadata.get("source") != "loop_same_session":
+    if metadata.get("source") not in {"loop_same_session", "trigger_reflection"}:
         return [], True
     agent = await db.get(Agent, agent_id)
     if agent is None or agent.tenant_id != tenant_id:
@@ -133,7 +133,7 @@ async def validate_native_trigger_input(db, tenant_id, dependency, *, user, runt
 
 async def revalidate_native_trigger_input(db, *, task, effect):
     origin = (task.metadata_json or {}).get("trigger_origin") or {}
-    if origin.get("source", "loop_same_session") != "loop_same_session":
+    if origin.get("source", "loop_same_session") not in {"loop_same_session", "trigger_reflection"}:
         return
     from app.services.native_trigger_context import _principal
 

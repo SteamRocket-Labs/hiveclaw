@@ -973,13 +973,20 @@ async def authorize_workspace_receipt_read(request):
     from app.services.session_tool_runtime import _sha256
     from app.tools.result_envelope import render_tool_error
 
-    if request.tool_name not in {"read_file", "read_document"} and not (
+    if request.tool_name not in {"read_file", "read_document", "exit_plan_mode"} and not (
         request.tool_name == "fs_read" and str(request.arguments.get("mode") or "text").strip().lower() in {"text", "document"}
     ):
         return None
     context = request.context
     try:
-        path = normalize_workspace_resource_path(str(request.arguments.get("path") or ""))
+        raw_path = request.arguments.get("path")
+        if request.tool_name == "exit_plan_mode":
+            from app.services.plan_mode_runtime_context import interactive_plan_mode_metadata
+
+            raw_path = interactive_plan_mode_metadata().get("plan_file_path")
+            if not raw_path:
+                return None
+        path = normalize_workspace_resource_path(str(raw_path or ""))
         if path == "memory/explicit" or path.startswith("memory/explicit/"):
             from app.services.explicit_memory_authority import authorize_explicit_memory_file_read
 
@@ -1188,6 +1195,8 @@ async def persist_workspace_execution_evidence(*, context, tool_name, tool_call_
                     carrier_ref=carrier_ref,
                     revision=input_read.revision, content_sha256=input_read.content_sha256,
                     dependencies_hash=input_read.dependencies_hash, observed_sha256=input_read.observed_sha256)
+                if tool_name == "exit_plan_mode":
+                    proof["runtime_input_path"] = input_read.path
                 if carrier_kind != "workspace_artifact":
                     proof["carrier_kind"] = carrier_kind
                 channel, metadata_key = "workspace-input", "workspace_input_evidence"
@@ -1436,7 +1445,10 @@ async def load_workspace_input_evidence(db, *, agent_id, invocation, model_resul
         raise ContentInputReceiptError("workspace_input_evidence_invalid", "The read evidence is not bound to this invocation.")
     try:
         receipt_id = uuid.UUID(proof["content_input_receipt_id"])
-        carrier_ref = workspace_artifact_ref(agent_id, arguments.get("path", ""))
+        path = proof.get("runtime_input_path") if invocation.tool_name == "exit_plan_mode" else arguments.get("path", "")
+        if invocation.tool_name == "exit_plan_mode" and row.name != invocation.tool_name:
+            raise ValueError("plan_input_tool_mismatch")
+        carrier_ref = workspace_artifact_ref(agent_id, path)
         carrier_kind = proof.get("carrier_kind", "workspace_artifact")
         if carrier_kind == "explicit_memory":
             from app.services.explicit_memory_authority import memory_ref

@@ -75,6 +75,21 @@ async def bind_private_session_permission_source(db, *, task, session, invocatio
     except (AttributeError, KeyError, ValueError, PermissionError, HTTPException):
         return
     frame = dict((command.target_json or {}).get("runtime_metadata") or {})
+    # The authenticated input owns entry; the platform derives the exact
+    # restrictive planning protocol, including its reserved file path.
+    if metadata.get("plan_mode"):
+        from app.services import plan_mode_core
+        from app.services.session_user_checkpoint import render_human_input_content
+        from app.services.web_chat_runtime import _interactive_plan_mode_state
+
+        content = render_human_input_content(row.content_parts_json)
+        decision = plan_mode_core.classify_plan_mode_entry(
+            str(frame.get("display_content") or content), explicit=bool(frame.get("plan_mode_requested")))
+        if decision.mode not in {"none", "declined"} and decision.action_kind and decision.tool_name:
+            expected = _interactive_plan_mode_state(original_request=content, decision=decision,
+                session_id=str(session.id)).to_metadata()
+            if metadata["plan_mode"] == expected:
+                frame["plan_mode"] = expected
     profile = frame.get("permission_profile") or {}
     exact = (profile.get("capability_policy_snapshot") or {}).get("session_exact_scope") is True
     from app.services.native_trigger_frame import load_native_trigger_frame

@@ -162,7 +162,17 @@ def _read_provisioned_plan_markdown(request: ToolExecutionRequest, metadata: dic
     if not absolute_path.is_file():
         return ""
     try:
-        return absolute_path.read_text(encoding="utf-8").strip()
+        from app.services.workspace_resource_authority import authorize_workspace_tool_path, open_workspace_file
+
+        scope = request.context.workspace_authority_scope
+        if scope is not None:
+            authorize_workspace_tool_path(workspace, scope, plan_file_path, action="read")
+        with open_workspace_file(workspace, plan_file_path) as source:
+            data = source.read()
+        read = scope.input_read(plan_file_path) if scope is not None else None
+        if read is not None:
+            read.verify(data)
+        return data.decode("utf-8").strip()
     except OSError:
         return ""
 

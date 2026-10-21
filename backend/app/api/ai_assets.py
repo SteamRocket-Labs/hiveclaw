@@ -19,6 +19,8 @@ router = APIRouter(prefix="/enterprise/ai-assets", tags=["enterprise-ai-assets"]
 
 class RollbackAssetRequest(BaseModel):
     target_version: int = Field(ge=1)
+    operation_id: uuid.UUID | None = None
+    expected_revision_id: uuid.UUID | None = None
 
 
 def _tenant_id(user: User) -> uuid.UUID:
@@ -148,6 +150,8 @@ async def rollback_ai_asset(
 ) -> dict:
     _require_admin(current_user)
     tenant_id, actor_user_id = _tenant_id(current_user), current_user.id
+    from app.services.content_input_receipts import ContentInputReceiptError
+
     try:
         record, revision = await ai_asset_service.rollback_asset(
             db,
@@ -155,7 +159,14 @@ async def rollback_ai_asset(
             asset_id=asset_id,
             target_version=body.target_version,
             actor_user_id=actor_user_id,
+            user=current_user,
+            operation_id=body.operation_id,
+            expected_revision_id=body.expected_revision_id,
         )
+    except ContentInputReceiptError as exc:
+        await db.rollback()
+        raise HTTPException(status_code=exc.status_code, detail={"code": exc.code, "message": str(exc),
+            **({key: getattr(exc, key) for key in ("outcome", "operation_id", "native_transaction_id") if hasattr(exc, key)})}) from exc
     except ValueError as exc:
         await db.rollback()
         await ai_asset_service.record_projection_failure(

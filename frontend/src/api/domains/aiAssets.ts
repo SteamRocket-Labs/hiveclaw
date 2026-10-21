@@ -21,7 +21,9 @@ export interface AIAssetRecord {
   admission_state: string;
   quarantine_reason: string | null;
   usage: { count: number; last_used_at: string | null; evidence: Array<Record<string, unknown>> };
-  projection: { status: string; error: string | null };
+  projection: { status: string; error: string | null; owner_operation?: {
+    operation_id: string; expected_revision_id: string; target_version: number;
+  } };
   created_at: string | null;
   updated_at: string | null;
 }
@@ -89,10 +91,12 @@ export const aiAssetsApi = {
     get<AIAssetRevision[]>(`/enterprise/ai-assets/${assetId}/revisions?limit=${limit}`),
   revision: (assetId: string, version: number) =>
     get<AIAssetRevision>(`/enterprise/ai-assets/${assetId}/revisions/${version}`),
-  rollback: (assetId: string, targetVersion: number) =>
+  rollback: (assetId: string, targetVersion: number, command?: { operationId: string; expectedRevisionId: string }) =>
     post<{ asset_id: string; revision_id: string; version: number }>(
       `/enterprise/ai-assets/${assetId}/rollback`,
-      { target_version: targetVersion },
+      { target_version: targetVersion, ...(command ? {
+        operation_id: command.operationId, expected_revision_id: command.expectedRevisionId,
+      } : {}) },
     ),
   reconcile: (assetId: string) =>
     post<{ status: string; expected_hash?: string; actual_hash?: string }>(

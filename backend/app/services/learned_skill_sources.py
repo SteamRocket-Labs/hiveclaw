@@ -38,6 +38,7 @@ class SkillReviewInputs:
     skill_capture: object | None = None
     source_scope: tuple = ()
     activation_request: object | None = None
+    owner_epochs: dict = field(default_factory=dict)
 
 
 def model_source(result):
@@ -472,6 +473,11 @@ async def skill_maintenance_inputs(*, workspace, agent_id, tenant_id, target_pat
                 session_id=uuid.UUID(reader.session_id), runtime_principal=reader)
         frame.skill_capture = SkillInputCapture(agent_id, allow_empty=True)
         await load_skill_input_snapshot(frame.skill_capture, tenant_id, runtime_request=reader)
+    from app.services.skill_evolution_registry import get_skill_evolution_entry
+
+    paths = [target_path, *(frame.skill_capture.learned_files if frame.skill_capture is not None else ())]
+    frame.owner_epochs = {path: (get_skill_evolution_entry(workspace, path) or {}).get("metadata", {}).get("owner_operation_id")
+        for path in paths}
     token = _REVIEW.set(frame)
     try:
         await recheck_review_inputs()
@@ -535,12 +541,20 @@ async def recheck_maintenance_effect(*, workspace, target_path):
 
 
 async def _maintenance_not_retired(db, tenant_id, installation_id):
+    from app.services.learned_skill_asset_rollback import require_no_pending_operation
+
+    await require_no_pending_operation(db, tenant_id=tenant_id, installation_id=installation_id)
     rows = await db.scalars(select(ConfigRevision).where(ConfigRevision.tenant_id == tenant_id,
         ConfigRevision.entity_type == "learned_skill_lifecycle", ConfigRevision.is_active.is_(True),
         ConfigRevision.content["installation_revision_id"].astext == str(installation_id),
         ConfigRevision.content["state"].astext == "retired"))
     if any(_revision_valid(row, tenant_id=tenant_id, entity_type="learned_skill_lifecycle") for row in rows):
         raise ContentInputReceiptError("skill_maintenance_retired", "The explicitly retired version cannot be autonomously reactivated.", 403)
+
+
+def maintenance_epoch_matches(frame, entry, target_path):
+    return frame is None or target_path not in frame.owner_epochs or (
+        (entry or {}).get("metadata", {}).get("owner_operation_id") == frame.owner_epochs[target_path])
 
 
 @asynccontextmanager
@@ -856,17 +870,24 @@ async def retire_learned_installation(db, *, agent_id, user, workspace, folder_n
     identity = uuid.uuid5(agent_id, f"learned-skill-lifecycle:{row.id}")
     await db.execute(text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
         {"key": f"registry-skill-install:{agent.tenant_id}:{agent_id}"})
+    from app.services.learned_skill_asset_rollback import supersede_pending_operations
+
+    await supersede_pending_operations(db, tenant_id=agent.tenant_id, installation_id=row.id, user=user)
     previous = await db.scalar(select(ConfigRevision).where(ConfigRevision.tenant_id == agent.tenant_id,
         ConfigRevision.entity_type == "learned_skill_lifecycle", ConfigRevision.entity_id == identity,
         ConfigRevision.is_active.is_(True)).execution_options(populate_existing=True))
     content = {"schema": "hive.learned_skill_lifecycle.v1", "agent_id": str(agent_id), "family_id": c["family_id"],
         "installation_revision_id": str(row.id), "state": "retired"}
     if previous is not None and previous.content == content and previous.content_hash == canonical_content_hash(content):
+        await db.commit()
         return {"status": "already_retired", "folder_name": folder_name, "files_removed": 0}
     await save_revision(db, tenant_id=agent.tenant_id, entity_type="learned_skill_lifecycle", entity_id=identity,
         content=content, change_source="user", changed_by_user_id=user.id, change_message="Learned Skill retired with historical bytes retained")
-    await register_projection(db, project_workspace_skill(workspace=workspace, folder_name=folder_name,
-        tenant_id=agent.tenant_id, agent_id=agent_id, lifecycle_status="deprecated", evolution_state="archived"),
+    projection = project_workspace_skill(workspace=workspace, folder_name=folder_name,
+        tenant_id=agent.tenant_id, agent_id=agent_id, lifecycle_status="deprecated", evolution_state="archived")
+    projection.content["control"]["learned_retired"] = True
+    projection.compatibility["learned_retired"] = True
+    await register_projection(db, projection,
         change_source="retire", actor_user_id=user.id, change_message="Learned Skill retired from active discovery")
     await db.commit()
     return {"status": "retired", "folder_name": folder_name, "files_removed": 0}

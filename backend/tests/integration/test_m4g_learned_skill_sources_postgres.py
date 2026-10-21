@@ -1309,6 +1309,328 @@ async def test_trial_review_cannot_reactivate_a_method_retired_while_the_model_w
     assert (n.root / path).is_file()
 
 
+@pytest.mark.parametrize("transition", ["archive_provisional", "promote", "retire", "trial_rollback", "archive_active"])
+async def test_owner_asset_rollback_restores_native_learning_state_and_preserves_observations(
+    learned_skill, app_user_sessionmaker, owner_sessionmaker, monkeypatch, transition,
+):
+    from copy import deepcopy
+    import uuid
+    import json
+    from app.models.user import User
+    from app.services.agent_asset_transaction import read_agent_asset_revision
+    from app.services.provisional_trial import (load_provisional_trial, record_provisional_trial_signal,
+        review_pending_provisional_trials_with_model)
+    from app.services.skill_curator import review_skill_lifecycle_with_model
+    from app.services.skill_evolution_registry import get_skill_evolution_entry
+    from tests.integration.test_m4c_explicit_memory_scope_postgres import memory_call
+
+    s, _submission = learned_skill
+    n = s.n
+    path = n.first_learned_skill_path
+    body = (n.root / path).read_bytes()
+    async with owner_sessionmaker() as db:
+        (await db.get(User, n.user)).role = "org_admin"
+        await db.commit()
+    initial = await _assert_native_asset_state(n, app_user_sessionmaker, evolution_state="provisional", lifecycle_status="active")
+    identity = initial["asset"]["id"]
+    loaded, _invocation = await memory_call(n, app_user_sessionmaker, "load_skill", {"name": "Evidence Review"}, include_history=True)
+    assert "EVIDENCE_METHOD_VERSION_ONE" in loaded, loaded
+    model = SimpleNamespace(provider="synthetic", model="controlled-lifecycle-review", api_key="synthetic", base_url="http://127.0.0.1:1")
+    if transition in {"promote", "trial_rollback", "archive_active"}:
+        decision = "rollback" if transition == "trial_rollback" else "promote"
+        class TrialReviewer:
+            async def complete(self, **_kwargs):
+                return SimpleNamespace(content=json.dumps({"decision": decision, "reason": "Controlled trial decision before owner rollback."}))
+            async def close(self):
+                pass
+        monkeypatch.setattr("app.services.llm_client.create_llm_client_from_config", lambda *_args, **_kwargs: TrialReviewer())
+        record_provisional_trial_signal(n.root, skill_name=path, kind="negative",
+            signal={"runtime_task_id": str(n.run), "session_id": str(n.session), "status": "failed"})
+        report = await review_pending_provisional_trials_with_model(n.root, agent_id=n.agent, tenant_id=n.tenant, model=model)
+        assert report["reviewed"] == 1, report
+    if transition in {"archive_provisional", "archive_active"}:
+        class ArchiveReviewer:
+            async def complete(self, **_kwargs):
+                return SimpleNamespace(content=json.dumps({"decisions": [{"slug": path.split('/')[1],
+                    "decision": "archive", "reason": "Controlled reversible archive before owner rollback."}]}))
+            async def close(self):
+                pass
+        monkeypatch.setattr("app.services.llm_client.create_llm_client_from_config", lambda *_args, **_kwargs: ArchiveReviewer())
+        report = await review_skill_lifecycle_with_model(n.root, agent_id=n.agent, tenant_id=n.tenant, model=model)
+        assert report["applied"] == [{"slug": path.split('/')[1], "decision": "archive"}], report
+    if transition == "retire":
+        removed = await n.client.post(f"/agents/{n.agent}/files/uninstall-skill", json={"folder_name": path.split('/')[1]})
+        assert removed.status_code == 200 and removed.json()["status"] == "retired", removed.text
+    entry = get_skill_evolution_entry(n.root, path)
+    before_trial = deepcopy(load_provisional_trial(n.root, entry["last_candidate_id"]))
+    assert before_trial is not None
+    target = 2 if transition == "archive_active" else 1
+    current = (await n.client.get(f"/enterprise/ai-assets/{identity}")).json()
+    command = {"target_version": target, "operation_id": str(uuid.uuid4()),
+        "expected_revision_id": current["asset"]["active_revision_id"]}
+    response = await n.client.post(f"/enterprise/ai-assets/{identity}/rollback", json=command)
+    assert response.status_code == 200, response.text
+    expected_state = "active" if transition == "archive_active" else "provisional"
+    assert get_skill_evolution_entry(n.root, path)["state"] == expected_state, response.text
+    after_trial = load_provisional_trial(n.root, entry["last_candidate_id"])
+    assert after_trial["state"] == ("promoted" if expected_state == "active" else "provisional"), after_trial
+    control_fields = {"state", "updated_at", "owner_restorations"}
+    assert {k: v for k, v in after_trial.items() if k not in control_fields} == {
+        k: v for k, v in before_trial.items() if k not in control_fields}
+    assert (n.root / path).read_bytes() == body
+    payload = await _assert_native_asset_state(n, app_user_sessionmaker, evolution_state=expected_state, lifecycle_status="active")
+    native_revision = read_agent_asset_revision(n.root)
+    repeated = await n.client.post(f"/enterprise/ai-assets/{identity}/rollback", json=command)
+    assert repeated.status_code == 200 and repeated.json() == response.json(), repeated.text
+    assert read_agent_asset_revision(n.root) == native_revision
+    again = await _assert_native_asset_state(n, app_user_sessionmaker, evolution_state=expected_state, lifecycle_status="active")
+    assert again["active_revision"]["id"] == payload["active_revision"]["id"]
+    restored, _invocation = await memory_call(n, app_user_sessionmaker, "load_skill", {"name": "Evidence Review"}, include_history=True)
+    assert "EVIDENCE_METHOD_VERSION_ONE" in restored, restored
+    historical, _invocation = await memory_call(n, app_user_sessionmaker, "save_memory", {
+        "content": "Earlier use of this exact method remains verifiable after owner lifecycle rollback.", "category": "strategy"}, include_history=True)
+    assert "Saved to explicit memory overlay" in historical, historical
+    if transition == "retire":
+        # Retirement is a distinct owner fact, even though a curator archive looks identical.
+        retired_again = await n.client.post(f"/enterprise/ai-assets/{identity}/rollback", json={
+            "target_version": 2, "operation_id": str(uuid.uuid4()),
+            "expected_revision_id": again["asset"]["active_revision_id"]})
+        assert retired_again.status_code == 200, retired_again.text
+        state = await _assert_native_asset_state(n, app_user_sessionmaker, evolution_state="archived", lifecycle_status="deprecated")
+        assert state["asset"]["compatibility"]["learned_retired"] is True
+        restored_again = await n.client.post(f"/enterprise/ai-assets/{identity}/rollback", json={
+            "target_version": 1, "operation_id": str(uuid.uuid4()),
+            "expected_revision_id": state["asset"]["active_revision_id"]})
+        assert restored_again.status_code == 200, restored_again.text
+        state = await _assert_native_asset_state(n, app_user_sessionmaker, evolution_state="provisional", lifecycle_status="active")
+        assert state["asset"]["compatibility"]["learned_retired"] is False
+
+
+@pytest.mark.parametrize("failure", ["prepare_before", "prepare_after", "final_before", "final_after", "supersede"])
+async def test_owner_rollback_commit_recovery_never_replays_or_revives_a_later_retirement(
+    learned_skill, app_user_sessionmaker, owner_sessionmaker, monkeypatch, failure,
+):
+    import uuid
+    from app.database import get_db
+    from app.models.user import User
+    from app.services.agent_asset_transaction import read_agent_asset_revision
+    from app.services.learned_skill_lifecycle import reconcile_agent_lifecycles
+    from app.services.provisional_trial import load_provisional_trial
+    from app.services.skill_evolution_registry import get_skill_evolution_entry
+
+    s, _submission = learned_skill
+    n = s.n
+    path = n.first_learned_skill_path
+    body = (n.root / path).read_bytes()
+    async with owner_sessionmaker() as db:
+        (await db.get(User, n.user)).role = "org_admin"
+        await db.commit()
+    initial = await _assert_native_asset_state(n, app_user_sessionmaker, evolution_state="provisional", lifecycle_status="active")
+    asset_id = initial["asset"]["id"]
+    retired = await n.client.post(f"/agents/{n.agent}/files/uninstall-skill", json={"folder_name": path.split('/')[1]})
+    assert retired.status_code == 200, retired.text
+    current = (await n.client.get(f"/enterprise/ai-assets/{asset_id}")).json()
+    command = {"target_version": 1, "operation_id": str(uuid.uuid4()),
+        "expected_revision_id": current["asset"]["active_revision_id"]}
+    native_before = read_agent_asset_revision(n.root)
+    commit_calls, faults = [], []
+    original_dependency = n.client._transport.app.dependency_overrides[get_db]
+    async def fault_db():
+        async for db in original_dependency():
+            commit = db.commit
+            async def faulty_commit():
+                commit_calls.append(True)
+                stage = 1 if failure.startswith("prepare") else 2
+                if len(commit_calls) == stage and not faults:
+                    faults.append(failure)
+                    if failure.endswith("after"):
+                        await commit()
+                    raise OSError("Controlled owner rollback commit response failure")
+                await commit()
+            monkeypatch.setattr(db, "commit", faulty_commit)
+            yield db
+    monkeypatch.setitem(n.client._transport.app.dependency_overrides, get_db, fault_db)
+    first = await n.client.post(f"/enterprise/ai-assets/{asset_id}/rollback", json=command)
+    assert faults == [failure], first.text
+    native_after = read_agent_asset_revision(n.root)
+    if failure in {"prepare_after", "final_after"}:
+        assert first.status_code == 200, first.text
+    else:
+        assert first.status_code == 503 and first.json()["detail"]["code"] == "skill_owner_operation_pending", first.text
+        assert first.json()["detail"]["outcome"] == ("not_started" if failure == "prepare_before" else "unknown"), first.text
+    assert native_after == native_before + (0 if failure == "prepare_before" else 1)
+    if failure in {"final_before", "supersede"}:
+        pending = await n.client.get(f"/enterprise/ai-assets/{asset_id}")
+        assert pending.status_code == 200, pending.text
+        assert pending.json()["asset"]["projection"]["owner_operation"] == {
+            "operation_id": command["operation_id"], "expected_revision_id": command["expected_revision_id"], "target_version": 1}, pending.text
+        held = await n.client.post(f"/enterprise/ai-assets/{asset_id}/reconcile")
+        assert held.status_code == 503 and held.json()["detail"]["code"] == "skill_owner_operation_pending", held.text
+        background = await reconcile_agent_lifecycles(workspace=n.root, agent_id=n.agent, tenant_id=n.tenant)
+        assert background["applied"] == 0, background
+        assert not any(item.get("status") == "applied" for item in background["held"]), background
+    if failure == "supersede":
+        stopped = await n.client.post(f"/agents/{n.agent}/files/uninstall-skill", json={"folder_name": path.split('/')[1]})
+        assert stopped.status_code == 200, stopped.text
+        stale = await n.client.post(f"/enterprise/ai-assets/{asset_id}/rollback", json=command)
+        assert stale.status_code == 409 and stale.json()["detail"]["code"] == "skill_owner_operation_superseded", stale.text
+        current = (await n.client.get(f"/enterprise/ai-assets/{asset_id}")).json()
+        assert current["asset"]["lifecycle_status"] == "deprecated" and current["asset"]["projection"]["status"] == "applied", current
+        command = {"target_version": 1, "operation_id": str(uuid.uuid4()),
+            "expected_revision_id": current["asset"]["active_revision_id"]}
+    resumed = await n.client.post(f"/enterprise/ai-assets/{asset_id}/rollback", json=command)
+    assert resumed.status_code == 200, resumed.text
+    result = await _assert_native_asset_state(n, app_user_sessionmaker, evolution_state="provisional", lifecycle_status="active")
+    after_resume = read_agent_asset_revision(n.root)
+    repeated = await n.client.post(f"/enterprise/ai-assets/{asset_id}/rollback", json=command)
+    assert repeated.status_code == 200 and repeated.json() == resumed.json(), repeated.text
+    assert read_agent_asset_revision(n.root) == after_resume
+    if failure != "prepare_before" and failure != "supersede":
+        assert after_resume == native_after
+    assert result["asset"]["compatibility"]["learned_retired"] is False
+    entry = get_skill_evolution_entry(n.root, path)
+    assert load_provisional_trial(n.root, entry["last_candidate_id"])["owner_restorations"][-1]["operation_id"] == command["operation_id"]
+    stopped = await n.client.post(f"/agents/{n.agent}/files/uninstall-skill", json={"folder_name": path.split('/')[1]})
+    assert stopped.status_code == 200, stopped.text
+    old = await n.client.post(f"/enterprise/ai-assets/{asset_id}/rollback", json=command)
+    assert old.status_code == 200 and old.json() == resumed.json(), old.text
+    retained = await _assert_native_asset_state(n, app_user_sessionmaker, evolution_state="archived", lifecycle_status="deprecated")
+    assert retained["asset"]["compatibility"]["learned_retired"] is True
+    assert read_agent_asset_revision(n.root) == after_resume and (n.root / path).read_bytes() == body
+
+
+@pytest.mark.parametrize("reader", ["owner_admin", "other_admin_inspection", "other_admin_recipient"])
+async def test_owner_rollback_checks_actual_source_authority_before_native_or_sql_effects(
+    learned_skill, app_user_sessionmaker, owner_sessionmaker, monkeypatch, reader,
+):
+    from contextlib import nullcontext
+    import uuid
+    from sqlalchemy import select, func
+    from app.core.security import get_current_user
+    from app.core.source_read_purpose import source_recipient_read
+    from app.models.config_revision import ConfigRevision
+    from app.models.user import User
+    from app.services.agent_asset_transaction import read_agent_asset_revision
+
+    s, _submission = learned_skill
+    n = s.n
+    async with owner_sessionmaker() as db:
+        for actor in [n.user, n.foreign]:
+            (await db.get(User, actor)).role = "org_admin"
+        await db.commit()
+    payload = await _assert_native_asset_state(n, app_user_sessionmaker, evolution_state="provisional", lifecycle_status="active")
+    asset_id = payload["asset"]["id"]
+    if reader != "owner_admin":
+        async def other_user():
+            async with tenant_scoped_session(n.tenant, session_factory=app_user_sessionmaker) as db:
+                return await db.get(User, n.foreign)
+        monkeypatch.setitem(n.client._transport.app.dependency_overrides, get_current_user, other_user)
+    before = read_agent_asset_revision(n.root)
+    command = {"target_version": 1, "operation_id": str(uuid.uuid4()), "expected_revision_id": payload["asset"]["active_revision_id"]}
+    purpose = source_recipient_read(session_id=s.second_session, user_id=n.foreign) if reader == "other_admin_recipient" else nullcontext()
+    with purpose:
+        response = await n.client.post(f"/enterprise/ai-assets/{asset_id}/rollback", json=command)
+    if reader == "other_admin_recipient":
+        assert response.status_code == 403 and "EVIDENCE_METHOD_VERSION_ONE" not in response.text, response.text
+        with source_recipient_read(session_id=s.second_session, user_id=n.foreign):
+            invalid = await n.client.post(f"/enterprise/ai-assets/{asset_id}/rollback", json={
+                **command, "target_version": 999, "operation_id": str(uuid.uuid4())})
+        assert invalid.status_code == 403 and "EVIDENCE_METHOD_VERSION_ONE" not in invalid.text, invalid.text
+        assert read_agent_asset_revision(n.root) == before
+        async with tenant_scoped_session(n.tenant, session_factory=app_user_sessionmaker) as db:
+            count = await db.scalar(select(func.count()).select_from(ConfigRevision).where(
+                ConfigRevision.tenant_id == n.tenant, ConfigRevision.entity_type == "learned_skill_asset_operation"))
+            assert count == 0
+        unchanged = (await n.client.get(f"/enterprise/ai-assets/{asset_id}")).json()
+        assert unchanged["asset"]["active_revision_id"] == command["expected_revision_id"]
+        assert unchanged["asset"]["projection"]["status"] == "applied", unchanged
+    else:
+        assert response.status_code == 200, response.text
+        assert read_agent_asset_revision(n.root) == before + 1
+        stale = await n.client.post(f"/enterprise/ai-assets/{asset_id}/rollback", json={**command, "operation_id": str(uuid.uuid4())})
+        assert stale.status_code == 409 and stale.json()["detail"]["code"] == "skill_owner_revision_changed", stale.text
+
+
+async def test_waiting_trial_model_cannot_overwrite_an_owner_rollback(
+    learned_skill, app_user_sessionmaker, owner_sessionmaker, monkeypatch,
+):
+    import uuid
+    from app.models.user import User
+    from app.services.agent_asset_transaction import read_agent_asset_revision
+    from app.services.provisional_trial import record_provisional_trial_signal, review_pending_provisional_trials
+    from app.services.skill_evolution_registry import get_skill_evolution_entry
+
+    s, _submission = learned_skill
+    n = s.n
+    async with owner_sessionmaker() as db:
+        (await db.get(User, n.user)).role = "org_admin"
+        await db.commit()
+    payload = await _assert_native_asset_state(n, app_user_sessionmaker, evolution_state="provisional", lifecycle_status="active")
+    path = n.first_learned_skill_path
+    record_provisional_trial_signal(n.root, skill_name=path, kind="negative", signal={"status": "failed"})
+    native_after_owner = []
+    async def reviewer(evidence):
+        assert "EVIDENCE_METHOD_VERSION_ONE" in evidence["candidate_content"]
+        response = await n.client.post(f"/enterprise/ai-assets/{payload['asset']['id']}/rollback", json={
+            "target_version": 1, "operation_id": str(uuid.uuid4()), "expected_revision_id": payload["asset"]["active_revision_id"]})
+        assert response.status_code == 200, response.text
+        native_after_owner.append(read_agent_asset_revision(n.root))
+        return {"decision": "promote", "reason": "Controlled review that predates the owner intervention."}
+    result = await review_pending_provisional_trials(n.root, agent_id=n.agent, tenant_id=n.tenant, reviewer=reviewer)
+    assert result["reviewed"] == 0 and result["errors"][0]["reason_code"] == "skill_owner_operation_changed", result
+    assert get_skill_evolution_entry(n.root, path)["state"] == "provisional"
+    assert [read_agent_asset_revision(n.root)] == native_after_owner
+
+
+@pytest.mark.parametrize("problem", ["expired", "unreceipted"])
+async def test_owner_rollback_retains_trial_window_and_requires_committed_control_evidence(
+    learned_skill, app_user_sessionmaker, owner_sessionmaker, problem,
+):
+    from datetime import UTC, datetime, timedelta
+    import json
+    import uuid
+    from app.models.user import User
+    from app.services.agent_asset_transaction import AgentAssetTransaction, read_agent_asset_revision
+    from app.services.provisional_trial import load_provisional_trial, _stage_trial, trial_rel_path
+    from app.services.skill_evolution_registry import get_skill_evolution_entry
+
+    s, _submission = learned_skill
+    n = s.n
+    path = n.first_learned_skill_path
+    async with owner_sessionmaker() as db:
+        (await db.get(User, n.user)).role = "org_admin"
+        await db.commit()
+    payload = await _assert_native_asset_state(n, app_user_sessionmaker, evolution_state="provisional", lifecycle_status="active")
+    candidate = get_skill_evolution_entry(n.root, path)["last_candidate_id"]
+    trial_file = n.root / trial_rel_path(candidate)
+    original = trial_file.read_bytes()
+    trial = load_provisional_trial(n.root, candidate)
+    if problem == "expired":
+        trial["started_at"] = (datetime.now(UTC) - timedelta(days=30)).isoformat()
+        with AgentAssetTransaction(n.root, operation="controlled_historical_trial_window") as tx:
+            _stage_trial(tx, trial)
+            tx.commit()
+    else:
+        trial["state"] = "promoted"
+        trial_file.write_text(json.dumps(trial))
+    native_before = read_agent_asset_revision(n.root)
+    body = (n.root / path).read_bytes()
+    command = {"target_version": 1, "operation_id": str(uuid.uuid4()), "expected_revision_id": payload["asset"]["active_revision_id"]}
+    response = await n.client.post(f"/enterprise/ai-assets/{payload['asset']['id']}/rollback", json=command)
+    assert response.status_code == (409 if problem == "expired" else 503), response.text
+    assert response.json()["detail"]["code"] == ("skill_owner_trial_expired" if problem == "expired" else "skill_owner_native_unverified"), response.text
+    assert read_agent_asset_revision(n.root) == native_before and (n.root / path).read_bytes() == body
+    assert load_provisional_trial(n.root, candidate) == trial
+    if problem == "unreceipted":
+        trial_file.write_bytes(original)
+        restored = await n.client.post(f"/enterprise/ai-assets/{payload['asset']['id']}/rollback", json=command)
+        assert restored.status_code == 200, restored.text
+    else:
+        stopped = await n.client.post(f"/agents/{n.agent}/files/uninstall-skill", json={"folder_name": path.split('/')[1]})
+        assert stopped.status_code == 200, stopped.text
+        assert read_agent_asset_revision(n.root) == native_before
+
+
 async def test_curator_archive_and_restore_retain_native_skill_history_without_promoting_its_trial(
     learned_skill, app_user_sessionmaker, monkeypatch,
 ):

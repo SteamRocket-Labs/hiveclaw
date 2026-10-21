@@ -264,10 +264,17 @@ async def rollback_asset(
     asset_id: uuid.UUID,
     target_version: int,
     actor_user_id: uuid.UUID,
+    user: Any | None = None,
+    operation_id: uuid.UUID | None = None,
+    expected_revision_id: uuid.UUID | None = None,
 ) -> tuple[AIAssetRecord, ConfigRevision]:
-    record = await get_asset_record(db, tenant_id=tenant_id, asset_id=asset_id, for_update=True)
+    record = await get_asset_record(db, tenant_id=tenant_id, asset_id=asset_id)
     if record is None:
         raise ValueError("AI asset not found")
+    if user is not None:
+        from app.services.learned_skill_sources import authorize_learned_asset_read
+
+        await authorize_learned_asset_read(db, record, user=user)
     target = (
         await db.execute(
             select(ConfigRevision).where(
@@ -281,6 +288,14 @@ async def rollback_asset(
     if target is None:
         raise ValueError("target AI asset revision not found")
 
+    from app.services.learned_skill_asset_rollback import rollback_learned_asset
+
+    learned = await rollback_learned_asset(db, record=record, target=target, user=user,
+        operation_id=operation_id, expected_revision_id=expected_revision_id)
+    if learned is not None:
+        return learned
+
+    record = await get_asset_record(db, tenant_id=tenant_id, asset_id=asset_id, for_update=True)
     native_snapshot = capture_file_native_state(record)
 
     record.projection_status = "pending"

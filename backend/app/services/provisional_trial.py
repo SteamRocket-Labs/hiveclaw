@@ -667,6 +667,7 @@ def _trial_review_payload(workspace: Path, trial: dict[str, Any]) -> dict[str, A
         "rollback_contract": rollback,
         "signals": trial.get("signals") if isinstance(trial.get("signals"), dict) else {},
         "source_refs": list(trial.get("source_refs") or []),
+        "owner_restorations": list(trial.get("owner_restorations") or []),
         "started_at": trial.get("started_at"),
         "review_requested_at": trial.get("review_requested_at"),
         "evidence_digest": _trial_evidence_digest(trial),
@@ -894,7 +895,7 @@ async def review_pending_provisional_trials(
     """Apply model-authored trial decisions behind version/rollback hard gates."""
 
     from app.services.content_input_receipts import ContentInputReceiptError
-    from app.services.learned_skill_sources import skill_maintenance_inputs, recheck_maintenance_effect
+    from app.services.learned_skill_sources import skill_maintenance_inputs, recheck_maintenance_effect, maintenance_epoch_matches
     from app.services.learned_skill_lifecycle import synchronize_after_native
 
     stamp = occurred_at or _now_iso()
@@ -911,6 +912,9 @@ async def review_pending_provisional_trials(
         try:
             async with skill_maintenance_inputs(workspace=workspace, agent_id=agent_id, tenant_id=tenant_id,
                 target_path=trial_snapshot["target_path"], candidate_id=candidate_id) as source_frame:
+                trial_snapshot = load_provisional_trial(workspace, candidate_id)
+                if not isinstance(trial_snapshot, dict) or trial_snapshot.get("review_status") != "pending_model_review":
+                    continue
                 payload = _trial_review_payload(workspace, trial_snapshot)
                 raw_review = await reviewer(payload)
                 if not isinstance(raw_review, dict):
@@ -941,6 +945,9 @@ async def review_pending_provisional_trials(
             )
             trial = load_provisional_trial(workspace, candidate_id, transaction=transaction)
             if not isinstance(entry, dict) or not isinstance(trial, dict):
+                continue
+            if not maintenance_epoch_matches(source_frame, entry, trial_snapshot["target_path"]):
+                errors.append({"candidate_id": candidate_id, "reason_code": "skill_owner_operation_changed", "outcome": "unavailable"})
                 continue
             if trial.get("review_status") != "pending_model_review":
                 continue

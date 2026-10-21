@@ -412,7 +412,7 @@ async def review_skill_lifecycle(
     if effective_now.tzinfo is None:
         effective_now = effective_now.replace(tzinfo=timezone.utc)
     from app.services.content_input_receipts import ContentInputReceiptError
-    from app.services.learned_skill_sources import current_review, recheck_review_inputs, recheck_maintenance_effect
+    from app.services.learned_skill_sources import current_review, recheck_review_inputs, recheck_maintenance_effect, maintenance_epoch_matches
     from app.services.learned_skill_lifecycle import synchronize_after_native
 
     evidence = build_skill_lifecycle_review_evidence(workspace, now=effective_now,
@@ -510,6 +510,9 @@ async def review_skill_lifecycle(
                     get_skill_evolution_entry, upsert_skill_evolution_entry)
 
                 entry = get_skill_evolution_entry(workspace, path, transaction=transaction)
+                if not maintenance_epoch_matches(source_frame, entry, path):
+                    blocked.append({"slug": slug, "decision": decision, "reason": "skill_owner_operation_changed"})
+                    continue
                 state = entry.get("state") if entry is not None else None
                 if state == STATE_ARCHIVED and decision != "restore":
                     blocked.append({"slug": slug, "decision": decision, "reason": "lifecycle_restore_required"})

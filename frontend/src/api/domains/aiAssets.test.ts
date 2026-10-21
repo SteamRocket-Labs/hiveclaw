@@ -31,5 +31,9 @@ describe('enterprise AI asset API adapter', () => {
     expect(get).toHaveBeenNthCalledWith(4, '/enterprise/ai-assets/asset-1/revisions/3');
     expect(post).toHaveBeenNthCalledWith(1, '/enterprise/ai-assets/asset-1/rollback', { target_version: 2 });
     expect(post).toHaveBeenNthCalledWith(2, '/enterprise/ai-assets/asset-1/reconcile');
+    await aiAssetsApi.rollback('asset-1', 2, { operationId: 'operation-1', expectedRevisionId: 'revision-4' });
+    expect(post).toHaveBeenNthCalledWith(3, '/enterprise/ai-assets/asset-1/rollback', {
+      target_version: 2, operation_id: 'operation-1', expected_revision_id: 'revision-4',
+    });
   });
 });

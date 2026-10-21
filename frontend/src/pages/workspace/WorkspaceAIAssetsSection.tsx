@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import {
@@ -127,6 +127,7 @@ export default function WorkspaceAIAssetsSection({ selectedTenantId }: Props) {
   const [detail, setDetail] = useState<AIAssetDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
+  const rollbackCommands = useRef(new Map<string, { operationId: string; expectedRevisionId: string }>());
 
   const loadAssets = useCallback(async () => {
     setLoading(true);
@@ -174,14 +175,26 @@ export default function WorkspaceAIAssetsSection({ selectedTenantId }: Props) {
       danger: true,
     });
     if (!confirmed) return;
+    const asset = detail.asset;
+    const key = `${selectedTenantId}:${asset.id}:${version}:${asset.active_revision_id}`;
+    const pending = asset.projection.owner_operation;
+    let command = rollbackCommands.current.get(key);
+    if (pending?.target_version === version) {
+      command = { operationId: pending.operation_id, expectedRevisionId: pending.expected_revision_id };
+    } else if (!command && asset.active_revision_id) {
+      command = { operationId: crypto.randomUUID(), expectedRevisionId: asset.active_revision_id };
+    }
+    if (command) rollbackCommands.current.set(key, command);
     setBusy(true);
     try {
-      await aiAssetsApi.rollback(detail.asset.id, version);
-      await Promise.all([loadAssets(), loadDetail(detail.asset.id)]);
+      await aiAssetsApi.rollback(asset.id, version, command);
+      rollbackCommands.current.delete(key);
+      await Promise.all([loadAssets(), loadDetail(asset.id)]);
       showAppToast(t('enterprise.extensions.aiAssetsRollbackDone', 'Asset rolled back and re-versioned'), 'success');
     } catch (error) {
       console.error(error);
       showAppToast(t('enterprise.extensions.aiAssetsRollbackFailed', 'Asset rollback failed'), 'error');
+      await Promise.all([loadAssets(), loadDetail(asset.id)]);
     } finally { setBusy(false); }
   };
 

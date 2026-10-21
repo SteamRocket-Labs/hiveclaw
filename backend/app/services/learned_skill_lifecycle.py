@@ -59,8 +59,9 @@ async def native_lifecycle_projection(db, record, *, user=None, reader=None, rec
         ConfigRevision.content["agent_id"].astext == str(agent_id),
         ConfigRevision.content["installation_revision_id"].astext == str(installation.id),
         ConfigRevision.content["state"].astext == "retired"))
-    if any(_revision_valid(row, tenant_id=record.tenant_id, entity_type="learned_skill_lifecycle")
-        and row.content.get("schema") == "hive.learned_skill_lifecycle.v1" for row in lifecycle_rows):
+    retired = any(_revision_valid(row, tenant_id=record.tenant_id, entity_type="learned_skill_lifecycle")
+        and row.content.get("schema") == "hive.learned_skill_lifecycle.v1" for row in lifecycle_rows)
+    if retired:
         state = "archived"
     projection = project_workspace_skill(workspace=root, folder_name=folder, tenant_id=record.tenant_id, agent_id=agent_id,
         lifecycle_status="active" if state in LOADABLE_STATES else "deprecated", evolution_state=state)
@@ -69,11 +70,19 @@ async def native_lifecycle_projection(db, record, *, user=None, reader=None, rec
 
     if {path: hashlib.sha256(body.encode()).hexdigest() for path, body in expected.items()} != installation.content["files"]:
         raise ContentInputReceiptError("skill_lifecycle_bytes_changed", "Restore the exact installed Skill bytes before projection.", 403)
+    if retired or "learned_retired" in (record.compatibility_json or {}):
+        projection.content["control"]["learned_retired"] = retired
+        projection.compatibility["learned_retired"] = retired
     return projection, receipt
 
 
 async def synchronize_lifecycle(db, record, *, user=None, reader=None, recover=False):
     from app.services.ai_assets import register_projection
+    from app.services.learned_skill_asset_rollback import pending_asset_operation, _pending_error
+
+    pending = await pending_asset_operation(db, record)
+    if pending is not None:
+        raise _pending_error(pending.content)
 
     snapshot = await native_lifecycle_projection(db, record, user=user, reader=reader, recover=recover)
     if snapshot is None:
@@ -91,8 +100,14 @@ async def synchronize_lifecycle(db, record, *, user=None, reader=None, recover=F
 
 async def asset_payload_for_reader(db, record, *, user):
     from app.services.ai_assets import asset_payload
+    from app.services.learned_skill_asset_rollback import pending_asset_operation, pending_metadata
 
     payload = asset_payload(record)
+    pending = await pending_asset_operation(db, record)
+    if pending is not None:
+        payload["projection"] = {"status": "pending", "error": "Resume the pending owner rollback or retire this version.",
+            "owner_operation": pending_metadata(pending)}
+        return payload
     try:
         snapshot = await native_lifecycle_projection(db, record, user=user)
     except ContentInputReceiptError as exc:

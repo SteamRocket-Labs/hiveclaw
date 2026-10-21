@@ -86,6 +86,7 @@ def _client(monkeypatch, *, db=None, current_user=None, context=None, agent=None
     app.dependency_overrides[get_db] = override_db
     app.dependency_overrides[local_agent_channel_api.get_bridge_auth_context] = override_context
     monkeypatch.setattr(local_agent_channel_api, "check_agent_access", fake_check_agent_access)
+    monkeypatch.setattr(local_agent_channel_api, "check_agent_history_access", fake_check_agent_access)
     monkeypatch.setattr(local_agent_channel_api.channel_service, 'dispatch_channel_message', fake_dispatch)
     return TestClient(app)
 

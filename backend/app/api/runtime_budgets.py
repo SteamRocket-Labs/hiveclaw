@@ -39,6 +39,7 @@ class RuntimeBudgetPolicyOut(BaseModel):
     max_provider_calls: int | None = None
     default_child_token_reservation: int = 50_000
     default_llm_call_token_reservation: int = 50_000
+    policy_json: dict | None = None
     created_at: datetime | None = None
     updated_at: datetime | None = None
 

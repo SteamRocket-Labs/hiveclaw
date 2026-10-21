@@ -1,4 +1,4 @@
-"""Read scheduled native work without turning a delivery ACK into completion."""
+"""Read scheduled work without turning a delivery ACK into completion."""
 
 import uuid
 
@@ -30,6 +30,8 @@ async def read_trigger_work(db, *, wrapper, user):
             or session.user_id != user.id):
             return unavailable
         await _authorize_session_input_source(db, wrapper.tenant_id, session, user=user, runtime_request=None)
+        if metadata.get("execution_target") == "local_agent":
+            return await _read_local_work(db, wrapper=wrapper, session=session)
         input_id = _trigger_child_run_id(wrapper.id, effect="same_session", discriminator=str(session.id))
         row = await db.get(SessionTurnInput, input_id)
         if row is None:
@@ -70,3 +72,30 @@ async def read_trigger_work(db, *, wrapper, user):
         # Keep the configured routine and its delivery facts inspectable.
         # Result bodies and recovery commands remain in the original work.
         return unavailable
+
+
+async def _read_local_work(db, *, wrapper, session):
+    from app.models.local_agent_channel import LocalAgentChannelEvent, LocalAgentChannelMessage
+    from app.services.local_agent_channel_service import _dispatch_origin, _leased_dispatch_attested
+    from app.services.local_trigger_runtime import load_local_trigger_message
+
+    message = await db.get(LocalAgentChannelMessage, uuid.UUID(wrapper.metadata_json["local_message_id"]))
+    if message is None:
+        return {"status": "unavailable"}
+    proof = await load_local_trigger_message(db, message=message, for_effect=False)
+    if proof is None or proof["wrapper_id"] != str(wrapper.id) or proof["session_id"] != str(session.id):
+        return {"status": "unavailable"}
+    origin = await _dispatch_origin(db, message)
+    if not _leased_dispatch_attested(message, origin):
+        return {"status": "unavailable"}
+    status = {"pending": "queued", "cancelled": "killed", "rejected": "failed"}.get(message.status, message.status)
+    if status in {"completed", "failed"} and message.status in {"completed", "failed"}:
+        reported = await db.scalar(select(LocalAgentChannelEvent.id).where(
+            LocalAgentChannelEvent.tenant_id == message.tenant_id, LocalAgentChannelEvent.message_id == message.id,
+            LocalAgentChannelEvent.session_id == message.session_id, LocalAgentChannelEvent.direction == "local_to_hive",
+            LocalAgentChannelEvent.event_type == "result", LocalAgentChannelEvent.payload_json["status"].astext == message.status).limit(1))
+        if reported is None:
+            status = "unknown"
+    return {"status": status, "session_id": str(session.id), "message_id": str(message.id),
+        "work_url": f"/agents/{session.agent_id}/sessions/{session.id}", "execution_target": "local_agent",
+        "usage_status": "unknown", "budget_scope": "platform_dispatch"}

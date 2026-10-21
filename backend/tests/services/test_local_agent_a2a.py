@@ -13,7 +13,7 @@ from app.services.agent_tool_domains import messaging
 async def test_delegate_to_agent_routes_execution_target_local_agent(monkeypatch) -> None:
     from_agent_id = uuid4()
     source = SimpleNamespace(id=from_agent_id, name="Coordinator", tenant_id=uuid4(), creator_id=uuid4())
-    target = SimpleNamespace(id=uuid4(), name="Local Codex", tenant_id=source.tenant_id, status="running")
+    target = SimpleNamespace(id=uuid4(), name="Local Codex", tenant_id=source.tenant_id, status="running", agent_type="local_agent")
     captured = {}
 
     async def fake_resolve_target_agent_runtime(from_agent_id_arg, agent_name, *, target_agent_id=None):

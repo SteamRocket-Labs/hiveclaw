@@ -1883,6 +1883,7 @@ async def _deliver_batch_to_source_session(
     tid = await resolve_tenant_for_agent(agent_id)
     delivered_run_id: str | None = None
     queued = False
+    local_message_id = None
     async with tenant_scoped_session(tid) as db:
         agent = (await db.execute(select(Agent).where(Agent.id == agent_id))).scalar_one_or_none()
         if agent is None or getattr(agent, "status", None) in ("expired", "stopped", "error", "archived"):
@@ -1949,77 +1950,84 @@ async def _deliver_batch_to_source_session(
         content, trigger_names = _build_trigger_context(triggers)
         if wake_content is not None:
             content = wake_content
-        native_options = {}
-        native_employee = getattr(agent, "agent_type", None) == "native"
-        if getattr(agent, "agent_type", None) != "remote_a2a":
-            from app.services.trigger_preflight import collect_trigger_runtime_options, select_trigger_model
+        if getattr(agent, "agent_type", None) == "local_agent":
+            from app.services.local_trigger_runtime import enqueue_local_trigger
 
-            options = collect_trigger_runtime_options(triggers)
-            model_metadata = {}
-            if any((trigger.config or {}).get("model_id") for trigger in triggers):
-                _model, model_metadata, error = await select_trigger_model(db, agent, triggers)
-                if error:
-                    raise HTTPException(409, detail={"code": error})
-            if any(options.values()) or model_metadata:
-                native_options = {**options, "allowed_tool_names": list(options["allowed_tool_names"]),
-                    "excluded_tool_names": list(options["excluded_tool_names"]),
-                    "model_id": model_metadata.get("model_id") if model_metadata.get("model_source") == "trigger_config" else None}
-            if options["execution_class"]:
-                content += "\n\nExecution class: " + options["execution_class"]
-            if options["workdir"]:
-                content += "\n\nUse this job workdir for generated files when applicable: " + options["workdir"]
-        trigger_ids = [str(getattr(t, "id", "")) for t in triggers if getattr(t, "id", None)]
-        child_run_id = _trigger_child_run_id(
-            runtime_task_id,
-            effect="same_session",
-            discriminator=str(source_session_id),
-        )
-        try:
-            # Preserve deliveries made by the former direct-run adapter on replay.
-            legacy_run = await db.get(RuntimeTask, child_run_id) if child_run_id is not None else None
-            if legacy_run is not None:
-                if legacy_run.parent_agent_id != agent.id or str(legacy_run.parent_session_id) != str(session.id):
-                    raise RuntimeError("same-session legacy delivery binding mismatch")
-                delivered_run_id = str(legacy_run.id)
-                queued = legacy_run.status not in {"completed", "failed", "killed"}
-            else:
-                payload = await submit_live_human_input(
-                    db=db,
-                    agent=agent,
-                    user=user,
-                    session=session,
-                    content=content,
-                    source="trigger_reflection" if reflection else "loop_same_session",
-                    input_id=child_run_id,
-                    idempotency_key=f"trigger-same-session:{runtime_task_id}:{source_session_id}",
-                    requested_kind="queue_next_turn",
-                    runtime_metadata={
-                        "budget_interactive": False,
-                        "trigger_ids": trigger_ids,
-                        "trigger_names": trigger_names,
-                        "trigger_runtime_task_id": runtime_task_id,
-                        **({"native_trigger_options": native_options} if native_options else {}),
-                    },
-                )
-                if payload.get("admission_state") != "admitted":
-                    raise RuntimeError(f"same-session input admission: {payload.get('admission_state')}")
-                delivered_run_id = str((payload.get("run") or {}).get("run_id") or "") or None
-                queued = delivered_run_id is None
-                if native_employee:
-                    from app.services.trigger_instruction_sources import record_native_trigger_input
+            local_message_id = await enqueue_local_trigger(db, agent=agent, user=user, session=session,
+                wrapper_id=runtime_task_id, triggers=triggers, content=content, reflection=reflection)
+            queued = True
+        else:
+            native_options = {}
+            native_employee = getattr(agent, "agent_type", None) == "native"
+            if getattr(agent, "agent_type", None) != "remote_a2a":
+                from app.services.trigger_preflight import collect_trigger_runtime_options, select_trigger_model
 
-                    agent = await db.get(Agent, agent_id, populate_existing=True)
-                    session = await db.get(ChatSession, session_uuid, populate_existing=True)
-                    await record_native_trigger_input(db, agent=agent, session=session, wrapper_id=runtime_task_id,
-                        input_id=child_run_id, triggers=triggers)
-        except HTTPException as exc:
-            logger.warning(
-                "[TriggerDaemon] same_session delivery rejected for session {}: {}",
-                source_session_id,
-                getattr(exc, "detail", exc),
+                options = collect_trigger_runtime_options(triggers)
+                model_metadata = {}
+                if any((trigger.config or {}).get("model_id") for trigger in triggers):
+                    _model, model_metadata, error = await select_trigger_model(db, agent, triggers)
+                    if error:
+                        raise HTTPException(409, detail={"code": error})
+                if any(options.values()) or model_metadata:
+                    native_options = {**options, "allowed_tool_names": list(options["allowed_tool_names"]),
+                        "excluded_tool_names": list(options["excluded_tool_names"]),
+                        "model_id": model_metadata.get("model_id") if model_metadata.get("model_source") == "trigger_config" else None}
+                if options["execution_class"]:
+                    content += "\n\nExecution class: " + options["execution_class"]
+                if options["workdir"]:
+                    content += "\n\nUse this job workdir for generated files when applicable: " + options["workdir"]
+            trigger_ids = [str(getattr(t, "id", "")) for t in triggers if getattr(t, "id", None)]
+            child_run_id = _trigger_child_run_id(
+                runtime_task_id,
+                effect="same_session",
+                discriminator=str(source_session_id),
             )
-            # Admission denial is not authority to retry through another lane.
-            raise
+            try:
+                # Preserve deliveries made by the former direct-run adapter on replay.
+                legacy_run = await db.get(RuntimeTask, child_run_id) if child_run_id is not None else None
+                if legacy_run is not None:
+                    if legacy_run.parent_agent_id != agent.id or str(legacy_run.parent_session_id) != str(session.id):
+                        raise RuntimeError("same-session legacy delivery binding mismatch")
+                    delivered_run_id = str(legacy_run.id)
+                    queued = legacy_run.status not in {"completed", "failed", "killed"}
+                else:
+                    payload = await submit_live_human_input(
+                        db=db,
+                        agent=agent,
+                        user=user,
+                        session=session,
+                        content=content,
+                        source="trigger_reflection" if reflection else "loop_same_session",
+                        input_id=child_run_id,
+                        idempotency_key=f"trigger-same-session:{runtime_task_id}:{source_session_id}",
+                        requested_kind="queue_next_turn",
+                        runtime_metadata={
+                            "budget_interactive": False,
+                            "trigger_ids": trigger_ids,
+                            "trigger_names": trigger_names,
+                            "trigger_runtime_task_id": runtime_task_id,
+                            **({"native_trigger_options": native_options} if native_options else {}),
+                        },
+                    )
+                    if payload.get("admission_state") != "admitted":
+                        raise RuntimeError(f"same-session input admission: {payload.get('admission_state')}")
+                    delivered_run_id = str((payload.get("run") or {}).get("run_id") or "") or None
+                    queued = delivered_run_id is None
+                    if native_employee:
+                        from app.services.trigger_instruction_sources import record_native_trigger_input
+
+                        agent = await db.get(Agent, agent_id, populate_existing=True)
+                        session = await db.get(ChatSession, session_uuid, populate_existing=True)
+                        await record_native_trigger_input(db, agent=agent, session=session, wrapper_id=runtime_task_id,
+                            input_id=child_run_id, triggers=triggers)
+            except HTTPException as exc:
+                logger.warning(
+                    "[TriggerDaemon] same_session delivery rejected for session {}: {}",
+                    source_session_id,
+                    getattr(exc, "detail", exc),
+                )
+                # Admission denial is not authority to retry through another lane.
+                raise
 
     # The wrapper commit atomically settles the exact trigger fire intent.
     effective_overrides = _with_trigger_settlement_outcome(settlement_overrides, triggers, "success")
@@ -2027,6 +2035,8 @@ async def _deliver_batch_to_source_session(
         runtime_task_id,
         status="completed",
         result_summary=(
+            f"Scheduled work queued for the selected local executor in session {source_session_id}; external usage is unknown."
+            if local_message_id else
             f"{'Reflection work' if reflection else 'Loop'} delivered into session {source_session_id} "
             f"({'queued behind active run' if queued else 'started new turn'})."
         ),
@@ -2035,6 +2045,8 @@ async def _deliver_batch_to_source_session(
             "delivery": "reflection" if reflection else "same_session",
             "delivered_run_id": delivered_run_id,
             "queued": queued,
+            **({"execution_target": "local_agent", "local_message_id": local_message_id,
+                "usage_status": "unknown", "budget_scope": "platform_dispatch"} if local_message_id else {}),
             "source_session_id": source_session_id,
             "trigger_settlement_overrides": effective_overrides,
             "workflow_trigger_results": list(workflow_results or []),
@@ -2042,6 +2054,11 @@ async def _deliver_batch_to_source_session(
     )
     if not terminal_committed:
         raise RuntimeError("same-session trigger terminal transaction did not commit")
+    if local_message_id:
+        from app.services.local_agent_channel_service import dispatch_channel_message
+
+        async with tenant_scoped_session(tid) as db:
+            await dispatch_channel_message(db, message_id=uuid.UUID(local_message_id), owner_user_id=agent.owner_user_id or agent.creator_id)
     return True
 
 
@@ -2641,7 +2658,7 @@ async def _invoke_agent_for_triggers(
 
             explicit_context = ""
             context_refs = list(runtime_options.get("context_from") or [])
-            if context_refs and agent.agent_type != "native":
+            if context_refs and agent.agent_type not in {"native", "local_agent"}:
                 from app.models.user import User
 
                 context_reader = await db.get(User, effect_user_id)
@@ -2712,7 +2729,7 @@ async def _invoke_agent_for_triggers(
             db.add(session)
             await db.flush()
 
-            if agent.agent_type in {"native", "remote_a2a"}:
+            if agent.agent_type in {"native", "remote_a2a", "local_agent"}:
                 await db.commit()
                 delivered = await _deliver_batch_to_source_session(agent_id, triggers,
                     source_session_id=str(session_id), runtime_task_id=runtime_task_id,
@@ -3171,6 +3188,24 @@ async def execute_claimed_trigger_runtime_task(task_id: uuid.UUID | str) -> bool
     metadata = dict(record.get("metadata") or {})
 
     session_id = str(record.get("child_session_id") or metadata.get("session_id") or "").strip()
+    if metadata.get("local_trigger_delivery_prepared"):
+        from fastapi import HTTPException
+        from app.models.runtime_task import RuntimeTask
+        from app.services.local_trigger_runtime import recover_local_trigger_delivery
+
+        tenant_id = _runtime_task_uuid_or_none(record.get("tenant_id"))
+        if tenant_id is not None:
+            try:
+                async with tenant_scoped_session(tenant_id, require_tenant=True, source="local_trigger_recovery") as db:
+                    wrapper = await db.get(RuntimeTask, task_uuid, populate_existing=True)
+                    if wrapper is not None:
+                        return await recover_local_trigger_delivery(db, wrapper=wrapper)
+            except HTTPException as exc:
+                code = exc.detail.get("code") if isinstance(exc.detail, dict) else "local_trigger_origin_unavailable"
+                await _mark_trigger_runtime_task_needs_reconciliation(task_uuid.hex, metadata=metadata,
+                    blocker=code, summary="The retained local input requires authority or source reconciliation.",
+                    trace_id=str(record.get("trace_id") or ""), session_id=session_id or None)
+                return False
     if session_id:
         await _mark_trigger_runtime_task_needs_reconciliation(
             task_uuid.hex,

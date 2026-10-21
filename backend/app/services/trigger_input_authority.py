@@ -16,6 +16,39 @@ def _unavailable():
     return HTTPException(409, detail={"code": "trigger_input_origin_unavailable"})
 
 
+async def authorize_trigger_origin(db, *, wrapper, trigger_ids):
+    """Recheck the original requester and fire generation at an execution boundary."""
+    from app.services.trigger_resource_authority import (
+        authorize_trigger_action, trigger_execution_block_reason, trigger_owner_user_id, trigger_fire_authority_block_reason,
+    )
+
+    user = await db.get(User, wrapper.root_user_id, populate_existing=True)
+    rows = list(await db.scalars(select(AgentTrigger).where(AgentTrigger.tenant_id == wrapper.tenant_id,
+        AgentTrigger.agent_id == wrapper.parent_agent_id, AgentTrigger.id.in_(trigger_ids))))
+    if user is None or not user.is_active or len(rows) != len(trigger_ids):
+        raise _unavailable()
+    for trigger in rows:
+        generation_block = trigger_fire_authority_block_reason(trigger, wrapper.metadata_json)
+        if generation_block:
+            raise HTTPException(403 if generation_block == "trigger_authority_revoked" else 409,
+                detail={"code": generation_block})
+        if trigger_owner_user_id(trigger) != user.id or trigger_execution_block_reason(trigger):
+            raise _unavailable()
+        await authorize_trigger_action(db, user, agent_id=wrapper.parent_agent_id, trigger=trigger, action="execute")
+        config = trigger.config or {}
+        if config.get("plan_id") and isinstance(config.get("plan_authorization"), dict):
+            from app.services.plan_authorization_lease import (
+                PlanAuthorizationLeaseError, verify_consumed_plan_authorization_lease,
+            )
+
+            try:
+                await verify_consumed_plan_authorization_lease(db=db, tenant_id=wrapper.tenant_id,
+                    agent_id=wrapper.parent_agent_id, plan_id=config["plan_id"], evidence=config["plan_authorization"])
+            except PlanAuthorizationLeaseError as exc:
+                raise HTTPException(403, detail={"code": "trigger_plan_authority_revoked"}) from exc
+    return rows
+
+
 async def load_trigger_input_origin(db, *, tenant_id, agent_id, session, metadata, for_effect=True):
     source = metadata.get("source")
     if source not in {"loop_same_session", "trigger_reflection"}:
@@ -24,9 +57,6 @@ async def load_trigger_input_origin(db, *, tenant_id, agent_id, session, metadat
         raise _unavailable()
     from app.services.session_model_inputs import _hash
     from app.services.trigger_daemon import _trigger_child_run_id
-    from app.services.trigger_resource_authority import (
-        authorize_trigger_action, trigger_execution_block_reason, trigger_owner_user_id, trigger_fire_authority_block_reason,
-    )
 
     try:
         wrapper_id = uuid.UUID(str(metadata["trigger_runtime_task_id"]))
@@ -66,30 +96,7 @@ async def load_trigger_input_origin(db, *, tenant_id, agent_id, session, metadat
             or budget.root_agent_id != agent_id or budget.root_user_id not in {None, wrapper.root_user_id}):
             raise ValueError("scheduled_input_budget_mismatch")
         if for_effect:
-            user = await db.get(User, wrapper.root_user_id, populate_existing=True)
-            rows = list(await db.scalars(select(AgentTrigger).where(AgentTrigger.tenant_id == tenant_id,
-                AgentTrigger.agent_id == agent_id, AgentTrigger.id.in_(trigger_ids))))
-            if user is None or not user.is_active or len(rows) != len(trigger_ids):
-                raise ValueError("scheduled_input_requester_unavailable")
-            for trigger in rows:
-                generation_block = trigger_fire_authority_block_reason(trigger, wrapper.metadata_json)
-                if generation_block:
-                    raise HTTPException(403 if generation_block == "trigger_authority_revoked" else 409,
-                        detail={"code": generation_block})
-                if trigger_owner_user_id(trigger) != user.id or trigger_execution_block_reason(trigger):
-                    raise ValueError("scheduled_input_requester_changed")
-                await authorize_trigger_action(db, user, agent_id=agent_id, trigger=trigger, action="execute")
-                config = trigger.config or {}
-                if config.get("plan_id") and isinstance(config.get("plan_authorization"), dict):
-                    from app.services.plan_authorization_lease import (
-                        PlanAuthorizationLeaseError, verify_consumed_plan_authorization_lease,
-                    )
-
-                    try:
-                        await verify_consumed_plan_authorization_lease(db=db, tenant_id=tenant_id,
-                            agent_id=agent_id, plan_id=config["plan_id"], evidence=config["plan_authorization"])
-                    except PlanAuthorizationLeaseError as exc:
-                        raise HTTPException(403, detail={"code": "trigger_plan_authority_revoked"}) from exc
+            await authorize_trigger_origin(db, wrapper=wrapper, trigger_ids=trigger_ids)
         return {"schema": "hive.trigger_input_origin.v1", "wrapper_id": str(wrapper.id),
             **({"authority_generations": wrapper.metadata_json["trigger_authority_generations"]}
                 if "trigger_authority_generations" in wrapper.metadata_json else {}),

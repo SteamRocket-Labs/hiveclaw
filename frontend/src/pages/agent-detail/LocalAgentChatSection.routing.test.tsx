@@ -27,7 +27,7 @@ it.each([
   ['/agents/local/sessions/loading', ''],
 ])('preserves the requested route and never substitutes a cached default: %s', async (route, sessionId) => {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
-  client.setQueryData(['local-agent-detail-default-session', 'local'], { id: 'channel-old', chat_session_id: 'old' });
+  client.setQueryData(['local-agent-detail-default-session', 'local', false], { id: 'channel-old', chat_session_id: 'old' });
   client.setQueryData(['local-agent-detail-route-session', 'local', 'selected'], { id: 'channel-selected', chat_session_id: 'selected' });
   vi.spyOn(localBridgeApi, 'getAgentChannelSession').mockImplementation(() => new Promise(() => {}));
   const getDefault = vi.spyOn(localBridgeApi, 'getAgentDefaultChannelSession');

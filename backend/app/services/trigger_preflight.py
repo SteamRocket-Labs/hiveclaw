@@ -102,6 +102,15 @@ async def select_trigger_model(
 ) -> tuple[Any | None, dict[str, Any], str | None]:
     """Resolve per-job model pinning, falling back to the agent primary model."""
     model_ids = _model_ids_from_triggers(triggers)
+    if getattr(agent, "agent_type", None) == "local_agent":
+        from fastapi import HTTPException
+        from app.services.local_trigger_runtime import require_local_trigger_executor
+
+        try:
+            return None, await require_local_trigger_executor(db, agent=agent, triggers=triggers), None
+        except HTTPException as exc:
+            detail = exc.detail if isinstance(exc.detail, dict) else {}
+            return None, detail, str(detail.get("code", "local_agent_executor_unavailable"))
     if getattr(agent, "agent_type", None) == "remote_a2a":
         from fastapi import HTTPException
         from app.services.remote_a2a_runtime import require_runtime_authorization
@@ -236,10 +245,10 @@ async def evaluate_trigger_preflight(
     now: datetime | None = None,
 ) -> TriggerPreflightResult:
     now = now or datetime.now(timezone.utc)
-    if not model and getattr(agent, "agent_type", None) == "remote_a2a":
+    if not model and getattr(agent, "agent_type", None) in {"remote_a2a", "local_agent"}:
         _model, metadata, error = await select_trigger_model(db, agent, triggers)
         if error:
-            return TriggerPreflightResult(False, error, "The selected remote executor is unavailable.", metadata)
+            return TriggerPreflightResult(False, error, "The selected executor is unavailable.", metadata)
     elif not model:
         return TriggerPreflightResult(False, "no_model", "No model available for trigger wake.")
     if getattr(agent, "status", None) in {"expired", "stopped", "error", "archived"}:

@@ -269,6 +269,9 @@ describe('actual routine work', () => {
     ['running', 'Running'],
     ['failed', 'Run failed'],
     ['completed', 'Run completed'],
+    ['delivered', 'Dispatched; execution is not yet confirmed'],
+    ['waiting_approval', 'Waiting for execution approval'],
+    ['unknown', 'Execution outcome unknown'],
   ])('shows %s separately from the completed delivery receipt', (status, label) => {
     renderSection({ autonomyOverview: {
       triggers: [{ id: 'trigger-1', display_kind: 'scheduled_job', display_title: 'Daily brief',
@@ -280,6 +283,21 @@ describe('actual routine work', () => {
     expect(screen.getByText('Delivered into original work')).toBeTruthy();
     expect(screen.getByRole('link', { name: 'Open original work' }).getAttribute('href'))
       .toBe('/agents/agent-1/sessions/work-1');
+  });
+
+  it('keeps local usage unknown when the delivery wrapper is complete', () => {
+    renderSection({ autonomyOverview: {
+      triggers: [{ id: 'trigger-1', display_kind: 'scheduled_job', display_title: 'Local stock check',
+        attention_state: 'active', last_attempt: { status: 'completed', work_execution: {
+          status: 'delivered', execution_target: 'local_agent', usage_status: 'unknown',
+          work_url: '/agents/agent-1/sessions/local-work',
+        } } }], recent_attempts: [], findings: [],
+    } });
+    expect(screen.getByText('Work execution: Dispatched; execution is not yet confirmed')).toBeTruthy();
+    expect(screen.getByText('Local model usage is unavailable. The platform budget covers dispatch, not local model spending.')).toBeTruthy();
+    expect(screen.queryByText('Work execution: Run completed')).toBeNull();
+    expect(screen.getByRole('link', { name: 'Open original work' }).getAttribute('href'))
+      .toBe('/agents/agent-1/sessions/local-work');
   });
 
   it('keeps an unverified work link unavailable', () => {

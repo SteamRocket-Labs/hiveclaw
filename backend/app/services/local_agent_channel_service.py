@@ -1309,27 +1309,35 @@ async def _active_snapshot_for_session(
     session: LocalAgentChannelSession,
     capability: str,
 ) -> tuple[LocalAgentChannel, LocalAgentCapabilitySnapshot]:
+    return await active_snapshot_for_agent(db, tenant_id=session.tenant_id, owner_user_id=session.owner_user_id,
+        agent_id=session.source_agent_id, connection_id=getattr(session, "connection_id", None), channel_id=getattr(session, "channel_id", None),
+        capability=capability)
+
+
+async def active_snapshot_for_agent(db: AsyncSession, *, tenant_id, owner_user_id, agent_id,
+    capability: str, connection_id=None, channel_id=None):
+    """Resolve the actual host-bound executor before creating or queuing work."""
     stmt = (
         select(LocalAgentChannel, LocalAgentCapabilitySnapshot)
         .join(LocalAgentCapabilitySnapshot, LocalAgentCapabilitySnapshot.channel_id == LocalAgentChannel.id)
         .join(LocalAgentBridgeConnection, LocalAgentBridgeConnection.id == LocalAgentChannel.connection_id)
         .where(
-            LocalAgentBridgeConnection.tenant_id == session.tenant_id,
-            LocalAgentBridgeConnection.user_id == session.owner_user_id,
+            LocalAgentBridgeConnection.tenant_id == tenant_id,
+            LocalAgentBridgeConnection.user_id == owner_user_id,
             LocalAgentBridgeConnection.status == "active",
             LocalAgentBridgeConnection.expires_at > utcnow(),
-            LocalAgentChannel.tenant_id == session.tenant_id,
-            LocalAgentChannel.owner_user_id == session.owner_user_id,
+            LocalAgentChannel.tenant_id == tenant_id,
+            LocalAgentChannel.owner_user_id == owner_user_id,
             LocalAgentCapabilitySnapshot.revoked_at.is_(None),
             LocalAgentCapabilitySnapshot.expires_at > utcnow(),
         )
     )
-    if session.source_agent_id is not None:
-        stmt = stmt.where(LocalAgentCapabilitySnapshot.subject_agent_id == session.source_agent_id)
-    if getattr(session, 'connection_id', None) is not None:
-        stmt = stmt.where(LocalAgentChannel.connection_id == session.connection_id)
-    if getattr(session, 'channel_id', None) is not None:
-        stmt = stmt.where(LocalAgentChannel.id == session.channel_id)
+    if agent_id is not None:
+        stmt = stmt.where(LocalAgentCapabilitySnapshot.subject_agent_id == agent_id)
+    if connection_id is not None:
+        stmt = stmt.where(LocalAgentChannel.connection_id == connection_id)
+    if channel_id is not None:
+        stmt = stmt.where(LocalAgentChannel.id == channel_id)
     rows = (
         await db.execute(
             stmt.order_by(
@@ -2055,6 +2063,8 @@ async def enqueue_channel_message(
     attachments: list[dict[str, Any]] | None = None,
     metadata: dict[str, Any] | None = None,
     idempotency_key: str | None = None,
+    commit: bool = True,
+    action_source: str | None = None,
 ) -> dict[str, Any]:
     """Queue one governed remote action with stable idempotency and receipt identity."""
 
@@ -2134,7 +2144,7 @@ async def enqueue_channel_message(
         )
         _enforce_action_conditions(
             execute_policy,
-            source=session.source,
+            source=action_source or session.source,
             content=str(content),
             attachments=clean_attachments,
         )
@@ -2165,7 +2175,7 @@ async def enqueue_channel_message(
     db.add(message)
     await db.flush()
     if execute_policy is not None and execute_policy.requires_approval:
-        await _request_message_approval(db, message=message, source=session.source,
+        await _request_message_approval(db, message=message, source=action_source or session.source,
             policy=execute_policy, snapshot_hash=snapshot_hash)
     _add_remote_action_span(db, message=message, session=session)
     if session.chat_session_id and session.source_agent_id:
@@ -2192,7 +2202,8 @@ async def enqueue_channel_message(
     )
     db.add(event)
     await db.flush()
-    await db.commit()
+    if commit:
+        await db.commit()
     return {**_message_payload(message), "event": _event_payload(event)}
 
 
@@ -3124,12 +3135,17 @@ async def _authorize_message_dispatch(db: AsyncSession, *, message: LocalAgentCh
     snapshot_hash: str) -> bool:
     """Apply the live action policy before creating another delivery attempt."""
     try:
+        from app.services.local_trigger_runtime import load_local_trigger_message
+
+        scheduled = await load_local_trigger_message(db, message=message)
         policy = await _effective_capability_policy(db, tenant_id=message.tenant_id,
             agent_id=message.source_agent_id, capability="local_agent.execute")
-        source = await _message_action_source(db, message)
+        source = "trigger" if scheduled is not None else await _message_action_source(db, message)
         _enforce_action_conditions(policy, source=source, content=message.content,
             attachments=list(message.attachments_json or []))
     except HTTPException as exc:
+        if isinstance(exc.detail, dict) and exc.detail.get("code") == "local_trigger_delivery_pending":
+            return False
         await _withhold_message_dispatch(db, message=message, reason=str(exc.detail))
         return False
     if not policy.requires_approval:

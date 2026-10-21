@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from dataclasses import replace
+import hashlib
 from pathlib import Path
 import uuid
 
@@ -31,8 +32,9 @@ from app.services.channel_delivery_service import DeliveryResult
 
 
 @pytest.fixture(autouse=True)
-async def _isolate_channel_delivery_outbox(owner_sessionmaker, migrated_pg_url):
+async def _isolate_channel_delivery_outbox(owner_sessionmaker, migrated_pg_url, app_user_sessionmaker, monkeypatch):
     del migrated_pg_url
+    monkeypatch.setattr("app.database.async_session", app_user_sessionmaker)
     async with owner_sessionmaker() as db:
         async with enter_rls_bypass(db, reason="test isolate channel delivery outbox") as bypass_db:
             await bypass_db.execute(delete(ChannelDeliveryOutbox))
@@ -149,12 +151,21 @@ async def _seed_delivery(
         )
         await db.flush()
         for index in range(artifact_count):
+            from app.services.content_input_receipts import record_workspace_receipt
+            from app.services.workspace_resource_authority import register_workspace_path
+
             artifact_id = uuid.uuid4()
             artifact_ids.append(artifact_id)
             snapshot_rel = Path("__chat_artifacts") / str(session_id) / str(run_id) / f"artifact-{index}.txt"
             snapshot = Path(get_settings().AGENT_DATA_DIR) / str(agent_id) / snapshot_rel
             snapshot.parent.mkdir(parents=True, exist_ok=True)
             snapshot.write_text(f"artifact {index}", encoding="utf-8")
+            artifact_path = f"workspace/reports/artifact-{index}.txt"
+            content_hash = hashlib.sha256(snapshot.read_bytes()).hexdigest()
+            receipt = record_workspace_receipt(db, tenant_id, agent_id, artifact_path, content_hash, None)
+            await register_workspace_path(db, tenant_id=tenant_id, agent_id=agent_id, path=artifact_path,
+                owner_user_id=user_id, root_session_id=session_id, source="fixture", content_hash=content_hash)
+            await db.flush()
             db.add(
                 ChatArtifact(
                     id=artifact_id,
@@ -163,14 +174,17 @@ async def _seed_delivery(
                     session_id=session_id,
                     message_id=message_id,
                     runtime_task_id=run_id,
-                    path=f"reports/artifact-{index}.txt",
+                    owner_user_id=user_id,
+                    root_session_id=session_id,
+                    path=artifact_path,
                     name=snapshot.name,
                     mime_type="text/plain",
                     size=snapshot.stat().st_size,
                     preview_kind="text",
                     source="workspace_write",
                     snapshot_hash=f"hash-{index}",
-                    snapshot_json={"snapshot_storage_path": snapshot_rel.as_posix()},
+                    snapshot_json={"snapshot_storage_path": snapshot_rel.as_posix(), "content_hash": content_hash,
+                        "content_input_receipt_id": str(receipt.id)},
                 )
             )
         await db.commit()

@@ -540,6 +540,51 @@ class ChannelDeliveryOutboxService:
                 resolved.append((artifact_id, absolute, Path(artifact.path).name))
             return resolved
 
+    async def _authorize_artifact_part(self, db: AsyncSession, item: ClaimedChannelDelivery,
+        artifact_id: uuid.UUID) -> ChatArtifact:
+        from fastapi import HTTPException
+        from app.core.resource_authority import authorize_resource_action
+        from app.core.source_read_purpose import source_recipient_read
+        from app.services.content_input_receipts import validate_artifact_content_receipt
+        from app.services.external_principal_service import load_external_runtime_actor
+        from app.services.runtime_user_identity import load_scoped_runtime_user
+
+        artifact = await db.scalar(select(ChatArtifact).where(ChatArtifact.id == artifact_id,
+            ChatArtifact.tenant_id == item.tenant_id, ChatArtifact.agent_id == item.agent_id,
+            ChatArtifact.session_id == item.session_id, ChatArtifact.runtime_task_id == item.runtime_task_id)
+            .execution_options(populate_existing=True))
+        session = await db.get(ChatSession, item.session_id, populate_existing=True)
+        if (artifact is None or session is None or session.tenant_id != item.tenant_id
+            or session.agent_id != item.agent_id or artifact_id not in item.artifact_ids):
+            raise HTTPException(404, detail={"code": "artifact_delivery_authority_unavailable"})
+        if session.audience_kind == "group":
+            from app.services.shared_group_authority import load_current_group_recipient_users
+
+            _config, recipients = await load_current_group_recipient_users(db, session=session)
+            for user in recipients:
+                with source_recipient_read(session_id=session.id, user_id=user.id):
+                    await validate_artifact_content_receipt(db, item.tenant_id, user, artifact)
+        else:
+            user = await load_scoped_runtime_user(db, item.user_id, tenant_id=item.tenant_id) if item.user_id else None
+            if item.user_id is not None and (user is None or session.user_id != item.user_id):
+                raise HTTPException(403, detail={"code": "artifact_delivery_reader_unavailable"})
+            if item.external_principal_id is not None:
+                actor = await load_external_runtime_actor(db, tenant_id=item.tenant_id,
+                    principal_id=item.external_principal_id, expected_user_id=item.user_id)
+                if item.user_id is not None and (not actor.authority_bound or actor.id != item.user_id):
+                    raise HTTPException(403, detail={"code": "artifact_delivery_binding_changed"})
+            if user is not None:
+                with source_recipient_read(session_id=session.id, user_id=user.id):
+                    await authorize_resource_action(db, user, agent_id=item.agent_id, resource_kind="chat_artifact",
+                        resource_id=artifact.id, action="deliver", owner_user_id=artifact.owner_user_id,
+                        root_session_id=artifact.root_session_id or artifact.session_id,
+                        authority_state=artifact.authority_state)
+            else:
+                # An unbound recipient cannot borrow a later linked User's grants.
+                # Only a verified source closure with no private reader requirement can pass.
+                await validate_artifact_content_receipt(db, item.tenant_id, None, artifact)
+        return artifact
+
     async def _send_part(
         self,
         *,
@@ -557,40 +602,67 @@ class ChannelDeliveryOutboxService:
         if isinstance(current, dict) and current.get("state") == "delivered":
             return
         idempotency_key = f"{item.id}:{part_key}"
-        await self._update_part_receipt(
-            item=item,
-            worker_id=worker_id,
-            part_key=part_key,
-            receipt={
-                "state": "sending",
+        with contextlib.ExitStack() as captured_files:
+            if part_key != "text":
+                from fastapi import HTTPException
+                from app.services.chat_artifact_delivery import captured_chat_artifact_file
+                from app.services.content_input_receipts import ContentInputReceiptError
+                from app.services.workspace_resource_authority import WorkspaceAuthorityError
+
+                try:
+                    artifact = await self._authorize_artifact_part(sender_kwargs["db"], item, uuid.UUID(part_key))
+                    root = Path(get_settings().AGENT_DATA_DIR) / str(item.agent_id)
+                    captured, _source = captured_files.enter_context(captured_chat_artifact_file(artifact, root))
+                    if captured is None:
+                        raise ChannelDeliveryPermanentError("artifact_snapshot_unavailable")
+                    sender_kwargs = {**sender_kwargs, "file_path": captured}
+                except (HTTPException, ContentInputReceiptError, WorkspaceAuthorityError, PermissionError, LookupError) as exc:
+                    detail = getattr(exc, "detail", None)
+                    code = getattr(exc, "code", None) or (detail.get("code") if isinstance(detail, dict) else None)
+                    message = f"artifact_source_unavailable:{code or 'artifact_access_denied'}"
+                    error_type = (ChannelDeliveryRetryableError if getattr(exc, "status_code", 403) >= 500
+                        else ChannelDeliveryPermanentError)
+                    raise error_type(message) from exc
+                except (ChannelDeliveryPermanentError, ChannelDeliveryRetryableError):
+                    raise
+                except Exception as exc:
+                    # No provider call has started; this read failure is safe to retry.
+                    raise ChannelDeliveryRetryableError(f"artifact_authority_unavailable:{type(exc).__name__}") from exc
+
+            await self._update_part_receipt(
+                item=item,
+                worker_id=worker_id,
+                part_key=part_key,
+                receipt={
+                    "state": "sending",
+                    "idempotency_key": idempotency_key,
+                    "started_at": datetime.now(UTC).isoformat(),
+                },
+            )
+            result = await sender(idempotency_key=idempotency_key, **sender_kwargs)
+            receipt = {
+                "state": "delivered" if result.ok else "unknown" if result.status == "unknown" else "failed",
                 "idempotency_key": idempotency_key,
-                "started_at": datetime.now(UTC).isoformat(),
-            },
-        )
-        result = await sender(idempotency_key=idempotency_key, **sender_kwargs)
-        receipt = {
-            "state": "delivered" if result.ok else "unknown" if result.status == "unknown" else "failed",
-            "idempotency_key": idempotency_key,
-            "provider_status": result.status,
-            "message": result.message,
-            "retryable": bool(result.retryable),
-            "detail": dict(result.detail or {}),
-            "recorded_at": datetime.now(UTC).isoformat(),
-        }
-        await self._update_part_receipt(
-            item=item,
-            worker_id=worker_id,
-            part_key=part_key,
-            receipt=receipt,
-        )
-        if result.ok:
-            return
-        error = f"{item.channel} {part_key} delivery failed: {result.message}"
-        if result.status == "unknown":
-            raise ChannelDeliveryAmbiguousError(error)
-        if result.retryable:
-            raise ChannelDeliveryRetryableError(error)
-        raise ChannelDeliveryPermanentError(error)
+                "provider_status": result.status,
+                "message": result.message,
+                "retryable": bool(result.retryable),
+                "detail": dict(result.detail or {}),
+                "recorded_at": datetime.now(UTC).isoformat(),
+            }
+            await self._update_part_receipt(
+                item=item,
+                worker_id=worker_id,
+                part_key=part_key,
+                receipt=receipt,
+            )
+            if result.ok:
+                return
+            error = f"{item.channel} {part_key} delivery failed: {result.message}"
+            if result.status == "unknown":
+                raise ChannelDeliveryAmbiguousError(error)
+            if result.retryable:
+                raise ChannelDeliveryRetryableError(error)
+            raise ChannelDeliveryPermanentError(error)
 
     async def _deliver(self, item: ClaimedChannelDelivery, *, worker_id: str) -> dict[str, Any]:
         if self._has_ambiguous_part(item):

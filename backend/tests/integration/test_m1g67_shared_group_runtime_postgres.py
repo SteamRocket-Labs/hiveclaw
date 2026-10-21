@@ -513,6 +513,8 @@ async def test_shared_work_runs_with_its_original_sender_and_real_tool_sources(
         await db.commit()
     sends = []
     async def send(**kwargs):
+        if kwargs.get("file_path") is not None:
+            kwargs["file_content"] = kwargs["file_path"].read_text()
         sends.append(kwargs)
         return DeliveryResult(ok=True, status="delivered", channel="feishu", message="Synthetic provider receipt.")
     outcome = await ChannelDeliveryOutboxService(session_factory=app_user_sessionmaker,
@@ -529,7 +531,8 @@ async def test_shared_work_runs_with_its_original_sender_and_real_tool_sources(
             assert delivery.status == "pending" and "group_recipient_identity_unavailable" in delivery.last_error
         else:
             assert outcome["delivered"] == 1 and len(sends) == 2, outcome
-            assert sends[1]["artifact_id"] == artifact.id and sends[1]["file_path"].read_text() == report_content
+            assert sends[1]["artifact_id"] == artifact.id and sends[1]["file_content"] == report_content
+            assert not sends[1]["file_path"].exists()
             assert sends[0]["reply_target"]["receive_id"] == "oc_native_group"
             assert delivery.status == "delivered"
     if mutation in {"queued_member", "private_context", "shared_context"}:
@@ -1981,6 +1984,8 @@ async def _exercise_group_enterprise(seed, session_id, run_id, requester_id, ses
             await db.commit()
         sends = []
         async def send(**kwargs):
+            if kwargs.get("file_path") is not None:
+                kwargs["file_content"] = kwargs["file_path"].read_text()
             sends.append(kwargs)
             return DeliveryResult(ok=True, status="delivered", channel="feishu", message="Synthetic group result receipt.")
         delivery_service = ChannelDeliveryOutboxService(session_factory=sessionmaker, text_sender=send, file_sender=send)
@@ -2020,7 +2025,8 @@ async def _exercise_group_enterprise(seed, session_id, run_id, requester_id, ses
             assert outcome["delivered"] == 1 and len(sends) == (2 if action == "approve" else 1), outcome
             assert sends[0]["reply_target"]["receive_id"] == "oc_native_group" and expected in sends[0]["text"]
             if action == "approve":
-                assert sends[1]["file_path"].read_text() == report_content and sends[1]["artifact_id"] is not None
+                assert sends[1]["file_content"] == report_content and sends[1]["artifact_id"] is not None
+                assert not sends[1]["file_path"].exists()
         if saved_browser:
             await browsers.aclose()
             assert (seed["agent_root"] / "workspace/shared-report.md").read_text() == "USER_EDITED_SAVED_REPORT"

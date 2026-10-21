@@ -89,7 +89,10 @@ async def snapshot(args):
         clients = await db.scalar(text("SELECT count(*) FROM pg_stat_activity WHERE datname=current_database() AND pid<>pg_backend_pid()"))
         prepared = await db.scalar(text("SELECT count(*) FROM pg_prepared_xacts WHERE database=current_database()"))
         if clients or prepared:
-            raise RecoveryError("upgrade_writers_must_be_stopped")
+            backends = (await db.execute(text("SELECT pid, backend_type, state FROM pg_stat_activity "
+                "WHERE datname=current_database() AND pid<>pg_backend_pid()"))).mappings().all()
+            raise RecoveryError("upgrade_writers_must_be_stopped", details={"backends": [dict(row) for row in backends],
+                "prepared_transactions": int(prepared)})
         if not await db.scalar(text("SELECT to_regclass('public.alembic_version')")):
             raise RecoveryError("upgrade_database_unversioned")
         heads = sorted((await db.execute(text("SELECT version_num FROM alembic_version"))).scalars().all())
@@ -215,7 +218,8 @@ def main():
         else:
             result = asyncio.run(preflight(args) if args.command == "preflight" else apply(args))
     except RecoveryError as exc:
-        print(json.dumps({"status": exc.status, "code": exc.code}))
+        print(json.dumps({"status": exc.status, "code": exc.code,
+            **({"details": exc.details} if exc.details is not None else {})}))
         return 3
     except Exception as exc:
         # SQL, URLs, archive paths and credentials never enter command diagnostics.

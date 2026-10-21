@@ -106,6 +106,25 @@ explicit failure; reconcile them before taking a new backup. Symbolic links are
 stored as links without reading their targets. A link to a separately managed
 external dependency remains an external dependency after recovery.
 
+Backups also bind the source volume's workspace locators. If maintenance and
+runtime mount the same volume at different paths, pass `--runtime-agents-root`
+with the runtime's absolute mount path when backing up and restoring. The
+standard Compose profile mounts both at `/data/agents` and needs no override.
+Restoration records authenticated relocation metadata and a matching database
+witness. Pending relative file actions then use the restored employee or isolated
+subtask workspace without changing the original approval's arguments, identity,
+policy or envelope hash. A later backup preserves this locator lineage.
+
+Keep `.hive-recovery.json` in the restored volume and retain the original
+installation encryption key. Missing, changed or mismatched recovery metadata
+holds affected approvals before consumption; it must not fall back to an old
+installation path. Repair from the verified restore receipt before retrying.
+Older bundles without source locators support unchanged mounts; a moved legacy
+workspace without sufficient evidence requires a new review. Absolute paths to
+external dependencies are not rewritten. Recovery does not approve or execute
+pending actions: an authenticated reviewer and the normal fenced worker remain
+required, and completed execution receipts prevent duplicate effects.
+
 ```bash
 python3 scripts/self_hosted_recovery.py verify "$HIVE_RECOVERY_BACKUPS/snapshot" \
   --manifest-sha256 REPORTED_SHA256

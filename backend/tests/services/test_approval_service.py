@@ -318,6 +318,7 @@ async def test_resolve_approval_atomically_enqueues_durable_execution_job(monkey
         execution_task_id=None,
         execution_receipt=None,
         execution_envelope_hash="envelope-hash",
+        execution_envelope=None,
         policy_snapshot_hash="policy-hash",
         requested_by=uuid4(),
         expires_at=None,

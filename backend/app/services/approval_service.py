@@ -268,6 +268,11 @@ class ApprovalService:
                 raise ApprovalTicketError("approval execution envelope agent or tenant mismatch")
             if restored_envelope.requester_user_id != requested_by or (requested_by is None and restored_envelope.machine_credential_id is None):
                 raise ApprovalTicketError("approval execution envelope requester mismatch")
+            if not details.get("policy_snapshot"):
+                from app.services.approval_ticket import build_live_approval_policy_snapshot
+
+                policy_snapshot = await build_live_approval_policy_snapshot(db=db,
+                    tenant_id=restored_envelope.tenant_id, agent_id=agent.id, tool_name=tool_name)
             if restored_envelope.machine_credential_id is not None:
                 from app.services.approval_ticket import validate_approval_execution_authority
 

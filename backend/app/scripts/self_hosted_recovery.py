@@ -3,6 +3,7 @@
 
 import argparse
 import hashlib
+import hmac
 import json
 import os
 from pathlib import Path, PurePosixPath
@@ -37,12 +38,117 @@ def read_profile(path: Path) -> dict[str, str]:
 
 SCHEMA = "hive.self_hosted_backup.v1"
 CONTROL = ".hive-recovery.json"
+RECOVERY_MARKER_KEY = "self_hosted_recovery_volume"
 
 
 class RecoveryError(RuntimeError):
-    def __init__(self, code, *, status="failed"):
+    def __init__(self, code, *, status="failed", details=None):
         self.code, self.status = code, status
+        self.details = details
         super().__init__(code)
+
+
+def _volume_locators(values):
+    if not isinstance(values, list) or not values:
+        raise RecoveryError("workspace_relocation_invalid")
+    result = []
+    for value in values:
+        if not isinstance(value, str) or not Path(value).is_absolute() or ".." in Path(value).parts:
+            raise RecoveryError("workspace_relocation_invalid")
+        normalized = str(Path(value))
+        if normalized not in result:
+            result.append(normalized)
+    return result
+
+
+def _relocation_mac(mapping, key):
+    if not key:
+        raise RecoveryError("workspace_relocation_key_unavailable")
+    content = {name: value for name, value in mapping.items() if name != "mac"}
+    body = json.dumps(content, sort_keys=True, separators=(",", ":")).encode()
+    return hmac.new(key.encode(), body, hashlib.sha256).hexdigest()
+
+
+def required_workspace_manifest(value):
+    if not isinstance(value, dict) or not re.fullmatch("[a-f0-9]{64}", str(value.get("manifest_sha256", ""))):
+        raise RecoveryError("workspace_relocation_invalid")
+    return value["manifest_sha256"]
+
+
+def _read_workspace_relocation(agents, key, *, required_manifest=None):
+    """Read only operator metadata from the configured volume, never employee files."""
+    try:
+        descriptor = os.open(Path(agents) / CONTROL, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+    except FileNotFoundError:
+        if required_manifest is not None:
+            raise RecoveryError("workspace_relocation_missing")
+        return None
+    with os.fdopen(descriptor, "r") as handle:
+        info = os.fstat(handle.fileno())
+        if not stat.S_ISREG(info.st_mode) or info.st_size > 64 * 1024 or info.st_mode & 0o077:
+            raise RecoveryError("workspace_relocation_invalid")
+        journal = json.load(handle)
+    if not isinstance(journal, dict) or journal.get("schema") != "hive.self_hosted_restore.v1" or journal.get("status") != "restored":
+        raise RecoveryError("workspace_relocation_incomplete")
+    if required_manifest is not None and journal.get("manifest_sha256") != required_manifest:
+        raise RecoveryError("workspace_relocation_invalid")
+    mapping = journal.get("workspace_relocation")
+    if mapping is None:
+        return {}
+    if (not isinstance(mapping, dict) or mapping.get("schema") != "hive.workspace_relocation.v1"
+        or not re.fullmatch("[a-f0-9]{64}", str(mapping.get("manifest_sha256", "")))
+        or mapping.get("manifest_sha256") != journal.get("manifest_sha256")
+        or not hmac.compare_digest(str(mapping.get("mac", "")), _relocation_mac(mapping, key))):
+        raise RecoveryError("workspace_relocation_invalid")
+    current = {str(Path(agents).absolute()), str(Path(agents).resolve())}
+    if not current.intersection(_volume_locators(mapping.get("target_roots"))):
+        raise RecoveryError("workspace_relocation_target_mismatch")
+    _volume_locators(mapping.get("source_roots"))
+    return mapping
+
+
+def workspace_requires_relocation(workspace, *, agent_id, agents):
+    workspace = Path(workspace)
+    if not workspace.is_absolute() or ".." in workspace.parts:
+        return True
+    return not any(workspace.is_relative_to(root / str(agent_id))
+        for root in (Path(agents).absolute(), Path(agents).resolve()))
+
+
+def resolve_recovered_workspace(workspace, *, agent_id, agents, key, required_manifest=None):
+    """Relocate a sealed Agent-relative locator without changing ticket authority."""
+    agents, workspace = Path(agents).absolute(), Path(workspace)
+    agent = str(uuid.UUID(str(agent_id)))
+    current_roots = [str(agents), str(agents.resolve())]
+    if not workspace_requires_relocation(workspace, agent_id=agent, agents=agents):
+        roots = current_roots
+    else:
+        mapping = _read_workspace_relocation(agents, key, required_manifest=required_manifest)
+        if mapping is None:
+            return workspace
+        roots = [*current_roots, *mapping.get("source_roots", [])]
+    if not workspace.is_absolute() or ".." in workspace.parts:
+        raise RecoveryError("approval_workspace_recovery_unavailable")
+    for root in roots:
+        try:
+            relative = workspace.relative_to(Path(root) / agent)
+        except ValueError:
+            continue
+        target = agents / agent / relative
+        cursor = agents
+        for component in target.relative_to(agents).parts:
+            cursor /= component
+            if cursor.is_symlink():
+                raise RecoveryError("approval_workspace_recovery_unavailable")
+        return target
+    raise RecoveryError("approval_workspace_recovery_unavailable")
+
+
+def _runtime_volume_roots(args):
+    values = [str(args.agents.absolute()), str(args.agents.resolve())]
+    if getattr(args, "runtime_agents_root", None) is not None:
+        values.append(str(args.runtime_agents_root))
+    return _volume_locators(values)
 
 
 def digest(path):
@@ -164,6 +270,14 @@ def backup(args):
         raise RecoveryError("installation_database_credential_mismatch")
     before = database_state(args)
     agents = args.agents.absolute()
+    required_manifest = None
+    if sql(args, "SELECT to_regclass('public.system_settings') IS NOT NULL") == "t":
+        marker = sql(args, f"SELECT value::text FROM system_settings WHERE key='{RECOVERY_MARKER_KEY}'")
+        if marker:
+            required_manifest = required_workspace_manifest(json.loads(marker))
+    prior = _read_workspace_relocation(agents, profile["HIVE_INSTALL_SECRETS_MASTER_KEY"], required_manifest=required_manifest)
+    source_roots = _volume_locators([*_runtime_volume_roots(args), *(prior or {}).get("source_roots", []),
+        *(prior or {}).get("target_roots", [])])
     destination = args.output.absolute()
     if destination.resolve().is_relative_to(agents.resolve()) or agents.is_symlink():
         raise RecoveryError("backup_destination_overlaps_agents")
@@ -192,6 +306,7 @@ def backup(args):
     if entries != file_tree(agents) or before != database_state(args):
         raise RecoveryError("backup_source_changed")
     manifest = {"schema": SCHEMA, "postgres_major": before["major"], "entries": entries,
+        "source_agent_roots": source_roots,
         "consistency": "operator_stopped_writers", "excluded_control_file": CONTROL,
         "files": {name: {"sha256": digest(destination / name), "bytes": (destination / name).stat().st_size}
             for name in ("database.dump", "agents.tar.gz", "installation.env")}}
@@ -254,6 +369,8 @@ def verify_contents(directory, manifest):
 
 def restore(args):
     manifest = verify(args.backup, args.manifest_sha256)
+    source_roots = _volume_locators(manifest["source_agent_roots"]) if "source_agent_roots" in manifest else []
+    target_roots = _runtime_volume_roots(args)
     original = read_profile(args.backup / "installation.env")
     target = read_profile(args.profile)
     if any(original[key] != target[key] for key in SECRET_KEYS):
@@ -304,14 +421,27 @@ def restore(args):
             os.utime(stage / row["path"], ns=(row["mtime_ns"], row["mtime_ns"]), follow_symlinks=False)
     pg(args, ["pg_restore", "--no-password", "--exit-on-error", "--single-transaction", "--no-owner",
         "--dbname", os.environ["PGDATABASE"], str(args.backup / "database.dump")])
+    # Keep a database witness so a missing volume journal cannot downgrade an
+    # existing restored installation to ordinary unrelocated replay semantics.
+    if sql(args, "SELECT to_regclass('public.system_settings') IS NOT NULL") == "t":
+        marker = json.dumps({"manifest_sha256": args.manifest_sha256})
+        literal = marker.replace("'", "''")
+        sql(args, f"INSERT INTO system_settings(key,value) VALUES ('{RECOVERY_MARKER_KEY}','{literal}'::jsonb) "
+            "ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value")
     for child in stage.iterdir():
         child.rename(agents / child.name)
     stage.rmdir()
     os.chown(agents, args.uid, args.gid)
     journal.update(status="restored", next_action="run canonical preparation, then verify login, files, approvals and worker recovery",
         business_verified=False)
+    if source_roots:
+        mapping = {"schema": "hive.workspace_relocation.v1", "manifest_sha256": args.manifest_sha256,
+            "source_roots": source_roots, "target_roots": target_roots}
+        mapping["mac"] = _relocation_mac(mapping, target["HIVE_INSTALL_SECRETS_MASTER_KEY"])
+        journal["workspace_relocation"] = mapping
     # The journal is operator-owned metadata, separate from employee source data.
     write_json(agents / CONTROL, journal, replace=True)
+    os.chown(agents / CONTROL, args.uid, args.gid)
     return journal
 
 
@@ -327,6 +457,8 @@ def main():
         command.add_argument("--offline", action="store_true", help="Confirm all database and Agent-volume writers have been stopped.")
         command.add_argument("--profile", type=Path, required=True)
         command.add_argument("--agents", type=Path, default=Path(os.environ.get("AGENT_DATA_DIR", "/data/agents")))
+        command.add_argument("--runtime-agents-root", type=Path,
+            help="Runtime mount path for this same volume, if different from --agents.")
         command.add_argument("--pg-bin", type=Path)
         if name == "backup":
             command.add_argument("--output", type=Path, required=True)
@@ -345,7 +477,8 @@ def main():
         else:
             result = backup(args) if args.command == "backup" else restore(args)
     except RecoveryError as exc:
-        print(json.dumps({"status": exc.status, "code": exc.code}))
+        print(json.dumps({"status": exc.status, "code": exc.code,
+            **({"details": exc.details} if exc.details is not None else {})}))
         return 3
     except (OSError, ValueError, KeyError, TypeError, AttributeError, tarfile.TarError):
         print(json.dumps({"status": "failed", "code": "recovery_input_or_storage_invalid"}))

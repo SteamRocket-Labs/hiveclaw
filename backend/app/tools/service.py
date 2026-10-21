@@ -1103,7 +1103,7 @@ class ToolRuntimeService:
                 expected_user_id=approved_by_user_id,
             )
         )
-        from app.services.approval_ticket import restore_approval_execution_envelope
+        from app.services.approval_ticket import resolve_approval_execution_workspace, restore_approval_execution_envelope
 
         envelope = restore_approval_execution_envelope(
             ticket.execution_envelope,
@@ -1169,7 +1169,7 @@ class ToolRuntimeService:
                 plan_mode_unattended_available=envelope.plan_mode_unattended_available,
                 emit_runtime_hooks=envelope.emit_runtime_hooks,
                 trace_metadata_sink=trace_metadata,
-                workspace_override=envelope.workspace,
+                workspace_override=(getattr(ticket, "execution_workspace", None) or resolve_approval_execution_workspace(envelope)),
                 _approval_decision=decision,
                 _expected_asset_refs=tuple(envelope.resolved_asset_refs),
             )

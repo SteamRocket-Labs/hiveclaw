@@ -93,6 +93,7 @@ class ApprovalExecutionTicket:
     execution_envelope: dict[str, Any]
     execution_envelope_hash: str
     requested_by_external_principal_id: uuid.UUID | None = None
+    execution_workspace: Path | None = None
 
 
 def _json_safe(value: Any) -> Any:
@@ -413,12 +414,24 @@ async def build_live_approval_policy_snapshot(
     }
 
 
+def resolve_approval_execution_workspace(envelope: ApprovalExecutionEnvelope, *, required_manifest=None) -> Path:
+    from app.config import get_settings
+    from app.scripts.self_hosted_recovery import RecoveryError, resolve_recovered_workspace
+
+    settings = get_settings()
+    try:
+        return resolve_recovered_workspace(envelope.workspace, agent_id=envelope.agent_id,
+            agents=Path(settings.AGENT_DATA_DIR), key=settings.SECRETS_MASTER_KEY, required_manifest=required_manifest)
+    except (RecoveryError, OSError, ValueError) as exc:
+        raise ApprovalTicketError("approval workspace recovery metadata is unavailable or changed") from exc
+
+
 async def validate_approval_execution_authority(
     *,
     db: AsyncSession,
     envelope: ApprovalExecutionEnvelope,
     approval=None,
-) -> None:
+) -> Path:
     """Recheck mutable resource/cancellation/budget authority at consume time."""
 
     from app.agents.delegation_token import validate_delegation_token
@@ -427,6 +440,22 @@ async def validate_approval_execution_authority(
     from app.models.runtime_budget import RuntimeBudgetRun
     from app.models.runtime_task import RuntimeTask
 
+    required_manifest = None
+    from app.config import get_settings
+    from app.scripts.self_hosted_recovery import workspace_requires_relocation
+
+    if isinstance(db, AsyncSession) and workspace_requires_relocation(envelope.workspace,
+        agent_id=envelope.agent_id, agents=get_settings().AGENT_DATA_DIR):
+        from app.models.system_settings import SystemSetting
+        from app.scripts.self_hosted_recovery import RECOVERY_MARKER_KEY, RecoveryError, required_workspace_manifest
+
+        marker = (await db.execute(select(SystemSetting.value).where(SystemSetting.key == RECOVERY_MARKER_KEY))).one_or_none()
+        if marker is not None:
+            try:
+                required_manifest = required_workspace_manifest(marker[0])
+            except RecoveryError as exc:
+                raise ApprovalTicketError("approval workspace recovery metadata is unavailable or changed") from exc
+    execution_workspace = resolve_approval_execution_workspace(envelope, required_manifest=required_manifest)
     identity = envelope.execution_identity
     if envelope.machine_credential_id is not None:
         from fastapi import HTTPException
@@ -543,6 +572,7 @@ async def validate_approval_execution_authority(
             raise ApprovalTicketError('approval execution machine budget requester mismatch')
         if budget_run.status not in {"active", "resuming"}:
             raise ApprovalTicketError(f"approval execution budget is not active: {budget_run.status}")
+    return execution_workspace
 
 
 async def consume_approval_ticket(
@@ -644,7 +674,7 @@ async def consume_approval_ticket(
                 and restored_envelope.requester_external_principal_id != approval.requested_by_external_principal_id)
         ):
             raise ApprovalTicketError("approval execution envelope authority mismatch")
-        await validate_approval_execution_authority(db=db, envelope=restored_envelope, approval=approval)
+        execution_workspace = await validate_approval_execution_authority(db=db, envelope=restored_envelope, approval=approval)
         if (approval.requested_by is None and restored_envelope.machine_credential_id is None) or approval.resolved_by is None:
             raise ApprovalTicketError("approval ticket principal binding is incomplete")
         if not str(approval.decision_id or "").strip():
@@ -671,6 +701,7 @@ async def consume_approval_ticket(
             action_type=str(approval.action_type),
             execution_envelope=dict(raw_execution_envelope),
             execution_envelope_hash=execution_envelope_hash,
+            execution_workspace=execution_workspace,
         )
 
 

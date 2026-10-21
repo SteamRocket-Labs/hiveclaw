@@ -65,12 +65,6 @@ async def test_backup_restore_restarts_real_auth_files_approvals_and_encrypted_c
                 values["HIVE_INSTALL_SECRETS_MASTER_KEY"]).encrypt("SYNTHETIC_RECOVERY_KEY"), base_url="http://127.0.0.1:1/v1")
         db.add(model)
         await db.flush()
-        context = ToolExecutionContext(agent_id=d.agent, tenant_id=str(d.tenant), user_id=d.user.id,
-            session_id=str(d.session), workspace=d.root, runtime_task_id=str(d.run), origin_channel="web")
-        envelope = build_approval_execution_envelope(context=context, tool_call_id="pending-backup-call", emit_runtime_hooks=True)
-        ticket = await ApprovalService().request_approval(db, await db.get(Agent, d.agent), action_type="file.write",
-            details={"tool": "write_file", "args": {"path": "workspace/pending.txt", "content": "AFTER_REVIEW"},
-                "requested_by": str(d.user.id), "reason": "Pending authorized review", "execution_envelope": envelope})
         await db.commit()
     common = {key: os.environ[key] for key in ("PATH", "HOME", "TMPDIR", "LANG", "LC_ALL", "PYTHONPATH", "PYTHONDONTWRITEBYTECODE") if key in os.environ}
     common.update(SECRET_KEY=values["HIVE_INSTALL_SECRET_KEY"], JWT_SECRET_KEY=values["HIVE_INSTALL_JWT_SECRET_KEY"],
@@ -124,6 +118,16 @@ async def test_backup_restore_restarts_real_auth_files_approvals_and_encrypted_c
             original = await client.get(origin + f"/api/agents/{d.agent}/files/artifacts/{d.first.id}/download",
                 headers={"Authorization": "Bearer " + token})
             assert original.status_code == 200 and original.content == b"AAAA", original.text
+        # Issue work under the live initialized installation's policy, rather
+        # than a pre-bootstrap configuration that legitimately requires reapproval.
+        async with owner_sessionmaker() as db:
+            context = ToolExecutionContext(agent_id=d.agent, tenant_id=str(d.tenant), user_id=d.user.id,
+                session_id=str(d.session), workspace=d.root, runtime_task_id=str(d.run), origin_channel="web")
+            envelope = build_approval_execution_envelope(context=context, tool_call_id="pending-backup-call", emit_runtime_hooks=True)
+            ticket = await ApprovalService().request_approval(db, await db.get(Agent, d.agent), action_type="file.write",
+                details={"tool": "write_file", "args": {"path": "workspace/pending.txt", "content": "AFTER_REVIEW"},
+                    "requested_by": str(d.user.id), "reason": "Pending authorized review", "execution_envelope": envelope})
+            await db.commit()
         # A live source process must be refused, with no bundle published.
         refused, detail = command("backup", "--offline", "--profile", profile, "--agents", tmp_path,
             "--output", work / "active-refused", "--pg-bin", binary)
@@ -181,6 +185,17 @@ async def test_backup_restore_restarts_real_auth_files_approvals_and_encrypted_c
         assert packaged.returncode == 0 and package_receipt["status"] == "packaged", package_receipt
         upgrade_args = ["--offline", "--release", release_file, "--release-sha256", package_receipt["release_sha256"],
             "--backup", backup_dir, "--backup-sha256", fingerprint]
+        probe = create_async_engine(source.set(database=target_database))
+        try:
+            async with probe.connect() as connection:
+                probe_pid = await connection.scalar(text("SELECT pg_backend_pid()"))
+                held, held_receipt = upgrade("preflight", *upgrade_args, "--output", work / "writer-held.json")
+                assert held.returncode == 3 and held_receipt["code"] == "upgrade_writers_must_be_stopped", held_receipt
+                assert any(row["pid"] == probe_pid and row["backend_type"] == "client backend"
+                    for row in held_receipt["details"]["backends"]), held_receipt
+                assert not (work / "writer-held.json").exists()
+        finally:
+            await probe.dispose()
         drift = target_agents / "new-unbacked-file.txt"
         drift.write_bytes(b"NEW_UNBACKED_STATE")
         stale, detail = upgrade("preflight", *upgrade_args, "--output", plan_file)
@@ -252,6 +267,64 @@ asyncio.run(check())
         finally:
             await engine.dispose()
         assert not (target_agents / str(d.agent) / "workspace/pending.txt").exists()
+        async with httpx.AsyncClient(timeout=30, trust_env=False) as client:
+            for _ in range(2):
+                reviewed = await client.post(approval_url + "/resolve", headers=headers, json={"action": "approve"})
+                assert reviewed.status_code == 200 and reviewed.json()["status"] == "approved", reviewed.text
+        worker = subprocess.run([sys.executable, "-B", "-c", """import asyncio, json, os
+from pathlib import Path
+from uuid import UUID
+from sqlalchemy import select
+from app.database import async_session, pin_rls_tenant_context
+from app.models.audit import ApprovalRequest
+from app.models.runtime_task import RuntimeTask
+from app.services.runtime_task_claim_service import RuntimeTaskClaimService
+from app.services.runtime_task_fence import run_claimed_runtime_task
+from app.services.approval_execution_runtime import execute_claimed_approval_execution
+from app.services.secrets_provider import init_secrets_provider
+init_secrets_provider(os.environ['SECRETS_MASTER_KEY'])
+async def check():
+    tenant, approval_id = UUID(os.environ['RECOVERY_TENANT']), UUID(os.environ['RECOVERY_APPROVAL'])
+    async with async_session() as db:
+        await pin_rls_tenant_context(db, tenant)
+        ticket = await db.get(ApprovalRequest, approval_id)
+        original_hash = ticket.execution_envelope_hash
+        task_id = ticket.execution_task_id
+        jobs = await RuntimeTaskClaimService(db=db, worker_id='restored-approval-worker',
+            task_types=('approval_execution',), lease_seconds=600).claim_available()
+        assert len(jobs) == 1 and jobs[0].id == task_id
+        await db.commit()
+    status = await run_claimed_runtime_task(execute_claimed_approval_execution(task_id), task_id=task_id,
+        claim_version=jobs[0].claim_version, worker_id='restored-approval-worker', lease_seconds=600)
+    assert status == 'succeeded', status
+    target = Path(os.environ['AGENT_DATA_DIR']) / os.environ['RECOVERY_AGENT'] / 'workspace/pending.txt'
+    assert target.read_text() == 'AFTER_REVIEW', 'The recovered worker must write to the restored workspace'
+    version = target.stat().st_mtime_ns
+    assert await execute_claimed_approval_execution(task_id) == 'succeeded'
+    assert target.stat().st_mtime_ns == version
+    async with async_session() as db:
+        await pin_rls_tenant_context(db, tenant)
+        ticket = await db.get(ApprovalRequest, approval_id)
+        assert ticket.consumed_at and ticket.execution_status == 'succeeded'
+        assert ticket.execution_envelope_hash == original_hash
+        assert ticket.execution_envelope['workspace'] == os.environ['RECOVERY_OLD_WORKSPACE']
+        jobs = (await db.scalars(select(RuntimeTask).where(RuntimeTask.task_type == 'approval_execution'))).all()
+        assert len(jobs) == 1 and jobs[0].id == task_id
+        receipt = {'status': ticket.execution_status, 'original_envelope_unchanged': True,
+            'execution_task_id': str(task_id), 'execution_jobs': len(jobs), 'duplicate_execution': 'no_write'}
+        Path(os.environ['RECOVERY_WORKER_RECEIPT']).write_text(json.dumps(receipt, indent=2))
+asyncio.run(check())
+"""], cwd=ROOT / "backend", env={**common,
+            "DATABASE_URL": runtime.set(database=target_database).render_as_string(hide_password=False),
+            "AGENT_DATA_DIR": str(target_agents), "RECOVERY_TENANT": str(d.tenant), "RECOVERY_AGENT": str(d.agent),
+            "RECOVERY_APPROVAL": str(ticket['approval_id']), "RECOVERY_OLD_WORKSPACE": str(d.root),
+            "RECOVERY_WORKER_RECEIPT": str(work / "recovered-worker.json")}, capture_output=True, timeout=60)
+        (work / "recovered-worker.log").write_bytes(worker.stdout + worker.stderr)
+        assert worker.returncode == 0, (worker.stdout + worker.stderr).decode()[-4000:]
+        assert not (d.root / "workspace/pending.txt").exists(), "The restored job must never write to its former installation"
+        async with httpx.AsyncClient(timeout=30, trust_env=False) as client:
+            completed = await client.get(approval_url, headers=headers)
+            assert completed.status_code == 200 and completed.json()["execution_status"] == "succeeded", completed.text
         (work / "recovery-consumption.json").write_text(json.dumps({"manifest_sha256": fingerprint,
             "login": 200, "old_jwt": "accepted", "content_download_bytes": "AAAA", "other_member": 403,
             "approval_status": "pending", "credential_consumer": "decrypted", "runtime_role": "nonprivileged",

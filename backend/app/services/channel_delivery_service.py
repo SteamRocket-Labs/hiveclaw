@@ -736,24 +736,15 @@ class ChannelDeliveryService:
 
                 agent_result = await db.execute(select(AgentModel).where(AgentModel.id == agent_id))
                 agent_obj = agent_result.scalar_one_or_none()
-                agent_id_str = str(agent_id)
-                if agent_id_str in ws_manager.active_connections:
-                    for ws, _sid in list(ws_manager.active_connections[agent_id_str]):
-                        try:
-                            await ws.send_json(
-                                {
-                                    "type": "trigger_notification",
-                                    "content": text,
-                                    "triggers": ["web_message"],
-                                    "agent_name": getattr(agent_obj, "name", None),
-                                }
-                            )
-                        except Exception as exc:
-                            error = exact_secret_boundary.redact_text(f"{type(exc).__name__}: {exc}")
-                            logger.debug(
-                                "[ChannelDelivery] Web push suppressed: {}",
-                                error.text,
-                            )
+                try:
+                    await ws_manager.send_session_message(
+                        str(agent_id), str(session.id),
+                        {"type": "trigger_notification", "content": text, "triggers": ["web_message"],
+                            "agent_name": getattr(agent_obj, "name", None)},
+                    )
+                except Exception as exc:
+                    error = exact_secret_boundary.redact_text(f"{type(exc).__name__}: {exc}")
+                    logger.debug("[ChannelDelivery] Web push suppressed: {}", error.text)
                 result = ChannelDeliveryService._success(
                     channel,
                     "Web message delivered.",

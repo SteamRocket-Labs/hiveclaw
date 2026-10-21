@@ -553,16 +553,25 @@ class TestSendText:
                 SimpleNamespace(id=agent_id, name="Web Agent"),
             ]
         )
+        from app.services.web_chat_broker import WebChatBroker
+
         pushed: list[dict] = []
+        unrelated: list[dict] = []
 
         class _FakeWS:
-            async def send_json(self, payload):
-                pushed.append(payload)
+            def __init__(self, received):
+                self.received = received
 
-        monkeypatch.setattr(
-            "app.api.websocket.manager",
-            SimpleNamespace(active_connections={str(agent_id): [(_FakeWS(), str(existing_session.id))]}),
-        )
+            async def send_json(self, payload):
+                self.received.append(payload)
+
+        broker = WebChatBroker()
+        broker.active_connections[str(agent_id)] = [
+            (_FakeWS(pushed), str(existing_session.id)),
+            (_FakeWS(unrelated), str(uuid4())),
+            (_FakeWS(unrelated), None),
+        ]
+        monkeypatch.setattr("app.api.websocket.manager", broker)
 
         result = await ChannelDeliveryService.send_text(
             db=db,
@@ -589,6 +598,7 @@ class TestSendText:
                 "agent_name": "Web Agent",
             }
         ]
+        assert unrelated == []
         assert db.commits == 1
         # RLS 阶段2b: the persisted web ChatMessage must carry the recipient's
         # tenant_id — a NULL would be globally visible under the USING-only policy.

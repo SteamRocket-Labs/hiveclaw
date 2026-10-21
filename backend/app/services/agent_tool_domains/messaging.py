@@ -871,19 +871,10 @@ async def _send_web_message(agent_id: uuid.UUID, args: dict) -> str:
             try:
                 from app.api.websocket import manager as ws_manager
 
-                agent_id_str = str(agent_id)
-                if agent_id_str in ws_manager.active_connections:
-                    for ws, sid in list(ws_manager.active_connections[agent_id_str]):
-                        try:
-                            await ws.send_json(
-                                {
-                                    "type": "trigger_notification",
-                                    "content": message_text,
-                                    "triggers": ["web_message"],
-                                }
-                            )
-                        except Exception as e:
-                            logger.debug("Suppressed: %s", e)
+                await ws_manager.send_session_message(
+                    str(agent_id), str(session.id),
+                    {"type": "trigger_notification", "content": message_text, "triggers": ["web_message"]},
+                )
             except Exception as e:
                 logger.debug("Suppressed: %s", e)
 

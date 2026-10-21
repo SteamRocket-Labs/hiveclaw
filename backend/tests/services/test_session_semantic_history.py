@@ -257,7 +257,7 @@ async def _settle_tool_invocation(
             "tool_decision": {
                 "schema": "hive.tool_decision.v1",
                 "decision_id": f"decision-{provider_tool_use_id}",
-                "outcome": {"denied": "deny", "unavailable": "unavailable"}.get(outcome, "allow"),
+                "outcome": {"denied": "deny", "unavailable": "unavailable", "approval_required": "require_approval"}.get(outcome, "allow"),
                 "input_hash": invocation.args_hash,
                 "policy_snapshot_hash": "a" * 64,
                 "capability_snapshot_hash": "b" * 64,
@@ -1613,3 +1613,23 @@ async def test_history_unavailable_fails_closed_before_any_provider_call(monkeyp
         },
         "terminal_reason": "persistence_error",
     }
+
+
+async def test_an_unbound_company_approval_round_remains_held(owner_sessionmaker, monkeypatch):
+    import json
+
+    tenant_id, user_id, agent_id, session_id = await _seed(owner_sessionmaker)
+    tool_id = uuid.uuid4().hex
+    marker = "UNBOUND_COMPANY_TICKET_PROPOSAL"
+    await _run_v2_turn(owner_sessionmaker, tenant_id=tenant_id, user_id=user_id, agent_id=agent_id,
+        session_id=session_id, prompt="Prepare the authorized notification.", answer="Waiting for the company decision.",
+        tool={"provider_tool_use_id": tool_id, "tool_name": "send_web_message",
+            "arguments": {"username": "recipient", "message": marker}, "outcome": "approval_required",
+            "result_content": json.dumps({"status": "approval_required", "approval_id": str(uuid.uuid4()),
+                "tool_name": "send_web_message"})})
+    _input, next_run, _turn = await _submit_turn(owner_sessionmaker, user_id=user_id, agent_id=agent_id,
+        session_id=session_id, content="Inspect the prior action.")
+    task, _history, conversation = await _load_history_via_live_entry(owner_sessionmaker, monkeypatch, run_id=next_run)
+    assert marker not in json.dumps(conversation)
+    held = task.metadata_json["session_semantic_history"]["held_items"]
+    assert any(item["kind"] == "unsettled_tool_round" and item["missing_provider_tool_use_ids"] == [tool_id] for item in held)

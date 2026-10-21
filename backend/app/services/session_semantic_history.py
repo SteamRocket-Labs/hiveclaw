@@ -11,6 +11,7 @@ boundary.
 from __future__ import annotations
 
 import copy
+import json
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -512,6 +513,25 @@ async def _committed_round_messages(
             tool_use_id = str(tool_call.get("id") or "") if isinstance(tool_call, dict) else ""
             invocation = invocation_map.get(tool_use_id)
             result_view = tool_result_views.get(invocation.id) if invocation is not None else None
+            payload = _event_payload(result_view.source) if result_view is not None else {}
+            settled = payload.get("outcome") in {"success", "failed", "denied", "unavailable", "cancelled", "aborted"}
+            if (not settled and payload.get("outcome") == "approval_required" and invocation is not None
+                and invocation.effect_state == "prepared_not_started"):
+                from app.services.approval_ticket import hash_tool_input
+                from app.services.session_approval import invocation_enterprise_approval
+
+                try:
+                    decision = json.loads(payload.get("content") or "")
+                except (ValueError, TypeError):
+                    decision = None
+                if isinstance(decision, dict) and decision.get("status") == "approval_required":
+                    decision_ref = payload.get("content_or_error_ref")
+                    if ("decision_id" not in decision and isinstance(decision_ref, str)
+                        and decision_ref.startswith("tool-decision:")):
+                        decision = {**decision, "decision_id": decision_ref.removeprefix("tool-decision:")}
+                    settled = await invocation_enterprise_approval(db, invocation=invocation, agent_id=agent_id,
+                        decision=decision, input_hash=hash_tool_input(invocation.tool_name,
+                            invocation.effective_arguments_json or {})) is not None
             if (
                 not tool_use_id
                 or invocation is None
@@ -521,8 +541,7 @@ async def _committed_round_messages(
                 or invocation.result_event_id is None
                 or result_view is None
                 or result_view.source.id != invocation.result_event_id
-                or _event_payload(result_view.source).get("outcome")
-                not in {"success", "failed", "denied", "unavailable", "cancelled", "aborted"}
+                or not settled
             ):
                 missing_tool_use_ids.append(tool_use_id or "<missing-provider-tool-use-id>")
                 continue

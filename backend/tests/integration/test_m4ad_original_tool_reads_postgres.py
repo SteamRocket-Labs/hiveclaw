@@ -363,3 +363,16 @@ async def test_actual_native_worker_consumes_original_with_complete_sources_and_
             failures = [value.metadata_json["original_read"] for value in proofs
                 if value.metadata_json["original_read"]["status"] != "verified"]
             assert len(failures) == 1 and failures[0]["sources"] == []
+    if first_failure is False and provider[0] == "filesystem":
+        from app.api import chat_sessions
+
+        client._transport.app.include_router(chat_sessions.router)
+        deleted = await client.delete(f"/agents/{seed['agent_id']}/sessions/{seed['session_id']}", headers={
+            "Authorization": "Bearer " + create_access_token(str(seed["user_id"]), "member", str(seed["tenant_id"]))})
+        assert deleted.status_code == 204, deleted.text
+        async with app_user_sessionmaker() as db:
+            await pin_rls_tenant_context(db, seed["tenant_id"])
+            closed = (await db.scalars(select(StorageBlobRef).where(StorageBlobRef.tenant_id == seed["tenant_id"],
+                StorageBlobRef.owner_type.in_(("session_input", "session_tool_read"))))).all()
+            assert {pin.owner_type for pin in closed} == {"session_input", "session_tool_read"}
+            assert all(pin.metadata_json.get("session_retirement", {}).get("schema") == "hive.original_session_retirement.v1" for pin in closed)

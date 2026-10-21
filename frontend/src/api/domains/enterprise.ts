@@ -87,7 +87,17 @@ export interface StorageRetention {
 }
 
 export type OriginalState = 'uploading' | 'available' | 'quarantined' | 'deleting' | 'deleted' | 'failed';
-export type OriginalOperationFamily = 'reconciliation' | 'retention' | 'sweep';
+export type OriginalOperationFamily = 'reconciliation' | 'retention' | 'sweep' | 'references';
+export interface OriginalReference {
+  reference_id: string;
+  owner_type: string;
+  retirable: boolean;
+  hold_reason: string | null;
+  snapshot_sha256: string;
+  created_at: string;
+  pinned_until: string | null;
+  legal_hold: boolean;
+}
 export interface OriginalPolicy {
   enabled: boolean;
   retention_days: number;
@@ -113,10 +123,12 @@ export interface OriginalRecord {
 export interface OriginalOperationRequest {
   operation_id: string;
   expected_content_sha256: string;
-  action: 'inspect' | 'recover' | 'quarantine' | 'restore' | 'sweep' | 'reconcile';
+  action: 'inspect' | 'recover' | 'quarantine' | 'restore' | 'sweep' | 'reconcile' | 'retire_reference';
   expected_policy_version?: number;
   expected_manifest_sha256?: string;
   retry_operation_id?: string;
+  reference_id?: string;
+  expected_reference_sha256?: string;
 }
 export interface OriginalObservation {
   operation_id: string;
@@ -135,6 +147,7 @@ export interface OriginalObservation {
   manifest_sha256?: string;
   sweep_eligible?: boolean;
   physical_bytes_reclaimed?: number | null;
+  reference_id?: string;
 }
 
 export interface LegacyCompanyFilesStatus {
@@ -494,6 +507,12 @@ export const enterpriseApi = {
   getOriginalOperation: (tenantId: string, blobId: string, family: OriginalOperationFamily, operationId: string) =>
     get<{ operation_id: string; status: 'running' | 'completed' | 'partial' | 'failed'; result: OriginalObservation }>(
       `/enterprise/storage-originals/${encodeURIComponent(blobId)}/operations/${family}/${encodeURIComponent(operationId)}?tenant_id=${encodeURIComponent(tenantId)}`),
+  getOriginalReferences: (tenantId: string, blobId: string, after?: string) => {
+    const query = new URLSearchParams({ tenant_id: tenantId, limit: '50' });
+    if (after) query.set('after', after);
+    return get<{ items: OriginalReference[]; next_cursor: string | null }>(
+      `/enterprise/storage-originals/${encodeURIComponent(blobId)}/references?${query}`);
+  },
   getSetting: (key: string, tenantId?: string) =>
     get<SystemSetting>(`/enterprise/system-settings/${key}${tenantId ? `?tenant_id=${tenantId}` : ''}`),
   updateSetting: (key: string, value: Record<string, unknown>, tenantId?: string) =>

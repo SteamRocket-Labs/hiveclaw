@@ -57,12 +57,20 @@ async def channel_original_source(db, *, tenant_id, ref, inspection_user=None, r
         raise BlobStoreError("Channel original authority requires reconciliation") from None
     manifest = await db.scalar(select(WorkspaceResourceManifest).where(WorkspaceResourceManifest.id == manifest_id,
         WorkspaceResourceManifest.tenant_id == tenant_id).execution_options(populate_existing=True))
+    same_root = manifest is not None and (str(manifest.root_session_id) if manifest.root_session_id else None) == metadata.get("root_session_id")
+    if manifest is not None and manifest.root_session_id is None and not same_root:
+        from app.models.chat_session import ChatSession
+        from app.services.original_reference_pins import closed_session_proof
+
+        closed = closed_session_proof(ref)
+        same_root = closed is not None and await db.scalar(select(ChatSession.id).where(
+            ChatSession.tenant_id == tenant_id, ChatSession.id == uuid.UUID(closed["session_id"]))) is None
     if (manifest is None or manifest.deleted_at is not None or manifest.agent_id != agent_id or manifest.path != path
         # The manifest source records the latest writer; the immutable ref
         # records the upload origin. Editing a work copy changes only the former.
         or metadata.get("source") not in {"feishu_upload", "dingtalk_upload", "wecom_upload"}
         or (str(manifest.owner_user_id) if manifest.owner_user_id else None) != metadata.get("owner_user_id")
-        or (str(manifest.root_session_id) if manifest.root_session_id else None) != metadata.get("root_session_id")):
+        or not same_root):
         raise BlobStoreError("Channel original authority requires reconciliation")
     return manifest
 

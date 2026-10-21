@@ -2,10 +2,11 @@ import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { ApiError } from '../../api/core';
-import { enterpriseApi, type OriginalObservation, type OriginalOperationFamily, type OriginalOperationRequest,
+import { enterpriseApi, type OriginalReference, type OriginalObservation, type OriginalOperationFamily, type OriginalOperationRequest,
   type OriginalPolicy, type OriginalRecord, type OriginalState } from '../../api/domains/enterprise';
 import { useAuthStore } from '../../stores';
 import Modal from '../../components/ui/Modal';
+import OriginalReferenceList from './OriginalReferenceList';
 
 interface SubmittedOperation {
   version: 1;
@@ -22,12 +23,13 @@ function readSubmitted(actor: string, tenant: string): SubmittedOperation | null
   try {
     const value = JSON.parse(sessionStorage.getItem(storageKey(actor, tenant)) || 'null');
     if (value?.version !== 1 || value.actor !== actor || value.tenant !== tenant || !value.original
-      || !['reconciliation', 'retention', 'sweep'].includes(value.family)
+      || !['reconciliation', 'retention', 'sweep', 'references'].includes(value.family)
       || !uuid.test(value.original.blob_id) || !uuid.test(value.request?.operation_id)
       || !sha256.test(value.request.expected_content_sha256) || value.original.content_sha256 !== value.request.expected_content_sha256) return null;
-    const actions = { reconciliation: ['recover'], retention: ['quarantine', 'restore'], sweep: ['sweep'] };
+    const actions = { reconciliation: ['recover'], retention: ['quarantine', 'restore'], sweep: ['sweep'], references: ['retire_reference'] };
     if (!actions[value.family as OriginalOperationFamily].includes(value.request.action)) return null;
-    if (value.family !== 'reconciliation' && (!Number.isInteger(value.request.expected_policy_version) || value.request.expected_policy_version < 0)) return null;
+    if (['retention', 'sweep'].includes(value.family) && (!Number.isInteger(value.request.expected_policy_version) || value.request.expected_policy_version < 0)) return null;
+    if (value.family === 'references' && (!uuid.test(value.request.reference_id) || !sha256.test(value.request.expected_reference_sha256))) return null;
     if (value.family === 'sweep' && (!sha256.test(value.request.expected_manifest_sha256)
       || (value.request.retry_operation_id != null && !uuid.test(value.request.retry_operation_id)))) return null;
     return value;
@@ -64,6 +66,8 @@ function OriginalOperations({ actor, tenant }: { actor: string; tenant: string }
   const [missingReceipt, setMissingReceipt] = useState(false);
   const [review, setReview] = useState<SubmittedOperation | null>(null);
   const [observed, setObserved] = useState<OriginalObservation | null>(null);
+  const [referenceTarget, setReferenceTarget] = useState<OriginalRecord | null>(null);
+  const [referenceVersion, setReferenceVersion] = useState(0);
   const cancelReview = useRef<HTMLButtonElement>(null);
   const active = () => alive.current;
   const states: Record<OriginalState, string> = { uploading: t('enterprise.originals.uploading'), available: t('enterprise.originals.available'),
@@ -126,18 +130,26 @@ function OriginalOperations({ actor, tenant }: { actor: string; tenant: string }
   }
   function command(original: OriginalRecord, family: OriginalOperationFamily, action: OriginalOperationRequest['action'], snapshot?: OriginalObservation): SubmittedOperation {
     const request: OriginalOperationRequest = { operation_id: crypto.randomUUID(), expected_content_sha256: original.content_sha256, action };
-    if (family !== 'reconciliation') request.expected_policy_version = snapshot?.policy_version ?? policy?.version;
+    if (family === 'retention' || family === 'sweep') request.expected_policy_version = snapshot?.policy_version ?? policy?.version;
     if (family === 'sweep') request.expected_manifest_sha256 = snapshot?.manifest_sha256;
     return { version: 1, actor, tenant, original, family, request };
+  }
+  function validateReferenceReceipt(operation: SubmittedOperation, result: OriginalObservation) {
+    if (operation.family === 'references' && (result.reference_id !== operation.request.reference_id
+      || result.blob_id !== operation.original.blob_id || result.operation_id !== operation.request.operation_id)) {
+      throw new Error('original_reference_receipt_mismatch');
+    }
   }
   async function submit(operation: SubmittedOperation, remember: boolean) {
     if (remember && submittedRef.current && submittedRef.current.request.operation_id !== operation.request.operation_id) return;
     if (remember) { track(operation); if (active()) setMissingReceipt(false); }
     try {
       const result = await enterpriseApi.originalOperation(tenant, operation.original.blob_id, operation.family, operation.request);
+      validateReferenceReceipt(operation, result);
       if (remember) track(null);
       if (!active()) return;
       setObserved(result); setMissingReceipt(false); setReview(null);
+      if (operation.family === 'references') setReferenceVersion(value => value + 1);
       if (!remember && !result.replayed) setDetail({ original: operation.original, result });
       else setDetail(null);
       await loadCatalog();
@@ -162,8 +174,10 @@ function OriginalOperations({ actor, tenant }: { actor: string; tenant: string }
       if (!operation) return;
       try {
         const receipt = await enterpriseApi.getOriginalOperation(tenant, operation.original.blob_id, operation.family, operation.request.operation_id);
+        validateReferenceReceipt(operation, receipt.result);
         if (!active()) return;
         setObserved(receipt.result); setDetail(null); setReview(null); setMissingReceipt(false);
+        if (operation.family === 'references') setReferenceVersion(value => value + 1);
         if (receipt.status !== 'running') track(null);
         await loadCatalog();
       } catch (failure) {
@@ -188,6 +202,13 @@ function OriginalOperations({ actor, tenant }: { actor: string; tenant: string }
     if (!detail?.result.manifest_sha256 || submittedRef.current) return;
     const operation = command(detail.original, 'sweep', 'sweep', detail.result);
     if (retry) operation.request.retry_operation_id = rows.find((row) => row.blob_id === detail.original.blob_id)?.active_sweep?.operation_id;
+    setReview(operation);
+  }
+  function reviewReference(reference: OriginalReference) {
+    if (!referenceTarget || !reference.retirable || submittedRef.current || inflight.current) return;
+    const operation = command(referenceTarget, 'references', 'retire_reference');
+    operation.request.reference_id = reference.reference_id;
+    operation.request.expected_reference_sha256 = reference.snapshot_sha256;
     setReview(operation);
   }
   const numbersValid = [days, grace].every((value) => value.trim() !== '' && Number.isFinite(Number(value)) && Number(value) >= 0);
@@ -230,6 +251,7 @@ function OriginalOperations({ actor, tenant }: { actor: string; tenant: string }
     {rows.map((row) => <article className="card" key={row.blob_id}>
       <p><code>{row.blob_id}</code> · {states[row.state]} · {row.provider} · {row.size_bytes} B</p>
       <p>{t('enterprise.originals.references', { count: row.reference_count })}</p>
+      <button className="btn" disabled={busy} onClick={() => setReferenceTarget(row)}>{t('enterprise.originals.manageReferences', 'Retained references')}</button>
       <button className="btn" disabled={busy || (row.state !== 'uploading' && (!policy || policyError))} onClick={() => void inspect(row)}>{t('enterprise.originals.inspect')}</button>
     </article>)}
     {!rows.length && !busy ? <p>{t('enterprise.originals.empty')}</p> : null}
@@ -246,20 +268,29 @@ function OriginalOperations({ actor, tenant }: { actor: string; tenant: string }
       {current.state === 'deleting' ? <button className="btn" disabled={busy} onClick={() => void guard(() => submit(command(detail.original, 'sweep', 'reconcile', current), false))}>{t('enterprise.originals.verifyDeletion')}</button> : null}
       {canRetry ? <button className="btn ws-info-delete-btn" disabled={busy || Boolean(submitted)} onClick={() => reviewSweep(true)}>{t('enterprise.originals.retryDeletion')}</button> : null}
     </div> : null}
-    <Modal open={Boolean(review)} title={t('enterprise.originals.review')} ariaLabel={t('enterprise.originals.review')}
+    {referenceTarget ? <OriginalReferenceList key={`${tenant}:${referenceTarget.blob_id}`} tenant={tenant} blobId={referenceTarget.blob_id}
+      version={referenceVersion} disabled={busy || Boolean(submitted)} onRetire={reviewReference} /> : null}
+    <Modal open={Boolean(review)} title={review?.family === 'references' ? t('enterprise.originals.refReview', 'Review reference retirement') : t('enterprise.originals.review')}
+      ariaLabel={review?.family === 'references' ? t('enterprise.originals.refReview', 'Review reference retirement') : t('enterprise.originals.review')}
       onClose={() => { if (!inflight.current) setReview(null); }}
       footer={<>
         <button ref={cancelReview} className="btn" disabled={busy} onClick={() => setReview(null)}>{t('common.cancel')}</button>
-        <button className="btn ws-info-delete-btn" disabled={busy || !review} onClick={() => review && void guard(() => submit(review, true))}>{destructiveReview ? t('enterprise.originals.confirm') : t('enterprise.originals.confirmAction')}</button>
+        <button className="btn ws-info-delete-btn" disabled={busy || !review} onClick={() => review && void guard(() => submit(review, true))}>{review?.family === 'references'
+          ? t('enterprise.originals.refConfirm', 'Confirm reference retirement') : destructiveReview ? t('enterprise.originals.confirm') : t('enterprise.originals.confirmAction')}</button>
       </>}>
       {review ? <>
         <p className="ws-info-original-identity"><code>{review.original.blob_id}</code></p>
         <p className="ws-info-original-identity"><code>{review.request.expected_content_sha256}</code></p>
         <p>{review.original.provider} · {review.original.size_bytes} B</p>
-        <p>{destructiveReview ? t('enterprise.originals.deleteWarning') : t('enterprise.originals.resubmitWarning')}</p>
+        <p>{review.family === 'references' ? t('enterprise.originals.refWarning', 'Retire only this verified holding. The stored original remains subject to the separate retention and physical-cleanup policy.')
+          : destructiveReview ? t('enterprise.originals.deleteWarning') : t('enterprise.originals.resubmitWarning')}</p>
       </> : null}
     </Modal>
-    {observed ? <p role="status">{t('enterprise.originals.recorded', { id: observed.operation_id, state: states[observed.state], date: observed.observed_at })}</p> : null}
+    {observed ? <p role="status">{observed.reference_id ? observed.outcome === 'reference_retired'
+      ? t('enterprise.originals.refRecorded', 'Reference retirement recorded. The original has not been physically deleted.')
+      : observed.outcome === 'reference_absent' ? t('enterprise.originals.refAbsent', 'This original no longer has that reference.')
+      : t('enterprise.originals.refHeld', 'The reference was retained. Refresh and verify its current requirements.')
+      : t('enterprise.originals.recorded', { id: observed.operation_id, state: states[observed.state], date: observed.observed_at })}</p> : null}
     {error ? <p role="alert">{error}</p> : null}
   </section>;
 }

@@ -84,6 +84,11 @@ async def delete_session_tree(db: AsyncSession, session: ChatSession) -> None:
     if await list_unresolved_tool_effects(db, tenant_id=session.tenant_id, session_id=session_id,
                                          terminal_tasks_only=False, limit=1):
         raise SessionWorkUnsettled(SessionWorkUnsettled.code)
+    from app.services.original_reference_pins import mark_closed_original_references
+
+    # This mechanical proof commits only with successful guarded deletion.
+    # Keep holds and pins intact for the administrator's separate decision.
+    await mark_closed_original_references(db, session=session)
     # Run outcomes reference terminal model results, so they go first.
     await db.execute(sql_delete(SessionRunOutcome).where(SessionRunOutcome.session_id == session_id))
     await db.execute(sql_delete(SessionModelResult).where(SessionModelResult.session_id == session_id))

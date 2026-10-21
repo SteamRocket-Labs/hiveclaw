@@ -48,6 +48,7 @@ from app.services.original_reconciliation import OriginalReconciliationRequest
 from app.services.original_retention import OriginalRetentionPolicyUpdate, OriginalRetentionRequest
 from app.services.original_sweep import OriginalSweepRequest
 from app.services.original_catalog import OperationFamily, OriginalState
+from app.services.original_reference_retirement import OriginalReferenceRetirementRequest
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -128,6 +129,29 @@ async def get_original_catalog(tenant_id: uuid.UUID | None = Query(None), limit:
     _require_org_admin(current_user)
     target = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
     return await original_catalog(db, tenant_id=target, limit=limit, after=after, state=state, unreferenced=unreferenced)
+
+
+@router.get("/storage-originals/{blob_id}/references")
+async def get_original_references(blob_id: uuid.UUID, tenant_id: uuid.UUID | None = Query(None),
+    limit: int = Query(50, ge=1, le=200), after: uuid.UUID | None = Query(None),
+    current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    from app.services.original_reference_retirement import original_reference_catalog
+
+    _require_org_admin(current_user)
+    target = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
+    return await original_reference_catalog(db, tenant_id=target, blob_id=blob_id, limit=limit, after=after)
+
+
+@router.post("/storage-originals/{blob_id}/references")
+async def retire_original_reference_entry(blob_id: uuid.UUID, body: OriginalReferenceRetirementRequest,
+    tenant_id: uuid.UUID | None = Query(None), current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    from app.services.original_reference_retirement import retire_original_reference
+
+    _require_org_admin(current_user)
+    target = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
+    result = await retire_original_reference(db, tenant_id=target, actor_id=current_user.id, blob_id=blob_id, request=body)
+    await db.commit()
+    return result
 
 
 @router.get("/storage-originals/{blob_id}/operations/{family}/{operation_id}")

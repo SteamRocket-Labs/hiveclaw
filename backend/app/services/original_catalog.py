@@ -9,11 +9,13 @@ from sqlalchemy import func, select
 from app.models.storage_blob import StorageBlob, StorageBlobRef, StorageGCRun
 
 OriginalState = Literal["uploading", "available", "quarantined", "deleting", "deleted", "failed"]
-OperationFamily = Literal["reconciliation", "retention", "sweep"]
+OperationFamily = Literal["reconciliation", "retention", "sweep", "references"]
 NAMESPACES = {"reconciliation": "hive.original-reconciliation", "retention": "hive.original-retention", "sweep": "hive.original-sweep"}
+NAMESPACES["references"] = "hive.original-reference-retirement"
 RESULT_FIELDS = {"operation_id", "blob_id", "outcome", "state", "recovered", "replayed", "observed_at", "retryable",
     "recovery_action", "policy_version", "changed", "hold_reason", "observation", "delete_after", "sweep_eligible",
     "manifest_sha256", "physical_bytes_reclaimed", "previous_operation_id"}
+RESULT_FIELDS.add("reference_id")
 
 
 async def original_catalog(db, *, tenant_id, limit, after=None, state=None, unreferenced=False):

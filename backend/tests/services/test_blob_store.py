@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 from pathlib import Path
+import asyncio
 
 import pytest
 
@@ -74,3 +75,40 @@ async def test_blob_store_rejects_hash_mismatch_and_path_escape(tmp_path: Path) 
 
     with pytest.raises(ValueError, match="unsafe blob"):
         await store.stat(BlobLocation(provider="filesystem", bucket="durable", object_key="../escape"))
+
+
+@pytest.mark.asyncio
+async def test_blob_publication_never_overwrites_a_concurrent_immutable_key(tmp_path):
+    from app.services.blob_store import BlobIntegrityError, BlobLocation, BlobPutRequest, FilesystemBlobStore
+
+    store = FilesystemBlobStore(tmp_path / "objects")
+    location = BlobLocation(provider="filesystem", bucket="durable", object_key="tenant/immutable")
+    requests = []
+    for name, body in (("a", b"A" * 1024), ("b", b"B" * 1024)):
+        source = tmp_path / name
+        source.write_bytes(body)
+        requests.append(BlobPutRequest(tenant_id="tenant", kind="attachment", retention_class="original",
+            location=location, source_path=source, expected_sha256=hashlib.sha256(body).hexdigest(), expected_size=len(body)))
+    results = await asyncio.gather(*(store.put_verified(request) for request in requests), return_exceptions=True)
+    successful = [row for row in results if not isinstance(row, BaseException)]
+    assert len(successful) == 1 and sum(isinstance(row, BlobIntegrityError) for row in results) == 1
+    actual = b"".join([chunk async for chunk in store.open_stream(location)])
+    assert hashlib.sha256(actual).hexdigest() == successful[0].sha256
+
+
+@pytest.mark.asyncio
+async def test_blob_provider_refuses_an_in_root_parent_alias(tmp_path):
+    from app.services.blob_store import BlobStoreError, BlobLocation, BlobPutRequest, FilesystemBlobStore
+
+    root = tmp_path / "objects"
+    retained = root / "durable/retained-owner"
+    retained.mkdir(parents=True)
+    (root / "durable/tenant").symlink_to(retained, target_is_directory=True)
+    source = tmp_path / "source"
+    source.write_bytes(b"NEW_BYTES")
+    request = BlobPutRequest(tenant_id="tenant", kind="attachment", retention_class="original",
+        location=BlobLocation(provider="filesystem", bucket="durable", object_key="tenant/foreign"),
+        source_path=source, expected_sha256=hashlib.sha256(b"NEW_BYTES").hexdigest(), expected_size=9)
+    with pytest.raises(BlobStoreError):
+        await FilesystemBlobStore(root).put_verified(request)
+    assert not (retained / "foreign").exists()

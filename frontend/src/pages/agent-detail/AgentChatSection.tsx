@@ -939,6 +939,7 @@ function SessionHydratingState({ label }: { label: string }) {
 }
 
 interface ChatMessageItemProps {
+  viewerUserId?: string;
   msg: AgentChatMessage;
   i: number;
   isLeft: boolean;
@@ -983,6 +984,7 @@ const ChatMessageItem = React.memo(function ChatMessageItem({
   operatorView = false,
   operatorReason,
   collapseAssistantContent = false,
+  viewerUserId,
 }: ChatMessageItemProps) {
   const extension = msg.fileName?.split('.').pop()?.toLowerCase() ?? '';
   const fileIcon =
@@ -1100,6 +1102,7 @@ const ChatMessageItem = React.memo(function ChatMessageItem({
           artifacts={msg.inputAttachments}
           onOpenArtifact={onOpenArtifact}
           operatorView={operatorView} operatorReason={operatorReason}
+          viewerUserId={viewerUserId}
         />}
         <ArtifactCards
           agentId={effectiveAgentId}
@@ -1574,6 +1577,7 @@ function AgentChatSection({
 	        i={index}
 	        isLeft={isLeft}
 	        checkpointMessage={message.role === 'assistant' ? checkpointByIndex.get(index) || null : null}
+          viewerUserId={currentUser?.id}
           effectiveAgentId={effectiveAgentId}
           onOpenArtifact={openArtifact}
           onBranchMessage={canMutateSession ? startBranchAction : undefined}

@@ -118,6 +118,13 @@ async def test_backup_restore_restarts_real_auth_files_approvals_and_encrypted_c
             original = await client.get(origin + f"/api/agents/{d.agent}/files/artifacts/{d.first.id}/download",
                 headers={"Authorization": "Bearer " + token})
             assert original.status_code == 200 and original.content == b"AAAA", original.text
+            uploaded = await client.post(origin + "/api/chat/upload", headers={"Authorization": "Bearer " + token},
+                files={"file": ("original.bin", b"RECOVERED_ORIGINAL\x00BYTES", "application/octet-stream")},
+                data={"agent_id": str(d.agent), "skip_personal_kb": "true"})
+            assert uploaded.status_code == 200, uploaded.text
+            original_ref = uploaded.json()["original_attachment"]["id"]
+            upload_path = uploaded.json()["workspace_path"]
+            (d.root / upload_path).write_bytes(b"EDITED_BEFORE_BACKUP")
         # Issue work under the live initialized installation's policy, rather
         # than a pre-bootstrap configuration that legitimately requires reapproval.
         async with owner_sessionmaker() as db:
@@ -233,6 +240,12 @@ async def test_backup_restore_restarts_real_auth_files_approvals_and_encrypted_c
             headers = {"Authorization": "Bearer " + token}
             again = await client.post(origin + "/api/auth/login", json={"username": username, "password": password})
             assert again.status_code == 200, again.text
+            original_url = origin + f"/api/chat/attachments/{original_ref}/download"
+            recovered_original = await client.get(original_url, headers=headers)
+            assert recovered_original.status_code == 200 and recovered_original.content == b"RECOVERED_ORIGINAL\x00BYTES", recovered_original.text
+            assert (target_agents / str(d.agent) / upload_path).read_bytes() == b"EDITED_BEFORE_BACKUP"
+            denied_original = await client.get(original_url, headers={"Authorization": "Bearer " + other_token})
+            assert denied_original.status_code == 403, denied_original.text
             for suffix in ("content", "download"):
                 url = origin + f"/api/agents/{d.agent}/files/artifacts/{d.first.id}/{suffix}"
                 response = await client.get(url, headers=headers)

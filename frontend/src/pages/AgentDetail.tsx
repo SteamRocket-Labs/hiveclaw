@@ -62,7 +62,7 @@ import { agentApi, type AgentCapabilityInstall, type AgentChannelCapability } fr
 import { enterpriseApi } from '../api/domains/enterprise';
 import { triggerApi } from '../api/domains/triggers';
 import { autonomyApi } from '../api/domains/autonomy';
-import { chatApi, type ChatSession, type ConversationBranchMode, type SessionRun, type SessionStartResponse, type StartSessionRunInput } from '../api/domains/chat';
+import { chatApi, type ChatSession, type ConversationBranchMode, type SessionRun, type SessionStartResponse, type StartSessionRunInput, type UploadedChatFile } from '../api/domains/chat';
 import { ccParityApi } from '../api/domains/ccParity';
 import { ApiError } from '../api/core';
 import { uploadFileWithProgress } from '../api/core/upload-progress';
@@ -1488,6 +1488,7 @@ function AgentDetailInner() {
     const [uploadProgress, setUploadProgress] = useState(-1);
     const uploadAbortRef = useRef<(() => void) | null>(null);
     const [attachedFiles, setAttachedFiles] = useState<{
+        originalAttachment?: UploadedChatFile['original_attachment'];
         name: string;
         text: string;
         path?: string;
@@ -1879,6 +1880,7 @@ function AgentDetailInner() {
         let contentForLLM = userMsg;
         let displayFiles = '';
         const attachmentPayload = attachedFiles.map((file) => ({
+            original_attachment: file.originalAttachment || undefined,
             name: file.name,
             path: file.path,
             is_image: Boolean(file.imageUrl),
@@ -2283,6 +2285,7 @@ function AgentDetailInner() {
             });
             const results = await Promise.all(uploadPromises);
             const newAttached = results.map(data => ({
+                originalAttachment: data.original_attachment,
                 name: data.filename,
                 text: data.extracted_text,
                 path: data.workspace_path,
@@ -2341,6 +2344,7 @@ function AgentDetailInner() {
             });
             const results = await Promise.all(uploadPromises);
             const newAttached = results.map(data => ({
+                originalAttachment: data.original_attachment,
                 name: data.filename,
                 text: data.extracted_text,
                 path: data.workspace_path,

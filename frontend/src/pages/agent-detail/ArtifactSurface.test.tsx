@@ -1,10 +1,13 @@
 import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { describe, expect, it, vi } from 'vitest';
+import { afterAll, describe, expect, it, vi } from 'vitest';
 
 import { ArtifactPreviewPanel, getArtifactOpenMode, getEffectiveArtifactPreviewKind, loadOfficeArtifactPreview } from './ArtifactSurface';
 import { officeApi } from '../../api/domains/office';
 import nginxConf from '../../../nginx.conf?raw';
+
+vi.hoisted(() => vi.stubGlobal('localStorage', { getItem: () => null }));
+afterAll(() => vi.unstubAllGlobals());
 
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({ t: (_key: string, fallback?: string) => fallback || _key }),
@@ -13,7 +16,8 @@ vi.mock('react-i18next', () => ({
 describe('Office artifact preview surface', () => {
   it('allows local blob frames in every deployed CSP without allowing external frames or weakening scripts', () => {
     const policies = [...nginxConf.matchAll(/add_header Content-Security-Policy "([^"]+)"/g)].map((match) => match[1]);
-    expect(policies).toHaveLength(3);
+    expect(policies).toHaveLength(4);
+    expect(nginxConf).toMatch(/location = \/build-identity\.json \{[^}]*add_header Content-Security-Policy/s);
     for (const policy of policies) {
       expect(policy.match(/(?:^|;)\s*frame-src ([^;]+);/)?.[1]).toBe("'self' blob:");
       expect(policy).toContain("script-src 'self';");

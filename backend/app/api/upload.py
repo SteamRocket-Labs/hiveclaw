@@ -8,6 +8,8 @@ import uuid
 from pathlib import Path
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, UploadFile, Form
+from fastapi.responses import FileResponse
+from starlette.background import BackgroundTask
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.permissions import check_agent_access
@@ -18,6 +20,31 @@ from app.models.user import User
 from app.services.personal_knowledge_service import PersonalKnowledgeService
 
 router = APIRouter(prefix="/chat", tags=["chat"])
+
+
+class _OriginalDownloadResponse(FileResponse):
+    def __init__(self, lease, path, filename):
+        self.lease = lease
+        super().__init__(path, filename=filename, media_type="application/octet-stream", background=BackgroundTask(lease.cleanup))
+
+    async def __call__(self, scope, receive, send):
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            self.lease.cleanup()
+
+
+@router.get("/attachments/{ref_id}/download")
+async def download_original_attachment(ref_id: uuid.UUID, current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)):
+    from app.services.blob_store import BlobStoreError
+    from app.services.upload_originals import capture_original_download
+
+    try:
+        lease, target, filename = await capture_original_download(db, current_user, ref_id)
+    except (BlobStoreError, OSError):
+        raise HTTPException(503, detail={"code": "original_attachment_unavailable", "retryable": True})
+    return _OriginalDownloadResponse(lease, target, filename)
 
 _settings = get_settings()
 WORKSPACE_ROOT = Path(_settings.AGENT_DATA_DIR)
@@ -128,9 +155,33 @@ def _sanitize_upload_filename(filename: str) -> str:
     """Normalize a user-supplied filename to a safe basename."""
     normalized = filename.replace("\\", "/")
     safe_name = Path(normalized).name
-    if safe_name in {"", ".", ".."}:
+    if safe_name in {"", ".", ".."} or "\x00" in safe_name:
         raise HTTPException(status_code=400, detail="Invalid filename")
     return safe_name
+
+
+def _write_upload_copy(namespace, filename, content):
+    from app.services.confined_storage import confined_storage_parent
+
+    counter = 0
+    original = Path(filename)
+    while True:
+        name = filename if counter == 0 else f"{original.stem}_{counter}{original.suffix}"
+        relative = f"workspace/uploads/{name}"
+        storage_path = f"{namespace}/{relative}"
+        try:
+            with confined_storage_parent(WORKSPACE_ROOT, storage_path, create=True) as (directory, leaf):
+                descriptor = os.open(leaf, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+                    0o600, dir_fd=directory)
+                with os.fdopen(descriptor, "wb") as output:
+                    output.write(content)
+                    output.flush()
+                    os.fsync(output.fileno())
+            return relative, WORKSPACE_ROOT / storage_path
+        except FileExistsError:
+            counter += 1
+        except OSError:
+            raise HTTPException(503, detail={"code": "upload_workspace_unavailable", "retryable": True})
 
 
 @router.post("/upload")
@@ -151,7 +202,7 @@ async def upload_file(
         elif access_result is not None:
             agent = access_result
     owner_user_id = _owner_user_id_for_upload(agent=agent, current_user=current_user)
-    return await save_upload_for_agent(
+    result = await save_upload_for_agent(
         file=file,
         agent_id=agent_id,
         tenant_id=getattr(current_user, "tenant_id", None),
@@ -162,6 +213,9 @@ async def upload_file(
         skip_personal_kb=skip_personal_kb,
         background_tasks=background_tasks,
     )
+    if isinstance(db, AsyncSession) and db.in_transaction():
+        await db.commit()
+    return result
 
 
 def _owner_user_id_for_upload(*, agent, current_user: User) -> uuid.UUID | None:
@@ -223,76 +277,59 @@ async def save_upload_for_agent(
     if ext in IMAGE_EXTENSIONS and len(content) > CHAT_IMAGE_UPLOAD_MAX_BYTES:
         raise HTTPException(status_code=413, detail=f"Image too large (max {CHAT_IMAGE_UPLOAD_MAX_BYTES} bytes)")
 
-    # Determine save directory
-    workspace_path = ""
+    original = None
+    if isinstance(db, AsyncSession) and tenant_id is not None and user_id is not None:
+        from app.services.blob_store import BlobStoreError
+        from app.services.upload_originals import archive_upload
+
+        try:
+            original = await archive_upload(db, tenant_id=uuid.UUID(str(tenant_id)), user_id=uuid.UUID(str(user_id)),
+                agent_id=uuid.UUID(str(agent_id)) if agent_id else None, filename=safe_filename, body=content)
+        except (BlobStoreError, OSError):
+            raise HTTPException(503, detail={"code": "original_attachment_storage_unavailable", "retryable": True})
+
     if agent_id:
         from app.services.session_workspace_snapshot import async_agent_workspace_lock
 
         async with async_agent_workspace_lock(agent_id):
-            # Save to agent's workspace/uploads/ under the same lock used by Rewind.
-            uploads_dir = WORKSPACE_ROOT / str(agent_id) / "workspace" / "uploads"
-            uploads_dir.mkdir(parents=True, exist_ok=True)
-            save_path = uploads_dir / safe_filename
-            # Avoid overwriting: add suffix if file exists
-            if save_path.exists():
-                stem = save_path.stem
-                suffix = save_path.suffix
-                counter = 1
-                while save_path.exists():
-                    save_path = uploads_dir / f"{stem}_{counter}{suffix}"
-                    counter += 1
-            save_path.write_bytes(content)
-            workspace_path = f"workspace/uploads/{save_path.name}"
+            workspace_path, save_path = _write_upload_copy(str(agent_id), safe_filename, content)
     else:
         tenant_segment = str(tenant_id) if tenant_id else "no_tenant"
         user_segment = str(user_id) if user_id else "anonymous"
-        uploads_dir = (
-            WORKSPACE_ROOT / "local_agents" / tenant_segment / "users" / user_segment / "workspace" / "uploads"
-        )
-        uploads_dir.mkdir(parents=True, exist_ok=True)
-        save_path = uploads_dir / safe_filename
-        if save_path.exists():
-            stem = save_path.stem
-            suffix = save_path.suffix
-            counter = 1
-            while save_path.exists():
-                save_path = uploads_dir / f"{stem}_{counter}{suffix}"
-                counter += 1
-        save_path.write_bytes(content)
-        workspace_path = f"workspace/uploads/{save_path.name}"
+        namespace = f"local_agents/{tenant_segment}/users/{user_segment}"
+        workspace_path, save_path = _write_upload_copy(namespace, safe_filename, content)
+    uploads_dir = save_path.parent
 
     if agent_id is not None and db is not None and tenant_id is not None and user_id is not None:
         from app.services.workspace_resource_authority import register_workspace_path
 
-        try:
-            await register_workspace_path(
-                db,
-                tenant_id=uuid.UUID(str(tenant_id)),
-                agent_id=uuid.UUID(str(agent_id)),
-                path=workspace_path,
-                owner_user_id=uuid.UUID(str(user_id)),
-                root_session_id=None,
-                source="chat_upload",
-                content_hash=hashlib.sha256(content).hexdigest(),
-                allow_owner_rebind=False,
+        # Receipt failure quarantines the copy. Its path may have changed while
+        # awaiting the database, so it cannot safely authorize an unlink.
+        await register_workspace_path(
+            db,
+            tenant_id=uuid.UUID(str(tenant_id)),
+            agent_id=uuid.UUID(str(agent_id)),
+            path=workspace_path,
+            owner_user_id=uuid.UUID(str(user_id)),
+            root_session_id=None,
+            source="chat_upload",
+            content_hash=hashlib.sha256(content).hexdigest(),
+            allow_owner_rebind=False,
+        )
+        if isinstance(db, AsyncSession):
+            from app.services.content_input_receipts import (
+                latest_workspace_receipt, lock_workspace_receipt_write, record_workspace_receipt,
+                validate_browser_input_dependencies,
             )
-            if isinstance(db, AsyncSession):
-                from app.services.content_input_receipts import (
-                    latest_workspace_receipt, lock_workspace_receipt_write, record_workspace_receipt,
-                    validate_browser_input_dependencies,
-                )
 
-                await lock_workspace_receipt_write(db, tenant_id, agent_id, workspace_path)
-                previous = await latest_workspace_receipt(db, tenant_id, agent_id, workspace_path)
-                if previous is not None:
-                    reader = await db.get(User, user_id)
-                    await validate_browser_input_dependencies(db, tenant_id, reader, previous.dependencies_json)
-                record_workspace_receipt(db, tenant_id, agent_id, workspace_path,
-                    hashlib.sha256(content).hexdigest(), previous)
-                await db.flush()
-        except Exception:
-            save_path.unlink(missing_ok=True)
-            raise
+            await lock_workspace_receipt_write(db, tenant_id, agent_id, workspace_path)
+            previous = await latest_workspace_receipt(db, tenant_id, agent_id, workspace_path)
+            if previous is not None:
+                reader = await db.get(User, user_id)
+                await validate_browser_input_dependencies(db, tenant_id, reader, previous.dependencies_json)
+            record_workspace_receipt(db, tenant_id, agent_id, workspace_path,
+                hashlib.sha256(content).hexdigest(), previous)
+            await db.flush()
 
     # Convert text/documents to canonical Markdown artifacts. Keep image handling
     # separate because vision-capable chat models still consume typed image parts.
@@ -400,6 +437,8 @@ async def save_upload_for_agent(
                 "error": str(exc),
             }
 
+    from app.services.upload_originals import original_upload_projection
+
     return {
         "filename": safe_filename,
         "saved_filename": save_path.name,
@@ -411,4 +450,5 @@ async def save_upload_for_agent(
         "is_image": is_image,
         "image_data_url": image_data_url,
         "personal_kb_candidate": personal_kb_candidate,
+        "original_attachment": original_upload_projection(original) if original is not None else None,
     }

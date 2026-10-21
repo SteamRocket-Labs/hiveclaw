@@ -15,10 +15,16 @@ export function parseUserAttachment(msg: AgentChatMessage, agentId?: string): Ag
             const attachment = part.type === 'attachment_ref' && part.attachment && typeof part.attachment === 'object'
                 ? part.attachment as Record<string, unknown> : undefined;
             const path = attachment?.path;
-            if (typeof path !== 'string' || !path.startsWith('workspace/') || path.split('/').includes('..')) return [];
+            if (!attachment || typeof path !== 'string' || !path.startsWith('workspace/') || path.split('/').includes('..')) return [];
+            const original = attachment.original_attachment && typeof attachment.original_attachment === 'object'
+                ? attachment.original_attachment as Record<string, unknown> : null;
+            const originalUpload = original && typeof original.id === 'string' && typeof original.owner_user_id === 'string'
+                && msg.sessionItem?.actor.type === 'user' && msg.sessionItem.actor.id === original.owner_user_id
+                ? { id: original.id, ownerUserId: original.owner_user_id } : undefined;
             return [{ path, name: typeof attachment?.name === 'string' ? attachment.name : path.split('/').pop() || 'file',
                 ...(typeof attachment?.size === 'number' ? { size: attachment.size } : {}),
-                ...(typeof attachment?.content_type === 'string' ? { mimeType: attachment.content_type } : {}), source: 'human_input' }];
+                ...(typeof attachment?.content_type === 'string' ? { mimeType: attachment.content_type } : {}),
+                ...(originalUpload ? { originalUpload } : {}), source: 'human_input' }];
         });
         const sharedGoal = records.some(part => part.type === 'text' && part.team_task_source && typeof part.team_task_source === 'object');
         if (inputAttachments.length || inputAttachmentFailures.length || sharedGoal) {

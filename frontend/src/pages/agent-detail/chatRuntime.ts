@@ -176,6 +176,7 @@ export interface SessionPermissionRequest {
 }
 
 export interface ChatArtifactPart {
+  originalUpload?: { id: string; ownerUserId: string };
   id?: string;
   name: string;
   path: string;

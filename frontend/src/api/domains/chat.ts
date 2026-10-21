@@ -2,7 +2,7 @@
  * Chat domain adapter — history, sessions, file upload.
  */
 
-import { ApiError, get, post, patch, del, upload } from '../core';
+import { ApiError, get, getBlob, post, patch, del, upload } from '../core';
 import type { RequestOptions } from '../core/request';
 import type { ChatMessage } from '../../types';
 import type { ThreadItem } from './threadItems.generated';
@@ -101,6 +101,7 @@ function requestOptionsOnly(options?: SessionReadOptions): RequestOptions | unde
 }
 
 export interface UploadedChatFile {
+  original_attachment?: { id: string; owner_user_id: string; content_sha256: string; size_bytes: number } | null;
   filename: string;
   saved_filename: string;
   size: number;
@@ -331,6 +332,7 @@ export const chatApi = {
   },
   uploadFile: (file: File, agentId?: string) =>
     upload<UploadedChatFile>('/chat/upload', file, agentId ? { agent_id: agentId } : undefined),
+  downloadOriginalUpload: (refId: string) => getBlob(`/chat/attachments/${encodeURIComponent(refId)}/download`),
 
   /** Session management */
   listSessions: (agentId: string, scope: 'mine' | 'groups' | 'all' = 'mine', options?: SessionOperatorOptions) => {

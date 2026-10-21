@@ -247,6 +247,8 @@ class Settings(BaseSettings):
     # Installation default, overridden by the company's versioned retention policy.
     # Referenced, active and pending-approval snapshots are preserved by maintenance.
     CHAT_ARTIFACT_SNAPSHOT_RETENTION_DAYS: float = 30.0
+    # New original-attachment writes use this provider; recorded objects keep their reader.
+    BLOB_STORAGE_PROVIDER: str = "filesystem"
     # Resident profile-plane budget (read side, memory-system-spec §4.2):
     # self + profiles + explicit overlay load whole into the prompt; going
     # over this budget is a write-side convergence failure signal (工序 4),

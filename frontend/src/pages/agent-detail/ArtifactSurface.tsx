@@ -5,6 +5,7 @@ import { IconDownload, IconExternalLink, IconFileText, IconX } from '@tabler/ico
 import MarkdownRenderer from '../../components/MarkdownRenderer';
 import { fileApi, type ResourceAuthorityOptions } from '../../api/domains/files';
 import { officeApi } from '../../api/domains/office';
+import { chatApi } from '../../api/domains/chat';
 import { saveBlob } from '../../utils/authenticatedResource';
 import { showAppToast } from '../../components/AppDialogs';
 import type { ChatArtifactPart } from './chatRuntime';
@@ -402,6 +403,7 @@ export function ArtifactCards({
   context = 'assistant',
   operatorView = false,
   operatorReason,
+  viewerUserId,
 }: {
   agentId?: string | null;
   artifacts?: ChatArtifactPart[];
@@ -409,6 +411,7 @@ export function ArtifactCards({
   context?: ArtifactDeliveryContext;
   operatorView?: boolean;
   operatorReason?: string;
+  viewerUserId?: string;
 }) {
   const { t } = useTranslation();
   const visibleArtifacts = (artifacts || []).filter((artifact) => (
@@ -452,6 +455,20 @@ export function ArtifactCards({
               </span>
             </button>
             <span className="chat-artifact-actions">
+              {artifact.originalUpload?.ownerUserId === viewerUserId && viewerUserId ? <button
+                type="button" className="chat-artifact-action" onClick={async (event) => {
+                  event.stopPropagation();
+                  try {
+                    const blob = await chatApi.downloadOriginalUpload(artifact.originalUpload!.id);
+                    saveBlob(blob, artifact.name);
+                  } catch (error) {
+                    showAppToast(t('agent.chat.artifacts.downloadFailed', 'Download failed: {{message}}', {
+                      message: error instanceof Error ? error.message : String(error),
+                    }), 'error');
+                  }
+                }}>
+                <IconDownload size={12} />{t('agent.chat.artifacts.originalUpload', 'Original upload')}
+              </button> : null}
               <button
                 type="button"
                 data-testid="chat-artifact-open"

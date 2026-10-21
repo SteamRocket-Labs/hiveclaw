@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 import inspect
+import json
 from pathlib import Path
 
 from app.tools.decorator import RESULT_CHARS_UNLIMITED, ToolMeta, tool
@@ -18,16 +20,22 @@ async def _maybe_await_tool_result(value):
     return value
 
 
-def _call_with_optional_authority(handler, workspace, arguments, tenant_id, authority_scope):
+def _call_with_optional_authority(handler, workspace, arguments, tenant_id, authority_scope, execution_context=None):
     """Preserve the public three-argument handler contract outside governed runtime calls."""
-    if authority_scope is None:
-        return handler(workspace, arguments, tenant_id)
-    return handler(
-        workspace,
-        arguments,
-        tenant_id,
-        authority_scope=authority_scope,
-    )
+    kwargs = {}
+    if authority_scope is not None:
+        kwargs["authority_scope"] = authority_scope
+    if execution_context is not None:
+        kwargs["execution_context"] = execution_context
+    return handler(workspace, arguments, tenant_id, **kwargs)
+
+
+def _working_copy_read_result(result):
+    """Keep source bytes inside data, separate from the trusted execution status."""
+    if isinstance(result, ToolContentEnvelope) and result.metadata.get("filesystem_read_error") is True:
+        return result
+    wire = json.dumps({"ok": True, "content": str(result)}, ensure_ascii=False, separators=(",", ":"))
+    return replace(result, text=wire) if isinstance(result, ToolContentEnvelope) else ToolContentEnvelope(text=wire)
 
 
 # -- list_files ---------------------------------------------------------------
@@ -114,13 +122,15 @@ def read_file(
         return read_original_for_tool(workspace, arguments, tenant_id, execution_context=execution_context, tool_name="read_file")
     from app.services.agent_tool_domains.workspace import _read_file
 
-    return _read_file(
+    result = _read_file(
         workspace,
         arguments.get("path", ""),
         tenant_id,
         authority_scope=authority_scope,
         permission_profile=permission_profile,
+        typed_errors=execution_context is not None,
     )
+    return _working_copy_read_result(result) if execution_context is not None else result
 
 
 # -- write_file ---------------------------------------------------------------
@@ -456,7 +466,7 @@ async def read_document(workspace: Path, arguments: dict, tenant_id: str | None 
             max_chars = max(1, int(raw_max_chars))
         except (TypeError, ValueError):
             return "[Error] max_chars must be a positive integer when provided."
-    return await _read_document(
+    result = await _read_document(
         workspace,
         arguments.get("path", ""),
         max_chars=max_chars,
@@ -466,7 +476,9 @@ async def read_document(workspace: Path, arguments: dict, tenant_id: str | None 
         force_refresh=bool(arguments.get("force_refresh", False)),
         return_format=str(arguments.get("return_format") or "markdown"),
         authority_scope=authority_scope,
+        typed_errors=execution_context is not None,
     )
+    return _working_copy_read_result(result) if execution_context is not None else result
 
 
 # -- execute_code -------------------------------------------------------------
@@ -678,6 +690,7 @@ def fs_read(workspace: Path, arguments: dict, tenant_id: str | None = None, auth
             {"path": arguments.get("path", "")},
             tenant_id,
             authority_scope,
+            execution_context=execution_context,
         )
     if mode == "document":
         return _call_with_optional_authority(
@@ -686,6 +699,7 @@ def fs_read(workspace: Path, arguments: dict, tenant_id: str | None = None, auth
             {"path": arguments.get("path", "")},
             tenant_id,
             authority_scope,
+            execution_context=execution_context,
         )
     if mode == "glob":
         return _call_with_optional_authority(

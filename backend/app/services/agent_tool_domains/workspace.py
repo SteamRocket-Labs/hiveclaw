@@ -1036,18 +1036,25 @@ async def _read_document(
     force_refresh: bool = False,
     return_format: str = "markdown",
     authority_scope=None,
-) -> str:
+    typed_errors: bool = False,
+) -> "str | ToolContentEnvelope":
+    def _typed_failure(value):
+        return ToolContentEnvelope(text=value, metadata={"filesystem_read_error": True}) if typed_errors else value
+
+    def _failure(*args, **kwargs):
+        return _typed_failure(_workspace_error(*args, **kwargs))
+
     # Same ordering as _read_file: known foreign ownership denies before any
     # existence probe; a not-yet-created workspace path is ``not_found``; an
     # existing unreadable file stays denied.
     if is_recovery_manifest_storage_path(rel_path):
-        return _workspace_error(tool_name, "auth_or_permission", "Access denied for this resource owner.")
+        return _failure(tool_name, "auth_or_permission", "Access denied for this resource owner.")
     if _authority_known_foreign_path(authority_scope, rel_path):
-        return _workspace_error(tool_name, "auth_or_permission", "Access denied for this resource owner.")
+        return _failure(tool_name, "auth_or_permission", "Access denied for this resource owner.")
     workspace_root = ws
     if rel_path and rel_path.startswith("enterprise_info"):
         if not company_context_path_allowed(rel_path):
-            return _workspace_error(tool_name, "auth_or_permission", "Only generated company context is available.")
+            return _failure(tool_name, "auth_or_permission", "Only generated company context is available.")
         if tenant_id:
             enterprise_root = (WORKSPACE_ROOT / f"enterprise_info_{tenant_id}").resolve()
         else:
@@ -1056,19 +1063,19 @@ async def _read_document(
         sub = rel_path[len("enterprise_info") :].lstrip("/")
         file_path = (enterprise_root / sub).resolve() if sub else enterprise_root
         if not _is_within_path(file_path, enterprise_root):
-            return _workspace_error(tool_name, "auth_or_permission", "Access denied for this path.")
+            return _failure(tool_name, "auth_or_permission", "Access denied for this path.")
     else:
         file_path = _resolved_workspace_path(ws, rel_path)
         if file_path is None:
-            return _workspace_error(tool_name, "auth_or_permission", "Access denied for this path.")
+            return _failure(tool_name, "auth_or_permission", "Access denied for this path.")
 
     authority_path = file_path.relative_to(ws.resolve()).as_posix() if _is_within_path(file_path, ws) else rel_path
     if _authority_known_foreign_path(authority_scope, authority_path):
-        return _workspace_error(tool_name, "auth_or_permission", "Access denied for this resource owner.")
+        return _failure(tool_name, "auth_or_permission", "Access denied for this resource owner.")
     if not file_path.exists():
-        return _workspace_error(tool_name, "not_found", f"File not found: {rel_path}")
+        return _failure(tool_name, "not_found", f"File not found: {rel_path}")
     if not _authority_allows_path(authority_scope, authority_path):
-        return _workspace_error(tool_name, "auth_or_permission", "Access denied for this resource owner.")
+        return _failure(tool_name, "auth_or_permission", "Access denied for this resource owner.")
 
     try:
         from app.services.document_conversion import (
@@ -1109,18 +1116,18 @@ async def _read_document(
             )
         return render_conversion_preview(result, max_chars=max_chars)
     except WorkspaceAuthorityError as exc:
-        return _workspace_storage_error(tool_name, exc)
+        return _typed_failure(_workspace_storage_error(tool_name, exc))
     except ImportError as e:
-        return _workspace_error(
+        return _failure(
             tool_name,
             "dependency_missing",
             f"Missing dependency: {e}. Install the document conversion backend dependencies.",
             actionable_hint="Install the required document parsing dependency in the backend environment.",
         )
     except ValueError as e:
-        return _workspace_error(tool_name, "bad_arguments", str(e))
+        return _failure(tool_name, "bad_arguments", str(e))
     except Exception as e:
-        return _workspace_error(tool_name, "operation_failed", f"Document read failed: {str(e)}")
+        return _failure(tool_name, "operation_failed", f"Document read failed: {str(e)}")
 
 
 _WRITE_PROTECTED = {

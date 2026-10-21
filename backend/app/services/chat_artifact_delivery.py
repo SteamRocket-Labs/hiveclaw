@@ -5,7 +5,9 @@ from __future__ import annotations
 import hashlib
 import json
 import mimetypes
+import os
 import shutil
+import stat
 import uuid
 from contextlib import contextmanager
 from datetime import datetime, timezone, timedelta
@@ -285,25 +287,23 @@ def _safe_snapshot_relative_path(value: Any) -> Path | None:
 
 
 def _write_snapshot_gc_report(workspace_root: Path, report: dict[str, Any]) -> None:
-    report_path = workspace_root / CHAT_ARTIFACT_SNAPSHOT_GC_REPORT
-    report_path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = report_path.with_suffix(f"{report_path.suffix}.tmp")
-    tmp.write_text(json.dumps(report, ensure_ascii=False, sort_keys=True, indent=2), encoding="utf-8")
-    tmp.replace(report_path)
+    from app.services.workspace_resource_authority import _workspace_parent_descriptor
 
-
-def _prune_empty_snapshot_dirs(snapshot_root: Path) -> int:
-    removed = 0
-    if not snapshot_root.exists():
-        return 0
-    directories = [path for path in snapshot_root.rglob("*") if path.is_dir()]
-    for directory in sorted(directories, key=lambda item: len(item.parts), reverse=True):
+    with _workspace_parent_descriptor(workspace_root, CHAT_ARTIFACT_SNAPSHOT_GC_REPORT.as_posix(), create=True) as (directory, name):
+        temporary = f".{name}.{uuid.uuid4().hex}.tmp"
         try:
-            directory.rmdir()
-            removed += 1
-        except OSError:
-            continue
-    return removed
+            descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+                0o600, dir_fd=directory)
+            with os.fdopen(descriptor, "w", encoding="utf-8") as output:
+                json.dump(report, output, ensure_ascii=False, sort_keys=True, indent=2)
+                output.flush()
+                os.fsync(output.fileno())
+            os.replace(temporary, name, src_dir_fd=directory, dst_dir_fd=directory)
+        finally:
+            try:
+                os.unlink(temporary, dir_fd=directory)
+            except FileNotFoundError:
+                pass
 
 
 def cleanup_chat_artifact_snapshots(
@@ -314,53 +314,61 @@ def cleanup_chat_artifact_snapshots(
     now: datetime | None = None,
 ) -> dict[str, Any]:
     """Delete expired unreferenced delivery snapshots and write an audit report."""
-    root = workspace_root.resolve()
-    snapshot_root = (root / CHAT_ARTIFACT_SNAPSHOT_DIR).resolve()
+    from app.services.workspace_resource_authority import _workspace_parent_descriptor
+
+    root = Path(workspace_root)
+    snapshot_root = root / CHAT_ARTIFACT_SNAPSHOT_DIR
     current_time = now or datetime.now(timezone.utc)
     retention_days = max(float(retention_days), 0.0)
     cutoff = current_time - timedelta(days=retention_days)
-    referenced_paths: set[Path] = set()
+    referenced_paths: set[str] = set()
     for raw_path in referenced_snapshot_paths:
         rel = _safe_snapshot_relative_path(raw_path)
         if rel is None:
             continue
-        referenced_paths.add((root / rel).resolve())
+        referenced_paths.add(rel.as_posix())
 
     removed_paths: list[str] = []
     removed_bytes = 0
     kept_referenced_count = 0
     kept_recent_count = 0
+    kept_unsafe_count = 0
+    pruned_empty_dirs = 0
     scanned_count = 0
-    if snapshot_root.exists():
-        for path in snapshot_root.rglob("*"):
-            if not path.is_file():
-                continue
-            scanned_count += 1
-            resolved = path.resolve()
-            try:
-                rel_display = resolved.relative_to(root).as_posix()
-            except ValueError:
-                continue
-            if resolved in referenced_paths:
-                kept_referenced_count += 1
-                continue
-            try:
-                stat_data = path.stat()
-            except OSError:
-                continue
-            modified_at = datetime.fromtimestamp(stat_data.st_mtime, tz=timezone.utc)
-            if modified_at > cutoff:
-                kept_recent_count += 1
-                continue
-            try:
-                size = stat_data.st_size
-                path.unlink()
-            except OSError:
-                continue
-            removed_paths.append(rel_display)
-            removed_bytes += size
-
-    pruned_empty_dirs = _prune_empty_snapshot_dirs(snapshot_root)
+    if snapshot_root.exists() or snapshot_root.is_symlink():
+        # Anchor traversal and deletion to the same unaliased directory descriptors.
+        scan_path = (CHAT_ARTIFACT_SNAPSHOT_DIR / ".gc-scan").as_posix()
+        with _workspace_parent_descriptor(root, scan_path) as (snapshot_directory, _name):
+            for current, directories, files, directory in os.fwalk(".", topdown=False,
+                follow_symlinks=False, dir_fd=snapshot_directory):
+                for name in files:
+                    scanned_count += 1
+                    rel_display = (CHAT_ARTIFACT_SNAPSHOT_DIR / current / name).as_posix()
+                    if rel_display in referenced_paths:
+                        kept_referenced_count += 1
+                        continue
+                    try:
+                        info = os.stat(name, dir_fd=directory, follow_symlinks=False)
+                        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+                            kept_unsafe_count += 1
+                            continue
+                        if datetime.fromtimestamp(info.st_mtime, tz=timezone.utc) > cutoff:
+                            kept_recent_count += 1
+                            continue
+                        os.unlink(name, dir_fd=directory)
+                    except OSError:
+                        continue
+                    removed_paths.append(rel_display)
+                    removed_bytes += info.st_size
+                for name in directories:
+                    try:
+                        if stat.S_ISLNK(os.stat(name, dir_fd=directory, follow_symlinks=False).st_mode):
+                            kept_unsafe_count += 1
+                            continue
+                        os.rmdir(name, dir_fd=directory)
+                        pruned_empty_dirs += 1
+                    except OSError:
+                        continue
     report = {
         "schema": CHAT_ARTIFACT_SNAPSHOT_GC_SCHEMA,
         "generated_at": current_time.isoformat(),
@@ -374,6 +382,7 @@ def cleanup_chat_artifact_snapshots(
         "removed_paths": removed_paths[:200],
         "kept_referenced_count": kept_referenced_count,
         "kept_recent_count": kept_recent_count,
+        "kept_unsafe_count": kept_unsafe_count,
         "pruned_empty_dirs": pruned_empty_dirs,
     }
     _write_snapshot_gc_report(root, report)
@@ -409,7 +418,7 @@ async def cleanup_chat_artifact_snapshots_for_agent(
         workspace_root=workspace_root,
         live_artifact_ids=live_artifact_ids,
     )
-    _write_snapshot_gc_report(Path(workspace_root).resolve(), report)
+    _write_snapshot_gc_report(Path(workspace_root), report)
     return report
 
 
@@ -419,22 +428,26 @@ def _cleanup_orphaned_office_preview_caches(
     live_artifact_ids: set[str],
 ) -> int:
     """Remove derived Office preview caches whose ChatArtifact no longer exists."""
-    cache_root = Path(workspace_root).resolve() / ".office_meta" / "artifacts"
-    if not cache_root.is_dir():
-        return 0
+    from app.services.workspace_resource_authority import WorkspaceAuthorityError, _workspace_parent_descriptor
 
+    cache_root = Path(workspace_root) / ".office_meta" / "artifacts"
+    if not cache_root.exists() and not cache_root.is_symlink():
+        return 0
+    if not shutil.rmtree.avoids_symlink_attacks:
+        raise WorkspaceAuthorityError("workspace_storage_unavailable", "Safe preview cache deletion is unavailable on this host.")
     removed_count = 0
-    for artifact_cache in cache_root.iterdir():
-        if artifact_cache.is_symlink() or not artifact_cache.is_dir():
-            continue
-        try:
-            uuid.UUID(artifact_cache.name)
-        except ValueError:
-            continue
-        if artifact_cache.name in live_artifact_ids:
-            continue
-        shutil.rmtree(artifact_cache)
-        removed_count += 1
+    with _workspace_parent_descriptor(Path(workspace_root), ".office_meta/artifacts/.gc-scan") as (directory, _name):
+        for name in os.listdir(directory):
+            try:
+                uuid.UUID(name)
+            except ValueError:
+                continue
+            if name in live_artifact_ids:
+                continue
+            if not stat.S_ISDIR(os.stat(name, dir_fd=directory, follow_symlinks=False).st_mode):
+                continue
+            shutil.rmtree(name, dir_fd=directory)
+            removed_count += 1
     return removed_count
 
 

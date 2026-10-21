@@ -93,6 +93,15 @@ def test_actual_compose_parser_preserves_private_paths_and_separates_owner_crede
         assert values["HIVE_INSTALL_SCHEMA_PASSWORD"] not in json.dumps(services[name])
         assert services[name]["depends_on"]["prepare"]["condition"] == "service_completed_successfully"
     assert services["backend"]["image"] == services["backend-api"]["image"] == services["prepare"]["image"]
+    assert "recovery" not in services
+    maintenance = subprocess.run([*compose, "--env-file", str(profile), "-f", str(ROOT / "deploy/self-hosted/compose.yml"),
+        "--profile", "maintenance", "config", "--format", "json"], env=compose_env, capture_output=True, text=True, timeout=30)
+    assert maintenance.returncode == 0, maintenance.stderr
+    recovery = json.loads(maintenance.stdout)["services"]["recovery"]
+    assert recovery["profiles"] == ["maintenance"]
+    assert recovery["environment"]["PGPASSWORD"] == values["HIVE_INSTALL_SCHEMA_PASSWORD"]
+    assert "SECRETS_MASTER_KEY" not in recovery["environment"]
+    assert (ROOT / "deploy/self-hosted/recovery.Dockerfile").read_text().splitlines()[1] == "FROM " + services["postgres"]["image"]
     assert services["backend"]["environment"]["HIVE_PROCESS_ROLE"] == "runtime"
     assert services["backend-api"]["environment"]["HIVE_PROCESS_ROLE"] == "api"
     assert all(not services[name].get("ports") for name in ("postgres", "redis", "backend", "backend-api"))

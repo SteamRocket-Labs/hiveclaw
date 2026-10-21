@@ -5,16 +5,38 @@ import argparse
 import json
 import os
 from pathlib import Path
+import re
 import secrets
 import shlex
+import stat
 import tempfile
 from urllib.parse import urlsplit
 import uuid
 
 ROOT = Path(__file__).resolve().parents[1]
+SECRET_KEYS = ("HIVE_INSTALL_SCHEMA_PASSWORD", "HIVE_INSTALL_RUNTIME_PASSWORD", "HIVE_INSTALL_REDIS_PASSWORD",
+    "HIVE_INSTALL_SECRET_KEY", "HIVE_INSTALL_JWT_SECRET_KEY", "HIVE_INSTALL_SECRETS_MASTER_KEY")
 
 
-def configure(directory: Path, *, public_origin: str, port: int) -> Path:
+def read_profile(path: Path) -> dict[str, str]:
+    """Read only the literal private profile format emitted by this command."""
+    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+    with os.fdopen(descriptor, "r", encoding="utf-8") as handle:
+        info = os.fstat(handle.fileno())
+        if not stat.S_ISREG(info.st_mode) or info.st_mode & 0o077 or info.st_size > 64 * 1024:
+            raise ValueError("Installation profiles must be private and bounded")
+        values = {}
+        for line in handle:
+            match = re.fullmatch(r"([A-Z][A-Z0-9_]*)='((?:\\'|[^'])*)'\n?", line)
+            if not match or match[1] in values:
+                raise ValueError("Invalid installation profile")
+            values[match[1]] = match[2].replace("\\'", "'")
+        if any(not re.fullmatch(r"[a-f0-9]{32,128}", values.get(key, "")) for key in SECRET_KEYS):
+            raise ValueError("Invalid installation secrets")
+        return values
+
+
+def configure(directory: Path, *, public_origin: str, port: int, recovery_profile: Path | None = None) -> Path:
     origin = urlsplit(public_origin)
     if (origin.scheme not in {"http", "https"} or not origin.hostname or origin.username or origin.password
         or origin.path not in {"", "/"} or origin.query or origin.fragment):
@@ -28,11 +50,11 @@ def configure(directory: Path, *, public_origin: str, port: int) -> Path:
     public_origin = f"{origin.scheme}://{authority}"
     if not 1 <= port <= 65535:
         raise ValueError("port must be between 1 and 65535")
+    recovered = read_profile(recovery_profile) if recovery_profile is not None else {}
     values = {"HIVE_INSTALL_ID": "hive_" + uuid.uuid4().hex[:20], "HIVE_INSTALL_SOURCE_ROOT": str(ROOT),
         "HIVE_INSTALL_FRONTEND_PORT": str(port),
         "HIVE_INSTALL_CORS_ORIGINS": json.dumps([public_origin.rstrip("/")]),
-        **{key: secrets.token_hex(32) for key in ("HIVE_INSTALL_SCHEMA_PASSWORD", "HIVE_INSTALL_RUNTIME_PASSWORD",
-            "HIVE_INSTALL_REDIS_PASSWORD", "HIVE_INSTALL_SECRET_KEY", "HIVE_INSTALL_JWT_SECRET_KEY", "HIVE_INSTALL_SECRETS_MASTER_KEY")}}
+        **{key: recovered.get(key) or secrets.token_hex(32) for key in SECRET_KEYS}}
     if any(any(char in value for char in "\r\n\0") for value in values.values()):
         raise ValueError("configuration values must not contain line breaks or NUL")
     directory = directory.expanduser().resolve()
@@ -63,9 +85,10 @@ def main() -> int:
     parser.add_argument("directory", type=Path)
     parser.add_argument("--public-origin", required=True)
     parser.add_argument("--port", type=int, default=3008)
+    parser.add_argument("--recovery-profile", type=Path, help="Reuse verified backup keys in a new isolated project; never overwrite a profile.")
     args = parser.parse_args()
     try:
-        profile = configure(args.directory, public_origin=args.public_origin, port=args.port)
+        profile = configure(args.directory, public_origin=args.public_origin, port=args.port, recovery_profile=args.recovery_profile)
     except FileExistsError:
         print("Profile already exists; it was not replaced. Reuse installation.env to retain keys and data.")
         return 2

@@ -5,7 +5,7 @@ import { IconDownload, IconExternalLink, IconFileText, IconX } from '@tabler/ico
 import MarkdownRenderer from '../../components/MarkdownRenderer';
 import { fileApi, type ResourceAuthorityOptions } from '../../api/domains/files';
 import { officeApi } from '../../api/domains/office';
-import { chatApi } from '../../api/domains/chat';
+import OriginalUploadAction from './OriginalUploadAction';
 import { saveBlob } from '../../utils/authenticatedResource';
 import { showAppToast } from '../../components/AppDialogs';
 import type { ChatArtifactPart } from './chatRuntime';
@@ -455,20 +455,8 @@ export function ArtifactCards({
               </span>
             </button>
             <span className="chat-artifact-actions">
-              {artifact.originalUpload?.ownerUserId === viewerUserId && viewerUserId ? <button
-                type="button" className="chat-artifact-action" onClick={async (event) => {
-                  event.stopPropagation();
-                  try {
-                    const blob = await chatApi.downloadOriginalUpload(artifact.originalUpload!.id);
-                    saveBlob(blob, artifact.name);
-                  } catch (error) {
-                    showAppToast(t('agent.chat.artifacts.downloadFailed', 'Download failed: {{message}}', {
-                      message: error instanceof Error ? error.message : String(error),
-                    }), 'error');
-                  }
-                }}>
-                <IconDownload size={12} />{t('agent.chat.artifacts.originalUpload', 'Original upload')}
-              </button> : null}
+              <OriginalUploadAction agentId={downloadAgentId || agentId} path={artifact.path} name={artifact.name}
+                original={artifact.originalUpload} viewerUserId={viewerUserId} discover={artifact.source === 'human_input'} />
               <button
                 type="button"
                 data-testid="chat-artifact-open"

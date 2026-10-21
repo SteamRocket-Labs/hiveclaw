@@ -107,6 +107,7 @@ import {
   isUserFacingDeliveryArtifact,
 } from './ArtifactSurface';
 import { useArtifactPreview } from './useArtifactPreview';
+import OriginalUploadAction from './OriginalUploadAction';
 import type { SessionMessageOptions } from './ArtifactContinuation';
 import {
   ActiveTailStatusLine,
@@ -1078,6 +1079,8 @@ const ChatMessageItem = React.memo(function ChatMessageItem({
             </div>
           )
         )}
+        {msg.role === 'user' && effectiveAgentId && msg.originalWorkspacePath && msg.fileName && <OriginalUploadAction
+          agentId={effectiveAgentId} path={msg.originalWorkspacePath} name={msg.fileName} viewerUserId={viewerUserId} discover />}
         {msg.thinking && (
           <ThinkingDisclosure thinking={msg.thinking} streaming={Boolean((msg as any)._streaming)} />
         )}

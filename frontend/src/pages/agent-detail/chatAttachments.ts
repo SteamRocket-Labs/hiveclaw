@@ -62,6 +62,9 @@ export function parseUserAttachment(msg: AgentChatMessage, agentId?: string): Ag
         parsed = { ...msg, fileName, content: qMatch ? qMatch[1].trim() : '' };
     }
     // If file is an image and no imageUrl yet, build download URL for preview
+    if (attachmentPath?.startsWith('workspace/') && !attachmentPath.split('/').includes('..')) {
+        parsed.originalWorkspacePath = attachmentPath;
+    }
     if (parsed.fileName && !parsed.imageUrl && agentId) {
         const ext = parsed.fileName.split('.').pop()?.toLowerCase() || '';
         if (IMAGE_EXTS.includes(ext)) {

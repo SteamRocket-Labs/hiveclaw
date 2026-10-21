@@ -112,9 +112,16 @@ async def save_channel_upload(db, *, actor, session, provider, message_id, resou
         raise HTTPException(409, "Upload content receipt changed; preserve the current file and upload a new message")
     root = Path(get_settings().AGENT_DATA_DIR).resolve()
     root.mkdir(parents=True, exist_ok=True)
-    _store_upload(root, (str(session.agent_id), *Path(path).parts), content)
-    await register_workspace_path(db, tenant_id=authority.tenant_id, agent_id=authority.agent_id, path=path,
+    manifest = await register_workspace_path(db, tenant_id=authority.tenant_id, agent_id=authority.agent_id, path=path,
         owner_user_id=actor.id, root_session_id=root_session_id, source=f"{provider}_upload", content_hash=digest)
+    from app.services.channel_originals import archive_channel_original
+    from app.services.blob_store import BlobStoreError
+
+    try:
+        await archive_channel_original(db, manifest=manifest, filename=name, body=content)
+    except (BlobStoreError, OSError):
+        raise HTTPException(503, {"code": "original_attachment_storage_unavailable", "retryable": True}) from None
+    _store_upload(root, (str(session.agent_id), *Path(path).parts), content)
     if previous is None:
         record_workspace_receipt(db, authority.tenant_id, authority.agent_id, path, digest, None)
     if ingress:

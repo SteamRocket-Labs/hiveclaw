@@ -53,6 +53,7 @@ export interface AgentChatMessage {
   role: 'user' | 'assistant' | 'tool_call' | 'event';
   content: string;
   fileName?: string;
+  originalWorkspacePath?: string;
   imageUrl?: string;
   inputAttachments?: ChatArtifactPart[];
   inputAttachmentFailures?: Array<{ name: string }>;

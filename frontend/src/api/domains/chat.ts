@@ -333,6 +333,8 @@ export const chatApi = {
   uploadFile: (file: File, agentId?: string) =>
     upload<UploadedChatFile>('/chat/upload', file, agentId ? { agent_id: agentId } : undefined),
   downloadOriginalUpload: (refId: string) => getBlob(`/chat/attachments/${encodeURIComponent(refId)}/download`),
+  findOriginalWorkspaceUpload: (agentId: string, path: string) =>
+    get<{ id: string; content_sha256: string; size_bytes: number }>(`/chat/attachments/workspace-original?agent_id=${encodeURIComponent(agentId)}&path=${encodeURIComponent(path)}`),
 
   /** Session management */
   listSessions: (agentId: string, scope: 'mine' | 'groups' | 'all' = 'mine', options?: SessionOperatorOptions) => {

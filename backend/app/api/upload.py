@@ -46,6 +46,18 @@ async def download_original_attachment(ref_id: uuid.UUID, current_user: User = D
         raise HTTPException(503, detail={"code": "original_attachment_unavailable", "retryable": True})
     return _OriginalDownloadResponse(lease, target, filename)
 
+
+@router.get("/attachments/workspace-original")
+async def discover_workspace_original(agent_id: uuid.UUID, path: str, current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)):
+    from app.services.blob_store import BlobStoreError
+    from app.services.channel_originals import find_channel_original
+
+    try:
+        return await find_channel_original(db, user=current_user, agent_id=agent_id, path=path)
+    except BlobStoreError:
+        raise HTTPException(503, detail={"code": "original_attachment_unavailable", "retryable": True}) from None
+
 _settings = get_settings()
 WORKSPACE_ROOT = Path(_settings.AGENT_DATA_DIR)
 CHAT_UPLOAD_MAX_BYTES = int(os.getenv("HIVE_CHAT_UPLOAD_MAX_BYTES", str(25 * 1024 * 1024)))

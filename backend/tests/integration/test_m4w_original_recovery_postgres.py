@@ -34,10 +34,18 @@ def migrated_pg_url(pg_container):
 
 @pytest.mark.parametrize("original_state", ["available", "quarantined"])
 async def test_offline_recovery_preserves_reconciled_unreferenced_original_and_receipt(
-    pending, owner_sessionmaker, tmp_path_factory, monkeypatch, original_state):  # noqa: F811
+    pending, owner_sessionmaker, app_user_sessionmaker, tmp_path_factory, monkeypatch, original_state):  # noqa: F811
     from app.models.storage_blob import StorageBlob, StorageBlobRef, StorageGCRun
 
     d, client, blob_id, (selected, remote), *_ = pending
+    from app.models.user import User
+    from tests.integration.test_m4ab_channel_originals_postgres import save as save_channel, BODY as CHANNEL_BODY
+
+    async with app_user_sessionmaker() as db:
+        await pin_rls_tenant_context(db, d.tenant)
+        channel_path = await save_channel(db, d, "feishu")
+        await db.commit()
+    (d.root / channel_path).write_bytes(b"EDITED_CHANNEL_WORK_COPY")
     operation = str(uuid.uuid4())
     result = await client.post(f"/enterprise/storage-originals/{blob_id}/reconcile", json={
         "operation_id": operation, "expected_content_sha256": hashlib.sha256(BODY).hexdigest(), "action": "recover"})
@@ -76,7 +84,7 @@ async def test_offline_recovery_preserves_reconciled_unreferenced_original_and_r
     assert receipt["status"] == "backed_up"
     manifest = json.loads((backup / "manifest.json").read_text())
     assert manifest["schema"] == ("hive.self_hosted_backup.v4" if original_state == "quarantined" else "hive.self_hosted_backup.v3")
-    assert len(manifest["remote_objects"]) == int(selected == "s3")
+    assert len(manifest["remote_objects"]) == 2 * int(selected == "s3")
     if selected == "s3":
         from app.scripts import self_hosted_recovery as recovery
 
@@ -141,6 +149,19 @@ async def test_offline_recovery_preserves_reconciled_unreferenced_original_and_r
             assert ledger.receipt_json["result"] == result.json()
             assert ledger.receipt_json["evidence"]["observed"] == {
                 "available": True, "sha256": hashlib.sha256(BODY).hexdigest(), "size_bytes": len(BODY)}
+            from app.config import get_settings
+            from app.services.channel_originals import find_channel_original
+            from app.services.upload_originals import capture_original_download
+
+            monkeypatch.setattr(get_settings(), "AGENT_DATA_DIR", str(target_agents))
+            reader = await db.get(User, d.user.id)
+            channel_ref = await find_channel_original(db, user=reader, agent_id=d.agent, path=channel_path)
+            lease, exact, filename = await capture_original_download(db, reader, uuid.UUID(channel_ref["id"]))
+            try:
+                assert exact.read_bytes() == CHANNEL_BODY and filename == "source.bin"
+                assert (target_agents / str(d.agent) / channel_path).read_bytes() == b"EDITED_CHANNEL_WORK_COPY"
+            finally:
+                lease.cleanup()
             if original_state == "quarantined":
                 from app.config import get_settings
                 from app.services.original_retention import OriginalRetentionRequest, apply_original_retention, read_original_retention

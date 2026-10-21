@@ -171,6 +171,14 @@ discarding local tracking does not cancel server work. Use read-only deletion
 verification before reviewing a predecessor-linked retry. Policy-save uncertainty
 requires reloading the saved version before another save.
 
+New Feishu, DingTalk and WeCom uploads also retain their original bytes in this
+store, with one source reference per recorded upload and company-local payload
+reuse. The existing attachment card discovers the recorded original using
+current source-file read authority; changes to a work copy do not replace its
+original. Missing, corrupt or rebound sources require reconciliation. Historical
+uploads without a recorded original are not inferred from their current files.
+Reading or revoking a source grant does not release its retention reference.
+
 Operators can also read `GET /api/v1/enterprise/storage-original-catalog` with
 `state`, `unreferenced`, `limit` and `after` filters. The original pending-only
 `storage-originals` API remains unchanged. For a known operation,

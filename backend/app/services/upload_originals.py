@@ -77,8 +77,7 @@ async def _commit_upload_intent(db, *, tenant_id, digest, size):
     return existing
 
 
-async def archive_upload(db: AsyncSession, *, tenant_id: uuid.UUID, user_id: uuid.UUID,
-    agent_id: uuid.UUID | None, filename: str, body: bytes) -> StorageBlobRef:
+async def archive_original_blob(db: AsyncSession, *, tenant_id: uuid.UUID, body: bytes) -> StorageBlob:
     digest = hashlib.sha256(body).hexdigest()
     blob_id = await _commit_upload_intent(db, tenant_id=tenant_id, digest=digest, size=len(body))
     # The unique digest and row lock also serialize two first-time uploads until
@@ -95,11 +94,17 @@ async def archive_upload(db: AsyncSession, *, tenant_id: uuid.UUID, user_id: uui
         await store.put_verified(BlobPutRequest(tenant_id=str(tenant_id), kind="chat_upload", retention_class="original",
             location=location, source_path=source, expected_sha256=digest, expected_size=len(body)))
     blob.state, blob.verified_at = "available", datetime.now(timezone.utc)
+    return blob
+
+
+async def archive_upload(db: AsyncSession, *, tenant_id: uuid.UUID, user_id: uuid.UUID,
+    agent_id: uuid.UUID | None, filename: str, body: bytes) -> StorageBlobRef:
+    blob = await archive_original_blob(db, tenant_id=tenant_id, body=body)
     ref_id = uuid.uuid4()
     ref = StorageBlobRef(id=ref_id, tenant_id=tenant_id, blob_id=blob.id, owner_type="chat_upload",
         owner_id=str(ref_id), purpose="original_attachment", metadata_json={"schema": REF_SCHEMA,
             "owner_user_id": str(user_id), "agent_id": str(agent_id) if agent_id else None, "filename": filename,
-            "content_sha256": digest, "size_bytes": len(body)})
+            "content_sha256": blob.content_sha256, "size_bytes": len(body)})
     db.add(ref)
     await db.flush()
     return ref
@@ -114,11 +119,16 @@ async def capture_original_download(db: AsyncSession, user: User, ref_id: uuid.U
     row = (await db.execute(select(StorageBlobRef, StorageBlob).join(StorageBlob,
         (StorageBlob.id == StorageBlobRef.blob_id) & (StorageBlob.tenant_id == StorageBlobRef.tenant_id)).where(
             StorageBlobRef.id == ref_id, StorageBlobRef.tenant_id == user.tenant_id,
-            StorageBlobRef.owner_type == "chat_upload", StorageBlobRef.purpose == "original_attachment"))).one_or_none()
+            StorageBlobRef.owner_type.in_(("chat_upload", "channel_upload")), StorageBlobRef.purpose == "original_attachment"))).one_or_none()
     if row is None:
         raise HTTPException(404, "Original attachment not found")
     ref, blob = row
     metadata = ref.metadata_json
+    if ref.owner_type == "channel_upload":
+        from app.services.channel_originals import authorize_channel_original
+
+        await authorize_channel_original(db, user=user, ref=ref)
+        return await capture_original_body(blob, metadata, user.tenant_id)
     try:
         if not isinstance(metadata, dict) or metadata.get("schema") != REF_SCHEMA:
             raise ValueError()
@@ -133,10 +143,14 @@ async def capture_original_download(db: AsyncSession, user: User, ref_id: uuid.U
             resource_id=ref.id, action="read", owner_user_id=owner, authority_state="owned")
     elif owner != user.id:
         raise HTTPException(403, "Original attachment access denied")
+    return await capture_original_body(blob, metadata, user.tenant_id)
+
+
+async def capture_original_body(blob, metadata, tenant_id):
     if (blob.state != "available" or blob.size_bytes != metadata.get("size_bytes")
         or blob.content_sha256 != metadata.get("content_sha256")):
         raise BlobStoreError("Original attachment requires storage reconciliation")
-    store = _recorded_store(blob, user.tenant_id)
+    store = _recorded_store(blob, tenant_id)
     temporary = tempfile.TemporaryDirectory(prefix="hive-upload-download-")
     target = Path(temporary.name) / "body"
     try:

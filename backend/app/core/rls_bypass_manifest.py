@@ -867,6 +867,69 @@ RLS_BYPASS_ALLOWLIST = (
         "'runtime exact user recovery lookup'",
         ("select:User,Tenant.is_active",),
     ),
+    _grant(
+        "app/api/desktop_auth.py",
+        "exchange_refresh_token",
+        "'desktop global refresh exchange'",
+        ("session-state-only",),
+    ),
+    _grant(
+        "app/api/desktop_auth.py",
+        "feishu_callback_desktop",
+        "'desktop global feishu sign-in'",
+        ("update:RefreshToken",),
+    ),
+    _grant(
+        "app/services/assistant_binding.py",
+        "_classify_hidden",
+        "'classify assistant binding that is not visible in the selected company'",
+        ("select:Agent.deleted_at,Agent.tenant_id",),
+    ),
+    _grant(
+        "app/services/business_teams.py",
+        "_live_user",
+        "'reload platform administrator before business team action'",
+        ("session-state-only",),
+    ),
+    _grant(
+        "app/services/hr_creation_source.py",
+        "load_creation_requester",
+        "'HR creation exact global principal lookup'",
+        ("select:User",),
+    ),
+    _grant(
+        "app/services/identity_dry_run.py",
+        "_foreign_blocks",
+        "'identity_dry_run_global_unique_exists'",
+        ("session-state-only",),
+    ),
+    _grant(
+        "app/services/identity_links.py",
+        "_bindings_for_providers",
+        "'identity link subject binding check'",
+        (
+            "select:ExternalIdentity.id,ExternalIdentity.provider_id,ExternalIdentity.user_id,"
+            "ExternalIdentity.provider_user_id,ExternalIdentity.provider_open_id,ExternalIdentity.provider_union_id",
+        ),
+    ),
+    _grant(
+        "app/services/identity_links.py",
+        "_hidden_provider",
+        "'identity link provider tenant check'",
+        ("select:IdentityProvider.id,IdentityProvider.tenant_id,IdentityProvider.is_active",),
+    ),
+    _grant(
+        "app/services/identity_links.py",
+        "_hidden_user",
+        "'identity link account tenant check'",
+        ("select:User.id,User.tenant_id,User.is_active",),
+    ),
+    _grant(
+        "app/services/identity_links.py",
+        "_reject_missing_member",
+        "'identity link directory tenant check'",
+        ("select:OrgMember.tenant_id",),
+    ),
     _grant(*("app/api/admin.py", "_load_platform_admin_agent_and_pin", "reason", ("select:Agent",))),
     _grant(
         *(
@@ -1481,7 +1544,7 @@ RLS_BYPASS_ALLOWLIST = (
         *(
             "app/services/runtime_task_worker.py",
             "expire_session_permission_requests_once",
-            "'runtime task worker expire Session V2 permission requests'",
+            "'runtime task worker recover and expire Session V2 permission requests'",
             ("session-state-only",),
         )
     ),
@@ -1698,7 +1761,7 @@ RLS_BYPASS_ALLOWLIST = (
             "app/services/trigger_daemon.py",
             "backfill_null_reply_contexts",
             '"trigger reply_context backfill — enumerate all tenants\' enabled triggers"',
-            ("select:AgentTrigger", "select:ChatSession"),
+            ("select:AgentTrigger",),
         )
     ),
     _grant(

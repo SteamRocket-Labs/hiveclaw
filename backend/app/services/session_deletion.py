@@ -78,6 +78,12 @@ async def delete_session_tree(db: AsyncSession, session: ChatSession) -> None:
     ).limit(1))
     if active is not None:
         raise SessionWorkUnsettled(SessionWorkUnsettled.code)
+    from app.services.session_tool_runtime import list_unresolved_tool_effects
+
+    # A stopped run can still own an effect whose original receipt is pending.
+    if await list_unresolved_tool_effects(db, tenant_id=session.tenant_id, session_id=session_id,
+                                         terminal_tasks_only=False, limit=1):
+        raise SessionWorkUnsettled(SessionWorkUnsettled.code)
     # Run outcomes reference terminal model results, so they go first.
     await db.execute(sql_delete(SessionRunOutcome).where(SessionRunOutcome.session_id == session_id))
     await db.execute(sql_delete(SessionModelResult).where(SessionModelResult.session_id == session_id))

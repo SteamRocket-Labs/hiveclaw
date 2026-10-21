@@ -13,7 +13,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.chat_session import ChatSession
-from app.models.runtime_task import RuntimeTask
+from app.models.runtime_task import RuntimeTask, SEALED_RUNTIME_TASK_STATUSES
 from app.models.session_v2 import SessionModelResult, SessionToolInvocation
 from app.runtime.ccplus_contracts import build_permission_profile
 from app.services.approval_ticket import hash_tool_input
@@ -242,9 +242,14 @@ async def _queue_same_run_continuation(
             RuntimeTask.parent_session_id == str(session_id),
         )
         .with_for_update()
+        .execution_options(populate_existing=True)
     )
     if task is None:
         raise RuntimeError("permission_runtime_task_missing")
+    if task.status in SEALED_RUNTIME_TASK_STATUSES:
+        # A late, known tool receipt still belongs to this stopped run. Keep
+        # its result without turning settlement into a new execution request.
+        return task
     metadata = dict(task.metadata_json or {})
     existing_resume = dict(metadata.get("session_permission_resume") or {})
     if str(existing_resume.get("source_result_id") or "") == str(source_result.id):
@@ -937,7 +942,8 @@ async def _resolve_session_tool_permission(
         run_status=str(task.status),
         result_event_id=str(invocation.result_event_id) if invocation.result_event_id else None,
         retryable=False,
-        recovery_action=("resume_same_runtime_task" if batch_settled else "resolve_remaining_permission_items"),
+        recovery_action=(None if task.status in SEALED_RUNTIME_TASK_STATUSES else
+                         "resume_same_runtime_task" if batch_settled else "resolve_remaining_permission_items"),
     )
 
 

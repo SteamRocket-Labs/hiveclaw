@@ -387,7 +387,7 @@ async def try_resolve_channel_session_permission_from_text(
 
     from fastapi import HTTPException
 
-    from app.models.runtime_task import RuntimeTask
+    from app.models.runtime_task import RuntimeTask, SEALED_RUNTIME_TASK_STATUSES
     from app.models.session_v2 import SessionToolInvocation
     from app.services.runtime_task_worker import notify_runtime_task_worker
     from app.services.session_permission_runtime import resolve_session_tool_permission
@@ -464,7 +464,12 @@ async def try_resolve_channel_session_permission_from_text(
     if receipt.status == "needs_reconciliation":
         return f"权限决定已记录{tool_label}，但工具效果状态需要核对；原运行已冻结且不会重复执行。"
     if receipt.status == "awaiting_tool_result":
-        return f"权限决定已记录{tool_label}，正在等待这次调用的原结果；没有重复执行。"
+        ended = "原运行已结束；" if receipt.run_status in SEALED_RUNTIME_TASK_STATUSES else ""
+        return f"权限决定已记录{tool_label}，{ended}正在等待这次调用的原结果；没有重复执行。"
+    if receipt.run_status in SEALED_RUNTIME_TASK_STATUSES:
+        result_note = "本次调用结果已保留。" if receipt.result_event_id else "本次调用尚无可读取的结果。"
+        siblings = "同批仍有其他权限待处理。" if receipt.status == "waiting_for_sibling_permissions" else ""
+        return f"权限决定已记录{tool_label}；原运行已结束，不会续跑。{result_note}{siblings}"
     if receipt.status == "waiting_for_sibling_permissions":
         return f"权限决定已记录{tool_label}；原运行仍在等待同一轮的其他权限请求。"
     if action == "deny":

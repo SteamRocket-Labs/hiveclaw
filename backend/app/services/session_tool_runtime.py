@@ -13,7 +13,7 @@ from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.chat_transcript_event import ChatTranscriptEvent
-from app.models.runtime_task import RuntimeTask
+from app.models.runtime_task import RuntimeTask, TERMINAL_BOUNDARY_TERMINAL_STATUSES
 from app.models.session_v2 import SessionModelResult, SessionToolInvocation
 from app.services import chat_transcript
 from app.services.knowledge_provenance import enrich_knowledge_event_metadata
@@ -414,6 +414,11 @@ async def mark_tool_effect_started(
         raise RuntimeError("tool_effect_start_requires_unsettled_invocation")
     if invocation.effect_state != "prepared_not_started":
         raise RuntimeError("tool_effect_start_requires_prepared_invocation")
+    run_status = await db.scalar(select(RuntimeTask.status).where(
+        RuntimeTask.id == invocation.run_id, RuntimeTask.tenant_id == tenant_id,
+    ))
+    if run_status is None or run_status in TERMINAL_BOUNDARY_TERMINAL_STATUSES:
+        raise RuntimeError("tool_effect_start_requires_active_run")
     effective_payload = _canonical(effective_arguments or invocation.provider_arguments_json or {})
     effective_hash = _sha256({"tool_name": invocation.tool_name, "arguments": effective_payload})
     if invocation.permission_state == "waiting":

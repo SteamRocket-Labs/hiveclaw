@@ -3762,7 +3762,15 @@
       "refWarning": "Retire only this verified holding. The stored original remains subject to the separate retention and physical-cleanup policy.",
       "refRecorded": "Reference retirement recorded. The original has not been physically deleted.",
       "refAbsent": "This original no longer has that reference.",
-      "refHeld": "The reference was retained. Refresh and verify its current requirements."
+      "refHeld": "The reference was retained. Refresh and verify its current requirements.",
+      "inactiveSource": "The uploader is inactive or revoked. An administrator can stop future use while retaining the original.",
+      "withdrawInactive": "Stop use of inactive source",
+      "custodyUnverified": "Source ownership needs reconciliation before administrator disposition.",
+      "dispositionReview": "Review inactive-source disposition",
+      "dispositionConfirm": "Confirm source withdrawal",
+      "dispositionWarning": "Stop future use under administrator authority for this inactive uploader. Keep the historical uploader, original bytes, work references and retention holds. This does not delete the original or grant access to a successor.",
+      "dispositionRecorded": "Future source use stopped. The original, historical uploader and retention holds are preserved.",
+      "dispositionHeld": "Source use was not changed. Refresh and verify the current uploader status."
     },
     "storage": {
       "title": "Storage and retention",

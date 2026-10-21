@@ -26,7 +26,7 @@ function readSubmitted(actor: string, tenant: string): SubmittedOperation | null
       || !['reconciliation', 'retention', 'sweep', 'references'].includes(value.family)
       || !uuid.test(value.original.blob_id) || !uuid.test(value.request?.operation_id)
       || !sha256.test(value.request.expected_content_sha256) || value.original.content_sha256 !== value.request.expected_content_sha256) return null;
-    const actions = { reconciliation: ['recover'], retention: ['quarantine', 'restore'], sweep: ['sweep'], references: ['retire_reference'] };
+    const actions = { reconciliation: ['recover'], retention: ['quarantine', 'restore'], sweep: ['sweep'], references: ['retire_reference', 'withdraw_source'] };
     if (!actions[value.family as OriginalOperationFamily].includes(value.request.action)) return null;
     if (['retention', 'sweep'].includes(value.family) && (!Number.isInteger(value.request.expected_policy_version) || value.request.expected_policy_version < 0)) return null;
     if (value.family === 'references' && (!uuid.test(value.request.reference_id) || !sha256.test(value.request.expected_reference_sha256))) return null;
@@ -204,11 +204,11 @@ function OriginalOperations({ actor, tenant }: { actor: string; tenant: string }
     if (retry) operation.request.retry_operation_id = rows.find((row) => row.blob_id === detail.original.blob_id)?.active_sweep?.operation_id;
     setReview(operation);
   }
-  function reviewReference(reference: OriginalReference) {
-    if (!referenceTarget || !reference.retirable || submittedRef.current || inflight.current) return;
-    const operation = command(referenceTarget, 'references', 'retire_reference');
+  function reviewReference(reference: OriginalReference, withdrawal = false) {
+    if (!referenceTarget || !(withdrawal ? reference.withdrawable : reference.retirable) || submittedRef.current || inflight.current) return;
+    const operation = command(referenceTarget, 'references', withdrawal ? 'withdraw_source' : 'retire_reference');
     operation.request.reference_id = reference.reference_id;
-    operation.request.expected_reference_sha256 = reference.snapshot_sha256;
+    operation.request.expected_reference_sha256 = withdrawal ? reference.withdrawal_snapshot_sha256 : reference.snapshot_sha256;
     setReview(operation);
   }
   const numbersValid = [days, grace].every((value) => value.trim() !== '' && Number.isFinite(Number(value)) && Number(value) >= 0);
@@ -218,6 +218,9 @@ function OriginalOperations({ actor, tenant }: { actor: string; tenant: string }
     && currentRow.active_sweep.reconciled_outcome === 'present' && !currentRow.operation_conflict;
   const resumeRecord = submitted && rows.find((row) => row.blob_id === submitted.original.blob_id && row.content_sha256 === submitted.request.expected_content_sha256);
   const destructiveReview = review?.family === 'sweep' && review.request.action === 'sweep';
+  const withdrawalReview = review?.family === 'references' && review.request.action === 'withdraw_source';
+  const referenceReviewTitle = withdrawalReview ? t('enterprise.originals.dispositionReview', 'Review inactive-source disposition')
+    : t('enterprise.originals.refReview', 'Review reference retirement');
   useEffect(() => { if (review) cancelReview.current?.focus(); }, [review]);
 
   return <section className="card ws-info-card" aria-label={t('enterprise.originals.title')}>
@@ -269,24 +272,29 @@ function OriginalOperations({ actor, tenant }: { actor: string; tenant: string }
       {canRetry ? <button className="btn ws-info-delete-btn" disabled={busy || Boolean(submitted)} onClick={() => reviewSweep(true)}>{t('enterprise.originals.retryDeletion')}</button> : null}
     </div> : null}
     {referenceTarget ? <OriginalReferenceList key={`${tenant}:${referenceTarget.blob_id}`} tenant={tenant} blobId={referenceTarget.blob_id}
-      version={referenceVersion} disabled={busy || Boolean(submitted)} onRetire={reviewReference} /> : null}
-    <Modal open={Boolean(review)} title={review?.family === 'references' ? t('enterprise.originals.refReview', 'Review reference retirement') : t('enterprise.originals.review')}
-      ariaLabel={review?.family === 'references' ? t('enterprise.originals.refReview', 'Review reference retirement') : t('enterprise.originals.review')}
+      version={referenceVersion} disabled={busy || Boolean(submitted)} onRetire={reviewReference} onWithdraw={reference => reviewReference(reference, true)} /> : null}
+    <Modal open={Boolean(review)} title={review?.family === 'references' ? referenceReviewTitle : t('enterprise.originals.review')}
+      ariaLabel={review?.family === 'references' ? referenceReviewTitle : t('enterprise.originals.review')}
       onClose={() => { if (!inflight.current) setReview(null); }}
       footer={<>
         <button ref={cancelReview} className="btn" disabled={busy} onClick={() => setReview(null)}>{t('common.cancel')}</button>
         <button className="btn ws-info-delete-btn" disabled={busy || !review} onClick={() => review && void guard(() => submit(review, true))}>{review?.family === 'references'
-          ? t('enterprise.originals.refConfirm', 'Confirm reference retirement') : destructiveReview ? t('enterprise.originals.confirm') : t('enterprise.originals.confirmAction')}</button>
+          ? withdrawalReview ? t('enterprise.originals.dispositionConfirm', 'Confirm source withdrawal') : t('enterprise.originals.refConfirm', 'Confirm reference retirement')
+          : destructiveReview ? t('enterprise.originals.confirm') : t('enterprise.originals.confirmAction')}</button>
       </>}>
       {review ? <>
         <p className="ws-info-original-identity"><code>{review.original.blob_id}</code></p>
         <p className="ws-info-original-identity"><code>{review.request.expected_content_sha256}</code></p>
         <p>{review.original.provider} · {review.original.size_bytes} B</p>
-        <p>{review.family === 'references' ? t('enterprise.originals.refWarning', 'Retire only this verified holding. The stored original remains subject to the separate retention and physical-cleanup policy.')
+        <p>{withdrawalReview ? t('enterprise.originals.dispositionWarning', 'Stop future use under administrator authority for this inactive uploader. Keep the historical uploader, original bytes, work references and retention holds. This does not delete the original or grant access to a successor.')
+          : review.family === 'references' ? t('enterprise.originals.refWarning', 'Retire only this verified holding. The stored original remains subject to the separate retention and physical-cleanup policy.')
           : destructiveReview ? t('enterprise.originals.deleteWarning') : t('enterprise.originals.resubmitWarning')}</p>
       </> : null}
     </Modal>
-    {observed ? <p role="status">{observed.reference_id ? observed.outcome === 'reference_retired'
+    {observed ? <p role="status">{observed.reference_id ? observed.outcome === 'source_withdrawn'
+      ? t('enterprise.originals.dispositionRecorded', 'Future source use stopped. The original, historical uploader and retention holds are preserved.')
+      : observed.outcome === 'source_withdrawal_held' ? t('enterprise.originals.dispositionHeld', 'Source use was not changed. Refresh and verify the current uploader status.')
+      : observed.outcome === 'reference_retired'
       ? t('enterprise.originals.refRecorded', 'Reference retirement recorded. The original has not been physically deleted.')
       : observed.outcome === 'reference_absent' ? t('enterprise.originals.refAbsent', 'This original no longer has that reference.')
       : t('enterprise.originals.refHeld', 'The reference was retained. Refresh and verify its current requirements.')

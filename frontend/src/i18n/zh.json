@@ -3762,7 +3762,15 @@
       "refWarning": "仅退役已核验的这条引用。原件仍须按独立的保留策略与物理清理流程处理。",
       "refRecorded": "引用退役已记录，原件尚未物理删除。",
       "refAbsent": "该原件已无此保留引用。",
-      "refHeld": "引用已保留，请刷新并核对当前保留要求。"
+      "refHeld": "引用已保留，请刷新并核对当前保留要求。",
+      "inactiveSource": "上传者已停用或撤销。管理员可明确停止后续使用，并保留原件。",
+      "withdrawInactive": "停止使用停用者来源",
+      "custodyUnverified": "来源归属须核查后，管理员才能处置。",
+      "dispositionReview": "核对停用来源处置",
+      "dispositionConfirm": "确认停止来源使用",
+      "dispositionWarning": "以管理员权限停止此停用上传者来源的后续使用。保留历史上传者、原件正文、工作引用和保留要求；不删除原件，也不向继任者授予访问权。",
+      "dispositionRecorded": "后续来源使用已停止。原件、历史上传者和保留要求均已保留。",
+      "dispositionHeld": "来源使用未改变，请刷新并核对当前上传者状态。"
     },
     "storage": {
       "title": "存储与保留策略",

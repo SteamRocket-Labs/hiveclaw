@@ -97,6 +97,9 @@ export interface OriginalReference {
   created_at: string;
   pinned_until: string | null;
   legal_hold: boolean;
+  withdrawable: boolean;
+  withdrawal_hold_reason: string | null;
+  withdrawal_snapshot_sha256: string;
 }
 export interface OriginalPolicy {
   enabled: boolean;
@@ -123,7 +126,7 @@ export interface OriginalRecord {
 export interface OriginalOperationRequest {
   operation_id: string;
   expected_content_sha256: string;
-  action: 'inspect' | 'recover' | 'quarantine' | 'restore' | 'sweep' | 'reconcile' | 'retire_reference';
+  action: 'inspect' | 'recover' | 'quarantine' | 'restore' | 'sweep' | 'reconcile' | 'retire_reference' | 'withdraw_source';
   expected_policy_version?: number;
   expected_manifest_sha256?: string;
   retry_operation_id?: string;

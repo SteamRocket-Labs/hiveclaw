@@ -23,7 +23,7 @@ NAMESPACE = "hive.original-reference-retirement"
 class OriginalReferenceRetirementRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     operation_id: uuid.UUID
-    action: Literal["retire_reference"]
+    action: Literal["retire_reference", "withdraw_source"]
     expected_content_sha256: str = Field(pattern="^[0-9a-f]{64}$")
     reference_id: uuid.UUID
     expected_reference_sha256: str = Field(pattern="^[0-9a-f]{64}$")
@@ -164,10 +164,15 @@ async def original_reference_catalog(db, *, tenant_id, blob_id, limit, after=Non
     rows = (await db.scalars(query.order_by(StorageBlobRef.id).limit(limit + 1))).all()
     items = []
     for ref in rows[:limit]:
+        from app.services.original_source_disposition import disposition_eligibility
+
         reason, _, snapshot = await _eligibility(db, blob=blob, ref=ref)
+        withdrawal_reason, custody = await disposition_eligibility(db, blob=blob, ref=ref)
         items.append({"reference_id": str(ref.id), "owner_type": ref.owner_type, "retirable": reason is None,
             "hold_reason": reason, "snapshot_sha256": snapshot, "created_at": ref.created_at.isoformat(),
-            "pinned_until": ref.pinned_until.isoformat() if ref.pinned_until else None, "legal_hold": ref.legal_hold})
+            "pinned_until": ref.pinned_until.isoformat() if ref.pinned_until else None, "legal_hold": ref.legal_hold,
+            "withdrawable": withdrawal_reason is None, "withdrawal_hold_reason": withdrawal_reason,
+            "withdrawal_snapshot_sha256": _hash({"reference": _snapshot(ref), "custody": custody, "hold_reason": withdrawal_reason})})
     return {"items": items, "next_cursor": str(rows[limit - 1].id) if len(rows) > limit else None}
 
 
@@ -210,11 +215,23 @@ async def retire_original_reference(db, *, tenant_id, actor_id, blob_id, request
     reason, evidence, changed = None, {}, False
     outcome = "reference_absent"
     if ref is not None:
-        reason, evidence, snapshot = await _eligibility(db, blob=blob, ref=ref)
+        if request.action == "withdraw_source":
+            from app.services.original_source_disposition import disposition_eligibility, disposition_marker
+
+            reason, custody = await disposition_eligibility(db, blob=blob, ref=ref, lock=True)
+            evidence = {"reference": _snapshot(ref), "custody": custody, "hold_reason": reason}
+            snapshot = _hash(evidence)
+        else:
+            reason, evidence, snapshot = await _eligibility(db, blob=blob, ref=ref)
         if snapshot != request.expected_reference_sha256:
             reason = "reference_changed"
         if reason:
-            outcome = "reference_held"
+            outcome = "source_withdrawal_held" if request.action == "withdraw_source" else "reference_held"
+        elif request.action == "withdraw_source":
+            ref.metadata_json = {**ref.metadata_json, "withdrawal": disposition_marker(
+                custody=custody, actor_id=actor_id, operation_id=request.operation_id)}
+            await db.flush()
+            changed, outcome = True, "source_withdrawn"
         else:
             await db.delete(ref)
             await db.flush()
@@ -227,9 +244,11 @@ async def retire_original_reference(db, *, tenant_id, actor_id, blob_id, request
     db.add(StorageGCRun(id=operation_id, tenant_id=tenant_id, policy_version=SCHEMA, mode="inventory", status="completed",
         manifest_sha256=fingerprint, candidate_count=1, candidate_bytes=0, processed_count=int(changed), processed_bytes=0,
         failed_count=0, finished_at=now, receipt_json={"schema": SCHEMA, "request": identity, "result": result, "evidence": evidence}))
-    await write_audit_event(db, event_type="storage.original_reference_retirement", severity="info", actor_type="user",
+    await write_audit_event(db, event_type="storage.original_source_disposition" if request.action == "withdraw_source"
+        else "storage.original_reference_retirement", severity="info", actor_type="user",
         actor_id=actor_id, tenant_id=tenant_id, resource_type="storage_blob_ref", resource_id=request.reference_id,
-        action="retire_original_reference", details={"blob_id": str(blob_id), "outcome": outcome,
+        action="withdraw_inactive_original_source" if request.action == "withdraw_source" else "retire_original_reference",
+        details={"blob_id": str(blob_id), "outcome": outcome,
             "operation_id": str(request.operation_id), "physical_bytes_reclaimed": None})
     await db.flush()
     return result

@@ -3,12 +3,13 @@ import { useTranslation } from 'react-i18next';
 
 import { enterpriseApi, type OriginalReference } from '../../api/domains/enterprise';
 
-export default function OriginalReferenceList({ tenant, blobId, version, disabled, onRetire }: {
+export default function OriginalReferenceList({ tenant, blobId, version, disabled, onRetire, onWithdraw }: {
   tenant: string;
   blobId: string;
   version: number;
   disabled: boolean;
   onRetire: (reference: OriginalReference) => void;
+  onWithdraw: (reference: OriginalReference) => void;
 }) {
   const { t, i18n } = useTranslation();
   const alive = useRef(true);
@@ -55,6 +56,13 @@ export default function OriginalReferenceList({ tenant, blobId, version, disable
       {row.pinned_until ? <p>{t('enterprise.originals.refUntil', 'Retain until {{date}}', { date: date(row.pinned_until) })}</p> : null}
       {row.retirable ? <button type="button" className="btn" disabled={disabled || loading} onClick={() => onRetire(row)}>
         {t('enterprise.originals.retireReference', 'Retire this reference')}</button> : null}
+      {row.withdrawable ? <>
+        <p>{t('enterprise.originals.inactiveSource', 'The uploader is inactive or revoked. An administrator can stop future use while retaining the original.')}</p>
+        <button type="button" className="btn" disabled={disabled || loading} onClick={() => onWithdraw(row)}>
+          {t('enterprise.originals.withdrawInactive', 'Stop use of inactive source')}</button>
+      </> : null}
+      {row.withdrawal_hold_reason === 'source_custody_reconciliation_required' && ['chat_upload', 'channel_upload'].includes(row.owner_type)
+        ? <p>{t('enterprise.originals.custodyUnverified', 'Source ownership needs reconciliation before administrator disposition.')}</p> : null}
     </article>)}
     {!rows.length && !loading && !error ? <p>{t('enterprise.originals.refEmpty', 'No retained references remain for this original.')}</p> : null}
     {error ? <p role="alert">{t('enterprise.originals.refLoadFailed', 'Could not verify retained references.')}</p> : null}

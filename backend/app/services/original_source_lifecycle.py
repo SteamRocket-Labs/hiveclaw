@@ -21,6 +21,14 @@ def _withdrawal(ref):
     if "withdrawal" not in metadata:
         return None
     value = metadata["withdrawal"]
+    if isinstance(value, dict) and value.get("schema") == "hive.original_admin_withdrawal.v1":
+        from app.services.original_source_disposition import validate_disposition
+
+        try:
+            validate_disposition(ref, value)
+            return value
+        except (KeyError, ValueError, TypeError, AttributeError):
+            raise HTTPException(503, detail={"code": "original_reference_requires_reconciliation", "retryable": True}) from None
     if (not isinstance(value, dict) or value.get("schema") != "hive.original_withdrawal.v1"
         or value.get("actor_user_id") != metadata.get("owner_user_id")
         or not isinstance(value.get("withdrawn_at"), str) or not value["withdrawn_at"]):

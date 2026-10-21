@@ -8,7 +8,7 @@ import socket
 import sys
 
 
-async def retire_references_through_ui(d, client, factory, actor_id):
+async def retire_references_through_ui(d, client, factory, actor_id, *, withdraw_source=False):
     from app.config import get_settings
 
     root = Path(__file__).resolve().parents[3]
@@ -45,8 +45,9 @@ async def retire_references_through_ui(d, client, factory, actor_id):
             "actor": str(actor_id), "token": client.headers["Authorization"].removeprefix("Bearer "), "output": str(output)}))
         profile.chmod(0o600)
         with (work / "frontend.log").open("wb") as log:
+            native_test = "InactiveOriginalDisposition.native.test.tsx" if withdraw_source else "OriginalReferenceRetirement.native.test.tsx"
             node = await asyncio.create_subprocess_exec(str(root / "frontend/node_modules/.bin/vitest"), "run",
-                "src/pages/workspace/OriginalReferenceRetirement.native.test.tsx", cwd=root / "frontend",
+                "src/pages/workspace/" + native_test, cwd=root / "frontend",
                 env={**os.environ, "HIVE_REFERENCE_RETIREMENT_BRIDGE": str(profile), "NODE_OPTIONS": "--no-experimental-webstorage"},
                 stdout=log, stderr=asyncio.subprocess.STDOUT)
             try:

@@ -515,6 +515,7 @@ async def test_trigger_terminal_learning_waits_for_committed_outbox(
     agent = SimpleNamespace(
         id=agent_id,
         name="Terminal Order Agent",
+        agent_type="native",
         role_description="",
         status="running",
         creator_id=creator_id,

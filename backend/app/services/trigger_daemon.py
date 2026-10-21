@@ -35,6 +35,8 @@ from app.services.daemon_liveness import mark_daemon_outcome
 from app.services.plan_mode_core import build_plan_execution_instruction
 from app.services.tenant_resolver import resolve_tenant_for_agent
 from app.services.trigger_resource_authority import (
+    trigger_authority_generation,
+    trigger_fire_authority_block_reason,
     trigger_execution_block_reason,
     trigger_owner_user_id,
     trigger_root_session_id,
@@ -293,6 +295,7 @@ async def _create_trigger_runtime_task(
         ],
     }
     metadata.update(metadata_json or {})
+    metadata["trigger_authority_generations"] = {str(t.id): trigger_authority_generation(t) for t in triggers}
     # A queued worker reloads definitions, not the evaluator's transient event.
     # Persist only event data; never snapshot or restore authority/configuration.
     metadata["fire_event_payloads"] = {
@@ -1592,6 +1595,8 @@ async def _mark_trigger_fire_started(
     expected_trigger_ids: list[uuid.UUID] | None = None,
     require_enabled: bool = True,
 ) -> bool:
+    from app.models.runtime_task import RuntimeTask
+
     if not triggers and not expected_trigger_ids:
         return False
     trigger_ids = list(expected_trigger_ids or [getattr(trigger, "id", None) for trigger in triggers])
@@ -1611,7 +1616,14 @@ async def _mark_trigger_fire_started(
         rows = list((await db.execute(statement.order_by(AgentTrigger.id).with_for_update())).scalars().all())
         if [trigger.id for trigger in rows] != expected_ids:
             return False
+        run_id = _runtime_task_uuid_or_none(runtime_task_id)
+        run = await db.get(RuntimeTask, run_id) if run_id is not None else None
+        fire_metadata = dict(run.metadata_json or {}) if run is not None else {}
         for trigger in rows:
+            if trigger_fire_authority_block_reason(trigger, fire_metadata):
+                # The normal authority preparation records a local refusal.
+                # An old fire must not replace a newer generation's lease.
+                continue
             cfg = dict(trigger.config or {})
             cfg["_fire_inflight"] = {
                 "event_key": event_keys.get(trigger.id) or _default_trigger_event_key(trigger, now),
@@ -2127,6 +2139,7 @@ async def _prepare_trigger_authority(
     from fastapi import HTTPException
 
     from app.models.user import User
+    from app.models.runtime_task import RuntimeTask
     from app.services.agent_identity_lifecycle import resolve_live_effect_principal
     from app.services.trigger_resource_authority import (
         authorize_trigger_action,
@@ -2145,6 +2158,9 @@ async def _prepare_trigger_authority(
     refused: list[tuple[AgentTrigger, str]] = []
     effect_users: dict[str, uuid.UUID] = {}
     async with tenant_scoped_session(tenant_id, require_tenant=True, source="trigger_authority") as db:
+        run_id = _runtime_task_uuid_or_none(runtime_task_id)
+        run = await db.get(RuntimeTask, run_id) if run_id is not None else None
+        fire_metadata = dict(run.metadata_json or {}) if run is not None else {}
         agent = (await db.execute(select(Agent).where(Agent.id == agent_id))).scalar_one_or_none()
         if agent is None:
             skip_reason = "agent_not_found"
@@ -2164,7 +2180,7 @@ async def _prepare_trigger_authority(
                     if row is None:
                         refused.append((claimed, "trigger_authority_unavailable"))
                         continue
-                    reason = trigger_execution_block_reason(row)
+                    reason = trigger_fire_authority_block_reason(row, fire_metadata) or trigger_execution_block_reason(row)
                     if reason:
                         refused.append((row, reason))
                         continue
@@ -2204,7 +2220,8 @@ async def _prepare_trigger_authority(
                 quarantine_ids = [
                     trigger.id
                     for trigger, reason in refused
-                    if reason != "trigger_authority_unavailable" and getattr(trigger, "id", None) is not None
+                    if reason not in {"trigger_authority_unavailable", "trigger_authority_revoked", "trigger_authority_generation_unavailable"}
+                    and getattr(trigger, "id", None) is not None
                 ]
                 if quarantine_ids:
                     await quarantine_stale_trigger_authority(

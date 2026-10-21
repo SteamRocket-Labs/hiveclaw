@@ -42,6 +42,30 @@ _PRIVATE_AUTHORITY_CONFIG_KEYS = frozenset(
 _PRIVATE_AUTHORITY_METADATA_KEYS = frozenset({"plan_exempt_reason", "plan_recommendation_id"})
 
 
+def trigger_authority_generation(trigger: AgentTrigger) -> int:
+    value = dict(trigger.config or {}).get("_authority_generation", 0)
+    if type(value) is not int or value < 0:
+        raise ValueError("trigger_authority_generation_unavailable")
+    return value
+
+
+def trigger_fire_authority_block_reason(trigger: AgentTrigger, metadata: dict) -> str | None:
+    generations = metadata.get("trigger_authority_generations")
+    if generations is None:
+        expected = 0  # Existing work remains valid until its first real revocation.
+    elif isinstance(generations, dict) and str(trigger.id) in generations:
+        expected = generations[str(trigger.id)]
+    else:
+        return "trigger_authority_generation_unavailable"
+    try:
+        current = trigger_authority_generation(trigger)
+    except ValueError:
+        return "trigger_authority_generation_unavailable"
+    if type(expected) is not int or expected < 0 or expected > current:
+        return "trigger_authority_generation_unavailable"
+    return "trigger_authority_revoked" if expected != current else None
+
+
 def _runtime_config_key(key: object) -> bool:
     return isinstance(key, str) and (key.startswith("_") or key in _RUNTIME_CONFIG_KEYS)
 
@@ -137,6 +161,7 @@ def stamp_trigger_authority(
     """Overwrite caller-selected authority fields with trusted runtime values."""
 
     stamped = dict(config or {})
+    stamped.pop("_authority_generation", None)
     if owner_user_id is None:
         stamped.pop("created_by", None)
         stamped.pop("root_session_id", None)
@@ -306,6 +331,7 @@ async def quarantine_transferred_trigger_authority(
         if str(config.get("authority_state") or "").strip().lower() == "quarantined":
             continue
         config["authority_state"] = "quarantined"
+        config["_authority_generation"] = trigger_authority_generation(trigger) + 1
         config["authority_revoked_reason"] = reason
         _assign_trigger_config(trigger, config)
         trigger.is_enabled = False
@@ -341,6 +367,7 @@ async def quarantine_stale_trigger_authority(
         config = dict(trigger.config or {})
         if str(config.get("authority_state") or "").strip().lower() != "quarantined":
             config["authority_state"] = "quarantined"
+            config["_authority_generation"] = trigger_authority_generation(trigger) + 1
             config["authority_revoked_reason"] = (
                 config.get("authority_revoked_reason") or reasons.get(str(trigger.id)) or "trigger_authority_stale"
             )
@@ -381,6 +408,7 @@ def apply_trigger_authority_reclaim(trigger: AgentTrigger, *, live_owner_id: uui
         raise ValueError("trigger_authority_not_revoked")
     previous = trigger_owner_user_id(trigger)
     config = dict(trigger.config or {})
+    config["_authority_generation"] = trigger_authority_generation(trigger) + 1
     config["created_by"] = str(live_owner_id)
     config["authority_state"] = "owned"
     config.pop("authority_revoked_reason", None)

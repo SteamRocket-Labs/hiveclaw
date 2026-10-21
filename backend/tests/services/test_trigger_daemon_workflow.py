@@ -426,6 +426,7 @@ async def test_workflow_asset_evidence_recovery_holds_trigger_and_wrapper(monkey
         agent_id,
         [trigger],
         runtime_task_id="workflow-wrapper",
+        _authority_checked=True,  # This unit starts at the workflow receipt boundary.
     )
 
     assert terminal_updates[0]["status"] == "needs_reconciliation"
@@ -551,11 +552,13 @@ async def test_workflow_wrapper_terminal_commit_crash_replays_receipt_without_fa
             agent_id,
             [trigger],
             runtime_task_id="workflow-wrapper-replay",
+            _authority_checked=True,
         )
     await trigger_daemon._invoke_agent_for_triggers(
         agent_id,
         [trigger],
         runtime_task_id="workflow-wrapper-replay",
+        _authority_checked=True,
     )
 
     assert len(fire_calls) == 2

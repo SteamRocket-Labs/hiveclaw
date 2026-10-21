@@ -25,7 +25,7 @@ async def load_trigger_input_origin(db, *, tenant_id, agent_id, session, metadat
     from app.services.session_model_inputs import _hash
     from app.services.trigger_daemon import _trigger_child_run_id
     from app.services.trigger_resource_authority import (
-        authorize_trigger_action, trigger_execution_block_reason, trigger_owner_user_id,
+        authorize_trigger_action, trigger_execution_block_reason, trigger_owner_user_id, trigger_fire_authority_block_reason,
     )
 
     try:
@@ -72,10 +72,16 @@ async def load_trigger_input_origin(db, *, tenant_id, agent_id, session, metadat
             if user is None or not user.is_active or len(rows) != len(trigger_ids):
                 raise ValueError("scheduled_input_requester_unavailable")
             for trigger in rows:
+                generation_block = trigger_fire_authority_block_reason(trigger, wrapper.metadata_json)
+                if generation_block:
+                    raise HTTPException(403 if generation_block == "trigger_authority_revoked" else 409,
+                        detail={"code": generation_block})
                 if trigger_owner_user_id(trigger) != user.id or trigger_execution_block_reason(trigger):
                     raise ValueError("scheduled_input_requester_changed")
                 await authorize_trigger_action(db, user, agent_id=agent_id, trigger=trigger, action="execute")
         return {"schema": "hive.trigger_input_origin.v1", "wrapper_id": str(wrapper.id),
+            **({"authority_generations": wrapper.metadata_json["trigger_authority_generations"]}
+                if "trigger_authority_generations" in wrapper.metadata_json else {}),
             **({"source": source} if source == "trigger_reflection" else {}), "input_id": str(row.id), "input_revision": row.revision, "input_sha256": _hash(row.content_parts_json),
             "command_id": str(command.id), "request_hash": command.request_hash, "target_hash": command.target_hash,
             "trigger_ids": list(map(str, trigger_ids)), "requester_user_id": str(wrapper.root_user_id),

@@ -359,6 +359,19 @@ def test_consumed_one_shot_with_completed_attempt_presents_terminal_completed_no
     assert view["last_attempt"]["status"] == "completed"
 
 
+@pytest.mark.parametrize("status", ["queued", "running", "awaiting_user_clarification", "failed", "unavailable", "completed"])
+def test_one_shot_delivery_does_not_complete_its_actual_work(status):
+    from app.services.autonomy_overview import build_trigger_view
+
+    trigger = _consumed_once_trigger(enabled=False, fire_count=1)
+    attempt = _attempt_for(trigger.id, status="completed")
+    work = {"status": status}
+    view = build_trigger_view(trigger, attempts=[attempt], work_executions={str(attempt.id): work})
+    assert (view["attention_state"] == "completed") is (status == "completed")
+    assert view["last_attempt"]["status"] == "completed"  # The delivery receipt remains inspectable.
+    assert view["last_attempt"]["work_execution"] == work
+
+
 def test_completed_one_shot_requires_attempt_evidence_not_fire_count_alone():
     from app.services.autonomy_overview import build_trigger_view
 

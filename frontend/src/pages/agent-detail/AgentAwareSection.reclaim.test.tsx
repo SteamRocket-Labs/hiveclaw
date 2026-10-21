@@ -262,3 +262,33 @@ describe('wake authority copy', () => {
     }
   });
 });
+
+describe('actual routine work', () => {
+  it.each([
+    ['awaiting_user_clarification', 'Waiting for your answer'],
+    ['running', 'Running'],
+    ['failed', 'Run failed'],
+    ['completed', 'Run completed'],
+  ])('shows %s separately from the completed delivery receipt', (status, label) => {
+    renderSection({ autonomyOverview: {
+      triggers: [{ id: 'trigger-1', display_kind: 'scheduled_job', display_title: 'Daily brief',
+        attention_state: 'active', last_attempt: { status: 'completed', display_summary: 'Delivered into original work',
+          work_execution: { status, work_url: '/agents/agent-1/sessions/work-1' } } }],
+      recent_attempts: [], findings: [],
+    } });
+    expect(screen.getByText(`Work execution: ${label}`)).toBeTruthy();
+    expect(screen.getByText('Delivered into original work')).toBeTruthy();
+    expect(screen.getByRole('link', { name: 'Open original work' }).getAttribute('href'))
+      .toBe('/agents/agent-1/sessions/work-1');
+  });
+
+  it('keeps an unverified work link unavailable', () => {
+    renderSection({ autonomyOverview: {
+      triggers: [{ id: 'trigger-1', display_kind: 'scheduled_job', display_title: 'Daily brief',
+        attention_state: 'active', last_attempt: { status: 'completed', work_execution: { status: 'unavailable' } } }],
+      recent_attempts: [], findings: [],
+    } });
+    expect(screen.getByText('Work execution: Work status unavailable')).toBeTruthy();
+    expect(screen.queryByRole('link', { name: 'Open original work' })).toBeNull();
+  });
+});

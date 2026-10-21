@@ -13,6 +13,7 @@ import { requestAppConfirm } from '../../components/AppDialogs';
 import { StructuredToolResultBody } from './StructuredToolResult';
 import TeamMemorySummaryCard from './TeamMemorySummaryCard';
 import PlanQueueSection from './PlanQueueSection';
+import RoutineWorkStatus from './RoutineWorkStatus';
 import { normalizeToolCallResult } from './toolResultEnvelope';
 import {
   buildWakePolicyPayload,
@@ -717,6 +718,7 @@ export default function AgentAwareSection({
                       </div>
                     )}
                     {trigger.last_attempt?.display_summary && <div className="agent-aware-trigger-summary">{trigger.last_attempt.display_summary}</div>}
+                    <RoutineWorkStatus work={trigger.last_attempt?.work_execution} />
                   </div>
                   <div className="agent-aware-trigger-actions">
                     {trigger.attention_state === 'authority_revoked' || trigger.next_action === 'reclaim_trigger_authority' ? (
@@ -747,6 +749,7 @@ export default function AgentAwareSection({
               <div key={`${attempt.status || 'attempt'}-${index}`} className="agent-aware-attempt">
                 <div className="agent-aware-min0">
                   <div className="agent-aware-attempt-title">{attempt.display_summary || attemptReasonLabel(attempt.status) || statusLabel(attempt.status)}</div>
+                  <RoutineWorkStatus work={attempt.work_execution} />
                   {attemptReasonLabel(attempt.status) && attempt.display_summary && (
                     <div className="u-meta u-tertiary agent-aware-mt2">{attemptReasonLabel(attempt.status)}</div>
                   )}

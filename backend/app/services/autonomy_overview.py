@@ -227,7 +227,7 @@ def _attention_from_last_attempt(task: Any | None) -> tuple[str | None, str | No
     return None, None, None
 
 
-def _one_shot_completed(trigger: Any, latest_attempt: Any) -> bool:
+def _one_shot_completed(trigger: Any, latest_attempt: Any, work_execution: dict | None = None) -> bool:
     """A consumed one-shot with a successful settled attempt is terminal.
 
     The daemon disables a ``once`` trigger at successful settlement, so
@@ -242,6 +242,8 @@ def _one_shot_completed(trigger: Any, latest_attempt: Any) -> bool:
         return False
     if latest_attempt is None:
         return False
+    if work_execution is not None and work_execution.get("status") != "completed":
+        return False
     return str(getattr(latest_attempt, "status", "") or "").strip() == "completed"
 
 
@@ -251,12 +253,14 @@ def build_trigger_view(
     attempts: list[Any] | None = None,
     include_diagnostics: bool = False,
     now: datetime | None = None,
+    work_executions: dict | None = None,
 ) -> dict[str, Any]:
     now = now or datetime.now(timezone.utc)
     attempts = attempts or []
     cfg = _config(trigger)
     display_kind = _trigger_class(trigger)
     latest_attempt = _latest_attempt_for_trigger(trigger, attempts)
+    work_execution = (work_executions or {}).get(str(latest_attempt.id)) if latest_attempt is not None else None
 
     # User-facing title: name/reason only. Falling back to the machine kind
     # code here leaked raw codes into client DOM; clients render their own
@@ -275,7 +279,7 @@ def build_trigger_view(
         attention_state = "authority_revoked"
         attention_reason = "Trigger authority was revoked and must be reclaimed by the current responsible person."
         next_action = "reclaim_trigger_authority"
-    elif _one_shot_completed(trigger, latest_attempt):
+    elif _one_shot_completed(trigger, latest_attempt, work_execution):
         attention_state = "completed"
         attention_reason = "This one-shot wake ran and completed successfully."
     elif not bool(getattr(trigger, "is_enabled", True)):
@@ -315,6 +319,8 @@ def build_trigger_view(
     }
     if view["last_attempt"] and view["last_attempt"].get("artifact"):
         view["last_artifact"] = view["last_attempt"]["artifact"]
+    if view["last_attempt"] and work_execution is not None:
+        view["last_attempt"]["work_execution"] = work_execution
     if include_diagnostics:
         view["diagnostics"] = {
             "trigger_class": display_kind,
@@ -343,10 +349,10 @@ def _finding(severity: str, category: str, message: str, recommendation: str, **
     }
 
 
-def build_agent_findings(triggers: list[Any], attempts: list[Any]) -> list[dict[str, Any]]:
+def build_agent_findings(triggers: list[Any], attempts: list[Any], *, work_executions: dict | None = None) -> list[dict[str, Any]]:
     findings: list[dict[str, Any]] = []
     for trigger in triggers:
-        view = build_trigger_view(trigger, attempts=attempts)
+        view = build_trigger_view(trigger, attempts=attempts, work_executions=work_executions)
         if view["attention_state"] in {"missing_model", "failed_recently", "backoff_active", "needs_reconciliation"}:
             findings.append(
                 _finding(
@@ -448,7 +454,14 @@ async def build_agent_autonomy_overview(
                 require_root_session=False,
             ).allowed
         ]
-    findings = build_agent_findings(triggers, attempts)
+    from app.services.trigger_work_view import read_trigger_work
+
+    work_executions = {}
+    for task in attempts:
+        work = await read_trigger_work(db, wrapper=task, user=resource_user)
+        if work is not None:
+            work_executions[str(task.id)] = work
+    findings = build_agent_findings(triggers, attempts, work_executions=work_executions)
     return {
         "agent_id": str(agent_id),
         "lookback_hours": lookback_hours,
@@ -462,11 +475,14 @@ async def build_agent_autonomy_overview(
                 trigger,
                 attempts=attempts,
                 include_diagnostics=include_diagnostics,
+                work_executions=work_executions,
             )
             for trigger in triggers
         ],
         "recent_attempts": [
-            build_runtime_task_view(task, include_diagnostics=include_diagnostics) for task in attempts[:50]
+            {**build_runtime_task_view(task, include_diagnostics=include_diagnostics),
+                **({"work_execution": work_executions[str(task.id)]} if str(task.id) in work_executions else {})}
+            for task in attempts[:50]
         ],
         "findings": findings,
     }

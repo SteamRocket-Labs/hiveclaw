@@ -16,6 +16,7 @@ import {
 import { evolutionApi, type EvolutionManifest, type EvolutionTimelineItem } from '../../api/domains/evolution';
 import { knowledgeApi, type GrowthMetrics } from '../../api/domains/knowledge';
 import './AgentEvolutionSection.css';
+import GrowthWorkComparisonCard from './GrowthWorkComparison';
 
 // 进化 tab — first screen answers "这个员工最近有没有变强、有什么等我批".
 //   1. 成长报告 (J2): zero-LLM production metrics the owner opens to judge growth.
@@ -301,6 +302,7 @@ export default function AgentEvolutionSection({ agentId, active, canManage = fal
       {!isLoading && !isError && (
         <>
           <GrowthReportCard metrics={growthMetrics} />
+          <GrowthWorkComparisonCard key={agentId} agentId={agentId} active={active} />
 
           <OwnerApprovalCard agentId={agentId} candidates={pendingSoulCandidates} canManage={canManage} />
 

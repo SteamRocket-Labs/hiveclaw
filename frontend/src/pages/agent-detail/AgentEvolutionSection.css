@@ -261,3 +261,18 @@
   background: var(--bg-secondary);
   color: var(--text-tertiary);
 }
+
+.agent-growth-work-selectors,
+.agent-growth-work-results {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr));
+  gap: var(--space-3);
+}
+
+.agent-growth-work-selectors label {
+  display: grid;
+  gap: var(--space-1);
+}
+
+.agent-growth-work-selectors select { width: 100%; min-width: 0; }
+.agent-growth-work-report pre { white-space: pre-wrap; overflow-wrap: anywhere; }

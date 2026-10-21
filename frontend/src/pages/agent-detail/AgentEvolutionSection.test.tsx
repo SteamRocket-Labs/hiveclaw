@@ -85,6 +85,7 @@ const observabilityData = {
 };
 
 vi.mock('@tanstack/react-query', () => ({
+  useInfiniteQuery: () => ({ data: { pages: [] }, isPending: false, isError: false }),
   useQuery: ({ queryKey }: { queryKey: unknown[] }) => {
     const kind = String(queryKey[0] ?? '');
     if (kind === 'agent-evolution') return { data: evolutionData, isLoading: false, isError: false };

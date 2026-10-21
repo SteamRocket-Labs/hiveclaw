@@ -1079,6 +1079,10 @@ async def get_overview(
 @router.get("/observability")
 async def get_observability(
     agent_id: uuid.UUID,
+    baseline_run_id: uuid.UUID | None = Query(default=None),
+    candidate_run_id: uuid.UUID | None = Query(default=None),
+    include_work_samples: bool = Query(default=False),
+    before_run_id: uuid.UUID | None = Query(default=None),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -1088,6 +1092,21 @@ async def get_observability(
     from app.services.knowledge_read_model import build_memory_observability
 
     observability = build_memory_observability(_data_root(), agent_id)
+    if bool(baseline_run_id) != bool(candidate_run_id) or (baseline_run_id and baseline_run_id == candidate_run_id):
+        raise HTTPException(422, detail={"code": "growth_work_pair_required", "message": "Select two different work items."})
+    if include_work_samples or baseline_run_id:
+        from app.services.growth_work_comparison import compare_recorded_work, list_work_samples
+        from app.services.content_input_receipts import ContentInputReceiptError
+
+        if include_work_samples:
+            try:
+                observability["growth"]["work_samples"] = await list_work_samples(
+                    db, agent=agent, user=current_user, before_run_id=before_run_id)
+            except ContentInputReceiptError as exc:
+                raise HTTPException(exc.status_code, detail={"code": exc.code, "message": str(exc)}) from exc
+        if baseline_run_id:
+            observability["growth"]["work_comparison"] = await compare_recorded_work(db, agent=agent, user=current_user,
+                baseline_run_id=baseline_run_id, candidate_run_id=candidate_run_id)
     await _audit_scoped_business_admin_agent_knowledge_access(
         db, current_user=current_user, agent=agent, action="agent_knowledge_observability"
     )

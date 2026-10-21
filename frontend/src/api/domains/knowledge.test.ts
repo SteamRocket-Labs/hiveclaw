@@ -43,6 +43,16 @@ function requestOf(callIndex = 0): { url: string; init: RequestInit } {
 }
 
 describe('knowledgeApi personal KB endpoints', () => {
+  it('retains the default growth read and scopes explicit work selection and pagination', async () => {
+    fetchMock.mockImplementation(async () => jsonResponse({ growth: {} }));
+    await knowledgeApi.observability('agent-1');
+    await knowledgeApi.observability('agent-1', { includeWorkSamples: true, beforeRunId: 'older-run' });
+    await knowledgeApi.observability('agent-1', { baselineRunId: 'baseline', candidateRunId: 'candidate' });
+    expect(requestOf(0).url).toBe('/api/agents/agent-1/knowledge/observability');
+    expect(requestOf(1).url).toBe('/api/agents/agent-1/knowledge/observability?include_work_samples=true&before_run_id=older-run');
+    expect(requestOf(2).url).toBe('/api/agents/agent-1/knowledge/observability?baseline_run_id=baseline&candidate_run_id=candidate');
+  });
+
   it('lists and reads personal knowledge documents under the agent knowledge route', async () => {
     fetchMock
       .mockResolvedValueOnce(jsonResponse({ documents: [{ document_id: 'doc-1', title: 'Taste notes' }] }))

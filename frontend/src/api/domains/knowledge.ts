@@ -100,7 +100,48 @@ export interface MemoryObservability {
   debt: Record<string, unknown>;
   debt_history: Record<string, unknown>[];
   label_axes: Record<string, Record<string, number>>;
-  growth: { generated_at?: string; metrics?: GrowthMetrics; report_path?: string };
+  growth: { generated_at?: string; metrics?: GrowthMetrics; report_path?: string;
+    work_samples?: { items: GrowthWorkSample[]; next_cursor: string | null };
+    work_comparison?: GrowthWorkComparison };
+}
+
+export interface GrowthWorkSample {
+  run_id: string;
+  session_id: string;
+  source_channel: string;
+  completed_at: string | null;
+}
+
+export interface GrowthWorkResult {
+  run_id: string;
+  session_id: string;
+  status: string;
+  result: string;
+  work_url: string;
+  duration_seconds: number | null;
+  usage: { effective_tokens: number | null; recorded_rounds: number };
+  cost: { amount: number | null; currency: string | null; status: string };
+  human_corrections: number | null;
+  feedback: { useful: number; misleading: number };
+  request_hashes: string[];
+  learning_sources: { source_kind: string; source_id: string; source_version: string }[];
+}
+
+export interface GrowthWorkComparison {
+  schema: 'hive.growth_work_comparison.v1';
+  status: 'unavailable' | 'not_comparable' | 'insufficient_evidence' | 'recorded_conditions_match';
+  interpretation: 'observations_only';
+  baseline?: GrowthWorkResult;
+  candidate?: GrowthWorkResult;
+  conditions: { key: string; status: 'same' | 'different' | 'unknown'; baseline: unknown; candidate: unknown }[];
+  reason_code?: string;
+}
+
+export interface GrowthWorkOptions {
+  baselineRunId?: string;
+  candidateRunId?: string;
+  includeWorkSamples?: boolean;
+  beforeRunId?: string;
 }
 
 export interface KnowledgePageSummary {
@@ -413,7 +454,14 @@ export const knowledgeApi = {
   entries: (agentId: string) => get<{ entries: KnowledgeEntry[] }>(`/agents/${agentId}/knowledge/entries`),
   events: (agentId: string) => get<{ events: KnowledgeEvent[] }>(`/agents/${agentId}/knowledge/events`),
   candidates: (agentId: string) => get<KnowledgeCandidates>(`/agents/${agentId}/knowledge/candidates`),
-  observability: (agentId: string) => get<MemoryObservability>(`/agents/${agentId}/knowledge/observability`),
+  observability: (agentId: string, options: GrowthWorkOptions = {}) => {
+    const query = new URLSearchParams();
+    if (options.baselineRunId) query.set('baseline_run_id', options.baselineRunId);
+    if (options.candidateRunId) query.set('candidate_run_id', options.candidateRunId);
+    if (options.includeWorkSamples) query.set('include_work_samples', 'true');
+    if (options.beforeRunId) query.set('before_run_id', options.beforeRunId);
+    return get<MemoryObservability>(`/agents/${agentId}/knowledge/observability${query.size ? `?${query}` : ''}`);
+  },
   personalDocuments: (agentId: string) =>
     get<{ documents: PersonalKnowledgeDocumentSummary[] }>(`/agents/${agentId}/knowledge/personal/documents`),
   personalIngest: (agentId: string, body: PersonalKnowledgeIngestRequest) =>

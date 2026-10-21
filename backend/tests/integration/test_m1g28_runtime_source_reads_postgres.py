@@ -102,4 +102,6 @@ async def test_receipted_document_never_uses_mutable_conversion_cache(native_wor
     if return_format == "markdown":
         assert body in output, output
     else:
-        assert json.loads(output)["source_sha256"] == hashlib.sha256(body.encode()).hexdigest()
+        wire = json.loads(output)
+        assert wire["ok"] is True, wire
+        assert json.loads(wire["content"])["source_sha256"] == hashlib.sha256(body.encode()).hexdigest()

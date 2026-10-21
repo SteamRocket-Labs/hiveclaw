@@ -13,7 +13,6 @@ from app.core.execution_context import get_execution_identity
 from app.database import async_session, tenant_scoped_session
 from app.models.chat_session import ChatSession
 from app.models.runtime_task import RuntimeTask
-from app.models.user import User
 from app.runtime.tenant_admission import RuntimeTenantPreconditionError
 from app.services.tenant_resolver import resolve_tenant_for_agent, resolve_tenant_for_runtime_task
 from app.tools.runtime import ToolExecutionContext
@@ -246,7 +245,9 @@ async def _load_workspace_authority_scope(
         require_tenant=True,
         source="tool_workspace_resource_authority",
     ) as authority_db:
-        user = (await authority_db.execute(select(User).where(User.id == user_id, User.is_active.is_(True)))).scalar_one_or_none()
+        from app.services.runtime_user_identity import load_scoped_runtime_user
+
+        user = await load_scoped_runtime_user(authority_db, user_id, tenant_id=tenant_id)
         if user is None:
             raise RuntimeTenantPreconditionError(
                 reason_code="tool_requester_not_found",

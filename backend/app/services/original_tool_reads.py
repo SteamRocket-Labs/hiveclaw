@@ -6,10 +6,8 @@ from pathlib import Path
 import uuid
 
 from fastapi import HTTPException
-from sqlalchemy import select
 
 from app.database import tenant_scoped_session
-from app.models.user import User
 from app.services.blob_store import BlobStoreError
 from app.tools.result_envelope import ToolContentEnvelope, render_tool_error
 
@@ -57,8 +55,9 @@ async def _read_original_for_tool(workspace, arguments, tenant_id, *, execution_
         return error("bad_arguments", "Original document reads return complete Markdown. Use return_format='markdown'.")
     try:
         async with tenant_scoped_session(tenant_id, require_tenant=True, source="native_original_read") as db:
-            user = await db.scalar(select(User).where(User.id == context.user_id, User.tenant_id == uuid.UUID(str(tenant_id)),
-                User.is_active.is_(True)).execution_options(populate_existing=True))
+            from app.services.runtime_user_identity import load_scoped_runtime_user
+
+            user = await load_scoped_runtime_user(db, context.user_id, tenant_id=uuid.UUID(str(tenant_id)))
             if user is None:
                 return error("auth_or_permission", "The current source reader is unavailable.")
             principal = AgentRuntimePrincipal(agent_id=context.agent_id, requester_user_id=user.id,

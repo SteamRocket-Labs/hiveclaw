@@ -6,6 +6,26 @@ from app.models.user import User
 from app.models.tenant import Tenant
 
 
+async def load_scoped_runtime_user(db, user_id, *, tenant_id):
+    """Recover an exact live reader inside the already selected runtime company.
+
+    This changes only the detached company view, never the canonical identity
+    or source grants. Callers must still enforce session and resource authority.
+    """
+    from app.database import get_current_tenant_id
+
+    if str(get_current_tenant_id()) != str(tenant_id):
+        return None
+    actor = await load_runtime_user(db, user_id)
+    if actor is None or actor.tenant_id == tenant_id:
+        return actor
+    if actor.role != "platform_admin":
+        return None
+    db.expunge(actor)
+    actor.tenant_id = tenant_id
+    return actor
+
+
 async def load_runtime_user(db, user_id, *, include_inactive=False, lock=False):
     """Default to a live principal; history-only callers can inspect inactive identity."""
     if user_id is None:

@@ -740,8 +740,8 @@ async def _runtime_input_actor(db, tenant_id, request):
     from app.core.permissions import check_agent_access
     from app.models.agent import Agent
     from app.models.chat_session import ChatSession
-    from app.models.user import User
     from app.services.personal_knowledge_access import AgentRuntimePrincipal
+    from app.services.runtime_user_identity import load_scoped_runtime_user
     from app.tools.handlers.knowledge import _personal_kb_runtime_principal
 
     from app.services.machine_runtime_authority import machine_request_actor
@@ -757,8 +757,7 @@ async def _runtime_input_actor(db, tenant_id, request):
 
     try:
         principal = request if isinstance(request, AgentRuntimePrincipal) else _personal_kb_runtime_principal(request)
-        requester = await db.scalar(select(User).where(User.id == principal.requester_user_id,
-            User.tenant_id == tenant_id, User.is_active.is_(True)).execution_options(populate_existing=True))
+        requester = await load_scoped_runtime_user(db, principal.requester_user_id, tenant_id=tenant_id)
         if requester is None:
             raise ValueError("runtime_requester_unavailable")
         current_session = await db.scalar(select(ChatSession).where(

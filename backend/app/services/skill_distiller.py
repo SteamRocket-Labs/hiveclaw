@@ -57,6 +57,13 @@ _TIME_SENSITIVE_PATTERNS = (
 )
 
 
+async def _complete_skill_review(client, **kwargs):
+    from app.services.learned_skill_sources import recheck_review_inputs
+
+    await recheck_review_inputs()
+    return await client.complete(**kwargs)
+
+
 def _selected_model_output_tokens(model: Any) -> int:
     return get_max_tokens(
         str(getattr(model, "provider", "") or ""),
@@ -272,6 +279,7 @@ def record_workflow_candidates_from_memory(
     agent_id: uuid.UUID,
     *,
     workspace: Path,
+    candidates: list[dict[str, str]] | None = None,
 ) -> int:
     """Surface memory workflow candidates into the evolution ledger.
 
@@ -282,7 +290,8 @@ def record_workflow_candidates_from_memory(
     """
     from app.services.evolution_ledger import record_evolution_candidate
 
-    candidates = load_memory_workflow_candidates(data_root, agent_id)
+    if candidates is None:
+        candidates = load_memory_workflow_candidates(data_root, agent_id)
     if not candidates:
         return 0
 
@@ -503,7 +512,7 @@ async def _select_skill_candidate_with_llm(
         )
     )
     try:
-        response = await client.complete(
+        response = await _complete_skill_review(client,
             messages=[
                 LLMMessage(role="system", content=system_prompt),
                 LLMMessage(role="user", content=json.dumps(payload, ensure_ascii=False, indent=2, default=str)),
@@ -524,7 +533,12 @@ async def _select_skill_candidate_with_llm(
 
 
 def _state_path(workspace: Path) -> Path:
+    from app.services.learned_skill_sources import current_review, review_scope_id
+
     evolution_dir = workspace / "evolution"
+    frame = current_review()
+    if frame is not None and frame.reader is not None:
+        evolution_dir = evolution_dir / "source_scopes" / str(review_scope_id())
     evolution_dir.mkdir(parents=True, exist_ok=True)
     return evolution_dir / "skill_distiller_state.json"
 
@@ -596,7 +610,13 @@ def _available_pack_names() -> set[str]:
 
 
 def _existing_skills(workspace: Path):
-    return WorkspaceSkillLoader().load_from_workspace(workspace)
+    from app.services.learned_skill_sources import review_path_allowed, observe_review_skill
+
+    skills = WorkspaceSkillLoader().load_from_workspace(workspace,
+        source_authorizer=lambda path: review_path_allowed(workspace, path))
+    for skill in skills:
+        observe_review_skill(skill)
+    return skills
 
 
 def validate_distilled_skill(
@@ -681,6 +701,7 @@ def _commit_skill_markdown_exact(
     candidate_id: str | None = None,
     skill_origin: str | None = None,
     transaction: Any | None = None,
+    immutable_version: bool = False,
 ) -> str:
     """Commit the LLM-authored SKILL.md draft exactly after all gates pass."""
 
@@ -702,6 +723,7 @@ def _commit_skill_markdown_exact(
                 candidate_id=candidate_id,
                 skill_origin=skill_origin,
                 transaction=own_transaction,
+                immutable_version=immutable_version,
             )
             if "✅" in result:
                 own_transaction.commit()
@@ -727,13 +749,15 @@ def _commit_skill_markdown_exact(
     from app.services.skill_installation import install_active_skill_package
 
     baseline_content = transaction.read_bytes(target_relative_path)
+    if immutable_version and baseline_content is not None:
+        return "❌ skill commit failed: an immutable version cannot be overwritten"
     baseline_registry_entry = get_skill_evolution_entry(
         workspace,
-        skill_name,
+        target_relative_path,
         transaction=transaction,
     ) or get_skill_evolution_entry(
         workspace,
-        target_relative_path,
+        skill_name,
         transaction=transaction,
     )
 
@@ -803,6 +827,7 @@ def _commit_skill_markdown_exact(
                 candidate_content=candidate_content,
                 baseline_content=baseline_content,
                 baseline_registry_entry=baseline_registry_entry,
+                retain_candidate=immutable_version,
                 transaction=transaction,
             )
     except Exception as exc:
@@ -822,6 +847,7 @@ async def _commit_skill_with_asset_revision(
     skill_origin: str | None,
     agent_id: uuid.UUID,
     tenant_id: uuid.UUID | None,
+    source_candidate_id: str | None = None,
 ) -> str:
     """Commit native Skill sidecars together and compensate the full revision on DB failure."""
 
@@ -830,6 +856,10 @@ async def _commit_skill_with_asset_revision(
         compensate_agent_asset_transaction,
         finalize_agent_asset_transaction,
     )
+    from app.services.learned_skill_sources import recheck_review_effect
+
+    await recheck_review_effect(workspace=workspace, target_path=target_relative_path,
+        rendered_markdown=rendered_markdown, source_candidate_id=source_candidate_id)
 
     with AgentAssetTransaction(
         workspace,
@@ -847,6 +877,7 @@ async def _commit_skill_with_asset_revision(
             candidate_id=candidate_id,
             skill_origin=skill_origin,
             transaction=transaction,
+            immutable_version=source_candidate_id is not None,
         )
         if "✅" not in result:
             return result
@@ -857,12 +888,15 @@ async def _commit_skill_with_asset_revision(
     try:
         from app.services.ai_assets import register_evolved_workspace_skill_asset
 
+        source_kwargs = ({"source_candidate_id": source_candidate_id, "gate_candidate_id": candidate_id,
+            "target_path": target_relative_path} if source_candidate_id is not None else {})
         await register_evolved_workspace_skill_asset(
             agent_id=agent_id,
             tenant_id=tenant_id,
             workspace=workspace,
             folder_name=Path(target_relative_path).parts[1],
             evolution_state=status,
+            **source_kwargs,
         )
     except Exception as exc:  # noqa: BLE001 - native file is compensated before surfacing failure
         compensate_agent_asset_transaction(
@@ -1245,6 +1279,10 @@ async def _load_internal_session_evidence(
     state: DistillerState,
     current_session_id: str | None,
 ) -> list[SessionWorkflowEvidence]:
+    from app.services.learned_skill_sources import current_review, load_review_session_evidence
+
+    if current_review() is not None:
+        return await load_review_session_evidence(agent_id=agent_id, state=state)
     del current_session_id  # cursoring by timestamp/session_id already handles the current session
     # ``since_days`` is retained for call compatibility only. Age may be an
     # observation in the prompt, but it cannot hide authorized evidence.
@@ -1542,7 +1580,7 @@ async def _draft_skill_with_llm(
             from app.services.semantic_input_coverage import prepare_covered_semantic_input
 
             async def _review_chunk(review_phase: str, review_prompt: str) -> str:
-                review_response = await client.complete(
+                review_response = await _complete_skill_review(client,
                     messages=[
                         LLMMessage(
                             role="system",
@@ -1571,7 +1609,7 @@ async def _draft_skill_with_llm(
                 "Use the notes below and make the final promote/patch/defer/reject decision yourself.\n\n"
                 f"{covered}\n\nReturn raw JSON using the required output contract."
             )
-        response = await client.complete(
+        response = await _complete_skill_review(client,
             messages=[
                 LLMMessage(role="system", content=system_prompt),
                 LLMMessage(role="user", content=prompt),
@@ -1766,7 +1804,7 @@ async def _review_skill_with_llm(
         )
     )
     try:
-        response = await client.complete(
+        response = await _complete_skill_review(client,
             messages=[
                 LLMMessage(role="system", content=system_prompt),
                 LLMMessage(role="user", content=prompt),
@@ -1889,13 +1927,23 @@ async def run_skill_distillation_cycle(
     import sys
     from app.services.skill_distillation_runner import run_skill_distillation
 
-    return await run_skill_distillation(
-        agent_id=agent_id,
-        workspace=workspace,
-        tenant_id=tenant_id,
-        runtime_config=runtime_config,
-        model=model,
-        current_session_id=current_session_id,
-        factor_session_provider=factor_session_provider,
-        support=sys.modules[__name__],
-    )
+    from app.services.learned_skill_sources import skill_review_inputs
+    from app.services.content_input_receipts import ContentInputReceiptError
+
+    async with skill_review_inputs(agent_id=agent_id, tenant_id=tenant_id, workspace=workspace,
+        current_session_id=current_session_id):
+        try:
+            return await run_skill_distillation(
+                agent_id=agent_id,
+                workspace=workspace,
+                tenant_id=tenant_id,
+                runtime_config=runtime_config,
+                model=model,
+                current_session_id=current_session_id,
+                factor_session_provider=factor_session_provider,
+                support=sys.modules[__name__],
+            )
+        except ContentInputReceiptError as exc:
+            return {"status": "approval_required" if exc.code == "learned_skill_activation_approval_required" else "held",
+                "reason": exc.code, "retryable": exc.status_code >= 500,
+                "recovery": "Retain the candidate and restore or reconcile its exact source and current policy before retrying."}

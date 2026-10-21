@@ -63,10 +63,7 @@ async def adapt_and_call(
                 **_trusted_context_kwargs(fn, request),
             )
         case "agent_workspace_args":
-            signature = inspect.signature(fn)
-            context_kwargs = {}
-            if "authority_scope" in signature.parameters:
-                context_kwargs["authority_scope"] = request.context.workspace_authority_scope
+            context_kwargs = _trusted_context_kwargs(fn, request)
             result = fn(
                 request.context.agent_id,
                 request.context.workspace,

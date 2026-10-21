@@ -432,6 +432,16 @@ async def _origin_dependencies(db, *, tenant_id, agent_id, ref):
         "source_version": payload["content_hash"]}]
     from app.services.explicit_memory_tool_sources import MEMORY_RESULT_TOOLS, memory_result_sources
 
+    if invocation.tool_name in {"save_skill", "reconcile_skill_candidate"}:
+        from app.services.learned_skill_sources import candidate_result_sources
+        from app.services.skill_candidate_operations import operation_result_sources
+
+        sources, complete = (await candidate_result_sources(db, tenant_id=tenant_id, agent_id=agent_id,
+            invocation=invocation, content=content)) if invocation.tool_name == "save_skill" else ([], False)
+        if not complete:
+            sources, complete = await operation_result_sources(db, tenant_id=tenant_id, agent_id=agent_id,
+                invocation=invocation, model=model, content=content)
+        return _unique_dependencies([*dependencies, *sources]), inherited_complete and complete
     if invocation.tool_name in MEMORY_RESULT_TOOLS:
         sources, complete = await memory_result_sources(db, tenant_id=tenant_id, agent_id=agent_id,
             invocation=invocation, model=model, content_hash=payload["content_hash"])
@@ -557,6 +567,19 @@ async def _origin_dependencies(db, *, tenant_id, agent_id, ref):
     metadata = payload.get("metadata")
     if not isinstance(metadata, dict):
         return _unique_dependencies(dependencies), False
+    if invocation.tool_name in {"read_file", "read_document", "fs_read"}:
+        from app.services.content_input_receipts import load_skill_input_evidence
+
+        pointer = metadata.get("skill_input_receipt")
+        if isinstance(pointer, dict) and pointer.get("sources"):
+            try:
+                bound = await load_skill_input_evidence(db, agent_id=agent_id, invocation=invocation, model_result=model,
+                    arguments=invocation.effective_arguments_json or invocation.provider_arguments_json,
+                    content_hash=payload["content_hash"], capture={"status": "captured", "receipt_ref": pointer.get("evidence_ref")})
+                return _unique_dependencies([*dependencies, *bound["sources"]]), inherited_complete and (
+                    bound == pointer and not bound["unbound"] and bool(bound["sources"]))
+            except (ContentInputReceiptError, ValueError, TypeError):
+                return _unique_dependencies(dependencies), False
     if invocation.tool_name in {"load_skill", "run_skill_tool", "tool_search"}:
         from app.services.content_input_receipts import load_skill_input_evidence
 
@@ -570,7 +593,7 @@ async def _origin_dependencies(db, *, tenant_id, agent_id, ref):
             if bound != pointer:
                 return _unique_dependencies(dependencies), False
             return _unique_dependencies([*dependencies, *bound["sources"]]), inherited_complete and (
-                bool(bound["sources"]) or invocation.tool_name == "tool_search") and not bound["unbound"]
+                bool(bound["sources"]) or invocation.tool_name == "tool_search" or bound.get("control_only") is True) and not bound["unbound"]
         except (ContentInputReceiptError, ValueError, TypeError):
             return _unique_dependencies(dependencies), False
     pointer = metadata.get("workspace_input_receipt")

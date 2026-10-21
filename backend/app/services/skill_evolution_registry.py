@@ -67,6 +67,13 @@ def normalize_skill_name(value: str) -> str:
     return normalized.strip("-") or "unknown-skill"
 
 
+def _entry_key(name: str, target_path: str) -> str:
+    parts = Path(str(target_path or "")).parts
+    if len(parts) >= 3 and parts[0] == "skills" and parts[1].startswith("learned-"):
+        return f"path:{Path(target_path).as_posix()}"
+    return normalize_skill_name(name)
+
+
 def normalize_skill_origin(value: str | None) -> str:
     normalized = str(value or ORIGIN_UNKNOWN).strip().lower().replace("-", "_")
     return normalized if normalized in KNOWN_ORIGINS else ORIGIN_UNKNOWN
@@ -115,7 +122,7 @@ def load_skill_evolution_registry(
     for raw_key, raw_entry in skills.items():
         if not isinstance(raw_entry, dict):
             continue
-        key = normalize_skill_name(str(raw_entry.get("skill_name") or raw_key))
+        key = _entry_key(str(raw_entry.get("skill_name") or raw_key), str(raw_entry.get("target_path") or ""))
         origin = normalize_skill_origin(str(raw_entry.get("skill_origin") or ORIGIN_UNKNOWN))
         entry = dict(raw_entry)
         entry["skill_name"] = str(raw_entry.get("skill_name") or key)
@@ -195,7 +202,7 @@ def upsert_skill_evolution_entry(
 
     registry = load_skill_evolution_registry(workspace, transaction=transaction)
     skills = registry.setdefault("skills", {})
-    key = normalize_skill_name(skill_name)
+    key = _entry_key(skill_name, target_path)
     origin = normalize_skill_origin(skill_origin)
     allowed = default_evolvable_for_origin(origin)
     entry_evolvable = allowed if evolvable is None else bool(evolvable) and allowed
@@ -239,18 +246,16 @@ def get_skill_evolution_entry(
 ) -> dict[str, Any] | None:
     registry = load_skill_evolution_registry(workspace, transaction=transaction)
     skills = registry.get("skills") if isinstance(registry.get("skills"), dict) else {}
+    normalized_path = str(skill_name_or_path or "").strip()
+    for entry in skills.values():
+        if isinstance(entry, dict) and entry.get("target_path") == normalized_path:
+            return entry
     key = normalize_skill_name(skill_name_or_path)
     if key in skills and isinstance(skills[key], dict):
         return skills[key]
-    normalized_path = str(skill_name_or_path or "").strip().lower()
-    for entry in skills.values():
-        if not isinstance(entry, dict):
-            continue
-        if normalize_skill_name(str(entry.get("skill_name") or "")) == key:
-            return entry
-        if str(entry.get("target_path") or "").strip().lower() == normalized_path:
-            return entry
-    return None
+    matching = [entry for entry in skills.values() if isinstance(entry, dict)
+        and normalize_skill_name(str(entry.get("skill_name") or "")) == key]
+    return matching[0] if len(matching) == 1 else None
 
 
 def restore_skill_evolution_entry(
@@ -258,6 +263,7 @@ def restore_skill_evolution_entry(
     *,
     skill_name: str,
     entry: dict[str, Any] | None,
+    target_path: str | None = None,
     transaction: AgentAssetTransaction | None = None,
 ) -> dict[str, Any] | None:
     """Restore one registry entry as part of the same native-asset revision.
@@ -273,6 +279,7 @@ def restore_skill_evolution_entry(
                 workspace,
                 skill_name=skill_name,
                 entry=entry,
+                target_path=target_path,
                 transaction=own_transaction,
             )
             own_transaction.commit()
@@ -280,7 +287,7 @@ def restore_skill_evolution_entry(
 
     registry = load_skill_evolution_registry(workspace, transaction=transaction)
     skills = registry.setdefault("skills", {})
-    key = normalize_skill_name(skill_name)
+    key = _entry_key(skill_name, str((entry or {}).get("target_path") or target_path or ""))
     if entry is None:
         skills.pop(key, None)
         restored = None

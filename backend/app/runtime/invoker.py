@@ -916,11 +916,11 @@ async def _resolve_memory_context(
     # invalidate the system-prompt cache.
     if request.agent_id:
         try:
-            from app.services.evolution_view import render_skill_evolution_digest
+            from app.services.skill_evolution_sources import render_runtime_skill_digest
 
-            skill_digest = render_skill_evolution_digest(Path(get_settings().AGENT_DATA_DIR) / str(request.agent_id))
+            skill_digest, digest_sources = await render_runtime_skill_digest(request, session_id=session_id)
             if skill_digest:
-                source_unbound.append("skill_evolution_digest_sources_unbound")
+                source_refs.extend(digest_sources)
                 parts.append(
                     _context_engine().inject(
                         request.session_context,
@@ -1841,6 +1841,8 @@ async def _build_native_skill_catalog(request: AgentInvocationRequest, agent_id,
                     delegation_id = getattr(request.delegation_token, "delegation_id", None)
                     principal = AgentRuntimePrincipal(agent_id=agent_id, requester_user_id=user.id,
                         session_id=str(kwargs.get("session_id")) if kwargs.get("session_id") else None,
+                        runtime_task_id=((getattr(request.session_context, "metadata", None) or {}).get("runtime_task_id")
+                            or (getattr(request.session_context, "metadata", None) or {}).get("task_id")),
                         purpose="autonomous_agent" if autonomous else "a2a_delegation" if delegation_id else "interactive_session",
                         autonomous=autonomous, delegation_id=str(delegation_id) if delegation_id else None)
                     scope = await load_workspace_authority_scope(db, user, agent_id=agent_id,
@@ -1857,7 +1859,9 @@ async def _build_native_skill_catalog(request: AgentInvocationRequest, agent_id,
                 continue
             if relative.startswith("workspace/"):
                 return candidate.resolve() == root.resolve() and scope is not None and scope.can_read(relative)
-            return True
+            from app.services.learned_skill_sources import managed_learning_path
+
+            return scope.can_read(relative) if scope is not None else not managed_learning_path(relative)
         return False
 
     def observed(skill):
@@ -1869,7 +1873,7 @@ async def _build_native_skill_catalog(request: AgentInvocationRequest, agent_id,
         capture.observe_file(relative, skill.source_sha256)
 
     async with async_agent_workspace_lock(agent_id, data_root=root.parent):
-        await load_skill_input_snapshot(capture, request.tenant_id)
+        await load_skill_input_snapshot(capture, request.tenant_id, runtime_request=principal if scope is not None else None)
         catalog = build_skill_catalog_section_for_agent(agent_id, **kwargs, source_observer=observed, source_authorizer=allowed)
     ensure_runtime_assembly_state(request.session_context).record_context_sources(
         agent_id=agent_id, content=catalog, sources=capture.snapshot()["sources"], unbound=capture.snapshot()["unbound"])

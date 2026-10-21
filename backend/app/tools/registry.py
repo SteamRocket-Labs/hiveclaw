@@ -62,6 +62,7 @@ _SKILLS = {
     "load_skill",
     "run_skill_tool",
     "save_skill",
+    "reconcile_skill_candidate",
     "pin_skill",
     "tool_search",
     "discover_resources",

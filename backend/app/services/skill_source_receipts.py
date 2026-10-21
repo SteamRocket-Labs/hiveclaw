@@ -24,10 +24,20 @@ class SkillInputCapture:
     unbound: list[str] = field(default_factory=list)
     unverified: set[str] = field(default_factory=set)
     allow_empty: bool = False
+    learning_only: bool = False
+    learned_files: set[str] = field(default_factory=set)
+    control_only: bool = False
 
     def observe_file(self, path, digest):
+        if self.learning_only and path not in self.files:
+            from app.services.learned_skill_sources import managed_learning_path
+
+            if not managed_learning_path(path):
+                return
         selected = self.files.get(path)
         source_kind = "agent_skill_file"
+        if path in self.learned_files:
+            source_kind = "learned_skill_file"
         if selected is None:
             selected = self.platform_files.get(path)
             source_kind = "agent_platform_skill_file"
@@ -44,6 +54,9 @@ class SkillInputCapture:
             path = state["path"]
             read = scope.input_read(path)
             digest = state.get("sha256")
+            if path in self.files:
+                self.observe_file(path, digest)
+                continue
             if read is None or not digest or read.observed_sha256 != digest or read.content_sha256 != digest:
                 self.unbound.append(f"workspace_file_unbound:{path}")
                 continue
@@ -51,8 +64,10 @@ class SkillInputCapture:
 
     def snapshot(self):
         sources = sorted({(row["source_kind"], row["source_id"], row["source_version"]) for row in self.sources})
+        control = self.control_only and not sources and not self.unbound
         return {"sources": [dict(zip(("source_kind", "source_id", "source_version"), row)) for row in sources],
-            "unbound": sorted(set(self.unbound or ([] if sources or self.allow_empty else ["skill_source_not_observed"])))}
+            "unbound": sorted(set(self.unbound or ([] if sources or self.allow_empty or control else ["skill_source_not_observed"]))),
+            **({"control_only": True} if control else {})}
 
 
 async def prepare_skill_input_capture(request):
@@ -61,17 +76,20 @@ async def prepare_skill_input_capture(request):
 
     context = request.context
     scope = context.workspace_authority_scope
-    if request.tool_name not in {"load_skill", "run_skill_tool", "tool_search"} or not isinstance(scope, WorkspaceAuthorityScope):
+    primary = request.tool_name in {"load_skill", "run_skill_tool", "tool_search"}
+    additional = request.tool_name in {"read_file", "read_document", "fs_read", "run_command", "execute_code"}
+    if not (primary or additional) or not isinstance(scope, WorkspaceAuthorityScope):
         return
-    capture = SkillInputCapture(context.agent_id, allow_empty=request.tool_name == "tool_search")
+    capture = SkillInputCapture(context.agent_id, allow_empty=request.tool_name == "tool_search" or additional,
+        learning_only=additional)
     context.workspace_authority_scope = replace(scope, skill_inputs=capture)
     if Path(context.workspace).resolve() != (Path(get_settings().AGENT_DATA_DIR) / str(context.agent_id)).resolve():
         capture.unbound.append("skill_workspace_source_unverified")
         return
-    await load_skill_input_snapshot(capture, context.tenant_id)
+    await load_skill_input_snapshot(capture, context.tenant_id, runtime_request=request)
 
 
-async def load_skill_input_snapshot(capture, tenant_id):
+async def load_skill_input_snapshot(capture, tenant_id, *, runtime_request=None):
     from app.database import tenant_scoped_session
 
     try:
@@ -85,12 +103,31 @@ async def load_skill_input_snapshot(capture, tenant_id):
             rows = (await db.scalars(select(ConfigRevision).where(ConfigRevision.tenant_id == tenant_id,
                 ConfigRevision.entity_type == "agent_skill_install", ConfigRevision.is_active.is_(True),
                 ConfigRevision.content["agent_id"].astext == str(capture.agent_id)))).all()
+            from app.services.learned_skill_sources import learning_file_access
+
+            _roots, learning_files = await learning_file_access(db, tenant_id=tenant_id,
+                agent_id=capture.agent_id, request=runtime_request)
+            visible_learning = {(path, revision, digest) for path, revision, digest in learning_files}
             for row in rows:
                 content = row.content
                 if (not isinstance(content, dict) or canonical_content_hash(content) != row.content_hash
                     or content.get("schema") != "hive.skill_installation_inputs.v1"
                     or not isinstance(content.get("files"), dict) or row.entity_id != _installation_id(capture.agent_id, content["folder_name"])):
                     continue
+                if content.get("learning"):
+                    from app.services.learned_skill_sources import validate_learned_installation
+                    from app.services.content_input_receipts import ContentInputReceiptError
+
+                    try:
+                        if runtime_request is None:
+                            continue
+                        if any((path, str(row.id), digest) not in visible_learning for path, digest in content["files"].items()):
+                            continue
+                        await validate_learned_installation(db, row, tenant_id=tenant_id,
+                            agent_id=capture.agent_id, request=runtime_request)
+                    except ContentInputReceiptError:
+                        continue
+                    capture.learned_files.update(content["files"])
                 if content.get("unverified_inputs") != []:
                     capture.unverified.update(content["files"])
                 capture.files.update({path: (str(row.id), digest) for path, digest in content["files"].items()})
@@ -326,6 +363,19 @@ async def validate_skill_file_dependency(db, tenant_id, dependency, *, user, run
     revision = await db.get(ConfigRevision, revision_id, populate_existing=True)
     content = revision.content if revision is not None and isinstance(revision.content, dict) else {}
     current = latest.content if latest is not None and isinstance(latest.content, dict) else {}
+    if dependency["source_kind"] == "learned_skill_file" and not content.get("learning"):
+        raise ContentInputReceiptError("learned_skill_source_unavailable", "The learned Skill source receipt is unavailable.", 403)
+    if content.get("learning"):
+        from app.services.learned_skill_sources import validate_learned_installation
+
+        await validate_learned_installation(db, revision, tenant_id=tenant_id, agent_id=agent_id,
+            request=runtime_request, user=user)
+        if (latest is None or current.get("unverified_inputs") != [] or not isinstance(current.get("files"), dict)
+            or current["files"].get(path) != dependency["source_version"]
+            or content.get("files", {}).get(path) != dependency["source_version"]):
+            raise ContentInputReceiptError("learned_skill_version_unavailable", "Reload the current reviewed Skill version.", 403)
+        _validate_source_bytes(Path(get_settings().AGENT_DATA_DIR) / str(agent_id) / path, dependency["source_version"])
+        return
     if (revision is None or revision.tenant_id != tenant_id or revision.entity_type != "agent_skill_install"
         or revision.entity_id != _installation_id(agent_id, folder) or canonical_content_hash(content) != revision.content_hash
         or latest is None or canonical_content_hash(current) != latest.content_hash or current.get("unverified_inputs") != []

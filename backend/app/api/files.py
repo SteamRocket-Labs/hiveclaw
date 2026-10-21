@@ -657,6 +657,15 @@ async def read_file(
         raise _workspace_authority_http_error(exc) from exc
     if source_authority is not None:
         await _authorize_session_source(db, current_user, agent_id, path, operator_view, operator_reason)
+    if source_authority == "learned_skill_source":
+        from app.services.learned_skill_sources import authorize_browser_learning_path
+        from app.services.content_input_receipts import ContentInputReceiptError
+
+        try:
+            await authorize_browser_learning_path(db, current_user, agent_id=agent_id, path=path,
+                observed_sha256=content_hash or await asyncio.to_thread(_workspace_content_hash, agent_id, path))
+        except ContentInputReceiptError as exc:
+            raise _content_receipt_http_error(exc) from exc
     receipt = None
     if resource_decision is not None:
         from app.services.content_input_receipts import (
@@ -1603,13 +1612,21 @@ async def uninstall_skill_from_agent(
     """Uninstall one workspace copy without deleting the registry or other agents' copies."""
     await require_agent_manage_access(db, current_user, agent_id)
     from app.services.skill_installation import uninstall_active_skill_package
+    from app.services.learned_skill_sources import retire_learned_installation
+    from app.services.content_input_receipts import ContentInputReceiptError
 
     try:
+        retired = await retire_learned_installation(db, agent_id=agent_id, user=current_user,
+            workspace=_agent_base_dir(agent_id), folder_name=body.folder_name)
+        if retired is not None:
+            return retired
         return uninstall_active_skill_package(
             workspace=_agent_base_dir(agent_id),
             folder_name=body.folder_name,
             actor_user_id=str(current_user.id),
         )
+    except ContentInputReceiptError as exc:
+        raise HTTPException(status_code=exc.status_code, detail={"code": exc.code, "message": str(exc)}) from exc
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:

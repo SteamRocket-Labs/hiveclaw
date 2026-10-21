@@ -184,6 +184,8 @@ def _authority_known_foreign_path(authority_scope, rel_path: str) -> bool:
     normalized = str(rel_path or "").replace("\\", "/").strip().lstrip("/")
     if authority_scope.can_read_session_source(normalized) is False:
         return True
+    if authority_scope.can_read_learning_source(normalized) is False:
+        return True
     if not normalized.startswith("workspace/"):
         return False
     return normalized in authority_scope.known_paths and not authority_scope.can_read(normalized)
@@ -312,6 +314,10 @@ def _read_receipted_workspace_bytes(read_root: Path, read_path: str, authority_s
     read = authority_scope.input_read(authority_path) if hasattr(authority_scope, "input_read") else None
     if read is not None:
         read.verify(raw)
+    learned = next((digest for path, _revision, digest in getattr(authority_scope, "learning_files", ())
+        if path == authority_path), None)
+    if learned is not None and hashlib.sha256(raw).hexdigest() != learned:
+        raise WorkspaceAuthorityError("learned_skill_bytes_changed", "The learned source bytes changed after authority was checked.")
     capture = getattr(authority_scope, "skill_inputs", None)
     if capture is not None:
         capture.observe_file(authority_path, hashlib.sha256(raw).hexdigest())
@@ -454,10 +460,17 @@ def _skill_scope_guidance(metadata) -> str:
     )
 
 
+def _skill_control_error(authority_scope, tool_name, error_class, message):
+    capture = getattr(authority_scope, "skill_inputs", None)
+    if capture is not None:
+        capture.control_only = True
+    return _workspace_error(tool_name, error_class, message)
+
+
 def _load_skill(ws: Path, skill_name: str, tool_name: str = "load_skill", *, session_id: str | None = None, authority_scope=None) -> str:
     requested = (skill_name or "").strip()
     if not requested:
-        return _workspace_error(tool_name, "bad_arguments", "Skill name cannot be empty.")
+        return _skill_control_error(authority_scope, tool_name, "bad_arguments", "Skill name cannot be empty.")
 
     workspace_root = ws.resolve()
     skills_dir = (ws / "skills").resolve()
@@ -487,11 +500,11 @@ def _load_skill(ws: Path, skill_name: str, tool_name: str = "load_skill", *, ses
             or not _is_skill_instruction_file(ws, path)
             or not _session_extension_path_allowed(ws, path, session_id=session_id)
         ):
-            return _workspace_error(tool_name, "auth_or_permission", "Access denied for this skill path.")
+            return _skill_control_error(authority_scope, tool_name, "auth_or_permission", "Access denied for this skill path.")
         try:
             relative_path = path.relative_to(workspace_root).as_posix()
             if not _authority_allows_path(authority_scope, relative_path):
-                return _workspace_error(tool_name, "auth_or_permission", "Access denied for this skill source.")
+                return _skill_control_error(authority_scope, tool_name, "auth_or_permission", "Access denied for this skill source.")
             raw = _read_receipted_workspace_bytes(workspace_root, relative_path, authority_scope, relative_path)
             with io.TextIOWrapper(io.BytesIO(raw), encoding="utf-8", errors="replace") as reader:
                 content = reader.read()
@@ -523,7 +536,8 @@ def _load_skill(ws: Path, skill_name: str, tool_name: str = "load_skill", *, ses
                 logger.debug("[workspace] curator use bump (explicit) failed: %s", exc)
             return body
 
-    registry = _build_skill_registry(ws, session_id=session_id)
+    registry = _build_skill_registry(ws, session_id=session_id, source_authorizer=lambda path:
+        _authority_allows_path(authority_scope, Path(path).resolve().relative_to(workspace_root).as_posix()))
     try:
         # Step 9: resolve once so allowed-tools can be re-surfaced as scoped tool
         # guidance. The registry path strips frontmatter (where allowed-tools
@@ -532,7 +546,7 @@ def _load_skill(ws: Path, skill_name: str, tool_name: str = "load_skill", *, ses
         skill = registry.resolve(requested)
         relative_path = skill.file_path.resolve().relative_to(workspace_root).as_posix()
         if not _authority_allows_path(authority_scope, relative_path):
-            return _workspace_error(tool_name, "auth_or_permission", "Access denied for this skill source.")
+            return _skill_control_error(authority_scope, tool_name, "auth_or_permission", "Access denied for this skill source.")
         raw = _read_receipted_workspace_bytes(workspace_root, relative_path, authority_scope, relative_path)
         from app.skills.parser import SkillParser
 
@@ -544,7 +558,7 @@ def _load_skill(ws: Path, skill_name: str, tool_name: str = "load_skill", *, ses
         body = _apply_trial_state(body, skill.relative_path or requested)
         if "skill_state_blocked" in body:
             return body
-        _curator_bump_use(ws, requested)
+        _curator_bump_use(ws, skill.relative_path)
         return body
     except KeyError:
         # Not a workspace skill — fall through to check tool packs
@@ -569,7 +583,7 @@ def _load_skill(ws: Path, skill_name: str, tool_name: str = "load_skill", *, ses
             "system guide separately."
         )
 
-    return _workspace_error(tool_name, "not_found", f"Skill not found: {skill_name}")
+    return _skill_control_error(authority_scope, tool_name, "not_found", f"Skill not found: {skill_name}")
 
 
 def _build_skill_registry(ws: Path, *, session_id: str | None = None, source_authorizer=None) -> SkillRegistry:
@@ -616,11 +630,14 @@ def _curator_bump_use(ws: Path, skill_name: str) -> None:
         from app.services.skill_curator import bump_skill_use
 
         slug: str | None = None
-        try:
-            parsed = _build_skill_registry(ws).resolve(skill_name)
-            slug = _skill_slug_from_relative_path(parsed.relative_path)
-        except KeyError:
-            slug = None
+        if skill_name.startswith("skills/"):
+            slug = _skill_slug_from_relative_path(skill_name)
+        else:
+            try:
+                parsed = _build_skill_registry(ws).resolve(skill_name)
+                slug = _skill_slug_from_relative_path(parsed.relative_path)
+            except KeyError:
+                slug = None
         if slug:
             bump_skill_use(ws, slug, kind="use")
     except Exception as exc:  # pragma: no cover - telemetry must never break load
@@ -666,6 +683,7 @@ def _find_similar_existing_skill(
     *,
     name: str,
     description: str,
+    source_authorizer=None,
 ):
     """Return the most similar existing skill (ParsedSkill + Jaccard score) if
     it exceeds SKILL_DEDUP_THRESHOLD, else None.
@@ -681,7 +699,7 @@ def _find_similar_existing_skill(
         return None
 
     try:
-        registry = _build_skill_registry(ws)
+        registry = _build_skill_registry(ws, source_authorizer=source_authorizer)
     except Exception as exc:
         logger.warning("[workspace] skill dedup registry build failed: %s", exc)
         return None
@@ -703,6 +721,7 @@ def _find_similar_pending_skill_candidate(
     *,
     name: str,
     description: str,
+    source_authorizer=None,
 ) -> tuple[dict, float] | None:
     """Return the most similar inactive skill candidate package if present."""
 
@@ -716,6 +735,8 @@ def _find_similar_pending_skill_candidate(
     candidate_text = f"{name} {description}".strip()
     best: tuple[dict, float] | None = None
     for manifest_path in root.glob("*/manifest.json"):
+        if source_authorizer is not None and not source_authorizer(manifest_path):
+            continue
         try:
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         except Exception:
@@ -724,7 +745,8 @@ def _find_similar_pending_skill_candidate(
         draft_text = ""
         if draft_path_raw:
             draft_path = (ws / str(draft_path_raw)).resolve()
-            if _is_within_path(draft_path, ws) and draft_path.exists():
+            if (_is_within_path(draft_path, ws) and draft_path.exists()
+                and (source_authorizer is None or source_authorizer(draft_path))):
                 draft_text = draft_path.read_text(encoding="utf-8", errors="replace")
         candidate_name = str(manifest.get("skill_name") or "")
         candidate_description = ""
@@ -793,6 +815,10 @@ def _submit_skill_activation_candidate(
     folder_name: str | None = None,
     overwrite: bool = False,
     tool_name: str = "save_skill",
+    candidate_id: str | None = None,
+    source_authorizer=None,
+    prepared_markdown: str | None = None,
+    outcome_observer=None,
 ) -> str:
     """Record an LLM-authored skill draft without activating it.
 
@@ -833,7 +859,8 @@ def _submit_skill_activation_candidate(
         )
     semantic_observations: list[dict[str, Any]] = []
     if not overwrite:
-        similar = _find_similar_existing_skill(ws, name=skill_name, description=skill_description)
+        similar = _find_similar_existing_skill(ws, name=skill_name, description=skill_description,
+            **({"source_authorizer": source_authorizer} if source_authorizer is not None else {}))
         if similar is not None:
             sim_skill, sim_score = similar
             semantic_observations.append(
@@ -850,6 +877,7 @@ def _submit_skill_activation_candidate(
             ws,
             name=skill_name,
             description=skill_description,
+            **({"source_authorizer": source_authorizer} if source_authorizer is not None else {}),
         )
         if similar_candidate is not None:
             manifest, sim_score = similar_candidate
@@ -864,7 +892,7 @@ def _submit_skill_activation_candidate(
                 }
             )
 
-    rendered = _render_skill_markdown(
+    rendered = prepared_markdown if prepared_markdown is not None else _render_skill_markdown(
         name=skill_name,
         description=skill_description,
         instructions=skill_instructions,
@@ -883,7 +911,7 @@ def _submit_skill_activation_candidate(
             actionable_hint="Remove embedded secrets, remote shell installers, path escapes, or destructive commands.",
         )
 
-    candidate_id = f"save-skill-{uuid.uuid4()}"
+    candidate_id = candidate_id or f"save-skill-{uuid.uuid4()}"
     from app.services.agent_asset_transaction import AgentAssetTransaction
     from app.services.skill_candidate_package import write_skill_candidate_package
     from app.services.skill_evolution_registry import ORIGIN_USER_SKILL_CREATOR, upsert_skill_evolution_entry
@@ -976,6 +1004,8 @@ def _submit_skill_activation_candidate(
             actionable_hint="Retry the same save_skill request; no partial candidate or registry entry was activated.",
         )
 
+    if outcome_observer is not None:
+        outcome_observer({"candidate_id": candidate_id, "draft_path": manifest["draft_path"]})
     return (
         f"🟡 save_skill submitted for review at evolution/skill_candidates/{candidate_id}/\n"
         f"- candidate_id: {candidate_id}\n"

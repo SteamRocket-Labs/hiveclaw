@@ -110,7 +110,7 @@ _DELEGATION_TOOL_PROFILES: dict[str, DelegationToolProfile] = {
         name="memory_readonly",
         core_tools_only=True,
         allowed_tools=(),
-        excluded_tools=_DELEGATION_BASE_EXCLUDED_TOOLS + ("save_skill",) + _DELEGATION_MEMORY_WRITE_TOOLS,
+        excluded_tools=_DELEGATION_BASE_EXCLUDED_TOOLS + ("save_skill", "reconcile_skill_candidate") + _DELEGATION_MEMORY_WRITE_TOOLS,
         tool_policy="worker_memory_readonly",
         tool_rule=(
             "Your tool surface is worker-safe, and you may use read-only recall tools when they materially help the delegated task."

@@ -17,6 +17,7 @@ pytestmark = [pytest.mark.usefixtures("migrated_pg_url"), pytest.mark.skipif(pla
 
 async def _run_native_skill_task(
     owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, *, load_skill_name="source-probe", delegated=False, client_script=None, compact_session_ids=False, settle_delegation=False,
+    skill_setup=None, prompt="Load source-probe, run scripts/probe.py and deliver the generated report to this work.",
 ):
     import app.database as database
     import app.runtime.invoker as invoker
@@ -29,8 +30,7 @@ async def _run_native_skill_task(
     from app.services.secrets_provider import get_secrets_provider
     from tests.integration.test_m1g46_skill_installation_postgres import _import_original_skill
 
-    seed = await _seed_run(owner_sessionmaker, tmp_path,
-        prompt="Load source-probe, run scripts/probe.py and deliver the generated report to this work.")
+    seed = await _seed_run(owner_sessionmaker, tmp_path, prompt=prompt)
     settings = get_settings()
     monkeypatch.setattr(settings, "AGENT_DATA_DIR", str(seed["data_root"]))
     monkeypatch.setattr(agent_manager, "settings", settings)
@@ -59,11 +59,14 @@ async def _run_native_skill_task(
             if value is factory:
                 monkeypatch.setattr(module, name, app_user_sessionmaker)
                 bindings.append(module.__name__ + "." + name)
-    _skill_id, _publisher, imported = await _import_original_skill(seed, owner_sessionmaker, app_user_sessionmaker, monkeypatch)
-    assert imported["source_receipt"]["source_status"] == "verified"
     monkeypatch.setattr(agent_tools, "WORKSPACE_ROOT", seed["data_root"])
     monkeypatch.setattr("app.tools.workspace.WORKSPACE_ROOT", seed["data_root"])
     monkeypatch.setattr(agent_tools, "_TOOL_RUNTIME_SERVICE", None)
+    if skill_setup is None:
+        _skill_id, _publisher, imported = await _import_original_skill(seed, owner_sessionmaker, app_user_sessionmaker, monkeypatch)
+        assert imported["source_receipt"]["source_status"] == "verified"
+    else:
+        imported = await skill_setup(seed)
     calls = [("load_skill", {"name": load_skill_name}),
         ("run_skill_tool", {"skill": "source-probe", "script": "scripts/probe.py"})]
     script = [{"tool_calls": [{"id": f"native-{index}", "type": "function",
@@ -376,7 +379,7 @@ async def test_native_actor_observation_rejects_rehash_and_current_owner_loss(
         await validate_runtime_input_dependencies(db, request, refs)
 
 
-async def test_native_context_binds_actual_explicit_memory_index(
+async def test_native_context_withholds_unverified_legacy_memory_without_blocking_authorized_work(
     owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path,
 ):
     import hashlib
@@ -385,7 +388,7 @@ async def test_native_context_binds_actual_explicit_memory_index(
     from app.models.invocation_span import InvocationSpan
     from app.models.session_v2 import SessionModelResult
     from app.services.agent_manager import AgentManager
-    from app.services.content_input_receipts import ContentInputReceiptError, validate_runtime_input_dependencies
+    from app.services.content_input_receipts import validate_runtime_input_dependencies
     from app.tools.runtime import ToolExecutionContext, ToolExecutionRequest
     from tests.memory.test_read_side_two_planes import _write_overlay_entry
 
@@ -400,7 +403,7 @@ async def test_native_context_binds_actual_explicit_memory_index(
     seed, client, _bindings, _imported = await _run_native_skill_task(owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path)
     paths = ["memory/explicit/manifest.jsonl", "memory/explicit/entries/native-index.md"]
     expected = {f"{seed['agent_id']}\n{path}": hashlib.sha256((seed["agent_root"] / path).read_bytes()).hexdigest() for path in paths}
-    assert "周报永远用中文" in json.dumps(client.requests, ensure_ascii=False)
+    assert "周报永远用中文" not in json.dumps(client.requests, ensure_ascii=False)
     request = ToolExecutionRequest(tool_name="run_skill_tool", arguments={}, context=ToolExecutionContext(
         agent_id=seed["agent_id"], user_id=seed["user_id"], tenant_id=str(seed["tenant_id"]),
         workspace=seed["agent_root"], session_id=str(seed["session_id"]), runtime_task_id=str(seed["run_id"])))
@@ -412,18 +415,27 @@ async def test_native_context_binds_actual_explicit_memory_index(
         assert len(rows) == 3
         output = await db.scalar(select(InvocationSpan).where(InvocationSpan.runtime_task_id == seed["run_id"],
             InvocationSpan.span_type == "workspace_output"))
-        assert output.metadata_json["native_content_receipts"] == {"status": "unavailable",
-            "reason_code": "model_input_inventory_incomplete", "receipts": {}}
+        receipts = output.metadata_json["native_content_receipts"]
+        assert receipts["status"] == "captured" and receipts["failures"] == {}
+        assert set(receipts["receipts"]) == {"workspace/native-report.md"}
         from app.models.chat_artifact import ChatArtifact
 
-        assert await db.scalar(select(ChatArtifact.id).where(ChatArtifact.agent_id == seed["agent_id"])) is None
+        assert await db.scalar(select(ChatArtifact.id).where(ChatArtifact.agent_id == seed["agent_id"])) is not None
         for row in rows:
             bindings = row.model_request_snapshot_json["input_bindings"]
             refs = [ref for ref in bindings["dependencies"] if ref["source_kind"] == "agent_memory_file"]
-            assert {ref["source_id"]: ref["source_version"] for ref in refs} == expected
-            assert bindings["dependency_coverage"]["complete"] is False
-            with pytest.raises(ContentInputReceiptError, match="cannot yet be revalidated"):
-                await validate_runtime_input_dependencies(db, request, refs)
+            assert refs == []
+            assert bindings["dependency_coverage"]["complete"] is True
+            await validate_runtime_input_dependencies(db, request, bindings["dependencies"])
+        from app.models.user import User
+        from app.services.workspace_resource_authority import load_workspace_authority_scope
+
+        user = await db.get(User, seed["user_id"])
+        scope = await load_workspace_authority_scope(db, user, agent_id=seed["agent_id"],
+            session_id=seed["session_id"])
+        assert all(not scope.can_read(path) for path in paths)
+    assert {f"{seed['agent_id']}\n{path}": hashlib.sha256((seed["agent_root"] / path).read_bytes()).hexdigest()
+        for path in paths} == expected
 
 
 @pytest.mark.parametrize("source_case", ["metadata_recovery", "source_revocation"])

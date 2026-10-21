@@ -33,6 +33,20 @@ def _require_admin(user: User) -> None:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="AI asset mutation requires admin access")
 
 
+async def _readable_asset(db, user, asset_id, *, revision_content=None):
+    from app.services.learned_skill_sources import authorize_learned_asset_read
+    from app.services.content_input_receipts import ContentInputReceiptError
+
+    record = await ai_asset_service.get_asset_record(db, tenant_id=_tenant_id(user), asset_id=asset_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="AI asset not found")
+    try:
+        await authorize_learned_asset_read(db, record, user=user, revision_content=revision_content)
+    except ContentInputReceiptError as exc:
+        raise HTTPException(status_code=exc.status_code, detail={"code": exc.code, "message": str(exc)}) from exc
+    return record
+
+
 @router.get("")
 async def list_ai_assets(
     asset_type: str | None = Query(default=None),
@@ -45,6 +59,7 @@ async def list_ai_assets(
         tenant_id=_tenant_id(current_user),
         asset_type=asset_type,
         lifecycle_status=lifecycle_status,
+        user=current_user,
     )
 
 
@@ -55,9 +70,7 @@ async def get_ai_asset(
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     tenant_id = _tenant_id(current_user)
-    record = await ai_asset_service.get_asset_record(db, tenant_id=tenant_id, asset_id=asset_id)
-    if record is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="AI asset not found")
+    record = await _readable_asset(db, current_user, asset_id)
     history = await ai_asset_service.revision_history(db, tenant_id=tenant_id, asset_id=asset_id, limit=20)
     usage_events = await ai_asset_service.list_asset_usage_events(
         db,
@@ -66,6 +79,7 @@ async def get_ai_asset(
         limit=100,
     )
     active = history[0] if history else None
+    await _readable_asset(db, current_user, asset_id)
     return {
         "asset": ai_asset_service.asset_payload(record),
         "active_revision": active,
@@ -81,8 +95,9 @@ async def list_ai_asset_revisions(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> list[dict]:
+    await _readable_asset(db, current_user, asset_id)
     try:
-        return await ai_asset_service.revision_history(
+        history = await ai_asset_service.revision_history(
             db,
             tenant_id=_tenant_id(current_user),
             asset_id=asset_id,
@@ -90,6 +105,8 @@ async def list_ai_asset_revisions(
         )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    await _readable_asset(db, current_user, asset_id)
+    return history
 
 
 @router.get("/{asset_id}/revisions/{version}")
@@ -99,6 +116,7 @@ async def get_ai_asset_revision(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
+    await _readable_asset(db, current_user, asset_id)
     try:
         revision = await ai_asset_service.revision_detail(
             db,
@@ -110,6 +128,7 @@ async def get_ai_asset_revision(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     if revision is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="AI asset revision not found")
+    await _readable_asset(db, current_user, asset_id, revision_content=revision["content"])
     return revision
 
 

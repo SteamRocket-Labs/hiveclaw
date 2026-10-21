@@ -105,6 +105,21 @@ async def _validate_input_dependency_batch(db, tenant_id: uuid.UUID, dependencie
 
         published_user, published = await published_creation_seed_sources(db, tenant_id=tenant_id, request=runtime_request)
     for dependency in dependencies:
+        if dependency["source_kind"] == "skill_evolution_observation":
+            from app.services.skill_evolution_sources import validate_observation
+
+            await validate_observation(db, tenant_id, dependency, request=runtime_request, user=user)
+            continue
+        if dependency["source_kind"] == "session_model_result":
+            from app.services.learned_skill_sources import validate_model_source
+
+            await validate_model_source(db, tenant_id, dependency, request=runtime_request, user=user)
+            continue
+        if dependency["source_kind"] == "learned_skill_candidate":
+            from app.services.learned_skill_sources import validate_candidate_dependency
+
+            await validate_candidate_dependency(db, tenant_id, dependency, request=runtime_request, user=user)
+            continue
         if dependency in published:
             await _validate_input_dependencies(db, tenant_id, [dependency], user=published_user,
                 active_workspace_receipts=active_workspace_receipts)
@@ -120,7 +135,7 @@ async def _validate_input_dependency_batch(db, tenant_id: uuid.UUID, dependencie
             await validate_project_dependency(db, tenant_id, dependency, user=user, runtime_request=runtime_request,
                 active_receipts=active_workspace_receipts)
             continue
-        if dependency["source_kind"] in {"agent_skill_file", "agent_platform_skill_file"}:
+        if dependency["source_kind"] in {"agent_skill_file", "agent_platform_skill_file", "learned_skill_file"}:
             from app.services.skill_source_receipts import validate_skill_file_dependency
 
             await validate_skill_file_dependency(db, tenant_id, dependency, user=user, runtime_request=runtime_request)
@@ -1325,7 +1340,7 @@ async def load_skill_input_evidence(db, *, agent_id, invocation, model_result, a
     if (not isinstance(proof, dict) or row.tenant_id != invocation.tenant_id or row.agent_id != agent_id
         or row.session_id != str(invocation.session_id) or row.runtime_task_id != invocation.run_id
         or row.span_type != "skill_input" or row.status != "captured" or row.name != invocation.tool_name
-        or invocation.tool_name not in {"load_skill", "run_skill_tool", "tool_search"}
+        or invocation.tool_name not in {"load_skill", "run_skill_tool", "tool_search", "read_file", "read_document", "fs_read", "run_command", "execute_code"}
         or proof.get("schema") != "hive.skill_input_evidence.v1"
         or proof.get("invocation_id") != str(invocation.id) or proof.get("model_result_id") != str(model_result.id)
         or proof.get("model_request_hash") != model_result.model_request_hash
@@ -1340,9 +1355,13 @@ async def load_skill_input_evidence(db, *, agent_id, invocation, model_result, a
     if (not isinstance(sources, list) or not isinstance(unbound, list) or any(not isinstance(value, str) for value in unbound)
         or any(not isinstance(source, dict) or set(source) != {"source_kind", "source_id", "source_version"}
             or any(not isinstance(value, str) or not value for value in source.values())
-            or source["source_kind"] not in {"agent_skill_file", "agent_platform_skill_file", "workspace_artifact"} for source in sources)):
+            or source["source_kind"] not in {"agent_skill_file", "agent_platform_skill_file", "learned_skill_file", "workspace_artifact"} for source in sources)):
         raise ContentInputReceiptError("skill_input_unverified", "The captured Skill source inventory is invalid.")
-    return {"status": "verified", "evidence_ref": f"skill-input:{evidence_id}", "sources": sources, "unbound": unbound}
+    control = proof.get("control_only")
+    if control is not None and (control is not True or sources or unbound or invocation.tool_name != "load_skill"):
+        raise ContentInputReceiptError("skill_input_unverified", "The Skill control receipt cannot contain source data.")
+    return {"status": "verified", "evidence_ref": f"skill-input:{evidence_id}", "sources": sources, "unbound": unbound,
+        **({"control_only": True} if control else {})}
 
 
 async def settle_workspace_receipt_read(*, request, read, tool_call_id, result):

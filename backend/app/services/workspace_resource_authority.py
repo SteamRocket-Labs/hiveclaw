@@ -58,6 +58,15 @@ async def authorize_browser_session_source(
     operator_view: bool = False, operator_reason: str | None = None,
 ) -> str | None:
     normalized = normalize_workspace_resource_path(path)
+    from app.services.learned_skill_sources import authorize_browser_learning_path
+    from app.services.content_input_receipts import ContentInputReceiptError
+
+    try:
+        learned = await authorize_browser_learning_path(db, user, agent_id=agent_id, path=normalized)
+        if learned is not None:
+            return learned
+    except ContentInputReceiptError as exc:
+        raise HTTPException(status_code=exc.status_code, detail={"code": exc.code, "message": str(exc)}) from exc
     if (normalized == "memory/explicit" or normalized.startswith("memory/explicit/")
         or normalized == "runtime_artifacts/asset_transactions" or normalized.startswith("runtime_artifacts/asset_transactions/")):
         from app.services.content_input_receipts import ContentInputReceiptError
@@ -426,6 +435,17 @@ class WorkspaceAuthorityScope:
     session_source_ids: frozenset[str] | None = None
     skill_inputs: Any | None = field(default=None, repr=False)
     execution_inputs: WorkspaceExecutionInputs | None = field(default=None, repr=False)
+    learning_roots: frozenset[str] = frozenset()
+    learning_files: tuple[tuple[str, str, str], ...] = ()
+
+    def can_read_learning_source(self, path: str) -> bool | None:
+        normalized = normalize_workspace_resource_path(path)
+        from app.services.learned_skill_sources import managed_learning_path
+
+        if not managed_learning_path(normalized) and not any(normalized == root or normalized.startswith(root + "/")
+            for root in self.learning_roots):
+            return None
+        return any(file == normalized or file.startswith(normalized + "/") for file, _revision, _digest in self.learning_files)
 
     def can_read_session_source(self, path: str) -> bool | None:
         if self.session_source_ids is None:
@@ -452,6 +472,11 @@ class WorkspaceAuthorityScope:
 
     def can_perform(self, path: str, action: str) -> bool:
         normalized = normalize_workspace_resource_path(path)
+        learning = self.can_read_learning_source(normalized)
+        if learning is not None:
+            return action == "read" and learning
+        if action != "read" and any(root.startswith(normalized + "/") for root in self.learning_roots):
+            return False
         if is_recovery_manifest_storage_path(normalized):
             return False
         if normalized == "runtime_artifacts/asset_transactions" or normalized.startswith("runtime_artifacts/asset_transactions/"):
@@ -472,6 +497,9 @@ class WorkspaceAuthorityScope:
     def can_read(self, path: str) -> bool:
         if is_recovery_manifest_storage_path(path):
             return False
+        learning = self.can_read_learning_source(path)
+        if learning is not None:
+            return learning
         source_access = self.can_read_session_source(path)
         if source_access is not None:
             return source_access
@@ -503,6 +531,9 @@ class WorkspaceAuthorityScope:
         source_access = self.can_read_session_source(raw_child)
         if source_access is not None:
             return source_access
+        learning = self.can_read_learning_source(raw_child)
+        if learning is not None:
+            return learning
         if self.operator_view:
             return True
         parent_path = normalize_workspace_resource_path(parent)
@@ -919,12 +950,18 @@ async def load_workspace_authority_scope(
             raise
 
     if operator_view and collection_decision.full_control:
+        from app.services.learned_skill_sources import learning_file_access
+
+        learning_roots, learning_files = await learning_file_access(db, tenant_id=resolved_agent_access[0].tenant_id,
+            agent_id=agent_id, user=user)
         return WorkspaceAuthorityScope(
             agent_id=agent_id, user_id=user.id, root_session_id=canonical_root,
             allowed_paths=frozenset(manifest.path for manifest in manifests), operator_view=True,
             authority_source=collection_decision.authority_source,
             known_paths=frozenset(manifest.path for manifest in manifests),
             collection_actions=frozenset(_WORKSPACE_EFFECT_ACTIONS),
+            learning_roots=learning_roots,
+            learning_files=learning_files,
         )
 
     allowed: set[str] = {manifest.path for manifest in manifests} if operator_view else set()
@@ -961,6 +998,10 @@ async def load_workspace_authority_scope(
             resource_ids = await load_explicit_resource_grant_ids(db, user=user, resource_kind="workspace_file", action=action)
             action_permissions.update((manifest.path, action) for manifest in grant_candidates
                 if workspace_resource_id(agent_id, manifest.path) in resource_ids)
+    from app.services.learned_skill_sources import learning_file_access
+
+    learning_roots, learning_files = await learning_file_access(db, tenant_id=resolved_agent_access[0].tenant_id,
+        agent_id=agent_id, request=runtime_principal, user=user)
     return WorkspaceAuthorityScope(
         agent_id=agent_id,
         user_id=user.id,
@@ -972,6 +1013,8 @@ async def load_workspace_authority_scope(
         known_paths=frozenset(manifest.path for manifest in manifests),
         action_permissions=frozenset(action_permissions),
         collection_actions=frozenset(_WORKSPACE_EFFECT_ACTIONS) if collection_decision and collection_decision.full_control else frozenset(),
+        learning_roots=learning_roots,
+        learning_files=learning_files,
     )
 
 

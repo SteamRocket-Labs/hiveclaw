@@ -894,7 +894,7 @@ async def complete_tool_invocation(
                 knowledge_metadata["workspace_input_receipt"] = input_evidence
         except ContentInputReceiptError as exc:
             knowledge_metadata["workspace_input_receipt"] = {"status": "unavailable", "reason_code": exc.code}
-    if invocation.tool_name in {"load_skill", "run_skill_tool", "tool_search"}:
+    if invocation.tool_name in {"load_skill", "run_skill_tool", "tool_search", "read_file", "read_document", "fs_read", "run_command", "execute_code"}:
         from app.services.content_input_receipts import ContentInputReceiptError, load_skill_input_evidence
 
         try:

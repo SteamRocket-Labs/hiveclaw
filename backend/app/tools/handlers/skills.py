@@ -194,7 +194,7 @@ async def run_skill_tool(workspace: Path, arguments: dict, tenant_id: str | None
         adapter="agent_workspace_args",
     )
 )
-async def save_skill(agent_id: uuid.UUID, workspace: Path, arguments: dict) -> str:
+async def save_skill(agent_id: uuid.UUID, workspace: Path, arguments: dict, *, execution_context=None) -> str:
     from app.core.execution_context import get_tool_tenant_id
     from app.services.agent_tool_domains.workspace import (
         _submit_skill_activation_candidate,
@@ -236,6 +236,17 @@ async def save_skill(agent_id: uuid.UUID, workspace: Path, arguments: dict) -> s
             actionable_hint="Remove embedded secrets, remote shell installers, path escapes, or destructive commands.",
         )
 
+    if execution_context is not None:
+        from app.services.learned_skill_sources import submit_candidate
+        from app.services.skill_candidate_operations import operation_error
+        from app.tools.runtime import ToolExecutionRequest
+
+        request = ToolExecutionRequest("save_skill", arguments, execution_context)
+        try:
+            return await submit_candidate(request, workspace=workspace, producer=_submit_skill_activation_candidate)
+        except Exception as exc:
+            return await operation_error(request, exc)
+
     return _submit_skill_activation_candidate(
         workspace,
         agent_id=agent_id,
@@ -247,6 +258,28 @@ async def save_skill(agent_id: uuid.UUID, workspace: Path, arguments: dict) -> s
         folder_name=arguments.get("folder_name"),
         overwrite=bool(arguments.get("overwrite", False)),
     )
+
+
+@tool(ToolMeta(name="reconcile_skill_candidate",
+    description=("Inspect, retry the exact retained native submission, or cancel your own unresolved Skill candidate. "
+        "Use operation_id from its failure receipt; omit it with action=status to find your original operations after a lost response. "
+        "Retry preserves the original candidate and draft without semantic regeneration or activation."),
+    parameters={"type": "object", "properties": {"operation_id": {"type": "string"},
+        "action": {"type": "string", "enum": ["status", "retry", "cancel"]}},
+        "required": ["action"], "additionalProperties": False},
+    category="skills", display_name="Recover Skill Candidate", icon="\U0001f4da", governance="sensitive",
+    adapter="agent_workspace_args", read_only=False, parallel_safe=False, max_result_chars=RESULT_CHARS_UNLIMITED))
+async def reconcile_skill_candidate(agent_id: uuid.UUID, workspace: Path, arguments: dict, *, execution_context=None) -> str:
+    from app.services.skill_candidate_operations import operation_error, reconcile_skill_operation
+    from app.tools.runtime import ToolExecutionRequest
+
+    if execution_context is None:
+        return "[Unavailable] A current authenticated work context is required for Skill recovery."
+    request = ToolExecutionRequest("reconcile_skill_candidate", arguments, execution_context)
+    try:
+        return await reconcile_skill_operation(request, workspace=workspace)
+    except Exception as exc:
+        return await operation_error(request, exc)
 
 
 # -- tool_search --------------------------------------------------------------
@@ -326,12 +359,16 @@ async def tool_search(agent_id: uuid.UUID, workspace: Path, arguments: dict, *, 
         adapter="workspace_args",
     )
 )
-def pin_skill(workspace: Path, arguments: dict, tenant_id: str | None = None) -> str:
+def pin_skill(workspace: Path, arguments: dict, tenant_id: str | None = None, *, authority_scope=None) -> str:
     from app.services.skill_curator import set_skill_pinned
 
     slug = str(arguments.get("skill", "")).strip()
     if not slug:
         return "❌ pin_skill: 'skill' (the skill slug) is required."
+    if Path(slug).name != slug or slug in {".", ".."}:
+        return "❌ pin_skill: use the exact skill folder from the authorized catalog."
+    if authority_scope is not None and not authority_scope.can_read(f"skills/{slug}/SKILL.md"):
+        return "❌ pin_skill: this Skill source is outside the current work's authority."
 
     pinned_arg = arguments.get("pinned", True)
     if isinstance(pinned_arg, str):

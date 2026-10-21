@@ -58,7 +58,7 @@ def _empty_view() -> dict[str, Any]:
     }
 
 
-def _build_skills(workspace: Path) -> tuple[list[dict[str, Any]], dict[str, int]]:
+def _build_skills(workspace: Path, *, source_authorizer=None, source_observer=None) -> tuple[list[dict[str, Any]], dict[str, int]]:
     """Project ``skill_usage.json`` into a skill list + per-state summary counts."""
     usage = load_skill_usage(workspace)
     summary = {STATE_ACTIVE: 0, STATE_STALE: 0, STATE_ARCHIVED: 0}
@@ -67,6 +67,11 @@ def _build_skills(workspace: Path) -> tuple[list[dict[str, Any]], dict[str, int]
     for slug, record in usage.items():
         if not isinstance(record, dict):
             continue
+        source_path = workspace / "skills" / slug / "SKILL.md"
+        if source_authorizer is not None and not source_authorizer(source_path):
+            continue
+        if source_observer is not None:
+            source_observer(source_path)
         state = str(record.get("state") or STATE_ACTIVE)
         if state in summary:
             summary[state] += 1
@@ -196,7 +201,7 @@ def build_evolution_view(workspace: Path) -> dict[str, Any]:
     }
 
 
-def render_skill_evolution_digest(workspace: Path, *, max_skills: int = 8) -> str:
+def render_skill_evolution_digest(workspace: Path, *, max_skills: int = 8, source_authorizer=None, source_observer=None) -> str:
     """Render a compact digest of the agent's own skill evolution for the prompt.
 
     Closes the self-evolution loop on the cognition side: memory already feeds
@@ -209,12 +214,11 @@ def render_skill_evolution_digest(workspace: Path, *, max_skills: int = 8) -> st
     never invalidates the frozen system-prompt cache. Read-only and cheap enough
     to run every round; returns "" when the agent has no tracked skills.
     """
-    view = build_evolution_view(workspace)
-    summary = view["skill_summary"]
+    skills, counts = _build_skills(workspace, source_authorizer=source_authorizer, source_observer=source_observer)
+    summary = {"total": len(skills), "active": counts[STATE_ACTIVE], "stale": counts[STATE_STALE], "archived": counts[STATE_ARCHIVED]}
     if summary["total"] == 0:
         return ""
 
-    skills = view["skills"]
     lines = [
         "## Your Skill Assets",
         f"You have {summary['total']} tracked skills — "

@@ -77,11 +77,19 @@ async def memory_call(n, app_user_sessionmaker, tool_name, arguments, *, user=No
             tool_name=tool_name, arguments=arguments)
         await db.commit()
     trace = {}
+    from app.services.web_chat_runtime import _persist_tool_call
+
+    async def start_effect(payload):
+        await _persist_tool_call(agent_id=n.agent, user_id=user, session_id=str(session),
+            data={"name": tool_name, "args": payload["arguments"], "status": "effect_started",
+                "tool_call_id": invocation.provider_tool_use_id, "provider_request_id": invocation.provider_request_id,
+                "runtime_task_id": str(run)})
+
     raw = await n.service.execute(tool_name, arguments, agent_id=n.agent, user_id=user,
         session_id=str(session), runtime_task_id=str(run), turn_id=turn,
-        tool_call_id=invocation.provider_tool_use_id, emit_runtime_hooks=False, trace_metadata_sink=trace)
+        tool_call_id=invocation.provider_tool_use_id, emit_runtime_hooks=False, trace_metadata_sink=trace,
+        pre_effect_callback=start_effect)
     from app.services.session_permission_runtime import _execution_evidence
-    from app.services.web_chat_runtime import _persist_tool_call
 
     await _persist_tool_call(agent_id=n.agent, user_id=user, session_id=str(session),
         data={"name": tool_name, "args": arguments, "status": "done", "result": str(raw),

@@ -12,6 +12,7 @@ async def test_list_ai_assets_uses_authenticated_tenant(monkeypatch) -> None:
 
     tenant_id = uuid4()
     captured = {}
+    user = SimpleNamespace(tenant_id=tenant_id, role="member", id=uuid4())
 
     async def fake_list(db, **kwargs):
         captured.update(kwargs)
@@ -21,12 +22,12 @@ async def test_list_ai_assets_uses_authenticated_tenant(monkeypatch) -> None:
     result = await api.list_ai_assets(
         asset_type="skill",
         lifecycle_status=None,
-        current_user=SimpleNamespace(tenant_id=tenant_id, role="member"),
+        current_user=user,
         db=object(),
     )
 
     assert result == [{"id": "asset"}]
-    assert captured == {"tenant_id": tenant_id, "asset_type": "skill", "lifecycle_status": None}
+    assert captured == {"tenant_id": tenant_id, "asset_type": "skill", "lifecycle_status": None, "user": user}
 
 
 @pytest.mark.asyncio
@@ -140,7 +141,7 @@ async def test_asset_detail_returns_durable_version_bound_usage_events(monkeypat
 
     tenant_id = uuid4()
     asset_id = uuid4()
-    record = SimpleNamespace(id=asset_id)
+    record = SimpleNamespace(id=asset_id, asset_type="agent", native_locator_json={})
     monkeypatch.setattr(api.ai_asset_service, "get_asset_record", AsyncMock(return_value=record))
     monkeypatch.setattr(api.ai_asset_service, "asset_payload", lambda _record: {"id": str(asset_id)})
     monkeypatch.setattr(api.ai_asset_service, "revision_history", AsyncMock(return_value=[]))

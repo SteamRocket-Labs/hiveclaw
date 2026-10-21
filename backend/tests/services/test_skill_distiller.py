@@ -9,6 +9,18 @@ from uuid import UUID, uuid4
 import pytest
 
 
+@pytest.fixture
+def semantic_review_inputs(monkeypatch):
+    """Keep these model/commit unit tests independent of source-authority integration."""
+    from contextlib import asynccontextmanager
+
+    @asynccontextmanager
+    async def controlled_sources(**_kwargs):
+        yield None
+
+    monkeypatch.setattr("app.services.learned_skill_sources.skill_review_inputs", controlled_sources)
+
+
 def _jsonl_records(path: Path) -> list[dict]:
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
 
@@ -471,7 +483,7 @@ def test_render_skill_evidence_contrast_keeps_late_patch_signal() -> None:
 
 
 @pytest.mark.asyncio
-async def test_run_skill_distillation_cycle_promotes_high_confidence_candidate(monkeypatch, tmp_path: Path) -> None:
+async def test_run_skill_distillation_cycle_promotes_high_confidence_candidate(monkeypatch, tmp_path: Path, semantic_review_inputs) -> None:
     from app.services.skill_distiller import DistilledSkillDraft, SessionWorkflowEvidence, run_skill_distillation_cycle
 
     workspace = tmp_path / "agent"
@@ -1020,7 +1032,7 @@ async def test_distiller_enters_provisional_without_external_behavior_eval(monke
 
 
 @pytest.mark.asyncio
-async def test_distiller_does_not_fetch_tenant_behavior_report_before_provisional(monkeypatch, tmp_path: Path) -> None:
+async def test_distiller_does_not_fetch_tenant_behavior_report_before_provisional(monkeypatch, tmp_path: Path, semantic_review_inputs) -> None:
     from app.services.skill_distiller import DistilledSkillDraft, SessionWorkflowEvidence, run_skill_distillation_cycle
 
     workspace = tmp_path / "agent"

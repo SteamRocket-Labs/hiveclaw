@@ -14,6 +14,7 @@ def test_tool_registry_round_trips_collected_openai_tools():
 
     assert "load_skill" in registry.names()
     assert "save_skill" in registry.names()
+    assert "reconcile_skill_candidate" in registry.names()
     assert "set_trigger" in registry.names()
     assert "send_feishu_message" in registry.names()
 
@@ -88,6 +89,7 @@ def test_minimal_kernel_tool_set_stays_small_and_explicit():
         "load_skill",
         "run_skill_tool",
         "save_skill",
+        "reconcile_skill_candidate",
         "search_memory",
         "load_memory",
         "save_memory",

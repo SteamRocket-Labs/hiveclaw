@@ -204,6 +204,7 @@ async def list_assets(
     tenant_id: uuid.UUID,
     asset_type: str | None = None,
     lifecycle_status: str | None = None,
+    user: Any | None = None,
 ) -> list[dict[str, Any]]:
     query = select(AIAssetRecord).where(AIAssetRecord.tenant_id == tenant_id)
     if asset_type:
@@ -211,7 +212,19 @@ async def list_assets(
     if lifecycle_status:
         query = query.where(AIAssetRecord.lifecycle_status == lifecycle_status)
     rows = (await db.execute(query.order_by(AIAssetRecord.asset_type, AIAssetRecord.display_name))).scalars().all()
-    return [asset_payload(row) for row in rows]
+    if user is None:
+        return [asset_payload(row) for row in rows]
+    from app.services.learned_skill_sources import authorize_learned_asset_read
+    from app.services.content_input_receipts import ContentInputReceiptError
+
+    visible = []
+    for row in rows:
+        try:
+            await authorize_learned_asset_read(db, row, user=user)
+            visible.append(asset_payload(row))
+        except ContentInputReceiptError:
+            continue
+    return visible
 
 
 async def get_asset_record(
@@ -719,6 +732,9 @@ async def register_evolved_workspace_skill_asset(
     workspace: Any,
     folder_name: str,
     evolution_state: str,
+    source_candidate_id: str | None = None,
+    gate_candidate_id: str | None = None,
+    target_path: str | None = None,
 ) -> AIAssetRecord:
     """Commit one self-evolved workspace Skill into the tenant asset ledger."""
 
@@ -732,6 +748,11 @@ async def register_evolved_workspace_skill_asset(
         ).scalar_one_or_none()
         if owns_agent is None:
             raise ValueError("workspace Skill Agent does not belong to the tenant")
+        if source_candidate_id is not None:
+            from app.services.learned_skill_sources import record_reviewed_installation
+
+            await record_reviewed_installation(db, agent_id=agent_id, tenant_id=tenant_id, workspace=workspace,
+                candidate_id=source_candidate_id, target_path=target_path, gate_candidate_id=gate_candidate_id)
         return await register_projection(
             db,
             project_workspace_skill(

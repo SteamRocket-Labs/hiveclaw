@@ -435,7 +435,19 @@ async def validate_memory_model_sources(db, *, task, agent_id, session_id, depen
     from app.kernel.contracts import ExecutionAuthorityUnavailable
     from app.services.personal_knowledge_access import AgentRuntimePrincipal
 
-    sources = [ref for ref in dependencies if ref["source_kind"] in {"explicit_memory", "team_memory"}]
+    sources = [ref for ref in dependencies if ref["source_kind"] in {
+        "explicit_memory", "team_memory", "learned_skill_candidate", "learned_skill_file", "skill_evolution_observation", "session_model_result"}]
+    from app.models.config_revision import ConfigRevision
+
+    for ref in dependencies:
+        if ref["source_kind"] != "agent_skill_file":
+            continue
+        try:
+            revision = await db.get(ConfigRevision, uuid.UUID(ref["source_id"].split("\n")[2]), populate_existing=True)
+        except (ValueError, IndexError):
+            revision = None
+        if revision is not None and (revision.content or {}).get("learning"):
+            sources.append(ref)
     if not sources:
         return
     try:
@@ -448,6 +460,8 @@ async def validate_memory_model_sources(db, *, task, agent_id, session_id, depen
                 from app.services.team_memory_runtime import validate_dependency
 
                 await validate_dependency(db, task.tenant_id, source, runtime_request=principal)
+            elif source["source_kind"] in {"learned_skill_candidate", "agent_skill_file", "learned_skill_file", "skill_evolution_observation", "session_model_result"}:
+                await _validate_input_dependencies(db, task.tenant_id, [source], runtime_request=principal)
             else:
                 await validate_explicit_memory_dependency(db, task.tenant_id, source, request=principal)
     except ContentInputReceiptError as exc:

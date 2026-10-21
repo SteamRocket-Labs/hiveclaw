@@ -56,7 +56,12 @@ class SkillCandidateRecord:
 
 
 def _candidate_path(workspace: Path) -> Path:
+    from app.services.learned_skill_sources import review_scope_id
+
     evolution_dir = workspace / "evolution"
+    scope_id = review_scope_id()
+    if scope_id is not None:
+        evolution_dir = evolution_dir / "source_scopes" / str(scope_id)
     evolution_dir.mkdir(parents=True, exist_ok=True)
     return evolution_dir / "skill_candidates.md"
 
@@ -66,9 +71,12 @@ def _candidate_package_root(workspace: Path) -> Path:
 
 
 def _candidate_id_for_workflow(workflow_signature: str) -> str:
+    from app.services.learned_skill_sources import review_scope_id
+
     normalized = (workflow_signature or "unknown_workflow").strip().lower()
     digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:16]
-    return f"lifecycle-{digest}"
+    scope_id = review_scope_id()
+    return f"lifecycle-{scope_id}-{digest}" if scope_id is not None else f"lifecycle-{digest}"
 
 
 def _safe_skill_slug(skill_name: str) -> str:

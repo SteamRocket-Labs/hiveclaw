@@ -270,11 +270,14 @@ def restore_skill(workspace: Path, slug: str) -> bool:
     return True
 
 
-def _read_skill_markdown(path: Path | None) -> str:
+def _read_skill_markdown(path: Path | None, *, observer=None) -> str:
     if path is None or not path.is_file():
         return ""
     try:
-        return path.read_text(encoding="utf-8", errors="replace")
+        content = path.read_bytes()
+        if observer is not None:
+            observer(path, content)
+        return content.decode("utf-8", errors="replace")
     except OSError:
         return ""
 
@@ -283,6 +286,8 @@ def build_skill_lifecycle_review_evidence(
     workspace: Path,
     *,
     now: datetime | None = None,
+    source_authorizer=None,
+    source_observer=None,
 ) -> dict[str, Any]:
     """Collect every Skill body plus all telemetry; no age/count filtering."""
 
@@ -327,13 +332,15 @@ def build_skill_lifecycle_review_evidence(
         else:
             observed_location = "missing"
         skill_path = source_dir / "SKILL.md" if source_dir is not None else None
+        if source_authorizer is not None and (skill_path is None or not source_authorizer(skill_path)):
+            continue
         skills.append(
             {
                 "slug": slug,
                 "usage": record,
                 "observed_location": observed_location,
                 "source_path": (source_dir.relative_to(workspace).as_posix() if source_dir is not None else None),
-                "skill_markdown": _read_skill_markdown(skill_path),
+                "skill_markdown": _read_skill_markdown(skill_path, observer=source_observer),
             }
         )
     return {
@@ -396,26 +403,42 @@ async def review_skill_lifecycle(
     *,
     reviewer: LifecycleReviewer,
     now: datetime | None = None,
+    source_authorizer=None,
+    source_observer=None,
 ) -> dict[str, Any]:
     """Apply only explicit model lifecycle decisions through platform gates."""
 
     effective_now = now or datetime.now(timezone.utc)
     if effective_now.tzinfo is None:
         effective_now = effective_now.replace(tzinfo=timezone.utc)
-    evidence = build_skill_lifecycle_review_evidence(workspace, now=effective_now)
+    from app.services.content_input_receipts import ContentInputReceiptError
+    from app.services.learned_skill_sources import current_review, recheck_review_inputs, recheck_maintenance_effect
+
+    evidence = build_skill_lifecycle_review_evidence(workspace, now=effective_now,
+        source_authorizer=source_authorizer, source_observer=source_observer)
+    effect_blocks = {}
     try:
+        await recheck_review_inputs()
         response = reviewer(evidence)
         if inspect.isawaitable(response):
             response = await response
         if not isinstance(response, dict) or not isinstance(response.get("decisions"), list):
             raise ValueError("reviewer response must contain a decisions list")
+        await recheck_review_inputs()
+        for item in evidence["skills"]:
+            try:
+                await recheck_maintenance_effect(workspace=workspace, target_path=f"{item['source_path']}/SKILL.md")
+            except ContentInputReceiptError as exc:
+                if exc.code not in {"skill_maintenance_policy_denied", "skill_maintenance_approval_required", "skill_maintenance_retired"}:
+                    raise
+                effect_blocks[item["slug"]] = exc.code
     except Exception as exc:  # model failure is an observable hold, never a fallback decision
         audit = {
             "schema": "skill_lifecycle_review.v1",
             "reviewed_at": _now_iso(effective_now),
             "semantic_authority": "model_review",
             "status": "held",
-            "reason": "reviewer_failed",
+            "reason": exc.code if isinstance(exc, ContentInputReceiptError) else "reviewer_failed",
             "error_class": type(exc).__name__,
         }
         try:
@@ -424,7 +447,7 @@ async def review_skill_lifecycle(
             logger.warning("[skill_curator] failed to persist reviewer failure: %s", audit_exc)
         return {
             "status": "held",
-            "reason": "reviewer_failed",
+            "reason": audit["reason"],
             "scanned": len(evidence["skills"]),
             "applied": [],
             "blocked": [],
@@ -472,9 +495,45 @@ async def review_skill_lifecycle(
             if record.get("pinned") and decision in {"mark_stale", "archive"}:
                 blocked.append({"slug": slug, "decision": decision, "reason": "pinned_authority_guard"})
                 continue
+            if slug in effect_blocks:
+                blocked.append({"slug": slug, "decision": decision, "reason": effect_blocks[slug]})
+                continue
 
             changed = False
-            if decision == "archive":
+            frame = current_review()
+            path = f"skills/{slug}/SKILL.md"
+            immutable = frame is not None and frame.skill_capture is not None and path in frame.skill_capture.learned_files
+            if immutable:
+                from app.services.skill_evolution_registry import (LOADABLE_STATES, STATE_PROVISIONAL,
+                    get_skill_evolution_entry, upsert_skill_evolution_entry)
+
+                entry = get_skill_evolution_entry(workspace, path, transaction=transaction)
+                state = entry.get("state") if entry is not None else None
+                if state == STATE_ARCHIVED and decision != "restore":
+                    blocked.append({"slug": slug, "decision": decision, "reason": "lifecycle_restore_required"})
+                    continue
+                if decision == "restore":
+                    next_state = record.get("restore_registry_state")
+                    if state != STATE_ARCHIVED or next_state not in LOADABLE_STATES:
+                        blocked.append({"slug": slug, "decision": decision, "reason": "restore_baseline_unavailable"})
+                        continue
+                    record.update(state=STATE_ACTIVE, archived_at=None)
+                elif state not in LOADABLE_STATES:
+                    blocked.append({"slug": slug, "decision": decision, "reason": "lifecycle_state_unavailable"})
+                    continue
+                elif decision == "archive":
+                    record.update(state=STATE_ARCHIVED, archived_at=_now_iso(effective_now), restore_registry_state=state)
+                    next_state = STATE_ARCHIVED
+                else:
+                    record["state"] = STATE_STALE if decision == "mark_stale" else STATE_ACTIVE
+                    next_state = STATE_PROVISIONAL if state == STATE_PROVISIONAL else record["state"]
+                changed = transaction.read_bytes(path) is not None
+                if changed:
+                    upsert_skill_evolution_entry(workspace, skill_name=entry["skill_name"], target_path=path,
+                        skill_origin=entry["skill_origin"], evolvable=entry.get("evolvable", True),
+                        state=next_state, transaction=transaction,
+                        metadata={"curator_state": record["state"], "immutable_version_retained": True})
+            elif decision == "archive":
                 source = _skills_dir(workspace) / slug
                 destination = _model_archive_destination(workspace, slug, now=effective_now)
                 changed = _stage_directory_move(transaction, source=source, destination=destination)
@@ -571,8 +630,14 @@ async def review_skill_lifecycle_with_model(
 ) -> dict[str, Any]:
     """Give every lifecycle byte to the configured model, then govern its decision."""
 
+    if tenant_id is None or agent_id is None:
+        return {"status": "held", "reason": "skill_maintenance_principal_unavailable", "applied": [], "blocked": [], "scanned": 0}
+
     from app.services.llm_client import LLMMessage, create_llm_client_from_config, with_llm_usage_context
     from app.services.semantic_input_coverage import prepare_covered_semantic_input
+    from app.services.content_input_receipts import ContentInputReceiptError
+    from app.services.learned_skill_sources import (skill_maintenance_inputs, skill_maintenance_targets,
+        maintenance_catalog_path_allowed, observe_maintenance_catalog, recheck_review_inputs, review_scope_id)
 
     client = create_llm_client_from_config(
         with_llm_usage_context(
@@ -603,6 +668,7 @@ async def review_skill_lifecycle_with_model(
             full_input = json.dumps(evidence, ensure_ascii=False, indent=2, sort_keys=True)
 
             async def review_chunk(_phase: str, prompt: str) -> str:
+                await recheck_review_inputs()
                 response = await client.complete(
                     messages=[
                         LLMMessage(
@@ -623,9 +689,10 @@ async def review_skill_lifecycle_with_model(
                 phase="skill_lifecycle_review",
                 sections=[("skill_lifecycle:complete_catalog", full_input)],
                 max_chars=semantic_budget,
-                coverage_path=workspace / "memory" / "control" / "skill_lifecycle_review.coverage.json",
+                coverage_path=workspace / "memory" / "control" / "skill_lifecycle_reviews" / f"{review_scope_id()}.coverage.json",
                 review_chunk=review_chunk,
             )
+            await recheck_review_inputs()
             response = await client.complete(
                 messages=[
                     LLMMessage(
@@ -650,6 +717,28 @@ async def review_skill_lifecycle_with_model(
                 raise ValueError("Skill lifecycle review must be a JSON object")
             return parsed
 
-        return await review_skill_lifecycle(workspace, reviewer=reviewer)
+        seen = set()
+        result = {"status": "reviewed", "scanned": 0, "applied": [], "blocked": [], "held": []}
+        targets = await skill_maintenance_targets(agent_id=agent_id, tenant_id=tenant_id)
+        if not targets:
+            return {**result, "status": "held", "reason": "skill_maintenance_source_unavailable"}
+        for target in targets:
+            try:
+                async with skill_maintenance_inputs(workspace=workspace, agent_id=agent_id, tenant_id=tenant_id,
+                    target_path=target["target_path"], candidate_id=target["candidate_id"], catalog=True) as frame:
+                    if frame.source_scope in seen:
+                        continue
+                    seen.add(frame.source_scope)
+                    report = await review_skill_lifecycle(workspace, reviewer=reviewer,
+                        source_authorizer=lambda path: maintenance_catalog_path_allowed(workspace, path),
+                        source_observer=lambda path, content: observe_maintenance_catalog(path, content, workspace=workspace))
+                    result["scanned"] += report["scanned"]
+                    for key in ("applied", "blocked", "held"):
+                        result[key].extend(report.get(key, []))
+                    if report["status"] == "held":
+                        result["held"].append({"source_ref": target["source_ref"], "reason": report["reason"]})
+            except ContentInputReceiptError as exc:
+                result["held"].append({"source_ref": target["source_ref"], "reason": exc.code})
+        return result
     finally:
         await client.close()

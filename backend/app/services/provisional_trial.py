@@ -129,6 +129,7 @@ def initialize_provisional_trial(
     window_days: int = DEFAULT_TRIAL_WINDOW_DAYS,
     started_at: str | None = None,
     transaction: AgentAssetTransaction | None = None,
+    retain_candidate: bool = False,
 ) -> dict[str, Any]:
     """Create the immutable rollback anchor and mutable trial ledger atomically."""
 
@@ -149,6 +150,7 @@ def initialize_provisional_trial(
                 window_days=window_days,
                 started_at=started_at,
                 transaction=own_transaction,
+                retain_candidate=retain_candidate,
             )
             own_transaction.commit()
             return trial
@@ -156,11 +158,11 @@ def initialize_provisional_trial(
     safe_id = _safe_candidate_id(candidate_id)
     stamp = started_at or _now_iso()
     candidate_hash = _sha256(candidate_content)
-    current_entry = get_skill_evolution_entry(workspace, skill_name, transaction=transaction) or {}
+    current_entry = get_skill_evolution_entry(workspace, target_path, transaction=transaction) or {}
     rollback: dict[str, Any]
     baseline_snapshot = dict(baseline_registry_entry) if isinstance(baseline_registry_entry, dict) else None
     if baseline_content is None:
-        rollback = {"action": "delete", "ref": target_path, "baseline_version_hash": None}
+        rollback = {"action": "retire" if retain_candidate else "delete", "ref": target_path, "baseline_version_hash": None}
     else:
         rollback_ref = _rollback_rel_path(safe_id)
         baseline_hash = _sha256(baseline_content)
@@ -807,11 +809,13 @@ def _apply_model_rollback(
             entry=rollback.get("baseline_registry_entry")
             if isinstance(rollback.get("baseline_registry_entry"), dict)
             else None,
+            target_path=target_path,
             transaction=transaction,
         )
         restored_ref = rollback_ref
-    else:
-        transaction.stage_delete(target_path)
+    elif action in {"delete", "retire"}:
+        if action == "delete":
+            transaction.stage_delete(target_path)
         upsert_skill_evolution_entry(
             workspace,
             skill_name=str(entry.get("skill_name") or trial.get("skill_name") or candidate_id),
@@ -828,7 +832,11 @@ def _apply_model_rollback(
             },
             transaction=transaction,
         )
-        restored_ref = f"deleted:{target_path}"
+        restored_ref = f"retired:{target_path}" if action == "retire" else f"deleted:{target_path}"
+    else:
+        return _mark_needs_review(workspace, trial=trial, entry=entry,
+            reason="The rollback action is unsupported; retain the exact candidate for reconciliation.",
+            occurred_at=occurred_at, transaction=transaction)
 
     signals = trial.get("signals") if isinstance(trial.get("signals"), dict) else {}
     trial["state"] = STATE_ROLLED_BACK
@@ -880,8 +888,13 @@ async def review_pending_provisional_trials(
     *,
     reviewer: TrialReviewer,
     occurred_at: str | None = None,
+    agent_id: Any = None,
+    tenant_id: Any = None,
 ) -> dict[str, Any]:
     """Apply model-authored trial decisions behind version/rollback hard gates."""
+
+    from app.services.content_input_receipts import ContentInputReceiptError
+    from app.services.learned_skill_sources import skill_maintenance_inputs, recheck_maintenance_effect
 
     stamp = occurred_at or _now_iso()
     reviewed = 0
@@ -895,14 +908,22 @@ async def review_pending_provisional_trials(
         if not isinstance(trial_snapshot, dict) or trial_snapshot.get("review_status") != "pending_model_review":
             continue
         try:
-            payload = _trial_review_payload(workspace, trial_snapshot)
-            raw_review = await reviewer(payload)
-            if not isinstance(raw_review, dict):
-                raise ValueError("model review must be a JSON object")
-            decision = str(raw_review.get("decision") or "").strip().lower()
-            reason = str(raw_review.get("reason") or "").strip()
-            if decision not in _MODEL_TRIAL_DECISIONS or not reason:
-                raise ValueError("model review requires decision=promote|rollback|continue|hold and a reason")
+            async with skill_maintenance_inputs(workspace=workspace, agent_id=agent_id, tenant_id=tenant_id,
+                target_path=trial_snapshot["target_path"], candidate_id=candidate_id):
+                payload = _trial_review_payload(workspace, trial_snapshot)
+                raw_review = await reviewer(payload)
+                if not isinstance(raw_review, dict):
+                    raise ValueError("model review must be a JSON object")
+                decision = str(raw_review.get("decision") or "").strip().lower()
+                reason = str(raw_review.get("reason") or "").strip()
+                if decision not in _MODEL_TRIAL_DECISIONS or not reason:
+                    raise ValueError("model review requires decision=promote|rollback|continue|hold and a reason")
+                await recheck_maintenance_effect(workspace=workspace, target_path=trial_snapshot["target_path"])
+        except ContentInputReceiptError as exc:
+            errors.append({"candidate_id": candidate_id, "error": f"{type(exc).__name__}: {exc}",
+                "reason_code": exc.code, "outcome": "approval_required" if exc.code == "skill_maintenance_approval_required"
+                    else "denied" if exc.status_code == 403 else "unavailable"})
+            continue
         except Exception as exc:  # noqa: BLE001 - observable retry, never a mechanical semantic fallback
             errors.append({"candidate_id": candidate_id, "error": f"{type(exc).__name__}: {exc}"})
             continue
@@ -914,7 +935,7 @@ async def review_pending_provisional_trials(
         ) as transaction:
             entry = get_skill_evolution_entry(
                 workspace,
-                str(entry_snapshot.get("skill_name") or trial_snapshot.get("skill_name") or ""),
+                str(entry_snapshot.get("target_path") or trial_snapshot.get("target_path") or ""),
                 transaction=transaction,
             )
             trial = load_provisional_trial(workspace, candidate_id, transaction=transaction)
@@ -1022,8 +1043,13 @@ async def review_pending_provisional_trials_with_model(
 ) -> dict[str, Any]:
     """Run complete-input model review for every pending provisional trial."""
 
+    if tenant_id is None or agent_id is None:
+        return {"reviewed": 0, "decisions": {}, "errors": [{"reason_code": "skill_maintenance_principal_unavailable",
+            "outcome": "unavailable", "error": "Restore the actual employee and tenant before model review."}], "pending": None}
+
     from app.services.llm_client import LLMMessage, create_llm_client_from_config, with_llm_usage_context
     from app.services.semantic_input_coverage import prepare_covered_semantic_input
+    from app.services.learned_skill_sources import recheck_review_inputs
 
     client = create_llm_client_from_config(
         with_llm_usage_context(
@@ -1055,6 +1081,7 @@ async def review_pending_provisional_trials_with_model(
             full_input = json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True)
 
             async def review_chunk(review_phase: str, review_prompt: str) -> str:
+                await recheck_review_inputs()
                 response = await client.complete(
                     messages=[
                         LLMMessage(
@@ -1082,6 +1109,7 @@ async def review_pending_provisional_trials_with_model(
                 / f"{_safe_candidate_id(candidate_id)}.coverage.json",
                 review_chunk=review_chunk,
             )
+            await recheck_review_inputs()
             response = await client.complete(
                 messages=[
                     LLMMessage(
@@ -1104,6 +1132,6 @@ async def review_pending_provisional_trials_with_model(
                 raise ValueError("model review response must be a JSON object")
             return parsed
 
-        return await review_pending_provisional_trials(workspace, reviewer=reviewer)
+        return await review_pending_provisional_trials(workspace, reviewer=reviewer, agent_id=agent_id, tenant_id=tenant_id)
     finally:
         await client.close()

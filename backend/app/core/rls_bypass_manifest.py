@@ -892,12 +892,6 @@ RLS_BYPASS_ALLOWLIST = (
         ("session-state-only",),
     ),
     _grant(
-        "app/services/hr_creation_source.py",
-        "load_creation_requester",
-        "'HR creation exact global principal lookup'",
-        ("select:User",),
-    ),
-    _grant(
         "app/services/identity_dry_run.py",
         "_foreign_blocks",
         "'identity_dry_run_global_unique_exists'",

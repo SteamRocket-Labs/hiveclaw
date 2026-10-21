@@ -5,12 +5,11 @@ from __future__ import annotations
 import uuid
 
 from fastapi import HTTPException
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.permissions import check_agent_access
 from app.models.user import User
-from app.database import enter_rls_bypass
+from app.services.runtime_user_identity import load_runtime_user
 from app.services.tool_visibility import is_hr_agent
 
 CREATION_PRECLAIM_BLOCKS = frozenset({
@@ -40,17 +39,17 @@ async def require_creation_capability(db: AsyncSession, tenant_id: uuid.UUID, ag
 
 
 async def load_creation_requester(db: AsyncSession, user_id: uuid.UUID) -> User | None:
-    requester = await db.get(User, user_id)
-    if requester is not None:
-        return requester
-    # A global administrator's home row is outside the runtime's pinned company.
-    async with enter_rls_bypass(db, reason="HR creation exact global principal lookup", actor_id=str(user_id)):
-        return await db.scalar(select(User).where(User.id == user_id, User.role == "platform_admin"))
+    """Recover canonical identity for receipts; execution checks liveness below."""
+    return await load_runtime_user(db, user_id, include_inactive=True)
 
 
 async def load_creation_source_agent(
     db: AsyncSession, user: User, agent_id: uuid.UUID, *, require_execute: bool = False,
 ):
+    if require_execute:
+        user = await load_runtime_user(db, user.id)
+        if user is None:
+            raise HTTPException(status_code=403, detail="Employee creation requester is unavailable")
     agent, access = await check_agent_access(db, user, agent_id)
     native = agent.agent_type == "native" and agent.agent_class == "internal_tenant"
     if not is_hr_agent(agent) and not native:

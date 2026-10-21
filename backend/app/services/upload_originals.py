@@ -20,33 +20,51 @@ from app.services.blob_store import BlobIntegrityError, BlobLocation, BlobPutReq
 REF_SCHEMA = "hive.chat_upload_original.v1"
 
 
-def _store(provider=None):
+def _store(provider=None, *, metadata=None, bucket=None):
     selected = provider or get_settings().BLOB_STORAGE_PROVIDER
+    if selected == "s3":
+        from app.services.s3_blob_store import s3_store_from_values
+
+        store = s3_store_from_values(vars(get_settings()))
+        if metadata is not None and (metadata != store.identity or bucket != store.bucket):
+            raise BlobStoreError("Recorded object storage is unavailable")
+        return store
     if selected != "filesystem":
         raise BlobStoreError("Original attachment provider is unavailable")
     return FilesystemBlobStore(Path(get_settings().AGENT_DATA_DIR) / ".storage_objects")
 
 
-def _location(tenant_id, digest):
-    return BlobLocation(provider="filesystem", bucket="durable", object_key=f"{tenant_id}/{digest}")
+def _location(tenant_id, digest, provider="filesystem", bucket="durable"):
+    return BlobLocation(provider=provider, bucket=bucket, object_key=f"{tenant_id}/{digest}")
+
+
+def _recorded_store(blob, tenant_id):
+    if (blob.provider not in {"filesystem", "s3"}
+        or blob.object_key != f"{tenant_id}/{blob.content_sha256}"
+        or (blob.provider == "filesystem" and blob.bucket != "durable")):
+        raise BlobStoreError("Original attachment location requires reconciliation")
+    return _store(blob.provider, metadata=blob.metadata_json if blob.provider == "s3" else None, bucket=blob.bucket)
 
 
 async def archive_upload(db: AsyncSession, *, tenant_id: uuid.UUID, user_id: uuid.UUID,
     agent_id: uuid.UUID | None, filename: str, body: bytes) -> StorageBlobRef:
     store = _store()
     digest = hashlib.sha256(body).hexdigest()
-    location = _location(tenant_id, digest)
+    provider = get_settings().BLOB_STORAGE_PROVIDER
+    location = _location(tenant_id, digest, provider, store.bucket if provider == "s3" else "durable")
     await db.execute(insert(StorageBlob).values(id=uuid.uuid4(), tenant_id=tenant_id, scope_type="tenant",
         kind="chat_upload", retention_class="original", state="uploading", provider=location.provider,
-        bucket=location.bucket, object_key=location.object_key, content_sha256=digest, size_bytes=len(body), metadata_json={})
+        bucket=location.bucket, object_key=location.object_key, content_sha256=digest, size_bytes=len(body),
+        metadata_json=store.identity if provider == "s3" else {})
         .on_conflict_do_nothing(index_elements=[StorageBlob.tenant_id, StorageBlob.content_sha256]))
     # The unique digest and row lock also serialize two first-time uploads until
     # their actual metadata/reference commit; no filename proves ownership.
     blob = await db.scalar(select(StorageBlob).where(StorageBlob.tenant_id == tenant_id,
         StorageBlob.content_sha256 == digest).with_for_update().execution_options(populate_existing=True))
-    if (blob.state not in {"uploading", "available"} or blob.size_bytes != len(body)
-        or (blob.provider, blob.bucket, blob.object_key) != (location.provider, location.bucket, location.object_key)):
+    if blob.state not in {"uploading", "available"} or blob.size_bytes != len(body):
         raise BlobStoreError("Original attachment requires storage reconciliation")
+    store = _recorded_store(blob, tenant_id)
+    location = BlobLocation(blob.provider, blob.bucket, blob.object_key)
     with tempfile.TemporaryDirectory(prefix="hive-upload-source-") as temporary:
         source = Path(temporary) / "body"
         source.write_bytes(body)
@@ -92,10 +110,9 @@ async def capture_original_download(db: AsyncSession, user: User, ref_id: uuid.U
     elif owner != user.id:
         raise HTTPException(403, "Original attachment access denied")
     if (blob.state != "available" or blob.size_bytes != metadata.get("size_bytes")
-        or blob.content_sha256 != metadata.get("content_sha256")
-        or BlobLocation(blob.provider, blob.bucket, blob.object_key) != _location(user.tenant_id, blob.content_sha256)):
+        or blob.content_sha256 != metadata.get("content_sha256")):
         raise BlobStoreError("Original attachment requires storage reconciliation")
-    store = _store(blob.provider)
+    store = _recorded_store(blob, user.tenant_id)
     temporary = tempfile.TemporaryDirectory(prefix="hive-upload-download-")
     target = Path(temporary.name) / "body"
     try:

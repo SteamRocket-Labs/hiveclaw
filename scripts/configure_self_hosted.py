@@ -17,7 +17,8 @@ sys.path.insert(0, str(ROOT / "backend"))
 from app.scripts.self_hosted_recovery import SECRET_KEYS, read_profile  # noqa: E402
 
 
-def configure(directory: Path, *, public_origin: str, port: int, recovery_profile: Path | None = None) -> Path:
+def configure(directory: Path, *, public_origin: str, port: int, recovery_profile: Path | None = None,
+    object_storage_profile: Path | None = None) -> Path:
     origin = urlsplit(public_origin)
     if (origin.scheme not in {"http", "https"} or not origin.hostname or origin.username or origin.password
         or origin.path not in {"", "/"} or origin.query or origin.fragment):
@@ -34,8 +35,25 @@ def configure(directory: Path, *, public_origin: str, port: int, recovery_profil
     recovered = read_profile(recovery_profile) if recovery_profile is not None else {}
     values = {"HIVE_INSTALL_ID": "hive_" + uuid.uuid4().hex[:20], "HIVE_INSTALL_SOURCE_ROOT": str(ROOT),
         "HIVE_INSTALL_FRONTEND_PORT": str(port),
+        "BLOB_STORAGE_PROVIDER": "filesystem",
         "HIVE_INSTALL_CORS_ORIGINS": json.dumps([public_origin.rstrip("/")]),
         **{key: recovered.get(key) or secrets.token_hex(32) for key in SECRET_KEYS}}
+    if object_storage_profile is not None:
+        import stat
+        from app.services.s3_blob_store import s3_store_from_values
+
+        descriptor = os.open(object_storage_profile, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+        with os.fdopen(descriptor, "r", encoding="utf-8") as source:
+            info = os.fstat(source.fileno())
+            if not stat.S_ISREG(info.st_mode) or info.st_mode & 0o077 or info.st_size > 64 * 1024:
+                raise ValueError("Object storage profile must be private and bounded")
+            selected = json.load(source)
+        allowed = {"endpoint", "region", "bucket", "access_key_id", "secret_access_key", "session_token"}
+        if not isinstance(selected, dict) or set(selected) - allowed:
+            raise ValueError("Invalid object storage profile")
+        storage = {"BLOB_S3_" + key.upper(): selected.get(key, "us-east-1" if key == "region" else "") for key in allowed}
+        s3_store_from_values(storage)
+        values.update(storage, BLOB_STORAGE_PROVIDER="s3")
     if any(any(char in value for char in "\r\n\0") for value in values.values()):
         raise ValueError("configuration values must not contain line breaks or NUL")
     directory = directory.expanduser().resolve()
@@ -67,13 +85,15 @@ def main() -> int:
     parser.add_argument("--public-origin", required=True)
     parser.add_argument("--port", type=int, default=3008)
     parser.add_argument("--recovery-profile", type=Path, help="Reuse verified backup keys in a new isolated project; never overwrite a profile.")
+    parser.add_argument("--object-storage-profile", type=Path, help="Private JSON with endpoint, region, bucket, access_key_id, secret_access_key and optional session_token.")
     args = parser.parse_args()
     try:
-        profile = configure(args.directory, public_origin=args.public_origin, port=args.port, recovery_profile=args.recovery_profile)
+        profile = configure(args.directory, public_origin=args.public_origin, port=args.port, recovery_profile=args.recovery_profile,
+            object_storage_profile=args.object_storage_profile)
     except FileExistsError:
         print("Profile already exists; it was not replaced. Reuse installation.env to retain keys and data.")
         return 2
-    except (ValueError, OSError) as exc:
+    except (ValueError, OSError, RuntimeError) as exc:
         print(f"Profile was not initialized ({type(exc).__name__}). Check the origin, port and directory permissions.")
         return 2
     command = ["docker", "compose", "--env-file", str(profile), "-f", str(ROOT / "deploy/self-hosted/compose.yml")]

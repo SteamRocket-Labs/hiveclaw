@@ -1,5 +1,14 @@
 name: ${HIVE_INSTALL_ID:?Initialize a private installation profile first}
 
+x-object-storage: &object-storage
+  BLOB_STORAGE_PROVIDER: ${BLOB_STORAGE_PROVIDER:-filesystem}
+  BLOB_S3_ENDPOINT: ${BLOB_S3_ENDPOINT:-}
+  BLOB_S3_REGION: ${BLOB_S3_REGION:-us-east-1}
+  BLOB_S3_BUCKET: ${BLOB_S3_BUCKET:-}
+  BLOB_S3_ACCESS_KEY_ID: ${BLOB_S3_ACCESS_KEY_ID:-}
+  BLOB_S3_SECRET_ACCESS_KEY: ${BLOB_S3_SECRET_ACCESS_KEY:-}
+  BLOB_S3_SESSION_TOKEN: ${BLOB_S3_SESSION_TOKEN:-}
+
 x-application: &application
   image: ${HIVE_INSTALL_ID}-backend:local
   build:
@@ -9,6 +18,7 @@ x-application: &application
   user: hive
   entrypoint: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
   environment: &runtime-environment
+    <<: *object-storage
     DATABASE_URL: postgresql+asyncpg://app_rls:${HIVE_INSTALL_RUNTIME_PASSWORD:?Runtime password is required}@postgres:5432/hive
     REDIS_URL: redis://:${HIVE_INSTALL_REDIS_PASSWORD:?Redis password is required}@redis:6379/0
     SECRET_KEY: ${HIVE_INSTALL_SECRET_KEY:?Application secret is required}
@@ -34,6 +44,7 @@ services:
       dockerfile: deploy/self-hosted/recovery.Dockerfile
     restart: "no"
     environment:
+      <<: *object-storage
       PGHOST: postgres
       PGPORT: "5432"
       PGDATABASE: hive

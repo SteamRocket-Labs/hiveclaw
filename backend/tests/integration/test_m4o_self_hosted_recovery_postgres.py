@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import create_async_engine
 
 from tests.integration.test_m1g22_artifact_versions_postgres import delivered  # noqa: F401
 from tests.scripts.test_self_hosted_installation import installer, unused_port, wait_ready, stop
+from tests.services.test_s3_blob_store import s3_server  # noqa: F401
 
 ROOT = Path(__file__).resolve().parents[3]
 pytestmark = pytest.mark.usefixtures("migrated_pg_url")
@@ -31,7 +32,7 @@ def tmp_path(tmp_path_factory):
 
 
 async def test_backup_restore_restarts_real_auth_files_approvals_and_encrypted_credentials(
-    delivered, owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path,  # noqa: F811
+    delivered, owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, s3_server,  # noqa: F811
 ):
     from app.core.security import hash_password
     from app.models.agent import Agent
@@ -46,7 +47,12 @@ async def test_backup_restore_restarts_real_auth_files_approvals_and_encrypted_c
     source = owner_sessionmaker.kw["bind"].url
     binary = Path(os.environ.get("M1E_PSQL") or shutil.which("psql") or "/missing/psql").parent
     assert (binary / "pg_dump").is_file() and (binary / "pg_restore").is_file()
-    profile = installer.configure(work / "source-profile", public_origin="http://127.0.0.1:3008", port=3008)
+    storage_profile = work / "object-storage.json"
+    storage_profile.write_text(json.dumps({"endpoint": s3_server.endpoint, "region": "us-east-1", "bucket": "private-originals",
+        "access_key_id": s3_server.access, "secret_access_key": s3_server.secret, "session_token": s3_server.token}))
+    storage_profile.chmod(0o600)
+    profile = installer.configure(work / "source-profile", public_origin="http://127.0.0.1:3008", port=3008,
+        object_storage_profile=storage_profile)
     values = installer.read_profile(profile)
     values["HIVE_INSTALL_SCHEMA_PASSWORD"] = source.password
     profile.write_text("".join(f"{key}='{value}'\n" for key, value in values.items()))
@@ -88,11 +94,13 @@ async def test_backup_restore_restarts_real_auth_files_approvals_and_encrypted_c
     async def launch(database, agents, name, role="runtime"):
         port = unused_port()
         log_path = work / (name + ".log")
+        storage_values = values if database == source.database else installer.read_profile(target_profile)
         with log_path.open("w") as log:
             process = await asyncio.create_subprocess_exec(sys.executable, "-B", "-m", "uvicorn", "app.main:app",
                 "--host", "127.0.0.1", "--port", str(port), "--no-access-log", cwd=ROOT / "backend",
                 env={**common, "DATABASE_URL": runtime.set(database=database).render_as_string(hide_password=False),
-                    "AGENT_DATA_DIR": str(agents), "HIVE_PROCESS_ROLE": role}, stdout=log, stderr=log)
+                    "AGENT_DATA_DIR": str(agents), "HIVE_PROCESS_ROLE": role,
+                    **{key: value for key, value in storage_values.items() if key.startswith("BLOB_")}}, stdout=log, stderr=log)
         processes.append((process, log_path))
         origin = f"http://127.0.0.1:{port}"
         await wait_ready(origin, process, log_path)
@@ -154,11 +162,23 @@ async def test_backup_restore_restarts_real_auth_files_approvals_and_encrypted_c
         downgraded = subprocess.run([sys.executable, "-B", "-m", "alembic", "downgrade", legacy_head],
             cwd=ROOT / "backend", env={**grant_env, "DATABASE_URL": owner_url}, capture_output=True, timeout=30)
         assert downgraded.returncode == 0, "The actual old catalog must preserve the authored work without bypassing downgrade checks"
+        assert s3_server.writes == 1 and not (tmp_path / ".storage_objects").exists()
+        s3_server.mode = "corrupt"
+        corrupt_path = work / "corrupt-object-refused"
+        corrupt, detail = command("backup", "--offline", "--profile", profile, "--agents", tmp_path,
+            "--output", corrupt_path, "--pg-bin", binary)
+        assert corrupt.returncode == 3 and detail["code"] == "remote_object_backup_unavailable", detail
+        assert not (corrupt_path / "manifest.json").exists()
+        s3_server.mode = None
         backup_dir = work / "backup"
         backed_up, receipt = command("backup", "--offline", "--profile", profile, "--agents", tmp_path,
             "--output", backup_dir, "--pg-bin", binary)
         assert backed_up.returncode == 0 and receipt["status"] == "backed_up", receipt
         fingerprint = receipt["manifest_sha256"]
+        manifest = json.loads((backup_dir / "manifest.json").read_text())
+        assert len(manifest["remote_objects"]) == 1
+        assert s3_server.secret not in (backup_dir / "manifest.json").read_text()
+        s3_server.stop()
         target_profile = installer.configure(work / "restored-profile", public_origin="http://127.0.0.1:3010", port=3010,
             recovery_profile=backup_dir / "installation.env")
         assert installer.read_profile(target_profile)["HIVE_INSTALL_ID"] != values["HIVE_INSTALL_ID"]
@@ -172,6 +192,7 @@ async def test_backup_restore_restarts_real_auth_files_approvals_and_encrypted_c
             "--manifest-sha256", fingerprint, "--agents", target_agents, "--pg-bin", binary,
             "--uid", os.getuid(), "--gid", os.getgid(), database=target_database)
         assert restored.returncode == 0 and receipt["status"] == "restored", receipt
+        assert receipt["object_storage"] == {"remote_objects_materialized": 1, "restored_provider": "filesystem"}
         # A second import cannot overwrite the restored work or repeat effects.
         repeated, detail = command("restore", "--offline", "--profile", target_profile, "--backup", backup_dir,
             "--manifest-sha256", fingerprint, "--agents", target_agents, "--pg-bin", binary,
@@ -181,10 +202,32 @@ async def test_backup_restore_restarts_real_auth_files_approvals_and_encrypted_c
             "SCHEMA_DATABASE_URL": source.set(database=target_database).render_as_string(hide_password=False),
             "AGENT_DATA_DIR": str(target_agents)}
 
-        def upgrade(*arguments):
-            result = subprocess.run([sys.executable, "-B", "-m", "app.scripts.self_hosted_upgrade", *map(str, arguments)],
-                cwd=ROOT / "backend", env=upgrade_env, capture_output=True, text=True, timeout=180)
-            return result, json.loads(result.stdout)
+        def upgrade(*arguments, environment=None, database_name=None):
+            def invoke():
+                result = subprocess.run([sys.executable, "-B", "-m", "app.scripts.self_hosted_upgrade", *map(str, arguments)],
+                    cwd=ROOT / "backend", env=environment or upgrade_env, capture_output=True, text=True, timeout=180)
+                return result, json.loads(result.stdout)
+
+            result, detail = invoke()
+            backends = (detail.get("details") or {}).get("backends", [])
+            if (arguments[0] == "preflight" and result.returncode == 3 and detail.get("code") == "upgrade_writers_must_be_stopped"
+                and backends and all(row["backend_type"] == "autovacuum worker" for row in backends)):
+                # Keep the production all-writer gate. This owned fixture may wait
+                # only for the exact reported internal process, then retry the
+                # read-only preflight once. A held client is never excluded.
+                pids = [int(row["pid"]) for row in backends]
+                wait_sql = """DO $wait$ DECLARE deadline timestamptz := clock_timestamp()+interval '30 seconds'; BEGIN
+                    LOOP EXIT WHEN NOT EXISTS(SELECT FROM pg_stat_activity WHERE datname=current_database()
+                    AND backend_type='autovacuum worker' AND pid=ANY(ARRAY[%s]));
+                    IF clock_timestamp()>deadline THEN RAISE EXCEPTION 'owned maintenance wait expired'; END IF;
+                    PERFORM pg_sleep(0.25); END LOOP; END $wait$;""" % ",".join(map(str, pids))
+                waited = subprocess.run([str(binary / "psql"), "-X", "-v", "ON_ERROR_STOP=1", "-c", wait_sql],
+                    env={**pg_env, "PGDATABASE": database_name or target_database}, capture_output=True, timeout=35)
+                assert waited.returncode == 0, "Reported internal maintenance must actually finish before preflight retries"
+                (work / ("maintenance-wait-" + uuid.uuid4().hex + ".json")).write_text(json.dumps({
+                    "reported_backends": backends, "wait_exit_code": waited.returncode, "action": "retry_read_only_preflight_once"}))
+                result, detail = invoke()
+            return result, detail
 
         dist = Path(os.environ["HIVE_TEST_M4P_FRONTEND_BUILD"])
         release_file, plan_file = work / "release.json", work / "upgrade-plan.json"
@@ -192,6 +235,10 @@ async def test_backup_restore_restarts_real_auth_files_approvals_and_encrypted_c
         assert packaged.returncode == 0 and package_receipt["status"] == "packaged", package_receipt
         upgrade_args = ["--offline", "--release", release_file, "--release-sha256", package_receipt["release_sha256"],
             "--backup", backup_dir, "--backup-sha256", fingerprint]
+        source_checked, source_receipt = upgrade("preflight", *upgrade_args, "--output", work / "source-upgrade-plan.json",
+            environment={**upgrade_env, "DATABASE_URL": runtime.render_as_string(hide_password=False),
+                "SCHEMA_DATABASE_URL": owner_url, "AGENT_DATA_DIR": str(tmp_path)}, database_name=source.database)
+        assert source_checked.returncode == 0, source_receipt
         probe = create_async_engine(source.set(database=target_database))
         try:
             async with probe.connect() as connection:

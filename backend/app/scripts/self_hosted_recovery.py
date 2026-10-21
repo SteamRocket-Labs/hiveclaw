@@ -4,6 +4,7 @@
 import argparse
 import hashlib
 import hmac
+from http.client import HTTPException
 import json
 import os
 from pathlib import Path, PurePosixPath
@@ -37,6 +38,7 @@ def read_profile(path: Path) -> dict[str, str]:
         return values
 
 SCHEMA = "hive.self_hosted_backup.v1"
+REMOTE_SCHEMA = "hive.self_hosted_backup.v2"
 CONTROL = ".hive-recovery.json"
 RECOVERY_MARKER_KEY = "self_hosted_recovery_volume"
 
@@ -296,16 +298,29 @@ def backup(args):
         pg(args, ["pg_dump", "--no-password", "--format=custom"], output=output)
         output.flush()
         os.fsync(output.fileno())
+    from app.scripts.object_storage_recovery import remote_objects
+
+    remote = remote_objects(args, sql)
     tree = destination / "agents.tar.gz"
     with tree.open("xb") as output:
         os.chmod(tree, 0o600)
         with tarfile.open(fileobj=output, mode="w:gz") as archive:
-            entries = file_tree(agents, archive)
+            local_entries = file_tree(agents, archive)
+            entries = local_entries
+            if remote:
+                from app.scripts.object_storage_recovery import export_objects
+
+                try:
+                    entries = export_objects(remote, profile, archive, local_entries, file_tree)
+                except (OSError, ValueError, RuntimeError, HTTPException):
+                    raise RecoveryError("remote_object_backup_unavailable") from None
         output.flush()
         os.fsync(output.fileno())
-    if entries != file_tree(agents) or before != database_state(args):
+    if local_entries != file_tree(agents) or remote != remote_objects(args, sql) or before != database_state(args):
         raise RecoveryError("backup_source_changed")
-    manifest = {"schema": SCHEMA, "postgres_major": before["major"], "entries": entries,
+    manifest = {"schema": REMOTE_SCHEMA if remote else SCHEMA, "postgres_major": before["major"], "entries": entries,
+        "remote_objects": remote,
+        **({"source_volume_paths": [entry["path"] for entry in local_entries]} if remote else {}),
         "source_agent_roots": source_roots,
         "consistency": "operator_stopped_writers", "excluded_control_file": CONTROL,
         "files": {name: {"sha256": digest(destination / name), "bytes": (destination / name).stat().st_size}
@@ -328,8 +343,10 @@ def verify(directory, expected=None):
 
 
 def verify_contents(directory, manifest):
-    if manifest.get("schema") != SCHEMA or set(manifest.get("files", {})) != {"database.dump", "agents.tar.gz", "installation.env"}:
+    if manifest.get("schema") not in {SCHEMA, REMOTE_SCHEMA} or set(manifest.get("files", {})) != {"database.dump", "agents.tar.gz", "installation.env"}:
         raise RecoveryError("backup_manifest_invalid")
+    if manifest["schema"] == REMOTE_SCHEMA and not manifest.get("remote_objects"):
+        raise RecoveryError("backup_remote_objects_invalid")
     for name, record in manifest["files"].items():
         path = directory / name
         if path.is_symlink() or path.stat().st_size != record["bytes"] or digest(path) != record["sha256"]:
@@ -345,6 +362,15 @@ def verify_contents(directory, manifest):
         for parent in PurePosixPath(name).parents:
             if str(parent) != "." and entries.get(str(parent), {}).get("type") != "directory":
                 raise RecoveryError("backup_parent_invalid")
+    if "remote_objects" in manifest:
+        from app.scripts.object_storage_recovery import verify_objects
+
+        try:
+            verify_objects(manifest["remote_objects"], entries, source_paths=manifest.get("source_volume_paths"))
+        except (ValueError, TypeError, KeyError):
+            raise RecoveryError("backup_remote_objects_invalid") from None
+        if manifest["remote_objects"] and manifest["schema"] != REMOTE_SCHEMA:
+            raise RecoveryError("backup_remote_schema_required")
     seen = set()
     with tarfile.open(directory / "agents.tar.gz", "r:gz") as archive:
         for member in archive:
@@ -421,6 +447,14 @@ def restore(args):
             os.utime(stage / row["path"], ns=(row["mtime_ns"], row["mtime_ns"]), follow_symlinks=False)
     pg(args, ["pg_restore", "--no-password", "--exit-on-error", "--single-transaction", "--no-owner",
         "--dbname", os.environ["PGDATABASE"], str(args.backup / "database.dump")])
+    remote = manifest.get("remote_objects", [])
+    if remote:
+        from app.scripts.object_storage_recovery import relocation_sql
+
+        try:
+            sql(args, relocation_sql(remote))
+        except RecoveryError:
+            raise RecoveryError("restored_object_mapping_unverified", status="unknown") from None
     # Keep a database witness so a missing volume journal cannot downgrade an
     # existing restored installation to ordinary unrelocated replay semantics.
     if sql(args, "SELECT to_regclass('public.system_settings') IS NOT NULL") == "t":
@@ -434,6 +468,7 @@ def restore(args):
     os.chown(agents, args.uid, args.gid)
     journal.update(status="restored", next_action="run canonical preparation, then verify login, files, approvals and worker recovery",
         business_verified=False)
+    journal["object_storage"] = {"remote_objects_materialized": len(remote), "restored_provider": "filesystem"}
     if source_roots:
         mapping = {"schema": "hive.workspace_relocation.v1", "manifest_sha256": args.manifest_sha256,
             "source_roots": source_roots, "target_roots": target_roots}

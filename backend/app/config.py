@@ -4,6 +4,7 @@ from functools import lru_cache
 from pathlib import Path
 
 from pydantic_settings import BaseSettings
+from pydantic import SecretStr
 
 
 def _running_in_container() -> bool:
@@ -249,6 +250,12 @@ class Settings(BaseSettings):
     CHAT_ARTIFACT_SNAPSHOT_RETENTION_DAYS: float = 30.0
     # New original-attachment writes use this provider; recorded objects keep their reader.
     BLOB_STORAGE_PROVIDER: str = "filesystem"
+    BLOB_S3_ENDPOINT: str = ""
+    BLOB_S3_REGION: str = "us-east-1"
+    BLOB_S3_BUCKET: str = ""
+    BLOB_S3_ACCESS_KEY_ID: SecretStr = SecretStr("")
+    BLOB_S3_SECRET_ACCESS_KEY: SecretStr = SecretStr("")
+    BLOB_S3_SESSION_TOKEN: SecretStr = SecretStr("")
     # Resident profile-plane budget (read side, memory-system-spec §4.2):
     # self + profiles + explicit overlay load whole into the prompt; going
     # over this budget is a write-side convergence failure signal (工序 4),

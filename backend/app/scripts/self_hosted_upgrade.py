@@ -80,9 +80,24 @@ async def snapshot(args):
         "HIVE_INSTALL_SECRETS_MASTER_KEY": os.environ["SECRETS_MASTER_KEY"]}
     if any(keys[key] != value for key, value in expected_keys.items()):
         raise RecoveryError("upgrade_recovery_keys_mismatch")
-    if file_tree(workspace) != recovery["entries"]:
-        raise RecoveryError("upgrade_recovery_files_changed")
     async with schema_engine.connect() as db:
+        expected_entries = recovery["entries"]
+        if recovery.get("remote_objects"):
+            from uuid import UUID
+            from app.scripts.object_storage_recovery import upgrade_entries
+            from app.scripts.self_hosted_recovery import RECOVERY_MARKER_KEY, required_workspace_manifest
+
+            marker = await db.scalar(text("SELECT value FROM system_settings WHERE key=:key"), {"key": RECOVERY_MARKER_KEY})
+            restored = marker is not None and required_workspace_manifest(marker) == args.backup_sha256
+            objects = (await db.execute(text("""SELECT id::text,tenant_id::text,provider,bucket,object_key,
+                content_sha256,size_bytes,metadata_json FROM storage_blobs WHERE id=ANY(:ids)"""),
+                {"ids": [UUID(row["id"]) for row in recovery["remote_objects"]]})).mappings().all()
+            try:
+                expected_entries = upgrade_entries(recovery, [dict(row) for row in objects], restored=restored)
+            except ValueError:
+                raise RecoveryError("upgrade_remote_object_mapping_changed") from None
+        if file_tree(workspace) != expected_entries:
+            raise RecoveryError("upgrade_recovery_files_changed")
         postgres_major = int(await db.scalar(text("SHOW server_version_num"))) // 10000
         if postgres_major != recovery["postgres_major"]:
             raise RecoveryError("upgrade_database_version_changed")

@@ -70,6 +70,14 @@ def test_verify_observes_exact_archive_and_preserves_links_as_data(bundle, recov
     assert next(row for row in manifest["entries"] if row["type"] == "file")["sha256"] == hashlib.sha256(b"EXACT_SAVED_VERSION").hexdigest()
 
 
+@pytest.mark.parametrize("invalid", [None, {}, [None], [{"provider": "s3"}]])
+def test_invalid_remote_recovery_manifest_cannot_hide_missing_object_bytes(bundle, recovery, invalid):
+    bundle.manifest["remote_objects"] = invalid
+    (bundle.path / "manifest.json").write_text(json.dumps(bundle.manifest))
+    with pytest.raises(recovery.RecoveryError, match="backup_remote_objects_invalid"):
+        recovery.verify(bundle.path, recovery.digest(bundle.path / "manifest.json"))
+
+
 @pytest.mark.parametrize("name", ["database.dump", "agents.tar.gz", "installation.env", "manifest.json"])
 def test_changed_backup_is_refused_before_any_restore_effect(bundle, recovery, name):
     (bundle.path / name).write_bytes(b"CHANGED_PRIVATE_BYTES")
@@ -112,7 +120,10 @@ def test_capture_refuses_shared_file_ownership_without_reinterpreting_it(tmp_pat
 def test_maintenance_image_python_layout_has_no_application_dependency(bundle, tmp_path):
     image = tmp_path / "maintenance-image/opt/hive"
     for relative, target in (("scripts/self_hosted_recovery.py", "scripts/self_hosted_recovery.py"),
-        ("backend/app/scripts/self_hosted_recovery.py", "backend/app/scripts/self_hosted_recovery.py")):
+        ("backend/app/scripts/self_hosted_recovery.py", "backend/app/scripts/self_hosted_recovery.py"),
+        ("backend/app/scripts/object_storage_recovery.py", "backend/app/scripts/object_storage_recovery.py"),
+        ("backend/app/services/blob_store.py", "backend/app/services/blob_store.py"),
+        ("backend/app/services/s3_blob_store.py", "backend/app/services/s3_blob_store.py")):
         destination = image / target
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(ROOT / relative, destination)

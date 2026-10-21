@@ -50,6 +50,44 @@ def test_private_profile_is_unique_and_cannot_replace_existing_keys(tmp_path):
     assert first.read_bytes() == before
 
 
+def test_private_s3_profile_reaches_runtime_and_maintenance_without_frontend_secrets(tmp_path):
+    source = tmp_path / "private-objects.json"
+    source.write_text(json.dumps({"endpoint": "https://objects.example.test", "bucket": "private-originals",
+        "access_key_id": "SYNTHETIC_ACCESS", "secret_access_key": "SYNTHETIC_SECRET", "session_token": "SYNTHETIC_TOKEN"}))
+    source.chmod(0o600)
+    profile = installer.configure(tmp_path / "installation", public_origin="http://localhost:3008", port=3008,
+        object_storage_profile=source)
+    values = installer.read_profile(profile)
+    assert values["BLOB_STORAGE_PROVIDER"] == "s3" and values["BLOB_S3_SECRET_ACCESS_KEY"] == "SYNTHETIC_SECRET"
+    recovered = installer.configure(tmp_path / "recovered", public_origin="http://localhost:3010", port=3010, recovery_profile=profile)
+    assert installer.read_profile(recovered)["BLOB_STORAGE_PROVIDER"] == "filesystem"
+    if not shutil.which("docker"):
+        pytest.skip("Docker Compose CLI required for resolved recipe, no daemon/container is used")
+    compose = [shutil.which("docker-compose")] if shutil.which("docker-compose") else ["docker", "compose"]
+    result = subprocess.run([*compose, "--profile", "maintenance", "--env-file", str(profile), "-f", str(ROOT / "deploy/self-hosted/compose.yml"),
+        "config", "--format", "json"], capture_output=True, text=True, timeout=10, env={"PATH": os.environ["PATH"], "HOME": str(tmp_path)})
+    assert result.returncode == 0, "The private object profile must parse without exposing its values in test diagnostics"
+    services = json.loads(result.stdout)["services"]
+    for name in ("backend-api", "backend", "recovery"):
+        assert services[name]["environment"]["BLOB_S3_SECRET_ACCESS_KEY"] == "SYNTHETIC_SECRET"
+    assert "BLOB_S3_SECRET_ACCESS_KEY" not in services["frontend"].get("environment", {})
+
+
+@pytest.mark.parametrize("failure", ["public", "alias", "remote_http"])
+def test_invalid_s3_profile_creates_no_installation(tmp_path, failure):
+    source = tmp_path / "objects.json"
+    source.write_text(json.dumps({"endpoint": "http://objects.example.test" if failure == "remote_http" else "https://objects.example.test",
+        "bucket": "private-originals", "access_key_id": "SYNTHETIC_ACCESS", "secret_access_key": "SYNTHETIC_SECRET"}))
+    source.chmod(0o644 if failure == "public" else 0o600)
+    if failure == "alias":
+        alias = tmp_path / "alias.json"
+        alias.symlink_to(source)
+        source = alias
+    with pytest.raises((ValueError, OSError, RuntimeError)):
+        installer.configure(tmp_path / "installation", public_origin="http://localhost:3008", port=3008, object_storage_profile=source)
+    assert not (tmp_path / "installation").exists()
+
+
 @pytest.mark.parametrize("origin", ["https://user:secret@example.test", "http://example.test/path", "https://example.test?key=x", "http://exa mple.test"])
 def test_invalid_origin_writes_no_profile(tmp_path, origin):
     with pytest.raises(ValueError):

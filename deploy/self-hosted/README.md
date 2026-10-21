@@ -51,6 +51,37 @@ provider calls, authorized effects and a real first task still require their own
 execution evidence. Connected employees use their own runtime. Existing work does
 not require every optional SSO/channel/directory or computer integration.
 
+Original uploads default to private filesystem object storage. To select an
+S3-compatible service for new objects, prepare a mode-600 JSON file containing
+`endpoint`, `region`, `bucket`, `access_key_id`, `secret_access_key` and, for
+temporary credentials, `session_token`. Pass its path to
+`configure_self_hosted.py --object-storage-profile`. Use an HTTPS service origin
+and a pre-existing private bucket with scoped `GetObject`/`PutObject` access;
+the adapter uses path-style requests and conditional `If-None-Match: *` writes.
+It does not create buckets or expose credentials or signed URLs to employees.
+Keep this file and `installation.env` private. Literal loopback HTTP endpoints
+are supported for local validation; remote HTTP, redirects and environment
+proxies are rejected. Other S3 APIs and real service compatibility need their
+own validation.
+
+Changing the writer does not relocate existing originals. Saved references keep
+their provider, bucket, tenant namespace and recorded endpoint/region. A missing
+reader configuration, altered location or changed bytes is an unavailable
+original, with no substitution from its editable workspace copy.
+
+Offline backups include verified bytes for every available remote object along
+with the database and volume. Keep the source object service readable until the
+backup manifest is complete and verified; missing or corrupt objects fail the
+backup. Restoration materializes those bytes in the target's private filesystem
+and maps the matching restored object records in one transaction, retaining
+original reference IDs, ownership, hashes and remote locator evidence. The
+restore receipt reports the mapping. A recovered installation defaults to the
+filesystem writer and can read these originals without the old object endpoint
+or credentials. Select an S3 profile explicitly for subsequent new remote
+objects. Existing backup profiles without remote objects remain supported.
+Bundles with remote objects use backup schema v2, which older recovery tools
+reject rather than restoring references without their required provider mapping.
+
 Current validation covers the Compose CLI model/build plan and owned macOS native
 processes with PostgreSQL 17/SCRAM and authenticated Redis. The recipe reuses the
 repository's PostgreSQL 15/Redis 7 container baselines; their container execution,

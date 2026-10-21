@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.chat_transcript_event import ChatTranscriptEvent
 from app.models.runtime_task import RuntimeTask
 from app.models.session_v2 import SessionModelResult, SessionToolInvocation
+from app.services import chat_transcript
 from app.services.knowledge_provenance import enrich_knowledge_event_metadata
 from app.services.session_v2_persistence import SessionEventDraft, append_session_events
 
@@ -102,7 +103,7 @@ async def list_unresolved_tool_effects(
     if limit is not None:
         stmt = stmt.limit(max(1, min(int(limit), 500)))
     if for_update:
-        stmt = stmt.with_for_update()
+        stmt = stmt.with_for_update().execution_options(populate_existing=True)
     return list((await db.execute(stmt)).scalars().all())
 
 
@@ -246,6 +247,7 @@ async def prepare_tool_invocation(
 ) -> SessionToolInvocation:
     """Persist the tool use and a pre-effect fence before execution authority."""
 
+    await chat_transcript.lock_transcript_session(db, session_id=session_id)
     result = await db.scalar(
         select(SessionModelResult)
         .where(
@@ -255,6 +257,7 @@ async def prepare_tool_invocation(
             SessionModelResult.provider_request_id == str(provider_request_id),
         )
         .with_for_update()
+        .execution_options(populate_existing=True)
     )
     if result is None or result.state in {"failed", "needs_reconciliation"}:
         raise RuntimeError("tool_invocation_requires_committed_model_result")
@@ -296,6 +299,7 @@ async def prepare_tool_invocation(
             SessionToolInvocation.provider_tool_use_id == clean_tool_use_id,
         )
         .with_for_update()
+        .execution_options(populate_existing=True)
     )
     if invocation is not None:
         if (
@@ -391,8 +395,9 @@ async def mark_tool_effect_started(
     effective_arguments: Mapping[str, Any] | None = None,
     permission_control_id: uuid.UUID | None = None,
 ) -> list[ChatTranscriptEvent]:
-    """CAS the invocation before returning execution authority to the kernel."""
+    """CAS an unsettled invocation before returning effect authority to the kernel."""
 
+    await chat_transcript.lock_transcript_session(db, session_id=session_id)
     invocation = await db.scalar(
         select(SessionToolInvocation)
         .where(
@@ -401,9 +406,12 @@ async def mark_tool_effect_started(
             SessionToolInvocation.session_id == session_id,
         )
         .with_for_update()
+        .execution_options(populate_existing=True)
     )
     if invocation is None:
         raise RuntimeError("tool_invocation_not_found")
+    if invocation.result_event_id is not None:
+        raise RuntimeError("tool_effect_start_requires_unsettled_invocation")
     if invocation.effect_state == "effect_started":
         return []
     if invocation.effect_state != "prepared_not_started":
@@ -591,6 +599,7 @@ async def complete_tool_invocation(
     receipt — back into model context when present.
     """
 
+    await chat_transcript.lock_transcript_session(db, session_id=session_id)
     invocation = await db.scalar(
         select(SessionToolInvocation)
         .where(
@@ -599,6 +608,7 @@ async def complete_tool_invocation(
             SessionToolInvocation.session_id == session_id,
         )
         .with_for_update()
+        .execution_options(populate_existing=True)
     )
     if invocation is None:
         raise RuntimeError("tool_invocation_not_found")
@@ -1066,6 +1076,7 @@ async def mark_tool_invocation_needs_reconciliation(
     reconciled before any replay or later model round.
     """
 
+    await chat_transcript.lock_transcript_session(db, session_id=session_id)
     invocation = await db.scalar(
         select(SessionToolInvocation)
         .where(
@@ -1074,6 +1085,7 @@ async def mark_tool_invocation_needs_reconciliation(
             SessionToolInvocation.session_id == session_id,
         )
         .with_for_update()
+        .execution_options(populate_existing=True)
     )
     if invocation is None:
         raise RuntimeError("tool_invocation_not_found")
@@ -1149,6 +1161,7 @@ async def acknowledge_unresolved_tool_effects(
     clean_reason = str(reason or "").strip()
     if not clean_reason:
         raise ValueError("tool effect acknowledgement reason is required")
+    await chat_transcript.lock_transcript_session(db, session_id=session_id)
     invocations = await list_unresolved_tool_effects(
         db,
         tenant_id=tenant_id,
@@ -1271,6 +1284,7 @@ async def apply_tool_permission_response(
 
     if decision not in {"allow_once", "allow_session", "deny"}:
         raise ValueError("unsupported_tool_permission_decision")
+    await chat_transcript.lock_transcript_session(db, session_id=session_id)
     invocation = await db.scalar(
         select(SessionToolInvocation)
         .where(
@@ -1279,6 +1293,7 @@ async def apply_tool_permission_response(
             SessionToolInvocation.session_id == session_id,
         )
         .with_for_update()
+        .execution_options(populate_existing=True)
     )
     if invocation is None:
         raise RuntimeError("tool_invocation_not_found")
@@ -1291,6 +1306,7 @@ async def apply_tool_permission_response(
             SessionControlInput.kind == "permission_response",
         )
         .with_for_update()
+        .execution_options(populate_existing=True)
     )
     if control is None or control.status != "applied":
         raise RuntimeError("tool_permission_requires_applied_control")

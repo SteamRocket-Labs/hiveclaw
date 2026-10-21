@@ -153,6 +153,7 @@ async def _settle_unstarted_batch_siblings(
                     SessionToolInvocation.provider_request_id == invocation.provider_request_id,
                 )
                 .with_for_update()
+                .execution_options(populate_existing=True)
             )
         ).scalars()
     )
@@ -418,10 +419,10 @@ async def expire_stale_session_permission_requests(
         ApprovalRequest.tool_name.is_not(None),
         func.coalesce(enterprise_visible_approval_filter(ApprovalRequest), True),
     ).exists()
-    candidate_ids = list(
+    candidates = (
         (
             await db.execute(
-                select(SessionToolInvocation.id)
+                select(SessionToolInvocation.id, SessionToolInvocation.session_id)
                 .where(
                     SessionToolInvocation.permission_state == "waiting",
                     SessionToolInvocation.effect_state == "prepared_not_started",
@@ -432,31 +433,30 @@ async def expire_stale_session_permission_requests(
                 .order_by(SessionToolInvocation.permission_expires_at, SessionToolInvocation.id)
                 .limit(max(1, int(limit)))
             )
-        ).scalars()
+        ).all()
     )
     expired = 0
-    for invocation_id in candidate_ids:
+    for invocation_id, session_id in candidates:
         try:
+            from app.services.chat_transcript import lock_transcript_session
+
+            await lock_transcript_session(db, session_id=session_id)
             invocation = await db.scalar(
                 select(SessionToolInvocation)
                 .where(
                     SessionToolInvocation.id == invocation_id,
+                    SessionToolInvocation.session_id == session_id,
                     SessionToolInvocation.permission_state == "waiting",
                     SessionToolInvocation.effect_state == "prepared_not_started",
                     SessionToolInvocation.permission_expires_at <= current,
                     ~enterprise_ticket,
                 )
                 .with_for_update(skip_locked=True)
+                .execution_options(populate_existing=True)
             )
             if invocation is None:
                 await db.rollback()
                 continue
-            from app.services.chat_transcript import lock_transcript_session
-
-            # Advisory → row: the expiry write appends session events for this
-            # session; locking the RuntimeTask row first would invert the
-            # order against a concurrent append of the same run's session.
-            await lock_transcript_session(db, session_id=invocation.session_id)
             task = await db.scalar(
                 select(RuntimeTask)
                 .where(
@@ -584,7 +584,9 @@ async def resolve_session_tool_permission(
     from app.services.session_tool_runtime import complete_tool_invocation, load_permission_plan_mode, mark_tool_effect_started
     from app.tools.governance import _detect_destructive_delete
     from app.tools.registry import is_destructive_tool
+    from app.services.chat_transcript import lock_transcript_session
 
+    await lock_transcript_session(db, session_id=authority.session_id)
     invocation = await db.scalar(
         select(SessionToolInvocation)
         .where(
@@ -593,6 +595,7 @@ async def resolve_session_tool_permission(
             SessionToolInvocation.permission_item_id == permission_request_id,
         )
         .with_for_update()
+        .execution_options(populate_existing=True)
     )
     if invocation is None:
         raise ValueError("pending_session_permission_not_found")
@@ -713,6 +716,7 @@ async def resolve_session_tool_permission(
                 # fence crossed, an escaped exception is effect-uncertain: never
                 # guess a failure receipt and never replay the effect.
                 await db.rollback()
+                await lock_transcript_session(db, session_id=authority.session_id)
                 invocation = await db.scalar(
                     select(SessionToolInvocation)
                     .where(
@@ -721,6 +725,7 @@ async def resolve_session_tool_permission(
                         SessionToolInvocation.session_id == authority.session_id,
                     )
                     .with_for_update()
+                    .execution_options(populate_existing=True)
                 )
                 if invocation is None:
                     raise RuntimeError("tool_invocation_not_found") from exc

@@ -4697,6 +4697,9 @@ async def _persist_tool_call(
     settlement_invocation_id: uuid.UUID | None = None
     try:
         async with tenant_scoped_session(tenant_id) as db:
+            from app.services.chat_transcript import lock_transcript_session
+
+            await lock_transcript_session(db, session_id=session_uuid)
             if status == "running":
                 if not provider_request_id:
                     raise RuntimeError("canonical_tool_start_requires_provider_request_id")
@@ -4740,6 +4743,7 @@ async def _persist_tool_call(
                         ),
                     )
                     .with_for_update()
+                    .execution_options(populate_existing=True)
                 )
                 if invocation is None:
                     raise RuntimeError("canonical_tool_invocation_not_found")

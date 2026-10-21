@@ -204,6 +204,7 @@ async def _locked_permission_invocation(
     authority: AuthenticatedSessionAuthority,
     invocation_id: uuid.UUID,
 ) -> SessionToolInvocation:
+    await lock_transcript_session(db, session_id=authority.session_id)
     invocation = await db.scalar(
         select(SessionToolInvocation)
         .where(
@@ -212,6 +213,7 @@ async def _locked_permission_invocation(
             SessionToolInvocation.session_id == authority.session_id,
         )
         .with_for_update()
+        .execution_options(populate_existing=True)
     )
     if invocation is None:
         raise ValueError("tool_permission_invocation_not_found")
@@ -282,8 +284,7 @@ async def accept_tool_permission_response(
     if int(permission_request_version) <= 0:
         raise ValueError("tool_permission_request_version_must_be_positive")
 
-    # Match the tool-runtime lock order (invocation -> session) so permission
-    # acceptance cannot deadlock a concurrent settlement writer.
+    # The shared invocation loader takes the session advisory before row locks.
     invocation = await _locked_permission_invocation(
         db,
         authority=authority,
@@ -296,8 +297,6 @@ async def accept_tool_permission_response(
         permission_authority_snapshot_hash=clean_authority_hash,
         expected_run_id=run_uuid,
     )
-    await lock_transcript_session(db, session_id=authority.session_id)
-
     response_payload = {"decision": clean_decision}
     response_hash = _sha256(response_payload)
     semantic_row = (
@@ -489,7 +488,6 @@ async def apply_permission_response_control_input(
         authority=authority,
         invocation_id=invocation_uuid,
     )
-    await lock_transcript_session(db, session_id=authority.session_id)
     row = (
         await db.execute(
             select(SessionControlInput, SessionCommand)

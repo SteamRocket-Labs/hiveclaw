@@ -1,5 +1,10 @@
 export const TRANSLATION_CALLEE_RULES = [
   {
+    source: 'src/pages/agent-detail/AgentAwareSection.tsx',
+    callee: 'translate',
+    reason: 'The plan-review builder receives react-i18next t and uses literal keys with English fallbacks.',
+  },
+  {
     source: 'src/pages/admin-companies/PlatformFeatureFlagsSection.tsx',
     callee: 'translate',
     reason: 'featureFlagAudienceSummary receives the react-i18next translator from its production component.',

@@ -243,9 +243,7 @@ export default function AgentAwareSection({
     }
     const schedule = scheduleLabelFromView(trigger) || (trigger.type ? triggerToHuman(trigger) : '');
     try {
-      await onReviewWakeInPlanMode(buildWakeEnablePlanReviewRequest(trigger, schedule, (key, fallback, options) => (
-        t(key, fallback, options)
-      )));
+      await onReviewWakeInPlanMode(buildWakeEnablePlanReviewRequest(trigger, schedule, t));
     } catch {
       setEnableError(t('agent.aware.reviewPlanFailed', 'Plan Mode could not be opened for this wake policy.'));
     }

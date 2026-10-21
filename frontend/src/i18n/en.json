@@ -845,6 +845,7 @@
     "scheduleGeneric": "Scheduled work",
     "automationStatus": {
       "paused": "Paused",
+      "authorityRevoked": "Authority revoked",
       "running": "Running",
       "failed": "Needs attention",
       "missingModel": "Model not configured",
@@ -5207,12 +5208,17 @@
   },
   "companyKnowledge": {
     "unlinked": {
+      "title": "Directory people without a selectable authenticated account",
+      "ambiguous": "This directory person matches more than one authenticated account and cannot be selected.",
+      "inactive": "The linked authenticated account is inactive and cannot receive a new grant.",
+      "unregistered": "This person has no authenticated account yet and cannot receive a grant.",
       "conflict": "The stored identity link conflicts and cannot be used for a grant.",
       "revoked": "The stored identity link was revoked and cannot be used for a grant.",
       "stale": "The stored identity link no longer matches the directory person.",
       "unproven": "The stored identity link does not have a proven provider for this company.",
       "crossTenant": "The stored identity link is outside this company and cannot be used for a grant."
     },
+    "identityOptionsError": "Authenticated accounts could not be loaded. No person was granted access.",
     "libraryEyebrow": "Authorized company library",
     "libraryTitle": "Company Knowledge",
     "librarySubtitle": "Search and read the current company knowledge your account is allowed to use.",
@@ -5335,6 +5341,7 @@
       "useCompanyModel": "Use company model"
     },
     "audiences": {
+      "authenticatedUser": "Authenticated user",
       "allEmployees": "All employees",
       "companyAdmins": "Company administrators",
       "member": "Company member",

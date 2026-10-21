@@ -820,6 +820,7 @@
     "scheduleGeneric": "定时工作",
     "automationStatus": {
       "paused": "已暂停",
+      "authorityRevoked": "授权已撤销",
       "running": "运行中",
       "failed": "需要处理",
       "missingModel": "未配置模型",
@@ -5207,12 +5208,17 @@
   },
   "companyKnowledge": {
     "unlinked": {
+      "title": "暂无可选已认证账号的通讯录人员",
+      "ambiguous": "此通讯录人员匹配了多个已认证账号，暂不能选择。",
+      "inactive": "关联的已认证账号已停用，无法获得新授权。",
+      "unregistered": "此人尚无已认证账号，暂不能获得授权。",
       "conflict": "已保存的身份关联存在冲突，不能用于授权。",
       "revoked": "已保存的身份关联已撤销，不能用于授权。",
       "stale": "已保存的身份关联与当前通讯录人员不一致。",
       "unproven": "已保存的身份关联没有本公司已证明的身份提供方。",
       "crossTenant": "已保存的身份关联不属于本公司，不能用于授权。"
     },
+    "identityOptionsError": "无法加载已认证账号，未向任何人授予权限。",
     "libraryEyebrow": "已授权的公司知识库",
     "libraryTitle": "公司知识",
     "librarySubtitle": "检索并阅读当前账号有权使用的公司知识。",
@@ -5335,6 +5341,7 @@
       "useCompanyModel": "使用公司模型"
     },
     "audiences": {
+      "authenticatedUser": "已认证用户",
       "allEmployees": "全体员工",
       "companyAdmins": "公司管理员",
       "member": "公司成员",

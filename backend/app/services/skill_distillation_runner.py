@@ -580,7 +580,9 @@ async def run_skill_distillation(
             }
 
         reviewed = await bind_reviewed_draft(workspace=workspace, gate_candidate_id=candidate["candidate_id"],
-            draft=effective_draft, source_candidate_id=direct_candidate.candidate_id if direct_candidate else None)
+            draft=effective_draft, source_candidate_id=direct_candidate.candidate_id if direct_candidate else None,
+            skill_origin=patch_skill_origin, gate_metadata=_promotion_gate_metadata(verification_report=verification_report,
+                artifact_gate_report=artifact_gate_report, referee_review=referee_review))
         save_result = await _commit_skill_with_asset_revision(
             workspace=workspace,
             target_relative_path=patch_relative_path,
@@ -873,7 +875,9 @@ async def run_skill_distillation(
         }
 
     reviewed = await bind_reviewed_draft(workspace=workspace, gate_candidate_id=candidate["candidate_id"],
-        draft=draft, source_candidate_id=direct_candidate.candidate_id if direct_candidate else None)
+        draft=draft, source_candidate_id=direct_candidate.candidate_id if direct_candidate else None,
+        skill_origin=ORIGIN_T3_AUTO_CREATED, gate_metadata=_promotion_gate_metadata(verification_report=verification_report,
+            artifact_gate_report=artifact_gate_report, referee_review=referee_review))
     save_result = await _commit_skill_with_asset_revision(
         workspace=workspace,
         target_relative_path=rollback_ref,

@@ -350,6 +350,7 @@ async def test_tool_runtime_service_executes_through_registry_and_logs(monkeypat
     from app.tools.runtime import ToolExecutionContext
     from app.tools.service import ToolRuntimeService
 
+    child_task_id, root_task_id = str(uuid4()), str(uuid4())
     permission_profile = PermissionProfileV1(
         mode=PermissionMode.DONT_ASK,
         allowed_tools=("write_file",),
@@ -361,7 +362,7 @@ async def test_tool_runtime_service_executes_through_registry_and_logs(monkeypat
         workspace=Path("/tmp/ws"),
         permission_profile=permission_profile,
         session_id="child-session-a2a",
-        runtime_task_id="child-task-a2a",
+        runtime_task_id=child_task_id,
         budget_run_id="budget-a2a",
     )
     execution_principal = ExecutionPrincipal(
@@ -369,7 +370,7 @@ async def test_tool_runtime_service_executes_through_registry_and_logs(monkeypat
         source_agent_id=context.agent_id,
         requester_user_id=context.user_id,
         root_session_id="root-session-a2a",
-        root_runtime_task_id="root-task-a2a",
+        root_runtime_task_id=root_task_id,
         delegation_chain=("agent:parent", f"agent:{context.agent_id}"),
     )
     governance_context = ToolGovernanceContext(
@@ -396,8 +397,8 @@ async def test_tool_runtime_service_executes_through_registry_and_logs(monkeypat
         "session_id": "child-session-a2a",
         "parent_session_id": "root-session-a2a",
         "trace_id": "trace-a2a",
-        "runtime_task_id": "child-task-a2a",
-        "root_runtime_task_id": "root-task-a2a",
+        "runtime_task_id": child_task_id,
+        "root_runtime_task_id": root_task_id,
         "budget_run_id": "budget-a2a",
         "interaction_type": "delegation",
         "depth": 1,
@@ -442,6 +443,21 @@ async def test_tool_runtime_service_executes_through_registry_and_logs(monkeypat
         fake_renew_current_runtime_task_lease,
     )
 
+    from contextlib import asynccontextmanager
+
+    source_checks, source_db = [], object()
+    @asynccontextmanager
+    async def source_scope(tenant_id, *, require_tenant):
+        assert tenant_id == context.tenant_id and require_tenant
+        yield source_db
+
+    async def revalidate_sources(db, **kwargs):
+        assert db is source_db
+        source_checks.append(kwargs)
+
+    monkeypatch.setattr("app.database.tenant_scoped_session", source_scope)
+    monkeypatch.setattr("app.services.team_task_context.revalidate_tool_sources", revalidate_sources)
+
     service = ToolRuntimeService(
         runtime_resolver=runtime_resolver,
         governance_resolver=governance_resolver,
@@ -468,8 +484,8 @@ async def test_tool_runtime_service_executes_through_registry_and_logs(monkeypat
             delegation_token=delegation_token,
             session_id="child-session-a2a",
             parent_session_id="root-session-a2a",
-            runtime_task_id="child-task-a2a",
-            root_runtime_task_id="root-task-a2a",
+            runtime_task_id=child_task_id,
+            root_runtime_task_id=root_task_id,
             budget_run_id="budget-a2a",
             trace_id="trace-a2a",
             delegation_id="delegation-a2a",
@@ -477,7 +493,7 @@ async def test_tool_runtime_service_executes_through_registry_and_logs(monkeypat
             approval_policy=str(profile_snapshot["approval_policy"]),
         ),
         session_id="child-session-a2a",
-        runtime_task_id="child-task-a2a",
+        runtime_task_id=child_task_id,
         budget_run_id="budget-a2a",
         permission_profile=permission_profile,
         delegation_token=delegation_token,
@@ -497,6 +513,10 @@ async def test_tool_runtime_service_executes_through_registry_and_logs(monkeypat
     assert states == ["created", "validated", "governed", "preflight", "executing", "completed"]
     tool_call_ids = {record["tool_call_id"] for record in context.tool_lifecycle_records}
     assert len(tool_call_ids) == 1
+    assert len(source_checks) == 1
+    assert str(source_checks[0]["task_id"]) == child_task_id
+    assert source_checks[0]["tool_name"] == "write_file"
+    assert source_checks[0]["tool_call_id"] in tool_call_ids
     assert context.tool_execution_frames[0]["status"] == "executing"
     assert context.tool_execution_frames[-1]["status"] == "completed"
     assert context.tool_execution_frames[-1]["tool_call_id"] in tool_call_ids
@@ -520,8 +540,8 @@ async def test_tool_runtime_service_executes_through_registry_and_logs(monkeypat
         "trace_id": "trace-a2a",
         "session_id": "child-session-a2a",
         "parent_session_id": "root-session-a2a",
-        "runtime_task_id": "child-task-a2a",
-        "root_runtime_task_id": "root-task-a2a",
+        "runtime_task_id": child_task_id,
+        "root_runtime_task_id": root_task_id,
         "budget_run_id": "budget-a2a",
         "delegation_id": "delegation-a2a",
         "sandbox_profile": "workspace_write",
@@ -2636,7 +2656,7 @@ async def test_tool_runtime_service_preflight_asks_before_external_visible_tool(
         user_id=context.user_id,
     )
 
-    payload = json.loads(result)
+    payload = json.loads(str(result))
     assert payload["status"] == "approval_required"
     assert payload["approval_id"] == str(approval_id)
     assert payload["tool_name"] == "send_feishu_message"

@@ -217,10 +217,14 @@ class ToolGovernanceResolver:
             return await self._security_zone_cache.get(agent_id, _load)
 
         async def _check_capability(tenant_id: uuid.UUID, agent_id: uuid.UUID, tool_name: str):
+            from app.tools.registry import is_read_only_tool
+
             async def _load():
                 async with tenant_scoped_session(tenant_id) as db:
                     return await check_capability(db, tenant_id, agent_id, tool_name)
 
+            if not is_read_only_tool(tool_name):
+                return await _load()
             return await self._capability_cache.get((tenant_id, agent_id, tool_name), _load)
 
         async def _write_audit_event(**kwargs) -> None:
@@ -393,6 +397,8 @@ class ToolGovernanceResolver:
             _agent_id: uuid.UUID,
             _tool_name: str,
         ) -> dict[str, Any]:
+            from app.tools.registry import is_read_only_tool
+
             async def _load() -> dict[str, Any]:
                 from app.models.guard_policy import GuardPolicy
 
@@ -407,6 +413,8 @@ class ToolGovernanceResolver:
                     "egress_guard": dict(policy.egress_guard or {}),
                 }
 
+            if not is_read_only_tool(_tool_name):
+                return await _load()
             return await self._guard_policy_cache.get(("guard_policy", tenant_id), _load)
 
         return GovernanceDependencies(

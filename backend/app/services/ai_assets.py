@@ -785,7 +785,7 @@ async def backfill_file_native_assets(
     apply: bool,
     actor_user_id: uuid.UUID | None = None,
 ) -> dict[str, Any]:
-    """Discover workspace Skill/Subagent assets and reconcile missing file authorities."""
+    """Backfill legacy file assets; learned versions retain their source-bound projections."""
 
     from app.agents.subagent_definition import definition_store_for_agent, definition_store_for_tenant
     from app.models.agent import Agent
@@ -803,6 +803,9 @@ async def backfill_file_native_assets(
         skills_dir = workspace / "skills"
         if skills_dir.is_dir():
             for skill_file in sorted(skills_dir.glob("*/SKILL.md")):
+                # Learned versions keep their reviewed source and lifecycle projection.
+                if skill_file.parent.name.startswith("learned-"):
+                    continue
                 try:
                     projections.append(
                         project_workspace_skill(
@@ -872,6 +875,9 @@ async def backfill_file_native_assets(
         ).scalars()
     )
     existing = {row.native_key: row for row in existing_rows}
+    existing_rows = [row for row in existing_rows if not (row.asset_type == "skill"
+        and (row.native_locator_json or {}).get("kind") == "agent_workspace"
+        and str((row.native_locator_json or {}).get("folder_name") or "").startswith("learned-"))]
     discovered_keys: set[str] = set()
     items: list[dict[str, Any]] = []
     for projection in sorted(projections, key=lambda item: (item.asset_type, item.native_key)):

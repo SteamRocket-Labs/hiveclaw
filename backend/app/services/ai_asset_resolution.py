@@ -124,6 +124,11 @@ async def _ensure_skill_ref(
     from app.services.ai_asset_adapters import project_workspace_flat_skill, project_workspace_skill
     from app.services.config_versioning import canonical_content_hash
 
+    # This reserved native namespace is admitted only by the source-bound review commit.
+    # A runtime read must not create an installation or overwrite its lifecycle metadata.
+    if consumption.folder_name and consumption.folder_name.startswith("learned-"):
+        return await ai_assets.resolve_asset_ref(db, tenant_id=tenant_id, asset_type="skill", native_key=consumption.native_key)
+
     projection = (
         project_workspace_skill(
             workspace=workspace,
@@ -279,6 +284,9 @@ async def resolve_tool_asset_refs(
                     workspace=context.workspace,
                     consumption=consumption,
                 )
+                if native_ref is None and consumption.folder_name and consumption.folder_name.startswith("learned-"):
+                    # The native reader returns its source-aware unavailable result without admitting the file.
+                    return tuple(refs)
                 if consumption.native_key is not None and native_ref is None:
                     raise RuntimeError("resolved Skill has no immutable AI asset revision")
                 if native_ref is not None:

@@ -856,29 +856,37 @@ async def _commit_skill_with_asset_revision(
         compensate_agent_asset_transaction,
         finalize_agent_asset_transaction,
     )
-    from app.services.learned_skill_sources import recheck_review_effect
+    from app.services.learned_skill_sources import current_review, recheck_review_effect
+    from app.services.content_input_receipts import ContentInputReceiptError
 
     await recheck_review_effect(workspace=workspace, target_path=target_relative_path,
         rendered_markdown=rendered_markdown, source_candidate_id=source_candidate_id)
+    frame = current_review()
 
     with AgentAssetTransaction(
         workspace,
         operation="skill_distiller_native_commit",
         evidence_refs=(f"skill-candidate:{candidate_id}",) if candidate_id else (),
         requires_projection=tenant_id is not None,
+        idempotency_key=f"reviewed-skill:{frame.candidates[source_candidate_id]}" if source_candidate_id is not None else None,
     ) as transaction:
-        result = _commit_skill_markdown_exact(
-            workspace=workspace,
-            target_relative_path=target_relative_path,
-            rendered_markdown=rendered_markdown,
-            skill_name=skill_name,
-            overwrite=overwrite,
-            status=status,
-            candidate_id=candidate_id,
-            skill_origin=skill_origin,
-            transaction=transaction,
-            immutable_version=source_candidate_id is not None,
-        )
+        if transaction.is_replay:
+            if transaction.read_bytes(target_relative_path) != (rendered_markdown.rstrip() + "\n").encode():
+                raise ContentInputReceiptError("learned_skill_draft_changed", "Reconcile the exact retained native activation.", 403)
+            result = f"✅ retained exact skill draft at {target_relative_path}"
+        else:
+            result = _commit_skill_markdown_exact(
+                workspace=workspace,
+                target_relative_path=target_relative_path,
+                rendered_markdown=rendered_markdown,
+                skill_name=skill_name,
+                overwrite=overwrite,
+                status=status,
+                candidate_id=candidate_id,
+                skill_origin=skill_origin,
+                transaction=transaction,
+                immutable_version=source_candidate_id is not None,
+            )
         if "✅" not in result:
             return result
         receipt = transaction.commit()
@@ -898,14 +906,25 @@ async def _commit_skill_with_asset_revision(
             evolution_state=status,
             **source_kwargs,
         )
-    except Exception as exc:  # noqa: BLE001 - native file is compensated before surfacing failure
-        compensate_agent_asset_transaction(
-            workspace,
-            receipt,
-            reason=f"AI asset projection failed: {type(exc).__name__}: {exc}",
-        )
-        logger.exception("[SkillDistiller] asset revision failed; compensated %s", target_relative_path)
-        return f"❌ skill asset revision failed; native transaction compensated: {type(exc).__name__}: {exc}"
+    except Exception as exc:  # noqa: BLE001 - preserve unknown learned effects; legacy compensation remains local
+        if source_candidate_id is not None:
+            from app.services.reviewed_skill_activation import confirm_reviewed_installation
+
+            confirmed = await confirm_reviewed_installation(frame=frame, workspace=workspace,
+                candidate_id=source_candidate_id, target_path=target_relative_path)
+            if not confirmed:
+                error = ContentInputReceiptError("learned_skill_projection_pending",
+                    "Inspect the retained reviewed draft and retry its exact activation arguments; native work must not be regenerated.", 503)
+                error.native_transaction_id = receipt.transaction_id
+                raise error from exc
+        else:
+            compensate_agent_asset_transaction(
+                workspace,
+                receipt,
+                reason=f"AI asset projection failed: {type(exc).__name__}: {exc}",
+            )
+            logger.exception("[SkillDistiller] asset revision failed; compensated %s", target_relative_path)
+            return f"❌ skill asset revision failed; native transaction compensated: {type(exc).__name__}: {exc}"
     finalize_agent_asset_transaction(
         workspace,
         receipt,

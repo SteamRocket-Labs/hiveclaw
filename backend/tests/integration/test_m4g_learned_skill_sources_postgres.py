@@ -123,15 +123,202 @@ async def learned_skill(shared_memory, app_user_sessionmaker, owner_sessionmaker
     monkeypatch.setattr("app.services.skill_distiller._draft_skill_with_llm", review_draft)
     monkeypatch.setattr("app.services.skill_distiller._run_skill_artifact_gate", _passing_artifact_gate)
     monkeypatch.setattr("app.services.skill_distiller._review_skill_with_llm", _approving_referee_review)
+    if mode in {"approval_hold", "guard_approval_hold"}:
+        async def require_final_approval(**kwargs):
+            from sqlalchemy import select
+            from app.models.guard_policy import GuardPolicy
+
+            review = await _approving_referee_review(**kwargs)
+            await n.service.governance_resolver.build_dependencies().load_guard_policy(n.tenant, n.agent, "inspect_reviewed_skill")
+            async with owner_sessionmaker() as db:
+                if mode == "guard_approval_hold":
+                    db.add(GuardPolicy(tenant_id=n.tenant, zone_guard={"tool_rules": [
+                        {"tools": ["save_skill"], "decision": "require_approval"}]}))
+                else:
+                    policy = await db.scalar(select(CapabilityPolicy).where(CapabilityPolicy.tenant_id == n.tenant,
+                        CapabilityPolicy.capability == "agent.skill.write"))
+                    policy.requires_approval = True
+                await db.commit()
+            return review
+
+        monkeypatch.setattr("app.services.skill_distiller._review_skill_with_llm", require_final_approval)
+    if mode == "post_gate_mutation":
+        from app.services.skill_distiller import _run_skill_referee_gate
+
+        async def mutate_after_gate(**kwargs):
+            result = await _run_skill_referee_gate(**kwargs)
+            assert result[1] is None, result
+            path = n.root / "evolution/skill_candidates" / kwargs["candidate_id"] / "SKILL.md.draft"
+            path.write_bytes(path.read_bytes() + b"\nUNREVIEWED_POST_GATE_BYTES\n")
+            return result
+
+        monkeypatch.setattr("app.services.skill_distiller._run_skill_referee_gate", mutate_after_gate)
+    before = sorted(path.relative_to(n.root).as_posix() for path in (n.root / "skills").rglob("SKILL.md"))
     outcome = await run_skill_distillation_cycle(agent_id=n.agent, workspace=n.root, tenant_id=n.tenant,
         current_session_id=str(n.session), runtime_config=SimpleNamespace(skill_candidate_loop_enabled=True),
         model=SimpleNamespace(provider="reference", model="controlled-skill-writer", api_key="synthetic", base_url=None))
+    if mode in {"approval_hold", "guard_approval_hold"}:
+        assert outcome["status"] == "approval_required" and outcome["reason"] == "learned_skill_activation_approval_required", outcome
+        assert sorted(path.relative_to(n.root).as_posix() for path in (n.root / "skills").rglob("SKILL.md")) == before
+        n.reviewed_markdown = body.rstrip() + "\n"
+        return s, invocation
+    if mode == "post_gate_mutation":
+        assert outcome["status"] == "held" and outcome["reason"] == "learned_skill_draft_changed", outcome
+        assert sorted(path.relative_to(n.root).as_posix() for path in (n.root / "skills").rglob("SKILL.md")) == before
+        return s, invocation
     assert outcome["status"] == "provisional", outcome
     target = outcome["skill_path"]
     n.first_learned_skill_path = target
     assert target.startswith("skills/") and target.endswith("/SKILL.md"), outcome
     assert "EVIDENCE_METHOD_VERSION_ONE" in (n.root / target).read_text()
     return s, invocation
+
+
+@pytest.mark.parametrize("learned_skill", ["post_gate_mutation"], indirect=True)
+async def test_reviewed_activation_cannot_relabel_bytes_changed_after_the_gates_as_approved(
+    learned_skill, app_user_sessionmaker,
+):
+    import json
+    from tests.integration.test_m4c_explicit_memory_scope_postgres import memory_call
+
+    s, _submission = learned_skill
+    listed, _invocation = await memory_call(s.n, app_user_sessionmaker, "inspect_reviewed_skill", {})
+    assert json.loads(listed)["candidates"] == [], listed
+
+
+@pytest.mark.parametrize("learned_skill,mutation", [("approval_hold", "none"), ("guard_approval_hold", "none"),
+    ("approval_hold", "draft_changed"), ("approval_hold", "source_withdrawn"),
+    ("approval_hold", "policy_changed"), ("approval_hold", "arguments_changed")], indirect=["learned_skill"])
+async def test_approved_reviewed_skill_continues_the_exact_draft_without_another_model_review(
+    learned_skill, app_user_sessionmaker, owner_sessionmaker, monkeypatch, mutation,
+):
+    import json
+    from sqlalchemy import select
+    from app.models.audit import ApprovalRequest
+    from app.models.capability_policy import CapabilityPolicy
+    from app.models.chat_session import ChatSession
+    from app.models.config_revision import ConfigRevision
+    from app.models.user import User
+    from app.services.approval_service import approval_service
+    from app.services.approval_execution_runtime import execute_claimed_approval_execution
+    from app.services.agent_asset_transaction import read_agent_asset_revision
+    from app.services.runtime_task_claim_service import RuntimeTaskClaimService
+    from app.services.runtime_task_fence import run_claimed_runtime_task
+    from tests.integration.test_m4c_explicit_memory_scope_postgres import memory_call, new_owner_work
+    from uuid import UUID
+
+    s, _submission = learned_skill
+    n = s.n
+    work_session, work_run = await new_owner_work(n, owner_sessionmaker)
+    work = {"session": work_session, "run": work_run}
+    async def no_more_review(**_kwargs):
+        raise AssertionError("Approved activation must not regenerate or review the frozen draft")
+    monkeypatch.setattr("app.services.skill_distiller._draft_skill_with_llm", no_more_review)
+    monkeypatch.setattr("app.services.skill_distiller._review_skill_with_llm", no_more_review)
+    listed, _invocation = await memory_call(n, app_user_sessionmaker, "inspect_reviewed_skill", {}, include_history=True, **work)
+    listing = json.loads(listed)
+    assert listing["status"] == "ok" and len(listing["candidates"]) == 1, listing
+    revision = listing["candidates"][0]["reviewed_revision_id"]
+    inspected, _invocation = await memory_call(n, app_user_sessionmaker, "inspect_reviewed_skill",
+        {"reviewed_revision_id": revision}, include_history=True, **work)
+    arguments = json.loads(inspected)["activation_arguments"]
+    assert arguments["reviewed_revision_id"] == revision and arguments["instructions"] == n.reviewed_markdown
+    if mutation == "arguments_changed":
+        arguments["instructions"] += "\nUnreviewed instructions must not be installed.\n"
+    waiting, _invocation = await memory_call(n, app_user_sessionmaker, "save_skill", arguments, include_history=True, **work)
+    assert "approval" in waiting.lower(), waiting
+    async with owner_sessionmaker() as db:
+        approvals = list(await db.scalars(select(ApprovalRequest).where(ApprovalRequest.tenant_id == n.tenant,
+            ApprovalRequest.tool_name == "save_skill")))
+        assert len(approvals) == 1, approvals
+        approval = approvals[0]
+        assert approval.normalized_arguments["reviewed_revision_id"] == revision
+        assert approval.normalized_arguments["instructions"] == arguments["instructions"] and approval.consumed_at is None
+        (await db.get(User, n.foreign)).role = "org_admin"
+        await db.commit()
+    async with tenant_scoped_session(n.tenant, session_factory=app_user_sessionmaker) as db:
+        reviewer = await db.get(User, n.foreign)
+        resolved = await approval_service.resolve_approval(db, approval.id, reviewer, "approve")
+        job = resolved.execution_task_id
+        await db.commit()
+    async with owner_sessionmaker() as db:
+        candidate = await db.get(ConfigRevision, UUID(revision))
+        frozen_hash, draft_path = candidate.content_hash, n.root / candidate.content["draft_path"]
+        if mutation == "draft_changed":
+            draft_path.write_bytes(draft_path.read_bytes() + b"\nUnreviewed file change.\n")
+        elif mutation == "source_withdrawn":
+            (await db.get(ChatSession, n.session)).user_id = n.foreign
+        elif mutation == "policy_changed":
+            policy = await db.scalar(select(CapabilityPolicy).where(CapabilityPolicy.tenant_id == n.tenant,
+                CapabilityPolicy.capability == "agent.skill.write"))
+            policy.allowed = False
+        await db.commit()
+    async with tenant_scoped_session(n.tenant, session_factory=app_user_sessionmaker) as db:
+        claims = await RuntimeTaskClaimService(db=db, worker_id="reviewed-skill-approval",
+            task_types=("approval_execution",)).claim_available()
+    assert [claim.id for claim in claims] == [job]
+    result = await run_claimed_runtime_task(execute_claimed_approval_execution(job), task_id=job,
+        claim_version=claims[0].claim_version, worker_id="reviewed-skill-approval", lease_seconds=180)
+    n.first_learned_skill_path = f"skills/{arguments['folder_name']}/SKILL.md"
+    if mutation != "none":
+        assert result == ("needs_reapproval" if mutation == "policy_changed" else "failed"), result
+        assert not (n.root / n.first_learned_skill_path).exists()
+        async with owner_sessionmaker() as db:
+            retained = await db.get(ConfigRevision, UUID(revision))
+            assert retained.content_hash == frozen_hash and retained.is_active
+            if mutation == "draft_changed":
+                draft_path.write_bytes(n.reviewed_markdown.encode())
+            elif mutation == "source_withdrawn":
+                (await db.get(ChatSession, n.session)).user_id = n.user
+            elif mutation == "policy_changed":
+                policy = await db.scalar(select(CapabilityPolicy).where(CapabilityPolicy.tenant_id == n.tenant,
+                    CapabilityPolicy.capability == "agent.skill.write"))
+                policy.allowed = True
+            await db.commit()
+        recovered, _invocation = await memory_call(n, app_user_sessionmaker, "inspect_reviewed_skill",
+            {"reviewed_revision_id": revision}, **work)
+        assert json.loads(recovered)["status"] == "pending", recovered
+        assert json.loads(recovered)["activation_arguments"]["instructions"] == n.reviewed_markdown
+        return
+    assert result == "succeeded", result
+    assert (n.root / n.first_learned_skill_path).read_bytes() == n.reviewed_markdown.encode()
+    payload = await _assert_native_asset_state(n, app_user_sessionmaker, evolution_state="provisional", lifecycle_status="active")
+    assert payload["active_revision"]["version"] == 1
+    from app.services.ai_assets import backfill_file_native_assets
+
+    async with tenant_scoped_session(n.tenant, session_factory=app_user_sessionmaker) as db:
+        await backfill_file_native_assets(db, tenant_id=n.tenant, data_root=n.root.parent, apply=True, actor_user_id=n.user)
+    after_backfill = await _assert_native_asset_state(n, app_user_sessionmaker, evolution_state="provisional", lifecycle_status="active")
+    assert after_backfill["active_revision"]["id"] == payload["active_revision"]["id"]
+    native_revision = read_agent_asset_revision(n.root)
+    assert await execute_claimed_approval_execution(job) == "succeeded"
+    assert read_agent_asset_revision(n.root) == native_revision
+    async with tenant_scoped_session(n.tenant, session_factory=app_user_sessionmaker) as db:
+        consumed = await db.get(ApprovalRequest, approval.id, populate_existing=True)
+        assert consumed.consumed_at is not None and consumed.execution_status == "succeeded", consumed.execution_result
+
+
+@pytest.mark.parametrize("learned_skill", ["approval_hold"], indirect=True)
+async def test_reviewed_skill_inspection_cannot_borrow_another_administrators_source_authority(
+    learned_skill, app_user_sessionmaker, owner_sessionmaker,
+):
+    import json
+    from app.models.user import User
+    from tests.integration.test_m4c_explicit_memory_scope_postgres import memory_call
+
+    s, _submission = learned_skill
+    n = s.n
+    listed, _invocation = await memory_call(n, app_user_sessionmaker, "inspect_reviewed_skill", {})
+    revision = json.loads(listed)["candidates"][0]["reviewed_revision_id"]
+    async with owner_sessionmaker() as db:
+        (await db.get(User, n.foreign)).role = "org_admin"
+        await db.commit()
+    reader = {"user": n.foreign, "session": s.second_session, "run": s.second_run}
+    listed, _invocation = await memory_call(n, app_user_sessionmaker, "inspect_reviewed_skill", {}, **reader)
+    assert json.loads(listed)["candidates"] == [], listed
+    refused, _invocation = await memory_call(n, app_user_sessionmaker, "inspect_reviewed_skill",
+        {"reviewed_revision_id": revision}, **reader)
+    assert "learned_skill_review_denied" in refused and "EVIDENCE_METHOD_VERSION_ONE" not in refused, refused
 
 
 @pytest.mark.parametrize("learned_skill", ["crlf"], indirect=True)
@@ -147,6 +334,82 @@ async def test_learned_package_projection_preserves_reviewed_line_endings(
     assert response.status_code == 200, response.text
     files = response.json()["content"]["files"]
     assert next(file["content"].encode() for file in files if file["path"] == "SKILL.md") == body
+
+
+@pytest.mark.parametrize("failure", ["before_commit", "after_commit"])
+@pytest.mark.parametrize("learned_skill", ["approval_hold"], indirect=True)
+async def test_reviewed_activation_reconciles_projection_commit_loss_without_replaying_native_work(
+    learned_skill, app_user_sessionmaker, owner_sessionmaker, monkeypatch, failure,
+):
+    import json
+    from contextlib import asynccontextmanager
+    from unittest.mock import patch
+    from sqlalchemy import select
+    from app import database
+    from app.models.capability_policy import CapabilityPolicy
+    from app.services import ai_assets
+    from app.services.agent_asset_transaction import read_agent_asset_revision
+    from tests.integration.test_m4c_explicit_memory_scope_postgres import memory_call
+
+    s, _submission = learned_skill
+    n = s.n
+    # This independent recovery probe uses the normal policy-allowed activation configuration.
+    async with owner_sessionmaker() as db:
+        policy = await db.scalar(select(CapabilityPolicy).where(CapabilityPolicy.tenant_id == n.tenant,
+            CapabilityPolicy.capability == "agent.skill.write"))
+        policy.requires_approval = False
+        await db.commit()
+    listed, _invocation = await memory_call(n, app_user_sessionmaker, "inspect_reviewed_skill", {}, include_history=True)
+    revision = json.loads(listed)["candidates"][0]["reviewed_revision_id"]
+    inspected, _invocation = await memory_call(n, app_user_sessionmaker, "inspect_reviewed_skill",
+        {"reviewed_revision_id": revision}, include_history=True)
+    arguments = json.loads(inspected)["activation_arguments"]
+    original_register, original_scope, faults = ai_assets.register_evolved_workspace_skill_asset, database.tenant_scoped_session, []
+
+    @asynccontextmanager
+    async def faulty_scope(*args, **kwargs):
+        async with original_scope(*args, **kwargs) as db:
+            if kwargs.get("source") == "workspace_skill_asset":
+                commit = db.commit
+                async def fault_commit():
+                    if not faults and failure == "before_commit":
+                        faults.append(failure)
+                        raise OSError("Controlled interrupted reviewed Skill projection commit")
+                    await commit()
+                    if not faults and failure == "after_commit":
+                        faults.append(failure)
+                        raise OSError("Controlled committed reviewed Skill projection response loss")
+                monkeypatch.setattr(db, "commit", fault_commit)
+            yield db
+
+    async def faulty_register(**kwargs):
+        with patch.object(database, "tenant_scoped_session", faulty_scope):
+            return await original_register(**kwargs)
+    async def no_more_review(**_kwargs):
+        raise AssertionError("Projection recovery cannot rerun a reviewed semantic decision")
+    monkeypatch.setattr(ai_assets, "register_evolved_workspace_skill_asset", faulty_register)
+    monkeypatch.setattr("app.services.skill_distiller._draft_skill_with_llm", no_more_review)
+    monkeypatch.setattr("app.services.skill_distiller._review_skill_with_llm", no_more_review)
+    first, _invocation = await memory_call(n, app_user_sessionmaker, "save_skill", arguments, include_history=True)
+    assert faults == [failure], first
+    path = f"skills/{arguments['folder_name']}/SKILL.md"
+    assert (n.root / path).is_file() and (n.root / path).read_bytes() == n.reviewed_markdown.encode(), first
+    native_revision = read_agent_asset_revision(n.root)
+    if failure == "before_commit":
+        assert "learned_skill_projection_pending" in first and '"outcome": "unknown"' in first, first
+        unavailable, _invocation = await memory_call(n, app_user_sessionmaker, "load_skill", {"name": "Evidence Review"})
+        assert "EVIDENCE_METHOD_VERSION_ONE" not in unavailable, unavailable
+        native_revision = read_agent_asset_revision(n.root)
+        second, _invocation = await memory_call(n, app_user_sessionmaker, "save_skill", arguments, include_history=True)
+        assert json.loads(second)["status"] == "provisional", second
+    else:
+        assert json.loads(first)["status"] == "provisional", first
+    repeated, _invocation = await memory_call(n, app_user_sessionmaker, "save_skill", arguments, include_history=True)
+    assert json.loads(repeated)["status"] == "already_installed", repeated
+    assert read_agent_asset_revision(n.root) == native_revision
+    n.first_learned_skill_path = path
+    payload = await _assert_native_asset_state(n, app_user_sessionmaker, evolution_state="provisional", lifecycle_status="active")
+    assert payload["active_revision"]["version"] == 1
 
 
 async def _seal_workflow_reply(n, session_factory, *, session, run, content):

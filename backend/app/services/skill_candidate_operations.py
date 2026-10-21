@@ -21,7 +21,7 @@ from app.services.learned_skill_sources import CANDIDATE_ENTITY, _candidate_enti
 from app.services.session_model_inputs import _model_dependencies, _stored_dependencies
 from app.services.session_tool_runtime import _sha256
 
-TOOLS = {"save_skill", "reconcile_skill_candidate"}
+TOOLS = {"save_skill", "reconcile_skill_candidate", "inspect_reviewed_skill"}
 
 
 class SkillCandidateOperationError(ContentInputReceiptError):
@@ -146,14 +146,19 @@ async def operation_error(request, error):
             operation_id = None
     status = getattr(error, "status_code", 503)
     code = getattr(error, "code", "learned_skill_operation_unknown")
-    approval_required = code == "learned_skill_recovery_approval_required"
+    approval_required = code in {"learned_skill_recovery_approval_required", "learned_skill_activation_approval_required", "explicit_memory_approval_required"}
+    reviewed_revision = request.arguments.get("reviewed_revision_id")
+    recovery_tool = "inspect_reviewed_skill" if reviewed_revision else "reconcile_skill_candidate"
     content = render_tool_error(tool_name=request.tool_name, provider="skill_candidate", http_status=status,
         error_class="approval_required" if approval_required else "auth_or_permission" if status == 403 else "provider_unavailable",
         message="The Skill candidate operation needs inspection or recovery.", retryable=status >= 500,
-        actionable_hint="Use reconcile_skill_candidate to inspect or retry the retained exact plan; do not regenerate the method.",
+        actionable_hint=("Inspect the reviewed revision with inspect_reviewed_skill and retry its exact save_skill activation arguments."
+            if reviewed_revision else "Use reconcile_skill_candidate to inspect or retry the retained exact plan; do not regenerate the method."),
         extra={"reason_code": code,
             "outcome": "approval_required" if approval_required else "denied" if status == 403 else "unknown",
-            "recovery_tool": "reconcile_skill_candidate", "error_type": type(error).__name__,
+            "recovery_tool": recovery_tool, "error_type": type(error).__name__,
+            **({"reviewed_revision_id": reviewed_revision} if reviewed_revision else {}),
+            **({"native_transaction_id": error.native_transaction_id} if getattr(error, "native_transaction_id", None) else {}),
             **({"operation_id": str(operation_id)} if operation_id is not None else {})})
     try:
         return await _record_result(request, content)

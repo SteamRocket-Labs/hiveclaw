@@ -58,6 +58,7 @@ _STATIC_SAFE_TOOLS = {
     "read_project_resource",
     "read_mcp_resource",
     "load_skill",
+    "inspect_reviewed_skill",
     "search_clawhub",
     "tool_search",
     "web_fetch",

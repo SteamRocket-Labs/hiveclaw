@@ -37,6 +37,7 @@ class SkillReviewInputs:
     dependencies: list = field(default_factory=list)
     skill_capture: object | None = None
     source_scope: tuple = ()
+    activation_request: object | None = None
 
 
 def model_source(result):
@@ -89,6 +90,8 @@ async def recheck_review_effect(*, workspace, target_path, rendered_markdown, so
 
     frame = current_review()
     if frame is None:
+        if source_candidate_id is not None:
+            raise ContentInputReceiptError("skill_review_sources_unavailable", "Restore the exact reviewed source frame.", 503)
         return
     from app.services.approval_ticket import build_live_approval_policy_snapshot
     from app.tools.guard_policy import evaluate_guard_policy
@@ -107,14 +110,22 @@ async def recheck_review_effect(*, workspace, target_path, rendered_markdown, so
             raise ContentInputReceiptError("learned_skill_employee_inactive", "Restore current employee authority before activation.", 403)
         live = await build_live_approval_policy_snapshot(db=db, tenant_id=frame.tenant_id,
             agent_id=frame.agent_id, tool_name="save_skill")
-        verdict = evaluate_guard_policy(tool_name="save_skill", arguments={"name": c["requested_folder"],
-            "folder_name": c["folder_name"], "instructions": rendered_markdown, "overwrite": False},
+        arguments = {"name": c["requested_folder"], "folder_name": c["folder_name"],
+            "instructions": rendered_markdown, "overwrite": False}
+        if c.get("activation"):
+            from app.services.reviewed_skill_activation import activation_arguments
+
+            arguments = activation_arguments(_row, workspace=workspace)
+        verdict = evaluate_guard_policy(tool_name="save_skill", arguments=arguments,
             external_visible=False, snapshot=live["guard_policy"])
         if live["capability"]["denied"] or verdict.decision == "deny":
             raise ContentInputReceiptError("learned_skill_activation_denied", "Current policy denies Skill activation.", 403)
         if (live["capability"]["policy_found"] and live["capability"]["escalate_to_l3"]) or verdict.decision == "require_approval":
-            raise ContentInputReceiptError("learned_skill_activation_approval_required",
-                "Approve the exact reviewed Skill before activation; the submission approval is not reusable.", 409)
+            from app.services.reviewed_skill_activation import approved_activation
+
+            if not approved_activation(frame.activation_request, arguments=arguments, policy=live):
+                raise ContentInputReceiptError("learned_skill_activation_approval_required",
+                    "Approve the exact reviewed Skill before activation; the submission approval is not reusable.", 409)
 
 
 def observe_review_skill(skill):
@@ -661,7 +672,8 @@ async def review_draft_target(*, workspace, gate_candidate_id, draft, source_can
     return candidate_id, folder, authority, slug
 
 
-async def bind_reviewed_draft(*, workspace, gate_candidate_id, draft, source_candidate_id=None):
+async def bind_reviewed_draft(*, workspace, gate_candidate_id, draft, source_candidate_id=None,
+    gate_metadata=None, skill_origin=None):
     """Pin the complete review inputs before the native installation effect."""
     import hashlib
 
@@ -674,12 +686,23 @@ async def bind_reviewed_draft(*, workspace, gate_candidate_id, draft, source_can
     candidate_id, folder, authority, slug = await review_draft_target(workspace=workspace,
         gate_candidate_id=gate_candidate_id, draft=draft, source_candidate_id=source_candidate_id)
     path = f"evolution/skill_candidates/{gate_candidate_id}/SKILL.md.draft"
-    digest = hashlib.sha256((Path(workspace) / path).read_bytes()).hexdigest()
+    from app.services.workspace_resource_authority import open_workspace_file
+
+    with open_workspace_file(Path(workspace), path) as source:
+        body = source.read()
+    if body != (draft.skill_markdown.strip().rstrip() + "\n").encode():
+        raise ContentInputReceiptError("learned_skill_draft_changed",
+            "Restore the exact draft which passed the gates before capturing an activation review.", 403)
+    digest = hashlib.sha256(body).hexdigest()
     content = {"schema": CANDIDATE_SCHEMA, "origin_kind": "distillation", "agent_id": str(frame.agent_id),
         "candidate_id": candidate_id, "source_principal": frame.reader.evidence(), "authority": authority,
         "dependencies": dependencies, "requested_folder": slug, "folder_name": folder, "draft_path": path, "draft_sha256": digest,
         "family_id": str(_family(frame.agent_id, authority, slug)),
         "submitted_candidate_revision_id": str(frame.candidates[source_candidate_id]) if source_candidate_id in frame.candidates else None}
+    if gate_metadata is not None:
+        content["activation"] = {"schema": "hive.reviewed_skill_activation.v1", "name": draft.name,
+            "description": draft.description, "tools": list(draft.declared_tools), "packs": list(draft.declared_packs),
+            "skill_origin": skill_origin, "gates": deepcopy(gate_metadata)}
     async with tenant_scoped_session(frame.tenant_id) as db:
         row = await save_revision(db, tenant_id=frame.tenant_id, entity_type=CANDIDATE_ENTITY,
             entity_id=_candidate_entity(frame.agent_id, candidate_id), content=content, change_source="evolve",

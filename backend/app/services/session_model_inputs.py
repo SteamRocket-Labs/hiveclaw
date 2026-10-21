@@ -432,7 +432,7 @@ async def _origin_dependencies(db, *, tenant_id, agent_id, ref):
         "source_version": payload["content_hash"]}]
     from app.services.explicit_memory_tool_sources import MEMORY_RESULT_TOOLS, memory_result_sources
 
-    if invocation.tool_name in {"save_skill", "reconcile_skill_candidate"}:
+    if invocation.tool_name in {"save_skill", "reconcile_skill_candidate", "inspect_reviewed_skill"}:
         from app.services.learned_skill_sources import candidate_result_sources
         from app.services.skill_candidate_operations import operation_result_sources
 

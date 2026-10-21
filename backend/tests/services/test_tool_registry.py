@@ -90,6 +90,7 @@ def test_minimal_kernel_tool_set_stays_small_and_explicit():
         "run_skill_tool",
         "save_skill",
         "reconcile_skill_candidate",
+        "inspect_reviewed_skill",
         "search_memory",
         "load_memory",
         "save_memory",

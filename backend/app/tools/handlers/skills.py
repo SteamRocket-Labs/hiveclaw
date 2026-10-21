@@ -142,7 +142,9 @@ async def run_skill_tool(workspace: Path, arguments: dict, tenant_id: str | None
             "A one-off task needs neither: track_todo is enough. This tool does "
             "not create an active skill directly; it writes an inactive Skill Candidate Package under "
             "`evolution/skill_candidates/<candidate_id>/` for SkillGuard + behavior eval + regression review. "
-            "Promotion is reviewed, never self-approved.\n\n"
+            "Promotion is reviewed, never self-approved. When inspect_reviewed_skill returns activation_arguments, "
+            "pass those exact arguments with reviewed_revision_id to install that already reviewed draft; "
+            "this does not generate a replacement or reuse the submission approval.\n\n"
             "Usage:\n"
             "- Only use this after an approach has succeeded repeatedly and the steps, decision rules, and verification pattern are stable.\n"
             "- Save durable, reusable capsule instructions that will help future runs of a similar task.\n"
@@ -154,6 +156,8 @@ async def run_skill_tool(workspace: Path, arguments: dict, tenant_id: str | None
         parameters={
             "type": "object",
             "properties": {
+                "reviewed_revision_id": {"type": "string",
+                    "description": "Exact reviewed revision returned by inspect_reviewed_skill. In this mode copy its complete activation_arguments unchanged."},
                 "name": {
                     "type": "string",
                     "description": "Display name for the skill, e.g. 'Deployment Review' or 'Market Research'.",
@@ -243,6 +247,10 @@ async def save_skill(agent_id: uuid.UUID, workspace: Path, arguments: dict, *, e
 
         request = ToolExecutionRequest("save_skill", arguments, execution_context)
         try:
+            if arguments.get("reviewed_revision_id"):
+                from app.services.reviewed_skill_activation import activate_reviewed_skill
+
+                return await activate_reviewed_skill(request, workspace=workspace)
             return await submit_candidate(request, workspace=workspace, producer=_submit_skill_activation_candidate)
         except Exception as exc:
             return await operation_error(request, exc)
@@ -258,6 +266,27 @@ async def save_skill(agent_id: uuid.UUID, workspace: Path, arguments: dict, *, e
         folder_name=arguments.get("folder_name"),
         overwrite=bool(arguments.get("overwrite", False)),
     )
+
+
+@tool(ToolMeta(name="inspect_reviewed_skill",
+    description=("Inspect your current-source-authorized reviewed Skill drafts without requesting write approval. "
+        "Omit reviewed_revision_id to list references, then supply one to read its exact body, gate evidence and "
+        "activation_arguments. Copy those arguments unchanged into save_skill to continue that same reviewed version."),
+    parameters={"type": "object", "properties": {"reviewed_revision_id": {"type": "string"}}, "additionalProperties": False},
+    category="skills", display_name="Inspect Reviewed Skill", icon="\U0001f4da", adapter="agent_workspace_args",
+    read_only=True, parallel_safe=True, max_result_chars=RESULT_CHARS_UNLIMITED))
+async def inspect_reviewed_skill(agent_id: uuid.UUID, workspace: Path, arguments: dict, *, execution_context=None) -> str:
+    from app.services.reviewed_skill_activation import inspect_reviewed_skill as inspect
+    from app.services.skill_candidate_operations import operation_error
+    from app.tools.runtime import ToolExecutionRequest
+
+    if execution_context is None:
+        return "[Unavailable] A current authenticated work context is required for reviewed Skill inspection."
+    request = ToolExecutionRequest("inspect_reviewed_skill", arguments, execution_context)
+    try:
+        return await inspect(request, workspace=workspace)
+    except Exception as exc:
+        return await operation_error(request, exc)
 
 
 @tool(ToolMeta(name="reconcile_skill_candidate",

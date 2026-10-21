@@ -50,6 +50,7 @@ async def test_tool_runtime_resolver_builds_execution_context(monkeypatch):
             "agent_id": agent_id,
             "user_id": user_id,
             "session_id": None,
+            "runtime_task_id": None,
         }
         return authority_scope
 

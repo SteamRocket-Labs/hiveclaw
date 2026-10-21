@@ -128,7 +128,8 @@ class ToolRuntimeResolver:
                 raise MachineRuntimeAuthorityDenied('Current machine authority is unavailable') from exc
         if machine_actor is None:
             workspace_authority_scope = await self.workspace_authority_loader(
-                tenant_id=tenant, agent_id=agent_id, user_id=user_id, session_id=session_uuid)
+                tenant_id=tenant, agent_id=agent_id, user_id=user_id, session_id=session_uuid,
+                runtime_task_id=runtime_task_id)
         try:
             exact_secret_boundary = await self.secret_boundary_loader(
                 tenant_id=tenant,
@@ -237,6 +238,7 @@ async def _load_workspace_authority_scope(
     agent_id: uuid.UUID,
     user_id: uuid.UUID,
     session_id: uuid.UUID | None,
+    runtime_task_id: str | None = None,
 ):
     async with tenant_scoped_session(
         tenant_id,
@@ -261,7 +263,7 @@ async def _load_workspace_authority_scope(
             agent_id=agent_id,
             session_id=session_id,
             runtime_principal=AgentRuntimePrincipal(agent_id=agent_id, requester_user_id=user_id,
-                session_id=str(session_id) if session_id else None),
+                session_id=str(session_id) if session_id else None, runtime_task_id=runtime_task_id),
         )
         private_sessions = select(ChatSession.id).where(
             ChatSession.tenant_id == tenant_id, ChatSession.agent_id == agent_id, ChatSession.user_id == user_id,

@@ -175,6 +175,10 @@ class FilesystemBlobStore:
     async def put_verified(self, request: BlobPutRequest) -> BlobReceipt:
         return await asyncio.to_thread(self._put, request)
 
+    def put_verified_sync(self, request: BlobPutRequest) -> BlobReceipt:
+        """Use the same verified publication for synchronous snapshot producers."""
+        return self._put(request)
+
     async def stat(self, location: BlobLocation) -> BlobStat:
         return await asyncio.to_thread(self._stat, location)
 

@@ -21,6 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.chat_artifact import ChatArtifact
 from app.models.chat_session import ChatSession
+from app.services.chat_snapshot_store import PAYLOAD_SCHEMA, SNAPSHOT_DIRECTORY
 
 
 PLATFORM_ONLY_RUNTIME_SOURCES = {"rls_guard", "health_check", "ops_script", "migration"}
@@ -31,7 +32,7 @@ IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg"}
 PDF_EXTENSIONS = {".pdf"}
 OFFICE_EXTENSIONS = {".docx", ".xlsx", ".pptx", ".doc", ".xls", ".ppt"}
 TEXT_PREVIEW_SNAPSHOT_MAX_BYTES = 64 * 1024
-CHAT_ARTIFACT_SNAPSHOT_DIR = Path("runtime_artifacts") / "chat_artifact_snapshots"
+CHAT_ARTIFACT_SNAPSHOT_DIR = SNAPSHOT_DIRECTORY
 CHAT_ARTIFACT_PROVENANCE_INDEX = Path("runtime_artifacts") / "chat_artifact_provenance_index.json"
 CHAT_ARTIFACT_SNAPSHOT_GC_REPORT = Path("runtime_artifacts") / "chat_artifact_snapshot_gc.json"
 CHAT_ARTIFACT_PROVENANCE_ENTRY_LIMIT = 20
@@ -313,6 +314,21 @@ def cleanup_chat_artifact_snapshots(
     protected_runtime_task_ids: set[uuid.UUID] | None = None,
     retention_days: float = DEFAULT_CHAT_ARTIFACT_SNAPSHOT_RETENTION_DAYS,
     now: datetime | None = None,
+    referenced_pin_paths: set[str] | None = None,
+    uncertain_payload_references: bool = False,
+) -> dict[str, Any]:
+    from app.services.chat_snapshot_store import snapshot_store_lock
+
+    with snapshot_store_lock(workspace_root):
+        return _cleanup_chat_artifact_snapshots_locked(workspace_root=workspace_root,
+            referenced_snapshot_paths=referenced_snapshot_paths, protected_runtime_task_ids=protected_runtime_task_ids,
+            retention_days=retention_days, now=now, referenced_pin_paths=referenced_pin_paths or set(),
+            uncertain_payload_references=uncertain_payload_references)
+
+
+def _cleanup_chat_artifact_snapshots_locked(
+    *, workspace_root, referenced_snapshot_paths, protected_runtime_task_ids, retention_days, now,
+    referenced_pin_paths, uncertain_payload_references,
 ) -> dict[str, Any]:
     """Delete expired unreferenced delivery snapshots and write an audit report."""
     from app.services.workspace_resource_authority import _workspace_parent_descriptor
@@ -342,19 +358,49 @@ def cleanup_chat_artifact_snapshots(
     kept_active_count = 0
     kept_recent_count = 0
     kept_unsafe_count = 0
+    kept_uncertain_count = 0
+    kept_pin_count = 0
+    removed_payload_count = 0
+    manifest_errors = []
     pruned_empty_dirs = 0
     scanned_count = 0
     if snapshot_root.exists() or snapshot_root.is_symlink():
         # Anchor traversal and deletion to the same unaliased directory descriptors.
         scan_path = (CHAT_ARTIFACT_SNAPSHOT_DIR / ".gc-scan").as_posix()
         with _workspace_parent_descriptor(root, scan_path) as (snapshot_directory, _name):
+            from app.services.chat_snapshot_store import STORE_LOCK, is_shared_snapshot_path, snapshot_pin_holds
+
+            pins = snapshot_pin_holds(snapshot_directory, referenced_pin_paths=referenced_pin_paths,
+                protected_runs=protected_runtime_task_ids or set(), cutoff=cutoff)
+            manifest_errors = pins["errors"]
             for current, directories, files, directory in os.fwalk(".", topdown=False,
                 follow_symlinks=False, dir_fd=snapshot_directory):
                 for name in files:
+                    if current == "." and name == STORE_LOCK:
+                        continue
                     scanned_count += 1
                     rel_display = (CHAT_ARTIFACT_SNAPSHOT_DIR / current / name).as_posix()
                     if rel_display in referenced_paths:
                         kept_referenced_count += 1
+                        continue
+                    if rel_display in pins["invalid"]:
+                        kept_unsafe_count += 1
+                        continue
+                    if rel_display in pins["keep"] or rel_display in referenced_pin_paths:
+                        kept_pin_count += 1
+                        continue
+                    if rel_display in pins["active"]:
+                        kept_active_count += 1
+                        continue
+                    if rel_display in pins["recent"]:
+                        kept_recent_count += 1
+                        continue
+                    shared = is_shared_snapshot_path(rel_display)
+                    if (shared or name.endswith(".ref.json")) and uncertain_payload_references:
+                        kept_uncertain_count += int(shared)
+                        continue
+                    if shared and manifest_errors:
+                        kept_uncertain_count += 1
                         continue
                     parts = PurePosixPath(rel_display).parts[len(CHAT_ARTIFACT_SNAPSHOT_DIR.parts):]
                     try:
@@ -376,6 +422,7 @@ def cleanup_chat_artifact_snapshots(
                     except OSError:
                         continue
                     removed_paths.append(rel_display)
+                    removed_payload_count += int(shared)
                     removed_bytes += info.st_size
                 for name in directories:
                     try:
@@ -401,6 +448,10 @@ def cleanup_chat_artifact_snapshots(
         "kept_active_count": kept_active_count,
         "kept_recent_count": kept_recent_count,
         "kept_unsafe_count": kept_unsafe_count,
+        "kept_uncertain_count": kept_uncertain_count,
+        "kept_pin_count": kept_pin_count,
+        "removed_payload_count": removed_payload_count,
+        "manifest_errors": manifest_errors[:20],
         "pruned_empty_dirs": pruned_empty_dirs,
     }
     _write_snapshot_gc_report(root, report)
@@ -450,17 +501,29 @@ async def cleanup_chat_artifact_snapshots_for_agent(
     artifact_rows = result.all()
     live_artifact_ids = {str(artifact_id) for artifact_id, _snapshot in artifact_rows}
     referenced_paths: list[str] = []
+    referenced_pins: set[str] = set()
+    uncertain_payload_references = False
     for _artifact_id, snapshot in artifact_rows:
         if isinstance(snapshot, dict):
             storage_path = str(snapshot.get("snapshot_storage_path") or "").strip()
             if storage_path:
                 referenced_paths.append(storage_path)
+            if snapshot.get("snapshot_payload_schema") == PAYLOAD_SCHEMA:
+                from app.services.chat_snapshot_store import is_shared_snapshot_path
+
+                reference = str(snapshot.get("snapshot_ref_path") or "")
+                if not is_shared_snapshot_path(storage_path) or _safe_snapshot_relative_path(reference) is None or not reference.endswith(".ref.json"):
+                    uncertain_payload_references = True
+                else:
+                    referenced_pins.add(reference)
     report = cleanup_chat_artifact_snapshots(
         workspace_root=workspace_root,
         referenced_snapshot_paths=referenced_paths,
         protected_runtime_task_ids=protected_runs,
         retention_days=retention_days,
         now=now,
+        referenced_pin_paths=referenced_pins,
+        uncertain_payload_references=uncertain_payload_references,
     )
     report["office_preview_cache_removed_count"] = _cleanup_orphaned_office_preview_caches(
         workspace_root=workspace_root,
@@ -508,25 +571,18 @@ def _write_content_snapshot(
     snapshot_hash: str,
     rel_path: PurePosixPath,
     content_hash: str,
-) -> str:
-    storage_rel = _snapshot_storage_rel_path(
-        session_id=session_id,
-        runtime_task_id=runtime_task_id,
-        snapshot_hash=snapshot_hash,
-        rel_path=rel_path,
-    )
-    from app.services.workspace_resource_authority import WorkspaceAuthorityError, open_workspace_file
+) -> tuple[str, str | None]:
+    from app.services.chat_snapshot_store import publish_snapshot
+    from app.services.blob_store import BlobIntegrityError, BlobStoreError
+    from app.services.workspace_resource_authority import WorkspaceAuthorityError
 
     try:
-        with open_workspace_file(workspace_root, storage_rel.as_posix(), mode="xb") as target, source_path.open("rb") as source:
-            shutil.copyfileobj(source, target)
-    except WorkspaceAuthorityError as exc:
-        if not isinstance(exc.__cause__, FileExistsError):
-            raise
-        with open_workspace_file(workspace_root, storage_rel.as_posix()) as existing:
-            if hashlib.file_digest(existing, "sha256").hexdigest() != content_hash:
-                raise WorkspaceAuthorityError("workspace_resource_changed", "The immutable artifact snapshot changed; regenerate the delivery before retrying.") from exc
-    return storage_rel.as_posix()
+        return publish_snapshot(root=workspace_root, source=source_path, session_id=session_id,
+            runtime_task_id=runtime_task_id, revision_id=snapshot_hash, artifact_path=rel_path, content_hash=content_hash)
+    except BlobIntegrityError as exc:
+        raise WorkspaceAuthorityError("workspace_resource_changed", "The immutable artifact snapshot changed; reconcile the stored version before retrying.") from exc
+    except (BlobStoreError, OSError) as exc:
+        raise WorkspaceAuthorityError("workspace_storage_unavailable", "Snapshot storage is unavailable; retry the request.") from exc
 
 
 def _read_preview_snapshot(path: Path, preview_kind: str) -> tuple[str | None, bool]:
@@ -747,7 +803,7 @@ def build_artifact_candidate(
             snapshot_hash = hashlib.sha256(f"{snapshot_hash}\ncontent-receipt:{source_receipt_id}".encode()).hexdigest()
         preview_kind = _preview_kind_for_path(rel)
         preview_snapshot_content, preview_snapshot_truncated = _read_preview_snapshot(captured, preview_kind)
-        snapshot_storage_path = _write_content_snapshot(
+        snapshot_storage_path, snapshot_ref_path = _write_content_snapshot(
             source_path=captured,
             workspace_root=root,
             session_id=session_id,
@@ -779,6 +835,8 @@ def build_artifact_candidate(
         "download_agent_id": download_agent,
         "delivery_agent_id": delivery_agent,
     }
+    if snapshot_ref_path is not None:
+        snapshot.update(snapshot_payload_schema=PAYLOAD_SCHEMA, snapshot_ref_path=snapshot_ref_path)
     if selection_model_result_id is not None:
         snapshot["selection_model_result_id"] = str(selection_model_result_id)
     if execution_evidence_ref is not None:
@@ -804,6 +862,7 @@ def build_artifact_candidate(
         "snapshot_hash": snapshot_hash,
         "content_hash": content_hash,
         "snapshot": snapshot,
+        **({"snapshot_payload_schema": snapshot["snapshot_payload_schema"]} if snapshot_ref_path is not None else {}),
         "preview_snapshot_content": preview_snapshot_content,
         "preview_snapshot_truncated": preview_snapshot_truncated if preview_snapshot_content is not None else None,
         "owner_agent_id": owner_agent,
@@ -869,6 +928,7 @@ def build_session_artifact_parts(
 
 def _artifact_part_from_candidate(candidate: dict[str, Any]) -> dict[str, Any]:
     return {
+        **({"snapshot_payload_schema": candidate["snapshot_payload_schema"]} if candidate.get("snapshot_payload_schema") else {}),
         "type": "artifact",
         "artifact_id": str(candidate.get("artifact_id") or candidate.get("id")),
         "path": candidate["path"],
@@ -896,6 +956,7 @@ def _artifact_part_from_candidate(candidate: dict[str, Any]) -> dict[str, Any]:
 def artifact_part_from_model(artifact: ChatArtifact) -> dict[str, Any]:
     snapshot = artifact.snapshot_json or {}
     return {
+        **({"snapshot_payload_schema": snapshot["snapshot_payload_schema"]} if snapshot.get("snapshot_payload_schema") else {}),
         "type": "artifact",
         "artifact_id": str(artifact.id),
         "path": artifact.path,

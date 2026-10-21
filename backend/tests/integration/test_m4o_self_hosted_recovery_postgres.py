@@ -15,12 +15,48 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 
+from tests.integration.conftest import app_user_engine, migrated_pg_url as _migrated_pg_url, pg_container as _pg_container  # noqa: F401
 from tests.integration.test_m1g22_artifact_versions_postgres import delivered  # noqa: F401
 from tests.scripts.test_self_hosted_installation import installer, unused_port, wait_ready, stop
 from tests.services.test_s3_blob_store import s3_server  # noqa: F401
 
 ROOT = Path(__file__).resolve().parents[3]
 pytestmark = pytest.mark.usefixtures("migrated_pg_url")
+
+
+@pytest.fixture
+def pg_container():
+    # Each recovery owns its source catalog, including intentional downgrades.
+    yield from _pg_container.__wrapped__()
+
+
+@pytest.fixture
+def migrated_pg_url(pg_container):
+    return _migrated_pg_url.__wrapped__(pg_container)
+
+
+@pytest.fixture(params=("legacy", "shared"))
+def snapshot_layout(request):
+    return request.param
+
+
+@pytest.fixture(autouse=True)
+def _snapshot_writer(snapshot_layout, monkeypatch):
+    if snapshot_layout != "legacy":
+        return
+    from app.services import chat_artifact_delivery as delivery
+    from app.services.blob_store import BlobLocation, BlobPutRequest, FilesystemBlobStore
+
+    def legacy_snapshot(**values):
+        relative = delivery._snapshot_storage_rel_path(session_id=values["session_id"],
+            runtime_task_id=values["runtime_task_id"], snapshot_hash=values["snapshot_hash"], rel_path=values["rel_path"])
+        source = values["source_path"]
+        FilesystemBlobStore(values["workspace_root"]).put_verified_sync(BlobPutRequest("fixture", "snapshot", "legacy",
+            BlobLocation("filesystem", relative.parts[0], Path(*relative.parts[1:]).as_posix()),
+            source, values["content_hash"], source.stat().st_size))
+        return relative.as_posix(), None
+
+    monkeypatch.setattr(delivery, "_write_content_snapshot", legacy_snapshot)
 
 
 @pytest.fixture
@@ -32,7 +68,7 @@ def tmp_path(tmp_path_factory):
 
 
 async def test_backup_restore_restarts_real_auth_files_approvals_and_encrypted_credentials(
-    delivered, owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, s3_server,  # noqa: F811
+    delivered, owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, s3_server, snapshot_layout,  # noqa: F811
 ):
     from app.core.security import hash_password
     from app.models.agent import Agent
@@ -161,7 +197,14 @@ async def test_backup_restore_restarts_real_auth_files_approvals_and_encrypted_c
         legacy_head = graph.get_revision(current_head).down_revision
         downgraded = subprocess.run([sys.executable, "-B", "-m", "alembic", "downgrade", legacy_head],
             cwd=ROOT / "backend", env={**grant_env, "DATABASE_URL": owner_url}, capture_output=True, timeout=30)
-        assert downgraded.returncode == 0, "The actual old catalog must preserve the authored work without bypassing downgrade checks"
+        if snapshot_layout == "legacy":
+            assert downgraded.returncode == 0, "The actual old catalog must preserve the authored work without bypassing downgrade checks"
+            expected_migrations = [current_head]
+        else:
+            assert downgraded.returncode != 0
+            assert b"chat_snapshot_payloads_require_recovery_before_downgrade" in downgraded.stderr
+            expected_migrations = []
+            assert d.first.snapshot_json["snapshot_payload_schema"] == "hive.chat_artifact_snapshot_payload.v1"
         assert s3_server.writes == 1 and not (tmp_path / ".storage_objects").exists()
         s3_server.mode = "corrupt"
         corrupt_path = work / "corrupt-object-refused"
@@ -257,15 +300,16 @@ async def test_backup_restore_restarts_real_auth_files_approvals_and_encrypted_c
         assert not plan_file.exists()
         drift.unlink()
         checked, checked_receipt = upgrade("preflight", *upgrade_args, "--output", plan_file)
-        assert checked.returncode == 0 and checked_receipt["migration_revisions"] == [current_head], checked_receipt
+        assert checked.returncode == 0 and checked_receipt["migration_revisions"] == expected_migrations, checked_receipt
         upgrade_receipt = work / "upgrade-receipt.json"
         applied, applied_receipt = upgrade("apply", *upgrade_args, "--plan", plan_file,
             "--plan-sha256", checked_receipt["plan_sha256"], "--receipt", upgrade_receipt)
         assert applied.returncode == 0 and applied_receipt["status"] == "prepared", applied_receipt
-        replay, replay_receipt = upgrade("apply", *upgrade_args, "--plan", plan_file,
-            "--plan-sha256", checked_receipt["plan_sha256"], "--receipt", work / "replayed-upgrade.json")
-        assert replay.returncode == 3 and replay_receipt["code"] == "upgrade_plan_stale", replay_receipt
-        assert not (work / "replayed-upgrade.json").exists()
+        if snapshot_layout == "legacy":
+            replay, replay_receipt = upgrade("apply", *upgrade_args, "--plan", plan_file,
+                "--plan-sha256", checked_receipt["plan_sha256"], "--receipt", work / "replayed-upgrade.json")
+            assert replay.returncode == 3 and replay_receipt["code"] == "upgrade_plan_stale", replay_receipt
+            assert not (work / "replayed-upgrade.json").exists()
         origin, process, log = await launch(target_database, target_agents, "restored")
         api_origin, _api_process, _api_log = await launch(target_database, target_agents, "restored-api", role="api")
         frontend_port = unused_port()
@@ -389,8 +433,9 @@ asyncio.run(check())
             "login": 200, "old_jwt": "accepted", "content_download_bytes": "AAAA", "other_member": 403,
             "approval_status": "pending", "credential_consumer": "decrypted", "runtime_role": "nonprivileged",
             "second_restore": "refused_nonempty", "provider_inference": "unverified",
-            "upgrade_from": legacy_head, "upgrade_to": current_head, "source_observation": observation,
-            "upgrade_drift": "refused", "upgrade_replay": "refused_stale_plan"}, indent=2))
+            "snapshot_layout": snapshot_layout, "upgrade_from": legacy_head if expected_migrations else current_head,
+            "upgrade_to": current_head, "source_observation": observation,
+            "upgrade_drift": "refused", "upgrade_replay": "refused_stale_plan" if expected_migrations else "not_applicable_no_migrations"}, indent=2))
     finally:
         failures = []
         if frontend is not None:

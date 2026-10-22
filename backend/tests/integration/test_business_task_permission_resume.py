@@ -2,6 +2,7 @@
 
 import json
 import uuid
+from contextlib import asynccontextmanager
 
 import pytest
 from sqlalchemy import select
@@ -23,6 +24,9 @@ pytestmark = pytest.mark.usefixtures('migrated_pg_url')
 async def test_business_permission_wait_resumes_the_original_run(
     original_api, provider, owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, decision, migrated_pg_url,  # noqa: F811
 ):
+    from app.config import get_settings
+
+    monkeypatch.setattr(get_settings(), 'PUBLIC_BASE_URL', 'https://work.synthetic.invalid')
     async def inspect_wait(**context):
         client, db_factory, seed = context['client'], context['db_factory'], context['seed']
         run_id, model = context['run_id'], context['model_client']
@@ -56,6 +60,7 @@ async def test_business_permission_wait_resumes_the_original_run(
         assert request['runtime_task_id'] == str(run_id) and request['session_id'] == child_id
         assert request['tool_name'] == 'fs_write'
         assert request['arguments']['path'] == 'workspace/business-report.md'
+        await _consume_waiting_permission_notice(context, permission_id, task.id)
         if decision == 'source_changed':
             soul = seed['agent_root'] / 'soul.md'
             original_soul = soul.read_bytes()
@@ -195,6 +200,40 @@ async def _claims(db):
 
     return await RuntimeTaskClaimService(db=db, worker_id='business-permission-resume',
         task_types=('business_task',)).claim_available(batch_size=10)
+
+
+async def _consume_waiting_permission_notice(context, permission_id, business_id):
+    from app.database import tenant_scoped_session
+    from app.models.channel_delivery_outbox import ChannelDeliveryOutbox
+    from app.services.channel_delivery_outbox import ChannelDeliveryOutboxService
+    from app.services.feishu_service import FeishuService
+
+    seed = context['seed']
+    async with context['db_factory']() as db:
+        await pin_rls_tenant_context(db, seed['tenant_id'])
+        notices = list(await db.scalars(select(ChannelDeliveryOutbox).where(
+            ChannelDeliveryOutbox.runtime_task_id == context['run_id'],
+            ChannelDeliveryOutbox.metadata_json['source'].astext == 'original_work_permission')))
+        assert len(notices) == 1 and notices[0].prompt_key == str(permission_id)
+        assert notices[0].session_id == seed['session_id'] and notices[0].user_id == seed['user_id']
+        expected = notices[0].text_content
+    sent = []
+    async def transport(_self, _app_id, _secret, recipient, message_type, content, **kwargs):
+        if json.loads(content)['text'] == expected:
+            sent.append((recipient, message_type, kwargs['receive_id_type']))
+        return {'data': {'message_id': 'synthetic-business-wait-permission'}}
+    context['monkeypatch'].setattr(FeishuService, 'send_message', transport)
+    service = ChannelDeliveryOutboxService(session_factory=context['db_factory'])
+    @asynccontextmanager
+    async def tenant_notice_session(_operation):
+        async with tenant_scoped_session(seed['tenant_id'], session_factory=context['db_factory']) as db:
+            yield db
+    context['monkeypatch'].setattr(service, '_worker_session', tenant_notice_session)
+    drained = await service.drain_once(worker_id='business-wait-permission')
+    assert sent == [('ou-business-owner', 'text', 'open_id')], drained
+    assert 'workspace/business-report.md' in expected and '此提示不代表任务完成' in expected
+    assert 'https://work.synthetic.invalid/agents/' in expected and f'task_id={business_id}#tasks' in expected
+    assert (await service.drain_once(worker_id='business-wait-permission-replay'))['claimed'] == 0
 
 
 async def _consume_notice(context):

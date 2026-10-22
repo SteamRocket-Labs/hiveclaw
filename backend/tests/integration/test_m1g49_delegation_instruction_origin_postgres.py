@@ -530,7 +530,54 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
             assert pending[0].result_event_id is None and len(client.requests) == 1
             permission_id = pending[0].permission_item_id
             invocation_id, permission_provider_id = pending[0].id, pending[0].provider_request_id
+            if first_task:
+                from app.models.channel_delivery_outbox import ChannelDeliveryOutbox
+
+                notices = list(await db.scalars(select(ChannelDeliveryOutbox).where(
+                    ChannelDeliveryOutbox.runtime_task_id == task_id,
+                    ChannelDeliveryOutbox.metadata_json["source"].astext == "original_work_permission")))
+                assert len(notices) == 1
+                assert notices[0].prompt_key == str(permission_id) and notices[0].delivery_kind == "interactive_prompt"
+                assert notices[0].session_id == seed["session_id"] and notices[0].user_id == seed["user_id"]
         assert not (seed["data_root"] / str(receiver) / report_path).exists()
+        if first_task:
+            from app.services.channel_delivery_outbox import ChannelDeliveryOutboxService, _claimed
+            from app.services.content_input_receipts import ContentInputReceiptError
+            from app.services.feishu_service import FeishuService
+
+            service = ChannelDeliveryOutboxService(session_factory=app_user_sessionmaker)
+            @asynccontextmanager
+            async def permission_notice_session(_operation):
+                from app.database import tenant_scoped_session
+
+                async with tenant_scoped_session(seed["tenant_id"], session_factory=app_user_sessionmaker) as scoped:
+                    yield scoped
+            monkeypatch.setattr(service, "_worker_session", permission_notice_session)
+            published = []
+            expected_text = notices[0].text_content
+            async def permission_transport(_self, _app_id, _secret, recipient, message_type, content, **kwargs):
+                text = json.loads(content)["text"]
+                if text == expected_text:
+                    published.append((recipient, message_type, kwargs["receive_id_type"], text))
+                return {"data": {"message_id": f"synthetic-permission-notice-{len(published)}"}}
+            monkeypatch.setattr(FeishuService, "send_message", permission_transport)
+            if decision == "allow":
+                claimed_notice = _claimed(notices[0])
+                async with app_user_sessionmaker() as db:
+                    await pin_rls_tenant_context(db, seed["tenant_id"])
+                    for corrupted in [replace(claimed_notice, text=claimed_notice.text + "\nUNATTESTED_BYTES"),
+                        replace(claimed_notice, delivery_target={**claimed_notice.delivery_target, "receive_id": "another-recipient"}),
+                        replace(claimed_notice, metadata={k: v for k, v in claimed_notice.metadata.items() if k != "source"}),
+                        replace(claimed_notice, metadata={**claimed_notice.metadata, "invocation_id": str(uuid4())})]:
+                        with pytest.raises(ContentInputReceiptError):
+                            await service._authorize_native_result_text(db, corrupted)
+                assert published == []
+            drained = await service.drain_once(worker_id="first-task-permission-notice")
+            assert len(published) == 1 and drained["delivered"] >= 1, drained
+            assert published[0][:3] == ("ou_creation_owner", "text", "open_id")
+            assert report_path in published[0][3] and "此提示不代表任务完成" in published[0][3]
+            assert f"https://hive.synthetic.test/agents/{seed['agent_id']}?session_id={seed['session_id']}#chat" in published[0][3]
+            assert (await service.drain_once(worker_id="first-task-permission-replay"))["claimed"] == 0
         if decision != "cancel":
             current = await orchestrator.check_async_delegation(task_id.hex, parent_agent_id=seed["agent_id"])
             assert current["status"] == "suspended", current

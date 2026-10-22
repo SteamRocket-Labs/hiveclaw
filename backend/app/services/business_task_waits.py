@@ -55,6 +55,9 @@ async def apply_business_task_permission_wait(db, *, task, run, pause):
     run.claimed_by = run.claim_expires_at = run.completed_at = None
     task.status, task.last_execution_status = 'doing', 'awaiting_permission'
     task.completed_at = task.last_error = task.last_result = None
+    from app.services.original_work_permission_notices import enqueue_original_work_permission_notices
+
+    await enqueue_original_work_permission_notices(db, run=run, model=model, invocations=pending)
     return True
 
 

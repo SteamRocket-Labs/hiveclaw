@@ -67,6 +67,9 @@ async def suspend_delegation_for_question(request, *, provider_request_id):
             task.claimed_by = task.claim_expires_at = task.completed_at = None
             await transition_runtime_root_item_by_task(db, runtime_task_id=task.id,
                 requested_state="suspended", reason_code="delegation_permission")
+            from app.services.original_work_permission_notices import enqueue_original_work_permission_notices
+
+            await enqueue_original_work_permission_notices(db, run=task, model=model, invocations=pending)
             await db.commit()
             return
         question = await db.scalar(select(ChatTranscriptEvent).join(

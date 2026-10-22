@@ -598,15 +598,30 @@ async def _record(db, task, state):
     from app.services.remote_a2a_withdrawal import refresh_summary
 
     await refresh_summary(db, task=task, state=state)
-    await db.commit()
     if state.get("dispatch_kind") == "session":
         from app.services.web_chat_runtime import broadcast_web_chat_event
         from app.services.chat_message_parts import build_done_event
-        from app.services.remote_a2a_chat import reply_text
+        from app.services.remote_a2a_chat import reply_text, validate_sources
+        from app.services.content_input_receipts import ContentInputReceiptError
+        from app.services.runtime_user_identity import load_scoped_runtime_user
 
-        event = build_done_event(reply_text(operation.get("observation") or {})) if task.status == "completed" else {
+        event = {
             "type": "run_updated", "status": task.status, "remote_state": state.get("remote_state"),
             "error_code": state.get("error_code")}
+        if task.status == "completed":
+            try:
+                # Journal maintenance may hold a bypass session; result consumption must not inherit it.
+                async with tenant_scoped_session(task.tenant_id) as reader_db:
+                    reader = await load_scoped_runtime_user(reader_db, task.root_user_id, tenant_id=task.tenant_id)
+                    if reader is None:
+                        raise HTTPException(403)
+                    await validate_sources(reader_db, task=task, state=state, for_effect=False, reader=reader)
+                event = build_done_event(reply_text(operation.get("observation") or {}))
+            except (ContentInputReceiptError, HTTPException):
+                event.update(content_status="source_unavailable",
+                    content_recovery_action="reconcile_instruction_sources")
+    await db.commit()
+    if state.get("dispatch_kind") == "session":
         await broadcast_web_chat_event(task.parent_agent_id, uuid.UUID(task.parent_session_id),
             {**event, "run_id": str(task.id), "execution_target": "remote_a2a"})
 

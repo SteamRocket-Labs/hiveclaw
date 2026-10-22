@@ -42,4 +42,87 @@ async def resolve_permission_reply(**kwargs):
     replay = await dispatch_channel_ingress_event(item)
     assert replay.get('permission_receipt') == receipt['permission_receipt'], replay
     assert await service._mark_processed(item=item, worker_id='permission-quote', receipt=receipt)
+    repeated_service, repeated_item = await claim_permission_reply(**kwargs)
+    repeated = await dispatch_channel_ingress_event(repeated_item)
+    assert repeated.get('permission_receipt') == receipt['permission_receipt'], repeated
+    assert await repeated_service._mark_processed(item=repeated_item, worker_id='permission-quote', receipt=repeated)
+    await assert_permission_response_notice(factory=kwargs['factory'], tenant_id=kwargs['tenant_id'],
+        notice_id=kwargs['notice_id'], receipt=receipt['permission_receipt'])
     return receipt
+
+
+async def assert_permission_response_notice(*, factory, tenant_id, notice_id, receipt):
+    from dataclasses import replace
+    from datetime import UTC, datetime
+    from unittest.mock import patch
+
+    import pytest
+    from sqlalchemy import select
+    from app.services.channel_delivery_outbox import ChannelDeliveryOutboxService, _claimed
+    from app.services.content_input_receipts import ContentInputReceiptError
+    from app.services.feishu_service import FeishuService
+
+    async with factory() as db:
+        await pin_rls_tenant_context(db, tenant_id)
+        original = await db.get(ChannelDeliveryOutbox, notice_id)
+        notices = list(await db.scalars(select(ChannelDeliveryOutbox).where(
+            ChannelDeliveryOutbox.runtime_task_id == original.runtime_task_id,
+            ChannelDeliveryOutbox.metadata_json['source'].astext == 'original_work_permission_response')))
+        assert len(notices) == 1, [(str(row.id), row.metadata_json) for row in notices]
+        notice = notices[0]
+        assert notice.session_id == original.session_id and notice.user_id == original.user_id
+        assert notice.delivery_target_json == original.delivery_target_json
+        assert notice.metadata_json['permission_receipt'] == receipt
+        assert '此提示不代表任务完成' in notice.text_content
+        assert str(original.agent_id) in notice.text_content
+        if receipt['status'] == 'needs_reconciliation':
+            assert '尚未确认' in notice.text_content and '不会自动重试' in notice.text_content
+        assert not any(value in notice.text_content for value in ('PRIVATE_BUSINESS_INPUT', 'DELEGATED_REPORT', 'UNATTESTED'))
+        saved = _claimed(notice)
+        service = ChannelDeliveryOutboxService(session_factory=factory)
+        for changed in (
+            replace(saved, text=saved.text + '\nUNATTESTED'),
+            replace(saved, delivery_target={**saved.delivery_target, 'receive_id': 'another-recipient'}),
+            replace(saved, metadata={k: v for k, v in saved.metadata.items() if k != 'source'}),
+            replace(saved, metadata={**saved.metadata, 'audit_event_id': str(uuid.uuid4())}),
+        ):
+            with pytest.raises(ContentInputReceiptError):
+                await service._authorize_native_result_text(db, changed)
+        from app.services.channel_delivery_service import ChannelDeliveryService
+
+        config = await ChannelDeliveryService._load_target_config(db, original.agent_id, original.channel, original.delivery_target_json)
+        original_app = config.app_id
+        try:
+            config.app_id = original_app + '-replaced'
+            await db.flush()
+            with pytest.raises(ContentInputReceiptError):
+                await service._authorize_native_result_text(db, saved)
+        finally:
+            config.app_id = original_app
+            await db.flush()
+        # Claim this exact acknowledgement without consuming the independent
+        # task-status notice queued by an uncertain native tool execution.
+        notice.status, notice.locked_by, notice.locked_at = 'processing', 'permission-response-notice', datetime.now(UTC)
+        notice.attempt_count += 1
+        await db.commit()
+        claimed = _claimed(notice)
+    @asynccontextmanager
+    async def scoped(_operation):
+        async with tenant_scoped_session(tenant_id, session_factory=factory) as db:
+            yield db
+    service._worker_session = scoped
+    sent = []
+    async def transport(_self, _app_id, _secret, recipient, message_type, content, **kwargs):
+        sent.append((recipient, message_type, json.loads(content)['text'], kwargs['receive_id_type']))
+        return {'data': {'message_id': 'synthetic-permission-response-notice'}}
+    with patch.object(FeishuService, 'send_message', transport):
+        delivered = await service._deliver(claimed, worker_id='permission-response-notice')
+        assert await service._mark_delivered(item_id=claimed.id, worker_id='permission-response-notice', receipt=delivered)
+        async with factory() as db:
+            await pin_rls_tenant_context(db, tenant_id)
+            current = await db.get(ChannelDeliveryOutbox, claimed.id)
+            assert current.status == 'delivered'
+            assert current.delivery_receipts_json['text']['detail']['provider_message_id'] == 'synthetic-permission-response-notice'
+            repeated = _claimed(current)
+        await service._deliver(repeated, worker_id='permission-response-notice')
+    assert sent == [(original.delivery_target_json['receive_id'], 'text', saved.text, 'open_id')]

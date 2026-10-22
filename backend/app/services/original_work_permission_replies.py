@@ -79,11 +79,15 @@ async def resolve_original_work_permission_reply(db, *, notice, run, session, us
     from app.database import pin_rls_tenant_context
 
     await pin_rls_tenant_context(db, run.tenant_id)
-    await write_audit_event(db, event_type='original_work.permission_response_via_channel', actor_type='user',
+    audit = await write_audit_event(db, event_type='original_work.permission_response_via_channel', actor_type='user',
         actor_id=user.id, tenant_id=run.tenant_id, action='respond_original_work_permission',
         resource_type='runtime_task', resource_id=run.id, request_id=ingress.event_id,
         details={'external_principal_id': str(principal.id), 'channel_ingress_event_id': str(ingress.event_id),
             'original_notice_id': str(notice.id), 'permission_receipt': receipt})
+    from app.services.original_work_permission_responses import enqueue_original_work_permission_response
+
+    await enqueue_original_work_permission_response(db, notice=notice, run=run, record=record, receipt=receipt,
+        decision=action, audit_event_id=audit.event_id)
     await db.commit()
     bind_channel_ingress_runtime_result(runtime_task_id=run.id, session_id=notice.session_id)
     return {'code': 0, 'msg': 'permission_received', 'permission_status': receipt['status'], 'permission_receipt': receipt}

@@ -163,7 +163,21 @@ async def deliver_permission_reply_feedback(db, *, item, result):
         return unavailable
     target = {'channel': 'feishu', 'receive_id_type': 'open_id', 'receive_id': sender}
     if (row.metadata_json or {}).get('tenant_channel_config_id'):
+        from app.models.external_principal import ExternalPrincipal
+
+        try:
+            config_id = uuid.UUID(str(row.metadata_json['tenant_channel_config_id']))
+        except (ValueError, TypeError):
+            return unavailable
+        principal_id = await db.scalar(select(ExternalPrincipal.id).where(
+            ExternalPrincipal.tenant_id == item.tenant_id, ExternalPrincipal.provider == 'feishu',
+            ExternalPrincipal.tenant_channel_config_id == config_id, ExternalPrincipal.channel_config_id.is_(None),
+            ExternalPrincipal.installation_ref == item.installation_ref, ExternalPrincipal.subject_id == sender,
+            ExternalPrincipal.status == 'active'))
+        if principal_id is None:
+            return unavailable
         target.update(tenant_channel_config_id=row.metadata_json['tenant_channel_config_id'], installation_ref=item.installation_ref)
+        target['external_principal_id'] = str(principal_id)
     config = await ChannelDeliveryService._load_target_config(db, item.agent_id, 'feishu', target)
     scope = (row.metadata_json or {}).get('feishu_message_scope')
     if (config is None or not config.is_configured or config.tenant_id != item.tenant_id

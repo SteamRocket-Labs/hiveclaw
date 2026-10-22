@@ -20,7 +20,7 @@ pytestmark = pytest.mark.usefixtures('migrated_pg_url')
 
 
 @pytest.mark.parametrize('provider', ['filesystem'], indirect=True)
-@pytest.mark.parametrize('decision', ['allow_once', 'deny', 'cancel', 'unknown', 'expired', 'source_changed', 'channel_allow_once', 'channel_deny', 'channel_unknown'])
+@pytest.mark.parametrize('decision', ['allow_once', 'deny', 'cancel', 'unknown', 'expired', 'source_changed', 'channel_allow_once', 'channel_deny', 'channel_unknown', 'channel_tenant_allow_once', 'channel_tenant_deny', 'channel_tenant_unknown'])
 async def test_business_permission_wait_resumes_the_original_run(
     original_api, provider, owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, decision, migrated_pg_url,  # noqa: F811
 ):
@@ -28,6 +28,8 @@ async def test_business_permission_wait_resumes_the_original_run(
 
     channel_permission = decision.startswith('channel_')
     decision = decision.removeprefix('channel_')
+    enterprise_channel = decision.startswith('tenant_')
+    decision = decision.removeprefix('tenant_')
     if channel_permission:
         from app.api import feishu
 
@@ -222,7 +224,7 @@ async def test_business_permission_wait_resumes_the_original_run(
 
     await _business_source(original_api, provider, owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path,
         withdrawn=False, unknown_effect=False, artifact_body='# Report\nPRIVATE_BUSINESS_INPUT\n',
-        permission_handler=inspect_wait)
+        permission_handler=inspect_wait, enterprise_channel=enterprise_channel)
 
 
 async def _claims(db):

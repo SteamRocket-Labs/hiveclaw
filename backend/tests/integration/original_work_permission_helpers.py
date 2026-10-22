@@ -150,8 +150,15 @@ async def assert_permission_response_notice(*, factory, tenant_id, notice_id, re
         try:
             config.app_id = original_app + '-replaced'
             await db.flush()
-            with pytest.raises(ContentInputReceiptError):
-                await service._authorize_native_result_text(db, saved)
+            if original.delivery_target_json.get('tenant_channel_config_id'):
+                from fastapi import HTTPException
+
+                with pytest.raises(HTTPException) as denied:
+                    await service._authorize_native_result_text(db, saved)
+                assert denied.value.status_code == 403
+            else:
+                with pytest.raises(ContentInputReceiptError):
+                    await service._authorize_native_result_text(db, saved)
         finally:
             config.app_id = original_app
             await db.flush()

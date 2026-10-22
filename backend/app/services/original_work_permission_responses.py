@@ -61,6 +61,7 @@ async def authorize_original_work_permission_response(db, *, item, session, user
     from app.models.security_audit import SecurityAuditEvent
     from app.models.session_v2 import SessionCommand, SessionControlInput, SessionToolInvocation
     from app.services.channel_delivery_service import ChannelDeliveryService
+    from app.services.channel_ingress_inbox import channel_installation_ref
     from app.services.channel_provider_receipts import feishu_message_scope
     from app.services.original_work_permission_notices import _original_work
     from app.services.session_control_input import _sha256
@@ -115,7 +116,7 @@ async def authorize_original_work_permission_response(db, *, item, session, user
             raise invalid()
         config = await ChannelDeliveryService._load_target_config(db, item.agent_id, item.channel, item.delivery_target)
         scope = ((notice.delivery_receipts_json or {}).get('text', {}).get('detail') or {}).get('provider_message_scope')
-        if (config is None or config.id != item.channel_config_id or principal.installation_ref != str(config.id)
+        if (config is None or config.id != item.channel_config_id or principal.installation_ref != channel_installation_ref(config, fallback='')
             or scope is None or scope != feishu_message_scope(config)):
             raise invalid()
         audit_fields = {key: getattr(audit, key) for key in ('event_type', 'severity', 'actor_type', 'actor_id', 'tenant_id',

@@ -242,6 +242,7 @@ async def test_business_task_text_rechecks_its_actual_original_source(
     artifact_body=None,
     permission_handler=None,
     question_handler=None,
+    enterprise_channel=False,
 ):
     import app.database as database
     import app.runtime.invoker as invoker
@@ -326,14 +327,47 @@ async def test_business_task_text_rechecks_its_actual_original_source(
         await pin_rls_tenant_context(db, seed['tenant_id'])
         session = await db.get(ChatSession, seed['session_id'])
         if delivery_channel == 'feishu':
-            config = ChannelConfig(id=uuid.uuid4(), tenant_id=seed['tenant_id'], agent_id=seed['agent_id'], channel_type='feishu',
-                app_id='synthetic-business-result', app_secret='synthetic-channel-only', is_configured=True)
-            db.add(config)
-            await db.flush()
-            bound = await bind_authenticated_self_channel_principal(db, tenant_id=seed['tenant_id'], config=config,
-                provider_subject_id='ou-business-owner', user_id=seed['user_id'], actor_user_id=seed['user_id'])
+            if enterprise_channel:
+                from app.models.external_principal import ExternalPrincipal, ExternalPrincipalBindingEvent
+                from app.models.identity import ExternalIdentity, IdentityProvider
+                from app.models.tenant_channel_config import TenantChannelConfig
+                from app.models.user_assistant_binding import UserAssistantBinding
+                from app.services.channel_ingress_inbox import channel_installation_ref
+
+                config = TenantChannelConfig(id=uuid.uuid4(), tenant_id=seed['tenant_id'], channel_type='feishu',
+                    app_id='synthetic-enterprise-business', app_secret='synthetic-enterprise-only',
+                    verification_token='synthetic-enterprise-verification')
+                provider_identity = IdentityProvider(id=uuid.uuid4(), tenant_id=seed['tenant_id'], provider_type='feishu',
+                    name='Business directory', is_active=True, config={'app_id': config.app_id})
+                db.add_all([config, provider_identity])
+                await db.flush()
+                principal = ExternalPrincipal(id=uuid.uuid4(), tenant_id=seed['tenant_id'], provider='feishu',
+                    installation_ref=channel_installation_ref(config, fallback=''), tenant_channel_config_id=config.id,
+                    subject_id='ou-business-owner', display_name='Business owner', linked_user_id=seed['user_id'],
+                    binding_method='feishu_tenant_identity', linked_at=datetime.now(UTC), binding_verified_at=datetime.now(UTC))
+                db.add_all([principal, ExternalIdentity(provider_id=provider_identity.id, user_id=seed['user_id'],
+                    provider_open_id=principal.subject_id), UserAssistantBinding(tenant_id=seed['tenant_id'],
+                    user_id=seed['user_id'], agent_id=seed['agent_id'], status='active', source='explicit_selection',
+                    requester_user_id=seed['user_id'], owner_user_id_at_bind=seed['user_id'])])
+                await db.flush()
+                db.add(ExternalPrincipalBindingEvent(tenant_id=seed['tenant_id'], external_principal_id=principal.id,
+                    action='linked', new_user_id=seed['user_id'], actor_user_id=seed['user_id'],
+                    reason='Verified enterprise member fixture'))
+                principal_id = principal.id
+                session.external_principal_id, session.actor_type = principal.id, 'external_principal'
+            else:
+                config = ChannelConfig(id=uuid.uuid4(), tenant_id=seed['tenant_id'], agent_id=seed['agent_id'], channel_type='feishu',
+                    app_id='synthetic-business-result', app_secret='synthetic-channel-only', is_configured=True)
+                db.add(config)
+                await db.flush()
+                bound = await bind_authenticated_self_channel_principal(db, tenant_id=seed['tenant_id'], config=config,
+                    provider_subject_id='ou-business-owner', user_id=seed['user_id'], actor_user_id=seed['user_id'])
+                principal_id = bound.principal.id
             session.delivery_target_json = {'channel': 'feishu', 'receive_id': 'ou-business-owner', 'receive_id_type': 'open_id',
-                'chat_type': 'p2p', 'session_id': str(session.id), 'external_principal_id': str(bound.principal.id)}
+                'chat_type': 'p2p', 'session_id': str(session.id), 'external_principal_id': str(principal_id)}
+            if enterprise_channel:
+                session.delivery_target_json = {**session.delivery_target_json, 'tenant_channel_config_id': str(config.id),
+                    'installation_ref': channel_installation_ref(config, fallback='')}
         plan_json = {'schema': 'hive_plan.v1', 'intent_type': 'in_session_execution', 'title': body['title'],
             'objective': body['description'], 'steps': [{'order': 1, 'description': body['description']}],
             'success_criteria': ['Deliver the complete report.'], 'stop_conditions': ['The owner cancels.'],

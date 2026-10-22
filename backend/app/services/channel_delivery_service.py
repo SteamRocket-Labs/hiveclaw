@@ -289,7 +289,7 @@ class ChannelDeliveryService:
             select(ChannelConfig).where(
                 ChannelConfig.agent_id == agent_id,
                 ChannelConfig.channel_type == channel,
-            )
+            ).execution_options(populate_existing=True)
         )
         return result.scalar_one_or_none()
 

@@ -125,7 +125,7 @@ async def _runtime_actor(
                     User.id == linked_user_id,
                     User.tenant_id == principal.tenant_id,
                     User.is_active.is_(True),
-                )
+                ).execution_options(populate_existing=True)
             )
         ).scalar_one_or_none()
 

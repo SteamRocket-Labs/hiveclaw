@@ -42,7 +42,7 @@ async def load_current_group_members(db, *, session):
     else:
         config = await db.scalar(select(ChannelConfig).where(
             ChannelConfig.tenant_id == session.tenant_id, ChannelConfig.agent_id == session.agent_id,
-            ChannelConfig.channel_type == "feishu", ChannelConfig.is_configured.is_(True)))
+            ChannelConfig.channel_type == "feishu", ChannelConfig.is_configured.is_(True)).execution_options(populate_existing=True))
     if config is None or channel_installation_ref(config, fallback=f"feishu:{session.agent_id}") != session.group_installation_ref:
         raise HTTPException(403, detail={"code": "shared_group_installation_unavailable"})
     try:
@@ -75,7 +75,7 @@ async def require_current_group_member(db, *, session, user=None, principal=None
             ExternalPrincipal.binding_method == _principal_binding_method(config), ExternalPrincipal.binding_verified_at.is_not(None))
     else:
         raise HTTPException(403, detail={"code": "group_membership_required"})
-    principals = list(await db.scalars(query))
+    principals = list(await db.scalars(query.execution_options(populate_existing=True)))
     for row in principals:
         if row.subject_id not in members:
             continue
@@ -544,7 +544,7 @@ async def load_current_group_recipient_users(db, *, session):
         ExternalPrincipal.installation_ref == session.group_installation_ref, _principal_installation(config),
         ExternalPrincipal.subject_id.in_(members), ExternalPrincipal.status == "active",
         ExternalPrincipal.linked_user_id.is_not(None), ExternalPrincipal.binding_method == _principal_binding_method(config),
-        ExternalPrincipal.binding_verified_at.is_not(None))))
+        ExternalPrincipal.binding_verified_at.is_not(None)).execution_options(populate_existing=True)))
     if {row.subject_id for row in principals} != members:
         raise HTTPException(503, detail={"code": "group_recipient_identity_unavailable"})
     if isinstance(config, TenantChannelConfig):

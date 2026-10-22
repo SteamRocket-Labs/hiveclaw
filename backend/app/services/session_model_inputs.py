@@ -240,12 +240,22 @@ async def build_model_input_bindings(
             ref = tool_refs.get((ref.split(":", 1)[1], wire_messages[i].get("tool_call_id")))
         if not ref or ref not in canonical:
             entry["code"] = "source_origin_unavailable"
-        elif canonical[ref] != message_snapshot(wire_messages[i]):
-            entry["code"] = "source_content_mismatch"
-        else:
-            entry.update(status="bound", code="canonical_origin_matched", source_ref=ref)
-            if ref in input_commands:
-                entry["command_ref"] = f"session-command:{input_commands[ref]}"
+            continue
+        snapshot = message_snapshot(wire_messages[i])
+        presentation = None
+        if canonical[ref] != snapshot:
+            from app.runtime.message_presentation import match_vision_presentation
+
+            presentation = match_vision_presentation(canonical[ref], snapshot)
+            if presentation is None:
+                entry["code"] = "source_content_mismatch"
+                continue
+        entry.update(status="bound", code="canonical_origin_matched", source_ref=ref)
+        if presentation is not None:
+            entry["code"] = "canonical_vision_presentation_matched"
+            entry["presentation"] = {**presentation, "canonical_message_hash": _hash(canonical[ref])}
+        if ref in input_commands:
+            entry["command_ref"] = f"session-command:{input_commands[ref]}"
     if entries and len(messages) == len(entries) and all(e["status"] == "bound" for e in entries):
         manifest["status"] = "resolved"
     resolved = {}

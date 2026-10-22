@@ -14,6 +14,8 @@ import json
 import logging
 import re
 import uuid
+
+from app.runtime.message_presentation import apply_vision_transform as _apply_vision_transform
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Awaitable, Callable
@@ -658,39 +660,6 @@ async def _resolve_current_user_name(user_id: uuid.UUID | None) -> str | None:
     except Exception as exc:
         logger.debug("Failed to resolve current user name for %s: %s", user_id, exc)
     return None
-
-
-def _apply_vision_transform(api_messages: list[LLMMessage], supports_vision: bool) -> list[LLMMessage]:
-    if supports_vision:
-        image_pattern = r"\[image_data:(data:image/[^;]+;base64,[A-Za-z0-9+/=]+)\]"
-        for i, msg in enumerate(api_messages):
-            if msg.role != "user" or not isinstance(msg.content, str):
-                continue
-            images = re.findall(image_pattern, msg.content)
-            if not images:
-                continue
-            text = re.sub(image_pattern, "", msg.content).strip()
-            parts: list[dict[str, Any]] = []
-            for image_url in images:
-                parts.append({"type": "image_url", "image_url": {"url": image_url}})
-            if text:
-                parts.append({"type": "text", "text": text})
-            api_messages[i] = LLMMessage(role=msg.role, content=parts, source_ref=msg.source_ref)  # type: ignore[arg-type]
-        return api_messages
-
-    strip_pattern = r"\[image_data:data:image/[^;]+;base64,[A-Za-z0-9+/=]+\]"
-    for i, msg in enumerate(api_messages):
-        if msg.role != "user" or not isinstance(msg.content, str) or "[image_data:" not in msg.content:
-            continue
-        image_count = len(re.findall(strip_pattern, msg.content))
-        cleaned = re.sub(strip_pattern, "", msg.content).strip()
-        if image_count > 0:
-            cleaned += (
-                f"\n[The user sent {image_count} image(s), but the current model does not support vision, "
-                "so the image content is unavailable.]"
-            )
-        api_messages[i] = LLMMessage(role=msg.role, content=cleaned, source_ref=msg.source_ref)
-    return api_messages
 
 
 def _apply_cache_hints(

@@ -45,7 +45,7 @@ def test_origin_survives_internal_round_trip_without_changing_provider_wire():
     assert cached[0].source_ref == ref
 
 
-async def _bound_input(owner_sessionmaker):
+async def _bound_input(owner_sessionmaker, content="Exact admitted input"):
     from app.services.session_human_input import queue_admitted_human_input
     from app.services.session_input_admission import run_user_prompt_admission
 
@@ -55,7 +55,7 @@ async def _bound_input(owner_sessionmaker):
     async with owner_sessionmaker() as db:
         authority = await _authority(db, user_id=user, agent_id=agent, session_id=session)
         receipt = await _accepted_input(db, authority=authority, session_id=session, run_id=run,
-            kind="steer_current_turn", content="Exact admitted input")
+            kind="steer_current_turn", content=content)
         await run_user_prompt_admission(db, authority=authority, input_id=receipt.input_id,
             worker_id="input-binding-test", hook_executor=allow)
         await queue_admitted_human_input(db, authority=authority, input_id=receipt.input_id)
@@ -157,3 +157,36 @@ async def test_native_provider_alias_resolves_only_the_selected_canonical_tool(
         rejected = await build_model_input_bindings(db, tenant_id=tenant, agent_id=agent,
             session_id=session, messages=messages, wire_messages=_llm_messages_to_dicts(messages))
         assert rejected["messages"][0]["code"] == "source_content_mismatch"
+
+
+@pytest.mark.parametrize("vision,alteration", [(False, None), (True, None), (False, "text"), (True, "text"), (True, "image")])
+async def test_vision_presentation_binds_exact_input_but_rejects_changed_bytes(
+    owner_sessionmaker, app_user_sessionmaker, vision, alteration,
+):
+    from app.runtime.invoker import _apply_vision_transform
+    from app.services.session_model_inputs import build_model_input_bindings
+
+    tenant, agent, session, _run, bound = await _bound_input(owner_sessionmaker,
+        content="Read the original image [image_data:data:image/png;base64,YQ==]")
+    messages = _apply_vision_transform(_mid_run_items_to_user_messages(bound), vision)
+    if alteration == "image":
+        messages[0].content[0]["image_url"]["url"] = "data:image/png;base64,Yg=="
+    elif alteration == "text":
+        if vision:
+            messages[0].content[-1]["text"] = "Changed user instructions"
+        else:
+            messages[0].content += " Changed user instructions"
+    async with app_user_sessionmaker() as db:
+        await pin_rls_tenant_context(db, tenant)
+        bindings = await build_model_input_bindings(db, tenant_id=tenant, agent_id=agent,
+            session_id=session, messages=messages, wire_messages=_llm_messages_to_dicts(messages))
+    entry = bindings["messages"][0]
+    if alteration is not None:
+        assert entry["status"] == "unresolved" and entry["code"] == "source_content_mismatch", bindings
+        assert "source_ref" not in entry and not bindings["dependency_coverage"]["complete"]
+    else:
+        assert entry["status"] == "bound" and entry["code"] == "canonical_vision_presentation_matched", bindings
+        assert entry["source_ref"] == messages[0].source_ref
+        assert entry["presentation"]["supports_vision"] is vision
+        assert entry["presentation"]["canonical_message_hash"] != entry["message_hash"]
+        assert entry["command_ref"].startswith("session-command:")

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 from types import SimpleNamespace
 from typing import Any
@@ -154,7 +155,7 @@ async def _resume_materialized_user_message(
 
 async def _dispatch_verified_payload(db, item: ClaimedChannelIngressEvent) -> dict[str, Any]:
     key = item.handler_key
-    body = dict(item.payload.get("body") or item.payload)
+    body = copy.deepcopy(item.payload.get("body") or item.payload)
     replay_request = ChannelIngressReplayRequest(event_id=item.id, body=body)
 
     if key in {"company.wecom.message", "company.dingtalk.message"}:
@@ -267,6 +268,8 @@ async def _dispatch_verified_payload(db, item: ClaimedChannelIngressEvent) -> di
 
     if _response_failed(result):
         raise RuntimeError(f"channel ingress processor returned HTTP {result.status_code}")
+    if key == 'feishu.event' and isinstance(result, dict) and result.get('msg') in {'answer_received', 'answer_rejected'}:
+        return {'status': 'processed', 'answer_status': result['answer_status'], 'reason_code': result.get('reason_code')}
     return {"status": "processed", **({"reply_text": result} if isinstance(result, str) else {})}
 
 

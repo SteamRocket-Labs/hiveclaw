@@ -528,6 +528,7 @@ class ChannelDeliveryService:
         try:
             if channel == "feishu":
                 from app.services.feishu_service import FeishuService
+                from app.services.channel_provider_receipts import feishu_message_scope
 
                 receive_id = target.get("receive_id") or target.get("open_id") or target.get("chat_id")
                 receive_id_type = target.get("receive_id_type") or (
@@ -537,7 +538,7 @@ class ChannelDeliveryService:
                     raise ValueError("missing receive_id")
                 payload = json.dumps({"text": text})
                 service = FeishuService()
-                await service.send_message(
+                response = await service.send_message(
                     config.app_id,
                     config.app_secret,
                     receive_id,
@@ -547,7 +548,9 @@ class ChannelDeliveryService:
                     extra_config=config.extra_config,
                 )
                 result = ChannelDeliveryService._success(
-                    channel, "Feishu message delivered.", receive_id=receive_id, receive_id_type=receive_id_type
+                    channel, "Feishu message delivered.", receive_id=receive_id, receive_id_type=receive_id_type,
+                    provider_message_id=(response.get('data') or {}).get('message_id') if isinstance(response, dict) else None,
+                    provider_message_scope=feishu_message_scope(config),
                 )
             elif channel == "telegram":
                 from app.api.telegram import _send_telegram_message

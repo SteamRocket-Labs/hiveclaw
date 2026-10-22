@@ -1369,6 +1369,7 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
         logger.info(f"[Feishu] Received {msg_type} message, chat_type={chat_type}, from={sender_open_id}")
 
         _post_uploads = []
+        _post_image_keys = []
 
         # ── Normalize post (rich text) while retaining attachment bytes for the verified sender ──
         if msg_type == "post":
@@ -1385,7 +1386,6 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
                         _paragraphs = _locale_val["content"]
                         break
             _text_parts = []
-            _post_image_keys = []
             for _para in _paragraphs:
                 _line_parts = []
                 for _elem in _para:
@@ -1547,6 +1547,15 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
                 conv_id = f"feishu_tenant_{uuid.uuid5(uuid.NAMESPACE_URL, delivery_target['installation_ref']).hex}_{conv_id}"
                 legacy_conv_ids = []
             delivery_target["user_label"] = runtime_actor.display_name or sender_name or sender_open_id[:8]
+
+            from app.services.business_task_channel_answers import try_answer_business_question
+
+            question_answer = await try_answer_business_question(db, agent=agent_obj,
+                principal=principal_resolution.principal, config=config, user_text=user_text,
+                delivery_target=delivery_target, external_conv_id=conv_id, uploads=_post_uploads,
+                expected_upload_keys=_post_image_keys)
+            if question_answer is not None:
+                return question_answer
 
             from app.services.feishu_group_entry import select_shared_feishu_session
 

@@ -1,10 +1,20 @@
 """Exact provider receipts without exporting URLs, credentials or message bodies."""
 
 from urllib.parse import urlsplit
+import hashlib
 import json
 import mimetypes
 
 import httpx
+
+
+def feishu_message_scope(config):
+    """Bind provider message IDs to the credential's actual app and API namespace."""
+    from app.services.feishu_platform import resolve_feishu_platform
+
+    identity = [str(getattr(config, 'id', None)), str(config.app_id),
+        resolve_feishu_platform(getattr(config, 'extra_config', None)).open_api_domain]
+    return hashlib.sha256(json.dumps(identity, separators=(',', ':')).encode()).hexdigest()
 
 
 class ProviderReceiptError(ValueError):

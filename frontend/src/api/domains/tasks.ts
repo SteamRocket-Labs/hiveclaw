@@ -5,6 +5,7 @@
 import { get, post, patch } from '../core';
 import type { Task } from '../../types';
 import type { SessionHumanInputReceipt } from './chat';
+import type { SessionPermissionRequest } from '../../pages/agent-detail/chatRuntime';
 import type { ClarificationQuestion } from '../../pages/agent-detail/toolResultEnvelope';
 
 export interface TaskCreateParams {
@@ -40,12 +41,19 @@ export interface TaskLog {
   created_at: string;
 }
 
+export interface BusinessTaskPermission {
+  session_id: string;
+  can_resolve: boolean;
+  request: SessionPermissionRequest;
+}
+
 export interface BusinessTaskDetail {
   task: Task;
   logs: TaskLog[];
   log_visibility?: { status?: string; recovery_action?: string };
   artifacts?: Record<string, unknown>[];
   artifact_delivery?: { status?: string; recovery_action?: string };
+  permissions?: BusinessTaskPermission[];
   questions?: Array<{
     question_item_id: string;
     session_id: string;

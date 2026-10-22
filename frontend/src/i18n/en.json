@@ -2465,6 +2465,10 @@
         "localPermissionDesc": "Access is governed by the connected Local Agent policy."
       },
       "permission": {
+        "unavailable": "Permission details could not be refreshed. Refresh the assignment.",
+        "title": "Tool permission",
+        "actionDetails": "Action details",
+        "changed": "This permission request is no longer current. Refresh the assignment.",
         "allowOnce": "Allow once",
         "allowSession": "Allow for this session",
         "deny": "Deny",

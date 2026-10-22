@@ -2465,6 +2465,10 @@
         "localPermissionDesc": "访问由已连接本地 Agent 的策略治理。"
       },
       "permission": {
+        "unavailable": "无法刷新权限详情，请刷新原任务。",
+        "title": "工具权限",
+        "actionDetails": "操作详情",
+        "changed": "此权限请求已不再适用，请刷新原任务。",
         "allowOnce": "本次允许",
         "allowSession": "本会话允许",
         "deny": "拒绝",

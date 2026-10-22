@@ -1,5 +1,7 @@
 import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
+import { MemoryRouter } from 'react-router-dom';
+import type { BusinessTaskDetail } from '../../api/domains/tasks';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { Task } from '../../types';
@@ -11,7 +13,7 @@ import AgentBusinessTasksSection, {
 } from './AgentBusinessTasksSection';
 import { AGENT_DETAIL_TABS, AGENT_WORKBENCH_AREAS } from './agentDetailPolicy';
 
-const queryData = vi.hoisted(() => ({ tasks: [] as Task[], plans: [] as PlanRequest[] }));
+const queryData = vi.hoisted(() => ({ tasks: [] as Task[], plans: [] as PlanRequest[], detail: undefined as BusinessTaskDetail | undefined, detailError: false }));
 
 vi.mock('../../stores', () => ({ useAuthStore: (select: (state: unknown) => unknown) => select({ user: { id: 'owner' } }) }));
 
@@ -30,6 +32,7 @@ vi.mock('@tanstack/react-query', () => ({
     if (queryKey[0] === 'business-task-plans') {
       return { data: queryData.plans, isLoading: false, isError: false, error: null, refetch: vi.fn() };
     }
+    if (queryKey[0] === 'business-task-detail') return { data: queryData.detail, isLoading: false, isError: queryData.detailError, error: null, refetch: vi.fn() };
     return { data: undefined, isLoading: false, isError: false, error: null, refetch: vi.fn() };
   },
   useQueryClient: () => ({ invalidateQueries: vi.fn() }),
@@ -38,6 +41,8 @@ vi.mock('@tanstack/react-query', () => ({
 describe('AgentBusinessTasksSection', () => {
   beforeEach(() => {
     queryData.tasks = [];
+    queryData.detail = undefined;
+    queryData.detailError = false;
     queryData.plans = [];
   });
 
@@ -154,7 +159,7 @@ describe('AgentBusinessTasksSection', () => {
       },
     ];
 
-    const markup = renderToStaticMarkup(<AgentBusinessTasksSection agentId="agent-1" />);
+    const markup = renderToStaticMarkup(<MemoryRouter><AgentBusinessTasksSection agentId="agent-1" /></MemoryRouter>);
 
     expect(markup).toContain('data-testid="agent-business-tasks-section"');
     expect(markup).toContain('Business assignments');
@@ -162,4 +167,31 @@ describe('AgentBusinessTasksSection', () => {
     expect(markup).toContain('Prepare board report');
     expect(markup).toContain('Prepare retry plan');
   });
+
+  it('shows the original native permission controls inside assignment evidence', () => {
+    queryData.detail = {
+      task: { id: 'task-1', agent_id: 'agent-1', title: 'Prepare report', status: 'doing',
+        last_execution_status: 'awaiting_permission', active_runtime_task_id: 'run-1', reflection_session_id: 'native-1',
+        recovery_state: 'none', actions: { can_cancel: true, can_retry: false, can_reconcile: false },
+        dependencies: [], stages: [] } as unknown as Task,
+      logs: [], permissions: [{ session_id: 'native-1', can_resolve: true, request: {
+        permission_request_id: 'permission-1', requested_by_user_id: 'owner', session_id: 'native-1',
+        runtime_task_id: 'run-1', tool_name: 'fs_write', arguments: { path: 'workspace/report.md' },
+        allow_session_allowed: true,
+      } }],
+    } as unknown as BusinessTaskDetail;
+    const markup = renderToStaticMarkup(<MemoryRouter initialEntries={['/?task_id=task-1']}>
+      <AgentBusinessTasksSection agentId="agent-1" /></MemoryRouter>);
+    expect(markup).toContain('workspace/report.md');
+    expect(markup).toContain('Allow once');
+    expect(markup).toContain('Allow for this session');
+    expect(markup).toContain('Deny');
+    queryData.detailError = true;
+    const unavailable = renderToStaticMarkup(<MemoryRouter initialEntries={['/?task_id=task-1']}>
+      <AgentBusinessTasksSection agentId="agent-1" /></MemoryRouter>);
+    expect(unavailable).toContain('Permission details could not be refreshed.');
+    expect(unavailable).not.toContain('Allow once');
+    expect(unavailable).not.toContain('workspace/report.md');
+  });
+
 });

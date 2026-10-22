@@ -19,7 +19,7 @@ pytestmark = pytest.mark.usefixtures('migrated_pg_url')
 
 
 @pytest.mark.parametrize('provider', ['filesystem'], indirect=True)
-@pytest.mark.parametrize('decision', ['allow_once', 'deny', 'cancel', 'unknown', 'expired'])
+@pytest.mark.parametrize('decision', ['allow_once', 'deny', 'cancel', 'unknown', 'expired', 'source_changed'])
 async def test_business_permission_wait_resumes_the_original_run(
     original_api, provider, owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, decision, migrated_pg_url,  # noqa: F811
 ):
@@ -48,6 +48,29 @@ async def test_business_permission_wait_resumes_the_original_run(
         detail = await client.get(f"/agents/{seed['agent_id']}/tasks/{business_id}", headers=context['headers'])
         assert detail.status_code == 200, detail.text
         assert detail.json()['task']['reflection_session_id'] == child_id
+        permissions = detail.json().get('permissions')
+        assert permissions and len(permissions) == 1, detail.text
+        assert permissions[0]['session_id'] == child_id and permissions[0]['can_resolve'] is True
+        request = permissions[0]['request']
+        assert request['permission_request_id'] == str(permission_id)
+        assert request['runtime_task_id'] == str(run_id) and request['session_id'] == child_id
+        assert request['tool_name'] == 'fs_write'
+        assert request['arguments']['path'] == 'workspace/business-report.md'
+        if decision == 'source_changed':
+            soul = seed['agent_root'] / 'soul.md'
+            original_soul = soul.read_bytes()
+            try:
+                soul.write_bytes(original_soul + b"\nChanged before reading permission details.\n")
+                denied = await client.get(f"/agents/{seed['agent_id']}/tasks/{business_id}", headers=context['headers'])
+                assert denied.status_code == 200 and denied.json()['permissions'] == [], denied.text
+                assert len(model.requests) == 2
+            finally:
+                soul.write_bytes(original_soul)
+            stopped = await client.post(f"/agents/{seed['agent_id']}/tasks/{business_id}/cancel",
+                headers=context['headers'], json={'reason': 'End the source-visibility check.'})
+            assert stopped.status_code == 200 and stopped.json()['permissions'] == [], stopped.text
+            await _consume_notice(context)
+            return
         assert detail.json()['task']['actions']['can_cancel'] and not detail.json()['task']['actions']['can_retry']
         from app.api import chat_sessions
         from app.services import agent_tools, runtime_task_worker

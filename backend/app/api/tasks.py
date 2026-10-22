@@ -211,15 +211,17 @@ async def _business_task_detail(task: Task, db: AsyncSession, current_user: User
     )
     out = await _enrich_task_out(task, db, current_user)
     log_visibility = await business_task_output_visibility(db, task, current_user, include_previous_attempts=True)
-    from app.services.business_task_waits import read_business_task_questions
+    from app.services.business_task_waits import read_business_task_permissions, read_business_task_questions
 
     questions = await read_business_task_questions(db, task, current_user)
+    permissions = await read_business_task_permissions(db, task, current_user)
     return BusinessTaskDetailOut(
         task=out,
         logs=[TaskLogOut.model_validate(item) for item in logs] if log_visibility['status'] == 'available' else [],
         log_visibility=log_visibility,
         artifacts=artifacts,
         questions=questions,
+        permissions=permissions,
         artifact_delivery=delivery,
     )
 

@@ -325,6 +325,7 @@ class BusinessTaskDetailOut(BaseModel):
     log_visibility: dict = Field(default_factory=dict)
     artifacts: list[dict] = Field(default_factory=list)
     questions: list[dict] = Field(default_factory=list)
+    permissions: list[dict] = Field(default_factory=list)
     artifact_delivery: dict = Field(default_factory=dict)
 
 

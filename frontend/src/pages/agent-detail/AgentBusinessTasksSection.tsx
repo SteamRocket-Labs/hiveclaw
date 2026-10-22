@@ -22,6 +22,7 @@ import { ArtifactCards, ArtifactPreviewPanel } from './ArtifactSurface';
 import { extractArtifactParts } from './chatRuntime';
 import { useArtifactPreview } from './useArtifactPreview';
 import AskUserQuestionCard from './AskUserQuestionCard';
+import BusinessTaskPermissions from './BusinessTaskPermissions';
 import './AgentBusinessTasksSection.css';
 
 type BusinessTaskAction =
@@ -608,6 +609,11 @@ export default function AgentBusinessTasksSection({ agentId }: { agentId: string
                     </div>
                   </dl>
                   {detailQuery.data.task.last_result && <pre>{detailQuery.data.task.last_result}</pre>}
+                  {detailQuery.isError ? <p role="alert">{t('agent.chat.permission.unavailable',
+                    'Permission details could not be refreshed. Refresh the assignment.')}</p> :
+                    <BusinessTaskPermissions key={answerAuthority} agentId={agentId} task={detailQuery.data.task}
+                      permissions={detailQuery.data.permissions || []} userId={userId}
+                      onResolved={async () => { if (currentAnswerAuthority.current === answerAuthority) await refresh(); }} />}
                   {(detailQuery.data.questions || []).map((question) => (
                     <AskUserQuestionCard key={`${answerAuthority}:${question.question_item_id}`}
                       questions={question.payload.questions} blocking={question.payload.blocking !== false}

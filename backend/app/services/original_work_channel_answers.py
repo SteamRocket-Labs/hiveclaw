@@ -3,7 +3,7 @@
 import uuid
 
 from fastapi import HTTPException
-from sqlalchemy import and_, or_, select
+from sqlalchemy import String, and_, or_, select
 
 from app.models.channel_delivery_outbox import ChannelDeliveryOutbox
 from app.models.channel_ingress_event import ChannelIngressEvent
@@ -39,7 +39,9 @@ async def try_answer_original_work_question(db, *, agent, principal, config, use
         ChannelDeliveryOutbox.delivery_kind == 'interactive_prompt',
         or_(and_(ChannelDeliveryOutbox.metadata_json['source'].astext == 'business_task_runtime',
                 ChannelDeliveryOutbox.metadata_json['projection_kind'].astext == 'question_notice'),
-            ChannelDeliveryOutbox.metadata_json['source'].astext == 'employee_first_task_question'),
+            ChannelDeliveryOutbox.metadata_json['source'].astext == 'employee_first_task_question',
+            ChannelDeliveryOutbox.metadata_json['source'].astext == 'original_work_permission',
+            ChannelDeliveryOutbox.terminal_status == 'awaiting_permission'),
         ChannelDeliveryOutbox.delivery_receipts_json['text']['state'].astext == 'delivered',
         ChannelDeliveryOutbox.delivery_receipts_json['text']['detail']['provider_message_id'].astext == parent).limit(2)))
     if not candidates:
@@ -63,12 +65,30 @@ async def try_answer_original_work_question(db, *, agent, principal, config, use
             if unknown is not None:
                 return {'code': 0, 'msg': 'answer_rejected', 'answer_status': 'needs_reconciliation',
                     'reason_code': 'business_question_provider_reference_unavailable'}
+            from app.models.session_v2 import SessionToolInvocation
+
+            permission_unknown = await db.scalar(select(ChannelDeliveryOutbox.id).join(SessionToolInvocation,
+                (SessionToolInvocation.tenant_id == ChannelDeliveryOutbox.tenant_id)
+                & (SessionToolInvocation.run_id == ChannelDeliveryOutbox.runtime_task_id)
+                & (SessionToolInvocation.permission_item_id.cast(String) == ChannelDeliveryOutbox.prompt_key)).where(
+                ChannelDeliveryOutbox.tenant_id == agent.tenant_id, ChannelDeliveryOutbox.agent_id == agent.id,
+                ChannelDeliveryOutbox.channel == 'feishu', ChannelDeliveryOutbox.channel_config_id == config.id,
+                ChannelDeliveryOutbox.delivery_kind == 'interactive_prompt',
+                ChannelDeliveryOutbox.metadata_json['source'].astext == 'original_work_permission',
+                ChannelDeliveryOutbox.user_id == principal.linked_user_id, ChannelDeliveryOutbox.external_principal_id == principal.id,
+                ChannelDeliveryOutbox.delivery_receipts_json['text']['state'].astext == 'delivered',
+                ChannelDeliveryOutbox.delivery_receipts_json['text']['detail']['provider_message_id'].astext.is_(None)).limit(1))
+            if permission_unknown is not None:
+                return {'code': 0, 'msg': 'permission_rejected', 'permission_status': 'needs_reconciliation',
+                    'reason_code': 'original_permission_provider_reference_unavailable'}
         return None
     if len(candidates) != 1:
         return {'code': 0, 'msg': 'answer_rejected', 'answer_status': 'rejected',
             'reason_code': 'business_question_reply_ambiguous'}
     notice = candidates[0]
-    first_task = notice.metadata_json.get('source') == 'employee_first_task_question'
+    permission_reply = notice.metadata_json.get('source') == 'original_work_permission' or notice.terminal_status == 'awaiting_permission'
+    first_task = notice.metadata_json.get('source') == 'employee_first_task_question' or (
+        permission_reply and notice.metadata_json.get('work_kind') == 'employee_first_task')
     try:
         from app.api.tasks import TaskAnswerIn, answer_business_task_question
         from app.core.policy import write_audit_event
@@ -103,6 +123,9 @@ async def try_answer_original_work_question(db, *, agent, principal, config, use
             raise HTTPException(403, detail={'code': 'business_question_reply_target_changed'})
         scope = ((notice.delivery_receipts_json or {}).get('text', {}).get('detail') or {}).get('provider_message_scope')
         if scope is None:
+            if permission_reply:
+                return {'code': 0, 'msg': 'permission_rejected', 'permission_status': 'needs_reconciliation',
+                    'reason_code': 'original_permission_provider_reference_unavailable'}
             return {'code': 0, 'msg': 'answer_rejected', 'answer_status': 'needs_reconciliation',
                 'reason_code': 'business_question_provider_reference_unavailable'}
         if scope != feishu_message_scope(config):
@@ -112,7 +135,7 @@ async def try_answer_original_work_question(db, *, agent, principal, config, use
             raise HTTPException(403, detail={'code': 'business_question_reply_requester_changed'})
         if session.audience_kind == 'group':
             await authorize_group_history_reader(db, session=session, user=user, audit=False)
-        if first_task:
+        if first_task and not permission_reply:
             from app.models.hr_creation import HrCreationDraft
             from app.services.hr_creation_service import direct_creation_authorization
 
@@ -132,6 +155,12 @@ async def try_answer_original_work_question(db, *, agent, principal, config, use
                 raise HTTPException(403 if work and work['status'] == 'unavailable' else 503,
                     detail={'code': (work or {}).get('reason', 'first_task_question_source_unavailable')})
         bind_channel_ingress_external_principal(principal.id)
+        if permission_reply:
+            from app.services.original_work_permission_replies import resolve_original_work_permission_reply
+
+            return await resolve_original_work_permission_reply(db, notice=notice, run=run, session=session,
+                user=user, principal=principal, ingress=ingress, text=user_text,
+                uploads=uploads, expected_upload_keys=expected_upload_keys)
         parts = [{'type': 'text', 'text': user_text}]
         if list(expected_upload_keys) != [key for key, _content in uploads]:
             raise HTTPException(503, detail={'code': 'business_question_reply_attachments_unavailable'})
@@ -174,5 +203,8 @@ async def try_answer_original_work_question(db, *, agent, principal, config, use
         if exc.status_code >= 500:
             raise
         detail = exc.detail if isinstance(exc.detail, dict) else {}
+        if permission_reply:
+            return {'code': 0, 'msg': 'permission_rejected', 'permission_status': 'rejected',
+                'reason_code': detail.get('code', 'original_permission_reply_unavailable')}
         return {'code': 0, 'msg': 'answer_rejected', 'answer_status': 'rejected',
             'reason_code': detail.get('code', 'business_question_reply_unavailable')}

@@ -13,6 +13,16 @@ from app.services.content_input_receipts import ContentInputReceiptError
 from app.services.session_user_question import question_payload
 
 logger = logging.getLogger(__name__)
+QUOTE_SCHEMA = 'hive.original_work_permission_quote.v1'
+
+
+def permission_notice_quote_enabled(metadata, channel):
+    marker = metadata.get('interaction_schema')
+    if marker is None:
+        return False
+    if marker != QUOTE_SCHEMA or channel != 'feishu':
+        raise ContentInputReceiptError('permission_notice_protocol_changed', 'Restore the supported notice protocol.', 403)
+    return True
 
 
 async def _original_work(db, run):
@@ -51,7 +61,7 @@ async def _original_work(db, run):
     return None
 
 
-def permission_notice_text(run, record, request):
+def permission_notice_text(run, record, request, *, quoted_reply=False):
     from app.config import get_settings
 
     first_task = run.task_type == 'delegation'
@@ -59,7 +69,15 @@ def permission_notice_text(run, record, request):
     text = f'{label}有一项工具权限待处理；此提示不代表任务完成。\n'
     text += f"操作：{request.get('tool_display_name') or request['tool_name']}\n"
     text += json.dumps(request.get('arguments') or {}, ensure_ascii=False, indent=2)
-    text += '\n请在 HiveClaw 的原工作中查看并处理这项权限。'
+    if quoted_reply:
+        actions = '/allow 或 /deny'
+        if (request.get('allow_session_allowed') is not False and request.get('risk_class') != 'destructive_delete'
+            and request.get('confirmation_kind') != 'destructive_once'):
+            actions = '/allow、/allow-session 或 /deny'
+        text += f'\n引用此消息回复 {actions}，即可处理这项权限；也可打开原工作。'
+        text += f"\nrequest_id={request['permission_request_id']}"
+    else:
+        text += '\n请在 HiveClaw 的原工作中查看并处理这项权限。'
     base = (get_settings().PUBLIC_BASE_URL or get_settings().BASE_URL).rstrip('/')
     if base:
         anchor = f'session_id={record.session_id}#chat' if first_task else f'task_id={record.id}#tasks'
@@ -100,11 +118,12 @@ async def enqueue_original_work_permission_notices(db, *, run, model, invocation
             agent_id=run.parent_agent_id, session_id=session.id, user_id=run.root_user_id,
             external_principal_id=target.get('external_principal_id') or session.external_principal_id,
             channel_config_id=getattr(config, 'id', None), delivery_target=target,
-            text=permission_notice_text(run, record, request), terminal_status='awaiting_permission',
+            text=permission_notice_text(run, record, request, quoted_reply=target['channel'] == 'feishu'), terminal_status='awaiting_permission',
             delivery_kind='interactive_prompt', prompt_item_id=invocation.permission_item_id,
             metadata={'source': 'original_work_permission', 'schema': 'hive.original_work_permission_notice.v1',
                 'projection_kind': 'tool_permission', **binding, 'invocation_id': str(invocation.id),
-                'model_result_id': str(model.id), 'permission_request_id': str(invocation.permission_item_id)}))
+                'model_result_id': str(model.id), 'permission_request_id': str(invocation.permission_item_id),
+                **({'interaction_schema': QUOTE_SCHEMA} if target['channel'] == 'feishu' else {})}))
 
 
 async def authorize_original_work_permission_notice(db, *, item, session, user):
@@ -147,7 +166,8 @@ async def authorize_original_work_permission_notice(db, *, item, session, user):
             permissions = await read_business_task_permissions(db, record, user)
     request = next((p['request'] for p in permissions if p['request']['permission_request_id'] == item.prompt_key), None)
     if (request is None or item.metadata.get('permission_request_id') != item.prompt_key
-        or item.text != permission_notice_text(run, record, request)):
+        or item.text != permission_notice_text(run, record, request,
+            quoted_reply=permission_notice_quote_enabled(item.metadata, item.channel))):
         raise ContentInputReceiptError('permission_notice_no_longer_current', 'Check the current original work.', 403)
     from app.models.session_v2 import SessionModelResult, SessionToolInvocation
 

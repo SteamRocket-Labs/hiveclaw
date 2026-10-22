@@ -270,6 +270,9 @@ async def _dispatch_verified_payload(db, item: ClaimedChannelIngressEvent) -> di
         raise RuntimeError(f"channel ingress processor returned HTTP {result.status_code}")
     if key == 'feishu.event' and isinstance(result, dict) and result.get('msg') in {'answer_received', 'answer_rejected'}:
         return {'status': 'processed', 'answer_status': result['answer_status'], 'reason_code': result.get('reason_code')}
+    if key == 'feishu.event' and isinstance(result, dict) and result.get('msg') in {'permission_received', 'permission_rejected'}:
+        return {'status': 'processed', 'permission_status': result['permission_status'],
+            'permission_receipt': result.get('permission_receipt'), 'reason_code': result.get('reason_code')}
     return {"status": "processed", **({"reply_text": result} if isinstance(result, str) else {})}
 
 

@@ -108,7 +108,7 @@ async def _start_feishu_creation_work(seed, app_user_sessionmaker, monkeypatch):
         return command.id
 
 
-@pytest.mark.parametrize("input_case", ["complete", "unbound", "revoked", "first_task", "first_task_unbound", "first_task_revoked", "first_task_refined", "first_task_delivery", "first_task_parent_model", "first_task_refined_native", "first_task_native_creation", "first_task_fresh_employee", "first_task_saved_reopen", "first_task_question", "first_task_question_after_write", "first_task_feishu_question", "first_task_feishu_quoted_question", "first_task_feishu_question_source_changed", "first_task_feishu_question_body_changed", "first_task_feishu_question_already_answered", "first_task_feishu_question_projection_missing", "first_task_feishu_question_recipient_changed", "first_task_feishu_question_legacy_status", "first_task_feishu_permission_allow", "first_task_feishu_permission_deny", "first_task_feishu_permission_cancel", "first_task_feishu_permission_unknown", "first_task_feishu_permission_expired", "first_task_feishu_permission_source_changed", "delegation_permission_allow"])
+@pytest.mark.parametrize("input_case", ["complete", "unbound", "revoked", "first_task", "first_task_unbound", "first_task_revoked", "first_task_refined", "first_task_delivery", "first_task_parent_model", "first_task_refined_native", "first_task_native_creation", "first_task_fresh_employee", "first_task_saved_reopen", "first_task_question", "first_task_question_after_write", "first_task_feishu_question", "first_task_feishu_quoted_question", "first_task_feishu_question_source_changed", "first_task_feishu_question_body_changed", "first_task_feishu_question_already_answered", "first_task_feishu_question_projection_missing", "first_task_feishu_question_recipient_changed", "first_task_feishu_question_legacy_status", "first_task_feishu_permission_allow", "first_task_feishu_permission_deny", "first_task_feishu_permission_cancel", "first_task_feishu_permission_unknown", "first_task_feishu_permission_expired", "first_task_feishu_permission_source_changed", "delegation_permission_allow", "first_task_feishu_permission_channel_allow", "first_task_feishu_permission_channel_deny", "first_task_feishu_permission_channel_unknown", "first_task_feishu_permission_channel_legacy", "first_task_feishu_permission_channel_scope"])
 async def test_governed_delegation_preserves_its_parent_instruction_origin(
     owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, input_case, migrated_pg_url,
 ):
@@ -512,6 +512,12 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
         from app.models.session_v2 import SessionToolInvocation
 
         decision = input_case.removeprefix("first_task_feishu_permission_") if first_task else "allow"
+        channel_permission = decision.startswith("channel_")
+        decision = decision.removeprefix("channel_")
+        legacy_permission = decision == "legacy"
+        scope_permission = decision == "scope"
+        if legacy_permission or scope_permission:
+            decision = "allow"
         expected_summary = "Report generated." if decision == "allow" else "The write was not authorized; no report was created."
         if decision != "allow":
             client.script[-1]["content"] = expected_summary
@@ -539,6 +545,19 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
                 assert len(notices) == 1
                 assert notices[0].prompt_key == str(permission_id) and notices[0].delivery_kind == "interactive_prompt"
                 assert notices[0].session_id == seed["session_id"] and notices[0].user_id == seed["user_id"]
+                if legacy_permission:
+                    from app.models.chat_transcript_event import ChatTranscriptEvent
+                    from app.services.original_work_permission_notices import _original_work, permission_notice_text
+                    from app.services.session_user_question import question_payload
+
+                    event = await db.scalar(select(ChatTranscriptEvent).where(
+                        ChatTranscriptEvent.invocation_id == invocation_id, ChatTranscriptEvent.item_kind == "tool_permission",
+                        ChatTranscriptEvent.lifecycle == "waiting"))
+                    _, record, _, _ = await _original_work(db, child)
+                    notices[0].metadata_json = {k: v for k, v in notices[0].metadata_json.items() if k != "interaction_schema"}
+                    notices[0].text_content = permission_notice_text(child, record, question_payload(event)["permission_request"])
+                    assert "/allow" not in notices[0].text_content
+                    await db.commit()
         assert not (seed["data_root"] / str(receiver) / report_path).exists()
         if first_task:
             from app.services.channel_delivery_outbox import ChannelDeliveryOutboxService, _claimed
@@ -665,6 +684,15 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
                 late = await api.post(url, json={"action": "allow_once"})
                 assert late.status_code == 409 and not permission_calls and len(client.requests) == 1, late.text
                 if first_task:
+                    from app.services.channel_ingress_dispatcher import dispatch_channel_ingress_event
+                    from tests.integration.original_work_permission_helpers import claim_permission_reply
+
+                    reply_service, reply_item = await claim_permission_reply(factory=app_user_sessionmaker,
+                        tenant_id=seed["tenant_id"], notice_id=notices[0].id, text="/allow")
+                    rejected = await dispatch_channel_ingress_event(reply_item)
+                    assert rejected.get("permission_status") == "rejected" and not permission_calls, rejected
+                    assert await reply_service._mark_processed(item=reply_item, worker_id="permission-quote", receipt=rejected)
+                if first_task:
                     assert (await api.get(draft_url)).json()["first_task_work"]["permissions"] == []
                 assert not (seed["data_root"] / str(receiver) / report_path).exists()
                 async with app_user_sessionmaker() as db:
@@ -678,6 +706,12 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
                 async def lose_result(*_args, **_kwargs):
                     pass
                 monkeypatch.setattr(session_tool_runtime, "complete_tool_invocation", lose_result)
+                if channel_permission:
+                    from tests.integration.original_work_permission_helpers import resolve_permission_reply
+
+                    quoted = await resolve_permission_reply(factory=app_user_sessionmaker,
+                        tenant_id=seed["tenant_id"], notice_id=notices[0].id, text="/allow")
+                    assert quoted["permission_receipt"]["run_status"] == "needs_reconciliation" and not quoted["permission_receipt"]["retryable"]
                 for _ in range(2):
                     uncertain = await api.post(url, json={"action": "allow_once"})
                     assert uncertain.status_code == 200 and uncertain.json()["run_status"] == "needs_reconciliation", uncertain.text
@@ -704,11 +738,85 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
                 late = await api.post(url, json={"action": "allow_once"})
                 assert late.status_code == 410 and late.json()["detail"]["code"] == "tool_permission_request_expired", late.text
                 assert not permission_calls
+                if first_task:
+                    from app.services.channel_ingress_dispatcher import dispatch_channel_ingress_event
+                    from tests.integration.original_work_permission_helpers import claim_permission_reply
+
+                    reply_service, reply_item = await claim_permission_reply(factory=app_user_sessionmaker,
+                        tenant_id=seed["tenant_id"], notice_id=notices[0].id, text="/allow")
+                    rejected = await dispatch_channel_ingress_event(reply_item)
+                    assert rejected.get("permission_status") == "rejected" and not permission_calls, rejected
+                    assert await reply_service._mark_processed(item=reply_item, worker_id="permission-quote", receipt=rejected)
             else:
                 soul = seed["data_root"] / str(receiver) / "soul.md"
                 original_soul = soul.read_bytes()
                 if decision == "source_changed":
                     soul.write_bytes(original_soul + b"\nChanged before the approved effect.\n")
+                if channel_permission:
+                    from tests.integration.original_work_permission_helpers import resolve_permission_reply
+
+                    async with app_user_sessionmaker() as db:
+                        await pin_rls_tenant_context(db, seed["tenant_id"])
+                        runs_before_quote = set(await db.scalars(select(RuntimeTask.id).where(RuntimeTask.tenant_id == seed["tenant_id"])))
+                    if decision == "allow" and not legacy_permission:
+                        from copy import deepcopy
+                        from app.models.external_principal import ExternalPrincipal
+                        from app.services.channel_ingress_dispatcher import dispatch_channel_ingress_event
+                        from tests.integration.original_work_permission_helpers import claim_permission_reply
+
+                        for changed in (("scope",) if scope_permission else ("binding", "source", "receipt", "body", "request", "prose", "model")):
+                            async with app_user_sessionmaker() as db:
+                                await pin_rls_tenant_context(db, seed["tenant_id"])
+                                saved = await db.get(ChannelDeliveryOutbox, notices[0].id)
+                                saved_text, saved_meta = saved.text_content, deepcopy(saved.metadata_json)
+                                saved_receipts = deepcopy(saved.delivery_receipts_json)
+                                provider_reference = saved_receipts["text"]["detail"]["provider_message_id"]
+                                principal = await db.get(ExternalPrincipal, saved.external_principal_id)
+                                linked = principal.linked_user_id
+                                if changed == "binding":
+                                    principal.linked_user_id = other.id
+                                elif changed == "receipt":
+                                    saved.delivery_receipts_json = {**saved_receipts, "text": {**saved_receipts["text"],
+                                        "detail": {k: v for k, v in saved_receipts["text"]["detail"].items() if k != "provider_message_id"}}}
+                                elif changed == "scope":
+                                    saved.delivery_receipts_json = {**saved_receipts, "text": {**saved_receipts["text"],
+                                        "detail": {k: v for k, v in saved_receipts["text"]["detail"].items() if k != "provider_message_scope"}}}
+                                elif changed == "body":
+                                    saved.text_content += "\nUNATTESTED_REPLY_SCOPE"
+                                elif changed == "model":
+                                    saved.metadata_json = {**saved_meta, "model_result_id": str(uuid4())}
+                                await db.commit()
+                            if changed == "source":
+                                soul.write_bytes(original_soul + b"\nChanged before quoted permission.\n")
+                            try:
+                                text = "/allow " + str(uuid4()) if changed == "request" else "Please continue" if changed == "prose" else "/allow"
+                                reply_service, reply_item = await claim_permission_reply(factory=app_user_sessionmaker,
+                                    tenant_id=seed["tenant_id"], notice_id=notices[0].id, text=text,
+                                    provider_reference=provider_reference)
+                                rejected = await dispatch_channel_ingress_event(reply_item)
+                                assert rejected.get("permission_status") == ("needs_reconciliation" if changed in {"receipt", "scope"} else "rejected"), (changed, rejected)
+                                assert not permission_calls and len(client.requests) == 1
+                                assert not (seed["data_root"] / str(receiver) / report_path).exists()
+                                async with app_user_sessionmaker() as db:
+                                    await pin_rls_tenant_context(db, seed["tenant_id"])
+                                    assert set(await db.scalars(select(RuntimeTask.id).where(RuntimeTask.tenant_id == seed["tenant_id"]))) == runs_before_quote
+                                assert await reply_service._mark_processed(item=reply_item, worker_id="permission-quote", receipt=rejected)
+                            finally:
+                                soul.write_bytes(original_soul)
+                                async with app_user_sessionmaker() as db:
+                                    await pin_rls_tenant_context(db, seed["tenant_id"])
+                                    restored = await db.get(ChannelDeliveryOutbox, notices[0].id)
+                                    restored.text_content, restored.metadata_json, restored.delivery_receipts_json = saved_text, saved_meta, saved_receipts
+                                    (await db.get(ExternalPrincipal, restored.external_principal_id)).linked_user_id = linked
+                                    await db.commit()
+                    quoted = await resolve_permission_reply(factory=app_user_sessionmaker,
+                        tenant_id=seed["tenant_id"], notice_id=notices[0].id,
+                        text="/deny" if decision == "deny" else "/allow")
+                    assert quoted["permission_receipt"]["run_id"] == str(task_id)
+                    assert quoted["permission_receipt"]["run_status"] == "resumable" and len(client.requests) == 1
+                    async with app_user_sessionmaker() as db:
+                        await pin_rls_tenant_context(db, seed["tenant_id"])
+                        assert set(await db.scalars(select(RuntimeTask.id).where(RuntimeTask.tenant_id == seed["tenant_id"]))) == runs_before_quote
                 try:
                     response = await api.post(url, json={"action": "deny" if decision == "deny" else "allow_once"})
                 finally:

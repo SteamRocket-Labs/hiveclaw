@@ -47,7 +47,10 @@ async def _assert_business_file_return(*, client, db_factory, seed, run_id, orig
         await pin_rls_tenant_context(db, seed['tenant_id'])
         run = await db.get(RuntimeTask, run_id)
         artifacts = list(await db.scalars(select(ChatArtifact).where(ChatArtifact.runtime_task_id == run_id)))
-        outbox = await db.scalar(select(ChannelDeliveryOutbox).where(ChannelDeliveryOutbox.runtime_task_id == run_id))
+        outbox = await db.scalar(select(ChannelDeliveryOutbox).where(
+            ChannelDeliveryOutbox.runtime_task_id == run_id,
+            ChannelDeliveryOutbox.delivery_kind == 'terminal_result',
+            ChannelDeliveryOutbox.terminal_status == 'completed'))
         observed = {'run_status': run.status, 'metadata': run.metadata_json,
             'artifacts': [{'id': str(a.id), 'path': a.path, 'session_id': str(a.session_id),
                 'root_session_id': str(a.root_session_id), 'owner_user_id': str(a.owner_user_id),

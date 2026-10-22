@@ -20,11 +20,20 @@ pytestmark = pytest.mark.usefixtures('migrated_pg_url')
 
 
 @pytest.mark.parametrize('provider', ['filesystem'], indirect=True)
-@pytest.mark.parametrize('decision', ['allow_once', 'deny', 'cancel', 'unknown', 'expired', 'source_changed'])
+@pytest.mark.parametrize('decision', ['allow_once', 'deny', 'cancel', 'unknown', 'expired', 'source_changed', 'channel_allow_once', 'channel_deny', 'channel_unknown'])
 async def test_business_permission_wait_resumes_the_original_run(
     original_api, provider, owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, decision, migrated_pg_url,  # noqa: F811
 ):
     from app.config import get_settings
+
+    channel_permission = decision.startswith('channel_')
+    decision = decision.removeprefix('channel_')
+    if channel_permission:
+        from app.api import feishu
+
+        async def profile(*_args, **_kwargs):
+            return {'open_id': 'ou-business-owner', 'name': 'Business owner'}
+        monkeypatch.setattr(feishu, '_resolve_feishu_sender_profile', profile)
 
     monkeypatch.setattr(get_settings(), 'PUBLIC_BASE_URL', 'https://work.synthetic.invalid')
     async def inspect_wait(**context):
@@ -60,7 +69,7 @@ async def test_business_permission_wait_resumes_the_original_run(
         assert request['runtime_task_id'] == str(run_id) and request['session_id'] == child_id
         assert request['tool_name'] == 'fs_write'
         assert request['arguments']['path'] == 'workspace/business-report.md'
-        await _consume_waiting_permission_notice(context, permission_id, task.id)
+        permission_notice_id = await _consume_waiting_permission_notice(context, permission_id, task.id)
         if decision == 'source_changed':
             soul = seed['agent_root'] / 'soul.md'
             original_soul = soul.read_bytes()
@@ -117,6 +126,12 @@ async def test_business_permission_wait_resumes_the_original_run(
                 pass
 
             monkeypatch.setattr(session_tool_runtime, 'complete_tool_invocation', lose_result)
+            if channel_permission:
+                from tests.integration.original_work_permission_helpers import resolve_permission_reply
+
+                quoted = await resolve_permission_reply(factory=db_factory, tenant_id=seed['tenant_id'],
+                    notice_id=permission_notice_id, text='/allow')
+                assert quoted['permission_receipt']['run_status'] == 'needs_reconciliation'
             uncertain = await client.post(path, headers=context['headers'], json={'action': 'allow_once'})
             assert uncertain.status_code == 200 and uncertain.json()['run_status'] == 'needs_reconciliation', uncertain.text
             retry = await client.post(path, headers=context['headers'], json={'action': 'allow_once'})
@@ -154,6 +169,12 @@ async def test_business_permission_wait_resumes_the_original_run(
                 forged = {**json.loads(content), 'content': 'UNATTESTED_WORKSPACE_BYTES'}
                 assert not await _expired_permission_result_bound(db, invocation=pending, event=result_event, content=json.dumps(forged))
         else:
+            if channel_permission:
+                from tests.integration.original_work_permission_helpers import resolve_permission_reply
+
+                quoted = await resolve_permission_reply(factory=db_factory, tenant_id=seed['tenant_id'],
+                    notice_id=permission_notice_id, text='/deny' if decision == 'deny' else '/allow')
+                assert quoted['permission_receipt']['run_id'] == str(run_id) and quoted['permission_receipt']['run_status'] == 'resumable'
             accepted = await client.post(path, headers=context['headers'], json={'action': decision})
             assert accepted.status_code == 200, accepted.text
             assert accepted.json()['run_id'] == str(run_id) and accepted.json()['run_status'] == 'resumable'
@@ -234,6 +255,7 @@ async def _consume_waiting_permission_notice(context, permission_id, business_id
     assert 'workspace/business-report.md' in expected and '此提示不代表任务完成' in expected
     assert 'https://work.synthetic.invalid/agents/' in expected and f'task_id={business_id}#tasks' in expected
     assert (await service.drain_once(worker_id='business-wait-permission-replay'))['claimed'] == 0
+    return notices[0].id
 
 
 async def _consume_notice(context):

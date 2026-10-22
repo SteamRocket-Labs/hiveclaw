@@ -20,7 +20,7 @@ pytestmark = pytest.mark.usefixtures('migrated_pg_url')
 
 
 @pytest.mark.parametrize('provider', ['filesystem'], indirect=True)
-@pytest.mark.parametrize('decision', ['allow_once', 'deny', 'cancel', 'unknown', 'expired', 'source_changed', 'channel_allow_once', 'channel_deny', 'channel_unknown', 'channel_tenant_allow_once', 'channel_tenant_deny', 'channel_tenant_unknown'])
+@pytest.mark.parametrize('decision', ['allow_once', 'deny', 'cancel', 'unknown', 'expired', 'source_changed', 'channel_allow_once', 'channel_deny', 'channel_unknown', 'channel_tenant_allow_once', 'channel_tenant_deny', 'channel_tenant_unknown', 'group_allow_once', 'channel_group_allow_once', 'channel_group_deny', 'channel_group_unknown'])
 async def test_business_permission_wait_resumes_the_original_run(
     original_api, provider, owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, decision, migrated_pg_url,  # noqa: F811
 ):
@@ -28,6 +28,8 @@ async def test_business_permission_wait_resumes_the_original_run(
 
     channel_permission = decision.startswith('channel_')
     decision = decision.removeprefix('channel_')
+    group_case = decision.startswith('group_')
+    decision = decision.removeprefix('group_')
     enterprise_channel = decision.startswith('tenant_')
     decision = decision.removeprefix('tenant_')
     if channel_permission:
@@ -224,7 +226,8 @@ async def test_business_permission_wait_resumes_the_original_run(
 
     await _business_source(original_api, provider, owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path,
         withdrawn=False, unknown_effect=False, artifact_body='# Report\nPRIVATE_BUSINESS_INPUT\n',
-        permission_handler=inspect_wait, enterprise_channel=enterprise_channel)
+        permission_handler=inspect_wait, enterprise_channel=enterprise_channel,
+        group_delivery_handler=inspect_wait if group_case else None)
 
 
 async def _claims(db):
@@ -256,13 +259,26 @@ async def _consume_waiting_permission_notice(context, permission_id, business_id
         return {'data': {'message_id': 'synthetic-business-wait-permission'}}
     context['monkeypatch'].setattr(FeishuService, 'send_message', transport)
     service = ChannelDeliveryOutboxService(session_factory=context['db_factory'])
+    if seed.get('group_config_id'):
+        from dataclasses import replace
+        from app.services.channel_delivery_outbox import ChannelDeliveryRetryableError, _claimed
+
+        async with context['db_factory']() as db:
+            await pin_rls_tenant_context(db, seed['tenant_id'])
+            saved = _claimed(notices[0])
+            with pytest.raises(ChannelDeliveryRetryableError):
+                await service._load_delivery_authority_and_artifacts(replace(saved,
+                    metadata={**saved.metadata, 'model_result_id': 'unavailable-model-reference'}))
     @asynccontextmanager
     async def tenant_notice_session(_operation):
         async with tenant_scoped_session(seed['tenant_id'], session_factory=context['db_factory']) as db:
             yield db
     context['monkeypatch'].setattr(service, '_worker_session', tenant_notice_session)
     drained = await service.drain_once(worker_id='business-wait-permission')
-    assert sent == [('ou-business-owner', 'text', 'open_id')], drained
+    if seed.get('group_config_id'):
+        assert sent == [('oc_business_group', 'text', 'chat_id')], drained
+    else:
+        assert sent == [('ou-business-owner', 'text', 'open_id')], drained
     assert 'workspace/business-report.md' in expected and '此提示不代表任务完成' in expected
     assert 'https://work.synthetic.invalid/agents/' in expected and f'task_id={business_id}#tasks' in expected
     assert (await service.drain_once(worker_id='business-wait-permission-replay'))['claimed'] == 0
@@ -286,7 +302,10 @@ async def _consume_notice(context):
     context['monkeypatch'].setattr(FeishuService, 'upload_and_send_file', file_transport)
     service = ChannelDeliveryOutboxService(session_factory=context['db_factory'])
     counts = await service.drain_once(worker_id='business-permission-notice')
-    assert texts == ['ou-business-owner'] and files == [], counts
+    if context['seed'].get('group_config_id'):
+        assert texts == ['oc_business_group'] and files == [], counts
+    else:
+        assert texts == ['ou-business-owner'] and files == [], counts
     assert (await service.drain_once(worker_id='business-permission-notice'))['claimed'] == 0
 
 

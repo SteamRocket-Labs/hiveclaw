@@ -4,6 +4,8 @@ import json
 import uuid
 from contextlib import asynccontextmanager
 
+from sqlalchemy import select
+
 from app.database import pin_rls_tenant_context, tenant_scoped_session
 from app.models.channel_delivery_outbox import ChannelDeliveryOutbox
 from app.services.channel_ingress_dispatcher import dispatch_channel_ingress_event
@@ -24,10 +26,23 @@ async def claim_permission_reply(*, factory, tenant_id, notice_id, text, sender=
         metadata = {'feishu_message_scope': feishu_message_scope(config)}
         if notice.delivery_target_json.get('tenant_channel_config_id'):
             metadata['tenant_channel_config_id'] = str(config.id)
+        group = notice.delivery_target_json.get('receive_id_type') == 'chat_id'
+        sender_id = sender or notice.delivery_target_json['receive_id']
+        if group and sender is None:
+            from app.models.external_principal import ExternalPrincipal
+
+            principals = list(await db.scalars(select(ExternalPrincipal).where(
+                ExternalPrincipal.tenant_id == tenant_id, ExternalPrincipal.provider == 'feishu',
+                ExternalPrincipal.installation_ref == channel_installation_ref(config, fallback=''),
+                ExternalPrincipal.linked_user_id == notice.user_id, ExternalPrincipal.status == 'active')))
+            assert len(principals) == 1
+            sender_id = principals[0].subject_id
         reply = {'header': {'event_type': 'im.message.receive_v1', 'event_id': uuid.uuid4().hex},
-            'event': {'sender': {'sender_id': {'open_id': sender or notice.delivery_target_json['receive_id']}},
-                'message': {'message_type': 'text', 'chat_type': 'p2p', 'message_id': uuid.uuid4().hex,
+            'event': {'sender': {'sender_id': {'open_id': sender_id}},
+                'message': {'message_type': 'text', 'chat_type': 'group' if group else 'p2p', 'message_id': uuid.uuid4().hex,
                     'parent_id': provider_id, 'content': json.dumps({'text': text})}}}
+        if group:
+            reply['event']['message']['chat_id'] = notice.delivery_target_json['receive_id']
         accepted = await enqueue_channel_ingress_event(db, ChannelIngressSubmission(tenant_id=tenant_id,
             agent_id=notice.agent_id, provider='feishu', installation_ref=channel_installation_ref(config, fallback=''),
             provider_event_id=reply['header']['event_id'], handler_key='feishu.event', payload={'body': reply}, metadata=metadata))
@@ -72,7 +87,10 @@ async def dispatch_permission_rejection(*, factory, tenant_id, notice_id, item, 
             before_replay()
         replay = await dispatch_channel_ingress_event(item)
         assert replay['permission_feedback'] == receipt['permission_feedback'], replay
-    assert len(sent) == 1 and sent[0][:2] == (target['receive_id'], 'text') and sent[0][3] == 'open_id', sent
+    if target.get('receive_id_type') == 'chat_id':
+        assert len(sent) == 1 and sent[0][:2] == (target['receive_id'], 'text') and sent[0][3] == 'chat_id', sent
+    else:
+        assert len(sent) == 1 and sent[0][:2] == (target['receive_id'], 'text') and sent[0][3] == 'open_id', sent
     text = sent[0][2]
     assert 'HiveClaw' in text
     assert not any(value in text for value in ('PRIVATE_BUSINESS_INPUT', 'DELEGATED_REPORT', 'UNATTESTED_REPLY_SCOPE'))
@@ -187,4 +205,7 @@ async def assert_permission_response_notice(*, factory, tenant_id, notice_id, re
             assert current.delivery_receipts_json['text']['detail']['provider_message_id'] == 'synthetic-permission-response-notice'
             repeated = _claimed(current)
         await service._deliver(repeated, worker_id='permission-response-notice')
-    assert sent == [(original.delivery_target_json['receive_id'], 'text', saved.text, 'open_id')]
+    if original.delivery_target_json.get('receive_id_type') == 'chat_id':
+        assert sent == [(original.delivery_target_json['receive_id'], 'text', saved.text, 'chat_id')]
+    else:
+        assert sent == [(original.delivery_target_json['receive_id'], 'text', saved.text, 'open_id')]

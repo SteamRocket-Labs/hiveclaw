@@ -98,10 +98,23 @@ async def _recovery_entry(db, *, item, result, config, sender, message, scope):
         detail = ((notice.delivery_receipts_json or {}).get('text') or {}).get('detail') or {}
         target = notice.delivery_target_json or {}
         if (notice.channel != 'feishu' or notice.channel_config_id != config.id
-            or detail.get('provider_message_id') != message.get('parent_id') or detail.get('provider_message_scope') != scope
-            or target.get('receive_id_type') != 'open_id' or target.get('receive_id') != sender):
+            or detail.get('provider_message_id') != message.get('parent_id') or detail.get('provider_message_scope') != scope):
             return generic
-        principal = await db.get(ExternalPrincipal, notice.external_principal_id) if notice.external_principal_id else None
+        group = message.get('chat_type') == 'group'
+        if group:
+            if (target.get('receive_id_type') != 'chat_id' or target.get('receive_id') != message.get('chat_id')
+                or notice.external_principal_id is not None):
+                return generic
+            principal_scope = (ExternalPrincipal.tenant_channel_config_id == config.id
+                if target.get('tenant_channel_config_id') else ExternalPrincipal.channel_config_id == config.id)
+            principal = await db.scalar(select(ExternalPrincipal).where(
+                ExternalPrincipal.tenant_id == item.tenant_id, ExternalPrincipal.provider == 'feishu',
+                ExternalPrincipal.installation_ref == item.installation_ref, ExternalPrincipal.subject_id == sender,
+                ExternalPrincipal.status == 'active', principal_scope))
+        else:
+            if target.get('receive_id_type') != 'open_id' or target.get('receive_id') != sender:
+                return generic
+            principal = await db.get(ExternalPrincipal, notice.external_principal_id) if notice.external_principal_id else None
         if principal is None or principal.subject_id != sender or principal.installation_ref != item.installation_ref:
             return generic
         actor = await load_external_runtime_actor(db, tenant_id=item.tenant_id, principal_id=principal.id,
@@ -117,8 +130,16 @@ async def _recovery_entry(db, *, item, result, config, sender, message, scope):
         if work is None:
             return generic
         session, record, _binding, _target = work
-        await authorize_session_action(db, user, agent_id=item.agent_id, session_id=session.id,
-            action='read_content_input_source', audit=False)
+        if group:
+            from app.services.shared_group_history import authorize_group_history_reader
+
+            if (session.audience_kind != 'group' or session.group_subject_id != message.get('chat_id')
+                or session.group_installation_ref != item.installation_ref):
+                return generic
+            await authorize_group_history_reader(db, session=session, user=user, audit=False)
+        else:
+            await authorize_session_action(db, user, agent_id=item.agent_id, session_id=session.id,
+                action='read_content_input_source', audit=False)
         if run.task_type == 'business_task':
             with source_recipient_read(session_id=session.id, user_id=user.id):
                 await authorize_resource_action(db, user, agent_id=record.agent_id, resource_kind='task', resource_id=record.id,
@@ -159,9 +180,15 @@ async def deliver_permission_reply_feedback(db, *, item, result):
     event = body.get('event') or {}
     message = event.get('message') or {}
     sender = ((event.get('sender') or {}).get('sender_id') or {}).get('open_id')
-    if not sender or message.get('chat_type') != 'p2p' or not message.get('parent_id'):
+    group = message.get('chat_type') == 'group'
+    if not sender or message.get('chat_type') not in {'p2p', 'group'} or not message.get('parent_id'):
         return unavailable
     target = {'channel': 'feishu', 'receive_id_type': 'open_id', 'receive_id': sender}
+    if group:
+        chat_id = message.get('chat_id')
+        if not isinstance(chat_id, str) or not chat_id:
+            return unavailable
+        target.update(receive_id_type='chat_id', receive_id=chat_id, chat_id=chat_id, chat_type='group')
     if (row.metadata_json or {}).get('tenant_channel_config_id'):
         from app.models.external_principal import ExternalPrincipal
 
@@ -169,15 +196,26 @@ async def deliver_permission_reply_feedback(db, *, item, result):
             config_id = uuid.UUID(str(row.metadata_json['tenant_channel_config_id']))
         except (ValueError, TypeError):
             return unavailable
-        principal_id = await db.scalar(select(ExternalPrincipal.id).where(
-            ExternalPrincipal.tenant_id == item.tenant_id, ExternalPrincipal.provider == 'feishu',
-            ExternalPrincipal.tenant_channel_config_id == config_id, ExternalPrincipal.channel_config_id.is_(None),
-            ExternalPrincipal.installation_ref == item.installation_ref, ExternalPrincipal.subject_id == sender,
-            ExternalPrincipal.status == 'active'))
-        if principal_id is None:
-            return unavailable
         target.update(tenant_channel_config_id=row.metadata_json['tenant_channel_config_id'], installation_ref=item.installation_ref)
-        target['external_principal_id'] = str(principal_id)
+        if group:
+            from app.models.chat_session import ChatSession
+
+            session_id = await db.scalar(select(ChatSession.id).where(ChatSession.tenant_id == item.tenant_id,
+                ChatSession.agent_id == item.agent_id, ChatSession.audience_kind == 'group',
+                ChatSession.group_subject_id == chat_id, ChatSession.group_installation_ref == item.installation_ref,
+                ChatSession.user_id.is_(None), ChatSession.external_principal_id.is_(None)))
+            if session_id is None:
+                return unavailable
+            target['session_id'] = str(session_id)
+        else:
+            principal_id = await db.scalar(select(ExternalPrincipal.id).where(
+                ExternalPrincipal.tenant_id == item.tenant_id, ExternalPrincipal.provider == 'feishu',
+                ExternalPrincipal.tenant_channel_config_id == config_id, ExternalPrincipal.channel_config_id.is_(None),
+                ExternalPrincipal.installation_ref == item.installation_ref, ExternalPrincipal.subject_id == sender,
+                ExternalPrincipal.status == 'active'))
+            if principal_id is None:
+                return unavailable
+            target['external_principal_id'] = str(principal_id)
     config = await ChannelDeliveryService._load_target_config(db, item.agent_id, 'feishu', target)
     scope = (row.metadata_json or {}).get('feishu_message_scope')
     if (config is None or not config.is_configured or config.tenant_id != item.tenant_id

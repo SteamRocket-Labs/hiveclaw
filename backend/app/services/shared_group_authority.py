@@ -589,24 +589,42 @@ async def validate_shared_group_delivery(db, *, item, session):
             dependencies = [] if item.metadata.get("remote_recovery_notice") is True else [item.metadata["remote_result"]]
         else:
             model_session_id = session.id
-            if item.metadata.get('source') == 'business_task_runtime' and item.metadata.get('projection_kind') == 'result':
+            model_id = None
+            if item.metadata.get('source') in {'business_task_runtime', 'original_work_permission', 'original_work_permission_response'}:
                 from app.models.runtime_task import RuntimeTask
 
                 task = await db.get(RuntimeTask, item.runtime_task_id, populate_existing=True)
                 if (task is None or task.tenant_id != session.tenant_id or task.task_type != 'business_task'
                     or task.parent_agent_id != session.agent_id or task.child_agent_id != session.agent_id
                     or task.parent_session_id != str(session.id) or task.root_user_id != item.user_id
-                    or task.status != 'completed' or item.terminal_status != task.status
                     or not task.child_session_id):
                     raise ContentInputReceiptError('group_output_binding_changed', 'Restore the original group task binding.', 403)
+                if (item.metadata.get('projection_kind') == 'result'
+                    and (task.status != 'completed' or item.terminal_status != task.status)):
+                    raise ContentInputReceiptError('group_output_binding_changed', 'Restore the completed group result.', 403)
                 model_session_id = uuid.UUID(task.child_session_id)
-            result = await db.scalar(select(SessionModelResult).join(ChatTranscriptEvent,
+                metadata = item.metadata
+                if metadata.get('source') == 'original_work_permission_response':
+                    from app.models.channel_delivery_outbox import ChannelDeliveryOutbox
+
+                    original = await db.get(ChannelDeliveryOutbox, uuid.UUID(metadata['original_notice_id']))
+                    if (original is None or original.tenant_id != item.tenant_id or original.runtime_task_id != task.id
+                        or original.agent_id != item.agent_id or original.session_id != session.id
+                        or original.metadata_json.get('source') != 'original_work_permission'):
+                        raise ContentInputReceiptError('group_output_binding_changed', 'Restore the original permission receipt.', 403)
+                    metadata = original.metadata_json
+                if metadata.get('source') == 'original_work_permission' or metadata.get('projection_kind') == 'question_notice':
+                    model_id = uuid.UUID(metadata['model_result_id'])
+            statement = select(SessionModelResult).join(ChatTranscriptEvent,
                 ChatTranscriptEvent.id == SessionModelResult.round_committed_event_id).where(
                 SessionModelResult.tenant_id == session.tenant_id, ChatTranscriptEvent.tenant_id == session.tenant_id,
                 ChatTranscriptEvent.agent_id == session.agent_id, ChatTranscriptEvent.session_id == model_session_id,
                 ChatTranscriptEvent.run_id == item.runtime_task_id,
                 SessionModelResult.session_id == model_session_id, SessionModelResult.run_id == item.runtime_task_id,
-                SessionModelResult.state == "round_committed").order_by(ChatTranscriptEvent.sequence.desc()).limit(1))
+                SessionModelResult.state == "round_committed")
+            if model_id is not None:
+                statement = statement.where(SessionModelResult.id == model_id)
+            result = await db.scalar(statement.order_by(ChatTranscriptEvent.sequence.desc()).limit(1))
             dependencies, complete = _model_dependencies(result)
             if not complete:
                 raise ContentInputReceiptError("group_output_sources_unavailable", "The group output lacks its complete source receipt.", 503)
@@ -620,3 +638,5 @@ async def validate_shared_group_delivery(db, *, item, session):
         if exc.status_code in {401, 403, 404}:
             raise ChannelDeliveryPermanentError(message) from exc
         raise ChannelDeliveryRetryableError(message) from exc
+    except (KeyError, ValueError, TypeError, AttributeError) as exc:
+        raise ChannelDeliveryRetryableError('shared_group_output_unavailable:group_output_binding_unavailable') from exc

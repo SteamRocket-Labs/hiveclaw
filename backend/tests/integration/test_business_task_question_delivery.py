@@ -17,10 +17,20 @@ pytestmark = pytest.mark.usefixtures('migrated_pg_url')
 
 
 @pytest.mark.parametrize('provider', ['filesystem'], indirect=True)
-@pytest.mark.parametrize('state', ['waiting', 'withdrawn', 'cancelled', 'answered', 'parent_target_changed'])
+@pytest.mark.parametrize('state', ['waiting', 'withdrawn', 'cancelled', 'answered', 'parent_target_changed', 'group_waiting', 'group_withdrawn', 'group_answered', 'group_quoted'])
 async def test_pending_business_question_returns_to_its_original_channel(
     original_api, provider, owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, state,  # noqa: F811
 ):
+    group_case = state.startswith('group_')
+    state = state.removeprefix('group_')
+    quoted = state == 'quoted'
+    if quoted:
+        from app.api import feishu
+
+        async def profile(*_args, **_kwargs):
+            return {'open_id': 'ou-business-owner', 'name': 'Business owner'}
+        monkeypatch.setattr(feishu, '_resolve_feishu_sender_profile', profile)
+        state = 'waiting'
     if state == 'parent_target_changed':
         from app.models.chat_session import ChatSession
         from app.services import business_task_question_delivery
@@ -47,7 +57,10 @@ async def test_pending_business_question_returns_to_its_original_channel(
             assert len(notices) == 1
             notice_id = notices[0].id
             assert notices[0].session_id == uuid.UUID(run.parent_session_id)
-            assert notices[0].delivery_target_json['receive_id'] == 'ou-business-owner'
+            if group_case:
+                assert notices[0].delivery_target_json['receive_id'] == 'oc_business_group'
+            else:
+                assert notices[0].delivery_target_json['receive_id'] == 'ou-business-owner'
             assert notices[0].metadata_json['projection_kind'] == 'question_notice'
             question_id = notices[0].prompt_key
             assert question_id and 'PRIVATE_BUSINESS_INPUT' in notices[0].text_content
@@ -64,6 +77,17 @@ async def test_pending_business_question_returns_to_its_original_channel(
         api = f"/agents/{seed['agent_id']}/tasks/{task_id}"
 
         async def answer():
+            if quoted:
+                from tests.integration.original_work_permission_helpers import claim_permission_reply
+                from app.services.channel_ingress_dispatcher import dispatch_channel_ingress_event
+
+                inbox, item = await claim_permission_reply(factory=factory, tenant_id=seed['tenant_id'],
+                    notice_id=notice_id, text='Report for this original work.')
+                receipt = await dispatch_channel_ingress_event(item)
+                assert receipt.get('answer_status') == 'queued', receipt
+                assert await inbox._mark_processed(item=item, worker_id='permission-quote', receipt=receipt)
+                assert await inbox.claim_batch(worker_id='answered-group-question', limit=10) == []
+                return
             response = await client.post(api + '/answers', headers=headers, json={
                 'input_id': str(uuid.uuid4()), 'question_item_id': question_id,
                 'content_parts': [{'type': 'text', 'text': 'Report for this original work.'}]})
@@ -85,7 +109,10 @@ async def test_pending_business_question_returns_to_its_original_channel(
             await pin_rls_tenant_context(db, seed['tenant_id'])
             notice = await db.get(ChannelDeliveryOutbox, notice_id)
             assert notice.status == ('delivered' if state in {'waiting', 'parent_target_changed'} else 'dead_letter'), notice.last_error
-        assert all(recipient == 'ou-business-owner' for recipient, _text in texts)
+        if group_case:
+            assert all(recipient == 'oc_business_group' for recipient, _text in texts)
+        else:
+            assert all(recipient == 'ou-business-owner' for recipient, _text in texts)
         assert sum('PRIVATE_BUSINESS_INPUT' in text for _recipient, text in texts) == int(state in {'waiting', 'parent_target_changed'})
         assert (await service.drain_once(worker_id='business-question-delivery'))['claimed'] == 0
         if state not in {'waiting', 'answered', 'parent_target_changed'}:
@@ -116,4 +143,5 @@ async def test_pending_business_question_returns_to_its_original_channel(
         assert len(texts) == (2 if state in {'waiting', 'parent_target_changed'} else 1)
 
     await _business_source(original_api, provider, owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path,
-        withdrawn=False, unknown_effect=False, question_handler=inspect)
+        withdrawn=False, unknown_effect=False, question_handler=inspect,
+        group_delivery_handler=inspect if group_case else None)

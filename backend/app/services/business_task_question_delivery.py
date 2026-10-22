@@ -96,3 +96,7 @@ async def authorize_business_question_notice(db, *, item, run, session, user):
             action='read', owner_user_id=business.created_by, root_session_id=business.root_session_id,
             authority_state=business.authority_state)
         await _validate_input_dependencies(db, run.tenant_id, dependencies, user=user)
+    if session.audience_kind == 'group':
+        from app.services.shared_group_authority import validate_shared_group_delivery
+
+        await validate_shared_group_delivery(db, item=item, session=session)

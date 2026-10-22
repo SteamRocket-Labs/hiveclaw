@@ -138,8 +138,12 @@ async def _assert_business_file_return(*, client, db_factory, seed, run_id, orig
     monkeypatch.setattr(FeishuService, 'upload_and_send_file', file_transport)
     service = ChannelDeliveryOutboxService(session_factory=db_factory)
     counts = await service.drain_once(worker_id='business-file')
-    assert texts == ([] if withdrawn else ['ou-business-owner']), counts
-    assert sent_files == ([] if withdrawn else [{'recipient': 'ou-business-owner', 'bytes': artifact_body.encode()}]), counts
+    if seed.get('group_config_id'):
+        assert texts == ([] if withdrawn else ['oc_business_group']), counts
+        assert sent_files == ([] if withdrawn else [{'recipient': 'oc_business_group', 'bytes': artifact_body.encode()}]), counts
+    else:
+        assert texts == ([] if withdrawn else ['ou-business-owner']), counts
+        assert sent_files == ([] if withdrawn else [{'recipient': 'ou-business-owner', 'bytes': artifact_body.encode()}]), counts
     assert (await service.drain_once(worker_id='business-file'))['claimed'] == 0
     assert len(model_client.requests) == 3
     if not withdrawn:

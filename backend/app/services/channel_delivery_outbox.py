@@ -590,6 +590,10 @@ class ChannelDeliveryOutboxService:
             session = await db.get(ChatSession, item.session_id, populate_existing=True)
             user = await self._private_delivery_reader(db, item, session) if session is not None else None
             await authorize_original_work_permission_response(db, item=item, session=session, user=user)
+            if session.audience_kind == 'group':
+                from app.services.shared_group_authority import validate_shared_group_delivery
+
+                await validate_shared_group_delivery(db, item=item, session=session)
             return
         if item.terminal_status == 'awaiting_permission' or item.metadata.get('source') == 'original_work_permission':
             from app.services.original_work_permission_notices import authorize_original_work_permission_notice
@@ -597,6 +601,10 @@ class ChannelDeliveryOutboxService:
             session = await db.get(ChatSession, item.session_id, populate_existing=True)
             user = await self._private_delivery_reader(db, item, session) if session is not None else None
             await authorize_original_work_permission_notice(db, item=item, session=session, user=user)
+            if session.audience_kind == 'group':
+                from app.services.shared_group_authority import validate_shared_group_delivery
+
+                await validate_shared_group_delivery(db, item=item, session=session)
             return
         if item.metadata.get('source') == 'employee_first_task_question':
             from app.services.employee_first_task import authorize_first_task_question_notice

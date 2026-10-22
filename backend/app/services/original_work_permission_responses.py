@@ -77,7 +77,9 @@ async def authorize_original_work_permission_response(db, *, item, session, user
         control = await db.get(SessionControlInput, uuid.UUID(receipt['control_id']), populate_existing=True)
         command = await db.get(SessionCommand, control.command_id) if control else None
         invocation = await db.get(SessionToolInvocation, uuid.UUID(receipt['invocation_id']))
-        principal = await db.get(ExternalPrincipal, item.external_principal_id) if item.external_principal_id else None
+        group = session is not None and session.audience_kind == 'group'
+        principal_id = (audit.details or {}).get('external_principal_id') if group and audit is not None else item.external_principal_id
+        principal = await db.get(ExternalPrincipal, uuid.UUID(str(principal_id))) if principal_id else None
         if (item.metadata.get('source') != SOURCE or item.metadata.get('schema') != SCHEMA
             or item.terminal_status != STATUS or item.delivery_kind != 'interactive_prompt' or item.artifact_ids
             or notice is None or audit is None or run is None or control is None or command is None or invocation is None
@@ -108,10 +110,17 @@ async def authorize_original_work_permission_response(db, *, item, session, user
             or audit.event_type != 'original_work.permission_response_via_channel'
             or audit.action != 'respond_original_work_permission' or audit.resource_type != 'runtime_task' or audit.resource_id != run.id
             or audit.details.get('original_notice_id') != str(notice.id) or audit.details.get('permission_receipt') != receipt
-            or audit.details.get('external_principal_id') != str(item.external_principal_id)
+            or audit.details.get('external_principal_id') != str(principal.id if principal else None)
             or audit.details.get('channel_ingress_event_id') != str(audit.request_id)
             or principal is None or principal.tenant_id != item.tenant_id or principal.linked_user_id != user.id
-            or item.channel != 'feishu' or item.delivery_target.get('receive_id_type') != 'open_id'
+            or item.channel != 'feishu'):
+            raise invalid()
+        if group:
+            if (item.external_principal_id is not None or item.delivery_target.get('receive_id_type') != 'chat_id'
+                or item.delivery_target.get('receive_id') != session.group_subject_id
+                or item.delivery_target.get('chat_id') != session.group_subject_id):
+                raise invalid()
+        elif (item.delivery_target.get('receive_id_type') != 'open_id'
             or item.delivery_target.get('receive_id') != principal.subject_id):
             raise invalid()
         config = await ChannelDeliveryService._load_target_config(db, item.agent_id, item.channel, item.delivery_target)
@@ -130,8 +139,18 @@ async def authorize_original_work_permission_response(db, *, item, session, user
         _original_session, record, _binding, _target = work
         if item.text != permission_response_text(run, record, receipt, control.response_payload_json['decision']):
             raise invalid()
-        await authorize_session_action(db, user, agent_id=item.agent_id, session_id=item.session_id,
-            action='read_content_input_source', audit=False)
+        if group:
+            from app.services.external_principal_service import load_external_runtime_actor
+            from app.services.shared_group_history import authorize_group_history_reader
+
+            actor = await load_external_runtime_actor(db, tenant_id=item.tenant_id,
+                principal_id=principal.id, expected_user_id=user.id)
+            if not actor.authority_bound:
+                raise invalid()
+            await authorize_group_history_reader(db, session=session, user=user, audit=False)
+        else:
+            await authorize_session_action(db, user, agent_id=item.agent_id, session_id=item.session_id,
+                action='read_content_input_source', audit=False)
         if run.task_type == 'business_task':
             with source_recipient_read(session_id=session.id, user_id=user.id):
                 await authorize_resource_action(db, user, agent_id=record.agent_id, resource_kind='task', resource_id=record.id,

@@ -759,9 +759,9 @@ async def _resolve_session_tool_permission(
 
             await execution_lease.ensure_owned()
             await authorize_group_tool_permission(db, authority=authority, invocation=invocation)
-            from app.services.delegation_permission_runtime import validate_delegated_permission_sources
+            from app.services.delegation_permission_runtime import validate_permission_input_sources
 
-            await validate_delegated_permission_sources(db, authority=authority, session=session,
+            await validate_permission_input_sources(db, authority=authority, session=session,
                 invocation=invocation, model=source_result, execution=delegated_execution)
             await mark_tool_effect_started(
                 db,

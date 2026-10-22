@@ -722,7 +722,7 @@ async def require_agent_owner_or_admin(
         # Lock only the Agent row: the liveness join must not widen the row
         # lock to the Tenant identity row, which the retirement path locks
         # first — a widened FOR UPDATE could invert that order and deadlock.
-        stmt = stmt.with_for_update(of=Agent)
+        stmt = stmt.with_for_update(of=Agent).execution_options(populate_existing=True)
 
     if user.role == "platform_admin":
         async with enter_rls_bypass(
@@ -751,6 +751,20 @@ async def require_agent_owner_or_admin(
         await pin_rls_tenant_context(db, agent.tenant_id)
     elif user.tenant_id is None or user.tenant_id != agent.tenant_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found")
+    if lock:
+        # The Agent lock may have waited after the company and actor reads.
+        # Recheck both without taking a Tenant lock in the opposite order.
+        live_tenant = await db.scalar(select(Tenant.id).where(
+            Tenant.id == agent.tenant_id, Tenant.is_active.is_(True)))
+        if live_tenant is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found")
+        from app.services.runtime_user_identity import load_scoped_runtime_user
+
+        current_user = await load_scoped_runtime_user(db, user.id, tenant_id=agent.tenant_id)
+        if current_user is None:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found or inactive")
+        # Callers retain this actor, including a detached selected-company view.
+        user.role, user.is_active, user.tenant_id = current_user.role, current_user.is_active, current_user.tenant_id
     if is_scoped_business_admin(user, resource_tenant_id=agent.tenant_id) or effective_agent_owner_id(agent) == user.id:
         return agent
     raise HTTPException(

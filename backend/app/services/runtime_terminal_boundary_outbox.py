@@ -660,7 +660,9 @@ class RuntimeTerminalBoundaryOutboxService:
             )
             .with_for_update()
         )
-        if row is None:
+        # The row lock may have outwaited the deadline used by the query.
+        current = datetime.now(UTC)
+        if row is None or row.lease_expires_at is None or row.lease_expires_at <= current:
             raise StaleTerminalBoundaryClaim("terminal boundary claim is no longer current")
         row.lease_expires_at = current + timedelta(seconds=self._lease_seconds)
         await db.flush()
@@ -692,7 +694,9 @@ class RuntimeTerminalBoundaryOutboxService:
                 )
                 .with_for_update()
             )
-            if row is None:
+            # Waiting for the exact claim cannot revive an expired lease.
+            current = datetime.now(UTC)
+            if row is None or row.lease_expires_at is None or row.lease_expires_at <= current:
                 return False
             row.lease_expires_at = current + timedelta(seconds=self._lease_seconds)
             await db.flush()

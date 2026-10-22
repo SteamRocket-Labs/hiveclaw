@@ -618,6 +618,30 @@ class ChannelDeliveryOutboxService:
             or session is None or session.tenant_id != item.tenant_id or session.agent_id != item.agent_id):
             raise ContentInputReceiptError('business_result_binding_changed', 'The original task delivery changed.', 403)
         outcome = (task.metadata_json or {}).get('outcome') or {}
+        if item.metadata.get('projection_kind') == 'status_notice':
+            from app.core.resource_authority import authorize_resource_action
+            from app.models.task import Task
+            from app.services.business_task_runtime import _runtime_binding_matches, business_task_status_notice
+
+            metadata = task.metadata_json or {}
+            try:
+                business = await db.get(Task, uuid.UUID(metadata['business_task_id']), populate_existing=True)
+            except (KeyError, ValueError, TypeError) as exc:
+                raise ContentInputReceiptError('business_status_binding_changed', 'The saved task is unavailable.', 403) from exc
+            notice = business_task_status_notice(task.status)
+            if (business is None or not _runtime_binding_matches(business, task) or metadata.get('phase') != 'terminal'
+                or item.metadata.get('business_task_id') != str(business.id)
+                or business.status != outcome.get('task_status') or business.last_execution_status != outcome.get('status')
+                or task.status != outcome.get('runtime_status') or notice is None or item.text != notice or item.artifact_ids):
+                raise ContentInputReceiptError('business_status_changed', 'The saved task status no longer matches.', 403)
+            user = await self._private_delivery_reader(db, item, session)
+            if user is None:
+                raise ContentInputReceiptError('business_result_reader_unavailable', 'Restore the original requester authority.', 403)
+            with source_recipient_read(session_id=session.id, user_id=user.id):
+                await authorize_resource_action(db, user, agent_id=business.agent_id, resource_kind='task', resource_id=business.id,
+                    action='read', owner_user_id=business.created_by, root_session_id=business.root_session_id,
+                    authority_state=business.authority_state)
+            return
         result, summary = outcome.get('result'), outcome.get('summary')
         if not isinstance(result, str) or not isinstance(summary, str) or not task.child_session_id:
             raise ContentInputReceiptError('business_result_sources_unavailable', 'Reconcile the saved task result before delivery.', 503)

@@ -548,6 +548,19 @@ async def quarantine_stale_business_task(
     await enqueue_business_task_terminal_boundary(db, runtime_task)
 
 
+def business_task_status_notice(runtime_status: str) -> str | None:
+    """Render only persisted platform state, without task or exception content."""
+
+    return {
+        "skipped": "Business task is blocked. Review the task in the original work before continuing.",
+        "failed": "Business task failed. Review the saved task state in the original work before retrying.",
+        "killed": "Business task was cancelled. Review the saved task state in the original work.",
+        "needs_reconciliation": (
+            "Business task requires reconciliation. Review possible effects in the original work before retrying."
+        ),
+    }.get(runtime_status)
+
+
 async def _enqueue_business_task_channel_delivery(
     *,
     db: AsyncSession,
@@ -574,8 +587,9 @@ async def _enqueue_business_task_channel_delivery(
 
     config = await ChannelDeliveryService._load_target_config(db, runtime_task.parent_agent_id,
         "microsoft_teams" if channel == "teams" else channel, target)
-    text = outcome.summary
-    if outcome.result and outcome.result.strip() != outcome.summary.strip():
+    notice = business_task_status_notice(outcome.runtime_status)
+    text = notice or outcome.summary
+    if notice is None and outcome.result and outcome.result.strip() != outcome.summary.strip():
         text = f"{outcome.summary}\n\n{outcome.result}"
     await enqueue_channel_delivery(
         db,
@@ -592,6 +606,7 @@ async def _enqueue_business_task_channel_delivery(
             terminal_status=outcome.runtime_status,
             metadata={
                 "source": "business_task_runtime",
+                "projection_kind": "status_notice" if notice is not None else "result",
                 "business_task_id": metadata.get("business_task_id"),
                 "evidence_refs": list(outcome.evidence_refs),
             },

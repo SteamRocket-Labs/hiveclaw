@@ -3,6 +3,7 @@
 import json
 import sys
 import uuid
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -170,6 +171,53 @@ async def test_business_task_text_rechecks_its_actual_original_source(
         assert detail.status_code == 200 and detail.json()['task']['actions']['can_reconcile']
         assert not detail.json()['task']['actions']['can_retry']
         await _execute_claimed_business_task(run_id)
+        assert len(model_client.requests) == 1
+        revoked = await client.post(f'/chat/attachments/{original_id}/withdraw', headers=headers,
+            json={'expected_content_sha256': original['original_attachment']['content_sha256']})
+        assert revoked.status_code == 200, revoked.text
+        calls = []
+
+        async def status_transport(self, _app_id, _secret, recipient, *args, **kwargs):
+            calls.append({'recipient': recipient, 'args': args, 'kwargs': kwargs})
+            return {'data': {'message_id': 'synthetic-business-status-ack'}}
+
+        monkeypatch.setattr(FeishuService, 'send_message', status_transport)
+        service = ChannelDeliveryOutboxService(session_factory=app_user_sessionmaker)
+        counts = await service.drain_once(worker_id='business-status')
+        async with app_user_sessionmaker() as db:
+            await pin_rls_tenant_context(db, seed['tenant_id'])
+            row = await db.scalar(select(ChannelDeliveryOutbox).where(ChannelDeliveryOutbox.runtime_task_id == run_id))
+            observed = {'calls': calls, 'counts': counts, 'status': row.status, 'last_error': row.last_error}
+            (tmp_path / 'business-status-source.json').write_text(json.dumps(observed, indent=2))
+            assert len(calls) == 1 and row.status == 'delivered', observed
+            assert calls[0]['recipient'] == 'ou-business-owner'
+            assert 'reconciliation' in json.dumps(calls)
+            assert not any(value in json.dumps(calls) for value in ('PRIVATE_BUSINESS_INPUT', RESULT, body['title']))
+            from app.services.channel_delivery_outbox import _claimed
+
+            saved = _claimed(row)
+            for changed in (
+                replace(saved, text='PRIVATE_BUSINESS_INPUT'),
+                replace(saved, artifact_ids=(uuid.uuid4(),)),
+                replace(saved, user_id=uuid.uuid4()),
+                replace(saved, metadata={**saved.metadata, 'business_task_id': str(uuid.uuid4())}),
+            ):
+                with pytest.raises(ContentInputReceiptError) as denied:
+                    await service._authorize_native_result_text(db, changed)
+                assert denied.value.status_code == 403
+            with pytest.raises(ContentInputReceiptError) as no_result:
+                await service._authorize_native_result_text(db,
+                    replace(saved, metadata={**saved.metadata, 'projection_kind': 'result'}))
+            assert no_result.value.status_code == 503
+            user = await db.get(User, seed['user_id'])
+            user.is_active = False
+            await db.flush()
+            from fastapi import HTTPException
+
+            with pytest.raises(HTTPException) as inactive:
+                await service._authorize_native_result_text(db, saved)
+            assert inactive.value.status_code == 403
+        assert len(calls) == 1
         assert len(model_client.requests) == 1
         return
     assert len(model_client.requests) == 2 and any(message.get('role') == 'tool' and 'PRIVATE_BUSINESS_INPUT' in str(message)

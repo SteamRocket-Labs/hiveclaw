@@ -1,4 +1,11 @@
 import { del, get, post } from '../core';
+import type { SessionPermissionRequest } from '../../pages/agent-detail/chatRuntime';
+
+export interface HrFirstTaskPermission {
+  session_id: string;
+  can_resolve: boolean;
+  request: SessionPermissionRequest;
+}
 
 export interface HrCreationRecovery {
   cleanup_pending?: boolean;
@@ -39,6 +46,7 @@ export interface HrCreationDraft {
     status: string;
     can_answer: boolean;
     question: { item_id: string; payload: Record<string, unknown> } | null;
+    permissions?: HrFirstTaskPermission[];
   } | null;
   provisioning_steps?: Array<{
     step_key: string;

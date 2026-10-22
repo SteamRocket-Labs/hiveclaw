@@ -128,12 +128,10 @@ async def read_business_task_questions(db, task, user):
 
 async def read_business_task_permissions(db, task, user):
     """Expose only current native permission requests in the original task view."""
-    from sqlalchemy import func, or_
-    from app.models.chat_transcript_event import ChatTranscriptEvent
     from app.models.runtime_task import RuntimeTask
     from app.services.business_task_artifacts import _execution_session, business_task_output_visibility
     from app.services.content_input_receipts import ContentInputReceiptError
-    from app.services.session_user_question import question_payload
+    from app.services.session_permission_views import read_session_run_permissions
 
     if task.active_runtime_task_id is None or (await business_task_output_visibility(db, task, user))['status'] != 'available':
         return []
@@ -143,47 +141,9 @@ async def read_business_task_permissions(db, task, user):
         return []
     try:
         session, _root = await _execution_session(db, run)
+        return await read_session_run_permissions(db, run=run, session=session, user=user)
     except ContentInputReceiptError:
         return []
-    rows = (await db.execute(select(ChatTranscriptEvent, SessionToolInvocation).join(SessionToolInvocation,
-        SessionToolInvocation.id == ChatTranscriptEvent.invocation_id).join(SessionModelResult,
-        SessionModelResult.id == ChatTranscriptEvent.result_id).where(
-        ChatTranscriptEvent.tenant_id == run.tenant_id, ChatTranscriptEvent.agent_id == run.parent_agent_id,
-        ChatTranscriptEvent.session_id == session.id, ChatTranscriptEvent.run_id == run.id,
-        ChatTranscriptEvent.item_kind == 'tool_permission', ChatTranscriptEvent.item_id == SessionToolInvocation.permission_item_id,
-        SessionToolInvocation.tenant_id == run.tenant_id, SessionToolInvocation.session_id == session.id,
-        SessionToolInvocation.run_id == run.id, SessionToolInvocation.permission_state == 'waiting',
-        SessionToolInvocation.effect_state == 'prepared_not_started', SessionToolInvocation.result_event_id.is_(None),
-        or_(SessionToolInvocation.permission_expires_at.is_(None), SessionToolInvocation.permission_expires_at > func.now()),
-        SessionModelResult.tenant_id == run.tenant_id, SessionModelResult.session_id == session.id,
-        SessionModelResult.run_id == run.id, SessionModelResult.state == 'round_committed',
-        SessionToolInvocation.provider_request_id == SessionModelResult.provider_request_id)
-        .order_by(ChatTranscriptEvent.sequence))).all()
-    can_resolve = user.id is not None and run.root_user_id == user.id
-    if can_resolve:
-        from fastapi import HTTPException
-        from app.core.permissions import authorize_session_action
-
-        try:
-            await authorize_session_action(db, user, agent_id=run.parent_agent_id, session_id=session.id,
-                action='respond_tool_permission', require_writable=True, audit=False)
-        except HTTPException as exc:
-            if exc.status_code not in {403, 404, 410}:
-                raise
-            can_resolve = False
-    latest = {event.item_id: (event, invocation) for event, invocation in rows}
-    permissions = []
-    for event, invocation in latest.values():
-        request = question_payload(event).get('permission_request') or {}
-        if (event.lifecycle != 'waiting' or request.get('permission_request_id') != str(event.item_id)
-            or request.get('session_id') != str(session.id) or request.get('runtime_task_id') != str(run.id)
-            or request.get('tool_name') != invocation.tool_name
-            or request.get('requested_by_user_id') != str(run.root_user_id)
-            or request.get('arguments') != (invocation.effective_arguments_json or invocation.provider_arguments_json or {})):
-            continue
-        permissions.append({'session_id': str(session.id), 'request': request,
-            'can_resolve': can_resolve})
-    return permissions
 
 
 async def sync_business_permission_resume(db, run):

@@ -10,6 +10,7 @@ import { runtimeStatusLabel } from './SessionRuntimePanel';
 import { useAuthStore } from '../../stores';
 import './HrBlueprintPreviewCard.css';
 import { blueprintStatusLabel } from './hrCreationStatus';
+import HrFirstTaskPermissions from './HrFirstTaskPermissions';
 
 interface HrBlueprintPreviewCardProps {
   agentId?: string;
@@ -297,7 +298,7 @@ export function HrBlueprintPreviewCard({ agentId, preview, onSendMessage }: HrBl
           <h4>{t('agent.chat.toolResults.explicitFirstTask', 'Your first task')}</h4>
           <p>{canonicalPreview.explicitFirstTask}</p>
           <p>{work
-            ? runtimeStatusLabel(work.question ? 'waiting_user' : work.status === 'resumable' ? 'resuming' : work.status, t)
+            ? runtimeStatusLabel(work.question || work.permissions?.length ? 'waiting_user' : work.status === 'resumable' ? 'resuming' : work.status, t)
             : firstTask?.status === 'dispatched'
             ? t('agent.chat.toolResults.firstTaskDispatched', 'Task dispatched. Updates and results return to this work.')
             : firstTask?.status
@@ -320,6 +321,9 @@ export function HrBlueprintPreviewCard({ agentId, preview, onSendMessage }: HrBl
                 return receipt;
               } : undefined} />
           )}
+          {work && agentId && draft && <HrFirstTaskPermissions key={`${work.runtime_task_id}:${viewerId}`}
+            agentId={agentId} draft={draft} userId={viewerId}
+            onResolved={async () => { await queryClient.invalidateQueries({ queryKey }); }} />}
           {work && ['unknown', 'unavailable', 'needs_reconciliation'].includes(work.status) && (
             <button type="button" onClick={() => queryClient.invalidateQueries({ queryKey })}>
               {t('common.refresh', 'Refresh')}

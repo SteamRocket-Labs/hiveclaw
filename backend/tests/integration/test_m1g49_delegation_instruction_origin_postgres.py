@@ -566,16 +566,44 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
                 yield db
         app = FastAPI()
         app.include_router(router, prefix="/api")
+        from app.api.hr_creation import router as creation_router
+
+        app.include_router(creation_router, prefix="/api")
         app.dependency_overrides[get_db] = permission_db
         app.dependency_overrides[get_current_user] = lambda: user
         url = f"/api/agents/{receiver}/sessions/{request.session_id}/permissions/{permission_id}/resolve"
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://permission.local") as api:
+            if first_task:
+                draft_url = f"/api/agents/{seed['agent_id']}/hr-creation-drafts/{creation['blueprint_id']}"
+                original = await api.get(draft_url)
+                assert original.status_code == 200, original.text
+                work = original.json()["first_task_work"]
+                assert work["status"] == "suspended" and len(work.get("permissions", [])) == 1, original.text
+                permission_view = work["permissions"][0]
+                assert permission_view["can_resolve"] is True and permission_view["session_id"] == request.session_id
+                assert permission_view["request"]["permission_request_id"] == str(permission_id)
+                assert permission_view["request"]["runtime_task_id"] == str(task_id)
+                assert permission_view["request"]["arguments"] == {"path": report_path, "content": "DELEGATED_REPORT"}
+                if decision == "allow":
+                    soul = seed["data_root"] / str(receiver) / "soul.md"
+                    original_soul = soul.read_bytes()
+                    try:
+                        soul.write_bytes(original_soul + b"\nChanged before original-work permission read.\n")
+                        changed = await api.get(draft_url)
+                        assert changed.status_code == 200, changed.text
+                        assert changed.json()["first_task_work"]["permissions"] == []
+                        assert changed.json()["first_task_work"]["status"] == "unavailable"
+                    finally:
+                        soul.write_bytes(original_soul)
             ordinary = await api.post(f"/api/agents/{receiver}/sessions/{request.session_id}/inputs", json={
                 "kind": "start_turn", "input_id": str(uuid4()), "idempotency_key": str(uuid4()),
                 "content_parts": [{"type": "text", "text": "Unrelated work"}]})
             assert ordinary.status_code == 409 and ordinary.json()["detail"]["code"] == "session_read_only"
             app.dependency_overrides[get_current_user] = lambda: other
             try:
+                if first_task:
+                    hidden = await api.get(draft_url)
+                    assert hidden.status_code in {403, 404}, hidden.text
                 denied = await api.post(url, json={"action": "allow_once"})
                 assert denied.status_code in {403, 404}, denied.text
                 assert not (seed["data_root"] / str(receiver) / report_path).exists()
@@ -589,6 +617,8 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
                 assert stopped["status"] == "killed", stopped
                 late = await api.post(url, json={"action": "allow_once"})
                 assert late.status_code == 409 and not permission_calls and len(client.requests) == 1, late.text
+                if first_task:
+                    assert (await api.get(draft_url)).json()["first_task_work"]["permissions"] == []
                 assert not (seed["data_root"] / str(receiver) / report_path).exists()
                 async with app_user_sessionmaker() as db:
                     await pin_rls_tenant_context(db, seed["tenant_id"])
@@ -606,6 +636,8 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
                     assert uncertain.status_code == 200 and uncertain.json()["run_status"] == "needs_reconciliation", uncertain.text
                     assert uncertain.json()["retryable"] is False
                 assert len(permission_calls) == 1 and len(client.requests) == 1
+                if first_task:
+                    assert (await api.get(draft_url)).json()["first_task_work"]["permissions"] == []
                 assert (seed["data_root"] / str(receiver) / report_path).read_text() == "DELEGATED_REPORT"
                 async with app_user_sessionmaker() as db:
                     await pin_rls_tenant_context(db, seed["tenant_id"])
@@ -639,6 +671,9 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
                 assert receipt["run_id"] == str(task_id) and receipt["run_status"] == "resumable", receipt
                 replay = await api.post(url, json={"action": "deny" if decision == "deny" else "allow_once"})
                 assert replay.status_code == 200 and replay.json()["result_event_id"] == receipt["result_event_id"], replay.text
+            if first_task:
+                settled = await api.get(draft_url)
+                assert settled.status_code == 200 and settled.json()["first_task_work"]["permissions"] == [], settled.text
         if decision == "allow":
             assert (seed["data_root"] / str(receiver) / report_path).read_text() == "DELEGATED_REPORT"
             assert len(permission_calls) == 1

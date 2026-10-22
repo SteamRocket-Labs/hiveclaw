@@ -41,18 +41,24 @@ async def load_first_task_work(db, *, draft, user):
     if task is None:
         return None
     work = {"runtime_task_id": str(task_id), "agent_id": str(draft.created_agent_id),
-        "session_id": str(session_id), "status": "needs_reconciliation", "question": None, "can_answer": False}
+        "session_id": str(session_id), "status": "needs_reconciliation", "question": None, "can_answer": False,
+        "permissions": []}
     if (task.tenant_id != draft.tenant_id or task.task_type != "delegation"
         or task.parent_agent_id != draft.hr_agent_id or task.child_agent_id != draft.created_agent_id
         or task.root_user_id != user.id or task.parent_session_id != str(draft.session_id)
         or task.child_session_id != str(session_id) or task.prompt != evidence["first_task"]):
         return work
     work["status"] = task.status
-    if task.status != "suspended" or not (task.metadata_json or {}).get("delegation_waiting_question_item_id"):
+    if task.status not in {"running", "suspended"}:
         return work
     try:
-        await authorize_session_action(db, user, agent_id=task.child_agent_id, session_id=session_id,
+        decision = await authorize_session_action(db, user, agent_id=task.child_agent_id, session_id=session_id,
             action="read_content_input_source")
+        from app.services.session_permission_views import read_session_run_permissions
+
+        work["permissions"] = await read_session_run_permissions(db, run=task, session=decision.session, user=user)
+        if task.status != "suspended" or not (task.metadata_json or {}).get("delegation_waiting_question_item_id"):
+            return work
         child, access = await check_agent_access(db, user, task.child_agent_id)
         question_id = uuid.UUID(task.metadata_json["delegation_waiting_question_item_id"])
         question = await db.scalar(select(ChatTranscriptEvent).where(
@@ -76,13 +82,13 @@ async def load_first_task_work(db, *, draft, user):
         work["question"] = {"item_id": str(question.item_id), "payload": payload}
         work["can_answer"] = access in {"use", "manage"} and child.deleted_at is None and child.deactivated_at is None
     except ContentInputReceiptError as exc:
-        work.update(status="unavailable" if exc.status_code == 403 else "unknown", reason=exc.code)
+        work.update(status="unavailable" if exc.status_code == 403 else "unknown", reason=exc.code, permissions=[])
     except HTTPException as exc:
         if exc.status_code not in {403, 404, 410}:
             raise
-        work.update(status="unavailable", reason="question_access_unavailable")
+        work.update(status="unavailable", reason="question_access_unavailable", permissions=[])
     except (ValueError, TypeError, KeyError):
-        work.update(status="unknown", reason="user_question_unverified")
+        work.update(status="unknown", reason="user_question_unverified", permissions=[])
     return work
 
 

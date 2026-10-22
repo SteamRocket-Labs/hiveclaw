@@ -640,7 +640,7 @@ async def _validate_session_dependency(db, tenant_id, dependency, *, user, runti
 
 async def _authorize_session_input_source(db, tenant_id, session, *, user, runtime_request, delegated_user_command=False):
     from fastapi import HTTPException
-    from app.core.permissions import authorize_session_action
+    from app.core.permissions import authorize_session_action, require_agent_execution_access
     from app.core.source_read_purpose import business_inspection_allowed
 
     if runtime_request is not None:
@@ -716,8 +716,9 @@ async def _authorize_session_input_source(db, tenant_id, session, *, user, runti
                 RuntimeTask.claim_expires_at > datetime.now(timezone.utc), RuntimeTask.parent_agent_id == session.agent_id,
                 func.replace(func.lower(RuntimeTask.parent_session_id), "-", "") == session.id.hex,
                 Agent.tenant_id == tenant_id, Agent.deleted_at.is_(None), Agent.deactivated_at.is_(None)))
-            if parent is None or (parent.owner_user_id or parent.creator_id) != requester.id:
+            if parent is None:
                 raise ValueError("session_source_actor_mismatch")
+            await require_agent_execution_access(db, requester, parent.id)
             task = await db.get(RuntimeTask, uuid.UUID(str(context.runtime_task_id)), populate_existing=True)
             if task.task_type == "remote_a2a":
                 from app.services.remote_a2a_tasks import SCHEMA

@@ -8,7 +8,6 @@ from fastapi import HTTPException
 from app.database import tenant_scoped_session
 from app.models.agent import Agent
 from app.models.runtime_task import RuntimeTask
-from app.models.user import User
 from app.services.content_input_receipts import ContentInputReceiptError, _validate_input_dependencies
 from app.services.delegation_input_origin import capture_delegation_instruction_origin, load_delegation_instruction_origin
 from app.services.personal_knowledge_access import AgentRuntimePrincipal
@@ -107,6 +106,7 @@ async def create_employee_session(db, task):
 
 async def delegate_employee(*, source_agent, target_agent, arguments, context):
     from app.services.remote_a2a_tasks import start_task
+    from app.services.runtime_user_identity import load_scoped_runtime_user
 
     if (not isinstance(context, ToolExecutionContext) or context.agent_id != source_agent.id
         or not context.user_id or not context.runtime_task_id or not context.session_id):
@@ -130,7 +130,7 @@ async def delegate_employee(*, source_agent, target_agent, arguments, context):
     read_principal = _personal_kb_runtime_principal(ToolExecutionRequest(tool_name="delegate_to_agent",
         arguments=arguments, context=context))
     async with tenant_scoped_session(tenant_id) as db:
-        actor = await db.get(User, context.user_id, populate_existing=True)
+        actor = await load_scoped_runtime_user(db, context.user_id, tenant_id=tenant_id)
         target = await db.get(Agent, target_agent.id, populate_existing=True)
         source_run = await db.get(RuntimeTask, uuid.UUID(str(context.runtime_task_id)), populate_existing=True)
         if (actor is None or not actor.is_active or actor.tenant_id != tenant_id or source_run is None
@@ -166,9 +166,11 @@ async def inspect_employee_task(*, task_id, principal, cancel=False):
     from sqlalchemy import select
     from app.models.runtime_result import RuntimeResultObject
     from app.services.remote_a2a_tasks import _view, get_task, operate_task
+    from app.services.runtime_user_identity import load_scoped_runtime_user
 
-    async with tenant_scoped_session(uuid.UUID(str(principal.tenant_id))) as db:
-        actor = await db.get(User, principal.requester_user_id, populate_existing=True)
+    tenant_id = uuid.UUID(str(principal.tenant_id))
+    async with tenant_scoped_session(tenant_id) as db:
+        actor = await load_scoped_runtime_user(db, principal.requester_user_id, tenant_id=tenant_id)
         task = await db.get(RuntimeTask, uuid.UUID(str(task_id)), populate_existing=True)
         if task is None or actor is None or not actor.is_active:
             raise HTTPException(404, detail={"code": "remote_a2a_task_unavailable"})

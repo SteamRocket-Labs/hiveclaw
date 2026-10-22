@@ -16,7 +16,6 @@ from app.core.permissions import is_scoped_business_admin, require_agent_owner_o
 from app.database import pin_rls_tenant_context
 from app.models.audit import AuditLog
 from app.models.remote_a2a import RemoteA2AConnection
-from app.models.user import User
 from app.services.agent_tool_config_storage import AgentToolConfigDecryptionError
 from app.services.machine_identity_service import _owner_scope
 from app.services.remote_a2a_transport import RemoteA2AEndpoint, RemoteA2AError, _same_endpoint
@@ -255,8 +254,10 @@ async def discover_connection(db, *, agent_id, actor, expected_user_id, expected
         error = exc.code
     # Do not retain an ownership lock while waiting on an external endpoint.
     # Recheck the actual actor, configuration and ownership before persisting.
+    from app.services.runtime_user_identity import load_scoped_runtime_user
+
     await pin_rls_tenant_context(db, tenant_id)
-    actor = await db.get(User, actor.id, populate_existing=True)
+    actor = await load_scoped_runtime_user(db, actor.id, tenant_id=tenant_id)
     if actor is None or not actor.is_active or not is_scoped_business_admin(actor, resource_tenant_id=tenant_id):
         raise HTTPException(403, detail={"code": "remote_a2a_administrator_unavailable"})
     agent = await require_agent_owner_or_admin(db, actor, agent_id, lock=True)

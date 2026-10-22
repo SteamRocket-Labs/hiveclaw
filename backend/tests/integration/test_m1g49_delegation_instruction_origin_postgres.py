@@ -178,6 +178,8 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
     monkeypatch.setattr(agent_tools, "WORKSPACE_ROOT", seed["data_root"])
     monkeypatch.setattr("app.tools.workspace.WORKSPACE_ROOT", seed["data_root"])
     monkeypatch.setattr(agent_tools, "_TOOL_RUNTIME_SERVICE", None)
+    # Bind the authority reader to this fixture's application-role database.
+    monkeypatch.setattr("app.tools.resolver.async_session", app_user_sessionmaker)
     from dataclasses import replace
     from datetime import datetime, timedelta, timezone
     from types import SimpleNamespace

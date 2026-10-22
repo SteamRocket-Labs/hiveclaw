@@ -176,7 +176,7 @@ async def test_remote_runtime_selection_requires_current_explicit_administrator_
         assert len(remote.requests) == 1
 
 
-@pytest.mark.parametrize("flow", ["completed", "unknown", "cancel", "source_changed", "grant_changed", "budget_denied", "budget_stopped", "budget_orphan", "budget_race", "recipient_denied", "recipient_granted", "recipient_revoked", "recipient_retry", "recipient_retry_revoked", "recipient_retry_budget", "recipient_retry_runtime", "source_hex_session", "source_principal_lost", "executor_mismatch", "unselected_remote", "observe_unchanged", "observe_exhausted"])
+@pytest.mark.parametrize("flow", ["completed", "unknown", "cancel", "source_changed", "grant_changed", "budget_denied", "budget_stopped", "budget_orphan", "budget_race", "recipient_denied", "recipient_granted", "recipient_revoked", "recipient_retry", "recipient_retry_revoked", "recipient_retry_budget", "recipient_retry_runtime", "source_hex_session", "source_principal_lost", "executor_mismatch", "unselected_remote", "observe_unchanged", "observe_exhausted", "selected_tenantless", "selected_foreign_home", "shared_requester", "shared_requester_revoked"])
 async def test_governed_employee_delegation_uses_real_remote_worker_and_original_work(
     owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, flow
 ):
@@ -204,12 +204,41 @@ async def test_governed_employee_delegation_uses_real_remote_worker_and_original
 
     source = await _seed_run(owner_sessionmaker, tmp_path)
     target_id = uuid4()
+    selected_company = flow in {"selected_tenantless", "selected_foreign_home"}
+    shared_requester = flow in {"shared_requester", "shared_requester_revoked"}
+    account_home = uuid4() if flow == "selected_foreign_home" else None
     async with owner_sessionmaker() as db:
         user = await db.get(User, source["user_id"])
-        user.role = "org_admin"
         parent = await db.get(Agent, source["agent_id"])
-        db.add(Agent(id=target_id, tenant_id=source["tenant_id"], creator_id=user.id, owner_user_id=user.id,
+        responsible_owner = user.id
+        if selected_company or shared_requester:
+            from app.models.tenant import Tenant
+
+            if account_home is not None:
+                db.add(Tenant(id=account_home, name="Requester home", slug=f"requester-{account_home.hex}"))
+                await db.flush()
+            responsible_owner = uuid4()
+            db.add(User(id=responsible_owner, tenant_id=source["tenant_id"], username=responsible_owner.hex,
+                email=f"{responsible_owner}@fixture.test", display_name="Company employee owner",
+                password_hash="synthetic-unused", role="org_admin", is_active=True))
+            await db.flush()
+            parent.creator_id = parent.owner_user_id = responsible_owner
+            user.tenant_id = account_home if selected_company else source["tenant_id"]
+            user.role = "platform_admin" if selected_company else "member"
+        else:
+            user.role = "org_admin"
+        db.add(Agent(id=target_id, tenant_id=source["tenant_id"], creator_id=responsible_owner,
+            owner_user_id=responsible_owner,
             name="Remote employee", primary_model_id=parent.primary_model_id, status="idle"))
+        if shared_requester:
+            from app.models.agent import AgentPermission
+
+            await db.flush()
+            parent_permission_id = uuid4()
+            db.add(AgentPermission(id=parent_permission_id, agent_id=parent.id, tenant_id=source["tenant_id"],
+                scope_type="user", scope_id=user.id, access_level="use"))
+            db.add(AgentPermission(agent_id=target_id, tenant_id=source["tenant_id"],
+                scope_type="user", scope_id=user.id, access_level="use"))
         db.add(CapabilityPolicy(tenant_id=source["tenant_id"], capability="agent.message.send", allowed=True,
             requires_approval=False))
         db.add(CapabilityPolicy(tenant_id=source["tenant_id"], capability="agent.async_task.modify", allowed=True,
@@ -244,11 +273,21 @@ async def test_governed_employee_delegation_uses_real_remote_worker_and_original
     app.dependency_overrides[database.get_db] = scoped_db
     seed = {"agent": target_id, "owner": source["user_id"], "tenant": source["tenant_id"]}
     with remote_server() as remote:
+        configuration_seed = {**seed, "owner": responsible_owner} if shared_requester else seed
+        headers = {"Authorization": "Bearer " + create_access_token(str(configuration_seed["owner"]),
+            "platform_admin" if selected_company else "org_admin",
+            str(account_home) if selected_company and account_home else None if selected_company else str(source["tenant_id"]))}
+        if selected_company:
+            headers["X-Tenant-Id"] = str(source["tenant_id"])
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://local",
-            headers={"Authorization": "Bearer " + create_access_token(str(source["user_id"]), "org_admin", str(source["tenant_id"]))}) as api:
-            path = await configure(seed, api, remote)
-            if flow != "unselected_remote":
-                assert (await api.post(path + "/runtime", json=selection(seed))).status_code == 200
+            headers=headers) as api:
+            if shared_requester:
+                path = await configure(configuration_seed, api, remote)
+                assert (await api.post(path + "/runtime", json=selection(configuration_seed))).status_code == 200
+            else:
+                path = await configure(seed, api, remote)
+                if flow != "unselected_remote":
+                    assert (await api.post(path + "/runtime", json=selection(seed))).status_code == 200
         arguments = {"agent_name": "Remote employee", "target_agent_id": str(target_id), "message": "Return the complete authorized report."}
         if flow != "source_hex_session":
             arguments["execution_target"] = "local_agent" if flow == "executor_mismatch" else "remote_a2a"
@@ -368,6 +407,10 @@ async def test_governed_employee_delegation_uses_real_remote_worker_and_original
                 metadata["remote_a2a"]["source_read_principal"].pop("purpose")
                 task.metadata_json = metadata
                 await db.commit()
+        if flow == "shared_requester_revoked":
+            async with owner_sessionmaker() as db:
+                (await db.get(AgentPermission, parent_permission_id)).access_level = "read"
+                await db.commit()
         remote.reply = lambda request: ({"task": {"id": "employee-report", "status": {
             "state": "TASK_STATE_WORKING" if flow in {"cancel", "budget_stopped", "observe_unchanged", "observe_exhausted"} else "TASK_STATE_COMPLETED"},
             "artifacts": [{"artifactId": "report", "parts": [{"filename": "report.txt", "text": text}]}]}}
@@ -383,6 +426,35 @@ async def test_governed_employee_delegation_uses_real_remote_worker_and_original
                 raise RemoteA2AError("remote_a2a_response_lost", execution_status="unknown")
             monkeypatch.setattr(RemoteA2AEndpoint, "rpc", lost_reply)
         await original.execute(seed, returned["task_id"], app_user_sessionmaker)
+        if flow == "shared_requester_revoked":
+            from fastapi import HTTPException
+            from app.core.permissions import check_agent_access, require_agent_execution_access
+
+            async with tenant_scoped_session(source["tenant_id"], session_factory=app_user_sessionmaker) as db:
+                reader = await db.get(User, source["user_id"])
+                assert (await check_agent_access(db, reader, source["agent_id"]))[1] == "read"
+                with pytest.raises(HTTPException) as denied:
+                    await require_agent_execution_access(db, reader, source["agent_id"])
+                assert denied.value.detail["code"] == "agent_execute_denied"
+                task = await db.get(RuntimeTask, UUID(returned["task_id"]))
+                state = task.metadata_json["remote_a2a"]
+                assert task.status == "needs_reconciliation" and state["operations"][-1]["phase"] == "not_started"
+                assert state["source_error"]["code"] == "agent_execute_denied"
+            assert len(remote.requests) == 1
+            async with owner_sessionmaker() as db:
+                (await db.get(AgentPermission, parent_permission_id)).access_level = "use"
+                await db.commit()
+            restored = await tool("check_async_task", {"task_id": returned["task_id"]})
+            assert restored["status"] == "needs_reconciliation" and "retry" in restored["recovery_actions"]
+            await RuntimeNotificationOutboxService(session_factory=app_user_sessionmaker).drain_once(
+                worker_id="shared-requester-recovery-return")
+            async with tenant_scoped_session(source["tenant_id"], session_factory=app_user_sessionmaker) as db:
+                row = await db.scalar(select(RuntimeNotificationOutbox).where(
+                    RuntimeNotificationOutbox.source_run_id.startswith(returned["task_id"] + ":")))
+                assert row.status == "delivered"
+                assert not list(await db.scalars(select(ChatArtifact).where(ChatArtifact.runtime_task_id == UUID(returned["task_id"]))))
+            assert len(remote.requests) == 1
+            return
         checked = await tool("check_async_task", {"task_id": returned["task_id"]})
         assert checked["result_refs"] and "observation" not in checked, checked
         if flow == "source_principal_lost":
@@ -556,3 +628,31 @@ async def test_governed_employee_delegation_uses_real_remote_worker_and_original
         async with tenant_scoped_session(source["tenant_id"], session_factory=app_user_sessionmaker) as db:
             used = await db.get(RuntimeBudgetRun, budget.id)
             assert used.used_delegations == used.used_background_tasks == 1
+        if selected_company or shared_requester:
+            from fastapi import HTTPException
+            from app.core.execution_context import ExecutionPrincipal
+            from app.services.remote_a2a_delegation import inspect_employee_task
+
+            async with owner_sessionmaker() as db:
+                user = await db.get(User, source["user_id"])
+                assert (user.tenant_id, user.role) == (
+                    account_home if selected_company else source["tenant_id"],
+                    "platform_admin" if selected_company else "member")
+                for agent_id in [source["agent_id"], target_id]:
+                    assert (await db.get(Agent, agent_id)).owner_user_id == responsible_owner
+        if selected_company:
+            async with owner_sessionmaker() as db:
+                user = await db.get(User, source["user_id"])
+                user.role = "member"
+                await db.commit()
+            principal = ExecutionPrincipal(tenant_id=str(source["tenant_id"]), source_agent_id=source["agent_id"],
+                requester_user_id=source["user_id"], root_session_id=str(source["session_id"]),
+                root_runtime_task_id=str(source["run_id"]), origin="web_chat")
+            with pytest.raises(HTTPException) as denied:
+                await inspect_employee_task(task_id=returned["task_id"], principal=principal)
+            assert denied.value.status_code == 404
+            assert denied.value.detail["code"] == "remote_a2a_task_unavailable"
+            assert len(remote.requests) == 2
+            async with owner_sessionmaker() as db:
+                user = await db.get(User, source["user_id"])
+                assert (user.tenant_id, user.role) == (account_home, "member")

@@ -40,7 +40,7 @@ async def load_runtime_user(db, user_id, *, include_inactive=False, lock=False):
     # canonical subject's current global role can recover a home-company row.
     async with enter_rls_bypass(db, reason="runtime exact user recovery lookup", actor_id=str(user_id)):
         statement = (select(User, Tenant.is_active).outerjoin(Tenant, Tenant.id == User.tenant_id)
-            .where(User.id == user_id, User.role == "platform_admin"))
+            .where(User.id == user_id, User.role == "platform_admin").execution_options(populate_existing=True))
         if not include_inactive:
             statement = statement.where(User.is_active.is_(True))
         if lock:

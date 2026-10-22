@@ -69,6 +69,7 @@ async def _load_agent_for_user(db: AsyncSession, user: User, agent_id: uuid.UUID
                 .options(selectinload(Agent.owner), selectinload(Agent.creator))
                 .join(Tenant, and_(Tenant.id == Agent.tenant_id, Tenant.is_active.is_(True)))
                 .where(Agent.id == agent_id)
+                .execution_options(populate_existing=True)
             )
     else:
         result = await db.execute(
@@ -76,6 +77,7 @@ async def _load_agent_for_user(db: AsyncSession, user: User, agent_id: uuid.UUID
             .options(selectinload(Agent.owner), selectinload(Agent.creator))
             .join(Tenant, and_(Tenant.id == Agent.tenant_id, Tenant.is_active.is_(True)))
             .where(Agent.id == agent_id)
+            .execution_options(populate_existing=True)
         )
     agent = result.scalar_one_or_none()
     if not agent:

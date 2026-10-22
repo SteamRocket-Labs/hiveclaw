@@ -292,6 +292,16 @@ async def _load_authorized_task(
     task = (await db.execute(statement)).scalar_one_or_none()
     if task is None:
         raise HTTPException(status_code=404, detail="Task not found")
+    if for_update:
+        from app.services.runtime_user_identity import load_scoped_runtime_user
+
+        # The Task row lock may have waited after the original authority read.
+        current = await load_scoped_runtime_user(db, current_user.id, tenant_id=task.tenant_id)
+        if current is None:
+            raise HTTPException(status_code=401, detail="User not found or inactive")
+        current_user.role, current_user.is_active = current.role, current.is_active
+        current_user.tenant_id, current_user.department_id = current.tenant_id, current.department_id
+        agent_access = await check_agent_access(db, current_user, agent_id)
     decision = await _authorize_task(
         db,
         current_user,

@@ -198,14 +198,14 @@ async def _get_smithery_api_key(agent_id: uuid.UUID | None = None) -> str:
                             return at.config["smithery_api_key"]
                     # 2) System-level fallback (global tenant_id NULL config rows)
                     for tool_name in ("discover_resources", "import_mcp_server"):
-                        r = await db.execute(select(Tool).where(Tool.name == tool_name))
+                        r = await db.execute(select(Tool).where(Tool.name == tool_name, Tool.tenant_id.is_(None)))
                         tool = r.scalar_one_or_none()
                         if tool and tool.config and tool.config.get("smithery_api_key"):
                             return tool.config["smithery_api_key"]
             else:
                 async with async_session() as db, enter_rls_bypass(db, reason="global Smithery API key config read"):
                     for tool_name in ("discover_resources", "import_mcp_server"):
-                        r = await db.execute(select(Tool).where(Tool.name == tool_name))
+                        r = await db.execute(select(Tool).where(Tool.name == tool_name, Tool.tenant_id.is_(None)))
                         tool = r.scalar_one_or_none()
                         if tool and tool.config and tool.config.get("smithery_api_key"):
                             return tool.config["smithery_api_key"]
@@ -262,7 +262,7 @@ async def _get_modelscope_api_token() -> str:
         try:
             async with async_session() as db, enter_rls_bypass(db, reason="global ModelScope API token config read"):
                 for tool_name in ("discover_resources", "import_mcp_server"):
-                    r = await db.execute(select(Tool).where(Tool.name == tool_name))
+                    r = await db.execute(select(Tool).where(Tool.name == tool_name, Tool.tenant_id.is_(None)))
                     tool = r.scalar_one_or_none()
                     if tool and tool.config and tool.config.get("modelscope_api_token"):
                         return tool.config["modelscope_api_token"]
@@ -461,7 +461,7 @@ async def import_mcp_from_smithery(
     try:
         async with tenant_scoped_session(agent_tenant_id) as db:
             for tool_name in ("discover_resources", "import_mcp_server"):
-                r = await db.execute(select(Tool).where(Tool.name == tool_name))
+                r = await db.execute(select(Tool).where(Tool.name == tool_name, Tool.tenant_id.is_(None)))
                 tool = r.scalar_one_or_none()
                 if not tool:
                     continue

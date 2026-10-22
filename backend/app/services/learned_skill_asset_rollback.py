@@ -13,6 +13,7 @@ from app.models.ai_asset import AIAssetRecord
 from app.models.config_revision import ConfigRevision
 from app.services.config_versioning import canonical_content_hash, save_revision
 from app.services.content_input_receipts import ContentInputReceiptError
+from app.services.runtime_user_identity import load_scoped_runtime_user
 
 ENTITY = "learned_skill_asset_operation"
 SCHEMA = "hive.learned_skill_asset_operation.v1"
@@ -99,15 +100,15 @@ async def _operation(db, tenant_id, identity):
 
 
 async def _authorize_owner(db, record, user, target):
-    from app.models.user import User
     from app.services.learned_skill_sources import authorize_learned_asset_read
 
-    actor = await db.get(User, user.id, populate_existing=True) if user is not None else None
+    actor = await load_scoped_runtime_user(db, user.id, tenant_id=record.tenant_id) if user is not None else None
     if (actor is None or actor.tenant_id != record.tenant_id or actor.role not in {"org_admin", "platform_admin"}
         or record.owner_type != "agent" or record.owner_id is None):
         raise ContentInputReceiptError("skill_owner_authority_required", "An authenticated tenant administrator is required.", 403)
     await authorize_learned_asset_read(db, record, user=actor, revision_content=target.content)
-    db.expunge(actor)
+    if actor in db:
+        db.expunge(actor)
     return actor
 
 
@@ -271,9 +272,7 @@ async def rollback_learned_asset(db, *, record, target, user, operation_id, expe
             record = await db.get(AIAssetRecord, asset_id, populate_existing=True)
             installation = await db.get(ConfigRevision, installation_id, populate_existing=True)
             target = await db.get(ConfigRevision, target_id, populate_existing=True)
-            from app.models.user import User
-
-            user = await db.get(User, user_id, populate_existing=True)
+            user = await load_scoped_runtime_user(db, user_id, tenant_id=tenant_id)
     # Prepare committed: re-establish both current authority and ordering before the native effect.
     record = await _lock(db, record)
     previous = await _operation(db, record.tenant_id, identity)

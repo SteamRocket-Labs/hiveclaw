@@ -1,26 +1,22 @@
-"""Compatibility adapter for the governed AI-asset revision API.
+"""Compatibility routes for the governed enterprise AI-asset revision API.
 
-The former generic endpoint exposed revision rows without applying changes to the
-native entity.  It is intentionally closed for every legacy entity type; callers
-must address the tenant-scoped AI asset record instead.
+Legacy entity types remain retired. AI-asset requests share source authority,
+owner commands and recovery with the enterprise catalog while retaining their
+compatibility response format.
 """
 
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api import ai_assets as asset_api
 from app.core.security import get_current_user
 from app.database import get_db
 from app.models.user import User
-from app.services import ai_assets as ai_asset_service
 
 router = APIRouter(prefix="/config-history", tags=["config-history"])
-
-
-class RollbackRequest(BaseModel):
-    target_version: int
+RollbackRequest = asset_api.RollbackAssetRequest
 
 
 def _require_ai_asset(entity_type: str) -> None:
@@ -31,13 +27,6 @@ def _require_ai_asset(entity_type: str) -> None:
         )
 
 
-def _tenant_id(user: User) -> uuid.UUID:
-    tenant_id = getattr(user, "tenant_id", None)
-    if tenant_id is None:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="A selected tenant is required")
-    return tenant_id
-
-
 @router.get("/{entity_type}/{entity_id}")
 async def list_revisions(
     entity_type: str,
@@ -45,16 +34,11 @@ async def list_revisions(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """List revision history for a tenant-scoped AI asset (newest first)."""
+    """List authorized AI-asset revision metadata, newest first."""
     _require_ai_asset(entity_type)
-    try:
-        return await ai_asset_service.revision_history(
-            db,
-            tenant_id=_tenant_id(current_user),
-            asset_id=entity_id,
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    return await asset_api.list_ai_asset_revisions(
+        asset_id=entity_id, limit=50, current_user=current_user, db=db,
+    )
 
 
 @router.get("/{entity_type}/{entity_id}/{version}")
@@ -65,20 +49,11 @@ async def get_revision(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Get a tenant-scoped AI asset revision."""
+    """Get an AI-asset revision within its current source audience."""
     _require_ai_asset(entity_type)
-    try:
-        rev = await ai_asset_service.revision_detail(
-            db,
-            tenant_id=_tenant_id(current_user),
-            asset_id=entity_id,
-            version=version,
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
-    if not rev:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Revision not found")
-    return rev
+    return await asset_api.get_ai_asset_revision(
+        asset_id=entity_id, version=version, current_user=current_user, db=db,
+    )
 
 
 @router.post("/{entity_type}/{entity_id}/rollback")
@@ -89,45 +64,12 @@ async def rollback_revision(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Apply an AI asset revision to its native entity and create a new revision."""
+    """Apply the exact governed owner command and retain the legacy response."""
     _require_ai_asset(entity_type)
-    if current_user.role not in ("platform_admin", "org_admin"):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required")
-
-    try:
-        _, revision = await ai_asset_service.rollback_asset(
-            db,
-            tenant_id=_tenant_id(current_user),
-            asset_id=entity_id,
-            target_version=body.target_version,
-            actor_user_id=current_user.id,
-        )
-    except ValueError as exc:
-        await db.rollback()
-        await ai_asset_service.record_projection_failure(
-            db,
-            tenant_id=_tenant_id(current_user),
-            asset_id=entity_id,
-            operation="rollback",
-            error=exc,
-            actor_user_id=current_user.id,
-        )
-        await db.commit()
-        code = status.HTTP_404_NOT_FOUND if "not found" in str(exc).lower() else status.HTTP_409_CONFLICT
-        raise HTTPException(status_code=code, detail=str(exc)) from exc
-    except Exception as exc:
-        await db.rollback()
-        await ai_asset_service.record_projection_failure(
-            db,
-            tenant_id=_tenant_id(current_user),
-            asset_id=entity_id,
-            operation="rollback",
-            error=exc,
-            actor_user_id=current_user.id,
-        )
-        await db.commit()
-        raise
+    result = await asset_api.rollback_ai_asset(
+        asset_id=entity_id, body=body, current_user=current_user, db=db,
+    )
     return {
-        "version": revision.version,
+        "version": result["version"],
         "message": f"Rolled back to version {body.target_version}",
     }

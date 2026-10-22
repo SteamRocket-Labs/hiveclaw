@@ -647,6 +647,7 @@ async def _authorize_session_input_source(db, tenant_id, session, *, user, runti
     from fastapi import HTTPException
     from app.core.permissions import authorize_session_action, require_agent_execution_access
     from app.core.source_read_purpose import business_inspection_allowed
+    from app.models.chat_session import ChatSession
 
     if runtime_request is not None:
         from app.services.machine_runtime_authority import machine_request_actor
@@ -713,18 +714,26 @@ async def _authorize_session_input_source(db, tenant_id, session, *, user, runti
                 or not validate_delegation_token(token, child_agent_id=context.agent_id).valid
                 or token.parent_agent_id != session.agent_id):
                 raise ValueError("session_source_actor_mismatch")
-            parent = await db.scalar(select(Agent).join(RuntimeTask, RuntimeTask.parent_agent_id == Agent.id).where(
+            binding = (await db.execute(select(Agent, RuntimeTask).join(RuntimeTask, RuntimeTask.parent_agent_id == Agent.id).where(
                 RuntimeTask.id == uuid.UUID(str(context.runtime_task_id)), RuntimeTask.tenant_id == tenant_id,
-                RuntimeTask.task_type.in_(("delegation", "remote_a2a")), RuntimeTask.status == "running",
+                RuntimeTask.task_type.in_(("delegation", "remote_a2a")),
                 RuntimeTask.root_user_id == requester.id, RuntimeTask.child_agent_id == context.agent_id,
                 func.replace(func.lower(RuntimeTask.child_session_id), "-", "") == uuid.UUID(str(context.session_id)).hex,
-                RuntimeTask.claim_expires_at > datetime.now(timezone.utc), RuntimeTask.parent_agent_id == session.agent_id,
+                RuntimeTask.parent_agent_id == session.agent_id,
                 func.replace(func.lower(RuntimeTask.parent_session_id), "-", "") == session.id.hex,
-                Agent.tenant_id == tenant_id, Agent.deleted_at.is_(None), Agent.deactivated_at.is_(None)))
-            if parent is None:
+                Agent.tenant_id == tenant_id, Agent.deleted_at.is_(None), Agent.deactivated_at.is_(None)))).first()
+            if binding is None:
                 raise ValueError("session_source_actor_mismatch")
+            parent, task = binding
+            worker_owned = task.status == 'running' and task.claim_expires_at is not None and task.claim_expires_at > datetime.now(timezone.utc)
+            if not worker_owned:
+                from app.services.shared_group_authority import _permission_execution_matches
+
+                child = await db.get(ChatSession, uuid.UUID(str(context.session_id)))
+                if (task.task_type != 'delegation' or child is None
+                    or not await _permission_execution_matches(db, task=task, session=child, runtime_request=runtime_request)):
+                    raise ValueError("session_source_actor_mismatch")
             await require_agent_execution_access(db, requester, parent.id)
-            task = await db.get(RuntimeTask, uuid.UUID(str(context.runtime_task_id)), populate_existing=True)
             if task.task_type == "remote_a2a":
                 from app.services.remote_a2a_tasks import SCHEMA
                 from app.services.remote_a2a_runtime import require_runtime_authorization

@@ -12,7 +12,7 @@ async def test_empty_business_permission_contract_restores_previous_and_current_
     migrated_pg_url, owner_sessionmaker, tmp_path,
 ):
     from app.services.session_event_contract import build_session_tenant_binding_function_sql as live_sql
-    from migration_snapshots.business_permissions_1022 import build_session_tenant_binding_function_sql as frozen_sql
+    from migration_snapshots.delegation_permissions_1022 import build_session_tenant_binding_function_sql as frozen_sql
 
     assert live_sql() == frozen_sql()
     async with owner_sessionmaker() as db:
@@ -29,4 +29,4 @@ async def test_empty_business_permission_contract_restores_previous_and_current_
     assert upgraded.returncode == 0, upgraded.stderr
     async with owner_sessionmaker() as db:
         assert await db.scalar(text("SELECT pg_get_functiondef('public.enforce_session_v2_tenant_binding()'::regprocedure)")) == before
-        assert await db.scalar(text('SELECT version_num FROM alembic_version')) == 'business_permissions_1022'
+        assert await db.scalar(text('SELECT version_num FROM alembic_version')) == 'delegation_permissions_1022'

@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from dataclasses import dataclass
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import String, func, select
 from sqlalchemy.exc import SQLAlchemyError
 
 from app.database import tenant_scoped_session
@@ -19,18 +19,56 @@ from app.services.runtime_task_fence import assert_runtime_task_fence
 
 
 async def suspend_delegation_for_question(request, *, provider_request_id):
-    """Keep a canonical question recoverable without emitting a false terminal result."""
+    """Keep a native question or permission wait on the original delegated Run."""
+    from app.models.chat_session import ChatSession
     from app.models.chat_transcript_event import ChatTranscriptEvent
-    from app.models.session_v2 import SessionInputAdmission, SessionModelResult, SessionTurnInput
+    from app.models.session_v2 import SessionInputAdmission, SessionModelResult, SessionToolInvocation, SessionTurnInput
     from app.services.runtime_root_ledger import transition_runtime_root_item_by_task
     from app.services.runtime_terminal_settlement import lock_runtime_task_with_session_authority
 
     async with tenant_scoped_session(request.tenant_id, require_tenant=True) as db:
+        resumed = await db.scalar(select(SessionModelResult.id).join(RuntimeTask,
+            RuntimeTask.id == SessionModelResult.run_id).join(ChatSession,
+            ChatSession.id == SessionModelResult.session_id).where(
+            RuntimeTask.id == uuid.UUID(str(request.runtime_task_id)), RuntimeTask.tenant_id == request.tenant_id,
+            RuntimeTask.task_type == "delegation", RuntimeTask.status == "resumable",
+            func.replace(func.lower(RuntimeTask.child_session_id), '-', '') == func.replace(ChatSession.id.cast(String), '-', ''),
+            RuntimeTask.child_agent_id == ChatSession.agent_id, ChatSession.tenant_id == RuntimeTask.tenant_id,
+            ChatSession.runtime_task_id == RuntimeTask.id, SessionModelResult.tenant_id == RuntimeTask.tenant_id,
+            SessionModelResult.provider_request_id == provider_request_id, SessionModelResult.state == "round_committed",
+            RuntimeTask.metadata_json["session_permission_resume"]["source_result_id"].astext == SessionModelResult.id.cast(String)))
+        if resumed is not None:
+            return  # Observe the committed response without reading or mutating a stale worker claim.
         task = await lock_runtime_task_with_session_authority(db, task_id=uuid.UUID(str(request.runtime_task_id)))
         if task is None:
             raise SessionRestartRecoveryRequired(reason_code="delegation_session_scope_unavailable", detail={})
-        assert_runtime_task_fence(task)
         child_session_id = uuid.UUID(str(task.child_session_id))
+        model = await db.scalar(select(SessionModelResult).join(ChatSession,
+            ChatSession.id == SessionModelResult.session_id).where(
+            SessionModelResult.tenant_id == task.tenant_id, ChatSession.tenant_id == task.tenant_id,
+            ChatSession.agent_id == task.child_agent_id, ChatSession.runtime_task_id == task.id,
+            SessionModelResult.session_id == child_session_id, SessionModelResult.run_id == task.id,
+            SessionModelResult.provider_request_id == provider_request_id, SessionModelResult.state == "round_committed"))
+        if model is None:
+            raise SessionRestartRecoveryRequired(reason_code="delegation_committed_round_missing", detail={})
+        metadata = dict(task.metadata_json or {})
+        assert_runtime_task_fence(task)
+        pending = list(await db.scalars(select(SessionToolInvocation).where(
+            SessionToolInvocation.tenant_id == task.tenant_id, SessionToolInvocation.run_id == task.id,
+            SessionToolInvocation.session_id == child_session_id,
+            SessionToolInvocation.provider_request_id == model.provider_request_id,
+            SessionToolInvocation.permission_state == "waiting", SessionToolInvocation.effect_state == "prepared_not_started",
+            SessionToolInvocation.result_event_id.is_(None))))
+        if pending and all(row.permission_item_id is not None for row in pending):
+            task.metadata_json = {**metadata, "interactive_pause": "awaiting_session_permission",
+                "delegation_waiting_permission_ids": [str(row.permission_item_id) for row in pending],
+                "terminal_reason": "clarification_required"}
+            task.status, task.result_summary = "suspended", "awaiting_session_permission"
+            task.claimed_by = task.claim_expires_at = task.completed_at = None
+            await transition_runtime_root_item_by_task(db, runtime_task_id=task.id,
+                requested_state="suspended", reason_code="delegation_permission")
+            await db.commit()
+            return
         question = await db.scalar(select(ChatTranscriptEvent).join(
             SessionModelResult, SessionModelResult.id == ChatTranscriptEvent.result_id).where(
             ChatTranscriptEvent.tenant_id == task.tenant_id, ChatTranscriptEvent.agent_id == task.child_agent_id,

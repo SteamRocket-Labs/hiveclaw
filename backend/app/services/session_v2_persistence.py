@@ -309,7 +309,7 @@ async def resolve_session_mutation_authority(
     tenant_id = decision.session.tenant_id
     if tenant_id is None or decision.agent.tenant_id != tenant_id:
         raise ValueError("session_tenant_mismatch")
-    if action == "answer_session_question" and decision.session.session_kind == "delegation_run":
+    if action in {"answer_session_question", "respond_tool_permission"} and decision.session.session_kind == "delegation_run":
         from app.models.runtime_task import RuntimeTask
 
         task = await db.get(RuntimeTask, decision.session.runtime_task_id)
@@ -320,7 +320,8 @@ async def resolve_session_mutation_authority(
             or task.root_user_id != user.id or decision.session.user_id != user.id):
             from fastapi import HTTPException
 
-            raise HTTPException(status_code=403, detail={"code": "delegation_question_requester_mismatch"})
+            code = "delegation_question_requester_mismatch" if action == "answer_session_question" else "delegation_permission_requester_mismatch"
+            raise HTTPException(status_code=403, detail={"code": code})
     return AuthenticatedSessionAuthority(
         tenant_id=tenant_id,
         agent_id=decision.agent.id,

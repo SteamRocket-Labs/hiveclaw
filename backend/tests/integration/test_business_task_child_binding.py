@@ -43,7 +43,7 @@ async def test_empty_business_child_revision_restores_exact_previous_and_current
     assert upgraded.returncode == 0, upgraded.stderr
     async with owner_sessionmaker() as db:
         assert await db.scalar(text("SELECT pg_get_functiondef('public.enforce_session_v2_tenant_binding()'::regprocedure)")) == before
-        assert await db.scalar(text('SELECT version_num FROM alembic_version')) == 'business_permissions_1022'
+        assert await db.scalar(text('SELECT version_num FROM alembic_version')) == 'delegation_permissions_1022'
 
 
 async def test_business_model_receipts_require_exact_child_identity_and_block_lossy_downgrade(

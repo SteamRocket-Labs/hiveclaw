@@ -358,6 +358,48 @@ async def _expired_permission_result_bound(db, *, invocation, event, content):
         and payload.get('provider_tool_use_id') == invocation.provider_tool_use_id)
 
 
+async def permission_abort_result_bound(db, *, invocation, event, content):
+    """Prove a native approved call stopped before its durable effect fence."""
+    from app.models.runtime_task import RuntimeTask
+    from app.models.session_v2 import SessionCommand, SessionControlInput
+    from app.services.session_semantic_history import _event_payload
+
+    try:
+        control_id = uuid.UUID(invocation.permission_receipt_ref.removeprefix('session-control:').removesuffix(':applied'))
+        control = await db.get(SessionControlInput, control_id)
+        command = await db.get(SessionCommand, control.command_id) if control else None
+        payload = json.loads(content)
+        reason = payload.get('reason_code')
+        suffix = {'approved_tool_execution_not_released': 'effect-authority-not-released',
+            'approved_permission_not_consumed': 'approved-effect-not-released'}.get(reason)
+        receipt = f'session-permission:{control_id}:{suffix}'
+        requester = await db.scalar(select(RuntimeTask.root_user_id).where(RuntimeTask.id == invocation.run_id,
+            RuntimeTask.tenant_id == invocation.tenant_id))
+        return bool(suffix and control and command and requester
+            and payload == {'schema': 'hive.tool_permission_execution_abort.v1', 'status': 'aborted',
+                'reason_code': reason, 'invocation_id': str(invocation.id), 'provider_tool_use_id': invocation.provider_tool_use_id}
+            and invocation.permission_state == 'approved' and invocation.effect_state == 'prepared_not_started'
+            and invocation.permission_receipt_ref == f'session-control:{control_id}:applied' and invocation.receipt_ref == receipt
+            and event.id == invocation.result_event_id and event.tenant_id == invocation.tenant_id
+            and event.session_id == invocation.session_id and event.run_id == invocation.run_id
+            and event.invocation_id == invocation.id and event.item_kind == 'tool_result' and event.lifecycle == 'completed'
+            and _event_payload(event).get('content_or_error_ref') == receipt
+            and control.tenant_id == invocation.tenant_id and control.session_id == invocation.session_id
+            and control.expected_run_id == invocation.run_id and control.kind == 'permission_response' and control.status == 'applied'
+            and control.request_item_id == invocation.permission_item_id and control.request_version == invocation.permission_request_version
+            and control.authority_snapshot_hash == invocation.permission_authority_snapshot_hash
+            and control.response_payload_json in ({'decision': 'allow_once'}, {'decision': 'allow_session'})
+            and control.response_payload_hash == _hash(control.response_payload_json)
+            and command.tenant_id == invocation.tenant_id and command.session_id == invocation.session_id
+            and command.principal_type == 'user' and command.principal_id == requester
+            and command.command_kind == 'permission_response' and command.status == 'applied'
+            and command.request_hash == _hash({'command_kind': command.command_kind, 'request': command.request_json})
+            and command.target_hash == _hash(command.target_json)
+            and (command.target_json or {}).get('invocation_id') == str(invocation.id))
+    except (AttributeError, ValueError, TypeError):
+        return False
+
+
 async def _origin_dependencies(db, *, tenant_id, agent_id, ref):
     from app.models.chat_transcript_event import ChatTranscriptEvent
     from app.models.organization_identity import ContentInputReceipt
@@ -475,6 +517,9 @@ async def _origin_dependencies(db, *, tenant_id, agent_id, ref):
     if invocation.permission_state == 'expired':
         valid = await _expired_permission_result_bound(db, invocation=invocation, event=event, content=content)
         return _unique_dependencies(dependencies), inherited_complete and valid
+    if invocation.permission_state == 'approved' and invocation.effect_state == 'prepared_not_started':
+        valid = await permission_abort_result_bound(db, invocation=invocation, event=event, content=content)
+        return _unique_dependencies(dependencies), inherited_complete and valid
     from app.services.explicit_memory_tool_sources import MEMORY_RESULT_TOOLS, memory_result_sources
 
     if invocation.tool_name in {"save_skill", "reconcile_skill_candidate", "inspect_reviewed_skill"}:
@@ -562,6 +607,12 @@ async def _origin_dependencies(db, *, tenant_id, agent_id, ref):
         from app.services.employee_creation_sources import creation_tool_result_bound
 
         complete = await creation_tool_result_bound(db, tenant_id=tenant_id, agent_id=agent_id, invocation=invocation, content=content)
+        return _unique_dependencies(dependencies), inherited_complete and complete
+    if invocation.tool_name == 'delegate_to_agent':
+        from app.services.delegation_input_origin import delegation_tool_result_bound
+
+        complete = await delegation_tool_result_bound(db, tenant_id=tenant_id, agent_id=agent_id,
+            invocation=invocation, content=content)
         return _unique_dependencies(dependencies), inherited_complete and complete
     if invocation.tool_name == "read_context_resource":
         dependency = _channel_context_dependency(agent_id, content,

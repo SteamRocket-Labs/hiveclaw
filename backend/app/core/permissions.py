@@ -783,7 +783,7 @@ def require_writable_session(session: ChatSession, *, action: str) -> None:
     session_kind = str(getattr(session, "session_kind", "") or "").strip().lower()
     if session_kind not in _READ_ONLY_SESSION_KINDS:
         return
-    if session_kind == "delegation_run" and action == "answer_session_question":
+    if session_kind == "delegation_run" and action in {"answer_session_question", "respond_tool_permission"}:
         return
     raise HTTPException(
         status_code=status.HTTP_409_CONFLICT,

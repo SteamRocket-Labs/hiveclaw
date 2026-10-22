@@ -1637,28 +1637,10 @@ async def _delegate_to_agent_async_outcome(
                 message="The delegated invocation was not queued because its authority frame is unavailable.",
                 status="unavailable",
             )
-        return A2AOutcome.success(
-            operation="delegate",
-            payload={
-                "task_id": handle.task_id,
-                "runtime_task_id": handle.task_id,
-                "session_id": child_session_id,
-                "child_session_id": child_session_id,
-                "status": getattr(handle, "status", "running"),
-                "target_agent": handle.target_name,
-                "target_agent_id": str(target.id),
-                "target_artifact_path": str(args.get("target_artifact_path") or "").strip() or None,
-                "target_artifacts": target_artifacts_arg,
-                "edit_mode": str(args.get("edit_mode") or "").strip() or None,
-                "trace_id": handle.trace_id,
-                "receipt": getattr(handle, "receipt", None),
-                "continuation_tool": "send_agent_session_message",
-                "next_action": (
-                    "Use send_agent_session_message with child_session_id to continue this delegated "
-                    "agent session; use check_async_task only for runtime status."
-                ),
-            },
-        )
+        from app.services.a2a_outcome import queued_delegation_outcome
+
+        return queued_delegation_outcome(handle=handle, target_agent_id=target.id,
+            child_session_id=child_session_id, arguments=args)
     except Exception as e:
         logger.error("delegate_to_agent failed: %s", e, exc_info=True)
         return _a2a_failure(

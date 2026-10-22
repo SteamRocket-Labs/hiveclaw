@@ -17,7 +17,7 @@ from app.services.content_input_receipts import ContentInputReceiptError, _runti
 from app.services.session_model_inputs import _model_dependencies, _stored_dependencies
 
 
-async def _published_first_task_input(db, dependency, task):
+async def _published_owned_delegation_input(db, dependency, task):
     kind, source_id = dependency["source_kind"], dependency["source_id"]
     if kind in {"agent_identity", "agent_context_resource", "agent_resident_memory", "agent_platform_skill_file", "owner_action_policy"}:
         try:
@@ -335,8 +335,21 @@ async def validate_runtime_result_sources(db, request, result_object, *, user=No
             raise ContentInputReceiptError("runtime_result_sources_unbound", "The original first-task publication is unavailable.", 503)
         # Recheck creating-model inputs before the original work consumes seed facts or its user's bound answers.
         await _validate_input_dependencies(db, task.tenant_id, original[0], user=user, runtime_request=request)
+    owned_return = False
+    if not first_task and result_object.source_kind == 'a2a_delegation' and requester.id == task.root_user_id:
+        from app.models.chat_session import ChatSession
+
+        child = await db.get(Agent, task.child_agent_id, populate_existing=True)
+        original_work = await db.get(ChatSession, reader_session, populate_existing=True)
+        owned_return = (child is not None and child.tenant_id == task.tenant_id and child.owner_user_id == requester.id
+            and child.deleted_at is None and child.deactivated_at is None
+            and original_work is not None and original_work.tenant_id == task.tenant_id
+            and original_work.agent_id == reader_agent and original_work.user_id == requester.id
+            and original_work.audience_kind in {None, 'private'}
+            and await runtime_result_publication_bound(db, result=result_object, agent_id=reader_agent,
+                session_id=reader_session, user_id=requester.id))
     for dependency in dependencies:
-        published = first_task and await _published_first_task_input(db, dependency, task)
+        published = (first_task or owned_return) and await _published_owned_delegation_input(db, dependency, task)
         await _validate_input_dependencies(db, task.tenant_id, [dependency],
             user=requester if published else user, runtime_request=None if published else request,
             active_workspace_receipts=frozenset(receipt_ids))

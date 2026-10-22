@@ -811,10 +811,13 @@ class DirectInvocationTerminalBoundaryProcessor:
     async def _seal_turn(self, item: ClaimedTerminalBoundary, material: _DirectTerminalMaterial) -> Any:
         event = HookEvent.TURN_STOP if material.event_kind == "turn_stop" else HookEvent.TURN_ABORT
         metadata = self._hook_metadata(item=item, material=material, event=event)
+        # Transcript projection stores the canonical database UUID. Preserve
+        # the original authority receipt while addressing that same T0 stream.
+        session_id = str(uuid.UUID(material.session_id))
         ctx = HookContext(
             event=event,
             agent_id=material.agent_id,
-            session_id=material.session_id,
+            session_id=session_id,
             source=material.source,
             messages=[],
             metadata=metadata,
@@ -823,7 +826,7 @@ class DirectInvocationTerminalBoundaryProcessor:
         metadata["required_terminal_boundary_projected"] = True
         seal = self._seal_t0(
             agent_id=material.agent_id,
-            session_id=material.session_id,
+            session_id=session_id,
             reason=str(metadata["reason"]),
             metadata=metadata,
             boundary_id=item.id,

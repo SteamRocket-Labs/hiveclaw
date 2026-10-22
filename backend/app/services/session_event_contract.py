@@ -1054,10 +1054,10 @@ def build_session_tenant_binding_function_sql() -> str:
     branches = []
     for index, (table_name, condition) in enumerate(_SESSION_V2_AUTHORITY_RULES):
         if table_name == 'session_control_inputs':
-            binding = """            AND (
-              (run.parent_session_id=NEW.session_id::text AND run.parent_agent_id=bound_agent_id)
-              """ + _BUSINESS_TASK_CHILD_RUN_BINDING.replace(
-                "OR (run.task_type=", "OR (NEW.kind='permission_response' AND run.task_type=", 1) + "\n            )"
+            binding = _PARENT_OR_DELEGATED_CHILD_RUN_BINDING.replace(
+                "OR (run.task_type='delegation'", _BUSINESS_TASK_CHILD_RUN_BINDING.replace(
+                    "OR (run.task_type=", "OR (NEW.kind='permission_response' AND run.task_type=", 1)
+                + "OR (NEW.kind='permission_response' AND run.task_type='delegation'", 1)
             condition = condition.replace(_PARENT_RUN_BINDING, binding, 1)
         if table_name in {"session_turn_inputs", "session_model_results", "session_tool_invocations",
             "session_round_obligations", "session_next_round_plans", "session_run_outcomes"}:

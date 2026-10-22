@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.chat_transcript_event import ChatTranscriptEvent
 from app.models.runtime_task import RuntimeTask
-from app.services.session_tool_runtime import permission_run_session_clause
+from app.services.session_tool_runtime import permission_run_agent_clause, permission_run_session_clause
 from app.models.session_v2 import SessionCommand, SessionControlInput, SessionToolInvocation
 from app.services.chat_transcript import lock_transcript_session
 from app.services.session_v2_persistence import (
@@ -340,7 +340,7 @@ async def accept_tool_permission_response(
         .where(
             RuntimeTask.id == run_uuid,
             RuntimeTask.tenant_id == authority.tenant_id,
-            RuntimeTask.parent_agent_id == authority.agent_id,
+            permission_run_agent_clause(authority.agent_id),
             permission_run_session_clause(authority.session_id),
         )
         .with_for_update()
@@ -544,7 +544,7 @@ async def apply_permission_response_control_input(
         .where(
             RuntimeTask.id == control.expected_run_id,
             RuntimeTask.tenant_id == authority.tenant_id,
-            RuntimeTask.parent_agent_id == authority.agent_id,
+            permission_run_agent_clause(authority.agent_id),
             permission_run_session_clause(authority.session_id),
         )
         .with_for_update()

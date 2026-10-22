@@ -23,7 +23,7 @@ from app.services.permission_execution import (
     permission_execution_lease,
 )
 from app.services.session_v2_persistence import AuthenticatedSessionAuthority, SessionEventDraft, append_session_events
-from app.services.session_tool_runtime import permission_run_session_clause
+from app.services.session_tool_runtime import permission_run_agent_clause, permission_run_session_clause
 
 
 @dataclass(frozen=True, slots=True)
@@ -44,13 +44,14 @@ class SessionPermissionResolutionReceipt:
 
 
 async def _lock_permission_session(db, *, tenant_id, session_id, permission_request_id):
-    """Business control writers lock the original work before its native child."""
+    """Child control writers lock the original work before its execution session."""
     from app.services.chat_transcript import lock_transcript_session
 
     parent = await db.scalar(select(RuntimeTask.parent_session_id).join(SessionToolInvocation,
         SessionToolInvocation.run_id == RuntimeTask.id).where(
-        RuntimeTask.tenant_id == tenant_id, RuntimeTask.task_type == 'business_task',
-        RuntimeTask.child_session_id == str(session_id), SessionToolInvocation.tenant_id == tenant_id,
+        RuntimeTask.tenant_id == tenant_id, RuntimeTask.task_type.in_(['business_task', 'delegation']),
+        func.replace(func.lower(RuntimeTask.child_session_id), '-', '') == uuid.UUID(str(session_id)).hex,
+        SessionToolInvocation.tenant_id == tenant_id,
         SessionToolInvocation.session_id == session_id, SessionToolInvocation.permission_item_id == permission_request_id))
     if parent:
         await lock_transcript_session(db, session_id=uuid.UUID(parent))
@@ -253,7 +254,7 @@ async def _queue_same_run_continuation(
         .where(
             RuntimeTask.id == invocation.run_id,
             RuntimeTask.tenant_id == tenant_id,
-            RuntimeTask.parent_agent_id == agent_id,
+            permission_run_agent_clause(agent_id),
             permission_run_session_clause(session_id),
         )
         .with_for_update()
@@ -346,7 +347,7 @@ async def _quarantine_same_run_for_reconciliation(
         .where(
             RuntimeTask.id == invocation.run_id,
             RuntimeTask.tenant_id == tenant_id,
-            RuntimeTask.parent_agent_id == agent_id,
+            permission_run_agent_clause(agent_id),
             permission_run_session_clause(session_id),
         )
         .with_for_update()
@@ -492,16 +493,20 @@ async def expire_stale_session_permission_requests(
             if invocation is None:
                 await db.rollback()
                 continue
+            session = await db.get(ChatSession, invocation.session_id)
+            if session is None or session.tenant_id != invocation.tenant_id:
+                raise RuntimeError("permission_chat_session_missing")
             task = await db.scalar(
                 select(RuntimeTask)
                 .where(
                     RuntimeTask.id == invocation.run_id,
                     RuntimeTask.tenant_id == invocation.tenant_id,
+                    permission_run_agent_clause(session.agent_id),
                     permission_run_session_clause(invocation.session_id),
                 )
                 .with_for_update()
             )
-            if task is None or task.parent_agent_id is None:
+            if task is None:
                 raise RuntimeError("permission_runtime_task_missing")
             source_result = await _source_result(db, invocation)
             if invocation.permission_item_id is None:
@@ -510,7 +515,7 @@ async def expire_stale_session_permission_requests(
             await append_session_events(
                 db,
                 tenant_id=invocation.tenant_id,
-                agent_id=task.parent_agent_id,
+                agent_id=session.agent_id,
                 session_id=invocation.session_id,
                 drafts=[
                     SessionEventDraft(
@@ -554,7 +559,7 @@ async def expire_stale_session_permission_requests(
             await complete_tool_invocation(
                 db,
                 tenant_id=invocation.tenant_id,
-                agent_id=task.parent_agent_id,
+                agent_id=session.agent_id,
                 session_id=invocation.session_id,
                 invocation_id=invocation.id,
                 provider_result_content=json.dumps(
@@ -578,7 +583,7 @@ async def expire_stale_session_permission_requests(
             source_result, batch_settled = await _settle_unstarted_batch_siblings(
                 db,
                 tenant_id=invocation.tenant_id,
-                agent_id=task.parent_agent_id,
+                agent_id=session.agent_id,
                 session_id=invocation.session_id,
                 invocation=invocation,
             )
@@ -586,7 +591,7 @@ async def expire_stale_session_permission_requests(
                 await _queue_same_run_continuation(
                     db,
                     tenant_id=invocation.tenant_id,
-                    agent_id=task.parent_agent_id,
+                    agent_id=session.agent_id,
                     session_id=invocation.session_id,
                     invocation=invocation,
                     source_result=source_result,
@@ -746,6 +751,7 @@ async def _resolve_session_tool_permission(
         trace: dict[str, Any] = {}
         invocation_id = invocation.id
         effect_started = False
+        delegated_execution = {}
 
         async def _pre_effect(payload: dict[str, Any]) -> None:
             nonlocal effect_started
@@ -753,6 +759,10 @@ async def _resolve_session_tool_permission(
 
             await execution_lease.ensure_owned()
             await authorize_group_tool_permission(db, authority=authority, invocation=invocation)
+            from app.services.delegation_permission_runtime import validate_delegated_permission_sources
+
+            await validate_delegated_permission_sources(db, authority=authority, session=session,
+                invocation=invocation, model=source_result, execution=delegated_execution)
             await mark_tool_effect_started(
                 db,
                 tenant_id=authority.tenant_id,
@@ -784,6 +794,10 @@ async def _resolve_session_tool_permission(
                 from app.services.plan_mode_runtime_context import set_interactive_plan_mode
 
                 source_result = await _source_result(db, invocation)
+                from app.services.delegation_permission_runtime import delegated_permission_execution
+
+                delegated_execution = await delegated_permission_execution(db, authority=authority, session=session,
+                    invocation=invocation, profile=profile, control_id=control_id, model=source_result)
                 plan_token = set_interactive_plan_mode(await load_permission_plan_mode(
                     db, agent_id=authority.agent_id, invocation=invocation, result=source_result,
                 ))
@@ -793,15 +807,16 @@ async def _resolve_session_tool_permission(
                     effective_arguments,
                     agent_id=authority.agent_id,
                     user_id=authority.principal_id,
-                    session_id=str(authority.session_id),
-                    permission_profile=profile,
+                    session_id=delegated_execution.pop('session_id', str(authority.session_id)),
+                    permission_profile=delegated_execution.pop('permission_profile', profile),
                     tool_call_id=invocation.provider_tool_use_id,
                     turn_id=source_result.turn_id,
-                    runtime_task_id=str(invocation.run_id),
+                    runtime_task_id=delegated_execution.pop('runtime_task_id', str(invocation.run_id)),
                     origin_channel=getattr(session, "source_channel", None) or "web",
                     round_state={"trace_id": f"permission:{control_id}"},
                     pre_effect_callback=_pre_effect,
                     trace_metadata_sink=trace,
+                    **delegated_execution,
                 )
             except PermissionExecutionUnavailable:
                 await db.rollback()

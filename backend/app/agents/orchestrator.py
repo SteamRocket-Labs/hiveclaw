@@ -4426,6 +4426,8 @@ async def check_async_delegation(
             ):
                 return {"task_id": task_id, "status": "forbidden", "result": None}
             return {"task_id": task_id, "status": "not_found", "result": None}
+        if request_parent_agent_id is not None and _maybe_uuid(persisted.get("parent_agent_id")) != request_parent_agent_id:
+            return {"task_id": task_id, "status": "forbidden", "result": None}
         return {
             "task_id": task_id,
             "status": persisted.get("status", "not_found"),
@@ -4455,7 +4457,7 @@ async def check_async_delegation(
         persisted = None
     if persisted is not None:
         persisted_status = str(persisted.get("status") or "")
-        if persisted_status in {"completed", "failed", "killed", "skipped", "needs_reconciliation"}:
+        if persisted_status:
             _async_tasks.pop(task_id, None)
             _async_task_parent_ids.pop(task_id, None)
             _async_task_fallback_records.pop(task_id, None)
@@ -4593,7 +4595,7 @@ async def cancel_async_delegation(
                         elapsed_seconds=elapsed_seconds,
                         min_runtime_seconds=min_runtime_seconds,
                     )
-        if status in {"pending", "running"}:
+        if status in {"pending", "running", "suspended", "resumable"}:
             cancellation_committed = False
             cancellation_error: Exception | None = None
             killed_receipt = _build_delegation_terminal_receipt_from_runtime_record(
@@ -4685,7 +4687,11 @@ async def cancel_async_delegation(
         return {"task_id": task_id, "status": "forbidden", "result": None}
 
     if state.task.done():
-        return await check_async_delegation(task_id, parent_agent_id=request_parent_agent_id)
+        observed = await check_async_delegation(task_id, parent_agent_id=request_parent_agent_id)
+        if observed.get("status") in {"suspended", "resumable"}:
+            return await cancel_async_delegation(task_id, parent_agent_id=request_parent_agent_id,
+                force=force, min_runtime_seconds=min_runtime_seconds)
+        return observed
 
     if not force and min_runtime_seconds > 0:
         elapsed_seconds = max((datetime.now(timezone.utc) - state.started_at).total_seconds(), 0.0)

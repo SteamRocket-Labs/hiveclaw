@@ -232,7 +232,7 @@ async def approval_execution_matches(db, *, task, session, invocation_id=None):
         return False
 
 
-async def _permission_execution_matches(db, *, task, session):
+async def _permission_execution_matches(db, *, task, session, runtime_request=None):
     from app.models.session_v2 import SessionCommand, SessionControlInput, SessionToolInvocation
     from app.services.session_model_inputs import _hash
 
@@ -247,6 +247,17 @@ async def _permission_execution_matches(db, *, task, session):
     control = await db.get(SessionControlInput, control_id)
     command = await db.get(SessionCommand, control.command_id) if control else None
     invocation = await db.get(SessionToolInvocation, invocation_id)
+    if runtime_request is not None:
+        context = runtime_request.context
+        try:
+            scope_matches = uuid.UUID(str(context.runtime_task_id)) == task.id and uuid.UUID(str(context.session_id)) == session.id
+        except (TypeError, ValueError):
+            return False
+        if (invocation is None or context.tool_call_id != invocation.provider_tool_use_id
+            or runtime_request.tool_name != invocation.tool_name
+            or runtime_request.arguments != invocation.effective_arguments_json
+            or not scope_matches):
+            return False
     return bool(control and command and invocation and control.tenant_id == session.tenant_id
         and control.session_id == session.id and control.expected_run_id == task.id
         and control.kind == "permission_response" and control.status == "applied"

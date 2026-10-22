@@ -132,7 +132,7 @@ async def _recovery_inputs(db, *, task, provider_request_id):
     tools = list(await db.scalars(select(SessionToolInvocation).where(SessionToolInvocation.tenant_id == task.tenant_id,
         SessionToolInvocation.run_id == task.id, SessionToolInvocation.provider_request_id == provider_request_id).order_by(SessionToolInvocation.provider_tool_use_id)))
     for tool in tools:
-        permission = getattr(task, "task_type", "delegation") != "delegation" and tool.permission_item_id is not None
+        permission = tool.permission_item_id is not None
         refs, bound = await _origin_dependencies(db, tenant_id=task.tenant_id, agent_id=agent_id,
             ref=f"session-tool-{'permission' if permission else 'result'}:{tool.id}")
         sources.extend(refs)
@@ -146,6 +146,14 @@ async def _recovery_inputs(db, *, task, provider_request_id):
 
             event = await db.get(ChatTranscriptEvent, tool.result_event_id)
             settled = event is not None and await _expired_permission_result_bound(db, invocation=tool,
+                event=event, content=_event_payload(event).get('content'))
+        if permission and tool.permission_state == 'approved' and tool.effect_state == 'prepared_not_started' and tool.result_event_id is not None:
+            from app.models.chat_transcript_event import ChatTranscriptEvent
+            from app.services.session_model_inputs import permission_abort_result_bound
+            from app.services.session_semantic_history import _event_payload
+
+            event = await db.get(ChatTranscriptEvent, tool.result_event_id)
+            settled = event is not None and await permission_abort_result_bound(db, invocation=tool,
                 event=event, content=_event_payload(event).get('content'))
         if not settled and tool.effect_state == "prepared_not_started" and tool.result_event_id is not None:
             from app.models.chat_transcript_event import ChatTranscriptEvent
@@ -179,8 +187,12 @@ def _recovery_scope(task):
 async def capture_native_recovery_context(db, *, task, session, provider_request_id):
     agent_id, session_id = _recovery_scope(task)
     checkpoint = (session.metadata or {}).get("_native_recovery_checkpoint")
-    if (not isinstance(checkpoint, dict) or set(checkpoint) != {"authority_hash", "manifest_hash", "session_id"}
-        or checkpoint["session_id"] != str(session_id)):
+    if not isinstance(checkpoint, dict) or set(checkpoint) != {"authority_hash", "manifest_hash", "session_id"}:
+        return
+    try:
+        if uuid.UUID(str(checkpoint['session_id'])) != session_id:
+            return
+    except (TypeError, ValueError):
         return
     model, sources, complete = await _recovery_inputs(db, task=task, provider_request_id=provider_request_id)
     if model is None:

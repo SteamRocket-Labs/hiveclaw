@@ -108,9 +108,9 @@ async def _start_feishu_creation_work(seed, app_user_sessionmaker, monkeypatch):
         return command.id
 
 
-@pytest.mark.parametrize("input_case", ["complete", "unbound", "revoked", "first_task", "first_task_unbound", "first_task_revoked", "first_task_refined", "first_task_delivery", "first_task_parent_model", "first_task_refined_native", "first_task_native_creation", "first_task_fresh_employee", "first_task_saved_reopen", "first_task_question", "first_task_question_after_write", "first_task_feishu_question", "first_task_feishu_quoted_question", "first_task_feishu_question_source_changed", "first_task_feishu_question_body_changed", "first_task_feishu_question_already_answered", "first_task_feishu_question_projection_missing", "first_task_feishu_question_recipient_changed", "first_task_feishu_question_legacy_status"])
+@pytest.mark.parametrize("input_case", ["complete", "unbound", "revoked", "first_task", "first_task_unbound", "first_task_revoked", "first_task_refined", "first_task_delivery", "first_task_parent_model", "first_task_refined_native", "first_task_native_creation", "first_task_fresh_employee", "first_task_saved_reopen", "first_task_question", "first_task_question_after_write", "first_task_feishu_question", "first_task_feishu_quoted_question", "first_task_feishu_question_source_changed", "first_task_feishu_question_body_changed", "first_task_feishu_question_already_answered", "first_task_feishu_question_projection_missing", "first_task_feishu_question_recipient_changed", "first_task_feishu_question_legacy_status", "first_task_feishu_permission_allow", "first_task_feishu_permission_deny", "first_task_feishu_permission_cancel", "first_task_feishu_permission_unknown", "first_task_feishu_permission_expired", "first_task_feishu_permission_source_changed", "delegation_permission_allow"])
 async def test_governed_delegation_preserves_its_parent_instruction_origin(
-    owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, input_case,
+    owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, input_case, migrated_pg_url,
 ):
     import app.database as database
     from app.agents import orchestrator
@@ -127,12 +127,13 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
     from app.services.web_chat_runtime import _persist_tool_call
 
     first_task = input_case.startswith("first_task")
+    permission_case = input_case.startswith("first_task_feishu_permission_") or input_case == "delegation_permission_allow"
     question_after_write = input_case == "first_task_question_after_write"
     feishu_creation = input_case.startswith("first_task_feishu_")
     if feishu_creation:
         monkeypatch.setattr(get_settings(), "PUBLIC_BASE_URL", "https://hive.synthetic.test")
     saved_reopen = input_case == "first_task_saved_reopen"
-    native_creation = feishu_creation or input_case in {"first_task_native_creation", "first_task_fresh_employee", "first_task_saved_reopen", "first_task_question", "first_task_question_after_write"}
+    native_creation = feishu_creation or input_case == "delegation_permission_allow" or input_case in {"first_task_native_creation", "first_task_fresh_employee", "first_task_saved_reopen", "first_task_question", "first_task_question_after_write"}
     parent_model_case = feishu_creation or input_case in {"first_task_parent_model", "first_task_refined_native", "first_task_native_creation", "first_task_fresh_employee", "first_task_saved_reopen", "first_task_question", "first_task_question_after_write"}
     delivery_case = input_case == "first_task_delivery" or parent_model_case
     native_refined = feishu_creation or input_case in {"first_task_refined_native", "first_task_native_creation", "first_task_fresh_employee", "first_task_saved_reopen", "first_task_question", "first_task_question_after_write"}
@@ -165,8 +166,9 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
                 owner_user_id=seed["user_id"], primary_model_id=model.id))
         db.add(CapabilityPolicy(tenant_id=seed["tenant_id"], capability="agent.message.send", allowed=True,
             requires_approval=False))
-        db.add(CapabilityPolicy(tenant_id=seed["tenant_id"], capability="workspace.file.write", allowed=True,
-            requires_approval=False))
+        if not permission_case:
+            db.add(CapabilityPolicy(tenant_id=seed["tenant_id"], capability="workspace.file.write", allowed=True,
+                requires_approval=False))
         await db.commit()
     factory = database.async_session
     for module in list(sys.modules.values()):
@@ -216,7 +218,8 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
             input_id = uuid4()
             await accept_human_input(db, authority=authority, intent={"kind": "start_turn", "input_id": str(input_id),
                 "idempotency_key": str(input_id), "session_id": str(seed["session_id"]),
-                "content_parts": [{"type": "text", "text": "Create a research employee and request the authorized report."}],
+                "content_parts": [{"type": "text", "text": "Create a research employee and request the authorized report." if first_task
+                    else "Delegate the authorized report to the worker."}],
                 "runtime_metadata": {"source": "session_input_api"}})
             await run_user_prompt_admission(db, authority=authority, input_id=input_id, worker_id="creation-origin-admission")
             row = await db.get(SessionTurnInput, input_id)
@@ -232,6 +235,53 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
             run = await db.get(RuntimeTask, seed["run_id"])
             run.status = "running"
             await db.commit()
+    if input_case == 'delegation_permission_allow':
+        from fastapi import FastAPI
+        from httpx import ASGITransport, AsyncClient
+        from app.api.chat_sessions import router
+        from app.core.security import get_current_user
+        from app.database import get_db
+        from app.models.chat_session import ChatSession
+        from app.models.user import User
+        from app.models.session_v2 import SessionInputAdmission, SessionTurnInput
+        from app.services.session_input_dispatch import recover_admitted_session_inputs_once
+
+        async with owner_sessionmaker() as db:
+            (await db.get(RuntimeTask, seed["run_id"])).status = "completed"
+            user = await db.get(User, seed["user_id"])
+            # Start the actual API journey in a fresh work session; the seed's
+            # synthetic running turn has no terminal boundary to acknowledge.
+            seed["session_id"] = uuid4()
+            db.add(ChatSession(id=seed["session_id"], agent_id=seed["agent_id"],
+                tenant_id=seed["tenant_id"], user_id=user.id, source_channel="web"))
+            await db.commit()
+        async def original_work_db():
+            async with app_user_sessionmaker() as db:
+                await pin_rls_tenant_context(db, seed["tenant_id"])
+                yield db
+        original_app = FastAPI()
+        original_app.include_router(router, prefix="/api")
+        original_app.dependency_overrides[get_db] = original_work_db
+        original_app.dependency_overrides[get_current_user] = lambda: user
+        original_input = uuid4()
+        async with AsyncClient(transport=ASGITransport(app=original_app), base_url="http://original.local") as api:
+            profile = await api.patch(f"/api/agents/{seed['agent_id']}/sessions/{seed['session_id']}/permissions/profile",
+                json={"permission_mode": "default"})
+            assert profile.status_code == 200, profile.text
+            admitted = await api.post(f"/api/agents/{seed['agent_id']}/sessions/{seed['session_id']}/inputs", json={
+                "kind": "start_turn", "input_id": str(original_input), "idempotency_key": str(original_input),
+                "content_parts": [{"type": "text", "text": "Delegate the authorized report to the worker."}]})
+            assert admitted.status_code == 200 and admitted.json()["admission_state"] == "admitted", admitted.text
+        async with app_user_sessionmaker() as db:
+            await pin_rls_tenant_context(db, seed["tenant_id"])
+            row = await db.get(SessionTurnInput, original_input)
+            admission_id = uuid5(row.command_id, "input-admission:revision:1")
+            await recover_admitted_session_inputs_once(db, tenant_id=seed["tenant_id"],
+                worker_id="original-work-admission", admission_ids=(admission_id,))
+            admission = await db.get(SessionInputAdmission, admission_id, populate_existing=True)
+            assert admission.dispatch_state == "dispatched", admission.dispatch_receipt_json
+            seed["run_id"] = UUID(admission.dispatch_receipt_json["run_id"])
+            seed["turn_id"] = admission.dispatch_receipt_json["turn_id"]
     if feishu_creation:
         creation_command_id = await _start_feishu_creation_work(seed, app_user_sessionmaker, monkeypatch)
     class SyntheticMemoryTransport:
@@ -275,7 +325,7 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
         dispatches.append(kwargs)
         queued.update(kwargs)
         queued["trace_id"] = kwargs.get("trace_id") or "origin-probe"
-        handle = (await native_dispatch(**kwargs) if first_task else orchestrator.AsyncDelegationHandle(
+        handle = (await native_dispatch(**kwargs) if first_task or permission_case else orchestrator.AsyncDelegationHandle(
             task_id=uuid4().hex, trace_id="origin-probe", target_name="Origin worker", status="queued"))
         queued["task_id"] = handle.task_id
         return handle
@@ -316,22 +366,41 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
                 SessionToolInvocation.provider_tool_use_id == call_id))
             assert invocation is not None and invocation.result_event_id is not None
             result = _event_payload(await db.get(ChatTranscriptEvent, invocation.result_event_id))["content"]
-            from app.services.employee_creation_sources import creation_tool_result_bound
+            if first_task:
+                from app.services.employee_creation_sources import creation_tool_result_bound
 
-            assert (await db.get(RuntimeTask, seed["run_id"])).status == "completed"
-            assert await creation_tool_result_bound(db, tenant_id=seed["tenant_id"], agent_id=seed["agent_id"],
-                invocation=invocation, content=result), result
-            assert not await creation_tool_result_bound(db, tenant_id=seed["tenant_id"], agent_id=seed["agent_id"],
-                invocation=invocation, content=json.dumps({**json.loads(result), "provisioning_task_id": str(uuid4())}))
+                assert (await db.get(RuntimeTask, seed["run_id"])).status == "completed"
+                assert await creation_tool_result_bound(db, tenant_id=seed["tenant_id"], agent_id=seed["agent_id"],
+                    invocation=invocation, content=result), result
+                assert not await creation_tool_result_bound(db, tenant_id=seed["tenant_id"], agent_id=seed["agent_id"],
+                    invocation=invocation, content=json.dumps({**json.loads(result), "provisioning_task_id": str(uuid4())}))
             creating_rounds = list(await db.scalars(select(SessionModelResult).where(SessionModelResult.run_id == seed["run_id"])))
             assert len(creating_rounds) == 2 and all(row.model_request_snapshot_json["input_bindings"]["dependency_coverage"]["complete"] for row in creating_rounds)
     else:
         execution_trace = {}
-        result = await agent_tools.execute_tool(tool_name, arguments, agent_id=seed["agent_id"],
-            user_id=seed["user_id"], session_id=str(seed["session_id"]), runtime_task_id=str(seed["run_id"]),
-            turn_id=scope["turn_id"], tool_call_id=call_id, pre_effect_callback=pre_effect,
-            permission_profile=permission_profile_snapshot(None), emit_runtime_hooks=False,
-            trace_metadata_sink=execution_trace)
+        from app.core.execution_context import clear_execution_identity, get_execution_identity, set_delegated_user_identity, set_execution_identity
+
+        previous_identity = get_execution_identity()
+        if permission_case:
+            set_delegated_user_identity(seed["user_id"], "Original requester", channel="web")
+        try:
+            result = await agent_tools.execute_tool(tool_name, arguments, agent_id=seed["agent_id"],
+                user_id=seed["user_id"], session_id=str(seed["session_id"]), runtime_task_id=str(seed["run_id"]),
+                turn_id=scope["turn_id"], tool_call_id=call_id, pre_effect_callback=pre_effect,
+                permission_profile=permission_profile_snapshot(None), emit_runtime_hooks=False,
+                trace_metadata_sink=execution_trace)
+        finally:
+            if previous_identity is None:
+                clear_execution_identity()
+            else:
+                set_execution_identity(previous_identity)
+        if permission_case:
+            from app.services.session_permission_runtime import _execution_evidence
+
+            evidence = _execution_evidence(execution_trace)
+            assert evidence["status"] == "settled" and evidence["tool_decision"]["outcome"] == "allow", str(result)
+            await _persist_tool_call(agent_id=seed["agent_id"], user_id=seed["user_id"], session_id=str(seed["session_id"]),
+                data={**event, "status": "done", "result": str(result), "tool_execution_evidence": evidence})
     if first_task:
         from uuid import UUID
         from app.models.hr_creation import HrCreationDraft
@@ -393,7 +462,7 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
     assert isinstance(message.get("a2a_instruction_origin"), dict), message
 
     task_id = UUID(queued.pop("task_id"))
-    if first_task:
+    if first_task or permission_case:
         from app.services.runtime_task_service import get_runtime_task_record
 
         request = await orchestrator._build_delegation_request_from_runtime_record(await get_runtime_task_record(task_id.hex))
@@ -405,7 +474,10 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
             task_id=str(task_id), trace_id="origin-probe", status="running")
     async with owner_sessionmaker() as db:
         target = await db.get(Agent, receiver)
-        if first_task:
+        if first_task or permission_case:
+            if not first_task:
+                await AgentManager().initialize_agent_files(db, target, personality="NATIVE_RECEIVER_CONTEXT",
+                    original_author_id=seed["user_id"])
             child = await db.get(RuntimeTask, task_id)
             child.status, child.claimed_by, child.claim_version, child.attempt_count = "running", "origin-worker", 1, 1
             child.claim_expires_at = datetime.now(timezone.utc) + timedelta(minutes=10)
@@ -436,6 +508,306 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
         return result
     monkeypatch.setattr(content_input_receipts, "record_native_workspace_receipts", observe_writer)
     monkeypatch.setattr(invoker, "create_llm_client", lambda **_kwargs: client)
+    if permission_case:
+        from app.models.session_v2 import SessionToolInvocation
+
+        decision = input_case.removeprefix("first_task_feishu_permission_") if first_task else "allow"
+        expected_summary = "Report generated." if decision == "allow" else "The write was not authorized; no report was created."
+        if decision != "allow":
+            client.script[-1]["content"] = expected_summary
+        token = set_runtime_task_fence(task_id=task_id, worker_id="origin-worker", claim_version=1)
+        try:
+            await orchestrator.dispatch_persisted_async_delegation(task_id.hex, wait_for_completion=True)
+        finally:
+            reset_runtime_task_fence(token)
+        async with app_user_sessionmaker() as db:
+            await pin_rls_tenant_context(db, seed["tenant_id"])
+            child = await db.get(RuntimeTask, task_id)
+            pending = list(await db.scalars(select(SessionToolInvocation).where(SessionToolInvocation.run_id == task_id,
+                SessionToolInvocation.permission_state == "waiting")))
+            assert child.status == "suspended" and child.completed_at is None, (child.status, child.result_summary, child.metadata_json)
+            assert len(pending) == 1 and pending[0].effect_state == "prepared_not_started"
+            assert pending[0].result_event_id is None and len(client.requests) == 1
+            permission_id = pending[0].permission_item_id
+            invocation_id, permission_provider_id = pending[0].id, pending[0].provider_request_id
+        assert not (seed["data_root"] / str(receiver) / report_path).exists()
+        if decision != "cancel":
+            current = await orchestrator.check_async_delegation(task_id.hex, parent_agent_id=seed["agent_id"])
+            assert current["status"] == "suspended", current
+            foreign = await orchestrator.check_async_delegation(task_id.hex, parent_agent_id=uuid4())
+            assert foreign["status"] == "forbidden" and foreign["result"] is None
+        from fastapi import FastAPI
+        from httpx import ASGITransport, AsyncClient
+        from app.api.chat_sessions import router
+        from app.core.security import get_current_user
+        from app.database import get_db
+        from app.services.runtime_task_claim_service import RuntimeTaskClaimService
+        from app.services.delegation_session_runtime import suspend_delegation_for_question
+        from app.models.user import User
+
+        if not first_task:
+            async with owner_sessionmaker() as db:
+                user = await db.get(User, seed["user_id"])
+        permission_calls = []
+        execute_permission = agent_tools.execute_session_permission_tool
+        async def actual_permission(*args, **kwargs):
+            permission_calls.append(kwargs)
+            return await execute_permission(*args, **kwargs)
+        monkeypatch.setattr(agent_tools, "execute_session_permission_tool", actual_permission)
+        async with owner_sessionmaker() as db:
+            other = User(id=uuid4(), username=uuid4().hex, email=f"{uuid4().hex}@synthetic.invalid", password_hash="synthetic",
+                display_name="Another company administrator", tenant_id=user.tenant_id, role="org_admin", is_active=True)
+            db.add(other)
+            await db.commit()
+
+        async def permission_db():
+            async with app_user_sessionmaker() as db:
+                await pin_rls_tenant_context(db, seed["tenant_id"])
+                yield db
+        app = FastAPI()
+        app.include_router(router, prefix="/api")
+        app.dependency_overrides[get_db] = permission_db
+        app.dependency_overrides[get_current_user] = lambda: user
+        url = f"/api/agents/{receiver}/sessions/{request.session_id}/permissions/{permission_id}/resolve"
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://permission.local") as api:
+            ordinary = await api.post(f"/api/agents/{receiver}/sessions/{request.session_id}/inputs", json={
+                "kind": "start_turn", "input_id": str(uuid4()), "idempotency_key": str(uuid4()),
+                "content_parts": [{"type": "text", "text": "Unrelated work"}]})
+            assert ordinary.status_code == 409 and ordinary.json()["detail"]["code"] == "session_read_only"
+            app.dependency_overrides[get_current_user] = lambda: other
+            try:
+                denied = await api.post(url, json={"action": "allow_once"})
+                assert denied.status_code in {403, 404}, denied.text
+                assert not (seed["data_root"] / str(receiver) / report_path).exists()
+            finally:
+                app.dependency_overrides[get_current_user] = lambda: user
+            wrong_agent = await api.post(f"/api/agents/{seed['agent_id']}/sessions/{request.session_id}/permissions/{permission_id}/resolve",
+                json={"action": "allow_once"})
+            assert wrong_agent.status_code == 404, wrong_agent.text
+            if decision == "cancel":
+                stopped = await orchestrator.cancel_async_delegation(task_id.hex, parent_agent_id=seed["agent_id"], force=True)
+                assert stopped["status"] == "killed", stopped
+                late = await api.post(url, json={"action": "allow_once"})
+                assert late.status_code == 409 and not permission_calls and len(client.requests) == 1, late.text
+                assert not (seed["data_root"] / str(receiver) / report_path).exists()
+                async with app_user_sessionmaker() as db:
+                    await pin_rls_tenant_context(db, seed["tenant_id"])
+                    assert (await db.get(RuntimeTask, task_id)).status == "killed"
+                    assert await RuntimeTaskClaimService(db=db, worker_id="cancelled-permission", task_types=("delegation",)).claim_available(batch_size=10) == []
+                return
+            if decision == "unknown":
+                from app.services import session_tool_runtime
+
+                async def lose_result(*_args, **_kwargs):
+                    pass
+                monkeypatch.setattr(session_tool_runtime, "complete_tool_invocation", lose_result)
+                for _ in range(2):
+                    uncertain = await api.post(url, json={"action": "allow_once"})
+                    assert uncertain.status_code == 200 and uncertain.json()["run_status"] == "needs_reconciliation", uncertain.text
+                    assert uncertain.json()["retryable"] is False
+                assert len(permission_calls) == 1 and len(client.requests) == 1
+                assert (seed["data_root"] / str(receiver) / report_path).read_text() == "DELEGATED_REPORT"
+                async with app_user_sessionmaker() as db:
+                    await pin_rls_tenant_context(db, seed["tenant_id"])
+                    assert await RuntimeTaskClaimService(db=db, worker_id="unknown-permission", task_types=("delegation",)).claim_available(batch_size=10) == []
+                return
+            if decision == "expired":
+                from app.services.session_permission_runtime import expire_stale_session_permission_requests
+
+                async with app_user_sessionmaker() as db:
+                    await pin_rls_tenant_context(db, seed["tenant_id"])
+                    (await db.get(SessionToolInvocation, invocation_id)).permission_expires_at = datetime.now(timezone.utc) - timedelta(minutes=1)
+                    await db.commit()
+                    assert await expire_stale_session_permission_requests(db=db) == 1
+                    invocation_row = await db.get(SessionToolInvocation, invocation_id, populate_existing=True)
+                    assert invocation_row.permission_state == "expired" and invocation_row.result_event_id is not None
+                    assert (await db.get(RuntimeTask, task_id)).status == "resumable"
+                late = await api.post(url, json={"action": "allow_once"})
+                assert late.status_code == 410 and late.json()["detail"]["code"] == "tool_permission_request_expired", late.text
+                assert not permission_calls
+            else:
+                soul = seed["data_root"] / str(receiver) / "soul.md"
+                original_soul = soul.read_bytes()
+                if decision == "source_changed":
+                    soul.write_bytes(original_soul + b"\nChanged before the approved effect.\n")
+                try:
+                    response = await api.post(url, json={"action": "deny" if decision == "deny" else "allow_once"})
+                finally:
+                    soul.write_bytes(original_soul)
+                assert response.status_code == 200, response.text
+                receipt = response.json()
+                assert receipt["run_id"] == str(task_id) and receipt["run_status"] == "resumable", receipt
+                replay = await api.post(url, json={"action": "deny" if decision == "deny" else "allow_once"})
+                assert replay.status_code == 200 and replay.json()["result_event_id"] == receipt["result_event_id"], replay.text
+        if decision == "allow":
+            assert (seed["data_root"] / str(receiver) / report_path).read_text() == "DELEGATED_REPORT"
+            assert len(permission_calls) == 1
+            frame = permission_calls[0]["authority_frame"]
+            assert frame.principal.source_agent_id == receiver and frame.principal.requester_user_id == user.id
+            assert frame.parent_session_id == str(seed["session_id"]) and UUID(frame.runtime_task_id) == task_id
+            from app.services.content_input_receipts import ContentInputReceiptError, validate_runtime_input_dependencies
+            from app.tools.runtime import ToolExecutionRequest
+            from app.services.session_model_inputs import _model_dependencies
+
+            async with app_user_sessionmaker() as db:
+                await pin_rls_tenant_context(db, seed["tenant_id"])
+                source_model = await db.scalar(select(SessionModelResult).where(SessionModelResult.provider_request_id == permission_provider_id))
+                sources, complete = _model_dependencies(source_model)
+                assert complete
+                parent_sources = [source for source in sources if source["source_kind"] == "agent_context_resource"
+                    and source["source_id"].startswith(str(seed["agent_id"]) + "\n")]
+                if not first_task:
+                    parent_sources = [source for source in sources if source["source_kind"] == "session_command"]
+                assert parent_sources
+                with pytest.raises(ContentInputReceiptError) as denied:
+                    await validate_runtime_input_dependencies(db, ToolExecutionRequest(tool_name="write_file",
+                        arguments={"path": report_path, "content": "DELEGATED_REPORT"}, context=observed["context"]), parent_sources)
+                assert denied.value.status_code == 403
+            from tests.integration.test_delegation_permission_binding import verify_delegated_permission_binding
+
+            await verify_delegated_permission_binding(owner=owner_sessionmaker, factory=app_user_sessionmaker,
+                tenant_id=seed["tenant_id"], session_id=request.session_id, control_id=UUID(receipt["control_id"]),
+                parent_agent_id=seed["agent_id"], url=migrated_pg_url, tmp_path=tmp_path)
+        else:
+            assert not (seed["data_root"] / str(receiver) / report_path).exists()
+        # An already committed response wins over a late worker's pause boundary.
+        token = set_runtime_task_fence(task_id=task_id, worker_id="origin-worker", claim_version=1)
+        try:
+            await suspend_delegation_for_question(request, provider_request_id=permission_provider_id)
+        finally:
+            reset_runtime_task_fence(token)
+        async with app_user_sessionmaker() as db:
+            await pin_rls_tenant_context(db, seed["tenant_id"])
+            invocation_row = await db.get(SessionToolInvocation, invocation_id)
+            assert invocation_row.effect_state == ("effect_committed" if decision == "allow" else "prepared_not_started")
+            assert invocation_row.result_event_id is not None
+            if decision == "source_changed":
+                from app.models.chat_transcript_event import ChatTranscriptEvent
+                from app.services.session_model_inputs import permission_abort_result_bound
+                from app.services.session_semantic_history import _event_payload
+
+                event = await db.get(ChatTranscriptEvent, invocation_row.result_event_id)
+                content = _event_payload(event)["content"]
+                assert await permission_abort_result_bound(db, invocation=invocation_row, event=event, content=content)
+                forged = {**json.loads(content), "content": "UNATTESTED_WORKSPACE_BYTES"}
+                assert not await permission_abort_result_bound(db, invocation=invocation_row, event=event, content=json.dumps(forged))
+            assert (await db.get(RuntimeTask, task_id)).status == "resumable" and len(client.requests) == 1
+            claimed = await RuntimeTaskClaimService(db=db, worker_id="permission-resume", task_types=("delegation",)).claim_available(batch_size=10)
+            assert [row.id for row in claimed] == [task_id]
+            version = claimed[0].claim_version
+        token = set_runtime_task_fence(task_id=task_id, worker_id="permission-resume", claim_version=version)
+        try:
+            assert await orchestrator.dispatch_persisted_async_delegation(task_id.hex, wait_for_completion=True)
+        finally:
+            reset_runtime_task_fence(token)
+        async with app_user_sessionmaker() as db:
+            await pin_rls_tenant_context(db, seed["tenant_id"])
+            child = await db.get(RuntimeTask, task_id)
+            assert child.status == "completed" and child.result_summary == expected_summary, child.metadata_json
+            assert child.child_agent_id == receiver and child.child_session_id == request.session_id
+            assert len(client.requests) == 2
+            assert len(list(await db.scalars(select(SessionToolInvocation).where(SessionToolInvocation.run_id == task_id)))) == 1
+            models = list(await db.scalars(select(SessionModelResult).where(SessionModelResult.run_id == task_id)))
+            assert len(models) == 2 and all(row.model_request_snapshot_json["input_bindings"]["dependency_coverage"]["complete"] for row in models)
+        from app.services.direct_invocation_terminal_boundary_processor import DirectInvocationTerminalBoundaryProcessor
+        from app.services.runtime_terminal_boundary_outbox import RuntimeTerminalBoundaryOutboxService
+        from app.services.runtime_notification_outbox import RuntimeNotificationOutboxService
+        from app.models.runtime_notification_outbox import RuntimeNotificationOutbox
+        from app.services.web_chat_runtime import execute_web_chat_run
+
+        processor = DirectInvocationTerminalBoundaryProcessor(session_factory=app_user_sessionmaker, data_root=seed["data_root"])
+        async def terminal_with_diagnostics(item):
+            try:
+                return await processor(item)
+            except Exception as exc:
+                (tmp_path / "permission-terminal-failure.json").write_text(json.dumps({"type": type(exc).__name__, "message": str(exc)}))
+                raise
+        drained = await RuntimeTerminalBoundaryOutboxService(session_factory=app_user_sessionmaker).drain_once(
+            tenant_id=seed["tenant_id"], worker_id="permission-result-terminal", canonical_validator=processor.validate,
+            process_callback=terminal_with_diagnostics, task_types=("delegation",))
+        assert drained["delivered"] == 1, drained
+        service = RuntimeNotificationOutboxService(session_factory=app_user_sessionmaker)
+        claimed = await service.claim_batch(worker_id="permission-result-return", limit=100)
+        pages = await service.prepare_integration_pages(worker_id="permission-result-return",
+            claimed=[item for item in claimed if item.tenant_id == seed["tenant_id"]])
+        assert len(pages) == 1
+        delivered = await service._deliver_page(pages[0])
+        assert delivered.get("ok") is True, delivered
+        async with app_user_sessionmaker() as db:
+            await pin_rls_tenant_context(db, seed["tenant_id"])
+            notification = await db.scalar(select(RuntimeNotificationOutbox).where(
+                RuntimeNotificationOutbox.source_run_id == str(task_id), RuntimeNotificationOutbox.source_kind == "a2a_delegation"))
+            continuation = await db.scalar(select(RuntimeTask).where(RuntimeTask.parent_agent_id == seed["agent_id"],
+                RuntimeTask.metadata_json["integration_page_id"].astext == str(pages[0].id)))
+            assert continuation is not None and continuation.parent_session_id == str(seed["session_id"])
+            return_id = continuation.id
+            result_ref = notification.result_ref
+        if not first_task:
+            from app.models.runtime_result import RuntimeResultObject
+            from app.services.content_input_receipts import ContentInputReceiptError
+            from app.services.runtime_result_sources import validate_runtime_result_sources
+            from app.tools.runtime import ToolExecutionContext, ToolExecutionRequest
+
+            source_request = ToolExecutionRequest(tool_name="read_runtime_result", arguments={"result_ref": result_ref},
+                context=ToolExecutionContext(agent_id=seed["agent_id"], user_id=seed["user_id"],
+                    tenant_id=seed["tenant_id"], workspace=seed["agent_root"], session_id=str(seed["session_id"]),
+                    runtime_task_id=str(seed["run_id"])))
+            async def read_sources():
+                async with app_user_sessionmaker() as db:
+                    await pin_rls_tenant_context(db, seed["tenant_id"])
+                    result_object = await db.get(RuntimeResultObject, UUID(result_ref.split("/")[2]))
+                    return await validate_runtime_result_sources(db, source_request, result_object)
+            assert await read_sources()
+            async with owner_sessionmaker() as db:
+                (await db.get(Agent, receiver)).owner_user_id = other.id
+                await db.commit()
+            try:
+                with pytest.raises(ContentInputReceiptError) as denied:
+                    await read_sources()
+                assert denied.value.status_code == 403
+            finally:
+                async with owner_sessionmaker() as db:
+                    (await db.get(Agent, receiver)).owner_user_id = seed["user_id"]
+                    await db.commit()
+            soul = seed["data_root"] / str(receiver) / "soul.md"
+            original_soul = soul.read_bytes()
+            try:
+                soul.write_bytes(original_soul + b"\nChanged before consuming the returned result.\n")
+                with pytest.raises(ContentInputReceiptError) as denied:
+                    await read_sources()
+                assert denied.value.status_code == 403
+            finally:
+                soul.write_bytes(original_soul)
+            assert await read_sources() and len(client.requests) == 2 and len(permission_calls) == 1
+        parent_client = ScriptedLLMClient([
+            {"tool_calls": [{"id": "read-permission-result", "type": "function", "function": {"name": "read_runtime_result",
+                "arguments": json.dumps({"result_ref": result_ref})}}], "finish_reason": "tool_calls"},
+            {"content": "Reviewed the generated report.", "finish_reason": "stop"},
+        ])
+        monkeypatch.setattr(invoker, "create_llm_client", lambda **_kwargs: parent_client)
+        async with owner_sessionmaker() as db:
+            continuation = await db.get(RuntimeTask, return_id)
+            continuation.status, continuation.claimed_by, continuation.claim_version = "running", "permission-return-worker", 1
+            continuation.claim_expires_at = datetime.now(timezone.utc) + timedelta(minutes=10)
+            await db.commit()
+        parent_version = 1
+        token = set_runtime_task_fence(task_id=return_id, worker_id="permission-return-worker", claim_version=parent_version)
+        try:
+            await execute_web_chat_run(return_id)
+        finally:
+            reset_runtime_task_fence(token)
+        assert len(parent_client.requests) == 2
+        returned = json.loads(next(message["content"] for message in parent_client.requests[1]["messages"]
+            if message.get("tool_call_id") == "read-permission-result"))
+        assert returned["status"] == "ok" and expected_summary in returned["content"], returned
+        assert returned["dependency_coverage"]["complete"] is True
+        async with app_user_sessionmaker() as db:
+            await pin_rls_tenant_context(db, seed["tenant_id"])
+            assert (await db.get(RuntimeTask, return_id)).status == "completed"
+            models = list(await db.scalars(select(SessionModelResult).where(SessionModelResult.run_id == return_id)))
+            assert len(models) == 2
+            assert all(row.model_request_snapshot_json["input_bindings"]["dependency_coverage"]["complete"] for row in models)
+        return
     if feishu_creation or input_case in {"first_task_question", "first_task_question_after_write"}:
         from app.models.chat_transcript_event import ChatTranscriptEvent
 

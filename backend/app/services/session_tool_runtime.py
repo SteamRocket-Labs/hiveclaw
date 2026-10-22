@@ -9,7 +9,7 @@ from collections.abc import Mapping
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from sqlalchemy import and_, or_, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.chat_transcript_event import ChatTranscriptEvent
@@ -27,10 +27,19 @@ TOOL_EFFECT_RECONCILIATION_TASK_STATUSES = frozenset({"failed", "needs_reconcili
 
 
 def permission_run_session_clause(session_id):
-    """A business Tool belongs to its pinned execution child, not its inbox."""
+    """Native controls belong to the task type's pinned execution session."""
     return or_(
-        and_(RuntimeTask.task_type != 'business_task', RuntimeTask.parent_session_id == str(session_id)),
-        and_(RuntimeTask.task_type == 'business_task', RuntimeTask.child_session_id == str(session_id)),
+        and_(RuntimeTask.task_type.notin_(['business_task', 'delegation']), RuntimeTask.parent_session_id == str(session_id)),
+        and_(RuntimeTask.task_type.in_(['business_task', 'delegation']),
+            func.replace(func.lower(RuntimeTask.child_session_id), '-', '') == uuid.UUID(str(session_id)).hex),
+    )
+
+
+def permission_run_agent_clause(agent_id):
+    """Delegated tools execute as the child Agent; other lanes retain their actor."""
+    return or_(
+        and_(RuntimeTask.task_type != 'delegation', RuntimeTask.parent_agent_id == agent_id),
+        and_(RuntimeTask.task_type == 'delegation', RuntimeTask.child_agent_id == agent_id),
     )
 
 

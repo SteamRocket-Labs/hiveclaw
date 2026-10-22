@@ -125,11 +125,17 @@ async def published_creation_seed_sources(db, *, tenant_id, request):
     except (ValueError, TypeError):
         return None, []
     task = await db.scalar(select(RuntimeTask).where(RuntimeTask.id == task_id, RuntimeTask.tenant_id == tenant_id,
-        RuntimeTask.task_type == "delegation", RuntimeTask.status == "running",
-        RuntimeTask.child_agent_id == context.agent_id, RuntimeTask.root_user_id == context.user_id,
-        RuntimeTask.claim_expires_at > datetime.now(timezone.utc)))
+        RuntimeTask.task_type == "delegation", RuntimeTask.child_agent_id == context.agent_id,
+        RuntimeTask.root_user_id == context.user_id))
     if (task is None or uuid.UUID(task.child_session_id) != session_id or token.parent_agent_id != task.parent_agent_id):
         return None, []
+    if not (task.status == 'running' and task.claim_expires_at is not None and task.claim_expires_at > datetime.now(timezone.utc)):
+        from app.models.chat_session import ChatSession
+        from app.services.shared_group_authority import _permission_execution_matches
+
+        session = await db.get(ChatSession, session_id)
+        if session is None or not await _permission_execution_matches(db, task=task, session=session, runtime_request=request):
+            return None, []
     principal, requester = await _runtime_input_actor(db, tenant_id, request)
     if principal.purpose != "a2a_delegation":
         return None, []
@@ -140,6 +146,8 @@ async def published_creation_seed_sources(db, *, tenant_id, request):
     evidence = direct_creation_authorization(draft) if draft else None
     parent = await db.get(Agent, task.parent_agent_id, populate_existing=True)
     child = await db.get(Agent, task.child_agent_id, populate_existing=True)
+    if draft is None or task.id != uuid.uuid5(draft.id, 'explicit-first-task.v1'):
+        return await _owned_delegation_parent_sources(db, task=task, requester=requester, parent=parent, child=child)
     if (draft is None or task.id != uuid.uuid5(draft.id, "explicit-first-task.v1")
         or session_id != uuid.uuid5(task.id, "session") or not evidence or task.prompt != evidence["first_task"]
         or str(task.root_runtime_task_id) != evidence["source_run_id"]
@@ -154,33 +162,19 @@ async def published_creation_seed_sources(db, *, tenant_id, request):
 
 
 async def _creation_seed_dependencies(db, *, draft, parent, dependencies):
-    from app.models.invocation_span import InvocationSpan
-
     published = []
-    allowed = {"agent_identity": {"identity"}, "agent_context_resource": {"soul", "a2a-collaborators", "channels"},
-        "agent_resident_memory": {"memory/self/self.md"}}
     for dependency in dependencies:
-        kind, source_id = dependency["source_kind"], dependency["source_id"]
-        parts = source_id.split("\n")
-        if (kind in {*allowed, "agent_platform_skill_file", "owner_action_policy"} and parts[0] == str(parent.id)
-            and len(parts) > 1 and (kind not in allowed or parts[1] in allowed[kind])):
+        if await _owned_context_source(db, dependency=dependency, agent_id=parent.id, tenant_id=draft.tenant_id,
+            session_id=draft.session_id, user_id=draft.requested_by_user_id):
             published.append(dependency)
-        elif kind == "session_actor_identity":
-            try:
-                row = await db.get(InvocationSpan, uuid.UUID(source_id), populate_existing=True)
-            except ValueError:
-                continue
-            if (row is not None and row.tenant_id == draft.tenant_id and row.agent_id == parent.id
-                and row.user_id == draft.requested_by_user_id and row.session_id == str(draft.session_id)):
-                published.append(dependency)
-        elif kind == "session_command":
+        elif dependency['source_kind'] == "session_command":
             from app.models.session_v2 import SessionCommand
             from app.services.direct_employee_creation import _human_request
             from app.services.hr_creation_service import HrCreationConflict, direct_creation_authorization
             from app.services.content_input_receipts import ContentInputReceiptError
 
             try:
-                command = await db.get(SessionCommand, uuid.UUID(source_id), populate_existing=True)
+                command = await db.get(SessionCommand, uuid.UUID(dependency['source_id']), populate_existing=True)
             except ValueError:
                 continue
             if command is not None and command.principal_type == "external_principal":
@@ -196,6 +190,62 @@ async def _creation_seed_dependencies(db, *, draft, parent, dependencies):
                 if command.id == original.command_id and original.content_hash == evidence["input_hash"]:
                     published.append(dependency)
     return published
+
+
+async def _owned_context_source(db, *, dependency, agent_id, tenant_id, session_id, user_id):
+    from app.models.invocation_span import InvocationSpan
+
+    kind, source_id = dependency['source_kind'], dependency['source_id']
+    allowed = {'agent_identity': {'identity'}, 'agent_context_resource': {'soul', 'a2a-collaborators', 'channels'},
+        'agent_resident_memory': {'memory/self/self.md'}}
+    parts = source_id.split('\n')
+    if (kind in {*allowed, 'agent_platform_skill_file', 'owner_action_policy'} and parts[0] == str(agent_id)
+        and len(parts) > 1 and (kind not in allowed or parts[1] in allowed[kind])):
+        return True
+    if kind == 'session_actor_identity':
+        try:
+            row = await db.get(InvocationSpan, uuid.UUID(source_id), populate_existing=True)
+        except ValueError:
+            return False
+        return bool(row is not None and row.tenant_id == tenant_id and row.agent_id == agent_id
+            and row.user_id == user_id and row.session_id == str(session_id))
+    return False
+
+
+async def _owned_delegation_parent_sources(db, *, task, requester, parent, child):
+    from app.agents.orchestrator import _delegation_projection_request_from_record
+    from app.models.chat_session import ChatSession
+    from app.models.invocation_span import InvocationSpan
+    from app.services.delegation_context_sources import _facts
+    from app.services.delegation_input_origin import load_delegation_instruction_origin
+
+    if any(agent is None or agent.tenant_id != task.tenant_id or agent.owner_user_id != requester.id
+        or agent.deleted_at is not None or agent.deactivated_at is not None for agent in (parent, child)):
+        return None, []
+    original_work = await db.get(ChatSession, uuid.UUID(task.parent_session_id), populate_existing=True)
+    if (original_work is None or original_work.tenant_id != task.tenant_id or original_work.agent_id != parent.id
+        or original_work.user_id != requester.id or original_work.audience_kind not in {None, 'private'}
+        or await _facts(db, task) is None):
+        return None, []
+    original = _delegation_projection_request_from_record({'id': task.id, 'tenant_id': task.tenant_id,
+        'parent_agent_id': task.parent_agent_id, 'child_agent_id': task.child_agent_id,
+        'parent_session_id': task.parent_session_id, 'child_session_id': task.child_session_id,
+        'root_user_id': task.root_user_id, 'metadata_json': task.metadata_json})
+    if original is None:
+        return None, []
+    try:
+        pointer = original.conversation_messages[0]['a2a_instruction_origin']
+        retained = await db.get(InvocationSpan, uuid.UUID(pointer['source_id']))
+    except (KeyError, IndexError, TypeError, ValueError):
+        return None, []
+    if retained is None or ((retained.metadata_json or {}).get('instruction_origin') or {}).get('schema') != 'hive.delegation_instruction_origin.v1':
+        return None, []
+    origin = await load_delegation_instruction_origin(db, request=original, tenant_id=task.tenant_id, content=task.prompt)
+    if origin is None or origin.unbound:
+        return None, []
+    published = [source for source in origin.sources if await _owned_context_source(db, dependency=source,
+        agent_id=parent.id, tenant_id=task.tenant_id, session_id=original_work.id, user_id=requester.id)]
+    return requester, published
 
 
 async def creation_tool_result_bound(db, *, tenant_id, agent_id, invocation, content):

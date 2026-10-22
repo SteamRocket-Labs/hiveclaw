@@ -1136,6 +1136,10 @@ async def execute_session_permission_tool(
     t0_refs: tuple[str, ...] = (),
     pre_effect_callback: Callable[[dict[str, Any]], Any] | None = None,
     trace_metadata_sink: dict[str, Any] | None = None,
+    authority_frame: A2AToolAuthorityFrame | None = None,
+    execution_identity: Any | None = None,
+    delegation_token: Any | None = None,
+    budget_run_id: str | None = None,
 ) -> str | ToolContentEnvelope:
     """Replay a session-approved tool through the public governed runtime boundary."""
     return await execute_tool(
@@ -1153,6 +1157,10 @@ async def execute_session_permission_tool(
         t0_refs=t0_refs,
         pre_effect_callback=pre_effect_callback,
         trace_metadata_sink=trace_metadata_sink,
+        authority_frame=authority_frame,
+        execution_identity=execution_identity,
+        delegation_token=delegation_token,
+        budget_run_id=budget_run_id,
     )
 
 

@@ -241,3 +241,52 @@ async def authorize_delegation_instruction(invocation, request):
             raise ContextDependencyUnavailable(dependency="a2a_instruction_origin",
                 code="delegation_instruction_source_access_denied" if exc.status_code == 403 else "delegation_instruction_source_unavailable",
                 user_message="The delegated instruction's upstream sources are not currently authorized or available. Revise or reconcile this input.") from exc
+
+
+async def delegation_tool_result_bound(db, *, tenant_id, agent_id, invocation, content):
+    """Prove the historical queue admission without claiming child work completed."""
+    from app.agents.orchestrator import (AsyncDelegationHandle, _build_delegation_execution_receipt,
+        _delegation_projection_request_from_record, _delegation_request_hash)
+    from app.models.runtime_task import RuntimeTask
+    from app.services.a2a_outcome import queued_delegation_outcome
+
+    try:
+        payload = json.loads(content)
+        task = await db.get(RuntimeTask, uuid.UUID(payload['task_id']), populate_existing=True)
+        if (task is None or task.tenant_id != tenant_id or task.task_type != 'delegation'
+            or task.parent_agent_id != agent_id or uuid.UUID(task.parent_session_id) != invocation.session_id
+            or invocation.effect_state != 'effect_committed'):
+            return False
+        metadata = task.metadata_json or {}
+        authority = metadata.get('authority_snapshot') or {}
+        original = _delegation_projection_request_from_record({'id': task.id.hex, 'tenant_id': task.tenant_id,
+            'parent_agent_id': task.parent_agent_id, 'child_agent_id': task.child_agent_id,
+            'parent_session_id': task.parent_session_id, 'child_session_id': task.child_session_id,
+            'root_user_id': task.root_user_id, 'trace_id': task.trace_id, 'metadata_json': metadata})
+        if original is None:
+            return False
+        original.session_id = task.child_session_id
+        original.interaction_type = metadata.get('interaction_type') or 'delegation'
+        origin = await load_delegation_instruction_origin(db, request=original, tenant_id=tenant_id, content=task.prompt)
+        pointer = original.conversation_messages[0]['a2a_instruction_origin']
+        row = await db.get(InvocationSpan, uuid.UUID(pointer['source_id']))
+        proof = (row.metadata_json or {}).get('instruction_origin') if row else {}
+        if (origin is None or origin.unbound or proof.get('parent_invocation_id') != str(invocation.id)
+            or proof.get('parent_model_result_id') != str(await db.scalar(select(SessionModelResult.id).where(
+                SessionModelResult.tenant_id == tenant_id, SessionModelResult.run_id == invocation.run_id,
+                SessionModelResult.provider_request_id == invocation.provider_request_id)))
+            or _hash(authority) != metadata.get('authority_snapshot_hash')
+            or _delegation_request_hash(original) != (metadata.get('execution_receipt') or {}).get('request_hash')):
+            return False
+        receipt = _build_delegation_execution_receipt(original, task_id=task.id.hex, trace_id=task.trace_id, status='pending')
+        if (receipt['capability_snapshot_hash'] != metadata.get('authority_snapshot_hash')
+            or receipt['policy_snapshot_hash'] != metadata.get('authority_policy_hash')
+            or receipt.get('execution_principal') != authority.get('execution_principal')):
+            return False
+        handle = AsyncDelegationHandle(task_id=task.id.hex, trace_id=task.trace_id, target_name=task.child_agent_name,
+            status='queued', receipt=receipt)
+        expected = queued_delegation_outcome(handle=handle, target_agent_id=task.child_agent_id,
+            child_session_id=task.child_session_id, arguments=invocation.effective_arguments_json or invocation.provider_arguments_json)
+        return payload == expected.to_payload()
+    except (AttributeError, KeyError, TypeError, ValueError):
+        return False

@@ -9,6 +9,21 @@ from typing import Any, Literal
 A2AOperation = Literal["consult", "delegate", "notify"]
 
 
+def queued_delegation_outcome(*, handle, target_agent_id, child_session_id, arguments):
+    """Render the native admission facts shared by the emitter and its receipt reader."""
+    return A2AOutcome.success(operation='delegate', payload={
+        'task_id': handle.task_id, 'runtime_task_id': handle.task_id,
+        'session_id': child_session_id, 'child_session_id': child_session_id,
+        'status': getattr(handle, 'status', 'running'), 'target_agent': handle.target_name, 'target_agent_id': str(target_agent_id),
+        'target_artifact_path': str(arguments.get('target_artifact_path') or '').strip() or None,
+        'target_artifacts': arguments.get('target_artifacts') if isinstance(arguments.get('target_artifacts'), list) else [],
+        'edit_mode': str(arguments.get('edit_mode') or '').strip() or None,
+        'trace_id': handle.trace_id, 'receipt': getattr(handle, 'receipt', None),
+        'continuation_tool': 'send_agent_session_message',
+        'next_action': 'Use send_agent_session_message with child_session_id to continue this delegated agent session; use check_async_task only for runtime status.',
+    })
+
+
 @dataclass(frozen=True, slots=True)
 class A2AOutcome:
     """One machine-readable truth for synchronous and asynchronous A2A calls."""

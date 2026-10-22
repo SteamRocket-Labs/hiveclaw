@@ -204,15 +204,12 @@ async def authenticate_machine(db, *, token, agent_id, scope):
         raise denied
     if credential.agent_id != agent.id or scope not in set(credential.scopes):
         raise HTTPException(403, detail={'code': 'machine_scope_denied'})
-    principal = await db.get(ExternalPrincipal, credential.principal_id, populate_existing=True)
     try:
-        owner_scope = await _owner_scope(db, agent)
+        # Both lock queries may have waited after the original company read.
+        # Reuse the complete live grant check only after both locks are held.
+        context, agent = await load_machine_grant(db, credential_id=credential.id,
+            agent_id=agent.id, principal_id=credential.principal_id, scope=scope)
     except HTTPException:
         raise denied from None
-    if (credential.status != 'active' or credential.expires_at <= _now()
-        or principal is None or principal.tenant_id != tenant_id or principal.provider != 'a2a'
-        or principal.linked_user_id is not None or principal.status != 'active'
-        or owner_scope != (credential.owner_user_id, credential.owner_epoch)):
-        raise denied
     credential.last_used_at = _now()
-    return MachineAuthContext(tenant_id, agent.id, principal.id, credential.id, tuple(credential.scopes)), agent
+    return context, agent

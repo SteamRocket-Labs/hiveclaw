@@ -468,6 +468,7 @@ async def apply_business_task_cancellation(
         outcome=outcome,
         completed_at=completed_at,
     )
+    await _enqueue_business_task_channel_delivery(db=db, runtime_task=runtime_task, outcome=outcome)
     await enqueue_business_task_terminal_boundary(db, runtime_task)
     return outcome
 
@@ -533,18 +534,20 @@ async def quarantine_stale_business_task(
     if not _runtime_binding_matches(task, runtime_task):
         raise BusinessTaskInvariantError("stale business task runtime binding is invalid")
     _invalidate_runtime_claim(runtime_task)
+    outcome = TaskExecutionOutcome(
+        status=TaskExecutionStatus.NEEDS_RECONCILIATION,
+        summary="Business task worker lease expired during execution; side effects require review before retry.",
+        error_code="worker_lease_expired",
+        retryable=False,
+    )
     apply_business_task_outcome(
         db=db,
         task=task,
         runtime_task=runtime_task,
-        outcome=TaskExecutionOutcome(
-            status=TaskExecutionStatus.NEEDS_RECONCILIATION,
-            summary="Business task worker lease expired during execution; side effects require review before retry.",
-            error_code="worker_lease_expired",
-            retryable=False,
-        ),
+        outcome=outcome,
         completed_at=detected_at,
     )
+    await _enqueue_business_task_channel_delivery(db=db, runtime_task=runtime_task, outcome=outcome)
     await enqueue_business_task_terminal_boundary(db, runtime_task)
 
 

@@ -69,16 +69,29 @@ async def reconcile_stale_business_tasks_in_session(
 
 
 async def reconcile_stale_business_tasks_once(*, limit: int = 100) -> dict[str, int]:
-    """Global worker tick under an explicit, audited RLS bypass."""
+    """Locate expired work globally, then reconcile within its tenant."""
 
     import app.database as database
-    from app.database import enter_rls_bypass
+    from app.database import enter_rls_bypass, tenant_scoped_session
 
-    async with (
-        database.async_session() as db,
-        enter_rls_bypass(db, reason="BusinessTask expired worker lease reconciliation"),
-    ):
-        return await reconcile_stale_business_tasks_in_session(db, limit=limit)
+    current = datetime.now(timezone.utc)
+    remaining = max(1, min(int(limit), 500))
+    async with database.async_session() as locator_db:
+        async with enter_rls_bypass(locator_db, reason="BusinessTask expired worker lease reconciliation"):
+            tenant_ids = (await locator_db.scalars(
+                stale_business_task_statement(now=current, limit=remaining).with_only_columns(RuntimeTask.tenant_id)
+            )).all()
+        await locator_db.rollback()
+    summary = {"checked": 0, "quarantined": 0}
+    for tenant_id in dict.fromkeys(tenant_ids):
+        if remaining <= 0:
+            break
+        async with tenant_scoped_session(tenant_id, require_tenant=True) as scoped_db:
+            counts = await reconcile_stale_business_tasks_in_session(scoped_db, now=current, limit=remaining)
+        summary["checked"] += counts["checked"]
+        summary["quarantined"] += counts["quarantined"]
+        remaining -= counts["checked"]
+    return summary
 
 
 __all__ = [

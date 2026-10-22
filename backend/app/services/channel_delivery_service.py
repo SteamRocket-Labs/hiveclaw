@@ -280,7 +280,11 @@ class ChannelDeliveryService:
         return hashlib.sha256(value.encode("utf-8")).hexdigest()[:24]
 
     @staticmethod
-    async def _load_config(db: AsyncSession, agent_id: uuid.UUID, channel: str) -> ChannelConfig | None:
+    async def _load_target_config(db, agent_id, channel, target):
+        if target.get("tenant_channel_config_id"):
+            from app.services.channel_installation import load_tenant_channel_for_target
+
+            return await load_tenant_channel_for_target(db, agent_id=agent_id, channel=channel, target=target)
         result = await db.execute(
             select(ChannelConfig).where(
                 ChannelConfig.agent_id == agent_id,
@@ -288,14 +292,6 @@ class ChannelDeliveryService:
             )
         )
         return result.scalar_one_or_none()
-
-    @staticmethod
-    async def _load_target_config(db, agent_id, channel, target):
-        if target.get("tenant_channel_config_id"):
-            from app.services.channel_installation import load_tenant_channel_for_target
-
-            return await load_tenant_channel_for_target(db, agent_id=agent_id, channel=channel, target=target)
-        return await ChannelDeliveryService._load_config(db, agent_id, channel)
 
     @staticmethod
     async def _log_result(

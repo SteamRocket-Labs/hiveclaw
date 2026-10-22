@@ -163,6 +163,16 @@ class BridgeAuthContext:
 
 async def require_live_bridge_context(db: AsyncSession, context: BridgeAuthContext, *, lock_connection: bool = False) -> BridgeAuthContext:
     """Revalidate a cached channel identity before accepting another runtime frame."""
+    if lock_connection:
+        locked = await db.scalar(select(LocalAgentBridgeConnection.id).where(
+            LocalAgentBridgeConnection.id == context.connection_id,
+            LocalAgentBridgeConnection.tenant_id == context.tenant_id,
+            LocalAgentBridgeConnection.agent_id == context.agent_id,
+            LocalAgentBridgeConnection.user_id == context.user_id).with_for_update())
+        if locked is None:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail='Local Agent connection is no longer authorized')
+    # A joined row-lock query can retain pre-wait liveness facts and deadline.
+    # Build the authority query only after the connection lock is acquired.
     query = select(LocalAgentBridgeConnection).join(User, User.id == LocalAgentBridgeConnection.user_id).join(
         Tenant, Tenant.id == LocalAgentBridgeConnection.tenant_id).where(
         LocalAgentBridgeConnection.id == context.connection_id,
@@ -175,8 +185,6 @@ async def require_live_bridge_context(db: AsyncSession, context: BridgeAuthConte
         query = query.join(Agent, Agent.id == LocalAgentBridgeConnection.agent_id).where(
             Agent.tenant_id == context.tenant_id, Agent.deleted_at.is_(None), Agent.deactivated_at.is_(None),
             func.coalesce(Agent.owner_user_id, Agent.creator_id) == context.user_id)
-    if lock_connection:
-        query = query.with_for_update(of=LocalAgentBridgeConnection)
     connection = await db.scalar(query.execution_options(populate_existing=True))
     if connection is None:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail='Local Agent connection is no longer authorized')

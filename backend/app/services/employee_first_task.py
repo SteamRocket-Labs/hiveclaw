@@ -22,7 +22,7 @@ def needs_first_task_dispatch(draft) -> bool:
 
 
 async def load_first_task_work(db, *, draft, user):
-    """Private HTTP view of the existing task, never a parent-model message."""
+    """Read the original requester's existing first task without a parent-model message."""
     from fastapi import HTTPException
     from sqlalchemy import select
     from app.core.permissions import authorize_session_action, check_agent_access
@@ -87,9 +87,8 @@ async def load_first_task_work(db, *, draft, user):
 
 
 async def enqueue_first_task_question_notice(db, *, task, question):
-    """Return a private first-task status to its original channel, without the question body."""
+    """Queue a canonical first-task question for authorized release to its original work."""
     from sqlalchemy import select
-    from app.config import get_settings
     from app.models.hr_creation import HrCreationDraft
     from app.services.channel_delivery_outbox import enqueue_terminal_delivery_for_task
     from app.services.session_user_question import question_payload
@@ -105,15 +104,72 @@ async def enqueue_first_task_question_notice(db, *, task, question):
         or task.child_session_id != str(uuid.uuid5(task.id, "session")) or task.prompt != evidence["first_task"]
         or question_payload(question).get("requested_by_user_id") != str(task.root_user_id)):
         return None
-    text = "首任务有一条待答问题。请在 HiveClaw 原工作中查看最新状态并答复；此提示不代表任务完成。"
+    from app.models.chat_session import ChatSession
+
+    session = await db.get(ChatSession, draft.session_id)
+    channel = str(((session.delivery_target_json or {}) if session is not None else {}).get('channel') or '').lower()
+    text = first_task_question_text(draft, question_payload(question), channel=channel)
+    return await enqueue_terminal_delivery_for_task(db, task=task, content=text,
+        terminal_status="clarification_required", delivery_kind="interactive_prompt", prompt_item_id=question.item_id,
+        metadata={"source": "employee_first_task_question", "projection_kind": "question_content", "draft_id": str(draft.id),
+            "question_item_id": str(question.item_id)})
+
+
+def first_task_question_text(draft, payload=None, *, channel=None):
+    from app.config import get_settings
+    from app.services.session_user_question import render_user_questions
+
+    if payload is None:
+        text = "首任务有一条待答问题。请在 HiveClaw 原工作中查看最新状态并答复；此提示不代表任务完成。"
+    else:
+        action = "引用此消息回复即可继续原工作" if channel == 'feishu' else "请在原工作中查看并答复"
+        text = f"首任务正在等待答复。{action}；此提示不代表任务完成。\n" + render_user_questions(payload)
     settings = get_settings()
     base_url = (settings.PUBLIC_BASE_URL or settings.BASE_URL).rstrip("/")
     if base_url:
         text += f"\n{base_url}/agents/{draft.hr_agent_id}?session_id={draft.session_id}#chat"
-    return await enqueue_terminal_delivery_for_task(db, task=task, content=text,
-        terminal_status="clarification_required", delivery_kind="interactive_prompt", prompt_item_id=question.item_id,
-        metadata={"source": "employee_first_task_question", "draft_id": str(draft.id),
-            "question_item_id": str(question.item_id)})
+    return text
+
+
+async def authorize_first_task_question_notice(db, *, item, session, user):
+    from app.core.source_read_purpose import source_recipient_read
+    from app.models.hr_creation import HrCreationDraft
+    from app.services.content_input_receipts import ContentInputReceiptError
+
+    try:
+        draft = await db.get(HrCreationDraft, uuid.UUID(item.metadata['draft_id']), populate_existing=True)
+    except (KeyError, ValueError, TypeError) as exc:
+        raise ContentInputReceiptError('first_task_question_reference_unavailable', 'Restore the original creation reference.', 503) from exc
+    if (draft is None or user is None or draft.tenant_id != item.tenant_id
+        or draft.hr_agent_id != item.agent_id or draft.session_id != item.session_id
+        or draft.requested_by_user_id != user.id or item.user_id != user.id
+        or item.runtime_task_id != uuid.uuid5(draft.id, 'explicit-first-task.v1')
+        or session is None or session.id != draft.session_id or session.tenant_id != draft.tenant_id
+        or item.delivery_kind != 'interactive_prompt' or item.artifact_ids):
+        raise ContentInputReceiptError('first_task_question_binding_changed', 'Restore the original question binding.', 403)
+    projection = item.metadata.get('projection_kind')
+    if projection is None and item.text == first_task_question_text(draft):
+        return  # Legacy intents contain only the fixed status and original-work link.
+    if projection != 'question_content':
+        raise ContentInputReceiptError('first_task_question_content_changed', 'Restore the canonical question.', 403)
+    if session.audience_kind != 'group' and item.channel == 'feishu':
+        from app.models.external_principal import ExternalPrincipal
+
+        principal = await db.get(ExternalPrincipal, item.external_principal_id) if item.external_principal_id else None
+        if (principal is None or principal.tenant_id != item.tenant_id or principal.id != session.external_principal_id
+            or item.delivery_target.get('receive_id_type') != 'open_id'
+            or item.delivery_target.get('receive_id') != principal.subject_id):
+            raise ContentInputReceiptError('first_task_question_recipient_changed', 'Restore the original channel recipient.', 403)
+    with source_recipient_read(session_id=session.id, user_id=user.id):
+        work = await load_first_task_work(db, draft=draft, user=user)
+    if work is None or work['status'] in {'unavailable', 'unknown', 'needs_reconciliation'}:
+        raise ContentInputReceiptError((work or {}).get('reason', 'first_task_question_source_unavailable'),
+            'Restore access to the exact question sources.', 403 if work and work['status'] == 'unavailable' else 503)
+    question = work.get('question')
+    if (work['status'] != 'suspended' or not question or question['item_id'] != item.prompt_key
+        or question['item_id'] != item.metadata.get('question_item_id')
+        or item.text != first_task_question_text(draft, question['payload'], channel=item.channel)):
+        raise ContentInputReceiptError('first_task_question_no_longer_current', 'Check the current original work.', 403)
 
 
 async def resume_first_task_from_tool(context, arguments) -> str:

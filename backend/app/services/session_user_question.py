@@ -17,6 +17,18 @@ def question_payload(event):
     return dict((event.metadata_json or {}).get("v2_payload") or {})
 
 
+def render_user_questions(payload):
+    """Render canonical question text and choices without inferring answer intent."""
+    lines = []
+    for entry in payload.get('questions') or []:
+        lines.append(entry['question'])
+        if entry.get('multiSelect'):
+            lines.append('可多选。')
+        for option in entry.get('options') or []:
+            lines.append(f"- {option['label']}" + (f": {option['description']}" if option.get('description') else ''))
+    return '\n'.join(lines)
+
+
 def question_requester_binding(task):
     binding = {'requested_by_user_id': str(task.root_user_id) if task and task.root_user_id else None}
     if task is not None and task.machine_credential_id is not None:

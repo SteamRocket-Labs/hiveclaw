@@ -46,15 +46,10 @@ async def _waiting_question(db, run, question_id):
 
 def _question_text(business, question):
     from app.config import get_settings
-    from app.services.session_user_question import question_payload
+    from app.services.session_user_question import question_payload, render_user_questions
 
-    lines = []
-    for entry in question_payload(question).get('questions') or []:
-        lines.append(entry['question'])
-        if entry.get('multiSelect'):
-            lines.append('可多选。')
-        for option in entry.get('options') or []:
-            lines.append(f"- {option['label']}" + (f": {option['description']}" if option.get('description') else ''))
+    rendered = render_user_questions(question_payload(question))
+    lines = [rendered] if rendered else []
     base = (get_settings().PUBLIC_BASE_URL or get_settings().BASE_URL).rstrip('/')
     lines.append(f'查看并答复原工作：{base}/agents/{business.agent_id}?task_id={business.id}#tasks')
     return '\n'.join(lines)

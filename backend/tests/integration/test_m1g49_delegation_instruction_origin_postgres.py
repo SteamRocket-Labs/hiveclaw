@@ -108,7 +108,7 @@ async def _start_feishu_creation_work(seed, app_user_sessionmaker, monkeypatch):
         return command.id
 
 
-@pytest.mark.parametrize("input_case", ["complete", "unbound", "revoked", "first_task", "first_task_unbound", "first_task_revoked", "first_task_refined", "first_task_delivery", "first_task_parent_model", "first_task_refined_native", "first_task_native_creation", "first_task_fresh_employee", "first_task_saved_reopen", "first_task_question", "first_task_question_after_write", "first_task_feishu_question", "first_task_feishu_quoted_question"])
+@pytest.mark.parametrize("input_case", ["complete", "unbound", "revoked", "first_task", "first_task_unbound", "first_task_revoked", "first_task_refined", "first_task_delivery", "first_task_parent_model", "first_task_refined_native", "first_task_native_creation", "first_task_fresh_employee", "first_task_saved_reopen", "first_task_question", "first_task_question_after_write", "first_task_feishu_question", "first_task_feishu_quoted_question", "first_task_feishu_question_source_changed", "first_task_feishu_question_body_changed", "first_task_feishu_question_already_answered", "first_task_feishu_question_projection_missing", "first_task_feishu_question_recipient_changed", "first_task_feishu_question_legacy_status"])
 async def test_governed_delegation_preserves_its_parent_instruction_origin(
     owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, input_case,
 ):
@@ -128,7 +128,7 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
 
     first_task = input_case.startswith("first_task")
     question_after_write = input_case == "first_task_question_after_write"
-    feishu_creation = input_case in {"first_task_feishu_question", "first_task_feishu_quoted_question"}
+    feishu_creation = input_case.startswith("first_task_feishu_")
     if feishu_creation:
         monkeypatch.setattr(get_settings(), "PUBLIC_BASE_URL", "https://hive.synthetic.test")
     saved_reopen = input_case == "first_task_saved_reopen"
@@ -476,7 +476,8 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
                 assert notices[0].terminal_status == "clarification_required" and notices[0].artifact_ids_json == []
                 assert notices[0].prompt_key == str(question_id)
                 assert f"/agents/{seed['agent_id']}?session_id={seed['session_id']}#chat" in notices[0].text_content
-                assert "Which audience?" not in notices[0].text_content
+                assert "Which audience?" in notices[0].text_content
+                assert "- Team" in notices[0].text_content and "- Personal" in notices[0].text_content
             if question_after_write:
                 from app.runtime.session import SessionContext
                 from app.services.delegation_context_sources import bind_native_recovery_context
@@ -514,10 +515,64 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
                 async with tenant_scoped_session(seed["tenant_id"], session_factory=app_user_sessionmaker) as scoped:
                     yield scoped
             monkeypatch.setattr(notice_service, "_worker_session", notice_session)
+            if input_case in {"first_task_feishu_question_source_changed", "first_task_feishu_question_body_changed",
+                "first_task_feishu_question_already_answered", "first_task_feishu_question_projection_missing",
+                "first_task_feishu_question_recipient_changed"}:
+                from app.api.chat_sessions import SessionHumanInputIn, submit_session_human_input
+
+                soul = seed["data_root"] / str(receiver) / "soul.md"
+                original_soul = soul.read_bytes()
+                async with app_user_sessionmaker() as db:
+                    await pin_rls_tenant_context(db, seed["tenant_id"])
+                    if input_case.endswith("body_changed"):
+                        saved = await db.get(ChannelDeliveryOutbox, notices[0].id)
+                        saved.text_content += "\nDifferent question text."
+                    elif input_case.endswith("projection_missing"):
+                        saved = await db.get(ChannelDeliveryOutbox, notices[0].id)
+                        saved.metadata_json = {k: v for k, v in saved.metadata_json.items() if k != "projection_kind"}
+                    elif input_case.endswith("recipient_changed"):
+                        saved = await db.get(ChannelDeliveryOutbox, notices[0].id)
+                        saved.delivery_target_json = {**saved.delivery_target_json, "receive_id": "ou_another_recipient"}
+                    elif input_case.endswith("already_answered"):
+                        answer_id = uuid4()
+                        admitted = await submit_session_human_input(agent_id=receiver, session_id=UUID(request.session_id),
+                            current_user=user, db=db, body=SessionHumanInputIn(kind="answer_request", input_id=answer_id,
+                                idempotency_key=str(answer_id), request_item_id=question_id,
+                                content_parts=[{"type": "text", "text": "Audience: Team"}],
+                                expected_run_id=task_id, terminal_fallback="reject"))
+                        assert admitted["status"] == "queued", admitted
+                    await db.commit()
+                if input_case.endswith("source_changed"):
+                    soul.write_bytes(original_soul + b"\nChanged before channel release.\n")
+                try:
+                    denied = await notice_service.drain_once(worker_id="question-release-denial")
+                    assert denied["dead_lettered"] == 1 and sent_notices == [], denied
+                    async with app_user_sessionmaker() as db:
+                        await pin_rls_tenant_context(db, seed["tenant_id"])
+                        assert (await db.get(ChannelDeliveryOutbox, notices[0].id)).status == "dead_letter"
+                    assert len(client.requests) == question_calls
+                finally:
+                    soul.write_bytes(original_soul)
+                return
+            if input_case.endswith("legacy_status"):
+                from app.models.hr_creation import HrCreationDraft
+                from app.services.employee_first_task import first_task_question_text
+
+                async with app_user_sessionmaker() as db:
+                    await pin_rls_tenant_context(db, seed["tenant_id"])
+                    saved = await db.get(ChannelDeliveryOutbox, notices[0].id)
+                    draft = await db.get(HrCreationDraft, UUID(creation["blueprint_id"]))
+                    saved.metadata_json = {k: v for k, v in saved.metadata_json.items() if k != "projection_kind"}
+                    saved.text_content = first_task_question_text(draft)
+                    await db.commit()
+                assert (await notice_service.drain_once(worker_id="legacy-status"))["delivered"] >= 1
+                assert len(sent_notices) == 1 and "Which audience?" not in sent_notices[0]["text"]
+                assert sent_notices[0]["target"] == "ou_creation_owner"
+                return
             assert (await notice_service.drain_once(worker_id="question-notice"))["delivered"] >= 1
             assert (await notice_service.drain_once(worker_id="question-notice-replay"))["delivered"] == 0
             assert len(sent_notices) == 1 and sent_notices[0]["target"] == "ou_creation_owner"
-            assert sent_notices[0]["target_type"] == "open_id" and "Which audience?" not in sent_notices[0]["text"]
+            assert sent_notices[0]["target_type"] == "open_id" and "Which audience?" in sent_notices[0]["text"]
             async with app_user_sessionmaker() as db:
                 await pin_rls_tenant_context(db, seed["tenant_id"])
                 assert (await db.get(RuntimeTask, task_id)).status == "suspended"
@@ -601,7 +656,7 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
             assert reopened["question"]["item_id"] == str(question_id) != work["question"]["item_id"]
             if feishu_creation:
                 assert (await notice_service.drain_once(worker_id="cancelled-answer-notice"))["delivered"] == 1
-                assert len(sent_notices) == 2 and all("Which audience?" not in row["text"] for row in sent_notices)
+                assert len(sent_notices) == 2 and all("Which audience?" in row["text"] for row in sent_notices)
                 async with app_user_sessionmaker() as db:
                     await pin_rls_tenant_context(db, seed["tenant_id"])
                     notices = list(await db.scalars(select(ChannelDeliveryOutbox).where(

@@ -104,6 +104,7 @@ class ClaimedChannelDelivery:
     delivery_receipts: dict[str, Any]
     terminal_status: str
     delivery_kind: DeliveryKind
+    prompt_key: str
     metadata: dict[str, Any]
     attempt_count: int
 
@@ -308,6 +309,7 @@ def _claimed(row: ChannelDeliveryOutbox) -> ClaimedChannelDelivery:
         delivery_receipts=dict(row.delivery_receipts_json or {}),
         terminal_status=row.terminal_status,
         delivery_kind=row.delivery_kind,  # type: ignore[arg-type]
+        prompt_key=row.prompt_key,
         metadata=dict(row.metadata_json or {}),
         attempt_count=int(row.attempt_count or 0),
     )
@@ -567,6 +569,13 @@ class ChannelDeliveryOutboxService:
         from app.services.content_input_receipts import ContentInputReceiptError, _validate_input_dependencies
         from app.services.session_model_inputs import _model_dependencies
 
+        if item.metadata.get('source') == 'employee_first_task_question':
+            from app.services.employee_first_task import authorize_first_task_question_notice
+
+            session = await db.get(ChatSession, item.session_id, populate_existing=True)
+            user = await self._private_delivery_reader(db, item, session) if session is not None else None
+            await authorize_first_task_question_notice(db, item=item, session=session, user=user)
+            return
         if item.metadata.get('source') == 'business_task_runtime':
             await self._authorize_business_result_text(db, item)
             return

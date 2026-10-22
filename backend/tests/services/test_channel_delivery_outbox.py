@@ -719,3 +719,17 @@ async def test_changed_installation_principal_is_permanent_dead_letter_without_p
     assert calls == 0
     assert row.status == "dead_letter"
     assert "installation changed" in row.last_error
+
+
+@pytest.mark.parametrize("channel,can_quote", [("feishu", True), ("dingtalk", False), ("wecom", False), ("telegram", False)])
+def test_first_task_guidance_uses_its_actual_channel_answer_path(channel, can_quote, monkeypatch):
+    from types import SimpleNamespace
+    from app.services.employee_first_task import first_task_question_text
+
+    monkeypatch.setattr(get_settings(), "PUBLIC_BASE_URL", "https://original-work.fixture.test")
+    draft = SimpleNamespace(hr_agent_id=uuid.uuid4(), session_id=uuid.uuid4())
+    text = first_task_question_text(draft, {"questions": [{"question": "Which audience?",
+        "options": [{"label": "Team"}, {"label": "Personal"}]}]}, channel=channel)
+    assert ("引用此消息回复" in text) is can_quote
+    assert "Which audience?" in text and "- Team" in text and "- Personal" in text
+    assert f"/agents/{draft.hr_agent_id}?session_id={draft.session_id}#chat" in text

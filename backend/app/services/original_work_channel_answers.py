@@ -1,9 +1,9 @@
-"""Relay an authenticated provider quote into its original native question only."""
+"""Relay an authenticated provider quote into its exact original work question."""
 
 import uuid
 
 from fastapi import HTTPException
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 
 from app.models.channel_delivery_outbox import ChannelDeliveryOutbox
 from app.models.channel_ingress_event import ChannelIngressEvent
@@ -11,7 +11,7 @@ from app.models.chat_session import ChatSession
 from app.models.runtime_task import RuntimeTask
 
 
-async def try_answer_business_question(db, *, agent, principal, config, user_text, delivery_target,
+async def try_answer_original_work_question(db, *, agent, principal, config, user_text, delivery_target,
     external_conv_id, uploads=(), expected_upload_keys=()):
     from app.services.channel_ingress_context import (
         bind_channel_ingress_external_principal, bind_channel_ingress_runtime_result, current_channel_ingress_context,
@@ -37,8 +37,9 @@ async def try_answer_business_question(db, *, agent, principal, config, user_tex
         ChannelDeliveryOutbox.tenant_id == agent.tenant_id, ChannelDeliveryOutbox.agent_id == agent.id,
         ChannelDeliveryOutbox.channel == 'feishu', ChannelDeliveryOutbox.channel_config_id == config.id,
         ChannelDeliveryOutbox.delivery_kind == 'interactive_prompt',
-        ChannelDeliveryOutbox.metadata_json['source'].astext == 'business_task_runtime',
-        ChannelDeliveryOutbox.metadata_json['projection_kind'].astext == 'question_notice',
+        or_(and_(ChannelDeliveryOutbox.metadata_json['source'].astext == 'business_task_runtime',
+                ChannelDeliveryOutbox.metadata_json['projection_kind'].astext == 'question_notice'),
+            ChannelDeliveryOutbox.metadata_json['source'].astext == 'employee_first_task_question'),
         ChannelDeliveryOutbox.delivery_receipts_json['text']['state'].astext == 'delivered',
         ChannelDeliveryOutbox.delivery_receipts_json['text']['detail']['provider_message_id'].astext == parent).limit(2)))
     if not candidates:
@@ -49,13 +50,16 @@ async def try_answer_business_question(db, *, agent, principal, config, user_tex
                 ChannelDeliveryOutbox.channel == 'feishu', ChannelDeliveryOutbox.channel_config_id == config.id,
                 ChannelDeliveryOutbox.user_id == principal.linked_user_id,
                 ChannelDeliveryOutbox.external_principal_id == principal.id,
-                ChannelDeliveryOutbox.metadata_json['source'].astext == 'business_task_runtime',
-                ChannelDeliveryOutbox.metadata_json['projection_kind'].astext == 'question_notice',
+                or_(and_(ChannelDeliveryOutbox.metadata_json['source'].astext == 'business_task_runtime',
+                        ChannelDeliveryOutbox.metadata_json['projection_kind'].astext == 'question_notice',
+                        RuntimeTask.task_type == 'business_task',
+                        RuntimeTask.metadata_json['business_wait']['question_item_id'].astext == ChannelDeliveryOutbox.prompt_key),
+                    and_(ChannelDeliveryOutbox.metadata_json['source'].astext == 'employee_first_task_question',
+                        RuntimeTask.task_type == 'delegation',
+                        RuntimeTask.metadata_json['delegation_waiting_question_item_id'].astext == ChannelDeliveryOutbox.prompt_key)),
                 ChannelDeliveryOutbox.delivery_receipts_json['text']['state'].astext == 'delivered',
                 ChannelDeliveryOutbox.delivery_receipts_json['text']['detail']['provider_message_id'].astext.is_(None),
-                RuntimeTask.tenant_id == agent.tenant_id, RuntimeTask.task_type == 'business_task',
-                RuntimeTask.status == 'suspended',
-                RuntimeTask.metadata_json['business_wait']['question_item_id'].astext == ChannelDeliveryOutbox.prompt_key).limit(1))
+                RuntimeTask.tenant_id == agent.tenant_id, RuntimeTask.status == 'suspended').limit(1))
             if unknown is not None:
                 return {'code': 0, 'msg': 'answer_rejected', 'answer_status': 'needs_reconciliation',
                     'reason_code': 'business_question_provider_reference_unavailable'}
@@ -64,6 +68,7 @@ async def try_answer_business_question(db, *, agent, principal, config, user_tex
         return {'code': 0, 'msg': 'answer_rejected', 'answer_status': 'rejected',
             'reason_code': 'business_question_reply_ambiguous'}
     notice = candidates[0]
+    first_task = notice.metadata_json.get('source') == 'employee_first_task_question'
     try:
         from app.api.tasks import TaskAnswerIn, answer_business_task_question
         from app.core.policy import write_audit_event
@@ -81,7 +86,7 @@ async def try_answer_business_question(db, *, agent, principal, config, user_tex
         session = await db.get(ChatSession, notice.session_id, populate_existing=True)
         if (not actor.authority_bound or actor.id is None or actor.id != notice.user_id
             or principal.installation_ref != installation or principal.subject_id != sender.get('open_id')
-            or run is None or run.task_type != 'business_task' or run.tenant_id != agent.tenant_id
+            or run is None or run.task_type != ('delegation' if first_task else 'business_task') or run.tenant_id != agent.tenant_id
             or run.parent_agent_id != agent.id or run.root_user_id != actor.id
             or run.parent_session_id != str(notice.session_id) or session is None
             or session.tenant_id != agent.tenant_id or session.agent_id != agent.id):
@@ -107,6 +112,25 @@ async def try_answer_business_question(db, *, agent, principal, config, user_tex
             raise HTTPException(403, detail={'code': 'business_question_reply_requester_changed'})
         if session.audience_kind == 'group':
             await authorize_group_history_reader(db, session=session, user=user, audit=False)
+        if first_task:
+            from app.models.hr_creation import HrCreationDraft
+            from app.services.hr_creation_service import direct_creation_authorization
+
+            draft = await db.get(HrCreationDraft, uuid.UUID(notice.metadata_json['draft_id']), populate_existing=True)
+            evidence = direct_creation_authorization(draft) if draft is not None else None
+            if (draft is None or draft.status != 'completed' or not evidence or not evidence.get('first_task')
+                or draft.tenant_id != run.tenant_id or draft.hr_agent_id != run.parent_agent_id
+                or draft.session_id != session.id or draft.requested_by_user_id != user.id
+                or draft.created_agent_id != run.child_agent_id or run.prompt != evidence['first_task']
+                or run.id != uuid.uuid5(draft.id, 'explicit-first-task.v1')
+                or run.child_session_id != str(uuid.uuid5(run.id, 'session'))):
+                raise HTTPException(403, detail={'code': 'first_task_question_binding_changed'})
+            from app.services.employee_first_task import load_first_task_work
+
+            work = await load_first_task_work(db, draft=draft, user=user)
+            if work is None or work['status'] in {'unavailable', 'unknown', 'needs_reconciliation'}:
+                raise HTTPException(403 if work and work['status'] == 'unavailable' else 503,
+                    detail={'code': (work or {}).get('reason', 'first_task_question_source_unavailable')})
         bind_channel_ingress_external_principal(principal.id)
         parts = [{'type': 'text', 'text': user_text}]
         if list(expected_upload_keys) != [key for key, _content in uploads]:
@@ -123,15 +147,25 @@ async def try_answer_business_question(db, *, agent, principal, config, user_tex
             paths = [await save_feishu_upload(db, actor=actor, session=origin, message_id=message.get('message_id'),
                 resource_key=key, filename=f'image_{key[-8:]}.jpg', content=content) for key, content in uploads]
             parts = content_parts_from_live_ingress(content=user_text, attachments=[{'path': path} for path in paths])
-        await write_audit_event(db, event_type='business_task.question_answer_via_channel', actor_type='user',
-            actor_id=user.id, tenant_id=agent.tenant_id, action='answer_business_task_question',
-            resource_type='task', resource_id=uuid.UUID(notice.metadata_json['business_task_id']),
+        await write_audit_event(db, event_type='employee_first_task.question_answer_via_channel' if first_task else 'business_task.question_answer_via_channel', actor_type='user',
+            actor_id=user.id, tenant_id=agent.tenant_id, action='answer_original_work_question',
+            resource_type='runtime_task' if first_task else 'task',
+            resource_id=run.id if first_task else uuid.UUID(notice.metadata_json['business_task_id']),
             details={'external_principal_id': str(principal.id), 'channel_ingress_event_id': str(ingress.event_id),
                 'question_item_id': notice.metadata_json['question_item_id']})
-        receipt = await answer_business_task_question(agent_id=agent.id,
-            task_id=uuid.UUID(notice.metadata_json['business_task_id']), current_user=user, db=db,
-            data=TaskAnswerIn(input_id=ingress.event_id, question_item_id=uuid.UUID(notice.metadata_json['question_item_id']),
-                content_parts=parts))
+        if first_task:
+            from app.api.chat_sessions import SessionHumanInputIn, submit_session_human_input
+
+            receipt = await submit_session_human_input(agent_id=run.child_agent_id,
+                session_id=uuid.UUID(run.child_session_id), current_user=user, db=db,
+                body=SessionHumanInputIn(kind='answer_request', input_id=ingress.event_id,
+                    idempotency_key=str(ingress.event_id), request_item_id=uuid.UUID(notice.metadata_json['question_item_id']),
+                    content_parts=parts, expected_run_id=run.id, terminal_fallback='reject'))
+        else:
+            receipt = await answer_business_task_question(agent_id=agent.id,
+                task_id=uuid.UUID(notice.metadata_json['business_task_id']), current_user=user, db=db,
+                data=TaskAnswerIn(input_id=ingress.event_id, question_item_id=uuid.UUID(notice.metadata_json['question_item_id']),
+                    content_parts=parts))
         bind_channel_ingress_runtime_result(runtime_task_id=run.id, session_id=notice.session_id)
         return {'code': 0, 'msg': 'answer_received', 'answer_status': receipt['status'],
             'reason_code': receipt.get('reason_code')}

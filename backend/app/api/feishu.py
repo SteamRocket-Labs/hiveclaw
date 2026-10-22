@@ -1548,9 +1548,9 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
                 legacy_conv_ids = []
             delivery_target["user_label"] = runtime_actor.display_name or sender_name or sender_open_id[:8]
 
-            from app.services.business_task_channel_answers import try_answer_business_question
+            from app.services.original_work_channel_answers import try_answer_original_work_question
 
-            question_answer = await try_answer_business_question(db, agent=agent_obj,
+            question_answer = await try_answer_original_work_question(db, agent=agent_obj,
                 principal=principal_resolution.principal, config=config, user_text=user_text,
                 delivery_target=delivery_target, external_conv_id=conv_id, uploads=_post_uploads,
                 expected_upload_keys=_post_image_keys)

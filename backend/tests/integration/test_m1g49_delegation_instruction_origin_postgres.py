@@ -108,7 +108,7 @@ async def _start_feishu_creation_work(seed, app_user_sessionmaker, monkeypatch):
         return command.id
 
 
-@pytest.mark.parametrize("input_case", ["complete", "unbound", "revoked", "first_task", "first_task_unbound", "first_task_revoked", "first_task_refined", "first_task_delivery", "first_task_parent_model", "first_task_refined_native", "first_task_native_creation", "first_task_fresh_employee", "first_task_saved_reopen", "first_task_question", "first_task_question_after_write", "first_task_feishu_question"])
+@pytest.mark.parametrize("input_case", ["complete", "unbound", "revoked", "first_task", "first_task_unbound", "first_task_revoked", "first_task_refined", "first_task_delivery", "first_task_parent_model", "first_task_refined_native", "first_task_native_creation", "first_task_fresh_employee", "first_task_saved_reopen", "first_task_question", "first_task_question_after_write", "first_task_feishu_question", "first_task_feishu_quoted_question"])
 async def test_governed_delegation_preserves_its_parent_instruction_origin(
     owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, input_case,
 ):
@@ -128,7 +128,7 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
 
     first_task = input_case.startswith("first_task")
     question_after_write = input_case == "first_task_question_after_write"
-    feishu_creation = input_case == "first_task_feishu_question"
+    feishu_creation = input_case in {"first_task_feishu_question", "first_task_feishu_quoted_question"}
     if feishu_creation:
         monkeypatch.setattr(get_settings(), "PUBLIC_BASE_URL", "https://hive.synthetic.test")
     saved_reopen = input_case == "first_task_saved_reopen"
@@ -503,7 +503,7 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
                 if "此提示不代表任务完成" in notice_text:
                     sent_notices.append({"target": receive_id, "target_type": kwargs["receive_id_type"],
                         "message_type": message_type, "text": notice_text})
-                return {"data": {"message_id": "synthetic-question-notice"}}
+                return {"data": {"message_id": f"synthetic-question-notice-{len(sent_notices)}"}}
             monkeypatch.setattr(FeishuService, "send_message", send_notice)
             notice_service = ChannelDeliveryOutboxService(session_factory=app_user_sessionmaker)
             @asynccontextmanager
@@ -612,8 +612,90 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
                     assert all(row.status == "delivered" for row in notices)
             answer_id = uuid4()
             body.update(input_id=str(answer_id), idempotency_key=str(answer_id), request_item_id=str(question_id))
-            response = await browser.post(f"/api/agents/{receiver}/sessions/{request.session_id}/inputs", json=body)
-            await dispatch_answer(response)
+            if input_case == "first_task_feishu_quoted_question":
+                from app.models.audit import ChatMessage
+                from app.services.channel_ingress_dispatcher import dispatch_channel_ingress_event
+                from app.services.channel_ingress_inbox import ChannelIngressInboxService, ChannelIngressSubmission, enqueue_channel_ingress_event
+                from app.services.session_input_dispatch import recover_admitted_session_inputs_once
+
+                async with app_user_sessionmaker() as db:
+                    await pin_rls_tenant_context(db, seed["tenant_id"])
+                    runs_before_reply = set(await db.scalars(select(RuntimeTask.id).where(RuntimeTask.tenant_id == seed["tenant_id"])))
+                    notice = next(row for row in notices if row.prompt_key == str(question_id))
+                reply_service = ChannelIngressInboxService(session_factory=app_user_sessionmaker)
+                monkeypatch.setattr(reply_service, "_worker_session", notice_session)
+
+                async def claim_reply():
+                    reply = {"header": {"event_type": "im.message.receive_v1", "event_id": uuid4().hex},
+                        "event": {"sender": {"sender_id": {"open_id": "ou_creation_owner"}},
+                            "message": {"message_type": "text", "chat_type": "p2p", "message_id": uuid4().hex,
+                                "parent_id": "synthetic-question-notice-2", "content": json.dumps({"text": "Audience: Team"})}}}
+                    async with app_user_sessionmaker() as db:
+                        await pin_rls_tenant_context(db, seed["tenant_id"])
+                        admitted = await enqueue_channel_ingress_event(db, ChannelIngressSubmission(
+                            tenant_id=seed["tenant_id"], agent_id=seed["agent_id"], provider="feishu",
+                            installation_ref=str(notice.channel_config_id), provider_event_id=reply["header"]["event_id"],
+                            handler_key="feishu.event", payload={"body": reply}))
+                        await db.commit()
+                    items = await reply_service.claim_batch(worker_id="first-task-answer", limit=10)
+                    assert [item.id for item in items] == [admitted.event_id]
+                    return items[0]
+
+                for changed in ("draft", "source", "receipt"):
+                    from app.models.hr_creation import HrCreationDraft
+
+                    async with app_user_sessionmaker() as db:
+                        await pin_rls_tenant_context(db, seed["tenant_id"])
+                        draft = await db.get(HrCreationDraft, UUID(creation["blueprint_id"]))
+                        draft_agent = draft.created_agent_id
+                        original_receipts = notice.delivery_receipts_json
+                        if changed == "draft":
+                            draft.created_agent_id = seed["agent_id"]
+                        elif changed == "receipt":
+                            current_notice = await db.get(ChannelDeliveryOutbox, notice.id)
+                            current_notice.delivery_receipts_json = {**original_receipts, "text": {
+                                **original_receipts["text"], "detail": {k: v for k, v in original_receipts["text"]["detail"].items()
+                                    if k != "provider_message_id"}}}
+                        await db.commit()
+                    if changed == "source":
+                        soul.write_bytes(original_soul + b"\nChanged before the quoted answer.\n")
+                    rejected_reply = await claim_reply()
+                    try:
+                        rejected = await dispatch_channel_ingress_event(rejected_reply)
+                        assert rejected.get("answer_status") == ("needs_reconciliation" if changed == "receipt" else "rejected"), (changed, rejected)
+                        async with app_user_sessionmaker() as db:
+                            await pin_rls_tenant_context(db, seed["tenant_id"])
+                            assert await db.get(SessionTurnInput, rejected_reply.id) is None
+                            assert set(await db.scalars(select(RuntimeTask.id).where(RuntimeTask.tenant_id == seed["tenant_id"]))) == runs_before_reply
+                        assert len(client.requests) == question_calls
+                        assert await reply_service._mark_processed(item=rejected_reply, worker_id="first-task-answer", receipt=rejected)
+                    finally:
+                        soul.write_bytes(original_soul)
+                        async with app_user_sessionmaker() as db:
+                            await pin_rls_tenant_context(db, seed["tenant_id"])
+                            (await db.get(HrCreationDraft, UUID(creation["blueprint_id"]))).created_agent_id = draft_agent
+                            (await db.get(ChannelDeliveryOutbox, notice.id)).delivery_receipts_json = original_receipts
+                            await db.commit()
+                replies = [await claim_reply()]
+                answer_id = replies[0].id
+                for _attempt in range(2):
+                    reply_receipt = await dispatch_channel_ingress_event(replies[0])
+                    assert reply_receipt.get("runtime_task_id") == str(task_id), reply_receipt
+                    assert reply_receipt["session_id"] == str(seed["session_id"])
+                    async with app_user_sessionmaker() as db:
+                        await pin_rls_tenant_context(db, seed["tenant_id"])
+                        row = await db.get(SessionTurnInput, answer_id)
+                        assert row.intent == "answer_request" and row.target_run_id == task_id
+                        assert row.session_id == UUID(request.session_id) and row.request_item_id == question_id
+                        await recover_admitted_session_inputs_once(db, worker_id="quoted-answer-dispatch", tenant_id=seed["tenant_id"],
+                            admission_ids=(uuid5(row.command_id, "input-admission:revision:1"),))
+                        assert row.status == "queued"
+                        assert await db.scalar(select(ChatMessage.id).where(ChatMessage.source_ingress_event_id == answer_id)) is None
+                        assert set(await db.scalars(select(RuntimeTask.id).where(RuntimeTask.tenant_id == seed["tenant_id"]))) == runs_before_reply
+                    assert len(client.requests) == question_calls
+            else:
+                response = await browser.post(f"/api/agents/{receiver}/sessions/{request.session_id}/inputs", json=body)
+                await dispatch_answer(response)
             answered = (await browser.get(draft_url)).json()["first_task_work"]
             assert answered["question"] is None and answered["runtime_task_id"] == str(task_id)
         async with owner_sessionmaker() as db:
@@ -659,6 +741,10 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://question.local") as browser:
             completed = (await browser.get(draft_url)).json()["first_task_work"]
             assert completed["status"] == "completed" and completed["question"] is None
+        if input_case == "first_task_feishu_quoted_question":
+            replay = await dispatch_channel_ingress_event(replies[0])
+            assert replay.get("runtime_task_id") == str(task_id) and len(client.requests) == question_calls + 1, replay
+            assert await reply_service._mark_processed(item=replies[0], worker_id="first-task-answer", receipt=replay)
         from app.services.direct_invocation_terminal_boundary_processor import DirectInvocationTerminalBoundaryProcessor
         from app.services.runtime_terminal_boundary_outbox import RuntimeTerminalBoundaryOutboxService
         from app.services.runtime_notification_outbox import RuntimeNotificationOutboxService

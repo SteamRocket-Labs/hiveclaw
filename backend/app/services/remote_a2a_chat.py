@@ -278,7 +278,7 @@ async def validate_sources(db, *, task, state, for_effect=True, reader=None):
     from app.services.remote_a2a_tasks import _digest
 
     principal = _principal(task, state)
-    session = await _session_principal(db, task=task, state=state, for_effect=for_effect)
+    await _session_principal(db, task=task, state=state, for_effect=for_effect)
     for operation in state["operations"]:
         if operation["method"] != "SendMessage":
             continue
@@ -297,7 +297,7 @@ async def validate_sources(db, *, task, state, for_effect=True, reader=None):
             or proof.get("sha256") != _digest({k: v for k, v in proof.items() if k != "sha256"})):
             raise HTTPException(409, detail={"code": "remote_a2a_input_receipt_unavailable"})
         try:
-            if not for_effect and session.audience_kind == "group" and reader is not None:
+            if not for_effect and reader is not None:
                 await _validate_input_dependencies(db, task.tenant_id, proof["dependencies"], user=reader)
             else:
                 await _validate_input_dependencies(db, task.tenant_id, proof["dependencies"], runtime_request=principal)

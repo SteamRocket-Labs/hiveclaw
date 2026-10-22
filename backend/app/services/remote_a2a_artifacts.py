@@ -124,12 +124,13 @@ async def group_event_ref(db, *, session, event, user):
 
 async def _packet_reader(db, tenant_id, *, task, session, user=None, runtime_request=None):
     from app.services.content_input_receipts import _runtime_input_actor, _authorize_session_input_source
+    from app.services.runtime_user_identity import load_scoped_runtime_user
 
     if runtime_request is not None:
         principal, user = await _runtime_input_actor(db, tenant_id, runtime_request)
         if principal.agent_id != task.parent_agent_id or str(principal.session_id) != task.parent_session_id:
             raise ContentInputReceiptError("remote_a2a_source_unavailable", "The exact remote packet, original work or requester cannot be verified.", 403)
-    reader = await db.get(User, user.id, populate_existing=True) if user is not None else None
+    reader = await load_scoped_runtime_user(db, user.id, tenant_id=tenant_id) if user is not None else None
     if (reader is None or not reader.is_active or reader.tenant_id != tenant_id
         or (session.audience_kind != "group" and reader.id != task.root_user_id)):
         raise ContentInputReceiptError("remote_a2a_source_unavailable", "The exact remote packet, original work or requester cannot be verified.", 403)

@@ -615,6 +615,7 @@ async def execute_claimed_task(task_id):
     from app.services.tenant_resolver import resolve_tenant_for_runtime_task
     from app.services.session_semantic_history import SessionSemanticHistoryUnavailable
     from app.services.content_input_receipts import ContentInputReceiptError
+    from app.services.runtime_user_identity import load_scoped_runtime_user
 
     tenant_id = await resolve_tenant_for_runtime_task(task_id)
     if tenant_id is None:
@@ -641,7 +642,7 @@ async def execute_claimed_task(task_id):
             await _record(db, task, state)
             return
         try:
-            actor = await db.get(User, task.root_user_id, populate_existing=True)
+            actor = await load_scoped_runtime_user(db, task.root_user_id, tenant_id=tenant_id)
             if actor is None or not actor.is_active:
                 raise HTTPException(403)
             await db.get(Agent, task.child_agent_id, populate_existing=True)
@@ -690,7 +691,7 @@ async def execute_claimed_task(task_id):
         operation = state["operations"][-1]
         authority_changed = False
         try:
-            actor = await db.get(User, task.root_user_id, populate_existing=True)
+            actor = await load_scoped_runtime_user(db, task.root_user_id, tenant_id=tenant_id)
             if actor is None or not actor.is_active:
                 raise HTTPException(403)
             await db.get(Agent, task.child_agent_id, populate_existing=True)

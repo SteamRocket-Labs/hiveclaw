@@ -32,7 +32,6 @@ from app.models.runtime_task import (
     RuntimeTask,
 )
 from app.models.runtime_terminal_boundary_outbox import RuntimeTerminalBoundaryOutbox
-from app.models.user import User
 from app.services.execution_admission import ExecutionAdmission, ExecutionAdmissionDecision
 from app.services.runtime_budget_service import RuntimeBudgetDenied, RuntimeBudgetReservation, RuntimeBudgetService
 from app.services.runtime_result_store import (
@@ -1706,9 +1705,10 @@ class RuntimeNotificationOutboxService:
                     select(Agent).where(Agent.id == page.parent_agent_id, Agent.tenant_id == page.tenant_id)
                 )
             ).scalar_one_or_none()
-            owner = (
-                await db.execute(select(User).where(User.id == page.parent_user_id, User.tenant_id == page.tenant_id))
-            ).scalar_one_or_none() if page.parent_user_id is not None else None
+            from app.services.runtime_user_identity import load_scoped_runtime_user
+
+            owner = await load_scoped_runtime_user(db, page.parent_user_id,
+                tenant_id=page.tenant_id) if page.parent_user_id is not None else None
             if parent_session is not None and page.parent_user_id is None:
                 from app.services.machine_runtime_authority import machine_approval_return_actor
 

@@ -70,9 +70,18 @@ async def resolve_task_effect_user(db, agent, requester_id: uuid.UUID | None):
     """
 
     from app.models.user import User
+    from app.services.runtime_user_identity import load_scoped_runtime_user
 
     if requester_id is not None:
         requester = (await db.execute(select(User).where(User.id == requester_id))).scalar_one_or_none()
+        if requester is None or (
+            getattr(requester, "is_active", True) is not False
+            and str(getattr(requester, "tenant_id", None)) != str(getattr(agent, "tenant_id", None))
+        ):
+            # A selected company does not replace the principal's canonical home.
+            recovered = await load_scoped_runtime_user(db, requester_id, tenant_id=agent.tenant_id)
+            if recovered is not None:
+                requester = recovered
         if requester is None or getattr(requester, "is_active", True) is False:
             return None, "requester_inactive"
         if str(getattr(requester, "tenant_id", None)) != str(getattr(agent, "tenant_id", None)):

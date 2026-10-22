@@ -19,9 +19,72 @@ RESULT = 'BUSINESS_RESULT_DERIVED_FROM_PRIVATE_ORIGINAL'
 
 
 @pytest.mark.parametrize('provider', ['filesystem'], indirect=True)
+@pytest.mark.parametrize('home,requester_state', [('none', 'active'), ('foreign', 'active'),
+    ('none', 'role_revoked'), ('foreign', 'role_revoked'), ('none', 'inactive'), ('foreign', 'home_disabled')])
+async def test_business_task_uses_the_selected_company_of_its_exact_requester(
+    original_api, provider, owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, home, requester_state,  # noqa: F811
+):
+    from fastapi import Request
+    from app.core.security import decode_access_token
+    from app.database import get_db
+    from app.models.agent import Agent
+    from app.models.tenant import Tenant
+    from app.models.user import User
+
+    original_seed = _seed_run
+    canonical = {}
+
+    async def selected_seed(*args, **kwargs):
+        seed = await original_seed(*args, **kwargs)
+        async with owner_sessionmaker() as db:
+            user = await db.get(User, seed['user_id'])
+            home_id = None
+            if home == 'foreign':
+                home_id = uuid.uuid4()
+                db.add(Tenant(id=home_id, name='Requester home', slug=f'requester-home-{home_id.hex}'))
+                await db.flush()
+            user.tenant_id, user.role = home_id, 'platform_admin'
+            owner_id = uuid.uuid4()
+            db.add(User(id=owner_id, tenant_id=seed['tenant_id'], username=f'owner-{owner_id.hex}',
+                email=f'{owner_id}@fixture.test', display_name='Company owner', password_hash='synthetic-unused',
+                role='member', is_active=True))
+            await db.flush()
+            (await db.get(Agent, seed['agent_id'])).owner_user_id = owner_id
+            await db.commit()
+        canonical.update(user_id=seed['user_id'], tenant_id=home_id, agent_id=seed['agent_id'], owner_id=owner_id)
+        return seed
+
+    monkeypatch.setattr(sys.modules[__name__], '_seed_run', selected_seed)
+
+    async def selected_scope(request: Request):
+        claims = decode_access_token(request.headers['authorization'].removeprefix('Bearer '))
+        scope = request.headers.get('x-tenant-id') if claims['role'] == 'platform_admin' else claims.get('tid')
+        async with app_user_sessionmaker() as db:
+            await pin_rls_tenant_context(db, uuid.UUID(scope))
+            try:
+                yield db
+                await db.commit()
+            except BaseException:
+                await db.rollback()
+                raise
+
+    original_api[1]._transport.app.dependency_overrides[get_db] = selected_scope
+    await test_business_task_text_rechecks_its_actual_original_source(
+        original_api, provider, owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path,
+        withdrawn=False, unknown_effect=False, delivery_channel='web', requester_state=requester_state)
+    async with owner_sessionmaker() as db:
+        user = await db.get(User, canonical['user_id'])
+        assert user.tenant_id == canonical['tenant_id'] and user.role == ('member' if requester_state == 'role_revoked' else 'platform_admin')
+        assert user.is_active is (requester_state != 'inactive')
+        assert (await db.get(Agent, canonical['agent_id'])).owner_user_id == canonical['owner_id'] != user.id
+
+
+@pytest.mark.parametrize('provider', ['filesystem'], indirect=True)
 @pytest.mark.parametrize('withdrawn,unknown_effect', [(False, False), (True, False), (False, True)])
 async def test_business_task_text_rechecks_its_actual_original_source(
     original_api, provider, owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, withdrawn, unknown_effect,  # noqa: F811
+    delivery_channel='feishu',
+    requester_state='active',
 ):
     import app.database as database
     import app.runtime.invoker as invoker
@@ -65,6 +128,8 @@ async def test_business_task_text_rechecks_its_actual_original_source(
     seed['agent_root'].rmdir()
     async with owner_sessionmaker() as db:
         agent = await db.get(Agent, seed['agent_id'])
+        requester = await db.get(User, seed['user_id'])
+        requester_role, requester_home = requester.role, requester.tenant_id
         await AgentManager().initialize_agent_files(db, agent, personality='Read authorized originals for business tasks.',
             original_author_id=seed['user_id'])
         model = await db.get(LLMModel, agent.primary_model_id)
@@ -83,7 +148,10 @@ async def test_business_task_text_rechecks_its_actual_original_source(
 
     monkeypatch.setattr(tasks, 'notify_runtime_task_worker', no_wakeup)
     client._transport.app.include_router(tasks.router)
-    headers = {'Authorization': 'Bearer ' + create_access_token(str(seed['user_id']), 'member', str(seed['tenant_id']))}
+    headers = {'Authorization': 'Bearer ' + create_access_token(str(seed['user_id']), requester_role,
+        str(requester_home) if requester_home else None)}
+    if requester_role == 'platform_admin':
+        headers['X-Tenant-Id'] = str(seed['tenant_id'])
     uploaded = await client.post('/chat/upload', headers=headers, files={'file': ('source.txt', b'PRIVATE_BUSINESS_INPUT')},
         data={'agent_id': str(seed['agent_id']), 'skip_personal_kb': 'true'})
     assert uploaded.status_code == 200, uploaded.text
@@ -94,15 +162,16 @@ async def test_business_task_text_rechecks_its_actual_original_source(
         confirmed_plan_session_id=str(seed['session_id'])).model_dump(mode='json')
     async with app_user_sessionmaker() as db:
         await pin_rls_tenant_context(db, seed['tenant_id'])
-        config = ChannelConfig(id=uuid.uuid4(), tenant_id=seed['tenant_id'], agent_id=seed['agent_id'], channel_type='feishu',
-            app_id='synthetic-business-result', app_secret='synthetic-channel-only', is_configured=True)
-        db.add(config)
-        await db.flush()
-        bound = await bind_authenticated_self_channel_principal(db, tenant_id=seed['tenant_id'], config=config,
-            provider_subject_id='ou-business-owner', user_id=seed['user_id'], actor_user_id=seed['user_id'])
         session = await db.get(ChatSession, seed['session_id'])
-        session.delivery_target_json = {'channel': 'feishu', 'receive_id': 'ou-business-owner', 'receive_id_type': 'open_id',
-            'chat_type': 'p2p', 'session_id': str(session.id), 'external_principal_id': str(bound.principal.id)}
+        if delivery_channel == 'feishu':
+            config = ChannelConfig(id=uuid.uuid4(), tenant_id=seed['tenant_id'], agent_id=seed['agent_id'], channel_type='feishu',
+                app_id='synthetic-business-result', app_secret='synthetic-channel-only', is_configured=True)
+            db.add(config)
+            await db.flush()
+            bound = await bind_authenticated_self_channel_principal(db, tenant_id=seed['tenant_id'], config=config,
+                provider_subject_id='ou-business-owner', user_id=seed['user_id'], actor_user_id=seed['user_id'])
+            session.delivery_target_json = {'channel': 'feishu', 'receive_id': 'ou-business-owner', 'receive_id_type': 'open_id',
+                'chat_type': 'p2p', 'session_id': str(session.id), 'external_principal_id': str(bound.principal.id)}
         plan_json = {'schema': 'hive_plan.v1', 'intent_type': 'in_session_execution', 'title': body['title'],
             'objective': body['description'], 'steps': [{'order': 1, 'description': body['description']}],
             'success_criteria': ['Deliver the complete report.'], 'stop_conditions': ['The owner cancels.'],
@@ -124,6 +193,18 @@ async def test_business_task_text_rechecks_its_actual_original_source(
     repeated = await client.post(f"/agents/{seed['agent_id']}/tasks/", headers=headers, json=body)
     assert repeated.status_code == 201 and repeated.json()['id'] == created.json()['id']
     assert repeated.json()['active_runtime_task_id'] == str(run_id)
+    if requester_state != 'active':
+        from app.models.tenant import Tenant
+
+        async with owner_sessionmaker() as db:
+            user = await db.get(User, seed['user_id'])
+            if requester_state == 'role_revoked':
+                user.role = 'member'
+            elif requester_state == 'inactive':
+                user.is_active = False
+            elif requester_state == 'home_disabled':
+                (await db.get(Tenant, user.tenant_id)).is_active = False
+            await db.commit()
     (seed['agent_root'] / original['workspace_path']).unlink()
     model_client = ScriptedLLMClient([{'tool_calls': [{'id': 'business-original-read', 'type': 'function', 'function': {
         'name': 'fs_read', 'arguments': json.dumps({'path': original['workspace_path'], 'original_attachment_id': str(original_id)})}}],
@@ -159,6 +240,12 @@ async def test_business_task_text_rechecks_its_actual_original_source(
         run = await db.get(RuntimeTask, run_id)
         (tmp_path / 'business-runtime-result.json').write_text(json.dumps({
             'status': run.status, 'child_session_id': run.child_session_id, 'metadata': run.metadata_json}, default=str))
+        if requester_state != 'active':
+            assert run.status == 'skipped', run.metadata_json
+            task = await db.get(Task, uuid.UUID(created.json()['id']))
+            assert task.status == 'blocked' and task.created_by == seed['user_id']
+            assert len(model_client.requests) == 0
+            return
         if unknown_effect:
             assert run.status == 'needs_reconciliation', run.metadata_json
             task = await db.get(Task, uuid.UUID(created.json()['id']))
@@ -222,6 +309,11 @@ async def test_business_task_text_rechecks_its_actual_original_source(
         return
     assert len(model_client.requests) == 2 and any(message.get('role') == 'tool' and 'PRIVATE_BUSINESS_INPUT' in str(message)
         for message in model_client.requests[-1]['messages'])
+    if delivery_channel == 'web':
+        detail = await client.get(f"/agents/{seed['agent_id']}/tasks/{created.json()['id']}", headers=headers)
+        assert detail.status_code == 200 and detail.json()['task']['last_result'] == RESULT, detail.text
+        assert detail.json()['task']['root_session_id'] == str(seed['session_id'])
+        return
     async with app_user_sessionmaker() as db:
         await pin_rls_tenant_context(db, seed['tenant_id'])
         run = await db.get(RuntimeTask, run_id)

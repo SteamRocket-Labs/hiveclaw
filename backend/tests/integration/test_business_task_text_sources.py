@@ -243,6 +243,7 @@ async def test_business_task_text_rechecks_its_actual_original_source(
     permission_handler=None,
     question_handler=None,
     enterprise_channel=False,
+    group_delivery_handler=None,
 ):
     import app.database as database
     import app.runtime.invoker as invoker
@@ -368,6 +369,18 @@ async def test_business_task_text_rechecks_its_actual_original_source(
             if enterprise_channel:
                 session.delivery_target_json = {**session.delivery_target_json, 'tenant_channel_config_id': str(config.id),
                     'installation_ref': channel_installation_ref(config, fallback='')}
+            if group_delivery_handler is not None:
+                from app.services.channel_session import find_or_create_shared_group_session
+
+                private_id = session.id
+                session = await find_or_create_shared_group_session(db, tenant_id=seed['tenant_id'],
+                    agent_id=seed['agent_id'], installation_ref=str(config.id), chat_id='oc_business_group',
+                    first_message_title='Shared business task')
+                seed.update(private_session_id=private_id, session_id=session.id, group_config_id=config.id)
+                body['confirmed_plan_session_id'] = str(session.id)
+                async def members(*_args, **_kwargs):
+                    return {'ou-business-owner'}
+                monkeypatch.setattr(FeishuService, 'get_chat_member_open_ids', members)
         plan_json = {'schema': 'hive_plan.v1', 'intent_type': 'in_session_execution', 'title': body['title'],
             'objective': body['description'], 'steps': [{'order': 1, 'description': body['description']}],
             'success_criteria': ['Deliver the complete report.'], 'stop_conditions': ['The owner cancels.'],
@@ -383,6 +396,16 @@ async def test_business_task_text_rechecks_its_actual_original_source(
         assert len(leases) == 1
         body.update(confirmed_plan_id=str(plan.id), confirmed_plan_version=1, confirmed_plan_hash=plan.plan_hash)
         await db.commit()
+    if group_delivery_handler is not None:
+        async def no_members(*_args, **_kwargs):
+            return set()
+        async def unavailable(*_args, **_kwargs):
+            raise RuntimeError('Synthetic group membership unavailable')
+        for lookup, status_code in ((no_members, 403), (unavailable, 503)):
+            with monkeypatch.context() as patch:
+                patch.setattr(FeishuService, 'get_chat_member_open_ids', lookup)
+                denied = await client.post(f"/agents/{seed['agent_id']}/tasks/", headers=headers, json=body)
+                assert denied.status_code == status_code, denied.text
     created = await client.post(f"/agents/{seed['agent_id']}/tasks/", headers=headers, json=body)
     assert created.status_code == 201, created.text
     run_id = uuid.UUID(created.json()['active_runtime_task_id'])
@@ -440,7 +463,7 @@ async def test_business_task_text_rechecks_its_actual_original_source(
     finally:
         reset_runtime_task_fence(fence)
     (tmp_path / 'business-model-requests.json').write_text(json.dumps(model_client.requests, default=str))
-    handler = permission_handler or question_handler
+    handler = permission_handler or question_handler or group_delivery_handler
     if handler is not None:
         await handler(client=client, db_factory=app_user_sessionmaker, owner_db_factory=owner_sessionmaker,
             seed=seed, run_id=run_id, original=original, headers=headers, artifact_body=artifact_body,

@@ -554,7 +554,15 @@ class ChannelDeliveryOutboxService:
         from app.services.runtime_user_identity import load_scoped_runtime_user
 
         user = await load_scoped_runtime_user(db, item.user_id, tenant_id=item.tenant_id) if item.user_id else None
-        if item.user_id is not None and (user is None or session.user_id != item.user_id):
+        if session.audience_kind == 'group':
+            from app.core.permissions import check_agent_access
+            from app.services.shared_group_authority import require_current_group_member
+
+            if user is None or item.external_principal_id is not None:
+                raise HTTPException(403, detail={'code': 'group_delivery_requester_unavailable'})
+            await require_current_group_member(db, session=session, user=user)
+            await check_agent_access(db, user, item.agent_id)
+        elif item.user_id is not None and (user is None or session.user_id != item.user_id):
             raise HTTPException(403, detail={"code": "artifact_delivery_reader_unavailable"})
         if item.external_principal_id is not None:
             actor = await load_external_runtime_actor(db, tenant_id=item.tenant_id,
@@ -714,6 +722,10 @@ class ChannelDeliveryOutboxService:
             raise ContentInputReceiptError('business_result_reader_unavailable', 'Restore the original requester authority.', 403)
         with source_recipient_read(session_id=session.id, user_id=user.id):
             await _validate_input_dependencies(db, item.tenant_id, dependencies, user=user)
+        if session.audience_kind == 'group':
+            from app.services.shared_group_authority import validate_shared_group_delivery
+
+            await validate_shared_group_delivery(db, item=item, session=session)
 
     async def _authorize_artifact_part(self, db: AsyncSession, item: ClaimedChannelDelivery,
         artifact_id: uuid.UUID) -> ChatArtifact:
@@ -787,6 +799,8 @@ class ChannelDeliveryOutboxService:
                     code = getattr(exc, "code", None) or (detail.get("code") if isinstance(detail, dict) else None)
                     error_type = (ChannelDeliveryRetryableError if exc.status_code >= 500 else ChannelDeliveryPermanentError)
                     raise error_type(f"native_result_source_unavailable:{code or 'source_access_denied'}") from exc
+                except (ChannelDeliveryPermanentError, ChannelDeliveryRetryableError):
+                    raise
                 except Exception as exc:
                     raise ChannelDeliveryRetryableError(f"native_result_authority_unavailable:{type(exc).__name__}") from exc
                 from app.services.remote_a2a_channel import validate_delivery

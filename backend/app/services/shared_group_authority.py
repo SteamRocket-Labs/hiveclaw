@@ -588,12 +588,24 @@ async def validate_shared_group_delivery(db, *, item, session):
             # They never acquire a native-model result seal.
             dependencies = [] if item.metadata.get("remote_recovery_notice") is True else [item.metadata["remote_result"]]
         else:
+            model_session_id = session.id
+            if item.metadata.get('source') == 'business_task_runtime' and item.metadata.get('projection_kind') == 'result':
+                from app.models.runtime_task import RuntimeTask
+
+                task = await db.get(RuntimeTask, item.runtime_task_id, populate_existing=True)
+                if (task is None or task.tenant_id != session.tenant_id or task.task_type != 'business_task'
+                    or task.parent_agent_id != session.agent_id or task.child_agent_id != session.agent_id
+                    or task.parent_session_id != str(session.id) or task.root_user_id != item.user_id
+                    or task.status != 'completed' or item.terminal_status != task.status
+                    or not task.child_session_id):
+                    raise ContentInputReceiptError('group_output_binding_changed', 'Restore the original group task binding.', 403)
+                model_session_id = uuid.UUID(task.child_session_id)
             result = await db.scalar(select(SessionModelResult).join(ChatTranscriptEvent,
                 ChatTranscriptEvent.id == SessionModelResult.round_committed_event_id).where(
                 SessionModelResult.tenant_id == session.tenant_id, ChatTranscriptEvent.tenant_id == session.tenant_id,
-                ChatTranscriptEvent.agent_id == session.agent_id, ChatTranscriptEvent.session_id == session.id,
+                ChatTranscriptEvent.agent_id == session.agent_id, ChatTranscriptEvent.session_id == model_session_id,
                 ChatTranscriptEvent.run_id == item.runtime_task_id,
-                SessionModelResult.session_id == session.id, SessionModelResult.run_id == item.runtime_task_id,
+                SessionModelResult.session_id == model_session_id, SessionModelResult.run_id == item.runtime_task_id,
                 SessionModelResult.state == "round_committed").order_by(ChatTranscriptEvent.sequence.desc()).limit(1))
             dependencies, complete = _model_dependencies(result)
             if not complete:

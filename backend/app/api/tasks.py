@@ -87,11 +87,21 @@ async def _task_delivery_context(
                 ChatSession.id == session_uuid,
                 ChatSession.tenant_id == tenant_id,
                 ChatSession.agent_id == agent_id,
-                ChatSession.user_id == requester_user_id,
             )
         )
     ).scalar_one_or_none()
     if session is None:
+        raise HTTPException(status_code=403, detail="confirmed plan session is outside the requester authority")
+    if session.audience_kind == 'group':
+        from app.services.shared_group_authority import resolve_shared_group_web_authority
+        from app.services.runtime_user_identity import load_scoped_runtime_user
+
+        user = await load_scoped_runtime_user(db, requester_user_id, tenant_id=tenant_id)
+        if user is None:
+            raise HTTPException(status_code=403, detail="confirmed plan requester is unavailable")
+        await resolve_shared_group_web_authority(db, session=session, user=user,
+            action='mutate_session_input', audit=False)
+    elif session.user_id != requester_user_id:
         raise HTTPException(status_code=403, detail="confirmed plan session is outside the requester authority")
     target = dict(session.delivery_target_json or {})
     if not target or str(target.get("channel") or "").strip().lower() == "web":

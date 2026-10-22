@@ -1193,7 +1193,11 @@ class ToolRuntimeService:
         boundary_block = result if isinstance(result, ToolBoundaryBlock) else None
         frame = trace_metadata.get("tool_execution_frame") or {}
         effect_unknown = frame.get("status") == "unknown"
-        execution_status = "needs_reconciliation" if effect_unknown else "failed" if tool_error or boundary_block is not None else "succeeded"
+        execution_status = (
+            "needs_reconciliation" if effect_unknown
+            else "failed" if _tool_result_failed(result) or boundary_block is not None
+            else "succeeded"
+        )
         await _maybe_await(
             self.approval_ticket_completer(
                 approval_id=ticket.approval_id,

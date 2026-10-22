@@ -853,9 +853,18 @@ def _approval_handoff_result(state: _ToolExecutionState, block: Any) -> Any:
         return block
     safe, _receipt = state.service._redact_runtime_egress(block, context=state.runtime_context,
         surface='approval_handoff', trace_metadata_sink=state.request.trace_metadata_sink)
+    principal_id = state.runtime_context.external_principal_id
+    identity = getattr(state.runtime_context, 'execution_identity', None)
+    if getattr(identity, 'identity_type', None) == 'external_principal_bound':
+        # A bound human's full provenance is carried by the trusted execution
+        # identity even when the optional context field is absent.
+        if (state.runtime_context.user_id is None or identity.identity_id is None
+            or principal_id is not None and str(principal_id) != str(identity.identity_id)):
+            return block
+        principal_id = identity.identity_id
     return with_connector_approval_handoff(str(safe), approval_id=context.approval_id,
         tenant_id=state.runtime_context.tenant_id, user_id=state.runtime_context.user_id, agent_id=state.runtime_context.agent_id,
-        external_principal_id=state.runtime_context.external_principal_id)
+        external_principal_id=principal_id)
 
 
 async def _apply_governance(state: _ToolExecutionState) -> _Stop | None:

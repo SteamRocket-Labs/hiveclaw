@@ -1163,12 +1163,15 @@ async def feishu_event_webhook(
 async def _authenticate_card_callback(db, *, request, body, config, tenant_id, agent_id):
     from app.models.channel_ingress_event import ChannelIngressEvent
     from app.models.tenant import Tenant
+    from app.models.tenant_channel_config import TenantChannelConfig
     from app.services.channel_ingress_context import current_channel_ingress_context
     from app.services.channel_ingress_inbox import channel_installation_ref
     from app.services.channel_provider_receipts import feishu_message_scope
 
+    enterprise = isinstance(config, TenantChannelConfig)
     if (config is None or not config.is_configured or config.tenant_id != tenant_id
-        or config.agent_id != agent_id or not await db.scalar(select(Tenant.is_active).where(Tenant.id == tenant_id))):
+        or (not enterprise and config.agent_id != agent_id)
+        or not await db.scalar(select(Tenant.is_active).where(Tenant.id == tenant_id))):
         raise HTTPException(403, detail={"code": "feishu_card_channel_unavailable"})
     ingress = current_channel_ingress_context()
     if ingress is None:
@@ -1184,6 +1187,8 @@ async def _authenticate_card_callback(db, *, request, body, config, tenant_id, a
         or row.provider != "feishu" or row.tenant_id != tenant_id or row.agent_id != agent_id
         or row.installation_ref != installation or row.metadata_json.get("feishu_message_scope") != feishu_message_scope(config)):
         raise HTTPException(403, detail={"code": "feishu_card_origin_changed"})
+    if enterprise and str(row.metadata_json.get("tenant_channel_config_id")) != str(config.id):
+        raise HTTPException(403, detail={"code": "feishu_card_origin_changed"})
     saved = (row.payload_json or {}).get("body") or row.payload_json or {}
     if row.handler_key == "feishu.event" and (saved.get("header") or {}).get("event_type") == "card.action.trigger":
         saved = saved.get("event")
@@ -1193,15 +1198,12 @@ async def _authenticate_card_callback(db, *, request, body, config, tenant_id, a
         raise HTTPException(403, detail={"code": "feishu_card_payload_changed"})
 
 
-@router.post("/channel/feishu/card-callback")
-async def feishu_card_callback(request: Request, db: AsyncSession = Depends(get_db)):
-    """Resolve a signed/token callback or an exact authenticated SDK inbox event."""
+def parse_feishu_card_action(body):
+    """Read the exact decision schema shared by routing and decision consumption."""
     import json as _json
 
-    body = await request.json()
-    logger.info("[Feishu] Card callback received")
     if not isinstance(body, dict) or not isinstance(body.get("action"), dict):
-        return {"toast": {"type": "error", "content": "Invalid action"}}
+        return None
 
     # Extract action value from card callback
     action = body.get("action", {})
@@ -1212,12 +1214,24 @@ async def feishu_card_callback(request: Request, db: AsyncSession = Depends(get_
         action_value = {}
 
     if not isinstance(action_value, dict):
-        return {"toast": {"type": "error", "content": "Invalid action"}}
+        return None
     approval_id_str = action_value.get("approval_id")
     action_type = action_value.get("action")  # "approve" or "reject"
 
     if not isinstance(approval_id_str, str) or not isinstance(action_type, str) or action_type not in {"approve", "reject"}:
+        return None
+    return approval_id_str, action_type
+
+
+@router.post("/channel/feishu/card-callback")
+async def feishu_card_callback(request: Request, db: AsyncSession = Depends(get_db)):
+    """Resolve a signed/token callback or an exact authenticated inbox event."""
+    body = await request.json()
+    logger.info("[Feishu] Card callback received")
+    decision = parse_feishu_card_action(body)
+    if decision is None:
         return {"toast": {"type": "error", "content": "Invalid action"}}
+    approval_id_str, action_type = decision
 
     # Resolve the approval
     try:
@@ -1257,19 +1271,34 @@ async def feishu_card_callback(request: Request, db: AsyncSession = Depends(get_
         operator = body.get("operator", {})
         feishu_open_id = operator.get("open_id", open_id)
         from app.models.external_principal import ExternalPrincipal
+        from app.models.channel_ingress_event import ChannelIngressEvent
+        from app.models.tenant_channel_config import TenantChannelConfig
         from app.services.external_principal_service import load_external_runtime_actor
 
-        config = await db.scalar(
-            select(ChannelConfig).where(
-                ChannelConfig.agent_id == approval_record.agent_id,
-                ChannelConfig.tenant_id == tenant_id,
-                ChannelConfig.channel_type == "feishu",
-            ).execution_options(populate_existing=True)
-        )
+        source = await db.get(ChannelIngressEvent, ingress.event_id, populate_existing=True) if ingress else None
+        enterprise_id = (source.metadata_json or {}).get("tenant_channel_config_id") if source else None
+        if enterprise_id:
+            config = await db.scalar(select(TenantChannelConfig).where(TenantChannelConfig.id == uuid.UUID(enterprise_id),
+                TenantChannelConfig.tenant_id == tenant_id, TenantChannelConfig.channel_type == "feishu")
+                .execution_options(populate_existing=True))
+        else:
+            config = await db.scalar(
+                select(ChannelConfig).where(
+                    ChannelConfig.agent_id == approval_record.agent_id,
+                    ChannelConfig.tenant_id == tenant_id,
+                    ChannelConfig.channel_type == "feishu",
+                ).execution_options(populate_existing=True)
+            )
         await _authenticate_card_callback(db, request=request, body=body, config=config,
             tenant_id=tenant_id, agent_id=approval_record.agent_id)
         principal = None
-        if config is not None and feishu_open_id:
+        if isinstance(config, TenantChannelConfig) and feishu_open_id:
+            from app.services.tenant_feishu import resolve_feishu_channel_principal
+
+            resolution = await resolve_feishu_channel_principal(db, config=config, agent_id=approval_record.agent_id,
+                tenant_id=tenant_id, subject_id=feishu_open_id, display_name="", profile=operator)
+            principal = resolution.principal
+        elif config is not None and feishu_open_id:
             principal = await db.scalar(
                 select(ExternalPrincipal).where(
                     ExternalPrincipal.tenant_id == tenant_id,

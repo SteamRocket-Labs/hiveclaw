@@ -571,10 +571,18 @@ class ApprovalService:
             ChannelConfig.tenant_id == agent.tenant_id, ChannelConfig.channel_type == 'feishu',
             ChannelConfig.is_configured.is_(True)))
         channel = channel_result.scalars().first()
+        from app.models.tenant_channel_config import TenantChannelConfig
+        from app.services.tenant_feishu import tenant_feishu_delivery_target
+
+        if channel is None:
+            channel = await db.scalar(select(TenantChannelConfig).where(TenantChannelConfig.tenant_id == agent.tenant_id,
+                TenantChannelConfig.channel_type == 'feishu', TenantChannelConfig.is_active.is_(True)))
         if channel and channel.app_id and channel.app_secret:
             card_body = json.dumps(approval.details, ensure_ascii=False)[:500]
             for recipient in recipients:
-                delivery_target = await channel_user_service.get_feishu_delivery_target(db, user=recipient)
+                delivery_target = (await tenant_feishu_delivery_target(db, config=channel, user=recipient)
+                    if isinstance(channel, TenantChannelConfig) else
+                    await channel_user_service.get_feishu_delivery_target(db, user=recipient))
                 if not delivery_target:
                     continue
                 receive_id, id_type = delivery_target

@@ -531,7 +531,7 @@ async def feishu_tenant_webhook(
     header = body.get("header", {})
     event_type = header.get("event_type", "")
 
-    if event_type != "im.message.receive_v1":
+    if event_type not in {"im.message.receive_v1", "card.action.trigger"}:
         return {"ok": True}
 
     # Extract sender
@@ -540,9 +540,10 @@ async def feishu_tenant_webhook(
     sender_open_id = sender.get("open_id", "")
 
     # Route: sender → User → Main Agent
-    from app.services.tenant_feishu import tenant_feishu_target
+    from app.services.tenant_feishu import tenant_feishu_card_target, tenant_feishu_target
 
-    target_agent_id = await tenant_feishu_target(db, config=config, sender=sender, message=event.get("message") or {})
+    target_agent_id = (await tenant_feishu_card_target(db, config=config, event=event) if event_type == "card.action.trigger"
+        else await tenant_feishu_target(db, config=config, sender=sender, message=event.get("message") or {}))
     if not target_agent_id:
         logger.info(f"[tenant-webhook] No Main Agent for sender user_id={sender_user_id} open_id={sender_open_id}")
         # Optionally reply with "not registered" message

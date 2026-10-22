@@ -52,6 +52,36 @@ async def tenant_feishu_assistant(db, *, config, sender):
     return await _tenant_member_assistant(db, tenant_id=config.tenant_id, user=proof[0]) if proof else None
 
 
+async def tenant_feishu_card_target(db, *, config, event):
+    from uuid import UUID
+    from app.api.feishu import parse_feishu_card_action
+    from app.models.audit import ApprovalRequest
+
+    decision = parse_feishu_card_action(event)
+    if decision is None:
+        return None
+    try:
+        approval_id = UUID(decision[0])
+    except ValueError:
+        return None
+    # Routing selects the existing work; the decision still needs a current actor.
+    return await db.scalar(select(ApprovalRequest.agent_id).join(Agent, Agent.id == ApprovalRequest.agent_id)
+        .where(ApprovalRequest.id == approval_id, ApprovalRequest.tenant_id == config.tenant_id,
+            Agent.tenant_id == config.tenant_id))
+
+
+async def tenant_feishu_delivery_target(db, *, config, user):
+    identity = await db.scalar(select(ExternalIdentity).join(IdentityProvider,
+        IdentityProvider.id == ExternalIdentity.provider_id).where(ExternalIdentity.user_id == user.id,
+            IdentityProvider.tenant_id == config.tenant_id, IdentityProvider.provider_type == "feishu",
+            IdentityProvider.is_active.is_(True)))
+    proof = await resolve_tenant_feishu_identity(db, config=config,
+        sender={"open_id": identity.provider_open_id}) if identity else None
+    if proof is None or proof[0].id != user.id:
+        return None
+    return identity.provider_open_id, "open_id"
+
+
 async def tenant_feishu_target(db, *, config, sender, message, accepted_event=None):
     from app.core.permissions import check_agent_access, reject_non_executing_agent_access
     from app.services.feishu_group_entry import group_entry_settings
@@ -124,11 +154,16 @@ async def resolve_feishu_channel_principal(db, *, config, agent_id, tenant_id, s
             or str((event.metadata_json or {}).get("tenant_channel_config_id")) != str(config.id)):
             raise PermissionError("tenant_feishu_authenticated_ingress_required")
         body = (event.payload_json or {}).get("body", {})
-        sender = (body.get("event", {}).get("sender", {}).get("sender_id") or {})
+        card = (body.get("header") or {}).get("event_type") == "card.action.trigger"
+        sender = (body.get("event", {}).get("operator") if card else
+            body.get("event", {}).get("sender", {}).get("sender_id")) or {}
         config = await db.get(TenantChannelConfig, config.id, populate_existing=True)
         proof = await resolve_tenant_feishu_identity(db, config=config, sender=sender)
+        target = (await tenant_feishu_card_target(db, config=config, event=body.get("event", {})) if card else
+            await tenant_feishu_target(db, config=config, sender=sender, message=body.get("event", {}).get("message", {}),
+                accepted_event=event)) if proof is not None else None
         if (proof is None or sender.get("open_id") != subject_id
-            or await tenant_feishu_target(db, config=config, sender=sender, message=body.get("event", {}).get("message", {}), accepted_event=event) != agent_id):
+            or target != agent_id):
             raise PermissionError("tenant_feishu_identity_or_assistant_changed")
     result = await resolve_or_create_external_principal(db, tenant_id=tenant_id, provider="feishu",
         installation_ref=channel_installation_ref(config, fallback=f"feishu:{agent_id}"),

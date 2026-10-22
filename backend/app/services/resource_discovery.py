@@ -929,6 +929,7 @@ async def import_mcp_direct(
     except Exception as e:
         logger.error(f"[DirectImport] Could not list tools from {mcp_url}: {e}")
 
+    # Installation credentials belong to this agent, not shared Tool metadata.
     # Config to store in AgentTool
     agent_tool_config = {}
     if api_key:
@@ -983,7 +984,6 @@ async def import_mcp_direct(
                         existing_tool,
                         server_name=display_name,
                         server_url=mcp_url,
-                        configuration={"api_key": api_key} if api_key else None,
                         remote_tool_name=mcp_tool["name"],
                         raw_description=mcp_tool.get("description", ""),
                         raw_schema=mcp_tool.get("inputSchema", {"type": "object", "properties": {}}),
@@ -1016,7 +1016,6 @@ async def import_mcp_direct(
                     tool,
                     server_name=display_name,
                     server_url=mcp_url,
-                    configuration={"api_key": api_key} if api_key else None,
                     remote_tool_name=mcp_tool["name"],
                     raw_description=mcp_tool.get("description", ""),
                     raw_schema=mcp_tool.get("inputSchema", {"type": "object", "properties": {}}),
@@ -1034,7 +1033,6 @@ async def import_mcp_direct(
                             existing_tool,
                             server_name=display_name,
                             server_url=mcp_url,
-                            configuration={"api_key": api_key} if api_key else None,
                             remote_tool_name=mcp_tool["name"],
                             raw_description=mcp_tool.get("description", ""),
                             raw_schema=mcp_tool.get("inputSchema", {"type": "object", "properties": {}}),
@@ -1061,7 +1059,6 @@ async def import_mcp_direct(
                     existing_tool,
                     server_name=display_name,
                     server_url=mcp_url,
-                    configuration={"api_key": api_key} if api_key else None,
                     remote_tool_name=tool_name,
                     raw_description="",
                     raw_schema={"type": "object", "properties": {}},
@@ -1091,7 +1088,6 @@ async def import_mcp_direct(
                 tool,
                 server_name=display_name,
                 server_url=mcp_url,
-                configuration={"api_key": api_key} if api_key else None,
                 remote_tool_name=tool_name,
                 raw_description="",
                 raw_schema={"type": "object", "properties": {}},
@@ -1108,7 +1104,6 @@ async def import_mcp_direct(
                         existing_tool,
                         server_name=display_name,
                         server_url=mcp_url,
-                        configuration={"api_key": api_key} if api_key else None,
                         remote_tool_name=tool_name,
                         raw_description="",
                         raw_schema={"type": "object", "properties": {}},

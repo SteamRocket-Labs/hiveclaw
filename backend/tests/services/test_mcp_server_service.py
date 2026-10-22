@@ -940,6 +940,8 @@ async def test_server_review_rejects_stale_activation_and_accepts_the_live_candi
         async def execute(self, _stmt):
             if _stmt.column_descriptions[0].get("entity") is MCPServer:
                 return SimpleNamespace(scalars=lambda: SimpleNamespace(all=lambda: []))
+            if _stmt.column_descriptions[0].get("entity") is AgentTool:
+                return SimpleNamespace(scalar_one_or_none=lambda: None)
             return SimpleNamespace(scalar_one_or_none=lambda: runtime_tool)
 
     @contextlib.asynccontextmanager

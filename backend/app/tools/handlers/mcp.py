@@ -418,8 +418,11 @@ async def call_mcp_tool(agent_id: uuid.UUID, arguments: dict, *, execution_conte
             )
 
         server_url = row.mcp_server_url
-        api_key = (row.config or {}).get("api_key") if isinstance(row.config, dict) else None
-        transport = (row.config or {}).get("transport") if isinstance(row.config, dict) else None
+        assignment = await db.execute(select(AgentTool.config).where(
+            AgentTool.agent_id == agent_id, AgentTool.tool_id == row.id))
+        config = {**(row.config or {}), **(assignment.scalar_one_or_none() or {})}
+        api_key = config.get("api_key")
+        transport = config.get("transport")
         remote_name = row.mcp_tool_name or row.name
         from app.services.mcp_server_service import resolve_mcp_oauth_bearer
 
@@ -556,12 +559,15 @@ async def _resolve_agent_mcp_server(
                 actionable_hint=f"Pass server=one of: {', '.join(sorted(by_server))}.",
             )
         url, row, name = chosen
-        transport = (row.config or {}).get("transport") if isinstance(row.config, dict) else None
+        assignment = await db.execute(select(AgentTool.config).where(
+            AgentTool.agent_id == agent_id, AgentTool.tool_id == row.id))
+        config = {**(row.config or {}), **(assignment.scalar_one_or_none() or {})}
+        transport = config.get("transport")
         try:
             assert_mcp_cloud_transport_allowed(server_url=url, transport=transport)
         except MCPAuthzError as exc:
             return _render_mcp_authz_error(tool_name, exc)
-        api_key = (row.config or {}).get("api_key") if isinstance(row.config, dict) else None
+        api_key = config.get("api_key")
         if not resolve_oauth:
             return url, api_key, name
         from app.services.mcp_server_service import resolve_mcp_oauth_bearer

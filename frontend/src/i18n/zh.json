@@ -1514,6 +1514,9 @@
       "state": "状态",
       "recovery": "恢复",
       "selectEvidence": "选择一项交办以查看证据。",
+      "filesUnavailable": "部分成果文件暂不可用，请检查来源权限或核对已保存的任务。",
+      "resultUnavailable": "读取已保存的成果需要当前有效的来源权限。",
+      "logsUnavailable": "读取部分已保存的日志需要当前有效的来源权限。",
       "status": {
         "pending": "已排队",
         "doing": "执行中",

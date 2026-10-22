@@ -259,6 +259,7 @@ class TaskOut(BaseModel):
     last_execution_status: str | None = None
     last_error: str | None = None
     last_result: str | None = None
+    result_visibility: dict = Field(default_factory=dict)
     creator_username: str | None = None
     due_date: datetime | None = None
     plan_id: uuid.UUID | None = None
@@ -321,6 +322,9 @@ class TaskLogOut(BaseModel):
 class BusinessTaskDetailOut(BaseModel):
     task: TaskOut
     logs: list[TaskLogOut] = Field(default_factory=list)
+    log_visibility: dict = Field(default_factory=dict)
+    artifacts: list[dict] = Field(default_factory=list)
+    artifact_delivery: dict = Field(default_factory=dict)
 
 
 # ─── Department ─────────────────────────────────────────

@@ -606,6 +606,7 @@ async def _enqueue_business_task_channel_delivery(
             channel_config_id=getattr(config, "id", None),
             delivery_target=target,
             text=text,
+            artifact_ids=list(metadata.get('business_artifact_ids') or []) if notice is None else [],
             terminal_status=outcome.runtime_status,
             metadata={
                 "source": "business_task_runtime",
@@ -720,6 +721,9 @@ async def finalize_business_task_execution(
         if task is None:
             raise BusinessTaskInvariantError("business Task not found during finalization")
         apply_business_task_outcome(db=db, task=task, runtime_task=runtime_task, outcome=outcome)
+        from app.services.business_task_artifacts import capture_business_task_artifacts
+
+        await capture_business_task_artifacts(db, runtime_task)
         await _enqueue_business_task_channel_delivery(db=db, runtime_task=runtime_task, outcome=outcome)
         await enqueue_business_task_terminal_boundary(db, runtime_task)
         await db.commit()

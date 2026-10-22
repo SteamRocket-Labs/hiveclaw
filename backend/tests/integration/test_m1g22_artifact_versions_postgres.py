@@ -80,6 +80,7 @@ async def delivered(owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_
             yield db
             await db.commit()
 
+    canonical_download_user = files._load_download_user_from_jwt
     monkeypatch.setattr(files, "_load_download_user_from_jwt", identity)
     app = FastAPI()
     app.include_router(files.router)
@@ -90,7 +91,7 @@ async def delivered(owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_
         headers={"Authorization": "Bearer fixture-identity"}) as client:
         yield SimpleNamespace(tenant=tenant, user=user, agent=agent, session=session, run=run,
             root=root, target=target, first=first, publish=publish, client=client,
-            url=f"/agents/{agent}/files/artifacts/{first.id}")
+            url=f"/agents/{agent}/files/artifacts/{first.id}", canonical_download_user=canonical_download_user)
 
 
 async def test_reopen_download_and_a2a_consume_distinct_same_stat_versions(delivered, app_user_sessionmaker):

@@ -17,6 +17,9 @@ import type { Task } from '../../types';
 import MarkdownRenderer from '../../components/MarkdownRenderer';
 import TaskTeamSharingControls from '../../components/TaskTeamSharingControls';
 import { useAuthStore } from '../../stores';
+import { ArtifactCards, ArtifactPreviewPanel } from './ArtifactSurface';
+import { extractArtifactParts } from './chatRuntime';
+import { useArtifactPreview } from './useArtifactPreview';
 import './AgentBusinessTasksSection.css';
 
 type BusinessTaskAction =
@@ -186,6 +189,12 @@ export default function AgentBusinessTasksSection({ agentId }: { agentId: string
   }, []);
   const scopeKey = `${tenantId}:${userId || ''}`;
   const [selectedTaskId, setSelectedTaskId] = React.useState<string | null>(null);
+  const { artifactPreview, closeArtifactPreview, downloadArtifactFile, openArtifact } = useArtifactPreview({
+    authorityIdentity: `${scopeKey}:${agentId}:${selectedTaskId || ''}`,
+    effectiveAgentId: agentId,
+    guardOperatorRead: (request) => request,
+    operatorView: false,
+  });
   const [title, setTitle] = React.useState('');
   const [description, setDescription] = React.useState('');
   const [priority, setPriority] = React.useState<TaskCreateParams['priority']>('medium');
@@ -571,6 +580,17 @@ export default function AgentBusinessTasksSection({ agentId }: { agentId: string
                     </div>
                   </dl>
                   {detailQuery.data.task.last_result && <pre>{detailQuery.data.task.last_result}</pre>}
+                  {detailQuery.data.task.result_visibility?.status && detailQuery.data.task.result_visibility.status !== 'available' && (
+                    <p>{t('agent.businessTasks.resultUnavailable', 'The saved result requires current access to its sources.')}</p>
+                  )}
+                  {detailQuery.data.log_visibility?.status && detailQuery.data.log_visibility.status !== 'available' && (
+                    <p>{t('agent.businessTasks.logsUnavailable', 'Some saved logs require current access to their sources.')}</p>
+                  )}
+                  <ArtifactCards agentId={agentId} viewerUserId={userId}
+                    artifacts={extractArtifactParts(detailQuery.data)} onOpenArtifact={openArtifact} />
+                  {detailQuery.data.artifact_delivery?.status && ['unavailable', 'partial', 'denied'].includes(detailQuery.data.artifact_delivery.status) && (
+                    <p>{t('agent.businessTasks.filesUnavailable', 'Some saved files are unavailable. Review their source access or reconcile the saved task.')}</p>
+                  )}
                   {detailQuery.data.logs.length > 0 && (
                     <ol>
                       {detailQuery.data.logs.map((log) => <li key={log.id}>{log.content}</li>)}
@@ -584,6 +604,9 @@ export default function AgentBusinessTasksSection({ agentId }: { agentId: string
           )}
         </aside>
       </div>
+      {artifactPreview && <ArtifactPreviewPanel preview={artifactPreview} agentId={agentId}
+        onClose={closeArtifactPreview} onRetry={() => { void openArtifact(artifactPreview.artifact); }}
+        onDownload={() => { void downloadArtifactFile(artifactPreview.artifact); }} t={t} />}
     </section>
   );
 }

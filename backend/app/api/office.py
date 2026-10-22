@@ -15,7 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
 from app.core.permissions import check_agent_access, check_agent_operator_reachability
-from app.core.resource_authority import authorize_resource_action, normalize_workspace_resource_path
+from app.core.resource_authority import normalize_workspace_resource_path
 from app.core.security import get_current_user
 from app.database import get_db
 from app.models.chat_artifact import ChatArtifact
@@ -527,20 +527,10 @@ async def preview_office_artifact(
     if artifact is None:
         raise HTTPException(status_code=404, detail={"code": "artifact_not_found", "message": "Artifact not found"})
 
-    decision = await authorize_resource_action(
-        db,
-        current_user,
-        agent_id=agent_id,
-        resource_kind="chat_artifact",
-        resource_id=artifact.id,
-        action="read",
-        owner_user_id=getattr(artifact, "owner_user_id", None),
-        root_session_id=getattr(artifact, "root_session_id", None) or getattr(artifact, "session_id", None),
-        authority_state=getattr(artifact, "authority_state", None) or "quarantined",
-        allow_manager_override=operator_view,
-        manager_override_reason=operator_reason,
-        agent_access=agent_access,
-    )
+    from app.services.chat_artifact_delivery import authorize_artifact_recipient_read
+
+    decision = await authorize_artifact_recipient_read(db, current_user, artifact,
+        allow_manager_override=operator_view, manager_override_reason=operator_reason, agent_access=agent_access)
 
     service = OfficeDocumentService(_agent_workspace(agent_id))
     try:

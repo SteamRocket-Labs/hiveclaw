@@ -12,7 +12,7 @@ from app.runtime.context_candidates import ContextMessageOrigin
 from app.services.session_model_inputs import _hash
 
 
-async def _facts(db, run):
+async def _facts(db, run, *, require_active=True):
     if run is None or run.task_type != 'business_task' or run.root_user_id is None:
         return None
     try:
@@ -21,7 +21,7 @@ async def _facts(db, run):
     except (ValueError, TypeError, KeyError):
         return None
     if (task is None or session is None or task.tenant_id != run.tenant_id or task.agent_id != run.parent_agent_id
-        or task.active_runtime_task_id != run.id or session.tenant_id != run.tenant_id
+        or (require_active and task.active_runtime_task_id != run.id) or session.tenant_id != run.tenant_id
         or session.agent_id != run.parent_agent_id or session.user_id != run.root_user_id
         or session.runtime_task_id != run.id or session.session_kind != 'user_task'):
         return None
@@ -79,12 +79,22 @@ async def validate_business_task_context(db, tenant_id, dependency, *, user=None
             or row.status != 'captured' or not isinstance(proof, dict) or _hash(proof) != dependency['source_version']
             or run is None or run.tenant_id != tenant_id or row.agent_id != run.parent_agent_id
             or row.user_id != run.root_user_id or row.id != uuid.uuid5(run.id, f"business-task-context:{dependency['source_version']}")
-            or proof.get('task') != await _facts(db, run) or row.session_id != proof['task']['session_id']):
+            or not isinstance(proof.get('task'), dict) or row.session_id != proof['task']['session_id']):
             raise ValueError('source_changed')
+        executing_source_run = False
         if runtime_request is not None:
             _principal, user = await _runtime_input_actor(db, tenant_id, runtime_request)
+            executing_source_run = str(_principal.runtime_task_id) == str(run.id)
         if user is None:
             raise ValueError('reader_unavailable')
+        live = await _facts(db, run, require_active=executing_source_run)
+        # Reading a saved version preserves its original task text and plan. Using
+        # that input to execute or resume its run still requires the current input.
+        version_fields = {'title', 'description', 'type', 'request_hash', 'plan_id', 'plan_version', 'plan_hash'}
+        if (live is None or set(proof['task']) != set(live)
+            or any(proof['task'][key] != value for key, value in live.items()
+                if executing_source_run or key not in version_fields)):
+            raise ValueError('source_changed')
         task = await db.get(Task, uuid.UUID(proof['task']['task_id']), populate_existing=True)
         await authorize_resource_action(db, user, agent_id=task.agent_id, resource_kind='task', resource_id=task.id,
             action='read', owner_user_id=task.created_by, root_session_id=task.root_session_id,

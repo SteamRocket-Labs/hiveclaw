@@ -81,6 +81,7 @@ export interface Task {
     last_execution_status?: string;
     last_error?: string;
     last_result?: string;
+    result_visibility?: { status?: 'available' | 'denied' | 'unavailable'; recovery_action?: string };
     creator_username?: string;
     due_date?: string;
     remind_schedule?: string;

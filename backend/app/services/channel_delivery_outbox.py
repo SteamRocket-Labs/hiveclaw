@@ -502,6 +502,12 @@ class ChannelDeliveryOutboxService:
                 await validate_shared_group_delivery(db, item=item, session=session)
             if not item.artifact_ids:
                 return []
+            artifact_session_id = item.session_id
+            if item.metadata.get('source') == 'business_task_runtime':
+                from app.services.business_task_artifacts import business_delivery_artifact_session
+
+                execution_session, _root = await business_delivery_artifact_session(db, item)
+                artifact_session_id = execution_session.id
             artifacts = list(
                 (
                     await db.execute(
@@ -509,7 +515,7 @@ class ChannelDeliveryOutboxService:
                             ChatArtifact.id.in_(item.artifact_ids),
                             ChatArtifact.tenant_id == item.tenant_id,
                             ChatArtifact.agent_id == item.agent_id,
-                            ChatArtifact.session_id == item.session_id,
+                            ChatArtifact.session_id == artifact_session_id,
                             ChatArtifact.runtime_task_id == item.runtime_task_id,
                         )
                     )
@@ -680,13 +686,20 @@ class ChannelDeliveryOutboxService:
         from app.core.source_read_purpose import source_recipient_read
         from app.services.content_input_receipts import validate_artifact_content_receipt
 
+        artifact_session_id, artifact_root = item.session_id, None
+        if item.metadata.get('source') == 'business_task_runtime':
+            from app.services.business_task_artifacts import business_delivery_artifact_session
+
+            execution_session, artifact_root = await business_delivery_artifact_session(db, item)
+            artifact_session_id = execution_session.id
         artifact = await db.scalar(select(ChatArtifact).where(ChatArtifact.id == artifact_id,
             ChatArtifact.tenant_id == item.tenant_id, ChatArtifact.agent_id == item.agent_id,
-            ChatArtifact.session_id == item.session_id, ChatArtifact.runtime_task_id == item.runtime_task_id)
+            ChatArtifact.session_id == artifact_session_id, ChatArtifact.runtime_task_id == item.runtime_task_id)
             .execution_options(populate_existing=True))
         session = await db.get(ChatSession, item.session_id, populate_existing=True)
         if (artifact is None or session is None or session.tenant_id != item.tenant_id
-            or session.agent_id != item.agent_id or artifact_id not in item.artifact_ids):
+            or session.agent_id != item.agent_id or artifact_id not in item.artifact_ids
+            or (artifact_root is not None and artifact.root_session_id != artifact_root)):
             raise HTTPException(404, detail={"code": "artifact_delivery_authority_unavailable"})
         if session.audience_kind == "group":
             from app.services.shared_group_authority import load_current_group_recipient_users

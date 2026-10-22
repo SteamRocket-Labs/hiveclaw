@@ -41,6 +41,9 @@ export interface TaskLog {
 export interface BusinessTaskDetail {
   task: Task;
   logs: TaskLog[];
+  log_visibility?: { status?: string; recovery_action?: string };
+  artifacts?: Record<string, unknown>[];
+  artifact_delivery?: { status?: string; recovery_action?: string };
 }
 
 export interface TaskCancelParams {

@@ -30,7 +30,7 @@ from app.core.permissions import (
     check_agent_operator_reachability,
     require_agent_manage_access,
 )
-from app.core.resource_authority import authorize_resource_action, normalize_workspace_resource_path
+from app.core.resource_authority import normalize_workspace_resource_path
 from app.core.security import get_current_user
 from app.database import _current_tenant_id, get_db, pin_rls_tenant_context
 from app.models.audit import AuditLog
@@ -1146,20 +1146,10 @@ async def read_artifact_content(
         else check_agent_access(db, current_user, agent_id)
     )
     artifact = await _load_chat_artifact_or_404(db=db, agent_id=agent_id, artifact_id=artifact_id)
-    decision = await authorize_resource_action(
-        db,
-        current_user,
-        agent_id=agent_id,
-        resource_kind="chat_artifact",
-        resource_id=artifact.id,
-        action="read",
-        owner_user_id=getattr(artifact, "owner_user_id", None),
-        root_session_id=getattr(artifact, "root_session_id", None) or getattr(artifact, "session_id", None),
-        authority_state=getattr(artifact, "authority_state", None) or "quarantined",
-        allow_manager_override=operator_view,
-        manager_override_reason=operator_reason,
-        agent_access=agent_access,
-    )
+    from app.services.chat_artifact_delivery import authorize_artifact_recipient_read
+
+    decision = await authorize_artifact_recipient_read(db, current_user, artifact,
+        allow_manager_override=operator_view, manager_override_reason=operator_reason, agent_access=agent_access)
     from app.services.workspace_resource_authority import WorkspaceAuthorityError
 
     try:
@@ -1286,20 +1276,10 @@ async def download_artifact(
         else check_agent_access(db, user, agent_id)
     )
     artifact = await _load_chat_artifact_or_404(db=db, agent_id=agent_id, artifact_id=artifact_id)
-    await authorize_resource_action(
-        db,
-        user,
-        agent_id=agent_id,
-        resource_kind="chat_artifact",
-        resource_id=artifact.id,
-        action="read",
-        owner_user_id=getattr(artifact, "owner_user_id", None),
-        root_session_id=getattr(artifact, "root_session_id", None) or getattr(artifact, "session_id", None),
-        authority_state=getattr(artifact, "authority_state", None) or "quarantined",
-        allow_manager_override=operator_view,
-        manager_override_reason=operator_reason,
-        agent_access=agent_access,
-    )
+    from app.services.chat_artifact_delivery import authorize_artifact_recipient_read
+
+    await authorize_artifact_recipient_read(db, user, artifact,
+        allow_manager_override=operator_view, manager_override_reason=operator_reason, agent_access=agent_access)
     from app.services.workspace_resource_authority import WorkspaceAuthorityError
 
     try:

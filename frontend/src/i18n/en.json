@@ -1514,6 +1514,9 @@
       "state": "State",
       "recovery": "Recovery",
       "selectEvidence": "Select an assignment to inspect its evidence.",
+      "filesUnavailable": "Some saved files are unavailable. Review their source access or reconcile the saved task.",
+      "resultUnavailable": "The saved result requires current access to its sources.",
+      "logsUnavailable": "Some saved logs require current access to their sources.",
       "status": {
         "pending": "Queued",
         "doing": "Running",

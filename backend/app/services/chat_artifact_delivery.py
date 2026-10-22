@@ -953,6 +953,18 @@ def _artifact_part_from_candidate(candidate: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+async def authorize_artifact_recipient_read(db, user, artifact, **authority):
+    """HTTP and UI readers cannot borrow business-inspection source access."""
+    from app.core.resource_authority import authorize_resource_action
+    from app.core.source_read_purpose import source_recipient_read
+
+    with source_recipient_read(session_id=artifact.root_session_id or artifact.session_id, user_id=user.id):
+        return await authorize_resource_action(db, user, agent_id=artifact.agent_id, resource_kind='chat_artifact',
+            resource_id=artifact.id, action='read', owner_user_id=artifact.owner_user_id,
+            root_session_id=artifact.root_session_id or artifact.session_id,
+            authority_state=artifact.authority_state, **authority)
+
+
 def artifact_part_from_model(artifact: ChatArtifact) -> dict[str, Any]:
     snapshot = artifact.snapshot_json or {}
     return {

@@ -147,7 +147,7 @@ async def _load_matching_runtime_request(
     return runtime_task
 
 
-async def _enrich_task_out(task: Task, db: AsyncSession) -> TaskOut:
+async def _enrich_task_out(task: Task, db: AsyncSession, current_user: User | None = None) -> TaskOut:
     """Convert Task to TaskOut with creator_username populated."""
     await db.refresh(task)
     out = TaskOut.model_validate(task)
@@ -160,7 +160,16 @@ async def _enrich_task_out(task: Task, db: AsyncSession) -> TaskOut:
         await db.get(RuntimeTask, task.active_runtime_task_id) if task.active_runtime_task_id is not None else None
     )
     _stamp_task_runtime_projection(out, task=task, runtime_task=runtime_task)
+    await _filter_task_output(out, db, task, current_user)
     return out
+
+
+async def _filter_task_output(out: TaskOut, db: AsyncSession, task: Task, user: User | None) -> None:
+    from app.services.business_task_artifacts import business_task_output_visibility
+
+    out.result_visibility = await business_task_output_visibility(db, task, user)
+    if out.result_visibility['status'] != 'available':
+        out.last_result = out.last_error = out.runtime_summary = out.recovery_message = None
 
 
 def _stamp_task_runtime_projection(
@@ -183,15 +192,23 @@ def _stamp_task_runtime_projection(
     return out
 
 
-async def _business_task_detail(task: Task, db: AsyncSession) -> BusinessTaskDetailOut:
+async def _business_task_detail(task: Task, db: AsyncSession, current_user: User | None = None) -> BusinessTaskDetailOut:
+    from app.services.business_task_artifacts import business_task_output_visibility, read_business_task_artifacts
+
+    artifacts, delivery = await read_business_task_artifacts(db, task, current_user)
     logs = list(
         (await db.execute(select(TaskLog).where(TaskLog.task_id == task.id).order_by(TaskLog.created_at.asc())))
         .scalars()
         .all()
     )
+    out = await _enrich_task_out(task, db, current_user)
+    log_visibility = await business_task_output_visibility(db, task, current_user, include_previous_attempts=True)
     return BusinessTaskDetailOut(
-        task=await _enrich_task_out(task, db),
-        logs=[TaskLogOut.model_validate(item) for item in logs],
+        task=out,
+        logs=[TaskLogOut.model_validate(item) for item in logs] if log_visibility['status'] == 'available' else [],
+        log_visibility=log_visibility,
+        artifacts=artifacts,
+        artifact_delivery=delivery,
     )
 
 
@@ -317,6 +334,7 @@ async def list_tasks(
         t_out.creator_username = creator_map.get(t.created_by)
         _stamp_task_authority(t_out, decision)
         _stamp_task_runtime_projection(t_out, task=t, runtime_task=runtime_map.get(t.active_runtime_task_id))
+        await _filter_task_output(t_out, db, t, current_user if not decision.operator_view else None)
         out_list.append(t_out)
     return out_list
 
@@ -351,7 +369,7 @@ async def create_task(
         request_hash=request_hash,
     )
     if existing is not None:
-        return await _enrich_task_out(existing, db)
+        return await _enrich_task_out(existing, db, current_user)
     evidence_id = f"task-create:{uuid.uuid4()}"
     plan_decision = await enforce_plan_gate(
         db,
@@ -417,7 +435,7 @@ async def create_task(
             root_session_id=root_session_id,
             delivery_target=delivery_target,
         )
-        task_out = await _enrich_task_out(task, db)
+        task_out = await _enrich_task_out(task, db, current_user)
         await db.commit()
     except BusinessTaskInvariantError as exc:
         await db.rollback()
@@ -433,7 +451,7 @@ async def create_task(
         )
         if existing is None:
             raise HTTPException(status_code=409, detail="task request conflict could not be recovered") from exc
-        return await _enrich_task_out(existing, db)
+        return await _enrich_task_out(existing, db, current_user)
     try:
         await notify_runtime_task_worker(reason="business_task_created", runtime_task_id=runtime_task.id)
     except Exception as exc:  # polling remains a durable fallback after the committed intent.
@@ -460,7 +478,7 @@ async def get_task_detail(
         operator_view=operator_view,
         operator_reason=operator_reason,
     )
-    detail = await _business_task_detail(task, db)
+    detail = await _business_task_detail(task, db, current_user if not decision.operator_view else None)
     _stamp_task_authority(detail.task, decision)
     return detail
 
@@ -494,7 +512,7 @@ async def cancel_business_task(
         raise HTTPException(status_code=409, detail="Business task has no active runtime intent to cancel")
     runtime_metadata = dict(runtime_task.metadata_json or {})
     if task.status in {"cancelled", "needs_reconciliation"} and runtime_metadata.get("cancelled_by_user_id"):
-        detail = await _business_task_detail(task, db)
+        detail = await _business_task_detail(task, db, current_user if not decision.operator_view else None)
         _stamp_task_authority(detail.task, decision)
         return detail
     try:
@@ -532,7 +550,7 @@ async def cancel_business_task(
         await publish_business_task_cancel(task_id=task.id, runtime_task_id=runtime_task.id)
     except Exception as exc:  # noqa: BLE001 - DB status and claim fence remain authoritative.
         logger.warning("business task cancel wakeup failed for %s: %s", runtime_task.id, exc)
-    detail = await _business_task_detail(task, db)
+    detail = await _business_task_detail(task, db, current_user if not decision.operator_view else None)
     _stamp_task_authority(detail.task, decision)
     return detail
 
@@ -594,7 +612,7 @@ async def reconcile_business_task_state(
         },
     )
     await db.commit()
-    detail = await _business_task_detail(task, db)
+    detail = await _business_task_detail(task, db, current_user if not decision.operator_view else None)
     _stamp_task_authority(detail.task, decision)
     return detail
 
@@ -644,7 +662,7 @@ async def update_task(
     for field, value in data.model_dump(exclude_unset=True).items():
         setattr(task, field, value)
     await db.flush()
-    return _stamp_task_authority(await _enrich_task_out(task, db), decision)
+    return _stamp_task_authority(await _enrich_task_out(task, db, current_user if not decision.operator_view else None), decision)
 
 
 @router.get("/{task_id}/logs", response_model=list[TaskLogOut])
@@ -665,7 +683,7 @@ async def get_task_logs(
     task = (await db.execute(select(Task).where(Task.id == task_id, Task.agent_id == agent_id))).scalar_one_or_none()
     if task is None:
         raise HTTPException(status_code=404, detail="Task not found")
-    await _authorize_task(
+    decision = await _authorize_task(
         db,
         current_user,
         agent_id=agent_id,
@@ -675,6 +693,12 @@ async def get_task_logs(
         operator_view=operator_view,
         operator_reason=operator_reason,
     )
+    from app.services.business_task_artifacts import business_task_output_visibility
+
+    visibility = await business_task_output_visibility(db, task, current_user if not decision.operator_view else None,
+        include_previous_attempts=True)
+    if visibility['status'] != 'available':
+        raise HTTPException(status_code=403 if visibility['status'] == 'denied' else 503, detail=visibility)
     result = await db.execute(select(TaskLog).where(TaskLog.task_id == task_id).order_by(TaskLog.created_at.asc()))
     return [TaskLogOut.model_validate(log_item) for log_item in result.scalars().all()]
 

@@ -580,6 +580,9 @@ async def execute_task(
                 visibility_scope="agent_owner",
                 listed_surface="task_updates",
                 runtime_task_id=runtime_task_id,
+                parent_session_id=uuid.UUID(run.parent_session_id) if runtime_task_id and run.parent_session_id else None,
+                root_session_id=uuid.UUID(run.root_session_id or run.parent_session_id)
+                    if runtime_task_id and (run.root_session_id or run.parent_session_id) else None,
                 title=f"🧾 Task: {task_title}"[:200],
             )
             db.add(reflection_session)

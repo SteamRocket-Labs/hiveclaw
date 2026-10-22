@@ -2356,6 +2356,27 @@ async def _invoke_agent_for_triggers(
     batch_trigger_ids = [str(getattr(trigger, "id", "")) for trigger in batch_triggers]
     batch_trigger_names = [str(getattr(trigger, "name", "")) for trigger in batch_triggers]
     batch_trigger_types = [str(getattr(trigger, "type", "")) for trigger in batch_triggers]
+    requester_groups = _group_triggers_by_effect_user(batch_triggers, effect_users)
+    if requester_groups is not None and len(requester_groups) > 1:
+        if not runtime_task_id:
+            raise RuntimeError("Mixed trigger batches require a durable reconciliation record")
+        await _mark_trigger_runtime_task_needs_reconciliation(
+            runtime_task_id,
+            metadata={
+                "trigger_ids": original_trigger_ids,
+                "trigger_settlement_overrides": {
+                    **release_overrides,
+                    **{str(trigger.id): "hold" for trigger in batch_triggers},
+                },
+            },
+            blocker="trigger_batch_requester_mismatch",
+            summary=(
+                "Queued trigger batch has multiple requesters without independent execution roots. "
+                "Reconcile the retained fire intents before new requester-scoped admission."
+            ),
+            trace_id=f"trigger:{runtime_task_id}",
+        )
+        return False
     react_triggers: list[AgentTrigger] = []
     settlement_overrides: dict[str, str] = dict(release_overrides)
     workflow_results: list[dict[str, Any]] = list(_inherited_workflow_results or [])
@@ -2414,37 +2435,6 @@ async def _invoke_agent_for_triggers(
                 fire_result.status,
                 fire_result.run_id,
             )
-    prose_groups = None if _authority_checked else _group_triggers_by_effect_user(react_triggers, effect_users)
-    if prose_groups is not None and len(prose_groups) > 1:
-        inherited = dict(settlement_overrides)
-        inherited_results = list(workflow_results)
-        for index, (user_id, group) in enumerate(prose_groups):
-            if index < len(prose_groups) - 1:
-                captured: list[dict[str, str]] = []
-                token = _TRIGGER_TERMINAL_SINK.set(captured)
-                try:
-                    await _invoke_agent_for_triggers(
-                        agent_id,
-                        group,
-                        runtime_task_id=runtime_task_id,
-                        _authority_checked=True,
-                        _effect_user_id=user_id,
-                    )
-                finally:
-                    _TRIGGER_TERMINAL_SINK.reset(token)
-                for overrides in captured:
-                    inherited.update(overrides)
-                continue
-            await _invoke_agent_for_triggers(
-                agent_id,
-                group,
-                runtime_task_id=runtime_task_id,
-                _authority_checked=True,
-                _effect_user_id=user_id,
-                _inherited_overrides=inherited,
-                _inherited_workflow_results=inherited_results,
-            )
-        return
     if not react_triggers:
         workflow_reconciliation_required = any(outcome == "hold" for outcome in settlement_overrides.values())
         workflow_failed = any(outcome == "failure" for outcome in settlement_overrides.values())
@@ -3309,8 +3299,8 @@ async def execute_claimed_trigger_runtime_task(task_id: uuid.UUID | str) -> bool
                 **{key: value for key, value in (trigger.config or {}).items() if key not in _TRIGGER_EVENT_FIELDS},
                 **{key: value for key, value in snapshot.items() if key in _TRIGGER_EVENT_FIELDS},
             }
-    await _invoke_agent_for_triggers(agent_id, triggers, runtime_task_id=task_uuid.hex)
-    return True
+    dispatched = await _invoke_agent_for_triggers(agent_id, triggers, runtime_task_id=task_uuid.hex)
+    return dispatched is not False
 
 
 async def fire_trigger_once_now(

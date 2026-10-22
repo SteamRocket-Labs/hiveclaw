@@ -64,7 +64,7 @@ class TerminalCommandBinding:
             or str((task.metadata_json or {}).get("session_v2_command_id") or "") != str(self.command_id or "")
         ):
             raise EnvironmentError("environment_source_authority_revoked", 403)
-        if (
+        if task.machine_credential_id is None and (
             runtime_task_requester_user_id(
                 {"id": task.id, "root_user_id": task.root_user_id, "metadata": task.metadata_json}
             )
@@ -93,6 +93,10 @@ class TerminalCommandBinding:
             pass  # Some direct invocations intentionally use a synthetic key.
         else:
             session = await db.get(ChatSession, session_id, populate_existing=True)
+        if task.machine_credential_id is not None:
+            from app.services.machine_runtime_authority import load_machine_runtime_actor
+
+            return await load_machine_runtime_actor(db, task=task, session=session)
         if session is not None and session.audience_kind == "group" and before_command:
             from app.services.shared_group_authority import _load_shared_group_task_actor
 
@@ -176,4 +180,9 @@ async def terminal_command_frame(db, *, item, worker_id, canonical_validator):
         str(metadata.get("session_v2_command_id") or "") or None,
         canonical_validator,
     )
-    return EnvironmentCommandFrame(item.tenant_id, item.agent_id, user_id, item.runtime_task_id, binding)
+    return EnvironmentCommandFrame(
+        item.tenant_id, item.agent_id, user_id, item.runtime_task_id, binding,
+        session_id=item.session_id,
+        machine_credential_id=task.machine_credential_id if task is not None else None,
+        external_principal_id=task.root_external_principal_id if task is not None else None,
+    )

@@ -8,6 +8,7 @@ from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from fastapi import HTTPException
 from sqlalchemy import func, select
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -156,7 +157,7 @@ async def control_environment(db, *, tenant_id, agent_id, action, expected_revis
 class EnvironmentCommandScope:
     tenant_id: uuid.UUID
     agent_id: uuid.UUID
-    user_id: uuid.UUID
+    user_id: uuid.UUID | None
     invocation_key: str
     runtime_task_id: uuid.UUID | None
     lease_id: uuid.UUID | None = None
@@ -167,22 +168,45 @@ class EnvironmentCommandScope:
     resource_state: str = "not_created"
     selected_provider: str | None = None
     source_binding: Any = field(default=None, repr=False)
+    session_id: uuid.UUID | str | None = None
+    machine_credential_id: uuid.UUID | None = None
+    external_principal_id: uuid.UUID | None = None
     worker_witness: dict | None = field(default=None, init=False, repr=False)
 
     async def _authority(self, db, *, before_command=False):
         from app.models.tenant import Tenant
         from app.services.agent_identity_lifecycle import resolve_live_effect_principal
+        from app.services.machine_runtime_authority import is_machine_runtime_actor, machine_task_actor
 
         agent = await db.get(Agent, self.agent_id, populate_existing=True)
-        user = (
-            (
+        if self.source_binding is not None:
+            user = (
                 await self.source_binding.authorize(db, self)
                 if before_command
                 else await self.source_binding.revalidate(db, self)
             )
-            if self.source_binding is not None
-            else await db.get(User, self.user_id, populate_existing=True)
-        )
+        elif self.user_id is None:
+            if self.machine_credential_id is None or self.external_principal_id is None:
+                raise EnvironmentError("environment_authority_unavailable", 403)
+            try:
+                user = await machine_task_actor(
+                    db, tenant_id=self.tenant_id, agent_id=self.agent_id, runtime_task_id=self.runtime_task_id,
+                    session_id=self.session_id, user_id=None,
+                )
+            except HTTPException as exc:
+                raise EnvironmentError("environment_authority_unavailable", 503 if exc.status_code >= 500 else 403) from exc
+        else:
+            user = await db.get(User, self.user_id, populate_existing=True)
+        if is_machine_runtime_actor(user):
+            if (
+                self.user_id is not None
+                or user.agent_id != self.agent_id
+                or user.machine_credential_id != self.machine_credential_id
+                or user.external_principal_id != self.external_principal_id
+            ):
+                raise EnvironmentError("environment_authority_unavailable", 403)
+        elif self.machine_credential_id is not None or self.user_id is None:
+            raise EnvironmentError("environment_authority_unavailable", 403)
         tenant = await db.get(Tenant, self.tenant_id, populate_existing=True)
         if (
             agent is None
@@ -249,7 +273,7 @@ class EnvironmentCommandScope:
                 generation=env.generation,
                 fence_version=env.fence_counter,
                 expires_at=datetime.now(UTC) + timedelta(seconds=max(timeout, 1) + 60),
-                outcome={"resource_lifecycle": {
+                outcome={**self._machine_receipt(), "resource_lifecycle": {
                     "schema": "hive.environment.resource-lifecycle.v1",
                     "phase": "not_created", "worker": self.worker_witness,
                 }},
@@ -307,13 +331,16 @@ class EnvironmentCommandScope:
     async def execute(self, operation, *, provider, timeout):
         task = None
         try:
-            if self.user_id is None and self.source_binding is not None:
-                raise EnvironmentError("environment_source_authority_unbound", 403)
             try:
-                self.tenant_id, self.agent_id, self.user_id = (
-                    uuid.UUID(str(value)) for value in (self.tenant_id, self.agent_id, self.user_id)
+                self.tenant_id, self.agent_id = (
+                    uuid.UUID(str(value)) for value in (self.tenant_id, self.agent_id)
                 )
+                self.user_id = uuid.UUID(str(self.user_id)) if self.user_id is not None else None
                 self.runtime_task_id = uuid.UUID(str(self.runtime_task_id)) if self.runtime_task_id else None
+                if self.machine_credential_id is not None:
+                    self.session_id = uuid.UUID(str(self.session_id)) if self.session_id else None
+                self.machine_credential_id = uuid.UUID(str(self.machine_credential_id)) if self.machine_credential_id else None
+                self.external_principal_id = uuid.UUID(str(self.external_principal_id)) if self.external_principal_id else None
             except (ValueError, TypeError):
                 raise EnvironmentError("environment_scope_unavailable", 503)
             selected = provider_key(provider)
@@ -351,7 +378,7 @@ class EnvironmentCommandScope:
                     except Exception as exc:
                         raise EnvironmentError("environment_state_unavailable", 503) from exc
             result = task.result()
-            if self.source_binding is not None:
+            if self.source_binding is not None or self.machine_credential_id is not None:
                 try:
                     await self._check()
                 except EnvironmentError:
@@ -390,6 +417,11 @@ class EnvironmentCommandScope:
                 except asyncio.CancelledError:
                     pass
 
+    def _machine_receipt(self):
+        return {"machine_principal": {
+            "credential_id": str(self.machine_credential_id), "external_principal_id": str(self.external_principal_id),
+        }} if self.machine_credential_id is not None else {}
+
     def receipt(self):
         return {
             "environment_id": str(self.environment_id) if self.environment_id else None,
@@ -397,6 +429,7 @@ class EnvironmentCommandScope:
             "generation": self.generation,
             "fence_version": self.fence_version,
             "outcome": dict(self.outcome),
+            **self._machine_receipt(),
             **({"source": self.source_binding.receipt()} if self.source_binding is not None else {}),
         }
 
@@ -424,6 +457,7 @@ class EnvironmentCommandScope:
                 **({"resource_lifecycle": lifecycle} if lifecycle is not None else {}),
                 **(self.outcome or {"status": "interrupted"}),
                 "resource_state": self.resource_state,
+                **self._machine_receipt(),
                 **({"source": self.source_binding.receipt()} if self.source_binding is not None else {}),
             }
             env.last_used_at = datetime.now(UTC)
@@ -450,6 +484,9 @@ class EnvironmentCommandFrame:
     runtime_task_id: uuid.UUID | str | None
     source_binding: Any = field(default=None, repr=False, compare=False)
     tool_call_id: str | None = None
+    session_id: uuid.UUID | str | None = None
+    machine_credential_id: uuid.UUID | None = None
+    external_principal_id: uuid.UUID | None = None
 
 
 _COMMAND_FRAME: ContextVar[EnvironmentCommandFrame | None] = ContextVar("environment_command_frame", default=None)
@@ -475,7 +512,9 @@ def _command_frame(context):
         if same_effect:
             tool_call_id = parent.tool_call_id
     return EnvironmentCommandFrame(
-        context.tenant_id, context.agent_id, context.user_id, context.runtime_task_id, binding, tool_call_id
+        context.tenant_id, context.agent_id, context.user_id, context.runtime_task_id, binding, tool_call_id,
+        getattr(context, "session_id", None), getattr(context, "machine_credential_id", None),
+        getattr(context, "external_principal_id", None),
     )
 
 
@@ -502,7 +541,7 @@ async def execute_environment_command(operation, *, provider, timeout):
         or scope.source_binding is frame.source_binding
         and all(
             str(getattr(scope, key)) == str(getattr(frame, key))
-            for key in ("tenant_id", "agent_id", "user_id", "runtime_task_id")
+            for key in ("tenant_id", "agent_id", "user_id", "runtime_task_id", "session_id", "machine_credential_id", "external_principal_id")
         )
     ):
         return await scope.execute(operation, provider=provider, timeout=timeout)
@@ -542,6 +581,9 @@ async def environment_command_scope(context, invocation_key):
         invocation_key=invocation_key,
         runtime_task_id=frame.runtime_task_id,
         source_binding=frame.source_binding,
+        session_id=frame.session_id,
+        machine_credential_id=frame.machine_credential_id,
+        external_principal_id=frame.external_principal_id,
     )
     token = _COMMAND_SCOPE.set(scope)
     frame_token = _COMMAND_FRAME.set(frame)

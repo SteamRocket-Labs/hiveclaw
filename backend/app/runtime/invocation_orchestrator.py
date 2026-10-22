@@ -73,7 +73,11 @@ async def run_agent_invocation(
     from app.services.runtime_task_fence import current_runtime_task_fence
 
     fence = current_runtime_task_fence()
-    frame = EnvironmentCommandFrame(request.tenant_id, request.agent_id, request.user_id, fence.task_id if fence else None)
+    frame = EnvironmentCommandFrame(
+        request.tenant_id, request.agent_id, request.user_id, fence.task_id if fence else None,
+        session_id=getattr(request.session_context, "session_id", None) or request.memory_session_id,
+        machine_credential_id=request.machine_credential_id, external_principal_id=request.external_principal_id,
+    )
     with command_environment_context(frame):
         ports.normalize_session_context(request)
         quota_result = await ports.enforce_quota(request)

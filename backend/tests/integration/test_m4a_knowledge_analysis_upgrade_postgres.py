@@ -44,9 +44,9 @@ async def migration_database(container):
         await creator.dispose()
 
 
-def upgrade(url):
+def migrate(url, command="upgrade", target="head"):
     result = subprocess.run(
-        [sys.executable, "-B", "-m", "alembic", "upgrade", "head"],
+        [sys.executable, "-B", "-m", "alembic", command, target],
         cwd=ROOT,
         env={**os.environ, "DATABASE_URL": url},
         capture_output=True,
@@ -75,15 +75,12 @@ async def test_incremental_upgrade_preserves_old_review_and_enforces_rls_and_dat
 ):
     tenant_id, user_id, other_tenant = uuid4(), uuid4(), uuid4()
     async with migration_database(pg_container) as url:
-        upgrade(url)
+        migrate(url)
+        # Revert every later revision before inserting the historical fixture.
+        migrate(url, command="downgrade", target=revision().down_revision)
         owner = create_async_engine(url)
         owner_factory = async_sessionmaker(owner, expire_on_commit=False)
         try:
-            async with owner.begin() as db:
-                await db.run_sync(downgrade)
-                await db.execute(
-                    text("UPDATE alembic_version SET version_num=:version"), {"version": revision().down_revision}
-                )
             async with owner_factory() as db:
                 db.add(Tenant(id=tenant_id, name="Legacy knowledge", slug="legacy-" + tenant_id.hex))
                 await db.flush()
@@ -123,7 +120,7 @@ async def test_incremental_upgrade_preserves_old_review_and_enforces_rls_and_dat
                 await db.commit()
                 proposal_id = proposal.id
             # Existing version table forces the real incremental revision path.
-            upgrade(url)
+            migrate(url)
             async with owner_factory() as db:
                 proposal = await db.get(CompanyKnowledgeProposal, proposal_id)
                 assert proposal.status == "approved" and proposal.state_version == 4

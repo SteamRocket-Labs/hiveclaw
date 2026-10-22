@@ -413,21 +413,15 @@ async def _seed_local_agent_channel(owner_sessionmaker, world: _World) -> tuple[
         session.add(channel_session)
         await session.flush()
 
-        # A live runner capability contract so message enqueue passes the real
-        # execute-capability gate (not a mock): bridge connection + channel +
-        # HMAC-signed capability snapshot from the canonical builder.
-        from datetime import datetime, timedelta, timezone
+        # Publish the runner contract through the same live producer as a device.
+        from datetime import timedelta
 
-        from app.services.local_agent_channel_service import (
-            build_signed_capability_snapshot,
-            local_capability_signing_secret,
-        )
-        from app.models.local_agent_channel import (
-            LocalAgentChannel,
-            LocalAgentCapabilitySnapshot as _Snap,
-        )
+        from app.models.capability_policy import CapabilityPolicy
         from app.models.local_bridge import LocalAgentBridgeConnection
+        from app.services.local_agent_channel_service import mark_channel_ready
+        from app.services.local_bridge_service import BridgeAuthContext, utcnow
 
+        scopes = ("local_agent:connect", "local_agent:receive", "local_agent:send", "local_agent:report")
         connection = LocalAgentBridgeConnection(
             tenant_id=world.tenant_a,
             agent_id=agent.id,
@@ -436,61 +430,18 @@ async def _seed_local_agent_channel(owner_sessionmaker, world: _World) -> tuple[
             client_kind="hive_connect",
             device_fingerprint=f"cc-fingerprint-{token}",
             token_hash=f"cc-token-hash-{token}",
-            scopes=["local_agent"],
+            scopes=list(scopes),
             status="active",
+            expires_at=utcnow() + timedelta(hours=1),
         )
         session.add(connection)
+        session.add(CapabilityPolicy(tenant_id=world.tenant_a, agent_id=agent.id,
+            capability="local_agent.execute", allowed=True, conditions={}, requires_approval=False))
         await session.flush()
-        channel_row = LocalAgentChannel(
-            tenant_id=world.tenant_a,
-            owner_user_id=world.employee_owner,
-            connection_id=connection.id,
-            runtime_kind="hive_connect",
-            status="online",
-        )
-        session.add(channel_row)
-        await session.flush()
-        now = datetime.now(timezone.utc)
-        signed = build_signed_capability_snapshot(
-            signing_secret=local_capability_signing_secret(),
-            issuer="cc-test",
-            subject_agent_id=agent.id,
-            tenant_id=world.tenant_a,
-            scopes=["execute"],
-            issued_at=now,
-            expires_at=now + timedelta(hours=1),
-            version=1,
-        )
-        from app.models.capability_policy import CapabilityPolicy
-
-        session.add(
-            CapabilityPolicy(
-                tenant_id=world.tenant_a,
-                agent_id=agent.id,
-                capability="local_agent.execute",
-                allowed=True,
-                conditions={},
-                requires_approval=False,
-            )
-        )
-        session.add(
-            _Snap(
-                tenant_id=world.tenant_a,
-                channel_id=channel_row.id,
-                connection_id=connection.id,
-                subject_agent_id=agent.id,
-                issuer=signed["issuer"],
-                version=signed["version"],
-                reported_capabilities_json=[],
-                server_capabilities_json=[],
-                agent_capabilities_json=[],
-                effective_capabilities_json=list(signed["scopes"]),
-                snapshot_hash=signed["snapshot_hash"],
-                signature=signed["signature"],
-                issued_at=now,
-                expires_at=now + timedelta(hours=1),
-            )
-        )
+        await mark_channel_ready(session, context=BridgeAuthContext(
+            connection_id=connection.id, tenant_id=world.tenant_a, agent_id=agent.id,
+            user_id=world.employee_owner, scopes=scopes, client_kind=connection.client_kind,
+            device_name=connection.device_name), runtime_kind="hive_connect", capabilities={"execute": True})
         await session.commit()
         return agent.id, channel_session.id, chat_session.id
 

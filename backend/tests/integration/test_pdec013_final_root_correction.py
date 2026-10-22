@@ -547,14 +547,45 @@ async def test_http_platform_admin_workspace_download_uses_selection(owner_sessi
     assert denied.status_code == 404, f"expected no-leak 404, got {denied.status_code}: {denied.text[:300]}"
 
 
-async def test_http_platform_admin_artifact_download_uses_selection(owner_sessionmaker, asgi) -> None:
+async def test_http_platform_admin_artifact_download_uses_selection(owner_sessionmaker, app_user_sessionmaker, asgi) -> None:
+    from app.core.resource_authority import workspace_resource_id
+    from app.api.files import _agent_base_dir
+    from app.services.chat_artifact_delivery import create_chat_artifacts_for_message
+
     world = await _seed_world(owner_sessionmaker)
-    await _write_workspace_file(owner_sessionmaker, world, "workspace/report.md", b"# artifact bytes\n")
+    base = _agent_base_dir(world.agent)
+    (base / "workspace").mkdir(parents=True, exist_ok=True)
+    written = await asgi.put(f"/api/agents/{world.agent}/files/content", params={"path": "workspace/report.md"},
+        json={"content": "# artifact bytes\n"}, headers=_bearer(world.employee, "member", world.tenant_a))
+    assert written.status_code == 200, written.text
+    async with app_user_sessionmaker() as db:
+        await pin_rls_tenant_context(db, world.tenant_a)
+        anchor = await db.get(ChatArtifact, world.artifact_id)
+        parts = await create_chat_artifacts_for_message(db=db, agent_id=world.agent, tenant_id=world.tenant_a,
+            session_id=anchor.session_id, message_id=anchor.message_id, runtime_task_id=None,
+            paths=["workspace/report.md"], workspace_root=base, source_validation_session=db)
+        assert len(parts) == 1, parts
+        world.artifact_id = uuid.UUID(parts[0]["artifact_id"])
+        await db.commit()
 
     selected_headers = {
         **_bearer(world.platform_admin, "platform_admin", world.tenant_b),
         "X-Tenant-Id": str(world.tenant_a),
     }
+    private = await asgi.get(
+        f"/api/agents/{world.agent}/files/artifacts/{world.artifact_id}/download", headers=selected_headers
+    )
+    assert private.status_code == 403, private.text
+    # Source sharing is independent from company inspection. Seed exact read grants.
+    grants = [uuid.uuid4(), uuid.uuid4()]
+    async with app_user_sessionmaker() as db:
+        await pin_rls_tenant_context(db, world.tenant_a)
+        for grant_id, kind, resource_id in zip(grants, ("workspace_file", "chat_artifact"),
+            (workspace_resource_id(world.agent, "workspace/report.md"), world.artifact_id), strict=True):
+            db.add(ResourcePermission(id=grant_id, tenant_id=world.tenant_a,
+                principal_type="user", principal_id=world.platform_admin, resource_type=kind,
+                resource_id=resource_id, actions=["read"], created_by_user_id=world.employee))
+        await db.commit()
     ok = await asgi.get(
         f"/api/agents/{world.agent}/files/artifacts/{world.artifact_id}/download", headers=selected_headers
     )
@@ -565,6 +596,19 @@ async def test_http_platform_admin_artifact_download_uses_selection(owner_sessio
         f"/api/agents/{world.agent}/files/artifacts/{world.artifact_id}/download", headers=unselected_headers
     )
     assert denied.status_code == 404, f"expected no-leak 404, got {denied.status_code}: {denied.text[:300]}"
+    from datetime import datetime, timezone
+
+    async with app_user_sessionmaker() as db:
+        await pin_rls_tenant_context(db, world.tenant_a)
+        for grant_id in grants:
+            grant = await db.get(ResourcePermission, grant_id)
+            grant.revoked_at = datetime.now(timezone.utc)
+            grant.revoked_by_user_id = world.employee
+        await db.commit()
+    revoked = await asgi.get(
+        f"/api/agents/{world.agent}/files/artifacts/{world.artifact_id}/download", headers=selected_headers
+    )
+    assert revoked.status_code == 403, revoked.text
 
 
 async def test_http_download_rejects_inactive_selected_company(owner_sessionmaker, asgi) -> None:

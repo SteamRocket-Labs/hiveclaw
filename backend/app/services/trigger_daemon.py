@@ -876,6 +876,25 @@ async def _latest_authorized_channel_target(db, *, agent_id: uuid.UUID, principa
     return _sendable_channel_target(dict(session.delivery_target_json or {}))
 
 
+async def _lock_legacy_reply_recovery(
+    db, *, agent_id: uuid.UUID, trigger_id: uuid.UUID, principal_id: uuid.UUID,
+    authority_generation: int, require_enabled: bool = False,
+) -> AgentTrigger | None:
+    """A target lookup cannot overwrite a newer authority or destination."""
+    from app.services.trigger_resource_authority import lock_trigger_for_update
+
+    row = await lock_trigger_for_update(db, agent_id=agent_id, trigger_id=trigger_id)
+    if (row is None or row.reply_context is not None or (require_enabled and not row.is_enabled)
+        or _legacy_delivery_principal(row) != principal_id):
+        return None
+    try:
+        if trigger_authority_generation(row) != authority_generation:
+            return None
+    except ValueError:
+        return None
+    return row
+
+
 async def _recover_reply_target_from_session(
     agent_id: uuid.UUID,
     triggers: list,
@@ -897,29 +916,20 @@ async def _recover_reply_target_from_session(
     assert principal is not None
 
     try:
+        pending_versions = [(getattr(trigger, "id", None), trigger_authority_generation(trigger))
+            for trigger in pending]
+        if any(trigger_id is None for trigger_id, _generation in pending_versions):
+            return _unavailable_delivery_recovery()
         tid = await resolve_tenant_for_agent(agent_id)
         async with tenant_scoped_session(tid) as db:
             target = await _latest_authorized_channel_target(db, agent_id=agent_id, principal_id=principal)
             if target is None:
                 return _unavailable_delivery_recovery()
             rows = []
-            for trigger in pending:
-                trigger_id = getattr(trigger, "id", None)
-                if trigger_id is None:
-                    return _unavailable_delivery_recovery()
-                row = (
-                    await db.execute(
-                        select(AgentTrigger).where(
-                            AgentTrigger.id == trigger_id,
-                            AgentTrigger.agent_id == agent_id,
-                        )
-                    )
-                ).scalar_one_or_none()
-                if (
-                    row is None
-                    or row.reply_context is not None
-                    or str(_legacy_delivery_principal(row) or "") != str(principal)
-                ):
+            for trigger_id, generation in sorted(pending_versions, key=lambda item: str(item[0])):
+                row = await _lock_legacy_reply_recovery(db, agent_id=agent_id, trigger_id=trigger_id,
+                    principal_id=principal, authority_generation=generation)
+                if row is None:
                     return _unavailable_delivery_recovery()
                 rows.append(row)
             for row in rows:
@@ -959,21 +969,28 @@ async def backfill_null_reply_contexts() -> dict:
             if not triggers:
                 return {"patched": 0, "skipped": 0, "unavailable_code": None}
 
-            grouped: dict[tuple[uuid.UUID, uuid.UUID], list] = {}
+            grouped: dict[tuple[uuid.UUID, uuid.UUID], list[tuple[uuid.UUID, int]]] = {}
             for trigger in triggers:
                 principal = _legacy_delivery_principal(trigger)
                 if principal is None:
                     skipped += 1
                     continue
-                grouped.setdefault((trigger.agent_id, principal), []).append(trigger)
+                try:
+                    generation = trigger_authority_generation(trigger)
+                except ValueError:
+                    skipped += 1
+                    continue
+                grouped.setdefault((trigger.agent_id, principal), []).append((trigger.id, generation))
 
-            for (aid, principal), rows in grouped.items():
+            for (aid, principal), pending_versions in sorted(grouped.items(), key=lambda item: str(item[0])):
                 target = await _latest_authorized_channel_target(db, agent_id=aid, principal_id=principal)
                 if target is None:
-                    skipped += len(rows)
+                    skipped += len(pending_versions)
                     continue
-                for row in rows:
-                    if str(_legacy_delivery_principal(row) or "") != str(principal):
+                for trigger_id, generation in sorted(pending_versions, key=lambda item: str(item[0])):
+                    row = await _lock_legacy_reply_recovery(db, agent_id=aid, trigger_id=trigger_id,
+                        principal_id=principal, authority_generation=generation, require_enabled=True)
+                    if row is None:
                         skipped += 1
                         continue
                     row.reply_context = dict(target)

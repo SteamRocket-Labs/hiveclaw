@@ -1849,7 +1849,7 @@ async def _handle_web_chat_failure(state: _WebChatRunState, exc: Exception) -> N
         await _handle_restart_recovery_required(state, exc)
         return
     summary = (
-        "Scheduled execution stopped before the next effect; restore authority or revise the schedule."
+        "Execution stopped before the next effect; restore authority or revise the work."
         if isinstance(exc, ExecutionAuthorityUnavailable) else
         "Canonical session history is unavailable; model invocation did not start."
         if isinstance(exc, SessionSemanticHistoryUnavailable)

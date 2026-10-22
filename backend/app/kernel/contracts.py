@@ -40,7 +40,8 @@ class ProviderRequestNeedsReconciliation(RuntimeError):
 class ExecutionAuthorityUnavailable(RuntimeError):
     """A live authority check stopped a specific effect before execution."""
 
-    def __init__(self, *, code, task, effect="runtime_start", status="unavailable"):
+    def __init__(self, *, code, task, effect="runtime_start", status="unavailable",
+        next_action="restore_authority_or_revise_schedule"):
         super().__init__(code)
         self.code = code
         self.run_id = task.id
@@ -49,10 +50,11 @@ class ExecutionAuthorityUnavailable(RuntimeError):
         self.session_id = task.parent_session_id
         self.effect = effect
         self.status = status
+        self.next_action = next_action
 
     def receipt(self):
         return {"status": self.status, "error_code": self.code, "effect": self.effect,
-            "effect_state": "not_started", "next_action": "restore_authority_or_revise_schedule"}
+            "effect_state": "not_started", "next_action": self.next_action}
 
 
 class SessionRestartRecoveryRequired(RuntimeError):

@@ -5608,6 +5608,8 @@ async def _resolve_runtime_models_for_task(
 async def _load_runtime_context(
     run_uuid: uuid.UUID,
 ) -> tuple[RuntimeTask, Agent, User, LLMModel | None, LLMModel | None, list[Any], ChatSession | None]:
+    from app.kernel.contracts import ExecutionAuthorityUnavailable
+
     tenant_id = await resolve_tenant_for_runtime_task(
         run_uuid,
         session_factory=_async_session,
@@ -5648,7 +5650,8 @@ async def _load_runtime_context(
         if agent is None:
             raise RuntimeError(f"Agent {runtime_task.parent_agent_id} not found")
         if is_agent_expired(agent):
-            raise RuntimeError(f"Agent {runtime_task.parent_agent_id} is not active")
+            raise ExecutionAuthorityUnavailable(code="runtime_agent_unavailable", task=runtime_task,
+                next_action="restore_authority_or_start_new_work")
 
         metadata = _with_reclaimed_web_chat_resume_context(runtime_task)
         if getattr(runtime_task, "budget_run_id", None) is None and not isinstance(
@@ -5694,7 +5697,8 @@ async def _load_runtime_context(
 
             user = await load_scoped_runtime_user(db, user_id, tenant_id=tenant_id)
             if user is None:
-                raise RuntimeError(f"User {user_id} not found")
+                raise ExecutionAuthorityUnavailable(code="runtime_actor_unavailable", task=runtime_task,
+                    next_action="restore_authority_or_start_new_work")
 
         boundary_updates = _enforce_runtime_context_tenant_boundary(
             runtime_task=runtime_task,
@@ -5734,8 +5738,6 @@ async def _load_runtime_context(
         except RuntimeError as exc:
             if native_frame is None:
                 raise
-            from app.kernel.contracts import ExecutionAuthorityUnavailable
-
             raise ExecutionAuthorityUnavailable(code="native_trigger_model_unavailable", task=runtime_task) from exc
         if native_frame is not None and native_frame.model_id is not None:
             fallback_model = None

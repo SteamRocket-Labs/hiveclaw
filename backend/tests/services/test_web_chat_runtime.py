@@ -1442,6 +1442,8 @@ async def test_load_runtime_context_resolves_model_inside_tenant_transaction(mon
     import app.services.model_resolution as model_resolution
     import app.services.session_semantic_history as semantic_history
     import app.services.web_chat_runtime as runtime
+    from app.database import _current_tenant_id
+    from app.models.user import User
 
     run_id = uuid4()
     agent_id = uuid4()
@@ -1470,7 +1472,7 @@ async def test_load_runtime_context_resolves_model_inside_tenant_transaction(mon
         deleted_at=None,
         deactivated_at=None,
     )
-    user = SimpleNamespace(id=user_id)
+    user = SimpleNamespace(id=user_id, tenant_id=tenant_id, is_active=True, role="member")
     model = SimpleNamespace(id=model_id, provider="minimax", model="minimax-m3", max_input_tokens=200000)
 
     class _Session:
@@ -1484,6 +1486,10 @@ async def test_load_runtime_context_resolves_model_inside_tenant_transaction(mon
         async def __aexit__(self, *_args):
             return False
 
+        async def get(self, model, identity, *, populate_existing):
+            assert model is User and identity == user_id and populate_existing is True
+            return user
+
         async def execute(self, _stmt):
             self.calls += 1
             if self.calls == 1:
@@ -1493,8 +1499,6 @@ async def test_load_runtime_context_resolves_model_inside_tenant_transaction(mon
             if self.calls == 3:
                 return _QueuedScalarResult(agent)
             if self.calls == 4:
-                return _QueuedScalarResult(user)
-            if self.calls == 5:
                 return _QueuedScalarResult(model)
             return _QueuedScalarResult([])
 
@@ -1506,9 +1510,11 @@ async def test_load_runtime_context_resolves_model_inside_tenant_transaction(mon
             self.db = db
 
         async def __aenter__(self):
+            self.token = _current_tenant_id.set(tenant_id)
             return self.db
 
         async def __aexit__(self, *_args):
+            _current_tenant_id.reset(self.token)
             await self.db.commit()
             return False
 
@@ -1551,6 +1557,8 @@ async def test_load_runtime_context_resolves_model_inside_tenant_transaction(mon
 async def test_load_runtime_context_uses_validated_team_member_model_override(monkeypatch):
     import app.services.session_semantic_history as semantic_history
     import app.services.web_chat_runtime as runtime
+    from app.database import _current_tenant_id
+    from app.models.user import User
 
     run_id = uuid4()
     agent_id = uuid4()
@@ -1593,7 +1601,7 @@ async def test_load_runtime_context_uses_validated_team_member_model_override(mo
         deleted_at=None,
         deactivated_at=None,
     )
-    user = SimpleNamespace(id=user_id, tenant_id=tenant_id)
+    user = SimpleNamespace(id=user_id, tenant_id=tenant_id, is_active=True, role="member")
     team_model = SimpleNamespace(
         id=team_model_id,
         tenant_id=tenant_id,
@@ -1608,9 +1616,13 @@ async def test_load_runtime_context_uses_validated_team_member_model_override(mo
         def __init__(self):
             self.calls = 0
 
+        async def get(self, model, identity, *, populate_existing):
+            assert model is User and identity == user_id and populate_existing is True
+            return user
+
         async def execute(self, _stmt):
             self.calls += 1
-            values = [task, session_row, agent, user, []]
+            values = [task, session_row, agent, []]
             return _QueuedScalarResult(values[self.calls - 1] if self.calls <= len(values) else [])
 
         async def commit(self):
@@ -1618,9 +1630,11 @@ async def test_load_runtime_context_uses_validated_team_member_model_override(mo
 
     class _TenantContext:
         async def __aenter__(self):
+            self.token = _current_tenant_id.set(tenant_id)
             return db
 
         async def __aexit__(self, *_args):
+            _current_tenant_id.reset(self.token)
             await db.commit()
             return False
 
@@ -1724,6 +1738,8 @@ async def test_runtime_model_resolver_rejects_invalid_or_unavailable_override() 
 @pytest.mark.asyncio
 async def test_load_runtime_context_rejects_runtime_task_agent_tenant_mismatch(monkeypatch):
     import app.services.web_chat_runtime as runtime
+    from app.database import _current_tenant_id
+    from app.models.user import User
 
     run_id = uuid4()
     agent_id = uuid4()
@@ -1755,17 +1771,21 @@ async def test_load_runtime_context_rejects_runtime_task_agent_tenant_mismatch(m
         deleted_at=None,
         deactivated_at=None,
     )
-    user = SimpleNamespace(id=user_id, tenant_id=agent_tenant_id)
+    user = SimpleNamespace(id=user_id, tenant_id=task_tenant_id, is_active=True, role="member")
 
     class _Session:
         def __init__(self):
-            self.values = [task, session_row, agent, user, []]
+            self.values = [task, session_row, agent, []]
 
         async def __aenter__(self):
             return self
 
         async def __aexit__(self, *_args):
             return False
+
+        async def get(self, model, identity, *, populate_existing):
+            assert model is User and identity == user_id and populate_existing is True
+            return user
 
         async def execute(self, _stmt):
             return _QueuedScalarResult(self.values.pop(0) if self.values else [])
@@ -1778,9 +1798,11 @@ async def test_load_runtime_context_rejects_runtime_task_agent_tenant_mismatch(m
             self.db = db
 
         async def __aenter__(self):
+            self.token = _current_tenant_id.set(task_tenant_id)
             return self.db
 
         async def __aexit__(self, *_args):
+            _current_tenant_id.reset(self.token)
             return False
 
     async def noop_materialize(**_kwargs):

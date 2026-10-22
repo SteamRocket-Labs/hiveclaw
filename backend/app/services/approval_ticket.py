@@ -584,21 +584,19 @@ async def consume_approval_ticket(
     """Claim one approved ticket through locator -> tenant-scoped execution."""
     from app.database import async_session, enter_rls_bypass, tenant_scoped_session
     from app.models.audit import ApprovalRequest
-    from app.models.user import User
 
     async with async_session() as db:
         async with enter_rls_bypass(db, reason="approval ticket tenant locator") as locator_db:
             located = (
                 await locator_db.execute(
-                    select(ApprovalRequest.tenant_id, ApprovalRequest.agent_id, ApprovalRequest.resolved_by,
-                        User.role, User.tenant_id, User.is_active).outerjoin(User, User.id == ApprovalRequest.resolved_by)
+                    select(ApprovalRequest.tenant_id, ApprovalRequest.agent_id)
                     .where(ApprovalRequest.id == approval_id)
                 )
             ).one_or_none()
         await db.rollback()
     if located is None:
         raise ApprovalTicketError("approval ticket not found")
-    tenant_id, agent_id, approver_id, approver_role, approver_tenant_id, approver_active = located
+    tenant_id, agent_id = located
     if tenant_id is None:
         raise ApprovalTicketError("approval ticket has no tenant")
     if expected_agent_id is not None and agent_id != expected_agent_id:
@@ -614,16 +612,12 @@ async def consume_approval_ticket(
         if approval.status != "approved":
             raise ApprovalTicketError(f"approval ticket is not approved: {approval.status}")
         from app.models.agent import Agent
-        from app.models.user import User
         from app.services.approval_service import can_resolve_approval
+        from app.services.runtime_user_identity import load_scoped_runtime_user
 
         agent = await db.get(Agent, approval.agent_id, populate_existing=True)
-        approver = await db.get(User, approval.resolved_by, populate_existing=True) if approval.resolved_by else None
-        if approver is None and approval.resolved_by == approver_id and approver_role == "platform_admin":
-            from types import SimpleNamespace
-
-            # The exact ticket locator reads identity facts only; company scope remains pinned here.
-            approver = SimpleNamespace(id=approver_id, role=approver_role, tenant_id=approver_tenant_id, is_active=approver_active)
+        approver = (await load_scoped_runtime_user(db, approval.resolved_by, tenant_id=tenant_id)
+            if approval.resolved_by else None)
         if agent is None or approver is None or not await can_resolve_approval(db, agent=agent, user=approver, approval=approval):
             raise ApprovalTicketError("approval ticket approver is no longer responsible")
         now = datetime.now(timezone.utc)

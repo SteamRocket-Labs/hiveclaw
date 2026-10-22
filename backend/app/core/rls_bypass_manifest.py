@@ -1183,7 +1183,7 @@ RLS_BYPASS_ALLOWLIST = (
             "app/services/approval_ticket.py",
             "consume_approval_ticket",
             "'approval ticket tenant locator'",
-            ("select:ApprovalRequest.tenant_id,ApprovalRequest.agent_id,ApprovalRequest.resolved_by,User.role,User.tenant_id,User.is_active",),
+            ("select:ApprovalRequest.tenant_id,ApprovalRequest.agent_id",),
         )
     ),
     _grant(

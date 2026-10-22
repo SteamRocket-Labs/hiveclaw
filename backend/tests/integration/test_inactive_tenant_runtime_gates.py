@@ -592,6 +592,7 @@ async def test_post_claim_tenant_deactivation_defers_dispatch_until_reactivation
     defer-time rewrite would let an event that arrived after the deferred one
     overtake it once the company is reactivated."""
 
+    from app.services.channel_provider_receipts import feishu_message_scope
     from app.runtime.tenant_admission import RuntimeTenantPreconditionError
     from app.services import channel_ingress_dispatcher
     from app.services.channel_ingress_dispatcher import dispatch_channel_ingress_event
@@ -615,18 +616,22 @@ async def test_post_claim_tenant_deactivation_defers_dispatch_until_reactivation
     later_arrival = datetime.now(timezone.utc) - timedelta(seconds=1)
     ingress_id = uuid.uuid4()
     async with owner_sessionmaker() as db:
+        config = ChannelConfig(id=uuid.uuid4(), tenant_id=tenant_id, agent_id=agent_id, channel_type="feishu",
+            app_id="synthetic-live-ingress", app_secret="synthetic-live-secret", is_configured=True)
+        db.add(config)
+        await db.flush()
         db.add(
             ChannelIngressEvent(
                 id=ingress_id,
                 tenant_id=tenant_id,
                 agent_id=agent_id,
                 provider="feishu",
-                installation_ref=str(uuid.uuid4()),
+                installation_ref=str(config.id),
                 provider_event_id=first_event_id,
                 handler_key="feishu.event",
                 payload_digest=uuid.uuid4().hex,
                 payload_json={"provider": "feishu", "body": {"event_id": first_event_id}},
-                metadata_json={"transport": "webhook"},
+                metadata_json={"transport": "webhook", "feishu_message_scope": feishu_message_scope(config)},
                 status="received",
                 available_at=first_arrival,
                 received_at=first_arrival,
@@ -709,12 +714,12 @@ async def test_post_claim_tenant_deactivation_defers_dispatch_until_reactivation
                 tenant_id=tenant_id,
                 agent_id=agent_id,
                 provider="feishu",
-                installation_ref=str(uuid.uuid4()),
+                installation_ref=str(config.id),
                 provider_event_id=later_event_id,
                 handler_key="feishu.event",
                 payload_digest=uuid.uuid4().hex,
                 payload_json={"provider": "feishu", "body": {"event_id": later_event_id}},
-                metadata_json={"transport": "webhook"},
+                metadata_json={"transport": "webhook", "feishu_message_scope": feishu_message_scope(config)},
                 status="received",
                 available_at=later_arrival,
                 received_at=later_arrival,

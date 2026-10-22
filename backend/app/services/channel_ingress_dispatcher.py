@@ -57,6 +57,47 @@ def _response_failed(result: Any) -> bool:
     return isinstance(result, Response) and int(result.status_code) >= 400
 
 
+async def _feishu_installation_receipt(db, item):
+    """Validate the saved provider namespace before recovery or handler effects."""
+    if item.handler_key not in {"feishu.event", "feishu.card_action"}:
+        return None
+    from app.models.channel_config import ChannelConfig
+    from app.models.tenant_channel_config import TenantChannelConfig
+    from app.services.channel_ingress_inbox import ChannelIngressInstallationUnavailable, channel_installation_ref
+    from app.services.channel_provider_receipts import feishu_message_scope
+    from app.services.original_work_channel_answers import rejected_original_work_reply
+
+    denied = {"status": "denied", "reason_code": "feishu_installation_changed",
+        "retryable": False, "recovery_action": "send_new_channel_message"}
+    if item.provider != "feishu":
+        return denied
+    tenant_config_id = item.metadata.get("tenant_channel_config_id")
+    if tenant_config_id:
+        try:
+            identifier = uuid.UUID(str(tenant_config_id))
+        except (ValueError, TypeError, AttributeError):
+            return denied
+        config = await db.scalar(select(TenantChannelConfig).where(TenantChannelConfig.id == identifier,
+            TenantChannelConfig.tenant_id == item.tenant_id, TenantChannelConfig.channel_type == "feishu")
+            .execution_options(populate_existing=True))
+    else:
+        config = await db.scalar(select(ChannelConfig).where(ChannelConfig.agent_id == item.agent_id,
+            ChannelConfig.tenant_id == item.tenant_id, ChannelConfig.channel_type == "feishu")
+            .execution_options(populate_existing=True))
+    scope = item.metadata.get("feishu_message_scope")
+    if config is None or channel_installation_ref(config, fallback="") != item.installation_ref:
+        return {**denied, **await rejected_original_work_reply(db, item=item)}
+    valid_scope = isinstance(scope, str) and len(scope) == 64 and all(c in "0123456789abcdef" for c in scope)
+    if not valid_scope and not (scope is None and isinstance(config, TenantChannelConfig)):
+        return {**denied, "status": "unavailable", "reason_code": "feishu_ingress_scope_unavailable"}
+    if scope is not None and scope != feishu_message_scope(config):
+        return {**denied, **await rejected_original_work_reply(db, item=item)}
+    active = config.is_active if isinstance(config, TenantChannelConfig) else config.is_configured
+    if not active:
+        raise ChannelIngressInstallationUnavailable("The accepted Feishu installation is paused")
+    return None
+
+
 async def _resume_materialized_user_message(
     db,
     item: ClaimedChannelIngressEvent,
@@ -332,8 +373,12 @@ async def dispatch_channel_ingress_event(item: ClaimedChannelIngressEvent) -> di
                     tenant_id=item.tenant_id,
                     agent_id=item.agent_id,
                 )
-            recovered = await _resume_materialized_user_message(db, item)
-            result = recovered or await _dispatch_verified_payload(db, item)
+            installation_receipt = await _feishu_installation_receipt(db, item)
+            if installation_receipt is not None:
+                result = installation_receipt
+            else:
+                recovered = await _resume_materialized_user_message(db, item)
+                result = recovered or await _dispatch_verified_payload(db, item)
 
         if context.runtime_task_id is not None or context.session_id is not None:
             result = {

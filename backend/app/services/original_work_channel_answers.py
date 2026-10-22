@@ -11,6 +11,35 @@ from app.models.chat_session import ChatSession
 from app.models.runtime_task import RuntimeTask
 
 
+def _original_work_prompt_query(tenant_id, agent_id):
+    return select(ChannelDeliveryOutbox).where(
+        ChannelDeliveryOutbox.tenant_id == tenant_id, ChannelDeliveryOutbox.agent_id == agent_id,
+        ChannelDeliveryOutbox.channel == 'feishu', ChannelDeliveryOutbox.delivery_kind == 'interactive_prompt',
+        or_(and_(ChannelDeliveryOutbox.metadata_json['source'].astext == 'business_task_runtime',
+                ChannelDeliveryOutbox.metadata_json['projection_kind'].astext == 'question_notice'),
+            ChannelDeliveryOutbox.metadata_json['source'].astext == 'employee_first_task_question',
+            ChannelDeliveryOutbox.metadata_json['source'].astext == 'original_work_permission',
+            ChannelDeliveryOutbox.terminal_status == 'awaiting_permission'))
+
+
+async def rejected_original_work_reply(db, *, item):
+    """Keep a saved quote's rejection type without authorizing its old sender."""
+    scope = item.metadata.get('feishu_message_scope')
+    body = item.payload.get('body') or item.payload
+    parent = ((body.get('event') or {}).get('message') or {}).get('parent_id')
+    if not isinstance(scope, str) or not scope or not isinstance(parent, str) or not parent:
+        return {}
+    rows = list(await db.scalars(_original_work_prompt_query(item.tenant_id, item.agent_id).where(
+        ChannelDeliveryOutbox.delivery_receipts_json['text']['state'].astext == 'delivered',
+        ChannelDeliveryOutbox.delivery_receipts_json['text']['detail']['provider_message_id'].astext == parent,
+        ChannelDeliveryOutbox.delivery_receipts_json['text']['detail']['provider_message_scope'].astext == scope).limit(2)))
+    if len(rows) != 1:
+        return {}
+    notice = rows[0]
+    permission = notice.metadata_json.get('source') == 'original_work_permission' or notice.terminal_status == 'awaiting_permission'
+    return {'permission_status' if permission else 'answer_status': 'rejected'}
+
+
 async def try_answer_original_work_question(db, *, agent, principal, config, user_text, delivery_target,
     external_conv_id, uploads=(), expected_upload_keys=()):
     from app.services.channel_ingress_context import (
@@ -33,15 +62,8 @@ async def try_answer_original_work_question(db, *, agent, principal, config, use
     parent = message.get('parent_id')
     if not isinstance(parent, str) or not parent:
         return None
-    candidates = list(await db.scalars(select(ChannelDeliveryOutbox).where(
-        ChannelDeliveryOutbox.tenant_id == agent.tenant_id, ChannelDeliveryOutbox.agent_id == agent.id,
-        ChannelDeliveryOutbox.channel == 'feishu', ChannelDeliveryOutbox.channel_config_id == config.id,
-        ChannelDeliveryOutbox.delivery_kind == 'interactive_prompt',
-        or_(and_(ChannelDeliveryOutbox.metadata_json['source'].astext == 'business_task_runtime',
-                ChannelDeliveryOutbox.metadata_json['projection_kind'].astext == 'question_notice'),
-            ChannelDeliveryOutbox.metadata_json['source'].astext == 'employee_first_task_question',
-            ChannelDeliveryOutbox.metadata_json['source'].astext == 'original_work_permission',
-            ChannelDeliveryOutbox.terminal_status == 'awaiting_permission'),
+    candidates = list(await db.scalars(_original_work_prompt_query(agent.tenant_id, agent.id).where(
+        ChannelDeliveryOutbox.channel_config_id == config.id,
         ChannelDeliveryOutbox.delivery_receipts_json['text']['state'].astext == 'delivered',
         ChannelDeliveryOutbox.delivery_receipts_json['text']['detail']['provider_message_id'].astext == parent).limit(2)))
     if not candidates:

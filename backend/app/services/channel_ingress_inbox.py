@@ -13,12 +13,14 @@ import re
 from typing import Any
 import uuid
 
-from sqlalchemy import and_, or_, select
+from sqlalchemy import String, and_, or_, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.database import async_session, enter_rls_bypass, tenant_scoped_session
 from app.models.channel_ingress_event import ChannelIngressEvent
+from app.models.channel_config import ChannelConfig
+from app.models.tenant_channel_config import TenantChannelConfig
 from app.models.tenant import Tenant
 from app.runtime.tenant_admission import RuntimeTenantPreconditionError
 from app.services.channel_secret_storage import (
@@ -32,6 +34,10 @@ _INGRESS_ID_NAMESPACE = uuid.UUID("cae0a095-76f4-4d84-8515-8d64370f8197")
 
 class ChannelIngressCollisionError(RuntimeError):
     """A provider reused one event identity with a different immutable payload."""
+
+
+class ChannelIngressInstallationUnavailable(RuntimeError):
+    """An unchanged installation is paused; keep its accepted input resumable."""
 
 
 def _uuid(value: Any, *, field: str) -> uuid.UUID:
@@ -540,6 +546,18 @@ class ChannelIngressInboxService:
                             # queued channel events into its Agent runtime.
                             # Events stay durable and resume on reactivation.
                             ChannelIngressEvent.tenant_id.in_(select(Tenant.id).where(Tenant.is_active.is_(True))),
+                            # A paused installation keeps its accepted queue without
+                            # repeatedly claiming and releasing the same event.
+                            or_(ChannelIngressEvent.provider != "feishu", and_(
+                                ~select(ChannelConfig.id).where(ChannelConfig.tenant_id == ChannelIngressEvent.tenant_id,
+                                    ChannelConfig.agent_id == ChannelIngressEvent.agent_id, ChannelConfig.channel_type == "feishu",
+                                    ChannelConfig.id.cast(String) == ChannelIngressEvent.installation_ref,
+                                    ChannelConfig.is_configured.is_(False)).exists(),
+                                ~select(TenantChannelConfig.id).where(TenantChannelConfig.tenant_id == ChannelIngressEvent.tenant_id,
+                                    TenantChannelConfig.channel_type == "feishu", TenantChannelConfig.is_active.is_(False),
+                                    TenantChannelConfig.id.cast(String) == ChannelIngressEvent.metadata_json['tenant_channel_config_id'].astext,
+                                    ChannelIngressEvent.installation_ref.like("tenant:" + TenantChannelConfig.id.cast(String) + ":%"))
+                                    .exists())),
                         )
                         .order_by(ChannelIngressEvent.available_at, ChannelIngressEvent.received_at)
                         .limit(max(1, int(limit)))
@@ -634,13 +652,14 @@ class ChannelIngressInboxService:
             await db.commit()
             return outcome
 
-    async def _release_for_inactive_tenant(
+    async def _release_for_unavailable_authority(
         self,
         *,
         item: ClaimedChannelIngressEvent,
         worker_id: str,
+        receipt: dict[str, Any] | None = None,
     ) -> bool:
-        """Release a claim whose tenant was deactivated after the claim.
+        """Release a claim whose tenant or unchanged installation is paused.
 
         A company deactivation is not a failure of the event: the row returns
         to ``received`` with its pre-claim attempt budget restored, so
@@ -661,6 +680,8 @@ class ChannelIngressInboxService:
             row.attempt_count = max(0, int(row.attempt_count or 0) - 1)
             row.locked_by = None
             row.locked_at = None
+            if receipt is not None:
+                row.processing_receipt_json = dict(receipt)
             await db.commit()
             return True
 
@@ -687,7 +708,13 @@ class ChannelIngressInboxService:
                 if isinstance(exc, RuntimeTenantPreconditionError) and exc.reason_code == "tenant_inactive":
                     # The tenant was deactivated after this claim was committed;
                     # defer the durable row instead of counting a failure.
-                    if await self._release_for_inactive_tenant(item=item, worker_id=worker_id):
+                    if await self._release_for_unavailable_authority(item=item, worker_id=worker_id):
+                        stats["deferred"] += 1
+                    continue
+                if isinstance(exc, ChannelIngressInstallationUnavailable):
+                    if await self._release_for_unavailable_authority(item=item, worker_id=worker_id,
+                        receipt={"status": "unavailable", "reason_code": "feishu_installation_paused",
+                            "retryable": True, "recovery_action": "resume_channel_connection"}):
                         stats["deferred"] += 1
                     continue
                 outcome = await self._mark_failed(item=item, worker_id=worker_id, error=exc)

@@ -41,6 +41,7 @@ async def test_feishu_quoted_business_answer_survives_ingress_replay(
             ChannelIngressSubmission, ChannelIngressInboxService, enqueue_channel_ingress_event,
         )
         from app.services.feishu_service import FeishuService
+        from app.services.channel_provider_receipts import feishu_message_scope
 
         texts = []
         subject = 'ou-business-other' if state == 'wrong_sender' else 'ou-business-owner'
@@ -105,7 +106,8 @@ async def test_feishu_quoted_business_answer_survives_ingress_replay(
             admitted = await enqueue_channel_ingress_event(db, ChannelIngressSubmission(
                 tenant_id=seed['tenant_id'], agent_id=seed['agent_id'], provider='feishu',
                 installation_ref=str(notice.channel_config_id), provider_event_id=body['header']['event_id'],
-                handler_key='feishu.event', payload={'body': body}))
+                handler_key='feishu.event', payload={'body': body},
+                metadata={'feishu_message_scope': feishu_message_scope(await db.get(ChannelConfig, notice.channel_config_id))}))
             await db.commit()
         inbox = ChannelIngressInboxService(session_factory=factory)
         if state == 'withdrawn':

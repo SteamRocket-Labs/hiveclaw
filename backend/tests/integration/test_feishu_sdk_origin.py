@@ -101,8 +101,7 @@ async def test_captured_sdk_callback_cannot_borrow_a_new_installation(
         first = await fire(handler, 'sdk-before-change')
         assert first is not None and first.installation_ref == str(config_id)
         assert first.handler_key == ('feishu.event' if kind == 'message' else 'feishu.card_action')
-        if kind == 'message':
-            assert first.metadata_json['feishu_message_scope'] == feishu_message_scope(config)
+        assert first.metadata_json['feishu_message_scope'] == feishu_message_scope(config)
 
         if change in {'stopped', 'replaced'}:
             task = manager._tasks[agent_id]
@@ -147,8 +146,7 @@ async def test_captured_sdk_callback_cannot_borrow_a_new_installation(
         fresh = await fire(new_client.handlers[handler_key], 'sdk-new-after-restart', app_id=current.app_id)
         assert fresh is not None and fresh.installation_ref == str(current.id)
         assert fresh.handler_key == first.handler_key
-        if kind == 'message':
-            assert fresh.metadata_json['feishu_message_scope'] == feishu_message_scope(current)
+        assert fresh.metadata_json['feishu_message_scope'] == feishu_message_scope(current)
         assert await fire(new_client.handlers[handler_key], 'sdk-foreign-header', app_id='synthetic-other-app') is None
         if change in {'application', 'credentials', 'platform'}:
             current_task = manager._tasks[agent_id]
@@ -160,7 +158,8 @@ async def test_captured_sdk_callback_cannot_borrow_a_new_installation(
         await manager.stop_client(agent_id)
         await asyncio.gather(*tasks, return_exceptions=True)
         async with owner_sessionmaker() as db:
+            (await db.get(Tenant, tenant_id)).is_active = False
             current = await db.scalar(select(ChannelConfig).where(ChannelConfig.agent_id == agent_id))
             if current is not None:
                 current.is_configured = False
-                await db.commit()
+            await db.commit()

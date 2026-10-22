@@ -105,6 +105,11 @@ async def _validate_input_dependency_batch(db, tenant_id: uuid.UUID, dependencie
 
         published_user, published = await published_creation_seed_sources(db, tenant_id=tenant_id, request=runtime_request)
     for dependency in dependencies:
+        if dependency["source_kind"] == "business_task_context":
+            from app.services.business_task_context import validate_business_task_context
+
+            await validate_business_task_context(db, tenant_id, dependency, user=user, runtime_request=runtime_request)
+            continue
         if dependency["source_kind"] == "original_attachment":
             from app.services.original_tool_sources import validate_original_dependency
 

@@ -1037,6 +1037,16 @@ _PARENT_OR_DELEGATED_CHILD_RUN_BINDING = """            AND (
                 ))
             )"""
 
+_BUSINESS_TASK_CHILD_RUN_BINDING = """OR (run.task_type='business_task' AND run.parent_agent_id=bound_agent_id
+                AND run.child_agent_id=run.parent_agent_id
+                AND replace(lower(run.child_session_id),'-','')=replace(NEW.session_id::text,'-','')
+                AND EXISTS (SELECT 1 FROM public.chat_sessions AS child
+                  WHERE child.id=NEW.session_id AND child.tenant_id=NEW.tenant_id
+                    AND child.agent_id=run.parent_agent_id AND child.session_kind='user_task'
+                    AND child.source_channel='task' AND child.runtime_task_id=run.id
+                    AND child.user_id=run.root_user_id AND child.user_id IS NOT NULL))
+              """
+
 
 def build_session_tenant_binding_function_sql() -> str:
     """Bind each Session V2 row and every typed reference to one authority frame."""
@@ -1045,7 +1055,9 @@ def build_session_tenant_binding_function_sql() -> str:
     for index, (table_name, condition) in enumerate(_SESSION_V2_AUTHORITY_RULES):
         if table_name in {"session_turn_inputs", "session_model_results", "session_tool_invocations",
             "session_round_obligations", "session_next_round_plans", "session_run_outcomes"}:
-            condition = condition.replace(_PARENT_RUN_BINDING, _PARENT_OR_DELEGATED_CHILD_RUN_BINDING, 1)
+            binding = _PARENT_OR_DELEGATED_CHILD_RUN_BINDING.replace(
+                "OR (run.task_type='delegation'", _BUSINESS_TASK_CHILD_RUN_BINDING + "OR (run.task_type='delegation'", 1)
+            condition = condition.replace(_PARENT_RUN_BINDING, binding, 1)
         keyword = "IF" if index == 0 else "ELSIF"
         branches.append(
             f"""          {keyword} TG_TABLE_NAME='{table_name}' THEN

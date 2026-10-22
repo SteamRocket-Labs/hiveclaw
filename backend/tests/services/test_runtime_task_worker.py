@@ -411,7 +411,7 @@ def test_worker_dispatches_a2a_continuation_to_web_chat_executor(monkeypatch):
         captured["worker_id"] = worker_id
         return True
 
-    task = SimpleNamespace(id=uuid4(), task_type="a2a_continuation", claim_version=3, claimed_by="worker-9")
+    task = SimpleNamespace(id=uuid4(), task_type="a2a_continuation", claim_version=3, claimed_by="worker-9", metadata_json={})
     monkeypatch.setattr(worker, "dispatch_web_chat_run", fake_dispatch)
 
     assert worker._dispatch_claimed_task(task) is True

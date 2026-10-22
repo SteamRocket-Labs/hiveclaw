@@ -585,6 +585,7 @@ async def _enqueue_business_task_channel_delivery(
             agent_id=runtime_task.parent_agent_id,
             session_id=session_id,
             user_id=requester_user_id,
+            external_principal_id=uuid.UUID(str(target['external_principal_id'])) if target.get('external_principal_id') else None,
             channel_config_id=getattr(config, "id", None),
             delivery_target=target,
             text=text,

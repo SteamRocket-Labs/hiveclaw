@@ -8,7 +8,9 @@ from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
-from app.kernel.contracts import ExecutionIdentityRef, TerminalReason
+from app.kernel.contracts import (
+    ExecutionIdentityRef, SessionRestartRecoveryRequired, TerminalReason, ToolLifecyclePersistenceError,
+)
 from app.database import tenant_scoped_session
 from app.models.agent import Agent
 from app.models.chat_session import ChatSession
@@ -278,7 +280,7 @@ async def _append_task_session_event(
     role: str,
     actor_type: str,
     content: str,
-    actor_id: uuid.UUID | None = None,
+    user_id: uuid.UUID | None = None,
     tenant_id: uuid.UUID | None = None,
     participant_id: uuid.UUID | None = None,
     message_id: uuid.UUID | None = None,
@@ -295,7 +297,7 @@ async def _append_task_session_event(
         event_type=event_type,
         role=role,
         t0_role=t0_role,
-        user_id=actor_id,
+        user_id=user_id,
         participant_id=participant_id,
         run_id=runtime_task_id,
         message_id=message_id,
@@ -532,40 +534,66 @@ async def execute_task(
         agent_participant = participant_result.scalar_one_or_none()
         agent_participant_id = agent_participant.id if agent_participant else None
 
-        reflection_session = ChatSession(
-            agent_id=agent_id,
-            tenant_id=tenant_id,
-            user_id=task_requester_id,
-            participant_id=agent_participant_id,
-            source_channel="task",
-            session_kind="user_task",
-            actor_type="agent",
-            runtime_source="runtime_task",
-            visibility_scope="agent_owner",
-            listed_surface="task_updates",
-            runtime_task_id=runtime_task_id,
-            title=f"🧾 Task: {task_title}"[:200],
-        )
-        db.add(reflection_session)
-        await db.flush()
+        reflection_session_id = uuid.uuid4()
+        reflection_session = None
+        if runtime_task_id is not None:
+            from app.models.runtime_task import RuntimeTask
+            from app.services.runtime_task_service import update_runtime_task_record
+
+            run = await db.get(RuntimeTask, runtime_task_id, populate_existing=True)
+            if run is not None and run.child_session_id:
+                reflection_session_id = uuid.UUID(run.child_session_id)
+                reflection_session = await db.get(ChatSession, reflection_session_id, populate_existing=True)
+                if (reflection_session is None or reflection_session.runtime_task_id != runtime_task_id
+                    or reflection_session.agent_id != agent_id or reflection_session.tenant_id != tenant_id
+                    or reflection_session.user_id != task_requester_id or reflection_session.session_kind != "user_task"):
+                    return TaskExecutionOutcome(status=TaskExecutionStatus.NEEDS_RECONCILIATION,
+                        summary="Business task execution session no longer matches its run.", error_code="runtime_session_binding_changed")
+            # Bind before the session FK can hold a lock needed by the durable updater.
+            elif not await update_runtime_task_record(runtime_task_id.hex, child_session_id=str(reflection_session_id)):
+                return TaskExecutionOutcome(
+                    status=TaskExecutionStatus.NEEDS_RECONCILIATION,
+                    summary="Business task could not bind its execution session.",
+                    error_code="runtime_session_binding_unavailable",
+                )
+        new_reflection = reflection_session is None
+        if new_reflection:
+            reflection_session = ChatSession(
+                id=reflection_session_id,
+                agent_id=agent_id,
+                tenant_id=tenant_id,
+                user_id=task_requester_id,
+                participant_id=agent_participant_id,
+                source_channel="task",
+                session_kind="user_task",
+                actor_type="agent",
+                runtime_source="runtime_task",
+                visibility_scope="agent_owner",
+                listed_surface="task_updates",
+                runtime_task_id=runtime_task_id,
+                title=f"🧾 Task: {task_title}"[:200],
+            )
+            db.add(reflection_session)
+            await db.flush()
         reflection_session_id = reflection_session.id
 
-        await _append_task_session_event(
-            db=db,
-            agent_id=agent_id,
-            session_id=reflection_session_id,
-            task_id=task_id,
-            task_type=task_type,
-            event_type="user_message",
-            actor_type="user",
-            role="user",
-            content=user_prompt,
-            actor_id=task_requester_id,
-            tenant_id=tenant_id,
-            participant_id=agent_participant_id,
-            metadata={"title": task_title},
-            runtime_task_id=runtime_task_id,
-        )
+        if new_reflection:
+            await _append_task_session_event(
+                db=db,
+                agent_id=agent_id,
+                session_id=reflection_session_id,
+                task_id=task_id,
+                task_type=task_type,
+                event_type="user_message",
+                actor_type="user",
+                role="user",
+                content=user_prompt,
+                user_id=task_requester_id,
+                tenant_id=tenant_id,
+                participant_id=agent_participant_id,
+                metadata={"title": task_title},
+                runtime_task_id=runtime_task_id,
+            )
         await db.commit()
 
     # Step 4: Call unified runtime
@@ -609,7 +637,7 @@ async def execute_task(
                     role="tool_call",
                     t0_role="tool",
                     content=tool_payload,
-                    actor_id=agent_id,
+                    user_id=task_requester_id,
                     tenant_id=tenant_id,
                     participant_id=agent_participant_id,
                     metadata={"tool_name": data.get("name"), "status": "done"},
@@ -617,41 +645,46 @@ async def execute_task(
                 )
                 await tc_db.commit()
 
-        result = await invoke_agent(
-            AgentInvocationRequest(
-                model=model,
-                fallback_model=fallback_model,
-                messages=runtime_messages,
-                memory_messages=runtime_messages,
-                memory_session_id=str(reflection_session_id),
-                agent_name=agent_name,
-                role_description=agent.role_description or "",
-                tenant_id=tenant_id,
-                agent_id=agent_id,
-                user_id=task_requester_id,
-                execution_identity=ExecutionIdentityRef(
-                    identity_type="agent_bot",
-                    identity_id=agent_id,
-                    label=f"Agent: {agent_name} (task)",
-                ),
-                system_prompt_suffix=TASK_EXECUTION_ADDENDUM,
-                session_context=SessionContext(
-                    source="task",
-                    channel="task",
-                    session_id=str(reflection_session_id),
-                    metadata={
-                        "task_id": str(task_id),
-                        "task_type": task_type,
-                        "runtime_task_id": str(runtime_task_id) if runtime_task_id else None,
-                        "turn_id": f"turn-{runtime_task_id.hex}" if runtime_task_id else None,
-                    },
-                ),
-                on_tool_call=_on_tool_call,
-                core_tools_only=True,
-                max_tool_rounds=getattr(agent, "max_tool_rounds", None),
-                cancel_event=cancel_event,
-            )
+        invocation = AgentInvocationRequest(
+            model=model,
+            fallback_model=fallback_model,
+            messages=runtime_messages,
+            memory_messages=runtime_messages,
+            memory_session_id=str(reflection_session_id),
+            agent_name=agent_name,
+            role_description=agent.role_description or "",
+            tenant_id=tenant_id,
+            agent_id=agent_id,
+            user_id=task_requester_id,
+            execution_identity=ExecutionIdentityRef(
+                identity_type="agent_bot",
+                identity_id=agent_id,
+                label=f"Agent: {agent_name} (task)",
+            ),
+            system_prompt_suffix=TASK_EXECUTION_ADDENDUM,
+            session_context=SessionContext(
+                source="task",
+                channel="task",
+                session_id=str(reflection_session_id),
+                metadata={
+                    "task_id": str(task_id),
+                    "task_type": task_type,
+                    "runtime_task_id": str(runtime_task_id) if runtime_task_id else None,
+                    "turn_id": f"turn-{runtime_task_id.hex}" if runtime_task_id else None,
+                },
+            ),
+            on_tool_call=_on_tool_call,
+            core_tools_only=True,
+            max_tool_rounds=getattr(agent, "max_tool_rounds", None),
+            cancel_event=cancel_event,
         )
+        if runtime_task_id is not None:
+            from app.services.delegation_session_runtime import DelegationSessionRuntime
+
+            canonical_runtime = await DelegationSessionRuntime.attach_business_task(
+                invocation, runtime_task_id=runtime_task_id, business_task_id=task_id)
+            invocation.on_tool_call = canonical_runtime.tool_call
+        result = await invoke_agent(invocation)
         terminal_reason = getattr(result, "terminal_reason", TerminalReason.TURN_ABORT)
         terminal_reason_value = (
             terminal_reason.value if getattr(terminal_reason, "value", None) else str(terminal_reason or "")
@@ -689,6 +722,15 @@ async def execute_task(
                 reflection_session_id=str(reflection_session_id),
             )
         logger.info(f"[TaskExec] Runtime reply: {reply[:80]}")
+    except (SessionRestartRecoveryRequired, ToolLifecyclePersistenceError) as exc:
+        return TaskExecutionOutcome(
+            status=TaskExecutionStatus.NEEDS_RECONCILIATION,
+            summary="Business task execution requires reconciliation before further work.",
+            error_code=getattr(exc, 'reason_code', 'tool_lifecycle_persistence_failed'),
+            retryable=False,
+            reflection_session_id=str(reflection_session_id),
+            terminal_reason='runtime_failure',
+        )
     except Exception as e:
         error_msg = str(e) or repr(e)
         logger.error(f"[TaskExec] Error: {error_msg}")
@@ -713,22 +755,23 @@ async def execute_task(
                 error_code="task_missing_after_invocation",
                 reflection_session_id=str(reflection_session_id),
             )
-        await _append_task_session_event(
-            db=db,
-            agent_id=agent_id,
-            session_id=reflection_session_id,
-            task_id=task_id,
-            task_type=task_type,
-            event_type="assistant_message",
-            actor_type="assistant",
-            role="assistant",
-            content=reply,
-            actor_id=agent_id,
-            tenant_id=tenant_id,
-            participant_id=agent_participant_id,
-            metadata={"title": task_title},
-            runtime_task_id=runtime_task_id,
-        )
+        if runtime_task_id is None:
+            await _append_task_session_event(
+                db=db,
+                agent_id=agent_id,
+                session_id=reflection_session_id,
+                task_id=task_id,
+                task_type=task_type,
+                event_type="assistant_message",
+                actor_type="assistant",
+                role="assistant",
+                content=reply,
+                user_id=task_requester_id,
+                tenant_id=tenant_id,
+                participant_id=agent_participant_id,
+                metadata={"title": task_title},
+                runtime_task_id=runtime_task_id,
+            )
         await db.commit()
         logger.info(f"[TaskExec] Task {task_id} persisted assistant evidence for atomic finalization")
 

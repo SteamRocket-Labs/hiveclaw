@@ -561,6 +561,9 @@ class ChannelDeliveryOutboxService:
         from app.services.content_input_receipts import ContentInputReceiptError, _validate_input_dependencies
         from app.services.session_model_inputs import _model_dependencies
 
+        if item.metadata.get('source') == 'business_task_runtime':
+            await self._authorize_business_result_text(db, item)
+            return
         if item.metadata.get("source") not in {"session_terminal_outcome", "session_terminal_outcome_recovery"}:
             return
         session = await db.get(ChatSession, item.session_id, populate_existing=True)
@@ -595,6 +598,56 @@ class ChannelDeliveryOutboxService:
         else:
             with source_recipient_read(session_id=session.id, user_id=user.id):
                 await _validate_input_dependencies(db, item.tenant_id, dependencies, user=user)
+
+    async def _authorize_business_result_text(self, db: AsyncSession, item: ClaimedChannelDelivery) -> None:
+        from app.core.source_read_purpose import source_recipient_read
+        from app.models.runtime_task import RuntimeTask
+        from app.models.session_v2 import SessionModelResult
+        from app.services.content_input_receipts import ContentInputReceiptError, _validate_input_dependencies
+        from app.services.direct_invocation_terminal_boundary_processor import (
+            _latest_run_event, _validate_response_payload,
+        )
+        from app.services.runtime_terminal_boundary_outbox import TerminalBoundaryCanonicalMismatch
+        from app.services.session_model_inputs import _model_dependencies
+
+        task = await db.get(RuntimeTask, item.runtime_task_id, populate_existing=True)
+        session = await db.get(ChatSession, item.session_id, populate_existing=True)
+        if (task is None or task.task_type != 'business_task' or task.tenant_id != item.tenant_id
+            or task.parent_agent_id != item.agent_id or task.parent_session_id != str(item.session_id)
+            or task.root_user_id != item.user_id or task.status != item.terminal_status
+            or session is None or session.tenant_id != item.tenant_id or session.agent_id != item.agent_id):
+            raise ContentInputReceiptError('business_result_binding_changed', 'The original task delivery changed.', 403)
+        outcome = (task.metadata_json or {}).get('outcome') or {}
+        result, summary = outcome.get('result'), outcome.get('summary')
+        if not isinstance(result, str) or not isinstance(summary, str) or not task.child_session_id:
+            raise ContentInputReceiptError('business_result_sources_unavailable', 'Reconcile the saved task result before delivery.', 503)
+        text = summary if result.strip() == summary.strip() else f'{summary}\n\n{result}'
+        if item.text != text.strip():
+            raise ContentInputReceiptError('business_result_changed', 'The saved result no longer matches its delivery.', 403)
+        payload = outcome.get('response_complete_payload')
+        event = await _latest_run_event(db, task=task, agent_id=item.agent_id,
+            session_id=task.child_session_id, lock_rows=False)
+        if not isinstance(payload, dict) or event is None or event.event_type != 'result_commit.round_committed':
+            raise ContentInputReceiptError('business_result_sources_unavailable', 'The saved task lacks its native result receipt.', 503)
+        try:
+            await _validate_response_payload(db=db, task=task, agent_id=item.agent_id,
+                session_id=task.child_session_id, source='task', terminal_event=event, payload=payload)
+        except TerminalBoundaryCanonicalMismatch as exc:
+            raise ContentInputReceiptError('business_result_changed', 'The native task result no longer matches.', 403) from exc
+        model = await db.scalar(select(SessionModelResult).where(SessionModelResult.tenant_id == item.tenant_id,
+            SessionModelResult.session_id == uuid.UUID(task.child_session_id), SessionModelResult.run_id == task.id,
+            SessionModelResult.round_committed_event_id == event.id, SessionModelResult.state == 'round_committed')
+            .execution_options(populate_existing=True))
+        if model is None or (model.seal_json or {}).get('semantic_content') != result:
+            raise ContentInputReceiptError('business_result_changed', 'The task output differs from its sealed result.', 403)
+        dependencies, complete = _model_dependencies(model)
+        if not complete:
+            raise ContentInputReceiptError('business_result_sources_unavailable', 'The task input source receipt is incomplete.', 503)
+        user = await self._private_delivery_reader(db, item, session)
+        if user is None:
+            raise ContentInputReceiptError('business_result_reader_unavailable', 'Restore the original requester authority.', 403)
+        with source_recipient_read(session_id=session.id, user_id=user.id):
+            await _validate_input_dependencies(db, item.tenant_id, dependencies, user=user)
 
     async def _authorize_artifact_part(self, db: AsyncSession, item: ClaimedChannelDelivery,
         artifact_id: uuid.UUID) -> ChatArtifact:

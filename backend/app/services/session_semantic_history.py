@@ -192,11 +192,14 @@ async def _load_event_views(
         (
             await db.execute(
                 select(ChatTranscriptEvent)
+                .join(ChatSession, ChatSession.id == ChatTranscriptEvent.session_id)
                 .where(
                     ChatTranscriptEvent.tenant_id == tenant_id,
                     ChatTranscriptEvent.agent_id == agent_id,
                     ChatTranscriptEvent.session_id == session_id,
-                    ChatTranscriptEvent.listed_surface == "chat",
+                    ChatSession.tenant_id == tenant_id,
+                    ChatSession.agent_id == agent_id,
+                    ChatTranscriptEvent.listed_surface == ChatSession.listed_surface,
                 )
                 .order_by(ChatTranscriptEvent.sequence.asc())
             )

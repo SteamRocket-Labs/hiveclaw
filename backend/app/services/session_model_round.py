@@ -1478,7 +1478,7 @@ async def fail_model_request(
                 RuntimeTask.id == run_id,
                 RuntimeTask.tenant_id == tenant_id,
                 or_(and_(RuntimeTask.parent_agent_id == agent_id, RuntimeTask.parent_session_id == str(session_id)),
-                    and_(RuntimeTask.task_type == "delegation", RuntimeTask.child_agent_id == agent_id,
+                    and_(RuntimeTask.task_type.in_(("delegation", "business_task")), RuntimeTask.child_agent_id == agent_id,
                         func.replace(func.lower(RuntimeTask.child_session_id), "-", "") == session_id.hex)),
             )
             .with_for_update()

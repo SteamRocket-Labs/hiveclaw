@@ -163,6 +163,8 @@ async def _recovery_inputs(db, *, task, provider_request_id):
 def _recovery_scope(task):
     if getattr(task, "task_type", "delegation") == "delegation":
         return task.child_agent_id, uuid.UUID(task.child_session_id)
+    if task.task_type == "business_task":
+        return task.parent_agent_id, uuid.UUID(task.child_session_id)
     return task.parent_agent_id, uuid.UUID(task.parent_session_id)
 
 

@@ -295,7 +295,7 @@ async def _validate_response_payload(
         raise TerminalBoundaryCanonicalMismatch("direct response tenant authority mismatch")
     if not isinstance(payload.get("messages"), list):
         raise TerminalBoundaryCanonicalMismatch("direct response messages are missing")
-    if task.task_type == "delegation" and terminal_event.event_type == "result_commit.round_committed":
+    if task.task_type in {"delegation", "business_task"} and terminal_event.event_type == "result_commit.round_committed":
         from app.models.session_v2 import SessionModelResult
         from app.services.session_model_round import _sha256 as model_hash
 

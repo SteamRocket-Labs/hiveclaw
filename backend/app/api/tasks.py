@@ -149,6 +149,7 @@ async def _load_matching_runtime_request(
 
 async def _enrich_task_out(task: Task, db: AsyncSession) -> TaskOut:
     """Convert Task to TaskOut with creator_username populated."""
+    await db.refresh(task)
     out = TaskOut.model_validate(task)
     if task.created_by:
         user_result = await db.execute(select(User).where(User.id == task.created_by))

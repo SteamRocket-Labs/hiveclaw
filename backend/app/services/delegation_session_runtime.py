@@ -69,6 +69,44 @@ class DelegationSessionRuntime:
     pending_replay_round: int | None = None
     active_provider_request_id: str | None = None
     final_content: str | None = None
+    user_id: uuid.UUID | None = None
+    lane: str = 'delegation'
+
+    @classmethod
+    async def attach_business_task(cls, invocation, *, runtime_task_id, business_task_id):
+        from app.models.chat_session import ChatSession
+        from app.services.business_task_context import bind_business_task_context
+        from app.services.delegation_context_sources import bind_native_recovery_context
+        from app.services.web_chat_runtime import _session_restart_resume_history
+
+        session_id = uuid.UUID(invocation.session_context.session_id)
+        async with tenant_scoped_session(invocation.tenant_id, require_tenant=True) as db:
+            task = await db.get(RuntimeTask, runtime_task_id, populate_existing=True)
+            session = await db.get(ChatSession, session_id, populate_existing=True)
+            if (task is None or task.task_type != 'business_task' or task.tenant_id != invocation.tenant_id
+                or task.parent_agent_id != invocation.agent_id or task.root_user_id != invocation.user_id
+                or task.child_session_id != str(session_id) or task.status != 'running'
+                or (task.metadata_json or {}).get('business_task_id') != str(business_task_id)
+                or session is None or session.runtime_task_id != task.id or session.user_id != invocation.user_id
+                or session.agent_id != invocation.agent_id or session.tenant_id != invocation.tenant_id):
+                raise RuntimeError('business_task_session_runtime_scope_unavailable')
+            assert_runtime_task_fence(task)
+            await bind_business_task_context(db, run=task, invocation=invocation)
+            await bind_native_recovery_context(db, task=task, session=invocation.session_context)
+            history, round_index, tokens, receipt = await _session_restart_resume_history(db, task)
+            turn_id = f'turn-{task.id.hex}'
+            runtime = cls(scope={'tenant_id': invocation.tenant_id, 'agent_id': invocation.agent_id,
+                'session_id': session_id, 'run_id': task.id, 'turn_id': turn_id},
+                attempt_owner=f'{task.claimed_by}:{task.claim_version}:{task.attempt_count}',
+                session_context=invocation.session_context, user_id=invocation.user_id, lane='business_task',
+                pending_replay_round=receipt.get('pending_tool_round') or receipt.get('pending_final_round'))
+        invocation.messages.extend(history)
+        invocation.initial_round_index, invocation.initial_turn_tokens_used = round_index, tokens
+        invocation.session_context.metadata.update(turn_id=turn_id, session_restart_resume=receipt,
+            session_v2_durable_tool_lifecycle=True)
+        invocation.round_input_bind, invocation.model_request_prepare = runtime.bind, runtime.prepare
+        invocation.model_response_commit, invocation.model_request_fail = runtime.commit, runtime.fail
+        return runtime
 
     @classmethod
     async def attach(cls, invocation, request):
@@ -129,7 +167,7 @@ class DelegationSessionRuntime:
                 if (task is None or task.status != "running" or task.claim_expires_at is None
                     or task.claim_expires_at <= datetime.now(timezone.utc)
                     or f"{task.claimed_by}:{task.claim_version}:{task.attempt_count}" != self.attempt_owner):
-                    raise SessionRestartRecoveryRequired(reason_code="delegation_session_claim_lost", detail={})
+                    raise SessionRestartRecoveryRequired(reason_code=f"{self.lane}_session_claim_lost", detail={})
                 assert_runtime_task_fence(task)
                 yield db
                 await db.commit()
@@ -138,7 +176,7 @@ class DelegationSessionRuntime:
                 raise SessionRestartRecoveryRequired(reason_code="model_round_needs_reconciliation",
                     detail={"run_id": str(self.scope["run_id"])}) from exc
             except SQLAlchemyError as exc:
-                raise SessionRestartRecoveryRequired(reason_code="delegation_session_persistence_unavailable",
+                raise SessionRestartRecoveryRequired(reason_code=f"{self.lane}_session_persistence_unavailable",
                     detail={"run_id": str(self.scope["run_id"])}) from exc
 
     async def bind(self, round_index):
@@ -187,7 +225,7 @@ class DelegationSessionRuntime:
         from app.services.web_chat_runtime import _persist_tool_call
 
         try:
-            await _persist_tool_call(agent_id=self.scope["agent_id"], user_id=None,
+            await _persist_tool_call(agent_id=self.scope["agent_id"], user_id=self.user_id,
                 session_id=str(self.scope["session_id"]), data={**data,
                     "provider_request_id": self.active_provider_request_id,
                     "runtime_task_id": str(self.scope["run_id"])})

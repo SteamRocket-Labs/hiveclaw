@@ -1160,23 +1160,48 @@ async def feishu_event_webhook(
 # ─── Feishu Interactive Card Callback ────────────────────
 
 
+async def _authenticate_card_callback(db, *, request, body, config, tenant_id, agent_id):
+    from app.models.channel_ingress_event import ChannelIngressEvent
+    from app.models.tenant import Tenant
+    from app.services.channel_ingress_context import current_channel_ingress_context
+    from app.services.channel_ingress_inbox import channel_installation_ref
+    from app.services.channel_provider_receipts import feishu_message_scope
+
+    if (config is None or not config.is_configured or config.tenant_id != tenant_id
+        or config.agent_id != agent_id or not await db.scalar(select(Tenant.is_active).where(Tenant.id == tenant_id))):
+        raise HTTPException(403, detail={"code": "feishu_card_channel_unavailable"})
+    ingress = current_channel_ingress_context()
+    if ingress is None:
+        authenticated = authenticate_feishu_webhook(config, headers=request.headers,
+            body_str=(await request.body()).decode("utf-8"))
+        if authenticated != body:
+            raise HTTPException(403, detail={"code": "feishu_card_payload_changed"})
+        return
+    row = await db.get(ChannelIngressEvent, ingress.event_id, populate_existing=True)
+    installation = channel_installation_ref(config, fallback="")
+    if (ingress.provider != "feishu" or ingress.tenant_id != tenant_id or ingress.agent_id != agent_id
+        or ingress.installation_ref != installation or row is None or row.status != "processing"
+        or row.provider != "feishu" or row.tenant_id != tenant_id or row.agent_id != agent_id
+        or row.installation_ref != installation or row.metadata_json.get("feishu_message_scope") != feishu_message_scope(config)):
+        raise HTTPException(403, detail={"code": "feishu_card_origin_changed"})
+    saved = (row.payload_json or {}).get("body") or row.payload_json or {}
+    if row.handler_key == "feishu.event" and (saved.get("header") or {}).get("event_type") == "card.action.trigger":
+        saved = saved.get("event")
+    elif row.handler_key != "feishu.card_action":
+        raise HTTPException(403, detail={"code": "feishu_card_origin_changed"})
+    if saved != body:
+        raise HTTPException(403, detail={"code": "feishu_card_payload_changed"})
+
+
 @router.post("/channel/feishu/card-callback")
 async def feishu_card_callback(request: Request, db: AsyncSession = Depends(get_db)):
-    """Handle Feishu interactive card button clicks (approve/reject approval requests).
-
-    Feishu sends a POST when a user clicks an action button on an interactive card.
-    We verify the action, resolve the approval, and return an updated card.
-
-    Authentication: Feishu card callbacks are authenticated by the combination of:
-      1. Unguessable approval_id (UUID) — only holders of the original card know it
-      2. feishu_open_id verified against platform user database (must match an existing user)
-      3. Only pending approvals can be resolved (resolve_approval checks status)
-    For additional security, verify X-Lark-Signature when encrypt_key is configured.
-    """
+    """Resolve a signed/token callback or an exact authenticated SDK inbox event."""
     import json as _json
 
     body = await request.json()
-    logger.info(f"[Feishu] Card callback received: {_json.dumps(body, ensure_ascii=False)[:500]}")
+    logger.info("[Feishu] Card callback received")
+    if not isinstance(body, dict) or not isinstance(body.get("action"), dict):
+        return {"toast": {"type": "error", "content": "Invalid action"}}
 
     # Extract action value from card callback
     action = body.get("action", {})
@@ -1186,10 +1211,12 @@ async def feishu_card_callback(request: Request, db: AsyncSession = Depends(get_
     except _json.JSONDecodeError:
         action_value = {}
 
+    if not isinstance(action_value, dict):
+        return {"toast": {"type": "error", "content": "Invalid action"}}
     approval_id_str = action_value.get("approval_id")
     action_type = action_value.get("action")  # "approve" or "reject"
 
-    if not approval_id_str or not action_type:
+    if not isinstance(approval_id_str, str) or not isinstance(action_type, str) or action_type not in {"approve", "reject"}:
         return {"toast": {"type": "error", "content": "Invalid action"}}
 
     # Resolve the approval
@@ -1197,17 +1224,24 @@ async def feishu_card_callback(request: Request, db: AsyncSession = Depends(get_
         from app.services.approval_service import approval_service
         from app.models.agent import Agent as AgentModel
         from app.models.audit import ApprovalRequest
+        from app.services.channel_ingress_context import current_channel_ingress_context
 
         approval_uuid = uuid.UUID(approval_id_str)
+        ingress = current_channel_ingress_context()
         async with enter_rls_bypass(
             db,
             reason=f"public feishu card approval lookup for {approval_uuid}",
         ) as bypass_db:
+            query = select(ApprovalRequest).where(ApprovalRequest.id == approval_uuid)
+            if ingress is not None:
+                query = query.where(ApprovalRequest.tenant_id == ingress.tenant_id, ApprovalRequest.agent_id == ingress.agent_id)
             approval_result = await bypass_db.execute(
-                select(ApprovalRequest).where(ApprovalRequest.id == approval_uuid)
+                query
             )
             approval_record = approval_result.scalar_one_or_none()
             if not approval_record:
+                if ingress is not None:
+                    raise HTTPException(403, detail={"code": "feishu_card_target_changed"})
                 return {"toast": {"type": "error", "content": "Approval not found"}}
 
             agent_result = await bypass_db.execute(select(AgentModel).where(AgentModel.id == approval_record.agent_id))
@@ -1217,8 +1251,6 @@ async def feishu_card_callback(request: Request, db: AsyncSession = Depends(get_
         if tenant_id is None:
             return {"toast": {"type": "error", "content": "Approval tenant not found"}}
         await pin_rls_tenant_context(db, tenant_id)
-        if getattr(approval_record, "tenant_id", None) is None:
-            approval_record.tenant_id = tenant_id
 
         # Resolve the clicker only through this Agent's provider-proven binding.
         open_id = body.get("open_id", "")
@@ -1232,8 +1264,10 @@ async def feishu_card_callback(request: Request, db: AsyncSession = Depends(get_
                 ChannelConfig.agent_id == approval_record.agent_id,
                 ChannelConfig.tenant_id == tenant_id,
                 ChannelConfig.channel_type == "feishu",
-            )
+            ).execution_options(populate_existing=True)
         )
+        await _authenticate_card_callback(db, request=request, body=body, config=config,
+            tenant_id=tenant_id, agent_id=approval_record.agent_id)
         principal = None
         if config is not None and feishu_open_id:
             principal = await db.scalar(
@@ -1280,23 +1314,25 @@ async def feishu_card_callback(request: Request, db: AsyncSession = Depends(get_
                 action=f"feishu_card_{action_type}",
                 resource_type="approval",
                 resource_id=approval.id,
-                details={"action_type": approval.action_type, "feishu_open_id": feishu_open_id},
+                details={"action_type": approval.action_type, "feishu_open_id": feishu_open_id,
+                    "requested_action": action_type, "outcome": approval.status},
             )
         except Exception:
             logger.warning("Audit write failed for approval.resolved_via_feishu", exc_info=True)
 
         await db.commit()
 
-        status_emoji = "✅" if action_type == "approve" else "❌"
-        status_text = "已批准" if action_type == "approve" else "已拒绝"
+        status_emoji = "✅" if approval.status == "approved" else "❌"
+        status_text = "已批准" if approval.status == "approved" else "已拒绝"
+        expected_status = "approved" if action_type == "approve" else "rejected"
 
         # Return updated card (replaces the original card)
         return {
-            "toast": {"type": "success", "content": f"{status_text}"},
+            "toast": {"type": "success" if approval.status == expected_status else "error", "content": f"{status_text}"},
             "card": {
                 "config": {"wide_screen_mode": True},
                 "header": {
-                    "template": "green" if action_type == "approve" else "red",
+                    "template": "green" if approval.status == "approved" else "red",
                     "title": {"tag": "plain_text", "content": f"{status_emoji} 审批已处理"},
                 },
                 "elements": [
@@ -1311,6 +1347,8 @@ async def feishu_card_callback(request: Request, db: AsyncSession = Depends(get_
             },
         }
 
+    except HTTPException:
+        raise
     except ValueError as e:
         return {"toast": {"type": "error", "content": str(e)}}
     except Exception as e:

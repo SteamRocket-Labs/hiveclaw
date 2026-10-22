@@ -8,7 +8,7 @@ from types import SimpleNamespace
 from typing import Any
 import uuid
 
-from fastapi import Response
+from fastapi import HTTPException, Response
 from sqlalchemy import select
 
 from app.database import tenant_scoped_session
@@ -55,6 +55,14 @@ class ChannelIngressReplayRequest:
 
 def _response_failed(result: Any) -> bool:
     return isinstance(result, Response) and int(result.status_code) >= 400
+
+
+def _card_authentication_denied(exc):
+    if exc.status_code not in {401, 403}:
+        raise exc
+    detail = exc.detail if isinstance(exc.detail, dict) else {}
+    return {"status": "denied", "reason_code": detail.get("code", "feishu_card_identity_unavailable"),
+        "retryable": False, "recovery_action": "continue_in_original_web_work"}
 
 
 async def _feishu_installation_receipt(db, item):
@@ -241,16 +249,24 @@ async def _dispatch_verified_payload(db, item: ClaimedChannelIngressEvent) -> di
 
             if channel_installation_ref(tenant_channel_config, fallback="") != item.installation_ref:
                 raise PermissionError("Feishu tenant installation was replaced")
-        result = await process_feishu_event(
-            item.agent_id,
-            body,
-            db,
-            tenant_channel_config=tenant_channel_config,
-        )
+        try:
+            result = await process_feishu_event(
+                item.agent_id,
+                body,
+                db,
+                tenant_channel_config=tenant_channel_config,
+            )
+        except HTTPException as exc:
+            if (body.get("header") or {}).get("event_type") != "card.action.trigger":
+                raise
+            return _card_authentication_denied(exc)
     elif key == "feishu.card_action":
         from app.api.feishu import feishu_card_callback
 
-        result = await feishu_card_callback(replay_request, db)
+        try:
+            result = await feishu_card_callback(replay_request, db)
+        except HTTPException as exc:
+            return _card_authentication_denied(exc)
     elif key == "telegram.update":
         from app.api.telegram import telegram_webhook
 

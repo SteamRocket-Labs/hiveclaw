@@ -361,14 +361,18 @@ class ApprovalService:
 
         local_agent_resolution = None
 
-        # M-17: Auto-reject approvals older than 7 days (AFTER authorization check)
+        # Honor decision deadlines after authorization. Tool tickets retain the
+        # needs_reapproval continuation below; keep the legacy seven-day cap.
         from datetime import timedelta
 
-        if approval.created_at and (datetime.now(timezone.utc) - approval.created_at) > timedelta(days=7):
+        now = datetime.now(timezone.utc)
+        deadline = getattr(approval, "expires_at", None)
+        expired_decision = deadline is not None and deadline <= now and not getattr(approval, "tool_name", None)
+        if expired_decision or (approval.created_at and (now - approval.created_at) > timedelta(days=7)):
             approval.status = "rejected"
             approval.execution_status = "rejected"
             approval.resolved_at = datetime.now(timezone.utc)
-            logger.info("Approval %s auto-rejected (older than 7 days)", approval.id)
+            logger.info("Approval {} auto-rejected (expired)", approval.id)
             from app.services.local_agent_channel_service import (
                 apply_local_agent_action_approval,
                 notify_local_agent_action_resolution,

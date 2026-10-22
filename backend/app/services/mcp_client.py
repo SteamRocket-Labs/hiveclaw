@@ -310,6 +310,7 @@ class MCPClient:
             tools = result.get("tools", []) if isinstance(result, dict) else []
             return [
                 {
+                    **t,
                     "name": t.get("name", ""),
                     "description": t.get("description", ""),
                     "inputSchema": t.get("inputSchema", {}),

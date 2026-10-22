@@ -26,6 +26,17 @@ _provider_config_cache: dict[tuple[str, str | None], tuple[float, str]] = {}
 _provider_config_locks: dict[tuple[str, str | None], asyncio.Lock] = {}
 
 
+class MCPImportResult(str):
+    """Selected Tool rows; consumers read back current scoped bindings."""
+
+    tool_ids: tuple[uuid.UUID, ...]
+
+    def __new__(cls, message: str, *, tool_ids=()):
+        result = str.__new__(cls, message)
+        result.tool_ids = tuple(sorted(set(tool_ids), key=str))
+        return result
+
+
 def _discovered_permissions(discovered) -> list | None:
     """Return discovered permissions, including an explicit empty list.
 
@@ -439,6 +450,11 @@ async def import_mcp_from_smithery(
     and stores the deploymentUrl for runtime execution via Smithery Connect.
     If config contains 'smithery_api_key', it's stored per-agent for future use.
     """
+    selected_tool_ids: set[uuid.UUID] = set()
+
+    def _result(message: str) -> MCPImportResult:
+        return MCPImportResult(message, tool_ids=selected_tool_ids)
+
     config = dict(config) if config else {}  # mutable copy
 
     # Resolve agent's tenant_id for tool scoping
@@ -447,14 +463,14 @@ async def import_mcp_from_smithery(
     # Extract smithery_api_key from config (user-provided) or fallback to stored
     api_key = config.pop("smithery_api_key", None) or await _get_smithery_api_key(agent_id)
     if not api_key:
-        return (
+        return _result((
             "❌ Smithery API key is required to import MCP servers.\n\n"
             "请提供你的 Smithery API Key，你可以通过以下步骤获取：\n"
             "1. 注册/登录 https://smithery.ai\n"
             "2. 前往 https://smithery.ai/account/api-keys 创建 API Key\n"
             "3. 将 Key 提供给我，例如：\n"
             '   `import_mcp_server(server_id="github", config={"smithery_api_key": "your-key"})`'
-        )
+        ))
 
     # Write key back to discover_resources / import_mcp_server AgentTool configs
     # so it shows up in the Config dialog
@@ -520,13 +536,14 @@ async def import_mcp_from_smithery(
                 if len(agent_assignments) >= len(existing_server_tools) and all(
                     is_mcp_metadata_runtime_approved(tool) for tool in existing_server_tools
                 ):
+                    selected_tool_ids.update(tool_ids)
                     tool_names = [t.display_name for t in existing_server_tools]
-                    return (
+                    return _result((
                         f"⏭️ You already have **{len(existing_server_tools)}** tools from this MCP server installed:\n"
                         + "\n".join(f"  • {n}" for n in tool_names)
                         + "\n\nNo action needed. These tools are ready to use."
                         + '\n\n💡 If tools stopped working (e.g. OAuth expired), use `import_mcp_server(server_id="....", reauthorize=true)` to re-authorize.'
-                    )
+                    ))
     except Exception as exc:
         logger.debug(f"[ResourceDiscovery] Early-exit dedup check failed, proceeding: {exc}")
 
@@ -541,7 +558,7 @@ async def import_mcp_from_smithery(
                 headers=headers,
             )
             if resp.status_code != 200:
-                return f"❌ Server '{server_id}' not found on Smithery (HTTP {resp.status_code})"
+                return _result(f"❌ Server '{server_id}' not found on Smithery (HTTP {resp.status_code})")
             data = resp.json()
             servers = data.get("servers", [])
             server_info = None
@@ -553,9 +570,9 @@ async def import_mcp_from_smithery(
             if not server_info and servers:
                 server_info = servers[0]
             if not server_info:
-                return f"❌ Server '{server_id}' not found on Smithery."
+                return _result(f"❌ Server '{server_id}' not found on Smithery.")
     except Exception as e:
-        return f"❌ Failed to fetch server info: {e}"
+        return _result(f"❌ Failed to fetch server info: {e}")
 
     display_name = server_info.get("displayName", server_id.split("/")[-1])
     description = server_info.get("description", "")
@@ -563,11 +580,11 @@ async def import_mcp_from_smithery(
 
     # Check if server supports remote hosting
     if not server_info.get("remote"):
-        return (
+        return _result((
             f"⚠️ **{display_name}** (`{qualified_name}`) does not support remote hosting via Smithery Connect.\n"
             f"This server requires local installation and cannot be imported automatically.\n"
             f"🔗 {server_info.get('homepage', '')}"
-        )
+        ))
 
     # Step 2: Get full server details including tools from registry API
     tools_discovered = []
@@ -639,6 +656,7 @@ async def import_mcp_from_smithery(
                 config=agent_tool_config,
                 quarantine_for_mcp_trust=not enabled,
             )
+            selected_tool_ids.add(tool_id)
 
         # On re-import/reauthorize: update ALL existing tools for this server
         if config or reauthorize:
@@ -793,15 +811,15 @@ async def import_mcp_from_smithery(
                 await _ensure_agent_tool(existing_tool.id, enabled=runtime_enabled)
                 if config:
                     await db.commit()
-                    return f"🔄 {tool_display} config updated." + (
+                    return _result(f"🔄 {tool_display} config updated." + (
                         " The tool is ready to use." if runtime_enabled else " Metadata review is required before use."
-                    )
+                    ))
                 else:
-                    return (
+                    return _result((
                         f"⏭️ {tool_display} is already imported."
                         if runtime_enabled
                         else f"⏸️ {tool_display} is imported and pending metadata review."
-                    )
+                    ))
 
             tool = Tool(
                 name=tool_name,
@@ -849,7 +867,7 @@ async def import_mcp_from_smithery(
                         if runtime_enabled
                         else f"⏸️ {tool_display} (pending metadata review)"
                     )
-                return "\n".join(imported_tools) if imported_tools else f"⏭️ {tool_display} (already imported)"
+                return _result("\n".join(imported_tools) if imported_tools else f"⏭️ {tool_display} (already imported)")
             await _ensure_agent_tool(tool.id, enabled=runtime_enabled)
             imported_tools.append(f"⏸️ {tool_display} (pending metadata review; remote tool list unavailable)")
 
@@ -864,7 +882,7 @@ async def import_mcp_from_smithery(
         result += (
             "\n\n🔒 Newly discovered or changed MCP metadata must be approved by a company administrator before use."
         )
-    return result
+    return _result(result)
 
 
 # ── Direct URL Import ───────────────────────────────────────────
@@ -881,6 +899,11 @@ async def import_mcp_direct(
     This bypasses Smithery entirely — useful for self-hosted or third-party
     MCP servers that provide their own public endpoint.
     """
+    selected_tool_ids: set[uuid.UUID] = set()
+
+    def _result(message: str) -> MCPImportResult:
+        return MCPImportResult(message, tool_ids=selected_tool_ids)
+
     from app.services.mcp_client import MCPClient
     from app.services.mcp_authz import assert_mcp_cloud_transport_allowed
 
@@ -925,6 +948,7 @@ async def import_mcp_direct(
                 config=agent_tool_config,
                 quarantine_for_mcp_trust=not enabled,
             )
+            selected_tool_ids.add(tool_id)
 
         # Tenant-scoped dedup filter
         _tenant_filter = Tool.tenant_id == agent_tenant_id if agent_tenant_id else Tool.tenant_id.is_(None)
@@ -1043,11 +1067,11 @@ async def import_mcp_direct(
                     raw_schema={"type": "object", "properties": {}},
                 )
                 await _ensure_agent_tool(existing_tool.id, enabled=runtime_enabled)
-                return (
+                return _result((
                     f"⏭️ {display_name} is already imported."
                     if runtime_enabled
                     else f"⏸️ {display_name} is imported and pending metadata review."
-                )
+                ))
 
             tool = Tool(
                 name=tool_name,
@@ -1095,7 +1119,7 @@ async def import_mcp_direct(
                         if runtime_enabled
                         else f"⏸️ {display_name} (pending metadata review)"
                     )
-                return "\n".join(imported_tools) if imported_tools else f"⏭️ {display_name} (already imported)"
+                return _result("\n".join(imported_tools) if imported_tools else f"⏭️ {display_name} (already imported)")
             await _ensure_agent_tool(tool.id, enabled=runtime_enabled)
             imported_tools.append(f"⏸️ {display_name} (pending metadata review; remote tool list unavailable)")
 
@@ -1105,4 +1129,4 @@ async def import_mcp_direct(
     result += "\n".join(imported_tools)
     result += f"\n\n📡 MCP Server URL: `{mcp_url}`"
     result += "\n\n🔒 Newly discovered or changed MCP metadata must be approved by a company administrator before use."
-    return result
+    return _result(result)

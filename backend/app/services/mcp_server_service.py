@@ -898,6 +898,7 @@ async def _read_tenant_mcp_tools_for_server(
             Tool.config,
             AgentTool.agent_id,
             AgentTool.enabled,
+            AgentTool.mcp_trust_requested_enabled,
         )
         .join(AgentTool, AgentTool.tool_id == Tool.id)
         .join(Agent, Agent.id == AgentTool.agent_id)
@@ -928,8 +929,10 @@ async def _read_tenant_mcp_tools_for_server(
                 )
             )
             is_default[tid] = bool(r.is_default)
+        requested_enabled = getattr(r, "mcp_trust_requested_enabled", None)
         states[(str(r.agent_id), tid)] = AgentToolState(
-            agent_id=str(r.agent_id), tool_id=tid, has_row=True, enabled=bool(r.enabled)
+            agent_id=str(r.agent_id), tool_id=tid, has_row=True,
+            enabled=bool(r.enabled) if requested_enabled is None else bool(requested_enabled),
         )
     return tool_rows, is_default, states, _mcp_server_activation_status(raw_rows)
 
@@ -1095,7 +1098,7 @@ async def import_and_register(
     tools to every tenant agent. Once the tools exist, ``register_imported_server``
     builds the first-class ``MCPServer`` record. Returns the new server-first DTO.
     """
-    from app.services.resource_discovery import import_mcp_direct, import_mcp_from_smithery
+    from app.services.resource_discovery import MCPImportResult, import_mcp_direct, import_mcp_from_smithery
 
     requested_transport = (config or {}).get("transport") if isinstance(config, dict) else None
     if mcp_url or requested_transport:
@@ -1120,6 +1123,10 @@ async def import_and_register(
         message = await import_mcp_from_smithery(server_id, bootstrap_agent_id, config=config or None)
         clean_id = server_id.replace("/", "_").replace("@", "")
         tool_query = select(Tool.id).where(Tool.type == "mcp", Tool.name.like(f"mcp_{clean_id}%"))
+
+    if isinstance(message, MCPImportResult):
+        tool_query = select(Tool.id).where(Tool.type == "mcp", Tool.id.in_(message.tool_ids))
+    tool_query = tool_query.where(Tool.tenant_id == tenant_id)
 
     # Assign the freshly-created tools to every tenant agent (same as the legacy path).
     from app.services.agent_tool_assignment_service import ensure_agent_tool_assignment
@@ -1172,7 +1179,7 @@ async def import_mcp_for_agent_and_register(
     the server to every tenant agent.
     """
     from app.database import tenant_scoped_session
-    from app.services.resource_discovery import import_mcp_direct, import_mcp_from_smithery
+    from app.services.resource_discovery import MCPImportResult, import_mcp_direct, import_mcp_from_smithery
     from app.services.tenant_resolver import resolve_tenant_for_agent
 
     config = dict(config or {})
@@ -1195,9 +1202,11 @@ async def import_mcp_for_agent_and_register(
         query = (
             select(Tool.mcp_server_name, Tool.mcp_server_url)
             .join(AgentTool, AgentTool.tool_id == Tool.id)
-            .where(AgentTool.agent_id == agent_id, Tool.type == "mcp")
+            .where(AgentTool.agent_id == agent_id, Tool.type == "mcp", Tool.tenant_id == tenant_id)
         )
-        if mcp_url:
+        if isinstance(message, MCPImportResult):
+            query = query.where(Tool.id.in_(message.tool_ids))
+        elif mcp_url:
             query = query.where(Tool.mcp_server_url == mcp_url)
         elif server_id:
             clean_id = server_id.replace("/", "_").replace("@", "")

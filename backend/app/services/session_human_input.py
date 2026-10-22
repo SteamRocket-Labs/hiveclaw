@@ -392,6 +392,9 @@ async def cancel_unbound_human_input(
                 'business_wait': {**(business.metadata_json or {}).get('business_wait', {}),
                     'question_item_id': str(reopened.item_id)}}
             projection.status, projection.last_execution_status = 'doing', 'awaiting_user'
+            from app.services.business_task_question_delivery import enqueue_business_question_notice
+
+            await enqueue_business_question_notice(db, run=business, question_id=reopened.item_id)
         if delegation is not None and delegation.status == "pending":
             from app.services.runtime_root_ledger import transition_runtime_root_item_by_task
 

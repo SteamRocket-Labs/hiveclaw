@@ -1,4 +1,5 @@
 import React from 'react';
+import { useLocation } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 
@@ -191,7 +192,10 @@ export default function AgentBusinessTasksSection({ agentId }: { agentId: string
     return () => window.removeEventListener('storage', changed);
   }, []);
   const scopeKey = `${tenantId}:${userId || ''}`;
-  const [selectedTaskId, setSelectedTaskId] = React.useState<string | null>(null);
+  const location = useLocation();
+  const requestedTaskId = new URLSearchParams(location.search).get('task_id');
+  const [selectedTaskId, setSelectedTaskId] = React.useState<string | null>(requestedTaskId);
+  React.useEffect(() => { setSelectedTaskId(requestedTaskId); }, [agentId, scopeKey, requestedTaskId]);
   const answerAttempts = React.useRef(new Map<string, { text: string; inputId: string }>());
   const answerAuthority = `${scopeKey}:${agentId}:${selectedTaskId || ''}`;
   const currentAnswerAuthority = React.useRef(answerAuthority);

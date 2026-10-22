@@ -85,6 +85,10 @@ async def _apply_question_wait(db, *, task, run, session, model):
             'question_item_id': str(question.item_id)}}
     task.status, task.last_execution_status = 'doing', 'queued' if answer else 'awaiting_user'
     task.last_result = task.last_error = task.completed_at = None
+    if not answer:
+        from app.services.business_task_question_delivery import enqueue_business_question_notice
+
+        await enqueue_business_question_notice(db, run=run, question_id=question.item_id)
     return True
 
 

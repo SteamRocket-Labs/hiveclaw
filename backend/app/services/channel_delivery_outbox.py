@@ -624,6 +624,12 @@ class ChannelDeliveryOutboxService:
             or session is None or session.tenant_id != item.tenant_id or session.agent_id != item.agent_id):
             raise ContentInputReceiptError('business_result_binding_changed', 'The original task delivery changed.', 403)
         outcome = (task.metadata_json or {}).get('outcome') or {}
+        if item.metadata.get('projection_kind') == 'question_notice':
+            from app.services.business_task_question_delivery import authorize_business_question_notice
+
+            user = await self._private_delivery_reader(db, item, session)
+            await authorize_business_question_notice(db, item=item, run=task, session=session, user=user)
+            return
         if item.metadata.get('projection_kind') == 'status_notice':
             from app.core.resource_authority import authorize_resource_action
             from app.models.task import Task

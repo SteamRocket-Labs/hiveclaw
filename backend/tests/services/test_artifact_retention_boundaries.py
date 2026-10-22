@@ -93,16 +93,22 @@ def test_snapshot_retention_pins_its_directory_before_a_parent_is_replaced(tmp_p
     (foreign / "old.txt").write_bytes(b"KEEP")
     os.utime(foreign / "old.txt", (0, 0))
     walk = os.fwalk
+    replaced = []
 
     def replace_after_directory_open(*args, **kwargs):
         for item in walk(*args, **kwargs):
-            snapshots.rename(snapshots.with_name("parked"))
-            snapshots.symlink_to(foreign, target_is_directory=True)
+            # Pin inventory also walks the store. Replace the directory once,
+            # after the deletion traversal has opened its own descriptor.
+            if kwargs.get("topdown") is False and not replaced:
+                snapshots.rename(snapshots.with_name("parked"))
+                snapshots.symlink_to(foreign, target_is_directory=True)
+                replaced.append(True)
             yield item
 
     monkeypatch.setattr(delivery.os, "fwalk", replace_after_directory_open)
     with pytest.raises(WorkspaceAuthorityError):
         delivery.cleanup_chat_artifact_snapshots(workspace_root=root, referenced_snapshot_paths=[], retention_days=0)
 
+    assert replaced == [True]
     assert (foreign / "old.txt").read_bytes() == b"KEEP"
     assert not (snapshots.with_name("parked") / "old.txt").exists()

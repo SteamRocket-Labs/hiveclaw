@@ -3396,7 +3396,7 @@ async def fire_trigger_once_now(
 
 
 async def _tick():
-    """One daemon tick: evaluate all triggers, group by agent, invoke."""
+    """Evaluate due triggers and admit one batch per employee and requester."""
     now = datetime.now(timezone.utc)
 
     async with (
@@ -3414,9 +3414,9 @@ async def _tick():
         logger.debug("[TriggerDaemon] No enabled triggers — tick skipped")
         return
 
-    # Evaluate and group fired triggers by agent. A schedule is just a trigger,
-    # so all of an agent's fired triggers collapse into one wake invocation.
-    fired_by_group: dict[uuid.UUID, list[AgentTrigger]] = {}
+    # Each budget and native input needs one original requester. Combine that
+    # requester's due triggers without merging another person's work authority.
+    fired_by_group: dict[tuple[uuid.UUID, uuid.UUID | None], list[AgentTrigger]] = {}
     fire_event_keys: dict[uuid.UUID, str] = {}
     for trigger in all_triggers:
         # Auto-disable expired triggers — single-agent write, scope to its tenant.
@@ -3439,13 +3439,12 @@ async def _tick():
                 logger.debug("[TriggerDaemon] Duplicate fire lease rejected for {} ({})", trigger.name, event_key)
                 continue
             fire_event_keys[trigger.id] = event_key
-            fired_by_group.setdefault(trigger.agent_id, []).append(trigger)
+            fired_by_group.setdefault((trigger.agent_id, trigger_owner_user_id(trigger)), []).append(trigger)
         except Exception as e:
             logger.warning(f"Error evaluating trigger {trigger.name}: {e}")
 
-    # Invoke each agent for the trigger events that acquired a fire lease.
-    # Per-agent try/except so one agent's failure doesn't block others (C-08)
-    for agent_id, agent_triggers in fired_by_group.items():
+    # Keep each requester's admission failure local to that batch.
+    for (agent_id, _requester_id), agent_triggers in fired_by_group.items():
         try:
             preflight_ok, skip_reason, skip_summary, preflight_metadata = await _preflight_trigger_group(
                 agent_id,

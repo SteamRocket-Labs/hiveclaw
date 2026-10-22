@@ -452,6 +452,7 @@ class FeishuWSManager:
                     accept_authenticated_channel_event,
                     channel_installation_ref,
                 )
+                from app.services.channel_provider_receipts import feishu_message_scope
 
                 await accept_authenticated_channel_event(
                     db,
@@ -462,7 +463,7 @@ class FeishuWSManager:
                     provider_event_id=str(body_dict.get("header", {}).get("event_id") or ""),
                     handler_key="feishu.event",
                     body=body_dict,
-                    metadata={"transport": "websocket"},
+                    metadata={"transport": "websocket", "feishu_message_scope": feishu_message_scope(config)},
                 )
 
         except Exception as e:

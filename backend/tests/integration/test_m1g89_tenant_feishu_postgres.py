@@ -167,6 +167,9 @@ async def test_enterprise_installation_normal_text_file_and_original_work_delive
             response = await client.post(f"/api/channel/feishu/tenant/{seed['tenant_id']}/webhook", json=body)
         assert response.status_code == 200 and response.json()["routed"] is True
         claimed = next(item for item in await inbox.claim_batch(worker_id="enterprise", limit=10) if item.provider_event_id == key)
+        from app.services.channel_provider_receipts import feishu_message_scope
+
+        assert claimed.metadata['feishu_message_scope'] == feishu_message_scope(config)
         with use_channel_ingress_context(event_id=claimed.id, tenant_id=seed["tenant_id"], agent_id=seed["agent_id"],
             provider="feishu", installation_ref=channel_installation_ref(config, fallback="")) as context:
             async with app_user_sessionmaker() as db:

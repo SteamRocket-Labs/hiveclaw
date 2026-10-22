@@ -108,7 +108,7 @@ async def _start_feishu_creation_work(seed, app_user_sessionmaker, monkeypatch):
         return command.id
 
 
-@pytest.mark.parametrize("input_case", ["complete", "unbound", "revoked", "first_task", "first_task_unbound", "first_task_revoked", "first_task_refined", "first_task_delivery", "first_task_parent_model", "first_task_refined_native", "first_task_native_creation", "first_task_fresh_employee", "first_task_saved_reopen", "first_task_question", "first_task_question_after_write", "first_task_feishu_question", "first_task_feishu_quoted_question", "first_task_feishu_question_source_changed", "first_task_feishu_question_body_changed", "first_task_feishu_question_already_answered", "first_task_feishu_question_projection_missing", "first_task_feishu_question_recipient_changed", "first_task_feishu_question_legacy_status", "first_task_feishu_permission_allow", "first_task_feishu_permission_deny", "first_task_feishu_permission_cancel", "first_task_feishu_permission_unknown", "first_task_feishu_permission_expired", "first_task_feishu_permission_source_changed", "delegation_permission_allow", "first_task_feishu_permission_channel_allow", "first_task_feishu_permission_channel_deny", "first_task_feishu_permission_channel_unknown", "first_task_feishu_permission_channel_legacy", "first_task_feishu_permission_channel_scope"])
+@pytest.mark.parametrize("input_case", ["complete", "unbound", "revoked", "first_task", "first_task_unbound", "first_task_revoked", "first_task_refined", "first_task_delivery", "first_task_parent_model", "first_task_refined_native", "first_task_native_creation", "first_task_fresh_employee", "first_task_saved_reopen", "first_task_question", "first_task_question_after_write", "first_task_feishu_question", "first_task_feishu_quoted_question", "first_task_feishu_question_source_changed", "first_task_feishu_question_body_changed", "first_task_feishu_question_already_answered", "first_task_feishu_question_projection_missing", "first_task_feishu_question_recipient_changed", "first_task_feishu_question_legacy_status", "first_task_feishu_permission_allow", "first_task_feishu_permission_deny", "first_task_feishu_permission_cancel", "first_task_feishu_permission_unknown", "first_task_feishu_permission_expired", "first_task_feishu_permission_source_changed", "delegation_permission_allow", "first_task_feishu_permission_channel_allow", "first_task_feishu_permission_channel_deny", "first_task_feishu_permission_channel_unknown", "first_task_feishu_permission_channel_legacy", "first_task_feishu_permission_channel_scope", "first_task_feishu_permission_channel_feedback_retry"])
 async def test_governed_delegation_preserves_its_parent_instruction_origin(
     owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, input_case, migrated_pg_url,
 ):
@@ -516,7 +516,8 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
         decision = decision.removeprefix("channel_")
         legacy_permission = decision == "legacy"
         scope_permission = decision == "scope"
-        if legacy_permission or scope_permission:
+        feedback_retry = decision == "feedback_retry"
+        if legacy_permission or scope_permission or feedback_retry:
             decision = "allow"
         expected_summary = "Report generated." if decision == "allow" else "The write was not authorized; no report was created."
         if decision != "allow":
@@ -684,12 +685,12 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
                 late = await api.post(url, json={"action": "allow_once"})
                 assert late.status_code == 409 and not permission_calls and len(client.requests) == 1, late.text
                 if first_task:
-                    from app.services.channel_ingress_dispatcher import dispatch_channel_ingress_event
-                    from tests.integration.original_work_permission_helpers import claim_permission_reply
+                    from tests.integration.original_work_permission_helpers import claim_permission_reply, dispatch_permission_rejection
 
                     reply_service, reply_item = await claim_permission_reply(factory=app_user_sessionmaker,
                         tenant_id=seed["tenant_id"], notice_id=notices[0].id, text="/allow")
-                    rejected = await dispatch_channel_ingress_event(reply_item)
+                    rejected = await dispatch_permission_rejection(factory=app_user_sessionmaker, tenant_id=seed["tenant_id"],
+                        notice_id=notices[0].id, item=reply_item, exact_work=True)
                     assert rejected.get("permission_status") == "rejected" and not permission_calls, rejected
                     assert await reply_service._mark_processed(item=reply_item, worker_id="permission-quote", receipt=rejected)
                 if first_task:
@@ -739,12 +740,12 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
                 assert late.status_code == 410 and late.json()["detail"]["code"] == "tool_permission_request_expired", late.text
                 assert not permission_calls
                 if first_task:
-                    from app.services.channel_ingress_dispatcher import dispatch_channel_ingress_event
-                    from tests.integration.original_work_permission_helpers import claim_permission_reply
+                    from tests.integration.original_work_permission_helpers import claim_permission_reply, dispatch_permission_rejection
 
                     reply_service, reply_item = await claim_permission_reply(factory=app_user_sessionmaker,
                         tenant_id=seed["tenant_id"], notice_id=notices[0].id, text="/allow")
-                    rejected = await dispatch_channel_ingress_event(reply_item)
+                    rejected = await dispatch_permission_rejection(factory=app_user_sessionmaker, tenant_id=seed["tenant_id"],
+                        notice_id=notices[0].id, item=reply_item, exact_work=True)
                     assert rejected.get("permission_status") == "rejected" and not permission_calls, rejected
                     assert await reply_service._mark_processed(item=reply_item, worker_id="permission-quote", receipt=rejected)
             else:
@@ -761,10 +762,9 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
                     if decision == "allow" and not legacy_permission:
                         from copy import deepcopy
                         from app.models.external_principal import ExternalPrincipal
-                        from app.services.channel_ingress_dispatcher import dispatch_channel_ingress_event
-                        from tests.integration.original_work_permission_helpers import claim_permission_reply
+                        from tests.integration.original_work_permission_helpers import claim_permission_reply, dispatch_permission_rejection
 
-                        for changed in (("scope",) if scope_permission else ("binding", "source", "receipt", "body", "request", "prose", "model")):
+                        for changed in (("source",) if feedback_retry else ("scope",) if scope_permission else ("binding", "source", "receipt", "body", "request", "prose", "model")):
                             async with app_user_sessionmaker() as db:
                                 await pin_rls_tenant_context(db, seed["tenant_id"])
                                 saved = await db.get(ChannelDeliveryOutbox, notices[0].id)
@@ -793,7 +793,10 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
                                 reply_service, reply_item = await claim_permission_reply(factory=app_user_sessionmaker,
                                     tenant_id=seed["tenant_id"], notice_id=notices[0].id, text=text,
                                     provider_reference=provider_reference)
-                                rejected = await dispatch_channel_ingress_event(reply_item)
+                                rejected = await dispatch_permission_rejection(factory=app_user_sessionmaker, tenant_id=seed["tenant_id"],
+                                    notice_id=notices[0].id, item=reply_item, exact_work=changed not in {"binding", "receipt", "scope"},
+                                    unknown_delivery=changed == "receipt",
+                                    before_replay=(lambda: soul.write_bytes(original_soul)) if changed == "source" else None)
                                 assert rejected.get("permission_status") == ("needs_reconciliation" if changed in {"receipt", "scope"} else "rejected"), (changed, rejected)
                                 assert not permission_calls and len(client.requests) == 1
                                 assert not (seed["data_root"] / str(receiver) / report_path).exists()

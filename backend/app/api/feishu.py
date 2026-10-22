@@ -1141,6 +1141,7 @@ async def feishu_event_webhook(
         return {"challenge": body["challenge"]}
 
     from app.services.channel_ingress_inbox import accept_authenticated_channel_event, channel_installation_ref
+    from app.services.channel_provider_receipts import feishu_message_scope
 
     await accept_authenticated_channel_event(
         db,
@@ -1151,7 +1152,7 @@ async def feishu_event_webhook(
         provider_event_id=str(body.get("header", {}).get("event_id") or ""),
         handler_key="feishu.event",
         body=body,
-        metadata={"transport": "webhook"},
+        metadata={"transport": "webhook", "feishu_message_scope": feishu_message_scope(config)},
     )
     return {"code": 0, "msg": "accepted"}
 

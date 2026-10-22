@@ -170,8 +170,17 @@ async def test_business_permission_wait_resumes_the_original_run(
                 assert not await _expired_permission_result_bound(db, invocation=pending, event=result_event, content=json.dumps(forged))
         else:
             if channel_permission:
-                from tests.integration.original_work_permission_helpers import resolve_permission_reply
+                from tests.integration.original_work_permission_helpers import (
+                    claim_permission_reply, dispatch_permission_rejection, resolve_permission_reply,
+                )
 
+                if decision == 'allow_once':
+                    reply_service, reply_item = await claim_permission_reply(factory=db_factory, tenant_id=seed['tenant_id'],
+                        notice_id=permission_notice_id, text='/allow ' + str(uuid.uuid4()))
+                    rejected = await dispatch_permission_rejection(factory=db_factory, tenant_id=seed['tenant_id'],
+                        notice_id=permission_notice_id, item=reply_item, exact_work=True)
+                    assert rejected['permission_status'] == 'rejected' and effects == [] and len(model.requests) == 2
+                    assert await reply_service._mark_processed(item=reply_item, worker_id='permission-quote', receipt=rejected)
                 quoted = await resolve_permission_reply(factory=db_factory, tenant_id=seed['tenant_id'],
                     notice_id=permission_notice_id, text='/deny' if decision == 'deny' else '/allow')
                 assert quoted['permission_receipt']['run_id'] == str(run_id) and quoted['permission_receipt']['run_status'] == 'resumable'

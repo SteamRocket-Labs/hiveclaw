@@ -155,6 +155,17 @@ async def _resume_materialized_user_message(
 
 async def _dispatch_verified_payload(db, item: ClaimedChannelIngressEvent) -> dict[str, Any]:
     key = item.handler_key
+    if key == 'feishu.event':
+        from app.services.original_work_permission_feedback import resume_permission_reply_rejection, deliver_permission_reply_feedback
+
+        rejection = await resume_permission_reply_rejection(db, item=item)
+        if rejection is not None:
+            feedback = ({'status': 'needs_reconciliation', 'retryable': False, 'recovery_action': 'check_channel_message'}
+                if rejection.get('reason_code') == 'permission_feedback_receipt_unverified'
+                else await deliver_permission_reply_feedback(db, item=item, result=rejection))
+            return {'status': 'processed', 'permission_status': rejection['permission_status'],
+                'reason_code': rejection.get('reason_code'),
+                'permission_feedback': feedback}
     body = copy.deepcopy(item.payload.get("body") or item.payload)
     replay_request = ChannelIngressReplayRequest(event_id=item.id, body=body)
 
@@ -271,8 +282,14 @@ async def _dispatch_verified_payload(db, item: ClaimedChannelIngressEvent) -> di
     if key == 'feishu.event' and isinstance(result, dict) and result.get('msg') in {'answer_received', 'answer_rejected'}:
         return {'status': 'processed', 'answer_status': result['answer_status'], 'reason_code': result.get('reason_code')}
     if key == 'feishu.event' and isinstance(result, dict) and result.get('msg') in {'permission_received', 'permission_rejected'}:
+        feedback = {}
+        if result['msg'] == 'permission_rejected':
+            from app.services.original_work_permission_feedback import record_permission_reply_rejection
+
+            if await record_permission_reply_rejection(db, item=item, result=result):
+                feedback['permission_feedback'] = await deliver_permission_reply_feedback(db, item=item, result=result)
         return {'status': 'processed', 'permission_status': result['permission_status'],
-            'permission_receipt': result.get('permission_receipt'), 'reason_code': result.get('reason_code')}
+            'permission_receipt': result.get('permission_receipt'), 'reason_code': result.get('reason_code'), **feedback}
     return {"status": "processed", **({"reply_text": result} if isinstance(result, str) else {})}
 
 

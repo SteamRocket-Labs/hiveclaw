@@ -16,13 +16,21 @@ async def claim_permission_reply(*, factory, tenant_id, notice_id, text, sender=
         notice = await db.get(ChannelDeliveryOutbox, notice_id)
         provider_id = provider_reference or notice.delivery_receipts_json['text']['detail'].get('provider_message_id')
         assert provider_id
+        from app.services.channel_delivery_service import ChannelDeliveryService
+        from app.services.channel_ingress_inbox import channel_installation_ref
+        from app.services.channel_provider_receipts import feishu_message_scope
+
+        config = await ChannelDeliveryService._load_target_config(db, notice.agent_id, notice.channel, notice.delivery_target_json)
+        metadata = {'feishu_message_scope': feishu_message_scope(config)}
+        if notice.delivery_target_json.get('tenant_channel_config_id'):
+            metadata['tenant_channel_config_id'] = str(config.id)
         reply = {'header': {'event_type': 'im.message.receive_v1', 'event_id': uuid.uuid4().hex},
             'event': {'sender': {'sender_id': {'open_id': sender or notice.delivery_target_json['receive_id']}},
                 'message': {'message_type': 'text', 'chat_type': 'p2p', 'message_id': uuid.uuid4().hex,
                     'parent_id': provider_id, 'content': json.dumps({'text': text})}}}
         accepted = await enqueue_channel_ingress_event(db, ChannelIngressSubmission(tenant_id=tenant_id,
-            agent_id=notice.agent_id, provider='feishu', installation_ref=str(notice.channel_config_id),
-            provider_event_id=reply['header']['event_id'], handler_key='feishu.event', payload={'body': reply}))
+            agent_id=notice.agent_id, provider='feishu', installation_ref=channel_installation_ref(config, fallback=''),
+            provider_event_id=reply['header']['event_id'], handler_key='feishu.event', payload={'body': reply}, metadata=metadata))
         await db.commit()
     service = ChannelIngressInboxService(session_factory=factory)
     @asynccontextmanager
@@ -33,6 +41,53 @@ async def claim_permission_reply(*, factory, tenant_id, notice_id, text, sender=
     items = await service.claim_batch(worker_id='permission-quote', limit=10)
     assert [item.id for item in items] == [accepted.event_id]
     return service, items[0]
+
+
+async def dispatch_permission_rejection(*, factory, tenant_id, notice_id, item, exact_work, unknown_delivery=False, before_replay=None):
+    from unittest.mock import patch
+
+    from sqlalchemy import select
+    from app.models.audit import ChatMessage
+    from app.models.chat_session import ChatSession
+    from app.models.runtime_task import RuntimeTask
+    from app.services.feishu_service import FeishuService
+
+    models = [RuntimeTask, ChatSession, ChatMessage]
+    async with factory() as db:
+        await pin_rls_tenant_context(db, tenant_id)
+        notice = await db.get(ChannelDeliveryOutbox, notice_id)
+        before = {m.__name__: set(await db.scalars(select(m.id).where(m.tenant_id == tenant_id))) for m in models}
+        session_owners = {(s.id, s.user_id, s.external_principal_id) for s in await db.scalars(
+            select(ChatSession).where(ChatSession.tenant_id == tenant_id))}
+        work_id = notice.metadata_json.get('business_task_id') or str(notice.session_id)
+        target = notice.delivery_target_json
+    sent = []
+    async def transport(_self, _app_id, _secret, recipient, message_type, content, **kwargs):
+        sent.append((recipient, message_type, json.loads(content)['text'], kwargs['receive_id_type']))
+        return {} if unknown_delivery else {'data': {'message_id': 'synthetic-permission-rejection-feedback'}}
+    with patch.object(FeishuService, 'send_message', transport):
+        receipt = await dispatch_channel_ingress_event(item)
+        assert receipt.get('permission_feedback', {}).get('status') == ('needs_reconciliation' if unknown_delivery else 'delivered'), receipt
+        if before_replay is not None:
+            before_replay()
+        replay = await dispatch_channel_ingress_event(item)
+        assert replay['permission_feedback'] == receipt['permission_feedback'], replay
+    assert len(sent) == 1 and sent[0][:2] == (target['receive_id'], 'text') and sent[0][3] == 'open_id', sent
+    text = sent[0][2]
+    assert 'HiveClaw' in text
+    assert not any(value in text for value in ('PRIVATE_BUSINESS_INPUT', 'DELEGATED_REPORT', 'UNATTESTED_REPLY_SCOPE'))
+    if exact_work:
+        assert work_id in text
+    else:
+        assert work_id not in text and str(notice.runtime_task_id) not in text and notice.prompt_key not in text
+    assert receipt.get('runtime_task_id') is None and receipt.get('session_id') is None, receipt
+    async with factory() as db:
+        await pin_rls_tenant_context(db, tenant_id)
+        after = {m.__name__: set(await db.scalars(select(m.id).where(m.tenant_id == tenant_id))) for m in models}
+        assert after == before
+        assert {(s.id, s.user_id, s.external_principal_id) for s in await db.scalars(
+            select(ChatSession).where(ChatSession.tenant_id == tenant_id))} == session_owners
+    return receipt
 
 
 async def resolve_permission_reply(**kwargs):

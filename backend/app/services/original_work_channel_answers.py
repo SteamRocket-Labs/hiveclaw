@@ -80,12 +80,17 @@ async def try_answer_original_work_question(db, *, agent, principal, config, use
                 ChannelDeliveryOutbox.delivery_receipts_json['text']['detail']['provider_message_id'].astext.is_(None)).limit(1))
             if permission_unknown is not None:
                 return {'code': 0, 'msg': 'permission_rejected', 'permission_status': 'needs_reconciliation',
+                    '_permission_feedback_notice_id': str(permission_unknown),
                     'reason_code': 'original_permission_provider_reference_unavailable'}
         return None
     if len(candidates) != 1:
+        if any(row.metadata_json.get('source') == 'original_work_permission' or row.terminal_status == 'awaiting_permission' for row in candidates):
+            return {'code': 0, 'msg': 'permission_rejected', 'permission_status': 'needs_reconciliation',
+                'reason_code': 'original_permission_reply_ambiguous'}
         return {'code': 0, 'msg': 'answer_rejected', 'answer_status': 'rejected',
             'reason_code': 'business_question_reply_ambiguous'}
     notice = candidates[0]
+    feedback_notice_id = str(notice.id)
     permission_reply = notice.metadata_json.get('source') == 'original_work_permission' or notice.terminal_status == 'awaiting_permission'
     first_task = notice.metadata_json.get('source') == 'employee_first_task_question' or (
         permission_reply and notice.metadata_json.get('work_kind') == 'employee_first_task')
@@ -125,6 +130,7 @@ async def try_answer_original_work_question(db, *, agent, principal, config, use
         if scope is None:
             if permission_reply:
                 return {'code': 0, 'msg': 'permission_rejected', 'permission_status': 'needs_reconciliation',
+                    '_permission_feedback_notice_id': feedback_notice_id,
                     'reason_code': 'original_permission_provider_reference_unavailable'}
             return {'code': 0, 'msg': 'answer_rejected', 'answer_status': 'needs_reconciliation',
                 'reason_code': 'business_question_provider_reference_unavailable'}
@@ -205,6 +211,7 @@ async def try_answer_original_work_question(db, *, agent, principal, config, use
         detail = exc.detail if isinstance(exc.detail, dict) else {}
         if permission_reply:
             return {'code': 0, 'msg': 'permission_rejected', 'permission_status': 'rejected',
+                '_permission_feedback_notice_id': feedback_notice_id,
                 'reason_code': detail.get('code', 'original_permission_reply_unavailable')}
         return {'code': 0, 'msg': 'answer_rejected', 'answer_status': 'rejected',
             'reason_code': detail.get('code', 'business_question_reply_unavailable')}

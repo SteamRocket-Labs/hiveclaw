@@ -549,6 +549,7 @@ async def feishu_tenant_webhook(
         return {"ok": True, "routed": False}
 
     from app.services.channel_ingress_inbox import accept_authenticated_channel_event, channel_installation_ref
+    from app.services.channel_provider_receipts import feishu_message_scope
 
     await accept_authenticated_channel_event(
         db,
@@ -561,6 +562,7 @@ async def feishu_tenant_webhook(
         body=body,
         metadata={
             "transport": "tenant_webhook",
+            "feishu_message_scope": feishu_message_scope(config),
             "tenant_channel_config_id": str(getattr(config, "id", None) or ""),
         },
     )

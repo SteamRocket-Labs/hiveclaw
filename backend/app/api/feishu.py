@@ -1274,21 +1274,10 @@ async def feishu_card_callback(request: Request, db: AsyncSession = Depends(get_
         from app.models.channel_ingress_event import ChannelIngressEvent
         from app.models.tenant_channel_config import TenantChannelConfig
         from app.services.external_principal_service import load_external_runtime_actor
+        from app.services.feishu_approval_cards import load_card_config
 
         source = await db.get(ChannelIngressEvent, ingress.event_id, populate_existing=True) if ingress else None
-        enterprise_id = (source.metadata_json or {}).get("tenant_channel_config_id") if source else None
-        if enterprise_id:
-            config = await db.scalar(select(TenantChannelConfig).where(TenantChannelConfig.id == uuid.UUID(enterprise_id),
-                TenantChannelConfig.tenant_id == tenant_id, TenantChannelConfig.channel_type == "feishu")
-                .execution_options(populate_existing=True))
-        else:
-            config = await db.scalar(
-                select(ChannelConfig).where(
-                    ChannelConfig.agent_id == approval_record.agent_id,
-                    ChannelConfig.tenant_id == tenant_id,
-                    ChannelConfig.channel_type == "feishu",
-                ).execution_options(populate_existing=True)
-            )
+        config = await load_card_config(db, tenant_id=tenant_id, agent_id=approval_record.agent_id, source=source)
         await _authenticate_card_callback(db, request=request, body=body, config=config,
             tenant_id=tenant_id, agent_id=approval_record.agent_id)
         principal = None
@@ -1327,7 +1316,13 @@ async def feishu_card_callback(request: Request, db: AsyncSession = Depends(get_
         if user is None:
             return {"toast": {"type": "error", "content": "Bound user is no longer active."}}
 
-        approval = await approval_service.resolve_approval(db, approval_uuid, user, action_type)
+        from app.services.feishu_approval_cards import card_response, record_card_decision
+
+        async def persist_card_decision(approval):
+            await record_card_decision(db, approval=approval, user=user, principal=principal)
+
+        approval = await approval_service.resolve_approval(db, approval_uuid, user, action_type,
+            before_commit=persist_card_decision)
 
         # Audit event
         try:
@@ -1350,31 +1345,7 @@ async def feishu_card_callback(request: Request, db: AsyncSession = Depends(get_
             logger.warning("Audit write failed for approval.resolved_via_feishu", exc_info=True)
 
         await db.commit()
-
-        status_emoji = "✅" if approval.status == "approved" else "❌"
-        status_text = "已批准" if approval.status == "approved" else "已拒绝"
-        expected_status = "approved" if action_type == "approve" else "rejected"
-
-        # Return updated card (replaces the original card)
-        return {
-            "toast": {"type": "success" if approval.status == expected_status else "error", "content": f"{status_text}"},
-            "card": {
-                "config": {"wide_screen_mode": True},
-                "header": {
-                    "template": "green" if approval.status == "approved" else "red",
-                    "title": {"tag": "plain_text", "content": f"{status_emoji} 审批已处理"},
-                },
-                "elements": [
-                    {
-                        "tag": "div",
-                        "text": {
-                            "tag": "lark_md",
-                            "content": f"**操作**: {approval.action_type}\n**结果**: {status_text}\n**处理人**: {user.display_name}",
-                        },
-                    },
-                ],
-            },
-        }
+        return card_response(approval, user, action_type)
 
     except HTTPException:
         raise

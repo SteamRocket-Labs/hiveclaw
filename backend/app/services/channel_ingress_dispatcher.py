@@ -217,6 +217,14 @@ async def _dispatch_verified_payload(db, item: ClaimedChannelIngressEvent) -> di
                 'permission_feedback': feedback}
     body = copy.deepcopy(item.payload.get("body") or item.payload)
     replay_request = ChannelIngressReplayRequest(event_id=item.id, body=body)
+    card_event = key == 'feishu.card_action' or (key == 'feishu.event'
+        and (body.get('header') or {}).get('event_type') == 'card.action.trigger')
+    if card_event:
+        from app.services.feishu_approval_cards import resume_card_decision
+
+        recovered = await resume_card_decision(db, item=item)
+        if recovered is not None:
+            return recovered
 
     if key in {"company.wecom.message", "company.dingtalk.message"}:
         from app.services.company_channel_runtime import process_company_message
@@ -336,6 +344,12 @@ async def _dispatch_verified_payload(db, item: ClaimedChannelIngressEvent) -> di
 
     if _response_failed(result):
         raise RuntimeError(f"channel ingress processor returned HTTP {result.status_code}")
+    if card_event:
+        projected = await resume_card_decision(db, item=item)
+        if projected is not None:
+            return projected
+        return {'status': 'processed', 'card_delivery': {'status': 'unavailable', 'retryable': False,
+            'reason_code': 'feishu_card_decision_unavailable', 'recovery_action': 'continue_in_original_web_work'}}
     if key == 'feishu.event' and isinstance(result, dict) and result.get('msg') in {'answer_received', 'answer_rejected'}:
         return {'status': 'processed', 'answer_status': result['answer_status'], 'reason_code': result.get('reason_code')}
     if key == 'feishu.event' and isinstance(result, dict) and result.get('msg') in {'permission_received', 'permission_rejected'}:

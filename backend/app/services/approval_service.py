@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from collections.abc import Awaitable, Callable
 from datetime import datetime, timedelta, timezone
 
 from loguru import logger
@@ -335,7 +336,8 @@ class ApprovalService:
         }
 
     async def resolve_approval(
-        self, db: AsyncSession, approval_id: uuid.UUID, user: User, action: str
+        self, db: AsyncSession, approval_id: uuid.UUID, user: User, action: str,
+        *, before_commit: Callable[[ApprovalRequest], Awaitable[None]] | None = None,
     ) -> ApprovalRequest:
         """Approve or reject a pending approval request."""
         result = await db.execute(select(ApprovalRequest).where(ApprovalRequest.id == approval_id).with_for_update())
@@ -373,6 +375,8 @@ class ApprovalService:
             )
 
             local_agent_resolution = await apply_local_agent_action_approval(db, approval=approval)
+            if before_commit is not None:
+                await before_commit(approval)
             await db.flush()
             await db.commit()
             await notify_local_agent_action_resolution(local_agent_resolution)
@@ -476,6 +480,8 @@ class ApprovalService:
         # external action. write_audit_event takes a per-tenant advisory
         # transaction lock; holding that lock while executing tools can block
         # unrelated audit writes for the same tenant.
+        if before_commit is not None:
+            await before_commit(approval)
         await db.flush()
         await db.commit()
 
@@ -586,7 +592,7 @@ class ApprovalService:
                 if not delivery_target:
                     continue
                 receive_id, id_type = delivery_target
-                await feishu_service.send_approval_card(
+                response = await feishu_service.send_approval_card(
                     channel.app_id,
                     channel.app_secret,
                     receive_id,
@@ -597,6 +603,9 @@ class ApprovalService:
                     str(approval.id),
                     extra_config=channel.extra_config,
                 )
+                from app.services.feishu_approval_cards import record_card_notification
+
+                record_card_notification(approval, config=channel, user=recipient, response=response)
 
 
 approval_service = ApprovalService()

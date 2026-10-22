@@ -55,6 +55,14 @@ class TaskReconcileIn(BaseModel):
     reason: str = Field(min_length=1, max_length=4_000)
 
 
+class TaskAnswerIn(BaseModel):
+    input_id: uuid.UUID
+    question_item_id: uuid.UUID
+    content_parts: list[dict]
+
+    model_config = {'extra': 'forbid'}
+
+
 router = APIRouter(prefix="/agents/{agent_id}/tasks", tags=["tasks"])
 logger = logging.getLogger(__name__)
 
@@ -203,11 +211,15 @@ async def _business_task_detail(task: Task, db: AsyncSession, current_user: User
     )
     out = await _enrich_task_out(task, db, current_user)
     log_visibility = await business_task_output_visibility(db, task, current_user, include_previous_attempts=True)
+    from app.services.business_task_waits import read_business_task_questions
+
+    questions = await read_business_task_questions(db, task, current_user)
     return BusinessTaskDetailOut(
         task=out,
         logs=[TaskLogOut.model_validate(item) for item in logs] if log_visibility['status'] == 'available' else [],
         log_visibility=log_visibility,
         artifacts=artifacts,
+        questions=questions,
         artifact_delivery=delivery,
     )
 
@@ -264,7 +276,7 @@ async def _load_authorized_task(
     )
     statement = select(Task).where(Task.id == task_id, Task.agent_id == agent_id)
     if for_update:
-        statement = statement.with_for_update()
+        statement = statement.with_for_update().execution_options(populate_existing=True)
     task = (await db.execute(statement)).scalar_one_or_none()
     if task is None:
         raise HTTPException(status_code=404, detail="Task not found")
@@ -483,6 +495,41 @@ async def get_task_detail(
     return detail
 
 
+@router.post('/{task_id}/answers')
+async def answer_business_task_question(
+    agent_id: uuid.UUID, task_id: uuid.UUID, data: TaskAnswerIn,
+    current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db),
+):
+    from app.api.chat_sessions import SessionHumanInputIn, _submit_session_human_input
+    from app.models.chat_transcript_event import ChatTranscriptEvent
+    from app.services.business_task_artifacts import _execution_session, business_task_output_visibility
+    from app.services.content_input_receipts import ContentInputReceiptError
+
+    task, _decision = await _load_authorized_task(db, current_user, agent_id=agent_id, task_id=task_id,
+        action='write', operator_view=False, operator_reason=None)
+    visibility = await business_task_output_visibility(db, task, current_user)
+    if visibility['status'] != 'available':
+        raise HTTPException(403 if visibility['status'] == 'denied' else 503, detail=visibility)
+    run = await db.get(RuntimeTask, task.active_runtime_task_id) if task.active_runtime_task_id else None
+    if (run is None or run.tenant_id != task.tenant_id or run.parent_agent_id != agent_id
+        or (run.metadata_json or {}).get('business_task_id') != str(task.id) or run.root_user_id != current_user.id):
+        raise HTTPException(403, detail={'code': 'business_question_requester_mismatch'})
+    try:
+        session, _root = await _execution_session(db, run)
+    except ContentInputReceiptError as exc:
+        raise HTTPException(exc.status_code, detail={'code': exc.code, 'message': str(exc)}) from exc
+    question = await db.scalar(select(ChatTranscriptEvent.id).where(ChatTranscriptEvent.tenant_id == run.tenant_id,
+        ChatTranscriptEvent.agent_id == agent_id, ChatTranscriptEvent.session_id == session.id,
+        ChatTranscriptEvent.run_id == run.id, ChatTranscriptEvent.item_kind == 'user_question',
+        ChatTranscriptEvent.item_id == data.question_item_id).limit(1))
+    if question is None:
+        raise HTTPException(404, detail={'code': 'business_question_not_found'})
+    return await _submit_session_human_input(db=db, current_user=current_user, agent_id=agent_id, session_id=session.id,
+        body=SessionHumanInputIn(kind='answer_request', input_id=data.input_id,
+            idempotency_key=f'business-answer:{data.input_id}', request_item_id=data.question_item_id,
+            content_parts=data.content_parts, terminal_fallback='reject'))
+
+
 @router.post("/{task_id}/cancel", response_model=BusinessTaskDetailOut)
 async def cancel_business_task(
     agent_id: uuid.UUID,
@@ -501,15 +548,22 @@ async def cancel_business_task(
         action="execute",
         operator_view=operator_view,
         operator_reason=operator_reason,
-        for_update=True,
     )
+    from app.services.runtime_terminal_settlement import lock_runtime_task_with_session_authority
+
+    # Native answer admission locks RuntimeTask before its Task projection.
+    # Cancellation must use the same order before terminal session settlement.
     runtime_task = (
-        await db.get(RuntimeTask, task.active_runtime_task_id, with_for_update=True)
+        await lock_runtime_task_with_session_authority(db, task_id=task.active_runtime_task_id)
         if task.active_runtime_task_id is not None
         else None
     )
     if runtime_task is None:
         raise HTTPException(status_code=409, detail="Business task has no active runtime intent to cancel")
+    task, decision = await _load_authorized_task(db, current_user, agent_id=agent_id, task_id=task_id,
+        action='execute', operator_view=operator_view, operator_reason=operator_reason, for_update=True)
+    if task.active_runtime_task_id != runtime_task.id:
+        raise HTTPException(409, detail={'code': 'business_cancel_runtime_changed'})
     runtime_metadata = dict(runtime_task.metadata_json or {})
     if task.status in {"cancelled", "needs_reconciliation"} and runtime_metadata.get("cancelled_by_user_id"):
         detail = await _business_task_detail(task, db, current_user if not decision.operator_view else None)

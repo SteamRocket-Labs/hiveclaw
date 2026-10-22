@@ -4,6 +4,8 @@
 
 import { get, post, patch } from '../core';
 import type { Task } from '../../types';
+import type { SessionHumanInputReceipt } from './chat';
+import type { ClarificationQuestion } from '../../pages/agent-detail/toolResultEnvelope';
 
 export interface TaskCreateParams {
   request_id: string;
@@ -44,6 +46,12 @@ export interface BusinessTaskDetail {
   log_visibility?: { status?: string; recovery_action?: string };
   artifacts?: Record<string, unknown>[];
   artifact_delivery?: { status?: string; recovery_action?: string };
+  questions?: Array<{
+    question_item_id: string;
+    session_id: string;
+    can_answer: boolean;
+    payload: { questions: ClarificationQuestion[]; blocking?: boolean; next_action?: string };
+  }>;
 }
 
 export interface TaskCancelParams {
@@ -62,6 +70,9 @@ export const taskApi = {
   update: (agentId: string, taskId: string, data: TaskUpdateParams) =>
     patch<Task>(`/agents/${agentId}/tasks/${taskId}`, data),
   getLogs: (agentId: string, taskId: string) => get<TaskLog[]>(`/agents/${agentId}/tasks/${taskId}/logs`),
+  answer: (agentId: string, taskId: string, data: {
+    input_id: string; question_item_id: string; content_parts: Array<{ type: 'text'; text: string }>;
+  }) => post<SessionHumanInputReceipt>(`/agents/${agentId}/tasks/${taskId}/answers`, data),
   trigger: (agentId: string, taskId: string, data: TaskTriggerParams) =>
     post<{ status: 'triggered'; task_id: string; runtime_task_id: string }>(
       `/agents/${agentId}/tasks/${taskId}/trigger`,

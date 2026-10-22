@@ -303,7 +303,7 @@ def _business_task_stages(
     *, task_status: str, runtime_status: str | None, phase: str, authorized: bool
 ) -> list[dict[str, str]]:
     terminal = task_status in _TASK_TERMINAL_STATUSES
-    executing_started = phase in {"invoking", "awaiting_permission", "terminal"} or runtime_status == "running"
+    executing_started = phase in {"invoking", "awaiting_permission", "awaiting_user", "terminal"} or runtime_status == "running"
     terminal_stage_status = {
         "done": "complete",
         "failed": "failed",
@@ -358,6 +358,8 @@ def project_business_task(*, task: Task, runtime_task: RuntimeTask | None) -> di
     )
     if runtime_status == 'suspended' and metadata.get('interactive_pause') == 'awaiting_session_permission':
         recovery_state = 'awaiting_permission'
+    elif runtime_status == 'suspended' and metadata.get('interactive_pause') == 'awaiting_user_clarification':
+        recovery_state = 'awaiting_user'
     elif can_reconcile:
         recovery_state = "needs_review"
     elif can_retry:

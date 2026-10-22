@@ -298,9 +298,12 @@ async def submit_live_human_input(
             'credential_id': str(authority.machine_credential_id)}
     if requested_kind == "answer_request":
         from fastapi import HTTPException
+        from app.services.business_task_waits import lock_business_question_parent
         from app.services.chat_transcript import lock_transcript_session
         from app.services.session_user_question import load_answer_question
 
+        await lock_business_question_parent(db, tenant_id=authority.tenant_id,
+            agent_id=authority.agent_id, session_id=session.id)
         await lock_transcript_session(db, session_id=session.id)
         question = await load_answer_question(db, authority=authority, item_id=_input_id(request_item_id)) if request_item_id else None
         if question is None:

@@ -134,6 +134,10 @@ async def _locked_input(
     authority: AuthenticatedSessionAuthority,
     input_id: uuid.UUID,
 ) -> tuple[SessionTurnInput, SessionInputAdmission, SessionCommand]:
+    from app.services.business_task_waits import lock_business_question_parent
+
+    await lock_business_question_parent(db, tenant_id=authority.tenant_id,
+        agent_id=authority.agent_id, session_id=authority.session_id)
     await lock_transcript_session(db, session_id=authority.session_id)
     row = await db.scalar(
         select(SessionTurnInput)
@@ -344,7 +348,7 @@ async def cancel_unbound_human_input(
         raise InputRevisionConflict(current_revision=row.revision)
     if admission.state in {"hook_running", "hook_result_committed"}:
         raise ValueError("human_input_admission_in_progress")
-    delegation = None
+    delegation = business = None
     if row.intent == "answer_request" and row.target_run_id is not None:
         delegation = await db.scalar(select(RuntimeTask).where(
             RuntimeTask.id == row.target_run_id, RuntimeTask.tenant_id == authority.tenant_id,
@@ -355,6 +359,15 @@ async def cancel_unbound_human_input(
             from fastapi import HTTPException
 
             raise HTTPException(status_code=409, detail={"code": "delegation_answer_already_resuming"})
+        business = await db.scalar(select(RuntimeTask).where(
+            RuntimeTask.id == row.target_run_id, RuntimeTask.tenant_id == authority.tenant_id,
+            RuntimeTask.task_type == 'business_task', RuntimeTask.parent_agent_id == authority.agent_id,
+            RuntimeTask.child_agent_id == authority.agent_id, RuntimeTask.child_session_id == str(authority.session_id),
+        ).with_for_update())
+        if business is not None and business.status == 'running':
+            from fastapi import HTTPException
+
+            raise HTTPException(409, detail={'code': 'business_answer_already_resuming'})
     row.status = "cancelled"
     row.revision = int(row.revision) + 1
     row.version = int(row.version) + 1
@@ -366,6 +379,19 @@ async def cancel_unbound_human_input(
         from app.services.session_user_question import reopen_cancelled_answer
 
         reopened = await reopen_cancelled_answer(db, authority=authority, row=row) if reopen_answer_request else None
+        if business is not None and business.status == 'resumable' and reopened is not None and (
+            ((business.metadata_json or {}).get('business_wait') or {}).get('question_item_id') == str(row.request_item_id)
+        ):
+            from app.services.business_task_waits import _business_projection
+
+            projection = await _business_projection(db, business)
+            business.status, business.claimed_by, business.claim_expires_at = 'suspended', None, None
+            business.result_summary = 'awaiting_user_clarification'
+            business.metadata_json = {**(business.metadata_json or {}), 'phase': 'awaiting_user',
+                'interactive_pause': 'awaiting_user_clarification',
+                'business_wait': {**(business.metadata_json or {}).get('business_wait', {}),
+                    'question_item_id': str(reopened.item_id)}}
+            projection.status, projection.last_execution_status = 'doing', 'awaiting_user'
         if delegation is not None and delegation.status == "pending":
             from app.services.runtime_root_ledger import transition_runtime_root_item_by_task
 
@@ -628,6 +654,9 @@ async def queue_admitted_human_input(
                 RuntimeTask.tenant_id == authority.tenant_id,
                 or_(and_(RuntimeTask.parent_agent_id == authority.agent_id,
                          RuntimeTask.parent_session_id == str(authority.session_id)),
+                    and_(RuntimeTask.task_type == 'business_task', row.intent == 'answer_request',
+                         RuntimeTask.parent_agent_id == authority.agent_id, RuntimeTask.child_agent_id == authority.agent_id,
+                         RuntimeTask.child_session_id == str(authority.session_id)),
                     and_(RuntimeTask.task_type == "delegation", row.intent == "answer_request",
                          RuntimeTask.child_agent_id == authority.agent_id,
                          func.replace(func.lower(RuntimeTask.child_session_id), "-", "") == authority.session_id.hex)),
@@ -640,8 +669,14 @@ async def queue_admitted_human_input(
         delegated_answer = (row.intent == "answer_request" and task is not None and task.task_type == "delegation"
             and task.child_agent_id == authority.agent_id
             and uuid.UUID(str(task.child_session_id)) == authority.session_id)
+        business_answer = (row.intent == 'answer_request' and task is not None and task.task_type == 'business_task'
+            and task.parent_agent_id == authority.agent_id and task.child_session_id == str(authority.session_id))
+        if business_answer:
+            from app.services.business_task_waits import _business_projection
+
+            await _business_projection(db, task)
         if row.intent == "answer_request" and task is not None and (
-            is_executable_chat_task_type(task.task_type) or delegated_answer
+            is_executable_chat_task_type(task.task_type) or delegated_answer or business_answer
         ):
             from app.services.session_user_question import question_payload, question_requester_matches, record_question_answer
 
@@ -671,7 +706,7 @@ async def queue_admitted_human_input(
         # reject for answer).
         if (
             task is None
-            or not (is_executable_chat_task_type(task.task_type) or delegated_answer)
+            or not (is_executable_chat_task_type(task.task_type) or delegated_answer or business_answer)
             or active_turn_id != row.target_turn_id
             or task.status not in SESSION_TARGETABLE_RUN_STATUSES
         ):
@@ -700,6 +735,14 @@ async def queue_admitted_human_input(
             task.claimed_by, task.claim_expires_at = None, None
             await transition_runtime_root_item_by_task(db, runtime_task_id=task.id, requested_state="queued",
                 reason_code="delegation_question_answered")
+        if business_answer and task.status == 'suspended' and (
+            ((task.metadata_json or {}).get('business_wait') or {}).get('question_item_id') == str(question.item_id)
+        ):
+            from app.services.business_task_waits import sync_business_permission_resume
+
+            task.status, task.claimed_by, task.claim_expires_at = 'resumable', None, None
+            task.metadata_json = {**(task.metadata_json or {}), 'interactive_pause': None}
+            await sync_business_permission_resume(db, task)
         await append_session_events(
             db,
             tenant_id=authority.tenant_id,
@@ -825,6 +868,8 @@ async def bind_admitted_inputs_to_round(
             RuntimeTask.id == run_id,
             RuntimeTask.tenant_id == tenant_id,
             or_(and_(RuntimeTask.parent_agent_id == agent_id, RuntimeTask.parent_session_id == str(session_id)),
+                and_(RuntimeTask.task_type == 'business_task', RuntimeTask.parent_agent_id == agent_id,
+                    RuntimeTask.child_agent_id == agent_id, RuntimeTask.child_session_id == str(session_id)),
                 and_(RuntimeTask.task_type == "delegation", RuntimeTask.child_agent_id == agent_id,
                     func.replace(func.lower(RuntimeTask.child_session_id), "-", "") == session_id.hex)),
             RuntimeTask.status.in_(_PROVIDER_ROUND_BINDABLE_RUN_STATUSES),

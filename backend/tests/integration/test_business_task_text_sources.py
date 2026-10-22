@@ -238,6 +238,7 @@ async def test_business_task_text_rechecks_its_actual_original_source(
     requester_state='active',
     artifact_body=None,
     permission_handler=None,
+    question_handler=None,
 ):
     import app.database as database
     import app.runtime.invoker as invoker
@@ -372,6 +373,10 @@ async def test_business_task_text_rechecks_its_actual_original_source(
             'name': 'fs_write', 'arguments': json.dumps({'path': 'workspace/business-report.md', 'content': artifact_body})}}],
             'finish_reason': 'tool_calls'})
         model_client.script[-1]['content'] = RESULT + '\nPRIVATE_BUSINESS_INPUT\n\n[Report](workspace/business-report.md)'
+    if question_handler is not None:
+        model_client.script.insert(1, {'tool_calls': [{'id': 'business-question', 'type': 'function', 'function': {
+            'name': 'ask_user_question', 'arguments': json.dumps({'questions': [{'question': 'Which output for PRIVATE_BUSINESS_INPUT?',
+                'header': 'Output', 'options': [{'label': 'Report'}, {'label': 'Summary'}]}]})}}], 'finish_reason': 'tool_calls'})
     monkeypatch.setattr(invoker, 'create_llm_client', lambda **_kwargs: model_client)
     if unknown_effect:
         from app.kernel.contracts import ToolLifecyclePersistenceError
@@ -398,8 +403,9 @@ async def test_business_task_text_rechecks_its_actual_original_source(
     finally:
         reset_runtime_task_fence(fence)
     (tmp_path / 'business-model-requests.json').write_text(json.dumps(model_client.requests, default=str))
-    if permission_handler is not None:
-        await permission_handler(client=client, db_factory=app_user_sessionmaker, owner_db_factory=owner_sessionmaker,
+    handler = permission_handler or question_handler
+    if handler is not None:
+        await handler(client=client, db_factory=app_user_sessionmaker, owner_db_factory=owner_sessionmaker,
             seed=seed, run_id=run_id, original=original, headers=headers, artifact_body=artifact_body,
             monkeypatch=monkeypatch, tmp_path=tmp_path, model_client=model_client,
             canonical_download_user=original_api[0].canonical_download_user)

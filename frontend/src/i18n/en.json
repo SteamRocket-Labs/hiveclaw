@@ -1552,9 +1552,12 @@
         "retry_available": "Retry available",
         "complete": "Complete",
         "cancelled": "Cancelled",
-        "runtime_evidence_missing": "Runtime evidence missing"
+        "runtime_evidence_missing": "Runtime evidence missing",
+        "awaiting_user": "Waiting for your answer",
+        "awaiting_permission": "Waiting for tool permission"
       },
       "errors": {
+        "answer": "The answer is not queued. Retry or review the task state.",
         "preparePlan": "Could not prepare the assignment plan.",
         "prepareRetry": "Could not prepare the retry plan.",
         "start": "The confirmed assignment could not be started. Retry safely with the same plan.",

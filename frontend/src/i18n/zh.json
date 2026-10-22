@@ -1552,9 +1552,12 @@
         "retry_available": "可以重试",
         "complete": "已完成",
         "cancelled": "已取消",
-        "runtime_evidence_missing": "运行证据缺失"
+        "runtime_evidence_missing": "运行证据缺失",
+        "awaiting_user": "等待你回答",
+        "awaiting_permission": "等待工具授权"
       },
       "errors": {
+        "answer": "答案尚未排队，请重试或检查任务状态。",
         "preparePlan": "无法准备交办计划。",
         "prepareRetry": "无法准备重试计划。",
         "start": "已确认的交办未能启动，请使用同一计划安全重试。",

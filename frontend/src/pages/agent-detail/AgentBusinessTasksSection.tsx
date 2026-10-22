@@ -20,6 +20,7 @@ import { useAuthStore } from '../../stores';
 import { ArtifactCards, ArtifactPreviewPanel } from './ArtifactSurface';
 import { extractArtifactParts } from './chatRuntime';
 import { useArtifactPreview } from './useArtifactPreview';
+import AskUserQuestionCard from './AskUserQuestionCard';
 import './AgentBusinessTasksSection.css';
 
 type BusinessTaskAction =
@@ -169,6 +170,8 @@ function recoveryFallback(state: string): string {
     complete: 'Complete',
     cancelled: 'Cancelled',
     runtime_evidence_missing: 'Runtime evidence missing',
+    awaiting_user: 'Waiting for your answer',
+    awaiting_permission: 'Waiting for tool permission',
   }[state] || 'No recovery action';
 }
 
@@ -189,6 +192,11 @@ export default function AgentBusinessTasksSection({ agentId }: { agentId: string
   }, []);
   const scopeKey = `${tenantId}:${userId || ''}`;
   const [selectedTaskId, setSelectedTaskId] = React.useState<string | null>(null);
+  const answerAttempts = React.useRef(new Map<string, { text: string; inputId: string }>());
+  const answerAuthority = `${scopeKey}:${agentId}:${selectedTaskId || ''}`;
+  const currentAnswerAuthority = React.useRef(answerAuthority);
+  currentAnswerAuthority.current = answerAuthority;
+  React.useEffect(() => { answerAttempts.current.clear(); }, [answerAuthority]);
   const { artifactPreview, closeArtifactPreview, downloadArtifactFile, openArtifact } = useArtifactPreview({
     authorityIdentity: `${scopeKey}:${agentId}:${selectedTaskId || ''}`,
     effectiveAgentId: agentId,
@@ -242,6 +250,22 @@ export default function AgentBusinessTasksSection({ agentId }: { agentId: string
         ? queryClient.invalidateQueries({ queryKey: ['business-task-detail', agentId, selectedTaskId] })
         : Promise.resolve(),
     ]);
+  };
+
+  const answerQuestion = async (questionId: string, text: string) => {
+    if (!selectedTaskId) throw new Error(t('agent.businessTasks.selectEvidence'));
+    const previous = answerAttempts.current.get(questionId);
+    const attempt = previous?.text === text ? previous : { text, inputId: globalThis.crypto.randomUUID() };
+    answerAttempts.current.set(questionId, attempt);
+    const receipt = await taskApi.answer(agentId, selectedTaskId, { input_id: attempt.inputId,
+      question_item_id: questionId, content_parts: [{ type: 'text', text }] });
+    if (!['queued', 'bound', 'applied'].includes(receipt.status)) {
+      if (['rejected', 'cancelled'].includes(receipt.status)
+        && currentAnswerAuthority.current === answerAuthority
+        && answerAttempts.current.get(questionId) === attempt) answerAttempts.current.delete(questionId);
+      throw new Error(t('agent.businessTasks.errors.answer', 'The answer is not queued. Retry or review the task state.'));
+    }
+    if (currentAnswerAuthority.current === answerAuthority) await refresh();
   };
 
   const prepareCreatePlan = async (event: React.FormEvent<HTMLFormElement>) => {
@@ -580,6 +604,13 @@ export default function AgentBusinessTasksSection({ agentId }: { agentId: string
                     </div>
                   </dl>
                   {detailQuery.data.task.last_result && <pre>{detailQuery.data.task.last_result}</pre>}
+                  {(detailQuery.data.questions || []).map((question) => (
+                    <AskUserQuestionCard key={`${answerAuthority}:${question.question_item_id}`}
+                      questions={question.payload.questions} blocking={question.payload.blocking !== false}
+                      nextAction={question.payload.next_action}
+                      readOnly={!question.can_answer}
+                      onSubmit={(text) => answerQuestion(question.question_item_id, text)} />
+                  ))}
                   {detailQuery.data.task.result_visibility?.status && detailQuery.data.task.result_visibility.status !== 'available' && (
                     <p>{t('agent.businessTasks.resultUnavailable', 'The saved result requires current access to its sources.')}</p>
                   )}

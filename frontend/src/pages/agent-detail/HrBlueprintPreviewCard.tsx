@@ -11,6 +11,7 @@ import { useAuthStore } from '../../stores';
 import './HrBlueprintPreviewCard.css';
 import { blueprintStatusLabel } from './hrCreationStatus';
 import HrFirstTaskPermissions from './HrFirstTaskPermissions';
+import MarkdownRenderer from '../../components/MarkdownRenderer';
 
 interface HrBlueprintPreviewCardProps {
   agentId?: string;
@@ -304,6 +305,9 @@ export function HrBlueprintPreviewCard({ agentId, preview, onSendMessage }: HrBl
             : firstTask?.status
               ? t('agent.chat.toolResults.firstTaskRecovery', 'Employee ready. The first task needs recovery; it has not been reported as started.')
               : t('agent.chat.toolResults.firstTaskWaiting', 'The task will start once the employee is ready.')}</p>
+          {work?.progress && ['running', 'resumable', 'suspended'].includes(work.status) && (
+            <div aria-live="polite"><MarkdownRenderer content={work.progress.text} /></div>
+          )}
           {firstTask?.error === 'capability_denied' && <p>{t('agent.chat.toolResults.firstTaskDenied', 'Company policy blocks this task. Restore the required permission before retrying.')}</p>}
           {firstTask?.error === 'approval_required' && <p>{t('agent.chat.toolResults.firstTaskApproval', 'This task needs scoped authorization before retrying.')}</p>}
           {work && question?.kind === 'user_clarification' && work.question && (

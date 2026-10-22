@@ -42,7 +42,7 @@ async def load_first_task_work(db, *, draft, user):
         return None
     work = {"runtime_task_id": str(task_id), "agent_id": str(draft.created_agent_id),
         "session_id": str(session_id), "status": "needs_reconciliation", "question": None, "can_answer": False,
-        "permissions": []}
+        "permissions": [], "progress": None}
     if (task.tenant_id != draft.tenant_id or task.task_type != "delegation"
         or task.parent_agent_id != draft.hr_agent_id or task.child_agent_id != draft.created_agent_id
         or task.root_user_id != user.id or task.parent_session_id != str(draft.session_id)
@@ -57,6 +57,9 @@ async def load_first_task_work(db, *, draft, user):
         from app.services.session_permission_views import read_session_run_permissions
 
         work["permissions"] = await read_session_run_permissions(db, run=task, session=decision.session, user=user)
+        from app.services.original_work_progress import read_original_work_progress
+
+        work['progress'] = await read_original_work_progress(db, run=task, user=user)
         if task.status != "suspended" or not (task.metadata_json or {}).get("delegation_waiting_question_item_id"):
             return work
         child, access = await check_agent_access(db, user, task.child_agent_id)
@@ -82,13 +85,13 @@ async def load_first_task_work(db, *, draft, user):
         work["question"] = {"item_id": str(question.item_id), "payload": payload}
         work["can_answer"] = access in {"use", "manage"} and child.deleted_at is None and child.deactivated_at is None
     except ContentInputReceiptError as exc:
-        work.update(status="unavailable" if exc.status_code == 403 else "unknown", reason=exc.code, permissions=[])
+        work.update(status="unavailable" if exc.status_code == 403 else "unknown", reason=exc.code, permissions=[], progress=None)
     except HTTPException as exc:
         if exc.status_code not in {403, 404, 410}:
             raise
-        work.update(status="unavailable", reason="question_access_unavailable", permissions=[])
+        work.update(status="unavailable", reason="question_access_unavailable", permissions=[], progress=None)
     except (ValueError, TypeError, KeyError):
-        work.update(status="unknown", reason="user_question_unverified", permissions=[])
+        work.update(status="unknown", reason="user_question_unverified", permissions=[], progress=None)
     return work
 
 

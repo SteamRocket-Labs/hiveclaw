@@ -237,6 +237,8 @@ class DelegationSessionRuntime:
                 **{key: value for key, value in self.scope.items() if key != "turn_id"},
                 round_index=int(payload["round_index"]), provider_request_id=provider_request_id,
                 continuation_index=0) if int(payload.get("continuation_index") or 0) == 0 else None
+            if receipt:
+                await self.enqueue_progress(db, provider_request_id)
         self.active_provider_request_id = provider_request_id
         if receipt:
             response = (receipt.get("sealed_round_resume") or {}).get("response") or {}
@@ -252,11 +254,28 @@ class DelegationSessionRuntime:
             await rounds.commit_sealed_model_round(db, **self.scope,
                 round_index=int(payload["round_index"]), provider_request_id=payload["provider_request_id"],
                 continuation_index=int(payload.get("continuation_index") or 0))
+            await self.enqueue_progress(db, payload['provider_request_id'])
         if payload.get("logical_round_complete", True):
             self.active_provider_request_id = payload["provider_request_id"]
             response = payload.get("response") or {}
             self.final_content = str(response.get("content") or "") if not response.get("tool_calls") else None
         return seal
+
+    async def enqueue_progress(self, db, provider_request_id):
+        if self.lane != 'delegation':
+            return
+        from fastapi import HTTPException
+        from app.services.content_input_receipts import ContentInputReceiptError
+        from app.services.original_work_progress import enqueue_original_work_progress
+
+        try:
+            async with db.begin_nested():
+                await enqueue_original_work_progress(db, run_id=self.scope['run_id'], provider_request_id=provider_request_id)
+        except (ContentInputReceiptError, HTTPException, SQLAlchemyError) as exc:
+            from logging import getLogger
+
+            getLogger(__name__).warning('Original-work progress unavailable: run=%s code=%s',
+                self.scope['run_id'], getattr(exc, 'code', type(exc).__name__))
 
     async def fail(self, **payload):
         async with self.transaction() as db:

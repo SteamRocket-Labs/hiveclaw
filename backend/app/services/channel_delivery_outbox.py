@@ -569,6 +569,13 @@ class ChannelDeliveryOutboxService:
         from app.services.content_input_receipts import ContentInputReceiptError, _validate_input_dependencies
         from app.services.session_model_inputs import _model_dependencies
 
+        if item.terminal_status == 'in_progress' or item.metadata.get('source') == 'original_work_progress':
+            from app.services.original_work_progress import authorize_original_work_progress
+
+            session = await db.get(ChatSession, item.session_id, populate_existing=True)
+            user = await self._private_delivery_reader(db, item, session) if session is not None else None
+            await authorize_original_work_progress(db, item=item, session=session, user=user)
+            return
         if item.terminal_status == 'permission_response' or item.metadata.get('source') == 'original_work_permission_response':
             from app.services.original_work_permission_responses import authorize_original_work_permission_response
 

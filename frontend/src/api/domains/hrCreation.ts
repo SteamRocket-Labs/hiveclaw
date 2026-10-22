@@ -47,6 +47,7 @@ export interface HrCreationDraft {
     can_answer: boolean;
     question: { item_id: string; payload: Record<string, unknown> } | null;
     permissions?: HrFirstTaskPermission[];
+    progress?: { model_result_id: string; event_id: string; text: string } | null;
   } | null;
   provisioning_steps?: Array<{
     step_key: string;

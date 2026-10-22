@@ -108,7 +108,7 @@ async def _start_feishu_creation_work(seed, app_user_sessionmaker, monkeypatch):
         return command.id
 
 
-@pytest.mark.parametrize("input_case", ["complete", "unbound", "revoked", "first_task", "first_task_unbound", "first_task_revoked", "first_task_refined", "first_task_delivery", "first_task_parent_model", "first_task_refined_native", "first_task_native_creation", "first_task_fresh_employee", "first_task_saved_reopen", "first_task_question", "first_task_question_after_write", "first_task_feishu_question", "first_task_feishu_quoted_question", "first_task_feishu_question_source_changed", "first_task_feishu_question_body_changed", "first_task_feishu_question_already_answered", "first_task_feishu_question_projection_missing", "first_task_feishu_question_recipient_changed", "first_task_feishu_question_legacy_status", "first_task_feishu_permission_allow", "first_task_feishu_permission_deny", "first_task_feishu_permission_cancel", "first_task_feishu_permission_unknown", "first_task_feishu_permission_expired", "first_task_feishu_permission_source_changed", "delegation_permission_allow", "first_task_feishu_permission_channel_allow", "first_task_feishu_permission_channel_deny", "first_task_feishu_permission_channel_unknown", "first_task_feishu_permission_channel_legacy", "first_task_feishu_permission_channel_scope", "first_task_feishu_permission_channel_feedback_retry"])
+@pytest.mark.parametrize("input_case", ["complete", "unbound", "revoked", "first_task", "first_task_unbound", "first_task_revoked", "first_task_refined", "first_task_delivery", "first_task_parent_model", "first_task_refined_native", "first_task_native_creation", "first_task_fresh_employee", "first_task_saved_reopen", "first_task_question", "first_task_question_after_write", "first_task_feishu_question", "first_task_feishu_quoted_question", "first_task_feishu_question_source_changed", "first_task_feishu_question_body_changed", "first_task_feishu_question_already_answered", "first_task_feishu_question_projection_missing", "first_task_feishu_question_recipient_changed", "first_task_feishu_question_legacy_status", "first_task_feishu_permission_allow", "first_task_feishu_permission_deny", "first_task_feishu_permission_cancel", "first_task_feishu_permission_unknown", "first_task_feishu_permission_expired", "first_task_feishu_permission_source_changed", "delegation_permission_allow", "first_task_feishu_permission_channel_allow", "first_task_feishu_permission_channel_deny", "first_task_feishu_permission_channel_unknown", "first_task_feishu_permission_channel_legacy", "first_task_feishu_permission_channel_scope", "first_task_feishu_permission_channel_feedback_retry", "first_task_feishu_progress"])
 async def test_governed_delegation_preserves_its_parent_instruction_origin(
     owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, input_case, migrated_pg_url,
 ):
@@ -127,6 +127,7 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
     from app.services.web_chat_runtime import _persist_tool_call
 
     first_task = input_case.startswith("first_task")
+    progress_case = input_case == "first_task_feishu_progress"
     permission_case = input_case.startswith("first_task_feishu_permission_") or input_case == "delegation_permission_allow"
     question_after_write = input_case == "first_task_question_after_write"
     feishu_creation = input_case.startswith("first_task_feishu_")
@@ -508,6 +509,29 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
         return result
     monkeypatch.setattr(content_input_receipts, "record_native_workspace_receipts", observe_writer)
     monkeypatch.setattr(invoker, "create_llm_client", lambda **_kwargs: client)
+    if progress_case:
+        from tests.integration.original_work_progress_helpers import (
+            PROGRESS, PRIVATE_REASONING, observe_first_task_progress, assert_first_task_progress,
+            assert_completed_progress,
+        )
+
+        client.script[0].update(content=PROGRESS, reasoning_content=PRIVATE_REASONING)
+        observe_first_task_progress(seed=seed, task_id=task_id, draft_id=creation["blueprint_id"],
+            factory=app_user_sessionmaker, owner_factory=owner_sessionmaker, monkeypatch=monkeypatch, observations=observed)
+        token = set_runtime_task_fence(task_id=task_id, worker_id="origin-worker", claim_version=1)
+        try:
+            assert await orchestrator.dispatch_persisted_async_delegation(task_id.hex, wait_for_completion=True)
+        finally:
+            reset_runtime_task_fence(token)
+        assert_first_task_progress(observed)
+        async with app_user_sessionmaker() as db:
+            await pin_rls_tenant_context(db, seed["tenant_id"])
+            child = await db.get(RuntimeTask, task_id)
+            assert child.status == "completed" and child.child_session_id == request.session_id
+        assert len(client.requests) == 2 and (seed["data_root"] / str(receiver) / report_path).read_text() == "DELEGATED_REPORT"
+        await assert_completed_progress(seed=seed, factory=app_user_sessionmaker,
+            draft_id=creation["blueprint_id"], observations=observed)
+        return
     if permission_case:
         from app.models.session_v2 import SessionToolInvocation
 

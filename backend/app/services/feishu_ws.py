@@ -2,6 +2,9 @@
 
 import asyncio
 import json
+import hashlib
+import hmac
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Dict
 import uuid
@@ -204,6 +207,15 @@ def _make_no_proxy_connect(orig_connect):
     return _scoped_no_proxy
 
 
+@dataclass(frozen=True, slots=True, eq=False)
+class _ConnectionInstallation:
+    config_id: uuid.UUID
+    tenant_id: uuid.UUID
+    app_id: str
+    secret_digest: bytes = field(repr=False)
+    api_domain: str
+
+
 class FeishuWSManager:
     """Manages Feishu WebSocket clients for all agents."""
 
@@ -211,6 +223,30 @@ class FeishuWSManager:
         self._clients: Dict[uuid.UUID, ws.Client] = {}
         # Tasks for reconnection or ping loops if we want to cancel them later
         self._tasks: Dict[uuid.UUID, asyncio.Task] = {}
+        self._connections: dict[uuid.UUID, _ConnectionInstallation] = {}
+
+    @staticmethod
+    async def _load_connection_installation(agent_id, app_id, app_secret, extra_config):
+        tenant_id = await resolve_tenant_for_agent(agent_id)
+        async with tenant_scoped_session(tenant_id) as db:
+            config = await db.scalar(select(ChannelConfig).where(ChannelConfig.agent_id == agent_id,
+                ChannelConfig.tenant_id == tenant_id, ChannelConfig.channel_type == "feishu", ChannelConfig.is_configured.is_(True)))
+            domain = resolve_feishu_platform(extra_config).open_api_domain
+            digest = hashlib.sha256(app_secret.encode()).digest()
+            if (config is None or config.app_id != app_id
+                or (config.extra_config or {}).get("connection_mode", "webhook") != "websocket"
+                or resolve_feishu_platform(config.extra_config).open_api_domain != domain
+                or not hmac.compare_digest(hashlib.sha256(str(config.app_secret or "").encode()).digest(), digest)):
+                return None
+            return _ConnectionInstallation(config.id, tenant_id, app_id, digest, domain)
+
+    def _connection_matches(self, agent_id, config, connection):
+        return bool(connection is not None and self._connections.get(agent_id) is connection
+            and config is not None and config.id == connection.config_id and config.tenant_id == connection.tenant_id
+            and config.is_configured and config.app_id == connection.app_id
+            and (config.extra_config or {}).get("connection_mode", "webhook") == "websocket"
+            and resolve_feishu_platform(config.extra_config).open_api_domain == connection.api_domain
+            and hmac.compare_digest(hashlib.sha256(str(config.app_secret or "").encode()).digest(), connection.secret_digest))
 
     async def _mark_channel_status(
         self,
@@ -220,6 +256,7 @@ class FeishuWSManager:
         connection_status: str,
         error: str | None = None,
         is_configured: bool | None = None,
+        connection: _ConnectionInstallation | None = None,
     ) -> None:
         """Persist Feishu websocket health so bad credentials do not restart forever."""
         now = datetime.now(timezone.utc)
@@ -239,6 +276,8 @@ class FeishuWSManager:
                 )
                 config = result.scalar_one_or_none()
                 if not config:
+                    return
+                if connection is not None and not self._connection_matches(agent_id, config, connection):
                     return
 
                 config.is_connected = is_connected
@@ -293,7 +332,7 @@ class FeishuWSManager:
                     f"agent={agent_id} error_type={type(exc).__name__}"
                 )
 
-    def _create_event_handler(self, agent_id: uuid.UUID) -> lark.EventDispatcherHandler:
+    def _create_event_handler(self, agent_id: uuid.UUID, *, connection=None) -> lark.EventDispatcherHandler:
         """Create an event dispatcher for a specific agent."""
 
         def handle_message(data: Any) -> None:
@@ -344,13 +383,13 @@ class FeishuWSManager:
                     body_dict = json.loads(raw_body.decode("utf-8"))
 
                 loop = asyncio.get_running_loop()
-                loop.create_task(self._async_handle_message(agent_id, data))
+                loop.create_task(self._async_handle_message(agent_id, data, connection=connection))
             except RuntimeError:
                 try:
                     # If no running loop in this thread, try to find the main event loop
                     # This is a heuristic and might need adjustment depending on the exact async framework setup
                     main_loop = [t for t in asyncio.all_tasks() if t.get_name() != "feishu-ws"][0].get_loop()
-                    asyncio.run_coroutine_threadsafe(self._async_handle_message(agent_id, data), main_loop)
+                    asyncio.run_coroutine_threadsafe(self._async_handle_message(agent_id, data, connection=connection), main_loop)
                 except Exception as e:
                     logger.opt(exception=True).error(f"[Feishu WS] Could not dispatch event to main loop: {e}")
 
@@ -362,7 +401,7 @@ class FeishuWSManager:
             """Handle card.action.trigger events from Feishu WebSocket."""
             try:
                 logger.info(f"[Feishu WS] Card action received for agent {agent_id}")
-                coro = self._async_handle_card_action(agent_id, data)
+                coro = self._async_handle_card_action(agent_id, data, connection=connection)
                 loop = asyncio.get_running_loop()
                 if hasattr(loop, "create_task"):
                     loop.create_task(coro)
@@ -371,7 +410,7 @@ class FeishuWSManager:
             except RuntimeError:
                 try:
                     main_loop = [t for t in asyncio.all_tasks() if t.get_name() != "feishu-ws"][0].get_loop()
-                    asyncio.run_coroutine_threadsafe(self._async_handle_card_action(agent_id, data), main_loop)
+                    asyncio.run_coroutine_threadsafe(self._async_handle_card_action(agent_id, data, connection=connection), main_loop)
                 except Exception as e:
                     logger.opt(exception=True).error(f"[Feishu WS] Could not dispatch card action to main loop: {e}")
             except Exception as e:
@@ -387,7 +426,7 @@ class FeishuWSManager:
         )
         return dispatcher
 
-    async def _async_handle_message(self, agent_id: uuid.UUID, data: Dict[str, Any]) -> None:
+    async def _async_handle_message(self, agent_id: uuid.UUID, data: Dict[str, Any], *, connection=None) -> None:
         """Handle im.message.receive_v1 events from Feishu WebSocket asynchronously."""
         try:
             # The data object carries the raw event body
@@ -446,8 +485,10 @@ class FeishuWSManager:
                         )
                     )
                 ).scalar_one_or_none()
-                if config is None:
-                    raise RuntimeError("Feishu installation no longer exists")
+                if (not self._connection_matches(agent_id, config, connection)
+                    or body_dict.get("header", {}).get("app_id") not in {None, "", connection.app_id}):
+                    logger.warning("[Feishu WS] Rejected message from an obsolete connection for {}", agent_id)
+                    return
                 from app.services.channel_ingress_inbox import (
                     accept_authenticated_channel_event,
                     channel_installation_ref,
@@ -469,7 +510,7 @@ class FeishuWSManager:
         except Exception as e:
             logger.opt(exception=True).error(f"[Feishu WS] Error processing event for {agent_id}: {e}")
 
-    async def _async_handle_card_action(self, agent_id: uuid.UUID, data: Dict[str, Any]) -> None:
+    async def _async_handle_card_action(self, agent_id: uuid.UUID, data: Dict[str, Any], *, connection=None) -> None:
         """Handle card.action.trigger events from Feishu WebSocket."""
         try:
             import json as _json_ca
@@ -498,8 +539,10 @@ class FeishuWSManager:
                         )
                     )
                 ).scalar_one_or_none()
-                if config is None:
-                    raise RuntimeError("Feishu installation no longer exists")
+                if (not self._connection_matches(agent_id, config, connection)
+                    or body_dict.get("header", {}).get("app_id") not in {None, "", connection.app_id}):
+                    logger.warning("[Feishu WS] Rejected card action from an obsolete connection for {}", agent_id)
+                    return
                 from app.services.channel_ingress_inbox import (
                     accept_authenticated_channel_event,
                     channel_installation_ref,
@@ -536,17 +579,23 @@ class FeishuWSManager:
             logger.warning(f"[Feishu WS] Missing app_id or app_secret for {agent_id}, skipping")
             return
 
+        connection = await self._load_connection_installation(agent_id, app_id, app_secret, extra_config)
+        if connection is None:
+            logger.warning("[Feishu WS] Configuration changed before client startup for {}", agent_id)
+            return
+
         logger.info(f"[Feishu WS] Starting async WS client for agent {agent_id} (App ID: {app_id})")
 
         # Stop existing client task if any
         if stop_existing and agent_id in self._tasks:
+            self._connections.pop(agent_id, None)
             old_task = self._tasks.pop(agent_id, None)
             if old_task and not old_task.done():
                 old_task.cancel()
                 logger.info(f"[Feishu WS] Cancelled old WS task for {agent_id}")
 
         try:
-            event_handler = self._create_event_handler(agent_id)
+            event_handler = self._create_event_handler(agent_id, connection=connection)
         except Exception as e:
             logger.opt(exception=True).error(f"[Feishu WS] Failed to create event handler for {agent_id}: {e}")
             return
@@ -562,6 +611,7 @@ class FeishuWSManager:
         )
         _patch_lark_receive_loop_for_supervised_reconnect(client, agent_id)
         self._clients[agent_id] = client
+        self._connections[agent_id] = connection
         no_proxy_ctx = _make_no_proxy_connect(_orig_websockets_connect) if _PROXY_PATCH_AVAILABLE else None
 
         # Direct Async runner bypassing the faulty client.start()
@@ -581,6 +631,7 @@ class FeishuWSManager:
                             agent_id,
                             is_connected=True,
                             connection_status="connected",
+                            connection=connection,
                         )
                         retry_delay = _FEISHU_WS_INITIAL_RETRY_DELAY_SECONDS
                         # Start ping loop natively
@@ -605,10 +656,13 @@ class FeishuWSManager:
                                 is_configured=False,
                                 connection_status="invalid_credentials",
                                 error=error,
+                                connection=connection,
                             )
                             await client._disconnect()
-                            self._clients.pop(agent_id, None)
-                            self._tasks.pop(agent_id, None)
+                            if self._connections.get(agent_id) is connection:
+                                self._connections.pop(agent_id, None)
+                                self._clients.pop(agent_id, None)
+                                self._tasks.pop(agent_id, None)
                             return
 
                         error = f"{type(e).__name__}: {e}"
@@ -621,18 +675,22 @@ class FeishuWSManager:
                             is_connected=False,
                             connection_status="transient_error",
                             error=error,
+                            connection=connection,
                         )
                         await client._disconnect()
                         await asyncio.sleep(retry_delay)
                         retry_delay = min(retry_delay * 2, _FEISHU_WS_MAX_RETRY_DELAY_SECONDS)
-                        self._clients[agent_id] = client
+                        if self._connections.get(agent_id) is connection:
+                            self._clients[agent_id] = client
             except asyncio.CancelledError:
                 logger.info(f"[Feishu WS] Async client task cancelled for {agent_id}")
                 await client._disconnect()
             except Exception as e:
                 logger.opt(exception=True).error(f"[Feishu WS] Async client fatal exception for {agent_id}: {e}")
                 await client._disconnect()
-                self._clients.pop(agent_id, None)
+                if self._connections.get(agent_id) is connection:
+                    self._connections.pop(agent_id, None)
+                    self._clients.pop(agent_id, None)
 
         task = asyncio.create_task(_run_async_client(), name=f"feishu-ws-async-{str(agent_id)[:8]}")
         self._tasks[agent_id] = task
@@ -640,6 +698,7 @@ class FeishuWSManager:
 
     async def stop_client(self, agent_id: uuid.UUID):
         """Stops an actively running WebSocket client for an agent."""
+        self._connections.pop(agent_id, None)
         if agent_id in self._tasks:
             task = self._tasks.pop(agent_id)
             if not task.done():

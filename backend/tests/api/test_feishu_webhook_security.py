@@ -104,6 +104,8 @@ async def test_feishu_webhook_falls_back_to_verification_token(monkeypatch):
     )
     db = _FakeDB(
         SimpleNamespace(
+            id=uuid4(),
+            app_id="synthetic-webhook-app",
             agent_id=agent_id,
             tenant_id=tenant_id,
             channel_type="feishu",
@@ -203,6 +205,8 @@ async def test_feishu_webhook_decrypts_encrypted_payload_before_processing(monke
         request=request,
         db=_FakeDB(
             SimpleNamespace(
+                id=uuid4(),
+                app_id="synthetic-webhook-app",
                 agent_id=agent_id,
                 tenant_id=uuid4(),
                 channel_type="feishu",
@@ -299,6 +303,8 @@ async def test_tenant_feishu_webhook_decrypts_payload_before_processing(monkeypa
         request=request,
         db=_FakeDB(
             SimpleNamespace(
+                id=uuid4(),
+                app_id="synthetic-webhook-app",
                 tenant_id=tenant_id,
                 channel_type="feishu",
                 is_active=True,

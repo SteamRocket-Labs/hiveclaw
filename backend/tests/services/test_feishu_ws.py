@@ -1,12 +1,24 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
+
+
+@pytest.fixture
+def sdk_installation(monkeypatch):
+    """Isolate SDK supervision checks from the native installation query."""
+    from app.services import feishu_ws
+
+    async def load(agent_id, app_id, app_secret, extra_config):
+        return feishu_ws._ConnectionInstallation(uuid4(), uuid4(), app_id,
+            hashlib.sha256(app_secret.encode()).digest(), feishu_ws.resolve_feishu_platform(extra_config).open_api_domain)
+    monkeypatch.setattr(feishu_ws.FeishuWSManager, '_load_connection_installation', staticmethod(load))
 
 
 class _FakeAwaitableConnection:
@@ -278,6 +290,7 @@ def test_receive_event_with_raw_body_is_scheduled(monkeypatch):
     assert scheduled
 
 
+@pytest.mark.usefixtures("sdk_installation")
 @pytest.mark.asyncio
 async def test_start_client_binds_lark_sdk_receive_loop_to_running_loop(monkeypatch):
     import app.services.feishu_ws as feishu_ws
@@ -318,7 +331,7 @@ async def test_start_client_binds_lark_sdk_receive_loop_to_running_loop(monkeypa
         raise asyncio.CancelledError
 
     manager = feishu_ws.FeishuWSManager()
-    monkeypatch.setattr(manager, "_create_event_handler", lambda _agent_id: object())
+    monkeypatch.setattr(manager, "_create_event_handler", lambda _agent_id, **_kwargs: object())
 
     async def fake_mark_channel_status(*_args, **_kwargs):
         return None
@@ -338,6 +351,7 @@ async def test_start_client_binds_lark_sdk_receive_loop_to_running_loop(monkeypa
     assert fake_lark_ws_client_module.loop is running_loop
 
 
+@pytest.mark.usefixtures("sdk_installation")
 @pytest.mark.asyncio
 async def test_start_client_passes_lark_global_domain_to_sdk(monkeypatch):
     import app.services.feishu_ws as feishu_ws
@@ -368,7 +382,7 @@ async def test_start_client_passes_lark_global_domain_to_sdk(monkeypatch):
     monkeypatch.setattr(feishu_ws, "lark", SimpleNamespace(LogLevel=SimpleNamespace(INFO="info")))
     monkeypatch.setattr(feishu_ws, "ws", SimpleNamespace(Client=_FakeClient))
     monkeypatch.setattr(feishu_ws.asyncio, "create_task", fake_create_task)
-    monkeypatch.setattr(feishu_ws.FeishuWSManager, "_create_event_handler", lambda self, agent_id: object())
+    monkeypatch.setattr(feishu_ws.FeishuWSManager, "_create_event_handler", lambda self, agent_id, **_kwargs: object())
 
     manager = feishu_ws.FeishuWSManager()
     await manager.start_client(
@@ -382,6 +396,7 @@ async def test_start_client_passes_lark_global_domain_to_sdk(monkeypatch):
     assert created_tasks
 
 
+@pytest.mark.usefixtures("sdk_installation")
 @pytest.mark.asyncio
 async def test_start_client_disables_sdk_auto_reconnect(monkeypatch):
     import app.services.feishu_ws as feishu_ws
@@ -418,7 +433,7 @@ async def test_start_client_disables_sdk_auto_reconnect(monkeypatch):
         raise asyncio.CancelledError
 
     manager = feishu_ws.FeishuWSManager()
-    monkeypatch.setattr(manager, "_create_event_handler", lambda _agent_id: object())
+    monkeypatch.setattr(manager, "_create_event_handler", lambda _agent_id, **_kwargs: object())
 
     async def fake_mark_channel_status(*_args, **_kwargs):
         return None
@@ -436,6 +451,7 @@ async def test_start_client_disables_sdk_auto_reconnect(monkeypatch):
     assert client_kwargs["auto_reconnect"] is False
 
 
+@pytest.mark.usefixtures("sdk_installation")
 @pytest.mark.asyncio
 async def test_start_client_suppresses_expected_lark_receive_loop_disconnect(monkeypatch):
     import app.services.feishu_ws as feishu_ws
@@ -481,7 +497,7 @@ async def test_start_client_suppresses_expected_lark_receive_loop_disconnect(mon
         raise asyncio.CancelledError
 
     manager = feishu_ws.FeishuWSManager()
-    monkeypatch.setattr(manager, "_create_event_handler", lambda _agent_id: object())
+    monkeypatch.setattr(manager, "_create_event_handler", lambda _agent_id, **_kwargs: object())
 
     async def fake_mark_channel_status(*_args, **_kwargs):
         return None
@@ -503,6 +519,7 @@ async def test_start_client_suppresses_expected_lark_receive_loop_disconnect(mon
     assert fake_client.disconnect_calls >= 1
 
 
+@pytest.mark.usefixtures("sdk_installation")
 @pytest.mark.asyncio
 async def test_start_client_keeps_client_registered_after_transient_connect_failure(monkeypatch):
     import app.services.feishu_ws as feishu_ws
@@ -541,9 +558,10 @@ async def test_start_client_keeps_client_registered_after_transient_connect_fail
         raise asyncio.CancelledError
 
     manager = feishu_ws.FeishuWSManager()
-    monkeypatch.setattr(manager, "_create_event_handler", lambda _agent_id: object())
+    monkeypatch.setattr(manager, "_create_event_handler", lambda _agent_id, **_kwargs: object())
 
-    async def fake_mark_channel_status(agent_id_arg, **kwargs):
+    async def fake_mark_channel_status(agent_id_arg, *, connection, **kwargs):
+        assert connection is manager._connections[agent_id_arg]
         status_updates.append({"agent_id": agent_id_arg, **kwargs})
 
     monkeypatch.setattr(manager, "_mark_channel_status", fake_mark_channel_status, raising=False)
@@ -571,6 +589,7 @@ async def test_start_client_keeps_client_registered_after_transient_connect_fail
     ]
 
 
+@pytest.mark.usefixtures("sdk_installation")
 @pytest.mark.asyncio
 async def test_start_client_marks_transient_when_connected_socket_disappears(monkeypatch):
     import app.services.feishu_ws as feishu_ws
@@ -614,9 +633,10 @@ async def test_start_client_marks_transient_when_connected_socket_disappears(mon
         raise asyncio.CancelledError
 
     manager = feishu_ws.FeishuWSManager()
-    monkeypatch.setattr(manager, "_create_event_handler", lambda _agent_id: object())
+    monkeypatch.setattr(manager, "_create_event_handler", lambda _agent_id, **_kwargs: object())
 
-    async def fake_mark_channel_status(agent_id_arg, **kwargs):
+    async def fake_mark_channel_status(agent_id_arg, *, connection, **kwargs):
+        assert connection is manager._connections[agent_id_arg]
         status_updates.append({"agent_id": agent_id_arg, **kwargs})
 
     monkeypatch.setattr(manager, "_mark_channel_status", fake_mark_channel_status, raising=False)
@@ -647,6 +667,7 @@ async def test_start_client_marks_transient_when_connected_socket_disappears(mon
     ]
 
 
+@pytest.mark.usefixtures("sdk_installation")
 @pytest.mark.asyncio
 async def test_start_client_does_not_retry_invalid_feishu_credentials(monkeypatch):
     import app.services.feishu_ws as feishu_ws
@@ -686,9 +707,10 @@ async def test_start_client_does_not_retry_invalid_feishu_credentials(monkeypatc
         raise asyncio.CancelledError
 
     manager = feishu_ws.FeishuWSManager()
-    monkeypatch.setattr(manager, "_create_event_handler", lambda _agent_id: object())
+    monkeypatch.setattr(manager, "_create_event_handler", lambda _agent_id, **_kwargs: object())
 
-    async def fake_mark_channel_status(agent_id_arg, **kwargs):
+    async def fake_mark_channel_status(agent_id_arg, *, connection, **kwargs):
+        assert connection is manager._connections[agent_id_arg]
         status_updates.append({"agent_id": agent_id_arg, **kwargs})
 
     monkeypatch.setattr(manager, "_mark_channel_status", fake_mark_channel_status, raising=False)

@@ -29,7 +29,7 @@ from app.services.plan_authorization_lease import (
     verify_consumed_plan_authorization_lease,
 )
 from app.services.tenant_resolver import resolve_tenant_for_agent
-from app.services.business_task_runtime import TaskExecutionOutcome, TaskExecutionStatus
+from app.services.business_task_runtime import BusinessTaskExecutionPause, TaskExecutionOutcome, TaskExecutionStatus
 
 
 _BUSINESS_TASK_CANCEL_EVENTS: dict[str, asyncio.Event] = {}
@@ -370,7 +370,7 @@ async def execute_task(
     requester_user_id: uuid.UUID | None = None,
     cancel_event: asyncio.Event | None = None,
     runtime_task_id: uuid.UUID | None = None,
-) -> TaskExecutionOutcome:
+) -> TaskExecutionOutcome | BusinessTaskExecutionPause:
     """Execute a task using the agent's configured LLM with full context.
 
     Uses the same context as chat dialog: build_agent_context for system prompt,
@@ -723,6 +723,9 @@ async def execute_task(
                 reflection_session_id=str(reflection_session_id),
                 terminal_reason=TerminalReason.USER_CANCEL.value,
             )
+        if runtime_task_id is not None and terminal_reason_value == TerminalReason.CLARIFICATION_REQUIRED.value:
+            return BusinessTaskExecutionPause(reflection_session_id=str(reflection_session_id),
+                provider_request_id=canonical_runtime.active_provider_request_id)
         reply = str(result.content or "").strip()
         if not reply:
             await _log_error(task_id, "模型返回空内容，任务未完成", tenant_id=tenant_id)

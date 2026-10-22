@@ -23,6 +23,7 @@ from app.services.permission_execution import (
     permission_execution_lease,
 )
 from app.services.session_v2_persistence import AuthenticatedSessionAuthority, SessionEventDraft, append_session_events
+from app.services.session_tool_runtime import permission_run_session_clause
 
 
 @dataclass(frozen=True, slots=True)
@@ -40,6 +41,20 @@ class SessionPermissionResolutionReceipt:
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+
+async def _lock_permission_session(db, *, tenant_id, session_id, permission_request_id):
+    """Business control writers lock the original work before its native child."""
+    from app.services.chat_transcript import lock_transcript_session
+
+    parent = await db.scalar(select(RuntimeTask.parent_session_id).join(SessionToolInvocation,
+        SessionToolInvocation.run_id == RuntimeTask.id).where(
+        RuntimeTask.tenant_id == tenant_id, RuntimeTask.task_type == 'business_task',
+        RuntimeTask.child_session_id == str(session_id), SessionToolInvocation.tenant_id == tenant_id,
+        SessionToolInvocation.session_id == session_id, SessionToolInvocation.permission_item_id == permission_request_id))
+    if parent:
+        await lock_transcript_session(db, session_id=uuid.UUID(parent))
+    await lock_transcript_session(db, session_id=session_id)
 
 
 def _tool_call_parts(call: Any) -> tuple[str, str, dict[str, Any]]:
@@ -141,9 +156,9 @@ async def _settle_unstarted_batch_siblings(
     """Close never-started siblings truthfully; preserve other open approvals."""
 
     from app.services.session_tool_runtime import complete_tool_invocation, prepare_tool_invocation
-    from app.services.chat_transcript import lock_transcript_session
 
-    await lock_transcript_session(db, session_id=session_id)
+    await _lock_permission_session(db, tenant_id=tenant_id, session_id=session_id,
+        permission_request_id=invocation.permission_item_id)
     result = await _source_result(db, invocation)
     response = dict((result.seal_json or {}).get("response") or {})
     calls = list(response.get("tool_calls") or [])
@@ -225,21 +240,21 @@ async def _queue_same_run_continuation(
     invocation: SessionToolInvocation,
     source_result: SessionModelResult,
 ) -> RuntimeTask:
-    from app.services.chat_transcript import lock_transcript_session
 
     # Advisory → row: the resume write below appends session events (which
     # take this session's advisory); taking the RuntimeTask row first would
     # be the row → advisory side of the global order against an in-flight
     # append of the same run's session. Reentrant when the caller (the
     # round/quarantine flow) already holds the advisory.
-    await lock_transcript_session(db, session_id=session_id)
+    await _lock_permission_session(db, tenant_id=tenant_id, session_id=session_id,
+        permission_request_id=invocation.permission_item_id)
     task = await db.scalar(
         select(RuntimeTask)
         .where(
             RuntimeTask.id == invocation.run_id,
             RuntimeTask.tenant_id == tenant_id,
             RuntimeTask.parent_agent_id == agent_id,
-            RuntimeTask.parent_session_id == str(session_id),
+            permission_run_session_clause(session_id),
         )
         .with_for_update()
         .execution_options(populate_existing=True)
@@ -277,6 +292,9 @@ async def _queue_same_run_continuation(
     task.claim_expires_at = None
     task.scheduled_at = datetime.now(timezone.utc)
     task.metadata_json = metadata
+    from app.services.business_task_waits import sync_business_permission_resume
+
+    await sync_business_permission_resume(db, task)
     await append_session_events(
         db,
         tenant_id=tenant_id,
@@ -318,18 +336,18 @@ async def _quarantine_same_run_for_reconciliation(
 ) -> RuntimeTask:
     """Freeze the original Run when effect settlement cannot be proven."""
 
-    from app.services.chat_transcript import lock_transcript_session
 
     # Advisory → row for the same reason as the resume path above: the
     # quarantine write settles the run terminally and appends session events.
-    await lock_transcript_session(db, session_id=session_id)
+    await _lock_permission_session(db, tenant_id=tenant_id, session_id=session_id,
+        permission_request_id=invocation.permission_item_id)
     task = await db.scalar(
         select(RuntimeTask)
         .where(
             RuntimeTask.id == invocation.run_id,
             RuntimeTask.tenant_id == tenant_id,
             RuntimeTask.parent_agent_id == agent_id,
-            RuntimeTask.parent_session_id == str(session_id),
+            permission_run_session_clause(session_id),
         )
         .with_for_update()
     )
@@ -367,6 +385,9 @@ async def _quarantine_same_run_for_reconciliation(
     task.claimed_by = None
     task.claim_expires_at = None
     task.metadata_json = metadata
+    from app.services.business_task_waits import sync_business_permission_reconciliation
+
+    await sync_business_permission_reconciliation(db, task, reason_code)
     await append_session_events(
         db,
         tenant_id=tenant_id,
@@ -450,9 +471,11 @@ async def expire_stale_session_permission_requests(
     expired = 0
     for invocation_id, session_id in candidates:
         try:
-            from app.services.chat_transcript import lock_transcript_session
-
-            await lock_transcript_session(db, session_id=session_id)
+            pending = await db.get(SessionToolInvocation, invocation_id)
+            if pending is None:
+                continue
+            await _lock_permission_session(db, tenant_id=pending.tenant_id, session_id=session_id,
+                permission_request_id=pending.permission_item_id)
             invocation = await db.scalar(
                 select(SessionToolInvocation)
                 .where(
@@ -474,7 +497,7 @@ async def expire_stale_session_permission_requests(
                 .where(
                     RuntimeTask.id == invocation.run_id,
                     RuntimeTask.tenant_id == invocation.tenant_id,
-                    RuntimeTask.parent_session_id == str(invocation.session_id),
+                    permission_run_session_clause(invocation.session_id),
                 )
                 .with_for_update()
             )
@@ -617,9 +640,9 @@ async def _resolve_session_tool_permission(
     from app.services.session_tool_runtime import complete_tool_invocation, load_permission_plan_mode, mark_tool_effect_started
     from app.tools.governance import _detect_destructive_delete
     from app.tools.registry import is_destructive_tool
-    from app.services.chat_transcript import lock_transcript_session
 
-    await lock_transcript_session(db, session_id=authority.session_id)
+    await _lock_permission_session(db, tenant_id=authority.tenant_id, session_id=authority.session_id,
+        permission_request_id=permission_request_id)
     invocation = await db.scalar(
         select(SessionToolInvocation)
         .where(
@@ -686,7 +709,8 @@ async def _resolve_session_tool_permission(
         session.transcript_metadata_json = session_metadata
         await db.commit()
 
-    await lock_transcript_session(db, session_id=authority.session_id)
+    await _lock_permission_session(db, tenant_id=authority.tenant_id, session_id=authority.session_id,
+        permission_request_id=permission_request_id)
     await db.refresh(invocation, with_for_update=True)
     if decision in {"allow_once", "allow_session"} and invocation.result_event_id is None:
         if execution_lease is None:
@@ -791,7 +815,8 @@ async def _resolve_session_tool_permission(
                 # fence crossed, an escaped exception is effect-uncertain: never
                 # guess a failure receipt and never replay the effect.
                 await db.rollback()
-                await lock_transcript_session(db, session_id=authority.session_id)
+                await _lock_permission_session(db, tenant_id=authority.tenant_id, session_id=authority.session_id,
+                    permission_request_id=permission_request_id)
                 invocation = await db.scalar(
                     select(SessionToolInvocation)
                     .where(

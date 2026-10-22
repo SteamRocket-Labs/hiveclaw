@@ -237,6 +237,7 @@ async def test_business_task_text_rechecks_its_actual_original_source(
     delivery_channel='feishu',
     requester_state='active',
     artifact_body=None,
+    permission_handler=None,
 ):
     import app.database as database
     import app.runtime.invoker as invoker
@@ -287,7 +288,7 @@ async def test_business_task_text_rechecks_its_actual_original_source(
         model = await db.get(LLMModel, agent.primary_model_id)
         model.api_key_encrypted = get_secrets_provider().encrypt('synthetic-business-task-provider-only')
         model.base_url, model.max_input_tokens = 'http://127.0.0.1:1', 256_000
-        if artifact_body is not None:
+        if artifact_body is not None and permission_handler is None:
             from app.models.capability_policy import CapabilityPolicy
 
             db.add(CapabilityPolicy(tenant_id=seed['tenant_id'], capability='workspace.file.write',
@@ -397,6 +398,12 @@ async def test_business_task_text_rechecks_its_actual_original_source(
     finally:
         reset_runtime_task_fence(fence)
     (tmp_path / 'business-model-requests.json').write_text(json.dumps(model_client.requests, default=str))
+    if permission_handler is not None:
+        await permission_handler(client=client, db_factory=app_user_sessionmaker, owner_db_factory=owner_sessionmaker,
+            seed=seed, run_id=run_id, original=original, headers=headers, artifact_body=artifact_body,
+            monkeypatch=monkeypatch, tmp_path=tmp_path, model_client=model_client,
+            canonical_download_user=original_api[0].canonical_download_user)
+        return
     async with app_user_sessionmaker() as db:
         await pin_rls_tenant_context(db, seed['tenant_id'])
         run = await db.get(RuntimeTask, run_id)

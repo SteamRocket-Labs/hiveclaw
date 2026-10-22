@@ -139,6 +139,14 @@ async def _recovery_inputs(db, *, task, provider_request_id):
         settled = tool.effect_state == "effect_committed" or (permission and (
             (tool.effect_state == "prepared_not_started" and tool.permission_state == "waiting")
             or (tool.result_event_id is not None and tool.permission_state == "denied")))
+        if permission and tool.permission_state == 'expired' and tool.result_event_id is not None:
+            from app.models.chat_transcript_event import ChatTranscriptEvent
+            from app.services.session_model_inputs import _expired_permission_result_bound
+            from app.services.session_semantic_history import _event_payload
+
+            event = await db.get(ChatTranscriptEvent, tool.result_event_id)
+            settled = event is not None and await _expired_permission_result_bound(db, invocation=tool,
+                event=event, content=_event_payload(event).get('content'))
         if not settled and tool.effect_state == "prepared_not_started" and tool.result_event_id is not None:
             from app.models.chat_transcript_event import ChatTranscriptEvent
             from app.services.session_approval import invocation_enterprise_approval

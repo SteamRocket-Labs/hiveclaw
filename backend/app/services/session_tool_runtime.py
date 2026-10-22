@@ -26,6 +26,14 @@ UNRESOLVED_TOOL_EFFECT_STATES = frozenset({"effect_started", "needs_reconciliati
 TOOL_EFFECT_RECONCILIATION_TASK_STATUSES = frozenset({"failed", "needs_reconciliation"})
 
 
+def permission_run_session_clause(session_id):
+    """A business Tool belongs to its pinned execution child, not its inbox."""
+    return or_(
+        and_(RuntimeTask.task_type != 'business_task', RuntimeTask.parent_session_id == str(session_id)),
+        and_(RuntimeTask.task_type == 'business_task', RuntimeTask.child_session_id == str(session_id)),
+    )
+
+
 class ToolEffectReconciliationRequired(RuntimeError):
     """A prior tool may have taken effect but has no canonical terminal receipt."""
 

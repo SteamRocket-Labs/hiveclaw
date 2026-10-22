@@ -89,6 +89,14 @@ class TaskExecutionOutcome:
 
 
 @dataclass(frozen=True, slots=True)
+class BusinessTaskExecutionPause:
+    """A native clarification boundary, awaiting its persisted tool witness."""
+
+    reflection_session_id: str
+    provider_request_id: str
+
+
+@dataclass(frozen=True, slots=True)
 class BusinessTaskFinalizationReceipt:
     """Post-commit authority for the business-task terminal sidecar."""
 
@@ -295,7 +303,7 @@ def _business_task_stages(
     *, task_status: str, runtime_status: str | None, phase: str, authorized: bool
 ) -> list[dict[str, str]]:
     terminal = task_status in _TASK_TERMINAL_STATUSES
-    executing_started = phase in {"invoking", "terminal"} or runtime_status == "running"
+    executing_started = phase in {"invoking", "awaiting_permission", "terminal"} or runtime_status == "running"
     terminal_stage_status = {
         "done": "complete",
         "failed": "failed",
@@ -348,7 +356,9 @@ def project_business_task(*, task: Task, runtime_task: RuntimeTask | None) -> di
     can_reconcile = bool(
         binding_matches and task_status == "needs_reconciliation" and not reconciliation.get("resolved_at")
     )
-    if can_reconcile:
+    if runtime_status == 'suspended' and metadata.get('interactive_pause') == 'awaiting_session_permission':
+        recovery_state = 'awaiting_permission'
+    elif can_reconcile:
         recovery_state = "needs_review"
     elif can_retry:
         recovery_state = "retry_available"
@@ -367,7 +377,7 @@ def project_business_task(*, task: Task, runtime_task: RuntimeTask | None) -> di
         "runtime_phase": phase,
         "runtime_summary": getattr(runtime_task, "result_summary", None) if runtime_task is not None else None,
         "runtime_request_id": str(metadata.get("request_id") or "") or None,
-        "reflection_session_id": outcome.get("reflection_session_id"),
+        "reflection_session_id": outcome.get("reflection_session_id") or getattr(runtime_task, 'child_session_id', None),
         "recovery_state": recovery_state,
         "recovery_message": str(outcome.get("summary") or getattr(task, "last_error", None) or "") or None,
         "actions": {
@@ -666,7 +676,7 @@ async def mark_business_task_execution_started(*, runtime_task_id: uuid.UUID) ->
 async def finalize_business_task_execution(
     *,
     runtime_task_id: uuid.UUID,
-    outcome: TaskExecutionOutcome,
+    outcome: TaskExecutionOutcome | BusinessTaskExecutionPause,
 ) -> BusinessTaskFinalizationReceipt | None:
     """Atomically persist Task and RuntimeTask terminal state; idempotent on retry."""
 
@@ -720,6 +730,22 @@ async def finalize_business_task_execution(
         ).scalar_one_or_none()
         if task is None:
             raise BusinessTaskInvariantError("business Task not found during finalization")
+        if isinstance(outcome, BusinessTaskExecutionPause):
+            from app.services.business_task_waits import apply_business_task_permission_wait
+            from app.services.runtime_task_fence import finish_current_runtime_task_claim
+
+            paused = await apply_business_task_permission_wait(db, task=task, run=runtime_task, pause=outcome)
+            if paused:
+                await db.commit()
+                finish_current_runtime_task_claim(task_id=runtime_task_id)
+                return BusinessTaskFinalizationReceipt(committed=True, terminal_transitioned=False,
+                    runtime_task_id=runtime_task_id, business_task_id=task.id, agent_id=agent_id,
+                    tenant_id=tenant_id, reflection_session_id=runtime_task.child_session_id,
+                    terminal_status=runtime_task.status)
+            outcome = TaskExecutionOutcome(status=TaskExecutionStatus.NEEDS_RECONCILIATION,
+                summary='Review the native task input request before continuing.',
+                error_code='business_native_wait_unavailable', reflection_session_id=runtime_task.child_session_id,
+                retryable=False)
         apply_business_task_outcome(db=db, task=task, runtime_task=runtime_task, outcome=outcome)
         from app.services.business_task_artifacts import capture_business_task_artifacts
 

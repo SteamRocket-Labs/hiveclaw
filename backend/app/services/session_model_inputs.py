@@ -316,6 +316,38 @@ async def load_compaction_source(db, *, tenant_id, agent_id, source_id, session_
     return source
 
 
+async def _expired_permission_result_bound(db, *, invocation, event, content):
+    from app.models.chat_transcript_event import ChatTranscriptEvent
+    from app.services.session_semantic_history import _event_payload
+
+    receipt = f'session-permission:{invocation.permission_item_id}:expired'
+    expected = {'schema': 'hive.tool_permission_result.v1', 'status': 'aborted',
+        'reason_code': 'tool_permission_request_expired', 'permission_item_id': str(invocation.permission_item_id),
+        'invocation_id': str(invocation.id)}
+    try:
+        if (json.loads(content) != expected or invocation.permission_state != 'expired'
+            or invocation.effect_state != 'prepared_not_started' or invocation.permission_item_id is None
+            or invocation.permission_receipt_ref != receipt or invocation.receipt_ref != receipt
+            or event.id != invocation.result_event_id or event.tenant_id != invocation.tenant_id
+            or event.session_id != invocation.session_id or event.run_id != invocation.run_id
+            or event.invocation_id != invocation.id or event.item_kind != 'tool_result' or event.lifecycle != 'completed'
+            or _event_payload(event).get('content_or_error_ref') != receipt):
+            return False
+    except (ValueError, TypeError):
+        return False
+    expired = await db.scalar(select(ChatTranscriptEvent).where(
+        ChatTranscriptEvent.tenant_id == invocation.tenant_id, ChatTranscriptEvent.agent_id == event.agent_id,
+        ChatTranscriptEvent.session_id == invocation.session_id, ChatTranscriptEvent.run_id == invocation.run_id,
+        ChatTranscriptEvent.result_id == event.result_id, ChatTranscriptEvent.invocation_id == invocation.id,
+        ChatTranscriptEvent.item_id == invocation.permission_item_id, ChatTranscriptEvent.item_kind == 'tool_permission',
+        ChatTranscriptEvent.lifecycle == 'cancelled').order_by(ChatTranscriptEvent.sequence).limit(1))
+    payload = _event_payload(expired) if expired else {}
+    return (payload.get('receipt_ref') == receipt and payload.get('reason_code') == 'tool_permission_request_expired'
+        and payload.get('invocation_id') == str(invocation.id)
+        and payload.get('permission_request_version') == invocation.permission_request_version
+        and payload.get('provider_tool_use_id') == invocation.provider_tool_use_id)
+
+
 async def _origin_dependencies(db, *, tenant_id, agent_id, ref):
     from app.models.chat_transcript_event import ChatTranscriptEvent
     from app.models.organization_identity import ContentInputReceipt
@@ -430,6 +462,9 @@ async def _origin_dependencies(db, *, tenant_id, agent_id, ref):
     # The call's own audience remains a source, including empty searches and private query arguments.
     dependencies = [*dependencies, {"source_kind": "session_tool_invocation", "source_id": str(invocation.id),
         "source_version": payload["content_hash"]}]
+    if invocation.permission_state == 'expired':
+        valid = await _expired_permission_result_bound(db, invocation=invocation, event=event, content=content)
+        return _unique_dependencies(dependencies), inherited_complete and valid
     from app.services.explicit_memory_tool_sources import MEMORY_RESULT_TOOLS, memory_result_sources
 
     if invocation.tool_name in {"save_skill", "reconcile_skill_candidate", "inspect_reviewed_skill"}:

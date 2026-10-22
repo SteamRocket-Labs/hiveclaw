@@ -932,7 +932,8 @@ async def run_hr_provisioning(request: ToolExecutionRequest, *, support: Any) ->
             )
             mcp_results = []
             if pending_mcp_server_ids:
-                from app.services.resource_discovery import import_mcp_from_smithery, _get_smithery_api_key
+                from app.services.mcp_server_service import import_mcp_for_agent_and_register
+                from app.services.resource_discovery import _get_smithery_api_key
 
                 # Pre-fetch API key from global config (not from the new agent which has empty config)
                 _smithery_key = await _get_smithery_api_key(None)
@@ -962,7 +963,9 @@ async def run_hr_provisioning(request: ToolExecutionRequest, *, support: Any) ->
                             logger.info(f"[HR] Reused existing MCP {server_id} for agent {agent.id}")
                             continue
                         _mcp_config = {"smithery_api_key": _smithery_key} if _smithery_key else None
-                        result = await import_mcp_from_smithery(server_id, agent.id, config=_mcp_config)
+                        result = await import_mcp_for_agent_and_register(
+                            agent.id, server_id=server_id, config=_mcp_config
+                        )
                         if isinstance(result, str) and "❌" in result:
                             mcp_results.append(f"⚠️ {server_id}: {result}")
                             warnings.append(f"MCP install not ready: {server_id}")

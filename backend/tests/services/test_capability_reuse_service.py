@@ -103,8 +103,10 @@ async def test_reuse_existing_skill_for_agent_runs_skill_guard_before_copy(tmp_p
 async def test_reuse_existing_mcp_server_for_agent_reassigns_existing_tools(monkeypatch):
     import app.services.capability_reuse_service as reuse_service
 
-    tool_one = SimpleNamespace(id=uuid4(), display_name="GitHub: repo_read")
-    tool_two = SimpleNamespace(id=uuid4(), display_name="GitHub: issue_search")
+    tool_one = SimpleNamespace(id=uuid4(), display_name="GitHub: repo_read", config={},
+                              mcp_server_name="GitHub", mcp_server_url="http://127.0.0.1:55116/mcp")
+    tool_two = SimpleNamespace(id=uuid4(), display_name="GitHub: issue_search", config={},
+                              mcp_server_name="GitHub", mcp_server_url="http://127.0.0.1:55116/mcp")
     session = _ReuseSession([[tool_one, tool_two]])
     monkeypatch.setattr(reuse_service, "tenant_scoped_session", lambda *a, **k: session)
 
@@ -115,10 +117,17 @@ async def test_reuse_existing_mcp_server_for_agent_reassigns_existing_tools(monk
         return SimpleNamespace(**kwargs), True
 
     monkeypatch.setattr(reuse_service, "ensure_agent_tool_assignment", fake_ensure)
+    registrations = []
+
+    async def register(db, tenant_id, name, url):
+        registrations.append((db, tenant_id, name, url))
+
+    monkeypatch.setattr("app.services.mcp_server_service.register_imported_server", register)
+    tenant_id = uuid4()
 
     result = await reuse_service.reuse_existing_mcp_server_for_agent(
         agent_id=uuid4(),
-        tenant_id=uuid4(),
+        tenant_id=tenant_id,
         server_id="smithery/github",
         config={"smithery_api_key": "secret"},
     )
@@ -128,3 +137,4 @@ async def test_reuse_existing_mcp_server_for_agent_reassigns_existing_tools(monk
     assert result["tool_count"] == 2
     assert len(calls) == 2
     assert session.committed is True
+    assert registrations == [(session, tenant_id, "GitHub", "http://127.0.0.1:55116/mcp")]

@@ -5,7 +5,7 @@ from __future__ import annotations
 import uuid
 from pathlib import Path
 
-from sqlalchemy import or_, select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -67,19 +67,31 @@ async def _query_existing_mcp_tools(
     tenant_id: uuid.UUID | None,
     server_id: str,
 ) -> list[Tool]:
-    clean_id = server_id.replace("/", "_").replace("@", "")
+    qualified_id = server_id.lstrip("@")
+    clean_id = qualified_id.replace("/", "_")
+    package = Tool.config["package"].as_string()
+    package_match = package == qualified_id
+    if "/" not in qualified_id:
+        package_match = or_(package_match, package.endswith("/" + qualified_id, autoescape=True))
     tenant_filter = Tool.tenant_id == tenant_id if tenant_id else Tool.tenant_id.is_(None)
     result = await db.execute(
         select(Tool).where(
             Tool.type == "mcp",
             tenant_filter,
             or_(
-                Tool.name.like(f"mcp_{clean_id}%"),
-                Tool.name.like(f"mcp_{clean_id.split('_')[-1]}%"),
+                package_match,
+                and_(
+                    or_(package.is_(None), package == ""),
+                    Tool.name.startswith(f"mcp_{clean_id}_", autoescape=True),
+                ),
             ),
         )
     )
-    return result.scalars().all()
+    tools = result.scalars().all()
+    packages = {str((tool.config or {}).get("package") or "") for tool in tools}
+    if len(packages) > 1:
+        return []
+    return tools
 
 
 async def reuse_existing_mcp_server_for_agent(
@@ -106,6 +118,14 @@ async def reuse_existing_mcp_server_for_agent(
                 config=config or {},
             )
         await db.commit()
+
+        if tenant_id is not None:
+            from app.services.mcp_server_service import register_imported_server
+
+            for server_name, server_url in sorted({
+                (tool.mcp_server_name or "MCP Server", tool.mcp_server_url or "") for tool in tools
+            }):
+                await register_imported_server(db, tenant_id, server_name, server_url)
 
     return {
         "status": "already_installed",

@@ -2277,8 +2277,10 @@ async def _execute_mcp_tool(tool_name: str, arguments: dict, agent_id: "uuid.UUI
         from app.models.tool import AgentTool, Tool
         from app.services.mcp_authz import (
             MCPAuthzError,
+            MCPStoredCredentialRequired,
             assert_mcp_cloud_transport_allowed,
             assert_no_mcp_token_passthrough,
+            resolve_stored_mcp_endpoint,
         )
         from app.services.mcp_client import MCPClient
         from app.services.mcp_metadata_trust import is_mcp_metadata_runtime_approved
@@ -2417,11 +2419,16 @@ async def _execute_mcp_tool(tool_name: str, arguments: dict, agent_id: "uuid.UUI
             merged_config["api_key"] = oauth_bearer
         mcp_url = tool.mcp_server_url
         mcp_name = tool.mcp_tool_name or tool_name
+        try:
+            mcp_url, direct_api_key = resolve_stored_mcp_endpoint(mcp_url, api_key=merged_config.get("api_key"))
+        except MCPStoredCredentialRequired as exc:
+            return render_tool_error(tool_name=tool_name, error_class="configuration_required", message=str(exc),
+                provider="mcp", retryable=False,
+                actionable_hint="Use secure employee tool configuration, or ask an administrator to configure company authorization.")
 
         if ".run.tools" in mcp_url and merged_config:
             return await _execute_via_smithery_connect(mcp_url, mcp_name, arguments, merged_config, agent_id=agent_id)
 
-        direct_api_key = merged_config.get("api_key")
         client = MCPClient(mcp_url, api_key=direct_api_key)
         return await client.call_tool(mcp_name, arguments)
     except Exception as e:

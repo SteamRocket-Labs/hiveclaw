@@ -22,6 +22,12 @@ from app.tools.result_envelope import render_tool_error
 
 
 def _render_mcp_authz_error(tool_name: str, exc: Exception) -> str:
+    from app.services.mcp_authz import MCPStoredCredentialRequired
+
+    if isinstance(exc, MCPStoredCredentialRequired):
+        return render_tool_error(tool_name=tool_name, error_class="configuration_required", message=str(exc),
+            provider="mcp", retryable=False,
+            actionable_hint="Use secure employee tool configuration, or ask an administrator to configure company authorization.")
     return render_tool_error(
         tool_name=tool_name,
         error_class="authz_policy_violation",
@@ -96,6 +102,8 @@ async def list_mcp_tools(agent_id: uuid.UUID, arguments: dict) -> str:
                 return "No MCP resources found for this agent. Use import_mcp_server to add one."
 
             from app.models.mcp_server import MCPServerTool
+            from app.services.mcp_authz import mcp_url_reference
+            from app.services.mcp_metadata_trust import public_mcp_review_facts
 
             links = (await db.execute(select(MCPServerTool.tool_id, MCPServerTool.mcp_server_id).where(
                 MCPServerTool.tenant_id == tid, MCPServerTool.tool_id.in_([item.id for item in tools])))).all()
@@ -105,7 +113,7 @@ async def list_mcp_tools(agent_id: uuid.UUID, arguments: dict) -> str:
             lines = [f"## MCP Resources ({len(tools)} tools)\n"]
             by_server: dict[str, list] = {}
             for t in tools:
-                server = t.mcp_server_name or t.mcp_server_url or "unknown"
+                server = t.mcp_server_name or public_mcp_review_facts(t)["activation"].get("endpoint") or "unknown"
                 by_server.setdefault(server, []).append(t)
 
             for server, server_tools in by_server.items():
@@ -113,7 +121,8 @@ async def list_mcp_tools(agent_id: uuid.UUID, arguments: dict) -> str:
                 for t in server_tools:
                     marker = " [approval required]" if t.name in approval_names else ""
                     lines.append(f"- **{t.name}**{marker} ({t.display_name}): {t.description}")
-                    for connection_id in connection_ids.get(t.id, []):
+                    fallback = [mcp_url_reference(t.mcp_server_url)] if t.mcp_server_url else []
+                    for connection_id in connection_ids.get(t.id, fallback):
                         lines.append(f"  - mcp_server_id: {connection_id}")
                 lines.append("")
 
@@ -217,11 +226,13 @@ async def inspect_mcp_tool(agent_id: uuid.UUID, arguments: dict) -> str:
                     actionable_hint="Enable the MCP server or change the tool policy in advanced MCP controls.",
                 )
 
+            from app.services.mcp_metadata_trust import public_mcp_review_facts
+
             info = [
                 f"## MCP Tool: {t.name}",
                 f"- Display name: {t.display_name}",
                 f"- Description: {t.description}",
-                f"- Server: {t.mcp_server_name or t.mcp_server_url or 'unknown'}",
+                f"- Server: {t.mcp_server_name or public_mcp_review_facts(t)['activation'].get('endpoint') or 'unknown'}",
                 f"- MCP tool name: {t.mcp_tool_name or t.name}",
                 f"- Enabled: {t.enabled}",
             ]
@@ -326,7 +337,7 @@ async def call_mcp_tool(agent_id: uuid.UUID, arguments: dict, *, execution_conte
 
     from app.database import tenant_scoped_session
     from app.models.tool import AgentTool, Tool
-    from app.services.mcp_authz import MCPAuthzError, assert_mcp_cloud_transport_allowed
+    from app.services.mcp_authz import MCPAuthzError, assert_mcp_cloud_transport_allowed, resolve_stored_mcp_endpoint
     from app.services.mcp_client import MCPClient
     from app.services.mcp_metadata_trust import is_mcp_metadata_runtime_approved
     from app.services.tenant_resolver import resolve_tenant_for_agent
@@ -442,6 +453,7 @@ async def call_mcp_tool(agent_id: uuid.UUID, arguments: dict, *, execution_conte
 
     try:
         assert_mcp_cloud_transport_allowed(server_url=server_url, transport=transport)
+        server_url, api_key = resolve_stored_mcp_endpoint(server_url, api_key=api_key)
         client = MCPClient(server_url, api_key=api_key)
         return await client.call_tool(remote_name, tool_args)
     except MCPAuthzError as exc:
@@ -483,7 +495,10 @@ async def _resolve_agent_mcp_server(
     from app.database import tenant_scoped_session
     from app.models.tool import AgentTool, Tool
     from app.models.mcp_server import MCPServerTool
-    from app.services.mcp_authz import MCPAuthzError, assert_mcp_cloud_transport_allowed
+    from app.services.mcp_authz import (
+        MCPAuthzError, assert_mcp_cloud_transport_allowed, mcp_url_reference,
+        resolve_stored_mcp_endpoint, split_mcp_server_url_and_api_key,
+    )
     from app.services.mcp_metadata_trust import is_mcp_metadata_runtime_approved
     from app.services.mcp_server_service import resolve_agent_mcp_tool_mode
     from app.services.tenant_resolver import resolve_tenant_for_agent
@@ -518,8 +533,8 @@ async def _resolve_agent_mcp_server(
             url = row.mcp_server_url
             if not url:
                 continue
-            name = row.mcp_server_name or url
-            for connection_id in ids_by_tool.get(row.id, [url]):
+            name = row.mcp_server_name or split_mcp_server_url_and_api_key(url)[0]
+            for connection_id in ids_by_tool.get(row.id, [mcp_url_reference(url)]):
                 mode = (await resolve_agent_mcp_tool_mode(db, agent_id, row, server_id=uuid.UUID(connection_id))
                         if connection_id in ids_by_tool.get(row.id, [])
                         else await resolve_agent_mcp_tool_mode(db, agent_id, row))
@@ -569,7 +584,7 @@ async def _resolve_agent_mcp_server(
             return _render_mcp_authz_error(tool_name, exc)
         api_key = config.get("api_key")
         if not resolve_oauth:
-            return url, api_key, name
+            return split_mcp_server_url_and_api_key(url)[0], api_key, name
         from app.services.mcp_server_service import resolve_mcp_oauth_bearer
 
         from fastapi import HTTPException
@@ -584,7 +599,11 @@ async def _resolve_agent_mcp_server(
         if auth_error:
             return render_tool_error(tool_name=tool_name, error_class="auth_required", message=auth_error,
                 provider="mcp", retryable=False, actionable_hint="Request MCP OAuth configuration in the original work.")
-        return url, bearer or api_key, name
+        try:
+            clean_url, scoped_key = resolve_stored_mcp_endpoint(url, api_key=bearer or api_key)
+        except MCPAuthzError as exc:
+            return _render_mcp_authz_error(tool_name, exc)
+        return clean_url, scoped_key, name
 
 
 @tool(

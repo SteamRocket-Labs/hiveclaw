@@ -905,11 +905,12 @@ async def import_mcp_direct(
         return MCPImportResult(message, tool_ids=selected_tool_ids)
 
     from app.services.mcp_client import MCPClient
-    from app.services.mcp_authz import assert_mcp_cloud_transport_allowed
+    from app.services.mcp_authz import assert_mcp_cloud_transport_allowed, split_mcp_server_url_and_api_key
 
     # Resolve agent's tenant_id for tool scoping
     agent_tenant_id = await _resolve_agent_tenant_id(agent_id)
     assert_mcp_cloud_transport_allowed(server_url=mcp_url)
+    mcp_url, api_key = split_mcp_server_url_and_api_key(mcp_url, explicit_api_key=api_key)
 
     # Build URL with apiKey if provided
     full_url = mcp_url

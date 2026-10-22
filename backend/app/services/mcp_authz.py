@@ -6,6 +6,7 @@ tokens or URL userinfo to arbitrary MCP resource servers.
 
 from __future__ import annotations
 
+import hashlib
 from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
 PASSTHROUGH_TOKEN_KEYS = {
@@ -27,6 +28,26 @@ CLOUD_CORE_TRANSPORTS = {"http", "https", "sse", "streamable", "streamable_http"
 
 class MCPAuthzError(ValueError):
     """Raised when MCP auth material violates Hive's authz policy."""
+
+
+class MCPStoredCredentialRequired(MCPAuthzError):
+    """A legacy URL key has no current scoped credential assignment."""
+
+
+def mcp_url_reference(server_url: str) -> str:
+    """Stable legacy connection identity without exposing URL credentials."""
+    return "mcp-url-" + hashlib.sha256(server_url.encode("utf-8")).hexdigest()
+
+
+def resolve_stored_mcp_endpoint(server_url: str, *, api_key: str | None = None) -> tuple[str, str | None]:
+    """Use current scoped credentials, never an implicit key in a stored URL."""
+    clean_url, embedded_key = split_mcp_server_url_and_api_key(server_url)
+    if embedded_key and not api_key:
+        raise MCPStoredCredentialRequired(
+            "This legacy MCP URL contains an unattributed credential. Configure this employee's "
+            "API key, or use an authorized company or OAuth credential before retrying."
+        )
+    return clean_url, api_key
 
 
 def _normalize_transport(value: object) -> str:

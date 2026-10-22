@@ -978,6 +978,16 @@ async def test_server_review_rejects_stale_activation_and_accepts_the_live_candi
     assert server.status == "connected"
     assert is_mcp_metadata_runtime_approved(runtime_tool) is True
 
+    unsupported = await call_mcp_tool(uuid4(), {"tool_name": runtime_tool.name, "arguments": {}})
+    assert "userinfo is forbidden" in unsupported
+    assert _SpyClient.instances == []
+    runtime_tool.mcp_server_url = "https://mcp.example/review?mode=sse"
+    repaired = await listed()
+    with pytest.raises(ValueError, match="fingerprint changed"):
+        await review(reloaded["metadata_fingerprint"])
+    assert is_mcp_metadata_runtime_approved(runtime_tool) is False
+    reloaded = repaired
+    await review(reloaded["metadata_fingerprint"])
     allowed = await call_mcp_tool(uuid4(), {"tool_name": runtime_tool.name, "arguments": {}})
     assert "OK from issue_search" in allowed
     assert _SpyClient.instances[0].server_url == runtime_tool.mcp_server_url

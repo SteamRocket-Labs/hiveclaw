@@ -4343,7 +4343,10 @@ class PersonalKnowledgeService:
             segment_id
             for segment_id, _score in sorted(vector_segment_scores.items(), key=lambda item: item[1], reverse=True)
         ]
-        fetch_segment_ids = list(dict.fromkeys([*entity_segment_ids, *graph_segment_ids, *vector_segment_ids]))
+        # Text matches precede optional asynchronous retrieval. Recheck every
+        # candidate's current source authority at the same final SQL boundary.
+        fetch_segment_ids = list(dict.fromkeys([*candidates, *entity_segment_ids, *graph_segment_ids, *vector_segment_ids]))
+        current_segments: dict[uuid.UUID, tuple[Any, Any]] = {}
         if fetch_segment_ids:
             segment_rows = (
                 await session.execute(
@@ -4375,6 +4378,7 @@ class PersonalKnowledgeService:
             vector_rank_by_segment = {segment_id: rank for rank, segment_id in enumerate(vector_segment_ids, start=1)}
             for row in segment_rows:
                 segment, document = row[0], row[1]
+                current_segments[segment.id] = (segment, document)
                 if segment.id in entity_rank_by_segment:
                     add_candidate(
                         segment=segment,
@@ -4404,7 +4408,7 @@ class PersonalKnowledgeService:
 
         hits: list[KnowledgeSearchHit] = []
         ranked_entries = sorted(
-            candidates.values(),
+            (entry for entry in candidates.values() if entry["segment"].id in current_segments),
             key=lambda entry: (
                 float(entry["rrf"]) + float(entry["boosts"]["heat"]) + float(entry["boosts"]["freshness"]),
                 max((trace["raw_score"] for trace in entry["channels"].values()), default=0.0),
@@ -4420,6 +4424,10 @@ class PersonalKnowledgeService:
             document_metadata = dict(getattr(document, "doc_metadata_json", None) or {})
             try:
                 sensitivity = canonicalize_sensitivity(getattr(document, "sensitivity", None))
+                current_document = current_segments[segment.id][1]
+                if canonicalize_sensitivity(current_document.sensitivity) == SensitivityLevel.PL4_CREDENTIAL:
+                    sensitivity = SensitivityLevel.PL4_CREDENTIAL
+                    document_metadata = dict(getattr(current_document, "doc_metadata_json", None) or {})
             except ValueError:
                 # Unknown legacy sensitivity fails closed as credential-like: no
                 # title, heading, source path, or segment bytes leave this layer.

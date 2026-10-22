@@ -1351,7 +1351,9 @@ async def test_search_personal_fuses_optional_vector_provider_after_acl_fetch(tm
         return await search(**kwargs)
 
     provider.search_personal_segments = advance_source
-    session = _QueuedSession([[(text_segment, document, 0.1)], [], [(vector_segment, document)]])
+    session = _QueuedSession([
+        [(text_segment, document, 0.1)], [], [(vector_segment, document), (text_segment, document)],
+    ])
     service = PersonalKnowledgeService(data_root=tmp_path, vector_provider=provider)
 
     hits = await service.search_personal(

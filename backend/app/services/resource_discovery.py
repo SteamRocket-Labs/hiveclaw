@@ -584,6 +584,7 @@ async def import_mcp_from_smithery(
                 raw_tools = detail.get("tools", [])
                 tools_discovered = [
                     {
+                        **t,
                         "name": t.get("name", ""),
                         "description": t.get("description", ""),
                         "inputSchema": t.get("inputSchema", {}),

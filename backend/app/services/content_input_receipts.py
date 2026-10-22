@@ -409,7 +409,7 @@ async def record_session_actor_identity(db, *, tenant_id, agent_id, session_id, 
     from app.models.agent import Agent
     from app.models.invocation_span import InvocationSpan
     from app.models.tenant import Tenant
-    from app.models.user import User
+    from app.services.runtime_user_identity import load_scoped_runtime_user
     from app.services.session_model_inputs import _hash
 
     session_id = uuid.UUID(str(session_id))
@@ -446,15 +446,15 @@ async def record_session_actor_identity(db, *, tenant_id, agent_id, session_id, 
                 or captured.metadata_json != {'session_actor_identity': payload}):
                 raise ContentInputReceiptError('context_actor_identity_unavailable', 'The machine observation cannot be rebound.', 503)
             return {'source_kind': 'session_actor_identity', 'source_id': str(source_id), 'source_version': version}, payload
-    row = (await db.execute(select(User, ChatSession).join(ChatSession, or_(ChatSession.user_id == User.id, ChatSession.audience_kind == "group"))
+    actor = await load_scoped_runtime_user(db, user_id, tenant_id=tenant_id)
+    session = await db.scalar(select(ChatSession)
         .join(Agent, Agent.id == ChatSession.agent_id).where(
-        User.id == user_id, User.tenant_id == tenant_id, User.is_active.is_(True),
         ChatSession.id == session_id, ChatSession.agent_id == agent_id, ChatSession.tenant_id == tenant_id,
+        or_(ChatSession.user_id == user_id, ChatSession.audience_kind == "group"),
         Agent.tenant_id == tenant_id, Agent.deleted_at.is_(None),
-    ).execution_options(populate_existing=True))).first()
-    if row is None or (display_name is not None and display_name != (row[0].display_name or row[0].username)):
+    ).execution_options(populate_existing=True))
+    if actor is None or session is None or (display_name is not None and display_name != (actor.display_name or actor.username)):
         raise ContentInputReceiptError("context_actor_identity_unavailable", "The observed actor does not match the current session.", 403)
-    actor, session = row
     channel = str(session.source_channel or "")
     if session.audience_kind == "group":
         from app.models.runtime_task import RuntimeTask

@@ -5690,8 +5690,9 @@ async def _load_runtime_context(
         else:
             if user_id is None:
                 raise RuntimeError(f"RuntimeTask {run_uuid.hex} has no actor authority")
-            user_result = await db.execute(select(User).where(User.id == user_id))
-            user = user_result.scalar_one_or_none()
+            from app.services.runtime_user_identity import load_scoped_runtime_user
+
+            user = await load_scoped_runtime_user(db, user_id, tenant_id=tenant_id)
             if user is None:
                 raise RuntimeError(f"User {user_id} not found")
 

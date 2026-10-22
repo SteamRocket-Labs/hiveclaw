@@ -1129,7 +1129,7 @@ async def create_chat_artifacts_for_message(
     authority_user = runtime_principal = authority_error = machine_scope = None
     from app.services.machine_runtime_authority import is_machine_runtime_actor
     if isinstance(db, AsyncSession):
-        from app.models.user import User
+        from app.services.runtime_user_identity import load_scoped_runtime_user
 
         authority_session = (
             await db.execute(
@@ -1184,9 +1184,7 @@ async def create_chat_artifacts_for_message(
             except (PermissionError, ValueError):
                 owner_user_id = None
         if owner_user_id is not None:
-            authority_user = await db.get(User, owner_user_id)
-            if authority_user is not None and authority_user.tenant_id != tenant_id:
-                authority_user = None
+            authority_user = await load_scoped_runtime_user(db, owner_user_id, tenant_id=tenant_id)
     authority_state = "owned" if owner_user_id is not None or is_machine_runtime_actor(authority_user) else "quarantined"
 
     def record_source_error(path, exc):

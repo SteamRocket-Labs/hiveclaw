@@ -101,6 +101,7 @@ async def deliver_packet(db, *, task, result, view, parts):
 
 
 async def validate_delivery(db, *, item):
+    from app.core.source_read_purpose import source_recipient_read
     from app.models.user import User
     from app.services.content_input_receipts import ContentInputReceiptError
     from app.services.remote_a2a_artifacts import load_packet, load_status_packet, _load_packet_frame, _status_view
@@ -122,8 +123,9 @@ async def validate_delivery(db, *, item):
             if item.text != _recovery_text(view, operation) or item.artifact_ids or item.terminal_status != view['status']:
                 raise _denied()
         elif not shared:
-            task, _result, session, _packet = await load_packet(db, item.tenant_id,
-                item.metadata.get('remote_result'), user=user)
+            with source_recipient_read(session_id=session.id, user_id=item.user_id):
+                task, _result, session, _packet = await load_packet(db, item.tenant_id,
+                    item.metadata.get('remote_result'), user=user)
         if (task.id, task.parent_agent_id, task.parent_session_id, task.root_user_id) != (
             item.runtime_task_id, item.agent_id, str(item.session_id), item.user_id):
             raise _denied()

@@ -663,6 +663,9 @@ class ChannelDeliveryOutboxService:
                     raise error_type(f"native_result_source_unavailable:{code or 'source_access_denied'}") from exc
                 except Exception as exc:
                     raise ChannelDeliveryRetryableError(f"native_result_authority_unavailable:{type(exc).__name__}") from exc
+                from app.services.remote_a2a_channel import validate_delivery
+
+                await validate_delivery(sender_kwargs["db"], item=item)
             else:
                 from fastapi import HTTPException
                 from app.services.chat_artifact_delivery import captured_chat_artifact_file

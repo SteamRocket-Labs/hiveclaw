@@ -616,46 +616,67 @@ async def test_invoke_keeps_valid_requesters_when_one_trigger_is_refused(monkeyp
     retired_trigger = trigger(retired_id)
     legacy_trigger = trigger(None)
     use_grant = SimpleNamespace(scope_type="user", scope_id=collaborator_id, access_level="use")
-    session = _ScriptSession(
+    owner_session = _ScriptSession(
         [
             _Scalar(agent),
             _Scalar(owner),
-            _Many([owner_trigger, collaborator_trigger, retired_trigger, legacy_trigger]),
-            _Many([owner, collaborator, retired]),
+            _Many([owner_trigger, retired_trigger, legacy_trigger]),
+            _Many([owner, retired]),
             _Scalar(agent),
-            _Scalar(agent),
-            _Many([use_grant]),
             _Many([retired_trigger, legacy_trigger]),
         ]
     )
+    collaborator_session = _ScriptSession(
+        [
+            _Scalar(agent),
+            _Scalar(owner),
+            _Many([collaborator_trigger]),
+            _Many([collaborator]),
+            _Scalar(agent),
+            _Many([use_grant]),
+        ]
+    )
+    batches = [([owner_trigger, retired_trigger, legacy_trigger], owner_session, uuid4()),
+        ([collaborator_trigger], collaborator_session, uuid4())]
+    for _triggers, session, runtime_id in batches:
+        async def get_run(_model, identifier, *, expected=runtime_id):
+            assert identifier == expected
+            return SimpleNamespace(metadata_json={})
+        session.get = get_run
+    sessions = iter(session for _triggers, session, _runtime_id in batches)
     fired = []
+    fired_roots = []
     updates = []
 
     async def fake_fire(**kwargs):
         fired.append(kwargs["requester_user_id"])
+        fired_roots.append(kwargs["runtime_task_id"])
         return SimpleNamespace(status="launched", run_id=uuid4(), run_status="running", session_id=uuid4(), reason=None)
 
     async def fake_update(_task_id, **fields):
-        updates.append(fields)
+        updates.append({"runtime_task_id": _task_id, **fields})
         return True
 
     async def resolve_tenant(*_args, **_kwargs):
         return tenant_id
 
     monkeypatch.setattr(trigger_daemon, "resolve_tenant_for_agent", resolve_tenant)
-    monkeypatch.setattr(trigger_daemon, "tenant_scoped_session", lambda *_args, **_kwargs: session)
+    monkeypatch.setattr(trigger_daemon, "tenant_scoped_session", lambda *_args, **_kwargs: next(sessions))
     monkeypatch.setattr(workflow_trigger, "fire_workflow_for_trigger", fake_fire)
     monkeypatch.setattr(trigger_daemon, "update_runtime_task_record", fake_update)
 
-    await trigger_daemon._invoke_agent_for_triggers(
-        agent_id,
-        [owner_trigger, collaborator_trigger, retired_trigger, legacy_trigger],
-        runtime_task_id="rt-mixed",
-    )
+    # The scheduler admits a separate execution and budget root per requester.
+    for triggers, session, runtime_id in batches:
+        await trigger_daemon._invoke_agent_for_triggers(agent_id, triggers, runtime_task_id=str(runtime_id))
+        assert session.results == []
 
     assert fired == [owner_id, collaborator_id]
-    assert updates[0]["status"] == "completed"
-    assert updates[0]["metadata_json"]["trigger_settlement_overrides"] == {
+    assert fired_roots == [str(runtime_id) for _triggers, _session, runtime_id in batches]
+    assert len(set(fired_roots)) == len(updates) == 2
+    assert [update["runtime_task_id"] for update in updates] == fired_roots
+    assert all(update["status"] == "completed" for update in updates)
+    assert {key: value for update in updates
+        for key, value in update["metadata_json"]["trigger_settlement_overrides"].items()} == {
         str(owner_trigger.id): "success",
         str(collaborator_trigger.id): "success",
         str(retired_trigger.id): "release",
@@ -709,8 +730,8 @@ async def test_pending_approval_routes_web_and_feishu_to_the_live_owner(monkeypa
     owner_id = uuid4()
     creator_id = uuid4()
     agent = SimpleNamespace(id=uuid4(), name="Analyst", tenant_id=tenant_id, creator_id=creator_id, owner_user_id=owner_id)
-    approval = SimpleNamespace(id=uuid4(), action_type="send_file", details={"tool": "send_file"})
-    channel = SimpleNamespace(agent_id=agent.id, app_id="app", app_secret="secret", extra_config={})
+    approval = SimpleNamespace(id=uuid4(), action_type="send_file", details={"tool": "send_file"}, execution_receipt={})
+    channel = SimpleNamespace(id=uuid4(), agent_id=agent.id, app_id="app", app_secret="secret", extra_config={})
     notified = []
     cards = []
 
@@ -737,6 +758,10 @@ async def test_pending_approval_routes_web_and_feishu_to_the_live_owner(monkeypa
     assert notified == [owner_id]
     assert creator_id not in notified
     assert cards == [("app", "ou_owner", "open_id")]
+    receipts = approval.execution_receipt["feishu_approval_cards"]
+    assert len(receipts) == 1 and receipts[0]["user_id"] == str(owner_id)
+    assert receipts[0]["configuration_id"] == str(channel.id)
+    assert receipts[0]["status"] == "unknown" and receipts[0]["provider_reference"] is None
 
 
 @pytest.mark.asyncio
@@ -748,8 +773,8 @@ async def test_pending_approval_falls_back_to_scoped_admin_when_owner_is_inactiv
     admin_id = uuid4()
     creator_id = uuid4()
     agent = SimpleNamespace(id=uuid4(), name="Analyst", tenant_id=tenant_id, creator_id=creator_id, owner_user_id=owner_id)
-    approval = SimpleNamespace(id=uuid4(), action_type="send_file", details={})
-    channel = SimpleNamespace(agent_id=agent.id, app_id="app", app_secret="secret", extra_config={})
+    approval = SimpleNamespace(id=uuid4(), action_type="send_file", details={}, execution_receipt={})
+    channel = SimpleNamespace(id=uuid4(), agent_id=agent.id, app_id="app", app_secret="secret", extra_config={})
     notified = []
     cards = []
 
@@ -783,6 +808,10 @@ async def test_pending_approval_falls_back_to_scoped_admin_when_owner_is_inactiv
     assert owner_id not in notified
     assert creator_id not in notified
     assert cards == [("ou_admin", "open_id")]
+    receipts = approval.execution_receipt["feishu_approval_cards"]
+    assert len(receipts) == 1 and receipts[0]["user_id"] == str(admin_id)
+    assert receipts[0]["configuration_id"] == str(channel.id)
+    assert receipts[0]["status"] == "unknown" and receipts[0]["provider_reference"] is None
 
 
 @pytest.mark.asyncio

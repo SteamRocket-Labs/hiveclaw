@@ -205,7 +205,7 @@ async def _process_compute_worker(seed, rounds, tmp_path, app_user_engine, synth
     return SimpleNamespace(requests=saved["requests"], pid=worker.pid)
 
 
-@pytest.mark.parametrize("fault", [None, "unapproved", "create_ack_lost", "pause_ack_lost", "worker_restart", "new_work", "process_restart"])
+@pytest.mark.parametrize("fault", [None, "unapproved", "create_ack_lost", "pause_ack_lost", "worker_restart", "new_work", "process_restart", "resource_lost"])
 async def test_original_work_reuses_paused_compute_and_consumes_canonical_file(
     owner_sessionmaker, app_user_sessionmaker, app_user_engine, monkeypatch, tmp_path, synthetic_sdk, fault,
 ):
@@ -228,8 +228,9 @@ async def test_original_work_reuses_paused_compute_and_consumes_canonical_file(
     from app.services.web_chat_runtime import execute_web_chat_run
 
     process_restart = fault == "process_restart"
+    resource_lost = fault == "resource_lost"
     restart, new_work = fault == "worker_restart" or process_restart, fault == "new_work"
-    if restart or new_work:
+    if restart or new_work or resource_lost:
         fault = None
     seed = await _seed_run(owner_sessionmaker, tmp_path)
     factory, original = database.async_session, llm.create_llm_client
@@ -282,6 +283,8 @@ async def test_original_work_reuses_paused_compute_and_consumes_canonical_file(
         call("compute-continued", "cat saved.txt \"$HOME/cache\"; printf _CONTINUED >> saved.txt"),
         {"content": "DELIVERABLE: workspace/saved.txt", "finish_reason": "stop"},
     ]
+    if resource_lost:
+        rounds[1] = call("compute-continued", 'test ! -e "$HOME/cache" && cat saved.txt && printf _CONTINUED >> saved.txt')
     if fault == "pause_ack_lost":
         rounds.pop(1)  # Do not invent a model's recovery decision after an unknown command.
     if fault is None:
@@ -291,6 +294,17 @@ async def test_original_work_reuses_paused_compute_and_consumes_canonical_file(
     from tests.integration.test_web_chat_worker_restart_kernel_recovery import SimulatedWorkerCrash
 
     script = ScriptedLLMClient([rounds[0], SimulatedWorkerCrash()] if restart else rounds)
+    if resource_lost:
+        class ResourceLossClient(ScriptedLLMClient):
+            async def stream(self, **kwargs):
+                if len(self.requests) == 1:
+                    assert len(synthetic_sdk.boxes) == 1
+                    box = next(iter(synthetic_sdk.boxes.values()))
+                    assert box.state == "Paused"
+                    box.state = "Terminated"  # A later exact control-plane lookup returns 404.
+                return await super().stream(**kwargs)
+
+        script = ResourceLossClient(rounds)
     monkeypatch.setattr(invoker, "create_llm_client", lambda **kw: script)
     fence = set_runtime_task_fence(task_id=seed["run_id"], worker_id="kernel-worker-1", claim_version=1)
     try:
@@ -369,8 +383,16 @@ async def test_original_work_reuses_paused_compute_and_consumes_canonical_file(
         return
     assert (seed["agent_root"] / "workspace/saved.txt").read_text() == "CANONICAL_COMPUTE_CONTINUED"
     assert "PRIVATE_CACHE" in json.dumps(script.requests[-1]["messages"])
-    assert [c[0] for c in synthetic_sdk.calls].count("create") == 1
-    assert [c[0] for c in synthetic_sdk.calls].count("resume") == 1
+    if resource_lost:
+        assert [c[0] for c in synthetic_sdk.calls].count("create") == 2
+        assert [c[0] for c in synthetic_sdk.calls].count("resume") == 0
+        assert [c[0] for c in synthetic_sdk.calls].count("kill") == 0
+        assert [box.state for box in synthetic_sdk.boxes.values()] == ["Terminated", "Paused"]
+        first_commands = [c for c in synthetic_sdk.calls if c[0] == "command" and "FIRST_COMPUTE" in json.dumps(c[2])]
+        assert len(first_commands) == 1
+    else:
+        assert [c[0] for c in synthetic_sdk.calls].count("create") == 1
+        assert [c[0] for c in synthetic_sdk.calls].count("resume") == 1
     assert [c[0] for c in synthetic_sdk.calls].count("pause") == 2
     from app.services.runtime_terminal_boundary_outbox import RuntimeTerminalBoundaryOutboxService
     from app.services.web_terminal_boundary_processor import WebTerminalBoundaryProcessor

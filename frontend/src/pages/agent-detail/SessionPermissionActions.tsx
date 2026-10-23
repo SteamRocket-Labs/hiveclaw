@@ -40,6 +40,15 @@ export default function SessionPermissionActions({
     && permissionRequest.confirmation_kind !== 'destructive_once';
   return (
     <>
+      {permissionRequest.arguments && (
+        <details style={{ marginTop: '10px', fontSize: '12px' }}>
+          <summary>{t('agent.chat.permission.actionDetails', 'Action details')}</summary>
+          <pre
+            aria-label={t('agent.chat.permission.actionDetails', 'Action details')}
+            style={{ maxHeight: '320px', overflow: 'auto', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}
+          >{JSON.stringify(permissionRequest.arguments, null, 2)}</pre>
+        </details>
+      )}
       <div style={{ marginTop: '10px', display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
         <button
           type="button"

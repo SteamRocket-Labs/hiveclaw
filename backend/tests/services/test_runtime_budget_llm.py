@@ -161,3 +161,45 @@ async def test_runtime_budgeted_llm_client_reservation_accounts_tool_schema_toke
     assert metadata["projected_input_tokens"] == metadata["prompt_estimate_tokens"]
     assert reservation.tokens == metadata["projected_input_tokens"]
     assert reservation.cache_miss_tokens == metadata["projected_uncached_input_tokens"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method", ["complete", "stream"])
+@pytest.mark.parametrize("outcome", ["exception", "missing", "partial", "invalid"])
+async def test_unknown_provider_usage_keeps_reservation_without_inventing_zero(method, outcome):
+    service = _CapturingBudgetService()
+    usage = {"missing": {}, "partial": {"input_tokens": 100},
+        "invalid": {"input_tokens": "not-reported", "output_tokens": 20}}
+
+    class UncertainClient(_FakeLLMClient):
+        async def complete(self, *args, **kwargs):
+            if outcome == "exception":
+                raise TimeoutError("Synthetic provider acknowledgement lost")
+            return self.response
+
+        stream = complete
+
+    response = LLMResponse(content="The returned answer remains usable", usage=usage.get(outcome, {}))
+    client = RuntimeBudgetedLLMClient(UncertainClient(response=response), budget_run_id=uuid.uuid4(), service=service)
+    if outcome == "exception":
+        with pytest.raises(TimeoutError, match="Synthetic provider acknowledgement lost"):
+            await getattr(client, method)([LLMMessage(role="user", content="hello")])
+    else:
+        assert await getattr(client, method)([LLMMessage(role="user", content="hello")]) is response
+    assert len(service.reservations) == 1
+    assert service.reservations[0].metadata["provider_usage_required"] is True
+    assert service.settlements == []
+
+
+@pytest.mark.asyncio
+async def test_explicitly_reported_zero_usage_is_settled_as_zero():
+    service = _CapturingBudgetService()
+    client = RuntimeBudgetedLLMClient(
+        _FakeLLMClient(response=LLMResponse(content="", usage={"input_tokens": 0, "output_tokens": 0})),
+        budget_run_id=uuid.uuid4(), service=service,
+    )
+    await client.complete([LLMMessage(role="user", content="A request with an explicitly reported empty bill")])
+    assert len(service.settlements) == 1
+    assert service.settlements[0].actual_tokens == 0
+    assert service.settlements[0].actual_cache_miss_tokens == 0
+    assert service.settlements[0].actual_provider_calls == 1

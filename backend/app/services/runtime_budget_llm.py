@@ -37,29 +37,36 @@ def estimate_llm_prompt_tokens(
     return max(1, (len(text) + 3) // 4) if text else 0
 
 
-def _usage_int(usage: dict[str, Any] | None, *keys: str) -> int:
+def _reported_usage_int(usage: dict[str, Any] | None, *keys: str) -> int | None:
     if not isinstance(usage, dict):
-        return 0
+        return None
     for key in keys:
         value = usage.get(key)
-        if value is None:
+        if isinstance(value, bool) or not isinstance(value, (int, str)):
             continue
         try:
-            return max(0, int(value))
+            amount = int(value)
         except (TypeError, ValueError):
             continue
-    return 0
+        if amount >= 0:
+            return amount
+    return None
+
+
+def _usage_int(usage: dict[str, Any] | None, *keys: str) -> int:
+    return _reported_usage_int(usage, *keys) or 0
 
 
 def runtime_budget_usage_amounts(usage: dict[str, Any] | None, *, prompt_estimate: int = 0) -> tuple[int, int, bool]:
     """Return (total_tokens, cache_miss_tokens, cache_miss_usage_observed)."""
 
-    prompt_tokens = _usage_int(usage, "input_tokens", "prompt_tokens", "promptTokenCount")
-    output_tokens = _usage_int(usage, "output_tokens", "completion_tokens", "candidatesTokenCount")
+    prompt_reported = _reported_usage_int(usage, "input_tokens", "prompt_tokens", "promptTokenCount")
+    output_reported = _reported_usage_int(usage, "output_tokens", "completion_tokens", "candidatesTokenCount")
+    prompt_tokens, output_tokens = prompt_reported or 0, output_reported or 0
     total_tokens = _usage_int(usage, "total_tokens", "totalTokenCount")
     if total_tokens <= 0:
         total_tokens = prompt_tokens + output_tokens
-    if total_tokens <= 0:
+    if total_tokens <= 0 and (prompt_reported is None or output_reported is None):
         total_tokens = prompt_estimate
 
     cached_tokens = _usage_int(
@@ -70,7 +77,7 @@ def runtime_budget_usage_amounts(usage: dict[str, Any] | None, *, prompt_estimat
         "prompt_cache_hit_tokens",
     )
     cache_miss_observed = prompt_tokens > 0 and cached_tokens > 0
-    if prompt_tokens > 0:
+    if prompt_reported is not None:
         cache_miss_tokens = max(0, prompt_tokens - cached_tokens)
     else:
         cache_miss_tokens = prompt_estimate
@@ -188,29 +195,21 @@ class RuntimeBudgetedLLMClient(LLMClient):
                     "projected_uncached_input_tokens": projected_uncached_input_tokens,
                     "tool_schema_estimate_tokens": tool_schema_estimate_tokens,
                     "provider_prompt_ledger": provider_prompt_ledger,
+                    "provider_usage_required": True,
                     **({"budget_summary_turn": True} if self._summary_lane else {}),
                 },
             )
         )
-        try:
-            response = await call()
-        except Exception:
-            await self._service.settle(
-                RuntimeBudgetSettlement(
-                    budget_run_id=self._budget_run_id,
-                    reservation_key=reservation_key,
-                    actual_tokens=0,
-                    actual_cache_miss_tokens=0,
-                    actual_provider_calls=1,
-                    reason="provider_call_failed",
-                    runtime_task_id=self._runtime_task_id,
-                    metadata={"method": method, "model": self.model},
-                )
-            )
-            raise
+        # A transport exception, cancellation or process loss is not a zero
+        # bill. Keep the reservation until an actual usage receipt settles it.
+        response = await call()
+        usage = getattr(response, "usage", None)
+        if (_reported_usage_int(usage, "input_tokens", "prompt_tokens", "promptTokenCount") is None
+            or _reported_usage_int(usage, "output_tokens", "completion_tokens", "candidatesTokenCount") is None):
+            return response
 
         actual_tokens, actual_cache_miss_tokens, observed = runtime_budget_usage_amounts(
-            getattr(response, "usage", None),
+            usage,
             prompt_estimate=prompt_estimate,
         )
         cache_metrics = extract_cache_metrics(

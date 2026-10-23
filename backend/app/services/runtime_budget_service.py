@@ -1081,6 +1081,15 @@ class RuntimeBudgetService:
                 .where(
                     reservation_event.event_type == "reservation",
                     reservation_event.reservation_key.is_not(None),
+                    # A terminal owner or expired grace cannot prove provider
+                    # billing. Leave these holds for exact usage settlement.
+                    or_(
+                        reservation_event.metadata_json.contains({"provider_usage_required": True}),
+                        and_(
+                            reservation_event.reason == "provider_call_start",
+                            reservation_event.amounts_json["provider_calls"].as_integer() > 0,
+                        ),
+                    ).is_not(True),
                     or_(
                         and_(
                             reservation_event.runtime_task_id.is_(None),

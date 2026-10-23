@@ -807,9 +807,9 @@ def fingerprint_rls_bypass_scopes(app_root: Path) -> str:
 # 2026-10-23 next-version refresh: complete current scopes and their authority,
 # source and recovery consumers reviewed across 758 entries in 82 modules.
 # Exact registered query shapes, scanner and expiry checks remain unchanged.
-# Reclaimed chat adds long-task recovery context only when artifacts exist.
-# Existing source guards and bypass query shapes remain unchanged.
-RLS_BYPASS_SCOPES_SHA256 = "2c10a005fd35e5acc11b4dd089a0163c13ed8914bc0860609ad5f72ef71819dc"
+# Provider quota holds without reported usage remain pending reconciliation.
+# Existing audited call signatures and grants remain unchanged.
+RLS_BYPASS_SCOPES_SHA256 = "84fb74e5fc3562760fe4be3b6345afbe17bce10cd92c3d9ffdff433a3159b410"
 
 
 def scan_rls_bypass_callsites(app_root: Path) -> list[RLSBypassCallsite]:

@@ -194,7 +194,7 @@ class RuntimeBudgetedLLMClient(LLMClient):
         if isinstance(max_tokens, int) and not isinstance(max_tokens, bool) and max_tokens > 0:
             output_tokens, output_source = max_tokens, "requested"
         elif max_tokens is None and get_provider_spec(self.provider) is not None:
-            output_tokens, output_source = get_provider_output_ceiling(self.provider), "provider_ceiling"
+            output_tokens, output_source = get_provider_output_ceiling(self.provider, self.model), "provider_ceiling"
         reservation_tokens = max(self._default_llm_call_token_reservation, prompt_estimate + (output_tokens or 0))
         reservation_key = f"provider_call:{self._runtime_task_id or 'unknown'}:{uuid.uuid4().hex}"
         await self._service.reserve(

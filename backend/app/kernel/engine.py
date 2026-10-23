@@ -3864,12 +3864,11 @@ async def _stream_with_cancel(
 
 
 def _resolve_continuation_max_tokens(active_model: Any) -> int:
-    """Resolve the output-cap continuation budget for the active model's provider.
+    """Resolve the output-cap continuation budget for the active model.
 
-    Uses the provider's own output ceiling (bounded by the global absolute cap)
-    so high-output providers (e.g. DeepSeek 384K) continue at their real ceiling
-    instead of a flat constant. Falls back to a generous constant when the
-    provider cannot be resolved (e.g. test doubles without a real provider).
+    Uses an exact native model ceiling when known, otherwise the provider's
+    ceiling, so recovery preserves its full supported output. Falls back to a
+    generous constant when the provider cannot be resolved.
     """
     provider = getattr(active_model, "provider", None)
     if not provider:
@@ -3877,7 +3876,7 @@ def _resolve_continuation_max_tokens(active_model: Any) -> int:
     try:
         from app.services.llm_client import get_provider_output_ceiling
 
-        return get_provider_output_ceiling(provider)
+        return get_provider_output_ceiling(provider, getattr(active_model, "model", None))
     except Exception:  # pragma: no cover - defensive: never block continuation
         return _STREAM_OUTPUT_CONTINUATION_FALLBACK_MAX_TOKENS
 

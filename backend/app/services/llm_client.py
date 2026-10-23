@@ -575,7 +575,7 @@ class _CapAwareLLMClient(LLMClient):
             phase="initial",
         )
 
-        escalate_ceiling = get_provider_output_ceiling(self.provider)
+        escalate_ceiling = get_provider_output_ceiling(self.provider, self.model)
         if not allow_output_escalation or tools or (max_tokens is not None and max_tokens >= escalate_ceiling):
             return response
 
@@ -1254,6 +1254,15 @@ class OpenAIResponsesClient(LLMClient):
         payload.update(kwargs)
         return payload
 
+    @staticmethod
+    def _is_output_cap_response(data: dict[str, Any]) -> bool:
+        details = data.get("incomplete_details")
+        return (
+            data.get("status") == "incomplete"
+            and isinstance(details, dict)
+            and details.get("reason") == "max_output_tokens"
+        )
+
     def _parse_response_data(self, data: dict[str, Any]) -> LLMResponse:
         """Convert Responses API payload into canonical LLMResponse."""
         content_parts: list[str] = []
@@ -1290,7 +1299,7 @@ class OpenAIResponsesClient(LLMClient):
             content_parts.append(str(data.get("output_text", "")))
 
         usage = data.get("usage")
-        finish_reason = "tool_calls" if tool_calls else "stop"
+        finish_reason = "length" if self._is_output_cap_response(data) else ("tool_calls" if tool_calls else "stop")
 
         return LLMResponse(
             content="".join(content_parts),
@@ -1321,7 +1330,7 @@ class OpenAIResponsesClient(LLMClient):
             return str(err)
 
         status = str(data.get("status") or "").lower()
-        if status in {"failed", "incomplete", "cancelled"}:
+        if status in {"failed", "incomplete", "cancelled"} and not self._is_output_cap_response(data):
             last_error = data.get("last_error")
             incomplete = data.get("incomplete_details")
             rid = data.get("id")
@@ -2376,6 +2385,9 @@ class ProviderSpec:
     # Class default is intentionally generous (131072); providers with a known
     # higher (e.g. DeepSeek 384K) or different ceiling override this explicitly.
     max_output_tokens: int = 131072
+    # Exact native model limits; unlike model_max_tokens, these are ceilings,
+    # not default request allocations. Unknown variants keep the provider limit.
+    model_output_ceilings: dict[str, int] = field(default_factory=dict)
     max_input_tokens: int = 256000
     model_max_tokens: dict[str, int] = field(default_factory=dict)
     # Prompt caching: does the API accept cache_control content blocks?
@@ -2463,16 +2475,30 @@ ABSOLUTE_MAX_OUTPUT_TOKENS = 524288
 MAX_OUTPUT_TOKENS_HARD_LIMIT = ProviderSpec.max_output_tokens
 
 
-def get_provider_output_ceiling(provider: str) -> int:
-    """Return the effective output-token ceiling for a provider.
+def get_provider_output_ceiling(provider: str, model: str | None = None) -> int:
+    """Return the effective provider/model output-token ceiling.
 
     Resolves the provider's configured ``max_output_tokens`` (falling back to
     the ``ProviderSpec`` class default for unknown providers) and bounds it by
-    the global :data:`ABSOLUTE_MAX_OUTPUT_TOKENS` cost guard.
+    the global :data:`ABSOLUTE_MAX_OUTPUT_TOKENS` cost guard. An exact known native
+    model ceiling narrows this bound without changing default allocations.
     """
     spec = get_provider_spec(provider)
     ceiling = spec.max_output_tokens if spec else ProviderSpec.max_output_tokens
+    if spec and model:
+        ceiling = min(ceiling, spec.model_output_ceilings.get(model.strip().lower(), ceiling))
     return min(ceiling, ABSOLUTE_MAX_OUTPUT_TOKENS)
+
+
+# Published native limits for the advertised aliases and their fixed snapshots:
+# https://developers.openai.com/api/docs/models/gpt-5.5
+# https://developers.openai.com/api/docs/models/gpt-5.4
+_OPENAI_MODEL_OUTPUT_CEILINGS = {
+    "gpt-5.5": 128000,
+    "gpt-5.5-2026-04-23": 128000,
+    "gpt-5.4": 128000,
+    "gpt-5.4-2026-03-05": 128000,
+}
 
 
 # Canonical provider registry (single source of truth)
@@ -2518,6 +2544,7 @@ PROVIDER_REGISTRY: dict[str, ProviderSpec] = {
         max_output_tokens=131072,
         max_input_tokens=272000,
         use_completion_tokens=True,
+        model_output_ceilings=dict(_OPENAI_MODEL_OUTPUT_CEILINGS),
         chars_per_token=4.0,
         reasoning_strategy="openai_chat_reasoning",
         supported_reasoning_modes=("provider_default", "enabled", "disabled"),
@@ -2538,6 +2565,7 @@ PROVIDER_REGISTRY: dict[str, ProviderSpec] = {
         max_output_tokens=131072,
         max_input_tokens=272000,
         use_completion_tokens=True,
+        model_output_ceilings=dict(_OPENAI_MODEL_OUTPUT_CEILINGS),
         chars_per_token=4.0,
         reasoning_strategy="openai_responses",
         supported_reasoning_modes=("provider_default", "enabled", "disabled"),
@@ -2826,10 +2854,10 @@ def get_max_tokens(provider: str, model: str | None = None, max_output_tokens: i
     spec = get_provider_spec(provider)
     model_limits = spec.model_max_tokens if spec else MAX_TOKENS_BY_MODEL
 
-    # Highest priority: per-model DB override, clamped to the provider's own
-    # output ceiling (and the global absolute cost guard inside the helper).
+    # Highest priority: per-model DB override, clamped to the native ceiling
+    # when known, the provider ceiling and the global guard inside the helper.
     if max_output_tokens and max_output_tokens > 0:
-        return min(max_output_tokens, get_provider_output_ceiling(provider))
+        return min(max_output_tokens, get_provider_output_ceiling(provider, model))
 
     # Check model-specific limits
     if model:

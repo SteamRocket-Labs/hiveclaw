@@ -130,8 +130,18 @@ async def load_context_message_origin(db, *, tenant_id, agent_id, source_id, ses
             or str(task.root_external_principal_id) != proof.get('requester_external_principal_id')):
             return None
     message = proof.get("message")
-    if not isinstance(message, dict) or set(message) != {"role", "content"} or message["role"] not in {"system", "user"} or not isinstance(message["content"], str):
+    if not isinstance(message, dict) or set(message) != {"role", "content"} or message["role"] not in {"system", "user"}:
         return None
+    if not isinstance(message["content"], str):
+        from app.services.prompt_cache import PROMPT_CACHE_BOUNDARY, match_cache_hint_presentation
+
+        blocks = message["content"]
+        if (not isinstance(blocks, list) or not 1 <= len(blocks) <= 2
+            or any(not isinstance(block, dict) or not isinstance(block.get("text"), str) for block in blocks)):
+            return None
+        canonical = {"role": message["role"], "content": PROMPT_CACHE_BOUNDARY.join(block["text"] for block in blocks)}
+        if match_cache_hint_presentation(canonical, message) is None:
+            return None
     try:
         result_id = uuid.UUID(proof["model_result_id"])
         expected_id = uuid.uuid5(result_id, f"kernel-context:{proof['message_index']}:{proof['source_hash']}")
@@ -252,16 +262,22 @@ async def build_model_input_bindings(
             continue
         snapshot = message_snapshot(wire_messages[i])
         presentation = None
+        presentation_code = "canonical_vision_presentation_matched"
         if canonical[ref] != snapshot:
             from app.runtime.message_presentation import match_vision_presentation
 
             presentation = match_vision_presentation(canonical[ref], snapshot)
             if presentation is None:
+                from app.services.prompt_cache import match_cache_hint_presentation
+
+                presentation = match_cache_hint_presentation(canonical[ref], snapshot)
+                presentation_code = "canonical_cache_presentation_matched"
+            if presentation is None:
                 entry["code"] = "source_content_mismatch"
                 continue
         entry.update(status="bound", code="canonical_origin_matched", source_ref=ref)
         if presentation is not None:
-            entry["code"] = "canonical_vision_presentation_matched"
+            entry["code"] = presentation_code
             entry["presentation"] = {**presentation, "canonical_message_hash": _hash(canonical[ref])}
         if ref in input_commands:
             entry["command_ref"] = f"session-command:{input_commands[ref]}"

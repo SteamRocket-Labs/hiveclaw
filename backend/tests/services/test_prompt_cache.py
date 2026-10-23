@@ -7,6 +7,10 @@ probe for metrics).
 
 from __future__ import annotations
 
+from copy import deepcopy
+
+import pytest
+
 from app.services.llm_client import LLMMessage
 from app.services.prompt_cache import (
     PROMPT_CACHE_BOUNDARY,
@@ -137,6 +141,64 @@ class TestHintInjection:
         result = apply_prompt_cache_hints([msg], "claude-compatible-but-unregistered")
 
         assert result[0].content == msg.content
+
+
+def test_cache_blocks_preserve_compiler_sources_and_existing_incompleteness():
+    from app.runtime.context_candidates import ContextMessageOrigin
+    from app.services.session_model_inputs import _hash, message_snapshot
+
+    source = {"source_kind": "agent_identity", "source_id": "synthetic\nidentity", "source_version": "frozen-version"}
+    origin = ContextMessageOrigin.capture(kind="frozen_prompt", role="system", content="Known source",
+        sources=(source,), unbound=("missing_private_source",))
+    original = LLMMessage(role="system", content="Known source", context_origin=origin)
+    presented = apply_cache_hints([original], "minimax")[0]
+    assert presented.context_origin is not None
+    assert presented.context_origin.message_sha256 == _hash(message_snapshot(presented))
+    assert presented.context_origin.sources == origin.sources
+    assert presented.context_origin.unbound == ("missing_private_source",)
+    assert original.content == "Known source" and original.context_origin == origin
+
+
+def test_cache_blocks_do_not_rebind_a_stale_compiler_origin():
+    from app.runtime.context_candidates import ContextMessageOrigin
+    from app.services.session_model_inputs import _hash, message_snapshot
+
+    origin = ContextMessageOrigin.capture(kind="frozen_prompt", role="system", content="Original bytes", unbound=())
+    stale = LLMMessage(role="system", content="Changed bytes", context_origin=origin)
+    presented = apply_cache_hints([stale], "minimax")[0]
+    assert presented.context_origin == origin
+    assert presented.context_origin.message_sha256 != _hash(message_snapshot(presented))
+
+
+@pytest.mark.parametrize("role,scope", [("system", "conversation"), ("system", "task"), ("assistant", "conversation")])
+def test_cache_presentation_matches_exact_canonical_content(role, scope):
+    from app.services.prompt_cache import match_cache_hint_presentation
+    from app.services.session_model_inputs import message_snapshot
+
+    canonical = {"role": role, "content": "Frozen " + PROMPT_CACHE_BOUNDARY + " Dynamic" if role == "system" else "Original reply"}
+    wire = message_snapshot(apply_cache_hints([LLMMessage(**canonical)], "minimax", invocation_scope=scope)[0])
+    proof = match_cache_hint_presentation(canonical, wire)
+    assert proof == {"schema": "hive.prompt_cache_presentation.v1", "cache_control":
+        {"type": "ephemeral", **({"ttl": "1h"} if scope == "task" else {})}}
+
+
+@pytest.mark.parametrize("change", ["text", "ttl", "extra_control", "tool_arguments"])
+def test_cache_presentation_rejects_changed_content_or_protocol(change):
+    from app.services.prompt_cache import match_cache_hint_presentation
+    from app.services.session_model_inputs import message_snapshot
+
+    canonical = {"role": "assistant", "content": "Original reply", "tool_calls": [{"id": "call-1", "type": "function",
+        "function": {"name": "read_ledger", "arguments": "{}"}}]}
+    wire = deepcopy(message_snapshot(apply_cache_hints([LLMMessage(**canonical)], "minimax")[0]))
+    if change == "text":
+        wire["content"][0]["text"] = "Changed reply"
+    elif change == "ttl":
+        wire["content"][0]["cache_control"]["ttl"] = "2h"
+    elif change == "extra_control":
+        wire["content"][0]["cache_control"]["extra"] = "unexpected"
+    else:
+        wire["tool_calls"][0]["function"]["arguments"] = '{"scope":"changed"}'
+    assert match_cache_hint_presentation(canonical, wire) is None
 
 
 class TestUniversalMetricsProbe:

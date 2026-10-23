@@ -193,17 +193,43 @@ def _latest_assistant_text_index(messages: list) -> int | None:
 
 def _clone_msg(msg, **overrides):
     """Clone an LLMMessage with field overrides."""
+    from app.runtime.context_candidates import ContextMessageOrigin
     from app.services.llm_client import LLMMessage
 
+    role = overrides.get("role", msg.role)
+    content = overrides.get("content", msg.content)
+    origin = getattr(msg, "context_origin", None)
+    if isinstance(origin, ContextMessageOrigin):
+        observed = ContextMessageOrigin.capture(kind=origin.kind, role=msg.role, content=msg.content)
+        if observed.message_sha256 == origin.message_sha256:
+            # The compiler's exact cache presentation retains the same leaves
+            # and incompleteness, rather than declaring a new source author.
+            origin = ContextMessageOrigin.capture(kind=origin.kind, role=role, content=content,
+                sections=origin.sections, sources=origin.sources, unbound=origin.unbound)
     return LLMMessage(
-        role=overrides.get("role", msg.role),
-        content=overrides.get("content", msg.content),
+        role=role,
+        content=content,
         tool_calls=overrides.get("tool_calls", msg.tool_calls),
         tool_call_id=overrides.get("tool_call_id", msg.tool_call_id),
         reasoning_content=overrides.get("reasoning_content", msg.reasoning_content),
         reasoning_signature=overrides.get("reasoning_signature", msg.reasoning_signature),
         source_ref=getattr(msg, "source_ref", None),
+        context_origin=origin,
     )
+
+
+def match_cache_hint_presentation(canonical: dict, wire: dict) -> dict | None:
+    """Recognize only the exact cache formatting of unchanged canonical text."""
+    from app.services.llm_client import LLMMessage
+
+    if (canonical.get("role") not in {"system", "assistant"} or not isinstance(canonical.get("content"), str)
+        or set(canonical) - {"role", "content", "tool_calls", "tool_call_id", "reasoning_content", "reasoning_signature"}):
+        return None
+    for scope, control in (("conversation", {"type": "ephemeral"}), ("task", {"type": "ephemeral", "ttl": "1h"})):
+        presented = _apply_cache_control_hints([LLMMessage(**canonical)], invocation_scope=scope)[0]
+        if wire == {**canonical, "content": presented.content}:
+            return {"schema": "hive.prompt_cache_presentation.v1", "cache_control": control}
+    return None
 
 
 # ── Metrics extraction (universal field probe) ──────────────────

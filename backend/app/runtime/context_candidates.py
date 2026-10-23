@@ -21,7 +21,7 @@ class ContextMessageOrigin:
     unbound: tuple[str, ...] = ("context_sources_unbound",)
 
     @classmethod
-    def capture(cls, *, kind: str, role: str, content: str, sections=(), sources=(), unbound=("context_sources_unbound",)):
+    def capture(cls, *, kind: str, role: str, content: Any, sections=(), sources=(), unbound=("context_sources_unbound",)):
         payload = json.dumps({"role": role, "content": content}, ensure_ascii=False,
             sort_keys=True, separators=(",", ":")).encode()
         return cls(kind, hashlib.sha256(payload).hexdigest(), tuple(deepcopy(sections)), tuple(deepcopy(sources)), tuple(unbound))

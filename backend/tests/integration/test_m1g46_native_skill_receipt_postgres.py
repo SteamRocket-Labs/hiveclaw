@@ -18,6 +18,7 @@ pytestmark = [pytest.mark.usefixtures("migrated_pg_url"), pytest.mark.skipif(pla
 async def _run_native_skill_task(
     owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, *, load_skill_name="source-probe", delegated=False, client_script=None, compact_session_ids=False, settle_delegation=False,
     skill_setup=None, prompt="Load source-probe, run scripts/probe.py and deliver the generated report to this work.",
+    model_provider="openai",
 ):
     import app.database as database
     import app.runtime.invoker as invoker
@@ -42,6 +43,7 @@ async def _run_native_skill_task(
     async with owner_sessionmaker() as db:
         agent = await db.get(Agent, seed["agent_id"])
         model = await db.get(LLMModel, agent.primary_model_id)
+        model.provider = model_provider
         model.api_key_encrypted = get_secrets_provider().encrypt("synthetic-local-provider-only")
         model.base_url = "http://127.0.0.1:1"
         model.max_input_tokens = 256_000
@@ -143,6 +145,38 @@ async def _run_native_skill_task(
     else:
         await asyncio.wait_for(web_chat_runtime.execute_web_chat_run(seed["run_id"]), timeout=90)
     return seed, client, bindings, imported
+
+
+async def test_cache_control_keeps_actual_native_model_inputs_bound(
+    owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path,
+):
+    from app.models.session_v2 import SessionModelResult
+
+    script = [
+        {"content": "Load the source probe.", "tool_calls": [{"id": "cache-load", "type": "function",
+            "function": {"name": "load_skill", "arguments": json.dumps({"name": "source-probe"})}}],
+            "finish_reason": "tool_calls"},
+        {"content": "Run the source probe.", "tool_calls": [{"id": "cache-run", "type": "function",
+            "function": {"name": "run_skill_tool", "arguments": json.dumps({"skill": "source-probe", "script": "scripts/probe.py"})}}],
+            "finish_reason": "tool_calls"},
+        {"content": "Generated native-report.md", "finish_reason": "stop"},
+    ]
+    seed, client, _bindings, _imported = await _run_native_skill_task(
+        owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path,
+        model_provider="minimax", client_script=script,
+    )
+    assert len(client.requests) == 3
+    async with owner_sessionmaker() as db:
+        results = list((await db.scalars(select(SessionModelResult).where(
+            SessionModelResult.run_id == seed["run_id"]).order_by(SessionModelResult.round_id))).all())
+        snapshots = [row.model_request_snapshot_json for row in results]
+        (tmp_path / "cache-native-inputs.json").write_text(json.dumps(snapshots, indent=2))
+        assert len(snapshots) == 3
+        assert all(isinstance(snapshot["messages"][0]["content"], list) for snapshot in snapshots)
+        assert all(snapshot["input_bindings"]["dependency_coverage"]["complete"] for snapshot in snapshots)
+        assert all(entry["status"] == "bound" for snapshot in snapshots for entry in snapshot["input_bindings"]["messages"])
+        assert any(entry.get("presentation", {}).get("schema") == "hive.prompt_cache_presentation.v1"
+            for snapshot in snapshots for entry in snapshot["input_bindings"]["messages"])
 
 
 async def test_normal_kernel_skill_output_has_a_usable_source_receipt(

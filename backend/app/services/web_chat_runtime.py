@@ -3700,10 +3700,13 @@ def _with_reclaimed_web_chat_resume_context(task: RuntimeTask) -> dict[str, Any]
         return metadata
     if getattr(task, "parent_agent_id", None) and not metadata.get("restart_resume_context"):
         try:
-            metadata["restart_resume_context"] = build_long_task_resume_context(
+            context = build_long_task_resume_context(
                 agent_id=task.parent_agent_id,
                 runtime_task_id=task.id,
             )
+            if (context.get("plan") or context.get("progress_count") or context.get("workspace_manifest")
+                or context.get("artifact_refs") or (context.get("work_ledger") or {}).get("present")):
+                metadata["restart_resume_context"] = context
         except Exception as exc:
             metadata["restart_resume_context_error"] = f"{type(exc).__name__}: {exc}"
     metadata["resumed_after_restart"] = True

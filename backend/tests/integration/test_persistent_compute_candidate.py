@@ -148,7 +148,7 @@ def synthetic_sdk(monkeypatch, tmp_path):
     return SimpleNamespace(calls=calls, boxes=boxes, profile=path, faults=faults)
 
 
-@pytest.mark.parametrize("fault", [None, "unapproved", "create_ack_lost", "pause_ack_lost"])
+@pytest.mark.parametrize("fault", [None, "unapproved", "create_ack_lost", "pause_ack_lost", "worker_restart"])
 async def test_original_work_reuses_paused_compute_and_consumes_canonical_file(
     owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, synthetic_sdk, fault,
 ):
@@ -170,6 +170,9 @@ async def test_original_work_reuses_paused_compute_and_consumes_canonical_file(
     from app.services.secrets_provider import get_secrets_provider
     from app.services.web_chat_runtime import execute_web_chat_run
 
+    restart = fault == "worker_restart"
+    if restart:
+        fault = None
     seed = await _seed_run(owner_sessionmaker, tmp_path)
     factory, original = database.async_session, llm.create_llm_client
     for module in list(sys.modules.values()):
@@ -227,13 +230,41 @@ async def test_original_work_reuses_paused_compute_and_consumes_canonical_file(
         rounds.insert(-1, {"tool_calls": [{"id": "read-compute-deliverable", "type": "function",
             "function": {"name": "read_file", "arguments": json.dumps({"path": "workspace/saved.txt"})}}],
             "finish_reason": "tool_calls"})
-    script = ScriptedLLMClient(rounds)
+    from tests.integration.test_web_chat_worker_restart_kernel_recovery import SimulatedWorkerCrash
+
+    script = ScriptedLLMClient([rounds[0], SimulatedWorkerCrash()] if restart else rounds)
     monkeypatch.setattr(invoker, "create_llm_client", lambda **kw: script)
     fence = set_runtime_task_fence(task_id=seed["run_id"], worker_id="kernel-worker-1", claim_version=1)
     try:
-        await execute_web_chat_run(seed["run_id"])
+        if restart:
+            with pytest.raises(SimulatedWorkerCrash):
+                await execute_web_chat_run(seed["run_id"])
+        else:
+            await execute_web_chat_run(seed["run_id"])
     finally:
         reset_runtime_task_fence(fence)
+    if restart:
+        from datetime import UTC, datetime, timedelta
+        from app.services.runtime_task_claim_service import RuntimeTaskClaimService
+
+        assert (seed["agent_root"] / "workspace/saved.txt").read_text() == "CANONICAL_COMPUTE"
+        async with app_user_sessionmaker() as db:
+            await pin_rls_tenant_context(db, seed["tenant_id"])
+            task = await db.get(RuntimeTask, seed["run_id"])
+            assert task.status == "running" and task.claim_version == 1
+            task.claim_expires_at = datetime.now(UTC) - timedelta(seconds=1)
+            await db.commit()
+            claims = await RuntimeTaskClaimService(db=db, worker_id="compute-worker-2", lease_seconds=600).claim_available()
+            claim = next(row for row in claims if row.id == seed["run_id"])
+            assert claim.claim_version == 2
+            await db.commit()
+        script = ScriptedLLMClient(rounds[1:])
+        fence = set_runtime_task_fence(task_id=seed["run_id"], worker_id="compute-worker-2", claim_version=2)
+        try:
+            await execute_web_chat_run(seed["run_id"])
+        finally:
+            reset_runtime_task_fence(fence)
+        assert "FIRST_COMPUTE" in json.dumps(script.requests[0]["messages"])
     if fault:
         from app.models.execution_environment import ExecutionEnvironment
 

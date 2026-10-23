@@ -183,7 +183,7 @@ async def test_governed_employee_delegation_uses_real_remote_worker_and_original
     from fastapi import FastAPI
     from httpx import AsyncClient, ASGITransport
     from app import database
-    from app.api import agents
+    from app.api import agents, files
     from app.config import get_settings
     from app.core.security import create_access_token
     from app.kernel.engine import _context_message, _mid_run_items_to_user_messages
@@ -267,6 +267,7 @@ async def test_governed_employee_delegation_uses_real_remote_worker_and_original
         await db.commit()
     app = FastAPI()
     app.include_router(agents.router)
+    app.include_router(files.router)
     async def scoped_db():
         async with tenant_scoped_session(source["tenant_id"], session_factory=app_user_sessionmaker) as db:
             yield db
@@ -623,6 +624,15 @@ async def test_governed_employee_delegation_uses_real_remote_worker_and_original
                 parent = await db.get(RuntimeTask, source["run_id"])
                 assert parent.status == "running" and parent.child_agent_id == source["agent_id"]
                 await db.commit()
+            if selected_company:
+                async with AsyncClient(transport=ASGITransport(app=app), base_url="http://local", headers=headers) as api:
+                    artifact_url = f"/agents/{source['agent_id']}/files/artifacts/{artifact.id}"
+                    content = await api.get(artifact_url + "/content")
+                    assert content.status_code == 200 and content.json()["content"] == text, content.text
+                    assert content.json()["uses_snapshot"] is True
+                    assert content.json()["legacy_current_file_fallback"] is False
+                    downloaded = await api.get(artifact_url + "/download")
+                    assert downloaded.status_code == 200 and downloaded.content == text.encode(), downloaded.text
             assert len(remote.requests) == 2
         await budget_service.reconcile_orphaned_reservations()
         async with tenant_scoped_session(source["tenant_id"], session_factory=app_user_sessionmaker) as db:
@@ -652,6 +662,10 @@ async def test_governed_employee_delegation_uses_real_remote_worker_and_original
                 await inspect_employee_task(task_id=returned["task_id"], principal=principal)
             assert denied.value.status_code == 404
             assert denied.value.detail["code"] == "remote_a2a_task_unavailable"
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://local", headers=headers) as api:
+                for suffix in ("/content", "/download"):
+                    refused = await api.get(artifact_url + suffix)
+                    assert refused.status_code in {403, 404} and text.encode() not in refused.content, refused.text
             assert len(remote.requests) == 2
             async with owner_sessionmaker() as db:
                 user = await db.get(User, source["user_id"])

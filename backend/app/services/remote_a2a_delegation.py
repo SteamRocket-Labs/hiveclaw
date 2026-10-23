@@ -59,7 +59,10 @@ async def validate_instruction_sources(db, *, task, state, recipient=False, for_
         session_id=evidence["session_id"], runtime_task_id=evidence["runtime_task_id"],
         purpose=evidence["purpose"], delegation_id=evidence["delegation_id"], autonomous=evidence["autonomous"])
     try:
-        await _validate_input_dependencies(db, task.tenant_id, list(origin.sources), runtime_request=principal)
+        if not for_effect and reader is not None:
+            await _validate_input_dependencies(db, task.tenant_id, list(origin.sources), user=reader)
+        else:
+            await _validate_input_dependencies(db, task.tenant_id, list(origin.sources), runtime_request=principal)
         if recipient:
             await _validate_input_dependencies(db, task.tenant_id, list(origin.sources),
                 runtime_request=_recipient_request(task))

@@ -76,7 +76,7 @@ def synthetic_sdk(monkeypatch, tmp_path):
                     stderr=[SimpleNamespace(text=stderr.decode())]))
 
         async def get_info(self):
-            return SimpleNamespace(id=self.id, state=self.state, metadata=self.metadata)
+            return SimpleNamespace(id=self.id, status=SimpleNamespace(state=self.state), metadata=self.metadata)
 
         async def pause(self):
             calls.append(("pause", self.id))

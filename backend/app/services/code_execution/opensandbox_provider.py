@@ -202,7 +202,8 @@ async def reconcile_resource(db, environment, lease):
     from opensandbox.transport import RetryPolicy
 
     async with httpx.AsyncHTTPTransport(trust_env=False) as transport:
-        config = ConnectionConfig(domain=profile["server_url"].rstrip("/"),
+        config = ConnectionConfig(domain=urlsplit(profile["server_url"]).netloc,
+            protocol=urlsplit(profile["server_url"]).scheme,
             api_key=os.environ["HIVE_OPENSANDBOX_API_KEY"], use_server_proxy=True,
             request_timeout=timedelta(seconds=10), retry_policy=RetryPolicy.disabled(),
             transport=transport, disable_metrics=True)
@@ -259,7 +260,8 @@ async def execute_opensandbox_command(command, *, work_dir, env, timeout, networ
         from opensandbox.transport import RetryPolicy
 
         transport = httpx.AsyncHTTPTransport(trust_env=False)
-        config = ConnectionConfig(domain=profile["server_url"].rstrip("/"),
+        config = ConnectionConfig(domain=urlsplit(profile["server_url"]).netloc,
+            protocol=urlsplit(profile["server_url"]).scheme,
             api_key=os.environ["HIVE_OPENSANDBOX_API_KEY"], use_server_proxy=True,
             request_timeout=timedelta(seconds=10), retry_policy=RetryPolicy.disabled(),
             transport=transport, disable_metrics=True)
@@ -271,7 +273,7 @@ async def execute_opensandbox_command(command, *, work_dir, env, timeout, networ
             else:
                 info = await manager.get_sandbox_info(binding["resource_id"])
                 _require(info.metadata.get("hive.environment") == str(scope.environment_id)
-                    and info.metadata.get("hive.profile") == digest and info.state == "Paused",
+                    and info.metadata.get("hive.profile") == digest and info.status.state == "Paused",
                     "compute_resource_identity_unconfirmed", 409)
                 owned = True
                 if binding["context"] != _context(scope):
@@ -301,7 +303,7 @@ async def execute_opensandbox_command(command, *, work_dir, env, timeout, networ
         info = await manager.get_sandbox_info(box.id)
         _require(info.id == binding["resource_id"] and info.metadata.get("hive.environment") == str(scope.environment_id)
             and info.metadata.get("hive.profile") == digest
-            and info.metadata.get("hive.creation_lease") == binding["creation_lease_id"] and info.state == "Running",
+            and info.metadata.get("hive.creation_lease") == binding["creation_lease_id"] and info.status.state == "Running",
             "compute_resource_identity_unconfirmed", 409)
         owned = True
         evidence["resource_id"] = box.id
@@ -338,7 +340,7 @@ async def execute_opensandbox_command(command, *, work_dir, env, timeout, networ
         _require(cleared.complete is not None and cleared.exit_code == 0, "compute_home_sync_failed", 409)
         await box.pause()
         info = await manager.get_sandbox_info(box.id)
-        _require(info.state == "Paused", "compute_pause_unconfirmed", 409)
+        _require(info.status.state == "Paused", "compute_pause_unconfirmed", 409)
         binding = {**binding, "state": "paused"}
         await _binding(scope, value=binding, write=True)
         scope.resource_state = "paused"

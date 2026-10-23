@@ -3022,6 +3022,14 @@ def create_llm_client_from_config(model_config: dict) -> LLMClient:
     usage_context = _usage_context_from_config(model_config)
     if usage_context is None:
         return client
+    if isinstance(client, _CapAwareLLMClient):
+        # Record each generation before cap recovery can replace its response
+        # or fail, preserving the existing recovery and returned-answer policy.
+        return _CapAwareLLMClient(
+            _MeteredLLMClient(client._inner, usage_context),
+            provider=client.provider,
+            model=client.model,
+        )
     return _MeteredLLMClient(client, usage_context)
 
 

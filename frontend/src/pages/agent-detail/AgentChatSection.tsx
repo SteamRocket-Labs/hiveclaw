@@ -1182,9 +1182,12 @@ function AgentChatSection({
   const visibleChatMessages = operatorReadEnabled && chatMessagesSessionId === activeSessionId ? chatMessages : EMPTY_CHAT_MESSAGES;
   const visibleTimeline = isReadOnlySession ? visibleHistoryMsgs : visibleChatMessages;
   const normalizedActiveRunStatus = String(activeRunStatus || '').trim().toLowerCase();
+  const unfinishedRunStatus = ['created', 'pending', 'queued', 'running', 'started', 'in_progress', 'resuming',
+    'waiting', 'waiting_user', 'suspended', 'resumable'].includes(normalizedActiveRunStatus);
+  const hasUnfinishedRun = Boolean(activeRunId?.trim()) && unfinishedRunStatus;
   const rewindUnavailableReason = isStreaming
     || isWaiting
-    || ['created', 'pending', 'queued', 'running', 'started', 'in_progress', 'resuming', 'waiting', 'waiting_user'].includes(normalizedActiveRunStatus)
+    || unfinishedRunStatus
     ? t(
       'sessionWorkbench.rewind.activeRunBlocked',
       'Stop the current turn before rewinding. Creating a new branch session remains available.',
@@ -2380,7 +2383,7 @@ function AgentChatSection({
                 goalModeRequested={goalModeRequested}
                 uploading={uploading}
                 uploadProgress={uploadProgress}
-                running={isStreaming || isWaiting}
+                running={isStreaming || isWaiting || hasUnfinishedRun}
                 onChange={onSetChatInput}
                 onPaste={onHandlePaste}
                 onSubmit={sendFromComposer}

@@ -92,6 +92,46 @@ vi.mock('../../components/MarkdownRenderer', () => ({
 import AgentChatSection from './AgentChatSection';
 import { projectsApi } from '../../api/domains/projects';
 
+it.each(['awaiting_approval', 'awaiting_budget', 'idle'] as const)(
+  'keeps Stop available for the owned suspended run after stream flags clear: %s', (phase) => {
+    const base = props('', false, 'original-work');
+    const stop = vi.fn();
+    render(<AgentChatSection {...base} agent={{ ...base.agent, access_level: 'use' }}
+      currentUser={{ id: 'operator-user', tenant_id: 'company' }}
+      activeSession={{ ...base.activeSession, user_id: 'operator-user', read_only: false,
+        is_current_user_session: true, operator_view: false }}
+      historyMsgs={[]} activeRunId="owned-run" activeRunStatus="suspended" runtimePhase={phase}
+      isStreaming={false} isWaiting={false} onAbortGeneration={stop} />);
+    const control = screen.getByTestId('session-composer-stop');
+    expect(control).toHaveProperty('disabled', false);
+    fireEvent.click(control);
+    expect(stop).toHaveBeenCalledTimes(1);
+  },
+);
+
+it.each(['read_only', 'non_cancellable', 'missing_run', 'terminal'])(
+  'does not offer an executable Stop outside the current cancellable run: %s', (state) => {
+    const base = props('', false, 'original-work');
+    const stop = vi.fn();
+    render(<AgentChatSection {...base} agent={{ ...base.agent, access_level: state === 'read_only' ? 'read' : 'use' }}
+      currentUser={{ id: 'operator-user', tenant_id: 'company' }}
+      activeSession={{ ...base.activeSession, user_id: 'operator-user', read_only: state === 'read_only',
+        is_current_user_session: true, operator_view: false }}
+      historyMsgs={[]} activeRunId={state === 'missing_run' ? null : 'owned-run'}
+      activeRunStatus={state === 'terminal' ? 'killed' : 'suspended'}
+      runtimePhase={state === 'terminal' ? 'cancelled' : 'awaiting_approval'}
+      canAbortGeneration={state !== 'non_cancellable'} isStreaming={false} isWaiting={false} onAbortGeneration={stop} />);
+    const control = screen.queryByTestId('session-composer-stop');
+    if (state === 'non_cancellable') {
+      expect(control).toHaveProperty('disabled', true);
+      fireEvent.click(control!);
+    } else {
+      expect(control).toBeNull();
+    }
+    expect(stop).not.toHaveBeenCalled();
+  },
+);
+
 it('keeps selected project inputs and the same input identifier after an unconfirmed original-work send', async () => {
   const base = props('', false, 'original-work');
   vi.spyOn(projectsApi, 'list').mockResolvedValue({ projects: [{ id: 'project', title: 'Research', revision: 1,

@@ -3135,6 +3135,11 @@ async def _authorize_message_dispatch(db: AsyncSession, *, message: LocalAgentCh
     snapshot_hash: str) -> bool:
     """Apply the live action policy before creating another delivery attempt."""
     try:
+        if _a2a_local_delegation(message.metadata_json):
+            await _validated_a2a_source_route(db, tenant_id=message.tenant_id,
+                sender_agent_id=message.sender_agent_id, sender_user_id=message.sender_user_id,
+                target_agent_id=message.source_agent_id, target_owner_user_id=message.owner_user_id,
+                metadata=dict(message.metadata_json or {}))
         from app.services.local_trigger_runtime import load_local_trigger_message
 
         scheduled = await load_local_trigger_message(db, message=message)

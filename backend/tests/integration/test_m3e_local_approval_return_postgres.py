@@ -130,6 +130,52 @@ async def test_new_contract_callbacks_cannot_invent_dispatch(delegation, app_use
         assert event['payload']['text'] == 'Independent authorized analysis remains available.'
 
 
+@pytest.mark.parametrize('transport', ['poll', 'online_push'])
+async def test_source_route_change_before_dispatch_withholds_the_original_request(
+    delegation, app_user_sessionmaker, monkeypatch, transport,
+):
+    from app.api.local_agent_channel import channel_ws_manager
+    from app.services.approval_service import ApprovalService
+
+    seed = delegation
+    sent = []
+
+    async def connected(context):
+        assert context.connection_id == seed['selected'].connection_id
+        return True
+
+    async def send(context, payload):
+        sent.append(payload)
+        return True
+
+    async with tenant_scoped_session(seed['tenant_id'], session_factory=app_user_sessionmaker) as db:
+        user = await db.get(User, seed['user_id'])
+        await ApprovalService().resolve_approval(db, seed['approval_id'], user, 'approve')
+        message = await db.get(LocalAgentChannelMessage, seed['message_id'])
+        original_content, original_metadata = message.content, dict(message.metadata_json)
+        source = await db.get(ChatSession, seed['parent'])
+        source.agent_id = seed['agent_id']
+        await db.commit()
+        monkeypatch.setattr(channel_ws_manager, 'has_connection', connected)
+        monkeypatch.setattr(channel_ws_manager, 'send_to_connection', send)
+        if transport == 'poll':
+            assert await channel.poll_pending_channel_messages(db, context=seed['selected']) == []
+        else:
+            await channel.dispatch_channel_message(db, message_id=seed['message_id'], owner_user_id=seed['user_id'])
+            assert sent == []
+        await db.refresh(message)
+        assert message.status == 'rejected' and message.delivery_attempt_count == 0
+        assert message.content == original_content
+        assert message.metadata_json['execution_principal'] == original_metadata['execution_principal']
+        origin = await channel._dispatch_origin(db, message)
+        assert channel._execution_state(message, origin) == 'not_dispatched'
+        assert message.metadata_json['source_delivery']['status'] == 'needs_reconciliation'
+        source.agent_id = seed['source']
+        await db.commit()
+        assert await channel.poll_pending_channel_messages(db, context=seed['selected']) == []
+        assert sent == []
+
+
 async def test_source_route_loss_holds_delivery_without_dropping_the_actual_result(delegation, app_user_sessionmaker):
     from app.services.approval_service import ApprovalService
     seed = delegation

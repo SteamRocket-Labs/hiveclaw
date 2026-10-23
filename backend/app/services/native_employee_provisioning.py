@@ -112,7 +112,7 @@ async def resume_native_employee(
     from app.services.agent_manager import agent_manager
 
     try:
-        await agent_manager.initialize_agent_files(db, agent)
+        await agent_manager.initialize_agent_files(db, agent, original_author_id=actor_id)
     except Exception as exc:
         logger.warning("native employee workspace incomplete: %s", type(exc).__name__)
         return NativeEmployeeResult(agent=agent, workspace_ready=False, error_code="workspace_failed")

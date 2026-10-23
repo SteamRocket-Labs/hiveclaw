@@ -19,7 +19,7 @@ from types import SimpleNamespace
 import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy import text
+from sqlalchemy import select, text
 from app.api.agents import router as agents_router
 from app.api.assistant import router as assistant_router
 from app.api.chat_sessions import router as chat_sessions_router
@@ -131,6 +131,8 @@ async def _agent(db, *, tenant_id, owner_id, name: str, model_id=None, **extra) 
 @pytest.fixture(autouse=True)
 def _agent_files(tmp_path, monkeypatch):
     monkeypatch.setattr("app.services.agent_manager.settings.AGENT_DATA_DIR", str(tmp_path / "agents"))
+    monkeypatch.setattr("app.services.agent_context.PERSISTENT_DATA", tmp_path / "agents")
+    monkeypatch.setattr("app.services.agent_context.TOOL_WORKSPACE", tmp_path / "tool-workspaces")
     (tmp_path / "agents").mkdir()
     monkeypatch.setattr("app.services.runtime_task_worker.runtime_task_worker_snapshot", lambda: {"running": True})
 
@@ -293,6 +295,92 @@ async def test_unbound_model_preview_uses_only_enabled_same_company_default(
             assert f"Unselected oldest {tag}" not in response.text
     assert await _scalar(owner_sessionmaker, "SELECT count(*) FROM user_assistant_bindings WHERE user_id = :u", u=user_id) == 0
     assert await _scalar(owner_sessionmaker, "SELECT count(*) FROM agents WHERE creator_id = :u", u=user_id) == 0
+
+
+@pytest.mark.parametrize("fail_before_workspace", [False, True])
+async def test_opened_assistant_retains_original_context_sources_without_attesting_existing_files(
+    owner_sessionmaker, app_user_sessionmaker, monkeypatch, fail_before_workspace,
+):
+    import hashlib
+
+    from app.models.config_revision import ConfigRevision
+    from app.services.agent_context import agent_identity_content, load_agent_context_resource
+    from app.services.config_versioning import canonical_content_hash
+    from app.services.content_input_receipts import ContentInputReceiptError, _validate_input_dependencies
+    from app.services.native_employee_provisioning import resume_native_employee
+
+    tag = uuid.uuid4().hex[:8]
+    tenant_id, user_id = uuid.uuid4(), uuid.uuid4()
+    async with owner_sessionmaker() as db:
+        db.add(Tenant(id=tenant_id, name=f"Source {tag}", slug=f"assistant-source-{tag}"))
+        await db.flush()
+        model = await _model(db, tenant_id, label=f"Source model {tag}")
+        _user(db, id=user_id, username=f"source-{tag}", email=f"source-{tag}@example.test", tenant_id=tenant_id)
+        db.add(TenantSetting(tenant_id=tenant_id, key="default_model_id", value={"model_id": str(model.id)}))
+        await db.commit()
+
+    initialize = AgentManager.initialize_agent_files
+
+    async def initialize_once(self, db, agent, *args, **kwargs):
+        if fail_before_workspace and not getattr(initialize_once, "failed", False):
+            initialize_once.failed = True
+            raise OSError("Synthetic failure before any workspace write")
+        return await initialize(self, db, agent, *args, **kwargs)
+
+    monkeypatch.setattr(AgentManager, "initialize_agent_files", initialize_once)
+    holder = {"actor": _actor(id=user_id, tenant_id=tenant_id, role="member")}
+    async with _client(app_user_sessionmaker, holder) as client:
+        opened = await client.post("/api/assistant/open", json={"idempotency_key": f"source-{tag}"})
+        assert opened.status_code == 200, opened.text
+        agent_id = uuid.UUID(opened.json()["agent"]["id"])
+        if fail_before_workspace:
+            assert opened.json()["state"] == "provision_incomplete"
+            opened = await client.post("/api/assistant/open", json={"idempotency_key": f"source-{tag}"})
+            assert opened.status_code == 200 and opened.json()["agent"]["id"] == str(agent_id)
+        assert opened.json()["state"] == "active"
+
+    async def context_dependencies(agent):
+        soul = await load_agent_context_resource(agent_id=agent.id, tenant_id=tenant_id, resource_ref="soul")
+        assert soul.status == "ok"
+        self_path = AgentManager()._agent_dir(agent.id) / "memory/self/self.md"
+        return [
+            {"source_kind": "agent_identity", "source_id": f"{agent.id}\nidentity",
+             "source_version": canonical_content_hash(agent_identity_content(agent.name, agent.role_description))},
+            {"source_kind": "agent_context_resource", "source_id": f"{agent.id}\nsoul", "source_version": soul.sha256},
+            {"source_kind": "agent_resident_memory", "source_id": f"{agent.id}\nmemory/self/self.md",
+             "source_version": hashlib.sha256(self_path.read_bytes()).hexdigest()},
+        ]
+
+    async with app_user_sessionmaker() as db:
+        await pin_rls_tenant_context(db, tenant_id)
+        actor = await db.get(User, user_id)
+        agent = await db.get(Agent, agent_id)
+        dependencies = await context_dependencies(agent)
+        await _validate_input_dependencies(db, tenant_id, dependencies, user=actor)
+        revision = (await db.execute(select(ConfigRevision).where(
+            ConfigRevision.tenant_id == tenant_id, ConfigRevision.entity_id == agent_id,
+            ConfigRevision.entity_type == "agent_bootstrap",
+        ))).scalar_one()
+        assert revision.changed_by_user_id == user_id and revision.changed_by_agent_id is None
+        assert revision.change_source == "user" and revision.version == 1
+
+    async with owner_sessionmaker() as db:
+        legacy = await _agent(db, tenant_id=tenant_id, owner_id=user_id, name=f"Legacy source {tag}")
+        await AgentManager().initialize_agent_files(db, legacy)
+        legacy_id = legacy.id
+        await db.commit()
+    async with app_user_sessionmaker() as db:
+        await pin_rls_tenant_context(db, tenant_id)
+        actor = await db.get(User, user_id)
+        legacy = await db.get(Agent, legacy_id)
+        dependencies = await context_dependencies(legacy)
+        await resume_native_employee(db, legacy, actor_id=user_id, audit_action="assistant.provisioned")
+        with pytest.raises(ContentInputReceiptError, match="complete original creation sources"):
+            await _validate_input_dependencies(db, tenant_id, dependencies, user=actor)
+        assert (await db.execute(select(ConfigRevision.id).where(
+            ConfigRevision.tenant_id == tenant_id, ConfigRevision.entity_id == legacy_id,
+            ConfigRevision.entity_type == "agent_bootstrap",
+        ))).scalar_one_or_none() is None
 
 
 async def test_open_is_stable_and_resume_does_not_duplicate(

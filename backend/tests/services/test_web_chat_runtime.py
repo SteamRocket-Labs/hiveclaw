@@ -5825,14 +5825,20 @@ def test_reclaimed_web_chat_claim_builds_durable_resume_context(monkeypatch):
     monkeypatch.setattr(
         runtime,
         "build_long_task_resume_context",
-        lambda **kwargs: {"resume_prompt": "resume once", "task": kwargs["runtime_task_id"].hex},
+        lambda **kwargs: {
+            "resume_prompt": "resume once",
+            "task": kwargs["runtime_task_id"].hex,
+            "plan": {"spec": "resume once"},
+        },
     )
 
     metadata = runtime._with_reclaimed_web_chat_resume_context(task)
 
     assert metadata["resumed_after_restart"] is True
     assert metadata["recovery_state"] == "recovering"
-    assert metadata["restart_resume_context"] == {"resume_prompt": "resume once", "task": run_id.hex}
+    assert metadata["restart_resume_context"] == {
+        "resume_prompt": "resume once", "task": run_id.hex, "plan": {"spec": "resume once"},
+    }
 
 
 def test_tool_settlement_uses_runtime_effective_arguments_for_decision_hash() -> None:

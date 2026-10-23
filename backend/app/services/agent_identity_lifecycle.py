@@ -100,7 +100,8 @@ async def resolve_live_effect_principal(db: AsyncSession, agent: Any) -> LiveEff
     owner_id = effective_agent_owner_id(agent)
     if owner_id is None:
         return LiveEffectPrincipal(user_id=None, block_reason="responsible_principal_missing")
-    user = (await db.execute(select(User).where(User.id == owner_id))).scalar_one_or_none()
+    user = (await db.execute(select(User).where(User.id == owner_id)
+        .execution_options(populate_existing=True))).scalar_one_or_none()
     if user is None:
         return LiveEffectPrincipal(user_id=None, block_reason="responsible_principal_missing")
     if getattr(user, "is_active", True) is False:

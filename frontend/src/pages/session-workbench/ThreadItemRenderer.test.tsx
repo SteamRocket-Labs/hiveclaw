@@ -10,6 +10,9 @@ vi.mock('react-i18next', () => ({
       if (_key === 'sessionWorkbench.threadItem.failure.modelMissing') {
         return '当前 Agent 尚未配置模型。请在“权限与设置”中选择模型，或联系管理员配置后再重试。';
       }
+      if (_key === 'sessionWorkbench.threadItem.failure.authOrPermission') {
+        return '模型服务的身份验证或权限检查失败。请联系管理员检查 API Key 和模型访问权限，修复后再重试。';
+      }
       const value = typeof fallback === 'string' ? fallback : String(options?.defaultValue || _key);
       return value.replace('{{status}}', String(options?.status || '')).replace('{{count}}', String(options?.count || ''));
     },
@@ -86,6 +89,18 @@ function item(itemType: ThreadItemType): ThreadItem {
 }
 
 describe('ThreadItemRenderer', () => {
+  it.each([true, false])('explains authentication recovery independently of replay safety: %s', (retryable) => {
+    const failure = { ...item('error'), event_type: 'runtime_failure', item_status: 'failed',
+      audience: 'user', content: 'PRIVATE_PROVIDER_ERROR', user_summary: 'Stale temporary failure summary',
+      item_data: { code: 'auth_or_permission', retryable, reason: 'provider_error', retry_reason: null },
+    } as ThreadItem;
+    const markup = renderToStaticMarkup(<ThreadItemRenderer item={failure} />);
+    expect(markup).toContain('身份验证或权限检查失败');
+    expect(markup).toContain('API Key');
+    expect(markup).toContain('修复后再重试');
+    expect(markup).not.toMatch(/temporarily unavailable|Stale temporary|PRIVATE_PROVIDER_ERROR/);
+  });
+
   it('shows a local permission decision while retaining operator-only visibility', () => {
     const decision = { ...item('approval_decision'), audience: 'user', event_type: 'permission_resolved' } as ThreadItem;
     expect(shouldRenderThreadItemInConversation(decision, false)).toBe(true);

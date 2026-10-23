@@ -184,6 +184,42 @@ def test_nonblocking_memory_degradation_has_no_turn_retry_action_or_raw_internal
     assert raw_message not in str(item)
 
 
+@pytest.mark.parametrize("retryable", [True, False])
+def test_authentication_rejection_requires_configuration_recovery(retryable: bool) -> None:
+    from app.services.thread_items import build_thread_item
+
+    item = build_thread_item(
+        _event(event_type="runtime_failure", item_type="error", item_status="failed",
+               content="PRIVATE_PROVIDER_ERROR", metadata_json={
+                   "failure_code": "auth_or_permission", "delivery_state": "rejected",
+                   "requires_user_decision": True, "retryable": retryable,
+               }),
+        audience="user",
+    )
+    assert item["item_data"]["code"] == "auth_or_permission"
+    assert item["item_data"]["retryable"] is retryable
+    assert item["user_summary"] == "模型服务的身份验证或权限检查失败。请联系管理员检查 API Key 和模型访问权限，修复后再重试。"
+    assert "暂时不可用" not in item["user_summary"]
+    assert "PRIVATE_PROVIDER_ERROR" not in item["user_summary"]
+    assert (item.get("user_action") or {}).get("kind") == ("retry_turn" if retryable else None)
+
+
+@pytest.mark.parametrize(("event_type", "code"), [
+    ("runtime_failure", "private_provider_diagnostic"),
+    ("tool_error", "auth_or_permission"),
+])
+def test_model_recovery_projection_does_not_expose_private_or_unrelated_codes(event_type: str, code: str) -> None:
+    from app.services.thread_items import build_thread_item
+
+    item = build_thread_item(_event(
+        event_type=event_type, item_type="error", item_status="failed",
+        metadata_json={"failure_code": code, "reason": "PRIVATE_PROVIDER_BODY", "retryable": False},
+    ), audience="user")
+    assert item["item_data"].get("code") is None
+    assert code not in str(item)
+    assert "PRIVATE_PROVIDER_BODY" not in str(item)
+
+
 @pytest.mark.parametrize(
     ("event_type", "item_type", "role"),
     [

@@ -1,5 +1,5 @@
 export type RuntimeFailurePresentation = {
-  kind: 'model_missing' | 'quota_exhausted' | 'rate_limited' | 'retryable' | 'unavailable';
+  kind: 'model_missing' | 'quota_exhausted' | 'rate_limited' | 'auth_or_permission' | 'retryable' | 'unavailable';
   fallback: string;
 };
 
@@ -7,6 +7,12 @@ export function runtimeFailurePresentation(
   failureCode: unknown,
   retryable: boolean,
 ): RuntimeFailurePresentation {
+  if (failureCode === 'auth_or_permission') {
+    return {
+      kind: 'auth_or_permission',
+      fallback: 'Model authentication or permission checks failed. Ask an administrator to check the API key and model access, then retry after fixing the configuration.',
+    };
+  }
   if (failureCode === 'llm_model_missing') {
     return {
       kind: 'model_missing',

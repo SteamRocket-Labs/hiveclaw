@@ -74,6 +74,25 @@ describe('assistant scope', () => {
 });
 
 describe('AssistantPanel recovery', () => {
+  it.each([
+    ['ok', 'Company approved model', 'Company approved model'],
+    ['forbidden', null, 'assistant.modelForbidden'],
+    ['unconfigured', null, 'assistant.modelMissing'],
+  ])('shows the unbound company model preview: %s', (model, label, expected) => {
+    const onOpen = vi.fn();
+    render(<MemoryRouter><AssistantPanel
+      payload={binding({ readiness: {
+        ready: false, worker: 'available', model, model_label: label, workspace: 'missing', blockers: [],
+      } })}
+      loading={false} onOpen={onOpen} onSelect={vi.fn()} onRetry={vi.fn()} onFirstWork={vi.fn()}
+    /></MemoryRouter>);
+    expect(screen.getByText(expected)).toBeTruthy();
+    expect(screen.queryByText('assistant.ready')).toBeNull();
+    expect(onOpen).not.toHaveBeenCalled();
+    expect(screen.getByRole('button', { name: 'assistant.open' })).toHaveProperty('disabled', false);
+    if (model !== 'unconfigured') expect(screen.queryByText('assistant.modelMissing')).toBeNull();
+  });
+
   it('shows server identity and does not preselect an employee', () => {
     const markup = render(
       <MemoryRouter>

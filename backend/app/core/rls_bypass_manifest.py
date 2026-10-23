@@ -809,7 +809,7 @@ def fingerprint_rls_bypass_scopes(app_root: Path) -> str:
 # Exact registered query shapes, scanner and expiry checks remain unchanged.
 # Provider quota holds without reported usage remain pending reconciliation.
 # Existing audited call signatures and grants remain unchanged.
-RLS_BYPASS_SCOPES_SHA256 = "84fb74e5fc3562760fe4be3b6345afbe17bce10cd92c3d9ffdff433a3159b410"
+RLS_BYPASS_SCOPES_SHA256 = "c47680bc1da5ab6146e0c662443c479cee3cc0fac70fd4b333ee3155141c5328"
 
 
 def scan_rls_bypass_callsites(app_root: Path) -> list[RLSBypassCallsite]:

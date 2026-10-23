@@ -41,6 +41,7 @@ export interface AssistantBinding {
     ready: boolean;
     worker: string;
     model: string;
+    model_label?: string | null;
     workspace: string;
     blockers: string[];
   };

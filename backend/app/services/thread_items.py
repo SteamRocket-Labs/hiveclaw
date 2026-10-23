@@ -790,6 +790,9 @@ def _user_summary(
             return "部分记忆检索暂时不可用，本轮任务仍在继续。"
         return _text(data.get("user_summary") or data.get("message")) or "部分上下文暂时不可用，任务仍可继续。"
     if item_type == "error":
+        code = _text(data.get("code") or data.get("error_code") or data.get("failure_code"))
+        if event_type == "runtime_failure" and code == "auth_or_permission":
+            return "模型服务的身份验证或权限检查失败。请联系管理员检查 API Key 和模型访问权限，修复后再重试。"
         if bool(data.get("retryable")):
             return "连接或服务暂时不可用，本次任务可以安全重试。"
         return "任务遇到问题，已停止继续执行。"
@@ -836,7 +839,7 @@ def _user_action(
     return None
 
 
-def _user_item_data(item_type: str, item_data: dict[str, Any]) -> dict[str, Any]:
+def _user_item_data(item_type: str, item_data: dict[str, Any], *, event_type: str) -> dict[str, Any]:
     clean = dict(item_data)
     if item_type == "tool_call":
         clean["tool_call_id"] = None
@@ -873,7 +876,12 @@ def _user_item_data(item_type: str, item_data: dict[str, Any]) -> dict[str, Any]
         clean["kept_message_count"] = None
         clean["continuity_sections_injected"] = []
     elif item_type in {"warning", "error"}:
-        clean["code"] = None
+        # Only public model-recovery categories survive the user projection.
+        # Provider bodies, private diagnostic codes and reasons stay redacted.
+        if item_type != "error" or event_type != "runtime_failure" or clean.get("code") not in {
+            "llm_model_missing", "quota_exhausted", "rate_limited", "auth_or_permission",
+        }:
+            clean["code"] = None
         clean["reason"] = None
         clean["retry_reason"] = None
     elif item_type == "event":
@@ -953,7 +961,7 @@ def _project_for_audience(
     raw["parts"] = _user_parts(list(raw["parts"]))
     raw["metadata"] = {"status": str(raw["item_status"])}
     raw["evidence_refs"] = []
-    raw["item_data"] = _user_item_data(str(raw["item_type"]), dict(raw["item_data"]))
+    raw["item_data"] = _user_item_data(str(raw["item_type"]), dict(raw["item_data"]), event_type=str(raw["event_type"]))
     return raw
 
 

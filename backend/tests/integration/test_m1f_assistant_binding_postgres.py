@@ -185,6 +185,9 @@ async def test_existing_employees_are_not_guessed_and_select_is_explicit(
         assert body["schema"] == "hive.assistant_binding.v1"
         assert body["state"] == "unbound"
         assert body["agent"] is None
+        assert body["readiness"]["model"] == "ok"
+        assert body["readiness"]["model_label"] == f"Approved {tag}"
+        assert body["readiness"]["ready"] is False
         assert body["applied"] is False and body["created"] is False
         assert body["legacy_provenance"] == "not_established"
         assert body["binding_grants_access"] is False
@@ -241,6 +244,55 @@ async def test_existing_employees_are_not_guessed_and_select_is_explicit(
         await pin_rls_tenant_context(db, tenant_b)
         visible = (await db.execute(text("SELECT id FROM user_assistant_bindings"))).all()
         assert visible == []
+
+
+async def test_unbound_model_preview_uses_only_enabled_same_company_default(
+    owner_sessionmaker, app_user_sessionmaker,
+):
+    tag = uuid.uuid4().hex[:8]
+    tenant_id, foreign_tenant, user_id = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+    async with owner_sessionmaker() as db:
+        db.add_all([
+            Tenant(id=tenant_id, name=f"Preview {tag}", slug=f"preview-{tag}"),
+            Tenant(id=foreign_tenant, name=f"Foreign {tag}", slug=f"foreign-preview-{tag}"),
+        ])
+        await db.flush()
+        _user(db, id=user_id, username=f"preview-{tag}", email=f"preview-{tag}@example.test", tenant_id=tenant_id)
+        await _model(db, tenant_id, label=f"Unselected oldest {tag}")
+        approved = await _model(db, tenant_id, label=f"Preview approved {tag}")
+        disabled = await _model(db, tenant_id, label=f"Disabled private {tag}", enabled=False)
+        foreign = await _model(db, foreign_tenant, label=f"Foreign private {tag}")
+        approved_id, disabled_id, foreign_id = approved.id, disabled.id, foreign.id
+        await db.commit()
+
+    cases = [
+        (None, "unconfigured", None),
+        ("malformed-id", "forbidden", None),
+        (str(disabled_id), "forbidden", None),
+        (str(foreign_id), "forbidden", None),
+        (str(approved_id), "ok", f"Preview approved {tag}"),
+    ]
+    holder = {"actor": _actor(id=user_id, tenant_id=tenant_id, role="member")}
+    async with _client(app_user_sessionmaker, holder) as client:
+        for model_id, expected_state, label in cases:
+            async with owner_sessionmaker() as db:
+                await db.execute(text("DELETE FROM tenant_settings WHERE tenant_id = :t AND key = 'default_model_id'"), {"t": tenant_id})
+                if model_id is not None:
+                    db.add(TenantSetting(tenant_id=tenant_id, key="default_model_id", value={"model_id": model_id}))
+                await db.commit()
+            response = await client.get("/api/assistant")
+            assert response.status_code == 200, response.text
+            body = response.json()
+            assert body["state"] == "unbound" and body["agent"] is None
+            assert body["readiness"]["model"] == expected_state
+            assert body["readiness"]["model_label"] == label
+            assert body["readiness"]["ready"] is False
+            assert body["created"] is False and body["applied"] is False
+            assert f"Foreign private {tag}" not in response.text
+            assert f"Disabled private {tag}" not in response.text
+            assert f"Unselected oldest {tag}" not in response.text
+    assert await _scalar(owner_sessionmaker, "SELECT count(*) FROM user_assistant_bindings WHERE user_id = :u", u=user_id) == 0
+    assert await _scalar(owner_sessionmaker, "SELECT count(*) FROM agents WHERE creator_id = :u", u=user_id) == 0
 
 
 async def test_open_is_stable_and_resume_does_not_duplicate(

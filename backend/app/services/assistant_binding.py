@@ -473,6 +473,16 @@ async def _view(
             model_label = (
                 await db.execute(select(LLMModel.label).where(LLMModel.id == agent.primary_model_id))
             ).scalar_one_or_none()
+    elif state == "unbound":
+        model_flag, model_id = await _approved_model(db, tenant_id)
+        if model_id is not None:
+            model_label = (
+                await db.execute(select(LLMModel.label).where(
+                    LLMModel.id == model_id,
+                    LLMModel.tenant_id == tenant_id,
+                    LLMModel.enabled.is_(True),
+                ))
+            ).scalar_one_or_none()
     if agent is None and state == "model_forbidden":
         model_flag = "forbidden"
     worker = _worker_state()
@@ -514,7 +524,8 @@ async def _view(
         "readiness": {
             "ready": ready,
             "worker": worker,
-            "model": model_flag if agent is not None else "unconfigured",
+            "model": model_flag,
+            "model_label": model_label,
             "workspace": "ok" if workspace_ok else "missing",
             "blockers": blockers,
         },

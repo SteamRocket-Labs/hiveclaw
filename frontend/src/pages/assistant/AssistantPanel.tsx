@@ -114,7 +114,8 @@ export default function AssistantPanel({
         <p>
           <span>{t('assistant.model')}</span>
           {' '}
-          {payload?.agent?.model_label || t('assistant.modelMissing')}
+          {payload?.agent?.model_label || payload?.readiness.model_label
+            || t(payload?.readiness.model === 'forbidden' ? 'assistant.modelForbidden' : 'assistant.modelMissing')}
         </p>
         <p>
           <span>{t('assistant.readiness')}</span>

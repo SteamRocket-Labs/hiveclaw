@@ -141,6 +141,8 @@ function shouldCollapse(item: ThreadItem): boolean {
 
 function translateRuntimeFailure(t: TFunction, presentation: RuntimeFailurePresentation): string {
   switch (presentation.kind) {
+    case 'auth_or_permission':
+      return t('sessionWorkbench.threadItem.failure.authOrPermission', presentation.fallback);
     case 'model_missing':
       return t('sessionWorkbench.threadItem.failure.modelMissing', presentation.fallback);
     case 'quota_exhausted':

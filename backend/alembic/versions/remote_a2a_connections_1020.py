@@ -4,6 +4,8 @@ from alembic import op
 import sqlalchemy as sa
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 
+from app.migration_compat import create_table_if_missing, create_index_if_missing
+
 revision = "remote_a2a_connections_1020"
 down_revision = "machine_task_authority_1019"
 branch_labels = None
@@ -11,7 +13,8 @@ depends_on = None
 
 
 def upgrade():
-    op.create_table(
+    create_table_if_missing(
+        op,
         "remote_a2a_connections",
         sa.Column("agent_id", UUID(as_uuid=True), sa.ForeignKey("agents.id"), primary_key=True),
         sa.Column("tenant_id", UUID(as_uuid=True), sa.ForeignKey("tenants.id"), nullable=False),
@@ -36,7 +39,7 @@ def upgrade():
         sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
         sa.CheckConstraint("state IN ('configured','discovered','disabled')", name="ck_remote_a2a_connection_state"),
     )
-    op.create_index("ix_remote_a2a_connections_tenant_id", "remote_a2a_connections", ["tenant_id"])
+    create_index_if_missing(op, "ix_remote_a2a_connections_tenant_id", "remote_a2a_connections", ["tenant_id"])
     op.execute("ALTER TABLE remote_a2a_connections ENABLE ROW LEVEL SECURITY")
     op.execute("ALTER TABLE remote_a2a_connections FORCE ROW LEVEL SECURITY")
     predicate = "current_setting('app.current_tenant_id', true) = 'BYPASS' OR tenant_id::text = current_setting('app.current_tenant_id', true)"

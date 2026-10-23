@@ -12,6 +12,8 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects import postgresql
 
+from app.migration_compat import create_table_if_missing, create_index_if_missing
+
 revision = "m1f_assistant_bindings_1016"
 down_revision = "m1d_directory_observation_1016"
 branch_labels = None
@@ -44,7 +46,8 @@ def _enable_strict_rls(table: str) -> None:
 
 
 def upgrade() -> None:
-    op.create_table(
+    create_table_if_missing(
+        op,
         "user_assistant_bindings",
         sa.Column("id", _uuid(), primary_key=True, nullable=False),
         sa.Column("tenant_id", _uuid(), sa.ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False),
@@ -69,8 +72,8 @@ def upgrade() -> None:
         ),
         sa.UniqueConstraint("tenant_id", "user_id", name="uq_user_assistant_bindings_tenant_user"),
     )
-    op.create_index("ix_user_assistant_bindings_tenant_id", "user_assistant_bindings", ["tenant_id"])
-    op.create_index("ix_user_assistant_bindings_agent_id", "user_assistant_bindings", ["agent_id"])
+    create_index_if_missing(op, "ix_user_assistant_bindings_tenant_id", "user_assistant_bindings", ["tenant_id"])
+    create_index_if_missing(op, "ix_user_assistant_bindings_agent_id", "user_assistant_bindings", ["agent_id"])
     _enable_strict_rls("user_assistant_bindings")
 
 

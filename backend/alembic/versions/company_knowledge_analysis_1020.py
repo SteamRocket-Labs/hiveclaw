@@ -4,6 +4,8 @@ from alembic import op
 import sqlalchemy as sa
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 
+from app.migration_compat import create_table_if_missing, create_index_if_missing
+
 revision = "company_knowledge_analysis_1020"
 down_revision = "remote_a2a_runtime_1020"
 branch_labels = None
@@ -26,7 +28,8 @@ def upgrade():
     connection.execute(
         sa.text("SELECT set_config('app.current_tenant_id', :scope, true)"), {"scope": previous_scope or ""}
     )
-    op.create_table(
+    create_table_if_missing(
+        op,
         TABLES[0],
         sa.Column("id", UUID(as_uuid=True), primary_key=True),
         sa.Column("tenant_id", UUID(as_uuid=True), sa.ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False),
@@ -61,7 +64,8 @@ def upgrade():
         ),
         sa.CheckConstraint("attempt_count >= 0 AND max_attempts > 0", name="ck_company_analysis_attempts"),
     )
-    op.create_table(
+    create_table_if_missing(
+        op,
         TABLES[1],
         sa.Column("id", UUID(as_uuid=True), primary_key=True),
         sa.Column("tenant_id", UUID(as_uuid=True), sa.ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False),
@@ -81,7 +85,8 @@ def upgrade():
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
         sa.UniqueConstraint("tenant_id", "job_id", "attempt", name="uq_company_extraction_attempt"),
     )
-    op.create_index(
+    create_index_if_missing(
+        op,
         "uq_company_extraction_accepted",
         TABLES[1],
         ["tenant_id", "job_id"],
@@ -93,7 +98,7 @@ def upgrade():
         (TABLES[1], ("tenant_id", "job_id", "evidence_id")),
     ):
         for field in fields:
-            op.create_index(f"ix_{table}_{field}", table, [field])
+            create_index_if_missing(op, f"ix_{table}_{field}", table, [field])
         predicate = (
             "current_setting('app.current_tenant_id', true) = 'BYPASS' "
             "OR tenant_id::text = current_setting('app.current_tenant_id', true)"
@@ -103,7 +108,7 @@ def upgrade():
         op.execute(
             f'CREATE POLICY "tenant_isolation_{table}" ON "{table}" USING ({predicate}) WITH CHECK ({predicate})'
         )
-    op.create_index("ix_company_analysis_claim", TABLES[0], ["tenant_id", "status", "available_at"])
+    create_index_if_missing(op, "ix_company_analysis_claim", TABLES[0], ["tenant_id", "status", "available_at"])
     op.add_column(
         "company_knowledge_publications",
         sa.Column("graph_projection_status", sa.String(40), nullable=False, server_default="not_analyzed"),
@@ -124,16 +129,20 @@ def upgrade():
             sa.ForeignKey("company_knowledge_publications.id", ondelete="RESTRICT"),
         ),
     )
-    op.create_index("ix_company_ontology_releases_publication_id", "company_ontology_releases", ["publication_id"])
+    create_index_if_missing(
+        op, "ix_company_ontology_releases_publication_id", "company_ontology_releases", ["publication_id"]
+    )
     op.drop_index("ix_company_ontology_release_active", table_name="company_ontology_releases")
-    op.create_index(
+    create_index_if_missing(
+        op,
         "ix_company_ontology_release_active",
         "company_ontology_releases",
         ["tenant_id", "namespace"],
         unique=True,
         postgresql_where=sa.text("status = 'active' AND publication_id IS NULL"),
     )
-    op.create_index(
+    create_index_if_missing(
+        op,
         "ix_company_ontology_publication_active",
         "company_ontology_releases",
         ["tenant_id", "publication_id"],

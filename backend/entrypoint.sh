@@ -1,7 +1,7 @@
 #!/bin/bash
 # Docker entrypoint: initialize DB tables, then start the app.
 # Order matters:
-#   1. create_all  - creates all tables using SQLAlchemy models (idempotent)
+#   1. bootstrap unversioned databases; versioned schemas belong to Alembic.
 #   2. alembic upgrade head - applies every pending migration and fails closed.
 #      For existing installs that may have missing columns, safe ALTER TABLE patches run first.
 #   2.7 schema readiness - proves migration head, RLS catalog, and strict tenant columns.
@@ -55,6 +55,10 @@ import asyncio, sys
 async def main():
     # Import all models to populate Base.metadata before create_all
     from app.database import Base, engine
+    from app.db_bootstrap import prepare_runtime_schema
+    from app.models import import_all_models
+
+    import_all_models()
     import app.models.user           # noqa
     import app.models.agent          # noqa
     import app.models.task           # noqa
@@ -84,10 +88,10 @@ async def main():
     import app.models.mcp_server          # noqa
     import app.models.installed_plugin    # noqa — plugin system install/dependency tables
 
-    # Create all tables that don't exist yet (safe to run on every startup)
+    # A versioned schema must not gain future tables before their migrations.
     async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-    print("[entrypoint] Tables created/verified")
+        schema_created = await conn.run_sync(lambda sync_conn: prepare_runtime_schema(sync_conn, Base.metadata))
+    print("[entrypoint] Initial schema created" if schema_created else "[entrypoint] Versioned schema retained for Alembic")
 
     # Apply safe column patches for existing installs that may be missing columns.
     # All statements use IF NOT EXISTS so they are fully idempotent.

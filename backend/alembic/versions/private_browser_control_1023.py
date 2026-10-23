@@ -4,6 +4,8 @@ from alembic import op
 import sqlalchemy as sa
 from sqlalchemy.dialects.postgresql import UUID
 
+from app.migration_compat import create_table_if_missing, create_index_if_missing
+
 revision = "private_browser_control_1023"
 down_revision = "delegation_permissions_1022"
 branch_labels = None
@@ -11,7 +13,8 @@ depends_on = None
 
 
 def upgrade():
-    op.create_table(
+    create_table_if_missing(
+        op,
         "environment_browsers",
         sa.Column("id", UUID(as_uuid=True), primary_key=True),
         sa.Column("tenant_id", UUID(as_uuid=True), sa.ForeignKey("tenants.id"), nullable=False),
@@ -55,8 +58,9 @@ def upgrade():
         ),
     )
     for column in ("tenant_id", "environment_id", "agent_id", "session_id", "principal_id"):
-        op.create_index(f"ix_environment_browsers_{column}", "environment_browsers", [column])
-    op.create_index(
+        create_index_if_missing(op, f"ix_environment_browsers_{column}", "environment_browsers", [column])
+    create_index_if_missing(
+        op,
         "uq_environment_browser_active",
         "environment_browsers",
         ["environment_id"],

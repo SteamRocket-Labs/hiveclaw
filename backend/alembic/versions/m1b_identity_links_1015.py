@@ -10,6 +10,14 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects import postgresql
 
+from app.migration_compat import (
+    add_column_if_missing,
+    create_check_constraint_if_missing,
+    create_foreign_key_if_missing,
+    create_index_if_missing,
+    create_table_if_missing,
+)
+
 revision = "m1b_identity_links_1015"
 down_revision = "session_v2_delete_fk_indexes_0907"
 branch_labels = None
@@ -70,7 +78,8 @@ def _enable_strict_rls(table: str) -> None:
 
 
 def upgrade() -> None:
-    op.create_table(
+    create_table_if_missing(
+        op,
         "business_teams",
         sa.Column("id", _uuid(), primary_key=True, nullable=False),
         _tenant(),
@@ -81,17 +90,16 @@ def upgrade() -> None:
         sa.CheckConstraint("status IN ('active','suspended','archived')", name="ck_business_teams_status"),
         sa.CheckConstraint("name <> ''", name="ck_business_teams_name"),
     )
-    op.create_index("ix_business_teams_tenant_id", "business_teams", ["tenant_id"])
-    op.create_index("ix_business_teams_created_by_user_id", "business_teams", ["created_by_user_id"])
-    op.create_index("ix_business_teams_department_id", "business_teams", ["department_id"])
+    create_index_if_missing(op, "ix_business_teams_tenant_id", "business_teams", ["tenant_id"])
+    create_index_if_missing(op, "ix_business_teams_created_by_user_id", "business_teams", ["created_by_user_id"])
+    create_index_if_missing(op, "ix_business_teams_department_id", "business_teams", ["department_id"])
 
-    op.create_table(
+    create_table_if_missing(
+        op,
         "business_team_memberships",
         sa.Column("id", _uuid(), primary_key=True, nullable=False),
         _tenant(),
-        sa.Column(
-            "business_team_id", _uuid(), sa.ForeignKey("business_teams.id", ondelete="RESTRICT"), nullable=False
-        ),
+        sa.Column("business_team_id", _uuid(), sa.ForeignKey("business_teams.id", ondelete="RESTRICT"), nullable=False),
         sa.Column("user_id", _uuid(), sa.ForeignKey("users.id", ondelete="RESTRICT"), nullable=True),
         sa.Column("org_member_id", _uuid(), sa.ForeignKey("org_members.id", ondelete="RESTRICT"), nullable=True),
         sa.Column("role", sa.String(16), nullable=False),
@@ -105,18 +113,24 @@ def upgrade() -> None:
             name="ck_business_team_memberships_person",
         ),
     )
-    op.create_index("ix_business_team_memberships_tenant_id", "business_team_memberships", ["tenant_id"])
-    op.create_index("ix_business_team_memberships_business_team_id", "business_team_memberships", ["business_team_id"])
-    op.create_index("ix_business_team_memberships_user_id", "business_team_memberships", ["user_id"])
-    op.create_index("ix_business_team_memberships_org_member_id", "business_team_memberships", ["org_member_id"])
-    op.create_index(
+    create_index_if_missing(op, "ix_business_team_memberships_tenant_id", "business_team_memberships", ["tenant_id"])
+    create_index_if_missing(
+        op, "ix_business_team_memberships_business_team_id", "business_team_memberships", ["business_team_id"]
+    )
+    create_index_if_missing(op, "ix_business_team_memberships_user_id", "business_team_memberships", ["user_id"])
+    create_index_if_missing(
+        op, "ix_business_team_memberships_org_member_id", "business_team_memberships", ["org_member_id"]
+    )
+    create_index_if_missing(
+        op,
         "uq_business_team_memberships_active_user",
         "business_team_memberships",
         ["business_team_id", "user_id"],
         unique=True,
         postgresql_where=sa.text("status = 'active' AND user_id IS NOT NULL"),
     )
-    op.create_index(
+    create_index_if_missing(
+        op,
         "uq_business_team_memberships_active_org_member",
         "business_team_memberships",
         ["business_team_id", "org_member_id"],
@@ -124,15 +138,14 @@ def upgrade() -> None:
         postgresql_where=sa.text("status = 'active' AND org_member_id IS NOT NULL"),
     )
 
-    op.create_table(
+    create_table_if_missing(
+        op,
         "org_member_user_links",
         sa.Column("id", _uuid(), primary_key=True, nullable=False),
         _tenant(),
         sa.Column("org_member_id", _uuid(), sa.ForeignKey("org_members.id", ondelete="RESTRICT"), nullable=False),
         sa.Column("user_id", _uuid(), sa.ForeignKey("users.id", ondelete="RESTRICT"), nullable=False),
-        sa.Column(
-            "provider_id", _uuid(), sa.ForeignKey("identity_providers.id", ondelete="RESTRICT"), nullable=True
-        ),
+        sa.Column("provider_id", _uuid(), sa.ForeignKey("identity_providers.id", ondelete="RESTRICT"), nullable=True),
         sa.Column("subject_kind", sa.String(32), nullable=True),
         sa.Column("match_subject", sa.String(255), nullable=False),
         sa.Column(
@@ -159,22 +172,26 @@ def upgrade() -> None:
         ),
         sa.CheckConstraint(_LINK_EVIDENCE_SQL, name="ck_org_member_user_links_evidence"),
     )
-    op.create_index("ix_org_member_user_links_tenant_id", "org_member_user_links", ["tenant_id"])
-    op.create_index("ix_org_member_user_links_org_member_id", "org_member_user_links", ["org_member_id"])
-    op.create_index("ix_org_member_user_links_user_id", "org_member_user_links", ["user_id"])
-    op.create_index("ix_org_member_user_links_provider_id", "org_member_user_links", ["provider_id"])
-    op.create_index(
-        "ix_org_member_user_links_external_identity_id", "org_member_user_links", ["external_identity_id"]
+    create_index_if_missing(op, "ix_org_member_user_links_tenant_id", "org_member_user_links", ["tenant_id"])
+    create_index_if_missing(op, "ix_org_member_user_links_org_member_id", "org_member_user_links", ["org_member_id"])
+    create_index_if_missing(op, "ix_org_member_user_links_user_id", "org_member_user_links", ["user_id"])
+    create_index_if_missing(op, "ix_org_member_user_links_provider_id", "org_member_user_links", ["provider_id"])
+    create_index_if_missing(
+        op, "ix_org_member_user_links_external_identity_id", "org_member_user_links", ["external_identity_id"]
     )
-    op.create_index("ix_org_member_user_links_created_by_user_id", "org_member_user_links", ["created_by_user_id"])
-    op.create_index(
+    create_index_if_missing(
+        op, "ix_org_member_user_links_created_by_user_id", "org_member_user_links", ["created_by_user_id"]
+    )
+    create_index_if_missing(
+        op,
         "uq_org_member_user_links_active_subject",
         "org_member_user_links",
         ["tenant_id", "provider_id", "subject_kind", "match_subject"],
         unique=True,
         postgresql_where=sa.text("status = 'active'"),
     )
-    op.create_index(
+    create_index_if_missing(
+        op,
         "uq_org_member_user_links_active_member_kind",
         "org_member_user_links",
         ["tenant_id", "org_member_id", "provider_id", "subject_kind"],
@@ -182,7 +199,8 @@ def upgrade() -> None:
         postgresql_where=sa.text("status = 'active'"),
     )
 
-    op.create_table(
+    create_table_if_missing(
+        op,
         "department_directory_links",
         sa.Column("id", _uuid(), primary_key=True, nullable=False),
         _tenant(),
@@ -203,26 +221,36 @@ def upgrade() -> None:
             name="ck_department_directory_links_provider_department",
         ),
     )
-    op.create_index("ix_department_directory_links_tenant_id", "department_directory_links", ["tenant_id"])
-    op.create_index(
-        "ix_department_directory_links_org_department_id", "department_directory_links", ["org_department_id"]
+    create_index_if_missing(op, "ix_department_directory_links_tenant_id", "department_directory_links", ["tenant_id"])
+    create_index_if_missing(
+        op, "ix_department_directory_links_org_department_id", "department_directory_links", ["org_department_id"]
     )
-    op.create_index("ix_department_directory_links_department_id", "department_directory_links", ["department_id"])
-    op.create_index(
+    create_index_if_missing(
+        op, "ix_department_directory_links_department_id", "department_directory_links", ["department_id"]
+    )
+    create_index_if_missing(
+        op,
         "uq_department_directory_links_active_org_department",
         "department_directory_links",
         ["tenant_id", "org_department_id"],
         unique=True,
         postgresql_where=sa.text("status = 'active'"),
     )
-    op.create_index(
+    create_index_if_missing(
+        op,
         "uq_department_directory_links_active_provider_department",
         "department_directory_links",
         ["tenant_id", "provider", "provider_department_id"],
         unique=True,
         postgresql_where=sa.text("status = 'active'"),
     )
-    op.create_index(
+    # Current metadata can contain the provider-scoped successor of this index.
+    # Rebuild this revision's contract; the later alignment migration advances it.
+    op.drop_index(
+        "uq_department_directory_links_active_department", table_name="department_directory_links", if_exists=True
+    )
+    create_index_if_missing(
+        op,
         "uq_department_directory_links_active_department",
         "department_directory_links",
         ["tenant_id", "department_id"],
@@ -230,7 +258,8 @@ def upgrade() -> None:
         postgresql_where=sa.text("status = 'active' AND department_id IS NOT NULL"),
     )
 
-    op.create_table(
+    create_table_if_missing(
+        op,
         "identity_cutover_journal",
         sa.Column("id", _uuid(), primary_key=True, nullable=False),
         _tenant(),
@@ -245,10 +274,11 @@ def upgrade() -> None:
             name="ck_identity_cutover_journal_after_json",
         ),
     )
-    op.create_index("ix_identity_cutover_journal_tenant_id", "identity_cutover_journal", ["tenant_id"])
-    op.create_index("ix_identity_cutover_journal_object_id", "identity_cutover_journal", ["object_id"])
+    create_index_if_missing(op, "ix_identity_cutover_journal_tenant_id", "identity_cutover_journal", ["tenant_id"])
+    create_index_if_missing(op, "ix_identity_cutover_journal_object_id", "identity_cutover_journal", ["object_id"])
 
-    op.create_table(
+    create_table_if_missing(
+        op,
         "content_input_receipts",
         sa.Column("id", _uuid(), primary_key=True, nullable=False),
         _tenant(),
@@ -284,17 +314,18 @@ def upgrade() -> None:
             name="uq_content_input_receipts_revision",
         ),
     )
-    op.create_index("ix_content_input_receipts_tenant_id", "content_input_receipts", ["tenant_id"])
+    create_index_if_missing(op, "ix_content_input_receipts_tenant_id", "content_input_receipts", ["tenant_id"])
 
     for table in IDENTITY_LINK_TABLES:
         _enable_strict_rls(table)
 
-    op.add_column("chat_sessions", sa.Column("audience_kind", sa.String(32), nullable=True))
-    op.add_column("chat_sessions", sa.Column("audience_ref", _uuid(), nullable=True))
-    op.add_column("chat_sessions", sa.Column("group_installation_ref", sa.String(200), nullable=True))
-    op.add_column("chat_sessions", sa.Column("group_subject_id", sa.String(200), nullable=True))
-    op.create_check_constraint("ck_chat_sessions_audience", "chat_sessions", _SESSION_AUDIENCE_SQL)
-    op.create_foreign_key(
+    add_column_if_missing(op, "chat_sessions", sa.Column("audience_kind", sa.String(32), nullable=True))
+    add_column_if_missing(op, "chat_sessions", sa.Column("audience_ref", _uuid(), nullable=True))
+    add_column_if_missing(op, "chat_sessions", sa.Column("group_installation_ref", sa.String(200), nullable=True))
+    add_column_if_missing(op, "chat_sessions", sa.Column("group_subject_id", sa.String(200), nullable=True))
+    create_check_constraint_if_missing(op, "ck_chat_sessions_audience", "chat_sessions", _SESSION_AUDIENCE_SQL)
+    create_foreign_key_if_missing(
+        op,
         "fk_chat_sessions_audience_ref",
         "chat_sessions",
         "business_teams",
@@ -303,11 +334,12 @@ def upgrade() -> None:
         ondelete="RESTRICT",
     )
 
-    op.add_column("tasks", sa.Column("responsible_user_id", _uuid(), nullable=True))
-    op.add_column("tasks", sa.Column("business_team_id", _uuid(), nullable=True))
-    op.add_column("tasks", sa.Column("audience_kind", sa.String(32), nullable=True))
-    op.create_check_constraint("ck_tasks_audience_kind", "tasks", _AUDIENCE_KIND_SQL)
-    op.create_foreign_key(
+    add_column_if_missing(op, "tasks", sa.Column("responsible_user_id", _uuid(), nullable=True))
+    add_column_if_missing(op, "tasks", sa.Column("business_team_id", _uuid(), nullable=True))
+    add_column_if_missing(op, "tasks", sa.Column("audience_kind", sa.String(32), nullable=True))
+    create_check_constraint_if_missing(op, "ck_tasks_audience_kind", "tasks", _AUDIENCE_KIND_SQL)
+    create_foreign_key_if_missing(
+        op,
         "fk_tasks_responsible_user_id",
         "tasks",
         "users",
@@ -315,7 +347,8 @@ def upgrade() -> None:
         ["id"],
         ondelete="RESTRICT",
     )
-    op.create_foreign_key(
+    create_foreign_key_if_missing(
+        op,
         "fk_tasks_business_team_id",
         "tasks",
         "business_teams",
@@ -324,8 +357,9 @@ def upgrade() -> None:
         ondelete="RESTRICT",
     )
 
-    op.add_column("agents", sa.Column("home_business_team_id", _uuid(), nullable=True))
-    op.create_foreign_key(
+    add_column_if_missing(op, "agents", sa.Column("home_business_team_id", _uuid(), nullable=True))
+    create_foreign_key_if_missing(
+        op,
         "fk_agents_home_business_team_id",
         "agents",
         "business_teams",
@@ -334,9 +368,10 @@ def upgrade() -> None:
         ondelete="RESTRICT",
     )
 
-    op.add_column("workspace_resource_manifests", sa.Column("audience_kind", sa.String(32), nullable=True))
-    op.add_column("workspace_resource_manifests", sa.Column("audience_ref", _uuid(), nullable=True))
-    op.create_check_constraint(
+    add_column_if_missing(op, "workspace_resource_manifests", sa.Column("audience_kind", sa.String(32), nullable=True))
+    add_column_if_missing(op, "workspace_resource_manifests", sa.Column("audience_ref", _uuid(), nullable=True))
+    create_check_constraint_if_missing(
+        op,
         "ck_workspace_resource_manifest_audience_kind",
         "workspace_resource_manifests",
         _AUDIENCE_KIND_SQL,
@@ -348,9 +383,7 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.drop_constraint(
-        "ck_workspace_resource_manifest_audience_kind", "workspace_resource_manifests", type_="check"
-    )
+    op.drop_constraint("ck_workspace_resource_manifest_audience_kind", "workspace_resource_manifests", type_="check")
     op.drop_column("workspace_resource_manifests", "audience_ref")
     op.drop_column("workspace_resource_manifests", "audience_kind")
 

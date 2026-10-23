@@ -1,0 +1,9 @@
+{
+  "source_commit": "c13d93fcafc9e6ef861bcd491871f85ea92f5b1f",
+  "revision": "session_v2_delete_fk_indexes_0907",
+  "scope": "Schema-only synthetic fixture from the released source; no production database or customer rows. psql meta-commands and PostgreSQL 17 transaction_timeout setting removed for PostgreSQL 16 compatibility.",
+  "sql_sha256": "063d57d59b060efc3f85a3b02bc5cb86939e08a63362e723541d25b0b7e56b9f",
+  "sql_bytes": 789922,
+  "gzip_sha256": "f954c07ea64a66932edd3c5d9fdbd047ca25636ab1ad6b912cdf2b10b1ba59e3",
+  "gzip_bytes": 64481
+}

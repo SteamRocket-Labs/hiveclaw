@@ -4,6 +4,8 @@ from alembic import op
 import sqlalchemy as sa
 from sqlalchemy.dialects.postgresql import UUID
 
+from app.migration_compat import create_table_if_missing, create_index_if_missing
+
 revision = "private_environment_1018"
 down_revision = "tenant_channel_principal_1018"
 branch_labels = None
@@ -11,7 +13,8 @@ depends_on = None
 
 
 def upgrade():
-    op.create_table(
+    create_table_if_missing(
+        op,
         "execution_environments",
         sa.Column("id", UUID(as_uuid=True), primary_key=True),
         sa.Column("tenant_id", UUID(as_uuid=True), sa.ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False),
@@ -34,7 +37,8 @@ def upgrade():
             "generation > 0 AND revision > 0 AND fence_counter >= 0", name="ck_execution_environment_versions"
         ),
     )
-    op.create_table(
+    create_table_if_missing(
+        op,
         "environment_leases",
         sa.Column("id", UUID(as_uuid=True), primary_key=True),
         sa.Column("tenant_id", UUID(as_uuid=True), sa.ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False),
@@ -56,7 +60,8 @@ def upgrade():
         sa.CheckConstraint("status IN ('active','released')", name="ck_environment_lease_status"),
         sa.CheckConstraint("generation > 0 AND fence_version > 0", name="ck_environment_lease_versions"),
     )
-    op.create_index(
+    create_index_if_missing(
+        op,
         "uq_environment_active_writer",
         "environment_leases",
         ["environment_id"],
@@ -68,7 +73,7 @@ def upgrade():
         ("environment_leases", ("tenant_id", "environment_id")),
     ):
         for column in columns:
-            op.create_index(f"ix_{table}_{column}", table, [column])
+            create_index_if_missing(op, f"ix_{table}_{column}", table, [column])
         op.execute(f'ALTER TABLE "{table}" ENABLE ROW LEVEL SECURITY')
         op.execute(f'ALTER TABLE "{table}" FORCE ROW LEVEL SECURITY')
         predicate = f"current_setting('app.current_tenant_id', true) = 'BYPASS' OR {table}.tenant_id::text = current_setting('app.current_tenant_id', true)"

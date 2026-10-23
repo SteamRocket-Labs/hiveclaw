@@ -2,6 +2,8 @@
 
 import asyncio
 import json
+import uuid
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from httpx import Response
@@ -14,6 +16,154 @@ from tests.integration.test_session_permission_execution_once import _mounted_cl
 from tests.services.test_session_permission_runtime import _seed_waiting_batch
 
 pytestmark = pytest.mark.usefixtures("migrated_pg_url")
+
+
+@pytest.mark.parametrize("run_status", ["suspended", "resumable"])
+@pytest.mark.parametrize("cancel_started", [False, True])
+@pytest.mark.parametrize("expired_lease", [False, True])
+async def test_cancelled_waiting_run_settles_without_a_live_executor(
+    owner_sessionmaker, app_user_sessionmaker, run_status, cancel_started, expired_lease,
+):
+    from sqlalchemy import func, select
+
+    from app.models.chat_transcript_event import ChatTranscriptEvent
+    from app.models.session_v2 import SessionControlInput
+    from app.models.user import User
+    from app.services.session_control_input import (
+        accept_cancel_control_input, begin_cancel_control_input, recover_stale_cancel_control_inputs_once,
+    )
+    from app.services.session_v2_persistence import resolve_session_mutation_authority
+    from app.services.web_chat_runtime import get_active_web_chat_run
+
+    seed = await _seed_waiting_batch(owner_sessionmaker)
+    async with owner_sessionmaker() as db:
+        task = await db.get(RuntimeTask, seed.run_id)
+        task.status = run_status
+        task.claimed_by = task.claim_expires_at = None
+        if expired_lease:
+            task.claimed_by = "expired-worker"
+            task.claim_expires_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+            task.claim_version = 7
+        await db.commit()
+    signals = []
+
+    async def no_executor(**kwargs):
+        signals.append(kwargs)
+
+    control_id = uuid.uuid4()
+    async with app_user_sessionmaker() as db:
+        await pin_rls_tenant_context(db, seed.tenant_id)
+        user = await db.get(User, seed.user_id)
+        authority = await resolve_session_mutation_authority(db, user=user, agent_id=seed.agent_id,
+            session_id=seed.session_id, action="mutate_session_control")
+        accepted = await accept_cancel_control_input(db, authority=authority, control_id=control_id,
+            idempotency_key=f"stop-wait:{control_id}", expected_run_id=seed.run_id)
+        if cancel_started:
+            await begin_cancel_control_input(db, authority=authority, control_id=control_id, worker_id="lost-ingress")
+        await db.commit()
+        for _ in range(2):
+            await pin_rls_tenant_context(db, seed.tenant_id)
+            await recover_stale_cancel_control_inputs_once(db, worker_id="restart-worker",
+                stale_after=timedelta(0), tenant_id=seed.tenant_id, signal_callback=no_executor)
+        await pin_rls_tenant_context(db, seed.tenant_id)
+        task = await db.get(RuntimeTask, seed.run_id, populate_existing=True)
+        control = await db.get(SessionControlInput, control_id, populate_existing=True)
+        invocation = await db.get(SessionToolInvocation, seed.invocation_ids[0], populate_existing=True)
+        assert task.status == "killed" and task.completed_at is not None
+        assert task.claimed_by is None and task.claim_expires_at is None
+        assert task.claim_version > (7 if expired_lease else 0)
+        assert task.metadata_json["terminal_execution_fence_ref"].startswith("runtime-task-terminal:")
+        assert control.status == "applied" and signals == []
+        assert invocation.effect_state == "prepared_not_started" and invocation.result_event_id is None
+        assert await get_active_web_chat_run(db=db, agent_id=seed.agent_id, session_id=seed.session_id) is None
+        for event_type in ("run.cancelled", "control_input.applied"):
+            count = await db.scalar(select(func.count()).select_from(ChatTranscriptEvent).where(
+                ChatTranscriptEvent.session_id == seed.session_id, ChatTranscriptEvent.event_type == event_type))
+            assert count == 1
+        assert accepted.command_id == control.command_id
+
+
+@pytest.mark.parametrize("lease_expiry", ["live", "unknown"])
+async def test_waiting_cancel_does_not_take_over_an_existing_executor_lease(
+    owner_sessionmaker, app_user_sessionmaker, lease_expiry,
+):
+    from app.models.session_v2 import SessionControlInput
+    from app.models.user import User
+    from app.services.session_control_input import accept_cancel_control_input, recover_stale_cancel_control_inputs_once
+    from app.services.session_v2_persistence import resolve_session_mutation_authority
+
+    seed = await _seed_waiting_batch(owner_sessionmaker)
+    async with owner_sessionmaker() as db:
+        task = await db.get(RuntimeTask, seed.run_id)
+        task.status = "suspended"
+        task.claimed_by = "existing-executor"
+        task.claim_expires_at = datetime.now(timezone.utc) + timedelta(minutes=5) if lease_expiry == "live" else None
+        await db.commit()
+    signalled = []
+
+    async def signal(**kwargs):
+        signalled.append(kwargs["run_id"])
+
+    control_id = uuid.uuid4()
+    async with app_user_sessionmaker() as db:
+        await pin_rls_tenant_context(db, seed.tenant_id)
+        user = await db.get(User, seed.user_id)
+        authority = await resolve_session_mutation_authority(db, user=user, agent_id=seed.agent_id,
+            session_id=seed.session_id, action="mutate_session_control")
+        await accept_cancel_control_input(db, authority=authority, control_id=control_id,
+            idempotency_key=f"stop-owned:{control_id}", expected_run_id=seed.run_id)
+        await db.commit()
+        await pin_rls_tenant_context(db, seed.tenant_id)
+        await recover_stale_cancel_control_inputs_once(db, worker_id="another-worker", stale_after=timedelta(0),
+            tenant_id=seed.tenant_id, signal_callback=signal)
+        await pin_rls_tenant_context(db, seed.tenant_id)
+        task = await db.get(RuntimeTask, seed.run_id, populate_existing=True)
+        control = await db.get(SessionControlInput, control_id, populate_existing=True)
+        assert task.status == "suspended" and task.completed_at is None
+        assert task.claimed_by == "existing-executor" and control.status == "applying"
+        assert signalled == [seed.run_id]
+
+
+async def test_cancel_recovery_refreshes_a_claim_that_arrived_after_its_cached_snapshot(
+    owner_sessionmaker, app_user_sessionmaker,
+):
+    from app.models.user import User
+    from app.services.runtime_terminal_settlement import lock_runtime_task_with_session_authority
+    from app.services.session_control_input import accept_cancel_control_input, recover_stale_cancel_control_inputs_once
+    from app.services.session_v2_persistence import resolve_session_mutation_authority
+
+    seed = await _seed_waiting_batch(owner_sessionmaker)
+    signalled = []
+
+    async def signal(**kwargs):
+        signalled.append(kwargs["run_id"])
+
+    async with app_user_sessionmaker() as db:
+        await pin_rls_tenant_context(db, seed.tenant_id)
+        user = await db.get(User, seed.user_id)
+        authority = await resolve_session_mutation_authority(db, user=user, agent_id=seed.agent_id,
+            session_id=seed.session_id, action="mutate_session_control")
+        control_id = uuid.uuid4()
+        await accept_cancel_control_input(db, authority=authority, control_id=control_id,
+            idempotency_key=f"stop-cache:{control_id}", expected_run_id=seed.run_id)
+        cached = await db.get(RuntimeTask, seed.run_id)
+        assert cached.status == "suspended" and cached.claimed_by is None
+        await db.commit()
+        async with owner_sessionmaker() as writer:
+            task = await lock_runtime_task_with_session_authority(writer, task_id=seed.run_id)
+            task.status = "running"
+            task.claimed_by = "new-executor"
+            task.claim_expires_at = datetime.now(timezone.utc) + timedelta(minutes=5)
+            task.claim_version += 1
+            await writer.commit()
+        assert cached.status == "suspended"
+        await pin_rls_tenant_context(db, seed.tenant_id)
+        await recover_stale_cancel_control_inputs_once(db, worker_id="cached-recovery", stale_after=timedelta(0),
+            tenant_id=seed.tenant_id, signal_callback=signal)
+        await pin_rls_tenant_context(db, seed.tenant_id)
+        task = await db.get(RuntimeTask, seed.run_id, populate_existing=True)
+        assert task.status == "running" and task.claimed_by == "new-executor" and task.completed_at is None
+        assert signalled == [seed.run_id]
 
 
 @pytest.mark.parametrize("stop_phase,delete_while_pending", [

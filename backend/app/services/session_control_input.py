@@ -1202,6 +1202,7 @@ async def recover_stale_cancel_control_inputs_once(
                     SessionCommand.updated_at <= cutoff,
                 )
                 .with_for_update(skip_locked=True)
+                .execution_options(populate_existing=True)
             )
         ).first()
         if row is None:
@@ -1298,6 +1299,25 @@ async def recover_stale_cancel_control_inputs_once(
                     ),
                 ],
             )
+        from app.services.web_chat_runtime import EXECUTABLE_CHAT_TASK_TYPES, _apply_terminal_task_update_and_settle
+
+        unclaimed = task.claimed_by is None and task.claim_expires_at is None
+        expired = task.claim_expires_at is not None and task.claim_expires_at <= claimed_at
+        if (task.task_type in EXECUTABLE_CHAT_TASK_TYPES and task.status in {"suspended", "resumable"}
+            and (unclaimed or expired)):
+            # A suspended turn has no executor to receive an in-memory signal.
+            # The locked durable cancel owns this terminal transition; retain
+            # every tool receipt so it makes no claim about an in-flight effect.
+            task.claim_version = int(task.claim_version or 0) + 1
+            task.claimed_by = task.claim_expires_at = task.scheduled_at = None
+            await _apply_terminal_task_update_and_settle(db, task, status="killed",
+                result_summary="Generation stopped by user.", metadata_json={"cancelled_by_user": True},
+                terminal_source="unclaimed_session_cancel")
+            from app.services.runtime_terminal_settlement import settle_and_enqueue_runtime_task_terminal
+
+            await settle_and_enqueue_runtime_task_terminal(db, task, terminal_source="unclaimed_session_cancel")
+            counts["settled"] += 1
+            continue
         control.recovery_owner = str(worker_id)
         control.version = int(control.version) + 1
         # SessionCommand.updated_at is the durable recovery lease timestamp.

@@ -238,7 +238,13 @@ async def test_direct_import_uses_only_the_current_employee_or_explicit_company_
             assert shared.config.get("api_key") == ("synthetic-company-key" if company_default else None)
         assert shared.mcp_server_url == (legacy_url if stored_legacy else endpoint)
         if legacy_unattributed:
-            confirmation = {"confirm_mcp_credential": True, "expected_mcp_fingerprint": fact["metadata_fingerprint"]}
+            catalog = await client.get("/api/tools")
+            assert catalog.status_code == 200, catalog.text
+            catalog_tool = next(row for row in catalog.json() if row["id"] == str(tool_id))
+            assert catalog_tool["mcp_metadata_fingerprint"] == fact["metadata_fingerprint"]
+            assert "synthetic-unattributed-company-key" not in catalog.text
+            confirmation = {"confirm_mcp_credential": True,
+                "expected_mcp_fingerprint": catalog_tool["mcp_metadata_fingerprint"]}
             actor[0] = owner_user
             forbidden = await client.put(f"/api/tools/{tool_id}", json=confirmation)
             assert forbidden.status_code == 403, forbidden.text

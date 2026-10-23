@@ -39,6 +39,7 @@ export default function WorkspaceGlobalToolsView({
   const [mcpTesting, setMcpTesting] = useState(false);
   const [editingToolId, setEditingToolId] = useState<string | null>(null);
   const [editingConfig, setEditingConfig] = useState<Record<string, any>>({});
+  const [companyCredentialBusy, setCompanyCredentialBusy] = useState<string | null>(null);
   const [configCategory, setConfigCategory] = useState<string | null>(null);
   const [collapsedServers, setCollapsedServers] = useState<Set<string>>(new Set());
 
@@ -58,6 +59,31 @@ export default function WorkspaceGlobalToolsView({
     } catch {
       setCapabilityDefinitions([]);
       setCapabilityPolicies([]);
+    }
+  };
+
+  const confirmCompanyCredential = async (tool: WorkspaceToolRow) => {
+    const confirmed = await requestAppConfirm({
+      title: t('enterprise.tools.confirmCompanyCredential', 'Authorize company sharing'),
+      message: t('enterprise.tools.confirmCompanyCredentialMessage', {
+        name: tool.display_name || tool.name || tool.id,
+        endpoint: tool.mcp_server_url || '',
+      }),
+      confirmLabel: t('enterprise.tools.confirmCompanyCredential', 'Authorize company sharing'),
+    });
+    if (!confirmed) return;
+    setCompanyCredentialBusy(tool.id);
+    try {
+      await toolsApi.updateGlobalTool(tool.id, {
+        confirm_mcp_credential: true,
+        expected_mcp_fingerprint: tool.mcp_metadata_fingerprint,
+      });
+      showAppToast(t('enterprise.tools.companyCredentialConfirmed', 'Company sharing scope confirmed.'), 'success');
+    } catch (error: any) {
+      showAppToast(error?.message || t('enterprise.tools.updateFailed', 'Update failed'), 'error');
+    } finally {
+      setCompanyCredentialBusy(null);
+      loadAllTools().catch((error: any) => showAppToast(error?.message || t('enterprise.tools.updateFailed', 'Update failed'), 'error'));
     }
   };
 
@@ -345,7 +371,9 @@ export default function WorkspaceGlobalToolsView({
                           }
 
                           const renderToolRow = (tool: WorkspaceToolRow) => {
-                            const hasOwnConfig = (tool.config_schema?.fields?.length ?? 0) > 0 && !hasCategoryConfig;
+                            const configFields = tool.config_schema?.fields?.length ? tool.config_schema.fields :
+                              tool.type === 'mcp' ? [{ key: 'api_key', label: t('enterprise.tools.companyApiKey', 'Company API key'), type: 'password' }] : [];
+                            const hasOwnConfig = configFields.length > 0 && !hasCategoryConfig;
                             const isEditing = editingToolId === tool.id;
                             const capability = resolveWorkspaceToolCapability(tool, capabilityDefinitions);
                             const capabilityPolicy = capability ? policyByCapability.get(capability) : undefined;
@@ -453,6 +481,16 @@ export default function WorkspaceGlobalToolsView({
                                       </button>
                                     ) : null}
 
+                                    {tool.type === 'mcp' && tool.tenant_id && tool.config?.api_key && tool.mcp_metadata_fingerprint ? (
+                                      <button
+                                        className="btn btn-secondary"
+                                        disabled={companyCredentialBusy !== null}
+                                        onClick={() => confirmCompanyCredential(tool)}
+                                      >
+                                        {companyCredentialBusy === tool.id ? t('common.loading', 'Loading...') : t('enterprise.tools.confirmCompanyCredential', 'Authorize company sharing')}
+                                      </button>
+                                    ) : null}
+
                                     {tool.type !== 'builtin' ? (
                                       <button
                                         className="btn btn-danger"
@@ -496,7 +534,7 @@ export default function WorkspaceGlobalToolsView({
                                 {isEditing && hasOwnConfig ? (
                                   <div className="ws-tools-config-panel">
                                     <div className="ws-tools-col-12">
-                                      {(tool.config_schema?.fields || []).map((field: any) => {
+                                      {configFields.map((field: any) => {
                                         if (field.depends_on) {
                                           const visible = Object.entries(field.depends_on).every(([key, values]: [string, any]) =>
                                             values.includes(editingConfig[key]),

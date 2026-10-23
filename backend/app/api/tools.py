@@ -454,7 +454,9 @@ def _serialize_tool(tool: Tool, *, enabled: bool | None = None, config: dict | N
     if tool.type == "mcp" and tool.mcp_server_url:
         from app.services.mcp_metadata_trust import public_mcp_review_facts
 
-        payload["mcp_server_url"] = public_mcp_review_facts(tool)["activation"].get("endpoint")
+        facts = public_mcp_review_facts(tool)
+        payload["mcp_server_url"] = facts["activation"].get("endpoint")
+        payload["mcp_metadata_fingerprint"] = facts["fingerprint"]
     provider_auth = _provider_auth_metadata(str(tool.name))
     if provider_auth is not None:
         payload["provider_auth"] = provider_auth

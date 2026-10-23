@@ -41,6 +41,8 @@ export type WorkspaceToolRow = {
   config_schema?: { fields?: any[] };
   mcp_server_name?: string | null;
   mcp_server_url?: string | null;
+  mcp_metadata_fingerprint?: string | null;
+  tenant_id?: string | null;
   governance_taxonomy?: ToolGovernanceTaxonomy | null;
   provider_auth?: WorkspaceProviderAuthMetadata | null;
 };

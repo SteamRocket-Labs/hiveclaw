@@ -40,6 +40,8 @@ export interface ToolCatalogRow {
   mcp_server_name?: string | null;
   mcp_tool_name?: string | null;
   mcp_server_url?: string | null;
+  mcp_metadata_fingerprint?: string | null;
+  tenant_id?: string | null;
   provider_auth?: ToolProviderAuth | null;
 }
 

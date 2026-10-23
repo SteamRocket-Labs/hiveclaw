@@ -4,7 +4,9 @@ import asyncio
 import hashlib
 import importlib.metadata
 import json
+import os
 import sys
+from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from uuid import uuid4
 
@@ -145,12 +147,67 @@ def synthetic_sdk(monkeypatch, tmp_path):
     monkeypatch.setenv("HIVE_OPENSANDBOX_PROFILE_PATH", str(path))
     monkeypatch.setenv("HIVE_OPENSANDBOX_APPROVED_PROFILE_SHA256", hashlib.sha256(path.read_bytes()).hexdigest())
     monkeypatch.setenv("HIVE_OPENSANDBOX_API_KEY", "synthetic-control-key-not-for-workload")
-    return SimpleNamespace(calls=calls, boxes=boxes, profile=path, faults=faults)
+    def snapshot():
+        return {"calls": calls, "boxes": [{"id": box.id, "metadata": box.metadata, "state": box.state}
+            for box in boxes.values()]}
+
+    def restore(saved):
+        calls[:] = [tuple(row) for row in saved["calls"]]
+        boxes.clear()
+        for row in saved["boxes"]:
+            box = Box.__new__(Box)
+            box.id, box.metadata, box.state = row["id"], row["metadata"], row["state"]
+            box.root = tmp_path / box.id
+            assert box.root.is_dir()
+            box.files, box.commands = Files(box.root), box
+            boxes[box.id] = box
+
+    return SimpleNamespace(calls=calls, boxes=boxes, profile=path, faults=faults, snapshot=snapshot, restore=restore)
 
 
-@pytest.mark.parametrize("fault", [None, "unapproved", "create_ack_lost", "pause_ack_lost", "worker_restart", "new_work"])
+async def _process_compute_worker(seed, rounds, tmp_path, app_user_engine, synthetic_sdk, *, phase):
+    """Kill/join one real worker at a settled boundary, then start a new process."""
+    control = tmp_path / "process-input.json"
+    control.write_text(json.dumps({"run_id": str(seed["run_id"]), "data_root": str(seed["data_root"]),
+        "resource_root": str(tmp_path), "rounds": rounds}))
+    env = {key: os.environ[key] for key in ("PATH", "HOME", "TMPDIR", "LANG", "LC_ALL", "PYTHONPATH",
+        "SECRET_KEY", "JWT_SECRET_KEY", "SECRETS_MASTER_KEY", "AGENT_TEMPLATE_DIR") if key in os.environ}
+    env.update(DATABASE_URL=app_user_engine.url.render_as_string(hide_password=False),
+        REDIS_URL="redis://127.0.0.1:1/15", AGENT_DATA_DIR=str(seed["data_root"]),
+        PYTHONDONTWRITEBYTECODE="1", PYTHONUNBUFFERED="1")
+    output = tmp_path / f"process-{phase}.stdout.log"
+    with (tmp_path / f"process-{phase}.stderr.log").open("wb") as errors:
+        worker = await asyncio.create_subprocess_exec(sys.executable, "-B", "-m",
+            "tests.integration.persistent_compute_worker", str(control), phase,
+            cwd=Path(__file__).resolve().parents[2], env=env,
+            stdout=asyncio.subprocess.PIPE, stderr=errors)
+        observed = b""
+        try:
+            if phase == "first":
+                observed = await asyncio.wait_for(worker.stdout.readline(), 60)
+                assert json.loads(observed) == {"ready_before_second_model": True, "pid": worker.pid}
+                worker.kill()
+                assert await asyncio.wait_for(worker.wait(), 10) == -9
+                remainder, _ = await asyncio.wait_for(worker.communicate(), 10)
+                observed += remainder
+            else:
+                observed, _ = await asyncio.wait_for(worker.communicate(), 90)
+                assert worker.returncode == 0, (tmp_path / f"process-{phase}.stderr.log").read_text()[-3000:]
+        finally:
+            if worker.returncode is None:
+                worker.kill()
+            await asyncio.wait_for(worker.communicate(), 10)
+            output.write_bytes(observed)
+    saved = json.loads((tmp_path / "process-resource.json").read_text())
+    synthetic_sdk.restore(saved["resource"])
+    (tmp_path / f"process-{phase}-receipt.json").write_text(json.dumps({"pid": worker.pid,
+        "exit_code": worker.returncode, "reaped": True, "phase": phase}))
+    return SimpleNamespace(requests=saved["requests"], pid=worker.pid)
+
+
+@pytest.mark.parametrize("fault", [None, "unapproved", "create_ack_lost", "pause_ack_lost", "worker_restart", "new_work", "process_restart"])
 async def test_original_work_reuses_paused_compute_and_consumes_canonical_file(
-    owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, synthetic_sdk, fault,
+    owner_sessionmaker, app_user_sessionmaker, app_user_engine, monkeypatch, tmp_path, synthetic_sdk, fault,
 ):
     import app.database as database
     import app.runtime.invoker as invoker
@@ -170,7 +227,8 @@ async def test_original_work_reuses_paused_compute_and_consumes_canonical_file(
     from app.services.secrets_provider import get_secrets_provider
     from app.services.web_chat_runtime import execute_web_chat_run
 
-    restart, new_work = fault == "worker_restart", fault == "new_work"
+    process_restart = fault == "process_restart"
+    restart, new_work = fault == "worker_restart" or process_restart, fault == "new_work"
     if restart or new_work:
         fault = None
     seed = await _seed_run(owner_sessionmaker, tmp_path)
@@ -236,7 +294,10 @@ async def test_original_work_reuses_paused_compute_and_consumes_canonical_file(
     monkeypatch.setattr(invoker, "create_llm_client", lambda **kw: script)
     fence = set_runtime_task_fence(task_id=seed["run_id"], worker_id="kernel-worker-1", claim_version=1)
     try:
-        if restart:
+        if process_restart:
+            script = await _process_compute_worker(seed, rounds, tmp_path, app_user_engine, synthetic_sdk, phase="first")
+            first_pid = script.pid
+        elif restart:
             with pytest.raises(SimulatedWorkerCrash):
                 await execute_web_chat_run(seed["run_id"])
         else:
@@ -252,6 +313,16 @@ async def test_original_work_reuses_paused_compute_and_consumes_canonical_file(
             await pin_rls_tenant_context(db, seed["tenant_id"])
             task = await db.get(RuntimeTask, seed["run_id"])
             assert task.status == "running" and task.claim_version == 1
+            if process_restart:
+                from app.models.session_v2 import SessionModelResult, SessionToolInvocation
+
+                models = list(await db.scalars(select(SessionModelResult).where(SessionModelResult.run_id == task.id)))
+                calls = list(await db.scalars(select(SessionToolInvocation).where(SessionToolInvocation.run_id == task.id)))
+                assert len(models) == 1 and models[0].state == "round_committed"
+                assert len(calls) == 1 and calls[0].effect_state == "effect_committed"
+                first_lease = await db.scalar(select(EnvironmentLease))
+                assert first_lease.status == "released" and first_lease.outcome["resource_state"] == "paused"
+                assert first_lease.outcome["resource_lifecycle"]["worker"]["pid"] == first_pid
             task.claim_expires_at = datetime.now(UTC) - timedelta(seconds=1)
             await db.commit()
             claims = await RuntimeTaskClaimService(db=db, worker_id="compute-worker-2", lease_seconds=600).claim_available()
@@ -261,7 +332,11 @@ async def test_original_work_reuses_paused_compute_and_consumes_canonical_file(
         script = ScriptedLLMClient(rounds[1:])
         fence = set_runtime_task_fence(task_id=seed["run_id"], worker_id="compute-worker-2", claim_version=2)
         try:
-            await execute_web_chat_run(seed["run_id"])
+            if process_restart:
+                script = await _process_compute_worker(seed, rounds[1:], tmp_path, app_user_engine, synthetic_sdk, phase="resume")
+                assert script.pid != first_pid
+            else:
+                await execute_web_chat_run(seed["run_id"])
         finally:
             reset_runtime_task_fence(fence)
         assert "FIRST_COMPUTE" in json.dumps(script.requests[0]["messages"])

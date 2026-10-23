@@ -804,7 +804,10 @@ def fingerprint_rls_bypass_scopes(app_root: Path) -> str:
 # Full-suite correction: terminal runs cannot re-arm a committed model round;
 # the existing exact tenant/run lookup is reused. HR cleanup keeps its result
 # limit. No query widening, new bypass, or scanner changes in this correction.
-RLS_BYPASS_SCOPES_SHA256 = "b2a25dfc940738bbd3b031bd7525ebec45a946af85fe7717b130dd20b12de51c"
+# 2026-10-23 next-version refresh: complete current scopes and their authority,
+# source and recovery consumers reviewed across 758 entries in 82 modules.
+# Exact registered query shapes, scanner and expiry checks remain unchanged.
+RLS_BYPASS_SCOPES_SHA256 = "ec4800429450bef33bab4ba829e1f9ea606f4e237d7b39f084ea0b45715bfc01"
 
 
 def scan_rls_bypass_callsites(app_root: Path) -> list[RLSBypassCallsite]:

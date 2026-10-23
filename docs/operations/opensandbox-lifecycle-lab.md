@@ -111,6 +111,25 @@ If creation acknowledgement is lost, an empty listing does not prove cleanup:
 the server may still be creating the resource. That outcome remains `unknown`.
 Never infer termination from an expired lifetime or a worker exit.
 
+On an approved Docker target, add both `--docker-context <context>` and
+`--docker-runtime <expected-runtime>` to inspect each newly created workload before
+running code. The probe reads only the container matching its exact sandbox ID and
+ownership label, checks the actual OCI runtime, rejects privileged workloads and
+shared host/container PID namespaces, and records only those mechanical facts.
+An unavailable, ambiguous, changed or mismatched container stops the probe before
+work and retains its existing scoped cleanup/reconciliation behavior. These paired
+options are validated before SDK/resource use. No Docker settings are modified.
+Runtime-name matching and private PID namespaces remain observations; they do not
+establish all isolation, network or secret properties or authorize adoption.
+
+Add `--check-control-credential` to check each workload's command environment for
+the control credential's exact bytes, including an embedded value. Only its length
+enters the command; the trusted operator compares returned environment hashes.
+The command receives neither the key nor a key verifier and exports no raw values.
+A detected key stops before the work scenario and uses the same scoped cleanup.
+This checks the command environment only; other secrets, files and snapshots still
+need their own acceptance evidence.
+
 This probe does not establish hard isolation, tenant authorization, complete
 egress enforcement, secret non-ingress across snapshots, storage ceilings,
 checkpoint/fork, server upgrade or rollback, browser takeover, or HiveClaw's

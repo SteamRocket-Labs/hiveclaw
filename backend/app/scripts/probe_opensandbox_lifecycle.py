@@ -11,6 +11,7 @@ import json
 import os
 from pathlib import Path
 import re
+import subprocess
 import sys
 from datetime import timedelta
 from urllib.parse import urlsplit
@@ -56,6 +57,65 @@ def validate_target(server_url, image):
     )
     require(re.fullmatch(r"[^\s@]+@sha256:[0-9a-f]{64}", image) is not None, "immutable_image_digest_required")
     return parsed.netloc
+
+
+def inspect_resource_runtime(resource_id, *, lab_id, context, expected_runtime):
+    """Read the exact owned container through the trusted operator's Docker context."""
+    command = ["docker", f"--context={context}"]
+    try:
+        found = subprocess.run([*command, "ps", "--all", "--quiet", "--no-trunc",
+            f"--filter=label=opensandbox.io/id={resource_id}", f"--filter=label={LABEL}={lab_id}"],
+            capture_output=True, text=True, timeout=10, check=False)
+        require(found.returncode == 0, "docker_inspection_unavailable")
+        identifiers = found.stdout.splitlines()
+        require(len(identifiers) == 1 and re.fullmatch(r"[0-9a-f]{64}", identifiers[0]) is not None,
+            "docker_resource_unavailable")
+        template = ('{"runtime":{{json .HostConfig.Runtime}},'
+            '"resource_id":{{json (index .Config.Labels "opensandbox.io/id")}},'
+            '"lab_id":{{json (index .Config.Labels "hive.conformance")}},'
+            '"privileged":{{json .HostConfig.Privileged}},"pid_mode":{{json .HostConfig.PidMode}}}')
+        inspected = subprocess.run([*command, "inspect", identifiers[0], "--format", template],
+            capture_output=True, text=True, timeout=10, check=False)
+        require(inspected.returncode == 0, "docker_inspection_unavailable")
+        facts = json.loads(inspected.stdout)
+    except (OSError, subprocess.TimeoutExpired, ValueError) as exc:
+        raise ProbeFailure("docker_inspection_unavailable") from exc
+    require(isinstance(facts, dict), "docker_inspection_unavailable")
+    require(facts.get("resource_id") == resource_id and facts.get("lab_id") == lab_id, "resource_ownership_changed")
+    require(facts.get("runtime") == expected_runtime, "docker_runtime_changed")
+    require(facts.get("privileged") is False and facts.get("pid_mode") in ("", "private"),
+        "docker_workload_namespace_unsupported")
+    return {"resource_id": resource_id, "container_id": identifiers[0], "runtime": expected_runtime,
+        "privileged": False, "private_pid_namespace": True}
+
+
+def record_resource_runtime(args, report, resource_id):
+    if getattr(args, "docker_context", None) or getattr(args, "docker_runtime", None):
+        require(bool(args.docker_context) and bool(args.docker_runtime), "runtime_inspection_options_required")
+        report.setdefault("runtime_inspections", []).append(inspect_resource_runtime(resource_id,
+            lab_id=report["lab_id"], context=args.docker_context, expected_runtime=args.docker_runtime))
+        save(args.output_dir, report)
+
+
+async def check_control_credential(box, secret):
+    """Compare exact environment bytes outside the workload; never send its key."""
+    expected = hashlib.sha256(secret.encode()).hexdigest()
+    # Only the byte length crosses this boundary. Workload-side hashes contain
+    # no control-key verifier unless the key was already present in its env.
+    program = ("import hashlib,json,os\nn=" + str(len(secret.encode())) + "\nhashes=set()\n"
+        "for value in os.environ.values():\n data=value.encode()\n"
+        " for offset in range(len(data)-n+1):\n"
+        "  hashes.add(hashlib.sha256(data[offset:offset+n]).hexdigest())\n"
+        "print(json.dumps(sorted(hashes)))")
+    execution = await box.commands.run(["python3", "-c", program])
+    require(execution.error is None and execution.exit_code == 0, "control_credential_inspection_unavailable")
+    try:
+        digests = json.loads("".join(log.text for log in execution.logs.stdout))
+    except (ValueError, TypeError, AttributeError) as exc:
+        raise ProbeFailure("control_credential_inspection_unavailable") from exc
+    require(isinstance(digests, list) and all(isinstance(value, str) and
+        re.fullmatch(r"[0-9a-f]{64}", value) is not None for value in digests), "control_credential_inspection_unavailable")
+    require(expected not in digests, "control_credential_in_workload_environment")
 
 
 def save(directory, report):
@@ -178,6 +238,10 @@ async def probe(args, report):
         require(report["server_version"] == SDK_VERSION, "server_version_mismatch")
         box = await create_resource(args, report, conn)
         require(((await box.get_info()).metadata or {}).get(LABEL) == report["lab_id"], "resource_ownership_changed")
+        record_resource_runtime(args, report, box.id)
+        if getattr(args, "check_control_credential", False):
+            await check_control_credential(box, os.environ[KEY_ENV])
+            report["checks"].append("workload_environment_excludes_control_credential")
         await box.files.write_files([WriteEntry(path="/tmp/probe-file", data=CONTENT, mode=600)])
         child_args = [
             sys.executable,
@@ -227,6 +291,10 @@ async def probe(args, report):
         require(report["cleanup_confirmed"], "resource_termination_unconfirmed")
         report["checks"].append("destroy_and_authoritative_not_found")
         box = await create_resource(args, report, conn)
+        record_resource_runtime(args, report, box.id)
+        if getattr(args, "check_control_credential", False):
+            await check_control_credential(box, os.environ[KEY_ENV])
+            report["checks"].append("workload_environment_excludes_control_credential")
         await box.files.write_files([WriteEntry(path="/tmp/probe-file", data=saved, mode=600)])
         execution = await box.commands.run(
             [
@@ -282,10 +350,14 @@ def main():
     parser.add_argument("--image", required=True, help="Python 3 workload image pinned by digest.")
     parser.add_argument("--output-dir", type=Path, required=True, help="New evidence directory; never overwritten.")
     parser.add_argument("--server-proxy", action="store_true")
+    parser.add_argument("--docker-context", help="Explicit context for optional exact-resource runtime inspection.")
+    parser.add_argument("--docker-runtime", help="Expected OCI runtime in that trusted Docker context.")
+    parser.add_argument("--check-control-credential", action="store_true", help="Check each workload's process environment without sending its control key.")
     parser.add_argument("--worker-id", help=argparse.SUPPRESS)
     parser.add_argument("--lab-id", help=argparse.SUPPRESS)
     args = parser.parse_args()
     validate_target(args.server_url, args.image)
+    require(bool(args.docker_context) == bool(args.docker_runtime), "runtime_inspection_options_required")
     require(os.name == "posix", "posix_host_required")
     require(bool(os.environ.get(KEY_ENV)), "explicit_probe_credential_required")
     require(importlib.metadata.version("opensandbox") == SDK_VERSION, "sdk_version_mismatch")

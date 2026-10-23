@@ -4,6 +4,33 @@ This optional operator probe tests a local OpenSandbox deployment independently
 of the configured HiveClaw code executor. It does not install an application
 dependency, select a default provider, or establish production acceptance.
 
+Before installing the SDK or creating resources, inspect an explicitly selected
+Docker profile with the read-only preflight:
+
+```sh
+python backend/app/scripts/probe_opensandbox_profile.py \
+  --config ./sandbox.toml \
+  --docker-context '<approved-docker-context>' \
+  --image 'python@sha256:<workload-image-digest>' \
+  --output-dir ./opensandbox-profile-evidence
+```
+
+This command reads only the selected TOML and Docker runtime names. It does not
+create, pull, stop, or reconfigure resources. API keys and unrelated configuration
+are not exported. It checks the three image pins and the configured strong runtime;
+`ready_for_conformance` is a prerequisite observation, with adoption still unproven.
+`unsupported` and `unavailable` retain explicit next actions. Existing evidence
+directories are never overwritten.
+
+The pinned lifecycle probe requests default-deny `networkPolicy`. OpenSandbox's
+[versioned secure-runtime guide](https://github.com/opensandbox-group/OpenSandbox/blob/531700ca18a7fa5fab6a2f25d6dc68a76eddab12/docs/guides/secure-container.md#5-egress-sidecar-incompatible-with-gvisor)
+documents that this combination is unsupported with gVisor. Select a profile that
+can enforce the required policy; do not remove egress protection to obtain a pass.
+This limitation concerns this workflow and does not establish a global rejection
+of gVisor or OpenSandbox. A runtime name alone does not prove isolation: actual
+resource runtime, cross-resource denial, network, secret, and recovery checks remain
+mandatory before adoption.
+
 Use an isolated server and Docker daemon with no unrelated OpenSandbox resources.
 The server restores Docker expiration timers at startup. Workload containers must
 not receive host workspace mounts, Docker sockets, or provider credentials.

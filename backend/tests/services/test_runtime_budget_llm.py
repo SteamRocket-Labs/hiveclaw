@@ -203,3 +203,36 @@ async def test_explicitly_reported_zero_usage_is_settled_as_zero():
     assert service.settlements[0].actual_tokens == 0
     assert service.settlements[0].actual_cache_miss_tokens == 0
     assert service.settlements[0].actual_provider_calls == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method", ["complete", "stream"])
+@pytest.mark.parametrize("provider,requested", [("openai", 128_000), ("openai", None), ("", None)])
+async def test_output_reservation_preserves_the_complete_request(method, provider, requested):
+    from app.services.llm_client import get_provider_output_ceiling
+
+    service = _CapturingBudgetService()
+    received = []
+
+    class Provider(_FakeLLMClient):
+        async def complete(self, *args, **kwargs):
+            received.append(kwargs)
+            return self.response
+
+        stream = complete
+
+    inner = Provider()
+    inner.provider = provider
+    client = RuntimeBudgetedLLMClient(inner, budget_run_id=uuid.uuid4(),
+        default_llm_call_token_reservation=0, service=service)
+    tools = [{"type": "function", "function": {"name": "read_file",
+        "parameters": {"type": "object", "properties": {"path": {"type": "string"}}}}}]
+    messages = [LLMMessage(role="user", content="Use the complete evidence and all authorized tools")]
+    await getattr(client, method)(messages=messages, tools=tools, max_tokens=requested, reasoning_effort="high")
+    reservation = service.reservations[0]
+    output = requested if requested is not None else get_provider_output_ceiling(provider) if provider else None
+    assert reservation.tokens == reservation.metadata["projected_input_tokens"] + (output or 0)
+    assert reservation.metadata["reserved_output_tokens"] == output
+    assert received[0]["max_tokens"] == requested
+    assert received[0]["tools"] == tools and received[0]["messages"] == messages
+    assert received[0]["reasoning_effort"] == "high"

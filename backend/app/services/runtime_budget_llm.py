@@ -6,7 +6,10 @@ import uuid
 from typing import Any
 
 from app.runtime.provider_prompt_ledger import build_provider_prompt_ledger, prompt_projection_token_count
-from app.services.llm_client import ChunkCallback, LLMClient, LLMMessage, LLMResponse, ThinkingCallback
+from app.services.llm_client import (
+    ChunkCallback, LLMClient, LLMMessage, LLMResponse, ThinkingCallback,
+    _CapAwareLLMClient, get_provider_output_ceiling, get_provider_spec,
+)
 from app.services.prompt_cache import extract_cache_metrics
 from app.services.runtime_budget_service import RuntimeBudgetReservation, RuntimeBudgetService, RuntimeBudgetSettlement
 
@@ -112,6 +115,17 @@ class RuntimeBudgetedLLMClient(LLMClient):
         # §2 finalization lane: marks this invocation's provider calls as the
         # single summarizing turn so a summary_only run admits them.
         self._summary_lane = bool(summary_lane)
+        self.provider = str(getattr(inner, "provider", "") or "")
+        # Cap recovery can issue a second generation. Budget each native call
+        # inside that existing strategy instead of metering only its last reply.
+        self._per_generation = isinstance(inner, _CapAwareLLMClient)
+        if self._per_generation:
+            generation = RuntimeBudgetedLLMClient(inner._inner,
+                budget_run_id=budget_run_id, runtime_task_id=runtime_task_id,
+                default_llm_call_token_reservation=default_llm_call_token_reservation,
+                service=self._service, summary_lane=summary_lane)
+            generation.provider = self.provider
+            self._inner = _CapAwareLLMClient(generation, provider=self.provider, model=inner.model)
 
     async def complete(
         self,
@@ -121,18 +135,18 @@ class RuntimeBudgetedLLMClient(LLMClient):
         max_tokens: int | None = None,
         **kwargs: Any,
     ) -> LLMResponse:
-        return await self._run_budgeted_call(
-            "complete",
-            messages=messages,
-            tools=tools,
-            call=lambda: self._inner.complete(
+        async def call():
+            return await self._inner.complete(
                 messages=messages,
                 tools=tools,
                 temperature=temperature,
                 max_tokens=max_tokens,
                 **kwargs,
-            ),
-        )
+            )
+        if self._per_generation:
+            return await call()
+        return await self._run_budgeted_call("complete", messages=messages, tools=tools,
+            max_tokens=max_tokens, call=call)
 
     async def stream(
         self,
@@ -144,11 +158,8 @@ class RuntimeBudgetedLLMClient(LLMClient):
         on_thinking: ThinkingCallback | None = None,
         **kwargs: Any,
     ) -> LLMResponse:
-        return await self._run_budgeted_call(
-            "stream",
-            messages=messages,
-            tools=tools,
-            call=lambda: self._inner.stream(
+        async def call():
+            return await self._inner.stream(
                 messages=messages,
                 tools=tools,
                 temperature=temperature,
@@ -156,8 +167,11 @@ class RuntimeBudgetedLLMClient(LLMClient):
                 on_chunk=on_chunk,
                 on_thinking=on_thinking,
                 **kwargs,
-            ),
-        )
+            )
+        if self._per_generation:
+            return await call()
+        return await self._run_budgeted_call("stream", messages=messages, tools=tools,
+            max_tokens=max_tokens, call=call)
 
     def _get_headers(self) -> dict[str, str]:
         return self._inner._get_headers()
@@ -165,17 +179,23 @@ class RuntimeBudgetedLLMClient(LLMClient):
     async def close(self) -> None:
         await self._inner.close()
 
-    async def _run_budgeted_call(self, method: str, *, messages: list[LLMMessage], tools: list[dict] | None, call):
+    async def _run_budgeted_call(self, method: str, *, messages: list[LLMMessage], tools: list[dict] | None,
+        max_tokens: int | None, call):
         provider_prompt_ledger = build_provider_prompt_ledger(
             messages=messages,
             tools=tools,
-            provider=str(getattr(self._inner, "provider", "") or ""),
+            provider=self.provider,
             model=str(self.model or ""),
         )
         prompt_estimate = int(provider_prompt_ledger["projected_input_tokens"])
         projected_uncached_input_tokens = int(provider_prompt_ledger["projected_uncached_input_tokens"])
         tool_schema_estimate_tokens = int(provider_prompt_ledger["tool_schema_tokens"])
-        reservation_tokens = max(self._default_llm_call_token_reservation, prompt_estimate)
+        output_tokens, output_source = None, "unavailable"
+        if isinstance(max_tokens, int) and not isinstance(max_tokens, bool) and max_tokens > 0:
+            output_tokens, output_source = max_tokens, "requested"
+        elif max_tokens is None and get_provider_spec(self.provider) is not None:
+            output_tokens, output_source = get_provider_output_ceiling(self.provider), "provider_ceiling"
+        reservation_tokens = max(self._default_llm_call_token_reservation, prompt_estimate + (output_tokens or 0))
         reservation_key = f"provider_call:{self._runtime_task_id or 'unknown'}:{uuid.uuid4().hex}"
         await self._service.reserve(
             RuntimeBudgetReservation(
@@ -192,6 +212,8 @@ class RuntimeBudgetedLLMClient(LLMClient):
                     "has_tools": bool(tools),
                     "prompt_estimate_tokens": prompt_estimate,
                     "projected_input_tokens": prompt_estimate,
+                    "reserved_output_tokens": output_tokens,
+                    "output_reservation_source": output_source,
                     "projected_uncached_input_tokens": projected_uncached_input_tokens,
                     "tool_schema_estimate_tokens": tool_schema_estimate_tokens,
                     "provider_prompt_ledger": provider_prompt_ledger,
@@ -214,7 +236,7 @@ class RuntimeBudgetedLLMClient(LLMClient):
         )
         cache_metrics = extract_cache_metrics(
             getattr(response, "usage", None),
-            provider=str(getattr(self._inner, "provider", "") or "unknown"),
+            provider=self.provider or "unknown",
         )
         await self._service.settle(
             RuntimeBudgetSettlement(

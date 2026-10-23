@@ -33,6 +33,14 @@ def migrated_pg_url(pg_container):
 
 
 @pytest.fixture
+async def native_model_clients():
+    clients = []
+    yield clients
+    for client in clients:
+        await client.aclose()
+
+
+@pytest.fixture
 def synthetic_sdk(monkeypatch, tmp_path):
     """No SDK transport, Docker, browser or provider resource is constructed."""
     calls, boxes, faults = [], {}, set()
@@ -205,9 +213,9 @@ async def _process_compute_worker(seed, rounds, tmp_path, app_user_engine, synth
     return SimpleNamespace(requests=saved["requests"], pid=worker.pid)
 
 
-@pytest.mark.parametrize("fault", [None, "unapproved", "create_ack_lost", "pause_ack_lost", "worker_restart", "new_work", "process_restart", "resource_lost"])
+@pytest.mark.parametrize("fault", [None, "unapproved", "create_ack_lost", "pause_ack_lost", "worker_restart", "new_work", "process_restart", "resource_lost", "native_transport"])
 async def test_original_work_reuses_paused_compute_and_consumes_canonical_file(
-    owner_sessionmaker, app_user_sessionmaker, app_user_engine, monkeypatch, tmp_path, synthetic_sdk, fault,
+    owner_sessionmaker, app_user_sessionmaker, app_user_engine, monkeypatch, tmp_path, synthetic_sdk, native_model_clients, fault,
 ):
     import app.database as database
     import app.runtime.invoker as invoker
@@ -229,7 +237,8 @@ async def test_original_work_reuses_paused_compute_and_consumes_canonical_file(
 
     process_restart = fault == "process_restart"
     resource_lost = fault == "resource_lost"
-    restart, new_work = fault == "worker_restart" or process_restart, fault == "new_work"
+    native_transport = fault == "native_transport"
+    restart, new_work = fault == "worker_restart" or process_restart, fault == "new_work" or native_transport
     if restart or new_work or resource_lost:
         fault = None
     seed = await _seed_run(owner_sessionmaker, tmp_path)
@@ -306,6 +315,28 @@ async def test_original_work_reuses_paused_compute_and_consumes_canonical_file(
 
         script = ResourceLossClient(rounds)
     monkeypatch.setattr(invoker, "create_llm_client", lambda **kw: script)
+    if native_transport:
+        async def respond(request):
+            payload = json.loads(request.content)
+            assert payload["stream"] is True and script.script
+            script.requests.append(payload)
+            row = script.script.pop(0)
+            delta = {"content": row.get("content", "")}
+            if row.get("tool_calls"):
+                delta["tool_calls"] = [{"index": index, **tool} for index, tool in enumerate(row["tool_calls"])]
+            chunks = [{"choices": [{"delta": delta}]}, {"choices": [{"delta": {},
+                "finish_reason": row["finish_reason"]}], "usage": {"prompt_tokens": 10, "completion_tokens": 5}}]
+            body = "".join("data: " + json.dumps(chunk) + "\n\n" for chunk in chunks) + "data: [DONE]\n\n"
+            return httpx.Response(200, text=body, headers={"content-type": "text/event-stream"})
+
+        def native_client(**kwargs):
+            client = original(**kwargs)
+            transport_client = httpx.AsyncClient(transport=httpx.MockTransport(respond))
+            native_model_clients.append(transport_client)
+            client._inner._client = transport_client
+            return client
+
+        monkeypatch.setattr(invoker, "create_llm_client", native_client)
     fence = set_runtime_task_fence(task_id=seed["run_id"], worker_id="kernel-worker-1", claim_version=1)
     try:
         if process_restart:
@@ -502,6 +533,8 @@ async def test_original_work_reuses_paused_compute_and_consumes_canonical_file(
             delivered = await client.get(f"/api/agents/{agent.id}/files/artifacts/{selected_id}/content")
             assert delivered.status_code == 200 and delivered.json()["content"] == expected
         assert "synthetic-control-key-not-for-workload" not in json.dumps(script.requests)
+        if native_transport:
+            assert native_model_clients and all(client.is_closed for client in native_model_clients)
 
 
 async def test_known_resource_reconciliation_requires_dead_worker_and_preserves_unknown_command(

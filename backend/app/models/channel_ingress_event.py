@@ -28,6 +28,7 @@ class ChannelIngressEvent(Base):
             "tenant_id",
             "provider",
             "installation_ref",
+            "provider_namespace",
             "provider_event_id",
             name="uq_channel_ingress_provider_event",
         ),
@@ -43,6 +44,7 @@ class ChannelIngressEvent(Base):
     )
     provider: Mapped[str] = mapped_column(String(40), nullable=False)
     installation_ref: Mapped[str] = mapped_column(String(200), nullable=False)
+    provider_namespace: Mapped[str] = mapped_column(String(64), nullable=False, default="", server_default="")
     provider_event_id: Mapped[str] = mapped_column(String(512), nullable=False)
     handler_key: Mapped[str] = mapped_column(String(100), nullable=False)
     payload_digest: Mapped[str] = mapped_column(String(64), nullable=False)

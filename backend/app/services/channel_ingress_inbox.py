@@ -237,18 +237,24 @@ def _normalized_submission(submission: ChannelIngressSubmission) -> dict[str, An
     if supplied_digest and not re.fullmatch(r"[0-9a-f]{64}", supplied_digest):
         raise ValueError("channel ingress payload digest must be a SHA-256 hex digest")
     payload_digest = supplied_digest or computed_payload_digest
+    metadata = dict(submission.metadata or {})
+    scope = metadata.get("feishu_message_scope")
+    provider_namespace = scope if provider == "feishu" and isinstance(scope, str) and re.fullmatch(r"[0-9a-f]{64}", scope) else ""
     identity = "|".join((str(tenant_id), provider, installation_ref, provider_event_id))
+    if provider_namespace:
+        identity += "|" + provider_namespace
     return {
         "id": uuid.uuid5(_INGRESS_ID_NAMESPACE, identity),
         "tenant_id": tenant_id,
         "agent_id": agent_id,
         "provider": provider,
         "installation_ref": installation_ref,
+        "provider_namespace": provider_namespace,
         "provider_event_id": provider_event_id,
         "handler_key": handler_key,
         "payload_digest": payload_digest,
         "payload_json": payload,
-        "metadata_json": dict(submission.metadata or {}),
+        "metadata_json": metadata,
         "status": "received",
         "attempt_count": 0,
         "available_at": datetime.now(UTC),
@@ -283,6 +289,7 @@ async def enqueue_channel_ingress_event(
                 ChannelIngressEvent.tenant_id == values["tenant_id"],
                 ChannelIngressEvent.provider == values["provider"],
                 ChannelIngressEvent.installation_ref == values["installation_ref"],
+                ChannelIngressEvent.provider_namespace == values["provider_namespace"],
                 ChannelIngressEvent.provider_event_id == values["provider_event_id"],
             )
         )

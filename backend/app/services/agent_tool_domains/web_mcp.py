@@ -2280,6 +2280,7 @@ async def _execute_mcp_tool(tool_name: str, arguments: dict, agent_id: "uuid.UUI
             MCPStoredCredentialRequired,
             assert_mcp_cloud_transport_allowed,
             assert_no_mcp_token_passthrough,
+            resolve_mcp_api_key,
             resolve_stored_mcp_endpoint,
         )
         from app.services.mcp_client import MCPClient
@@ -2294,6 +2295,7 @@ async def _execute_mcp_tool(tool_name: str, arguments: dict, agent_id: "uuid.UUI
         # candidate set the Python filter below expects.
         tid = await resolve_tenant_for_agent(agent_id)
         oauth_bearer: str | None = None
+        scoped_api_key: str | None = None
         async with tenant_scoped_session(tid) as db:
             result = await db.execute(select(Tool).where(Tool.name == tool_name, Tool.type == "mcp"))
             candidates = _result_scalars_or_one(result)
@@ -2372,6 +2374,18 @@ async def _execute_mcp_tool(tool_name: str, arguments: dict, agent_id: "uuid.UUI
                         retryable=False,
                         actionable_hint="Re-authorize this MCP server via the OAuth flow (admin MCP controls).",
                     )
+                try:
+                    scoped_api_key = await resolve_mcp_api_key(db, tool=tool, tenant_id=tid,
+                        agent_config=agent_config, oauth_bearer=oauth_bearer)
+                except MCPStoredCredentialRequired as exc:
+                    return render_tool_error(tool_name=tool_name, error_class="configuration_required", message=str(exc),
+                        provider="mcp", retryable=False,
+                        actionable_hint="Use secure employee configuration, or ask an administrator to confirm company scope.")
+                except MCPAuthzError as exc:
+                    return render_tool_error(tool_name=tool_name, error_class="forbidden", message=str(exc),
+                        provider="mcp", retryable=False,
+                        actionable_hint="Ask a company administrator to review this tool's policy.")
+
 
         if not tool:
             return f"Unknown tool: {tool_name}"
@@ -2417,10 +2431,15 @@ async def _execute_mcp_tool(tool_name: str, arguments: dict, agent_id: "uuid.UUI
         # agent-supplied config above; this is the tenant's stored token).
         if oauth_bearer:
             merged_config["api_key"] = oauth_bearer
+        from app.services.mcp_authz import MCP_COMPANY_CREDENTIAL_SCOPE
+
+        merged_config.pop(MCP_COMPANY_CREDENTIAL_SCOPE, None)
+        if "api_key" in merged_config or scoped_api_key:
+            merged_config["api_key"] = scoped_api_key
         mcp_url = tool.mcp_server_url
         mcp_name = tool.mcp_tool_name or tool_name
         try:
-            mcp_url, direct_api_key = resolve_stored_mcp_endpoint(mcp_url, api_key=merged_config.get("api_key"))
+            mcp_url, direct_api_key = resolve_stored_mcp_endpoint(mcp_url, api_key=scoped_api_key)
         except MCPStoredCredentialRequired as exc:
             return render_tool_error(tool_name=tool_name, error_class="configuration_required", message=str(exc),
                 provider="mcp", retryable=False,

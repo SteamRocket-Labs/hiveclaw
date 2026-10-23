@@ -337,7 +337,9 @@ async def call_mcp_tool(agent_id: uuid.UUID, arguments: dict, *, execution_conte
 
     from app.database import tenant_scoped_session
     from app.models.tool import AgentTool, Tool
-    from app.services.mcp_authz import MCPAuthzError, assert_mcp_cloud_transport_allowed, resolve_stored_mcp_endpoint
+    from app.services.mcp_authz import (
+        MCPAuthzError, assert_mcp_cloud_transport_allowed, resolve_mcp_api_key, resolve_stored_mcp_endpoint,
+    )
     from app.services.mcp_client import MCPClient
     from app.services.mcp_metadata_trust import is_mcp_metadata_runtime_approved
     from app.services.tenant_resolver import resolve_tenant_for_agent
@@ -431,7 +433,8 @@ async def call_mcp_tool(agent_id: uuid.UUID, arguments: dict, *, execution_conte
         server_url = row.mcp_server_url
         assignment = await db.execute(select(AgentTool.config).where(
             AgentTool.agent_id == agent_id, AgentTool.tool_id == row.id))
-        config = {**(row.config or {}), **(assignment.scalar_one_or_none() or {})}
+        agent_config = assignment.scalar_one_or_none() or {}
+        config = {**(row.config or {}), **agent_config}
         api_key = config.get("api_key")
         transport = config.get("transport")
         remote_name = row.mcp_tool_name or row.name
@@ -448,8 +451,11 @@ async def call_mcp_tool(agent_id: uuid.UUID, arguments: dict, *, execution_conte
         if auth_error:
             return render_tool_error(tool_name="call_mcp_tool", error_class="auth_required", message=auth_error,
                 provider="mcp", retryable=False, actionable_hint="Request MCP OAuth configuration in the original work.")
-        if bearer:
-            api_key = bearer
+        try:
+            api_key = await resolve_mcp_api_key(db, tool=row, tenant_id=tid,
+                agent_config=agent_config, oauth_bearer=bearer)
+        except MCPAuthzError as exc:
+            return _render_mcp_authz_error("call_mcp_tool", exc)
 
     try:
         assert_mcp_cloud_transport_allowed(server_url=server_url, transport=transport)
@@ -497,7 +503,7 @@ async def _resolve_agent_mcp_server(
     from app.models.mcp_server import MCPServerTool
     from app.services.mcp_authz import (
         MCPAuthzError, assert_mcp_cloud_transport_allowed, mcp_url_reference,
-        resolve_stored_mcp_endpoint, split_mcp_server_url_and_api_key,
+        resolve_mcp_api_key, resolve_stored_mcp_endpoint, split_mcp_server_url_and_api_key,
     )
     from app.services.mcp_metadata_trust import is_mcp_metadata_runtime_approved
     from app.services.mcp_server_service import resolve_agent_mcp_tool_mode
@@ -576,7 +582,8 @@ async def _resolve_agent_mcp_server(
         url, row, name = chosen
         assignment = await db.execute(select(AgentTool.config).where(
             AgentTool.agent_id == agent_id, AgentTool.tool_id == row.id))
-        config = {**(row.config or {}), **(assignment.scalar_one_or_none() or {})}
+        agent_config = assignment.scalar_one_or_none() or {}
+        config = {**(row.config or {}), **agent_config}
         transport = config.get("transport")
         try:
             assert_mcp_cloud_transport_allowed(server_url=url, transport=transport)
@@ -584,6 +591,10 @@ async def _resolve_agent_mcp_server(
             return _render_mcp_authz_error(tool_name, exc)
         api_key = config.get("api_key")
         if not resolve_oauth:
+            try:
+                api_key = await resolve_mcp_api_key(db, tool=row, tenant_id=tid, agent_config=agent_config)
+            except MCPAuthzError as exc:
+                return _render_mcp_authz_error(tool_name, exc)
             return split_mcp_server_url_and_api_key(url)[0], api_key, name
         from app.services.mcp_server_service import resolve_mcp_oauth_bearer
 
@@ -600,7 +611,9 @@ async def _resolve_agent_mcp_server(
             return render_tool_error(tool_name=tool_name, error_class="auth_required", message=auth_error,
                 provider="mcp", retryable=False, actionable_hint="Request MCP OAuth configuration in the original work.")
         try:
-            clean_url, scoped_key = resolve_stored_mcp_endpoint(url, api_key=bearer or api_key)
+            api_key = await resolve_mcp_api_key(db, tool=row, tenant_id=tid,
+                agent_config=agent_config, oauth_bearer=bearer)
+            clean_url, scoped_key = resolve_stored_mcp_endpoint(url, api_key=api_key)
         except MCPAuthzError as exc:
             return _render_mcp_authz_error(tool_name, exc)
         return clean_url, scoped_key, name

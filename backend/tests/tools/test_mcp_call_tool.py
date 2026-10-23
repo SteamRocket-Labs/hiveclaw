@@ -26,6 +26,9 @@ from app.services.agent_tool_domains.web_mcp import _execute_mcp_tool
 from app.tools.handlers.mcp import call_mcp_tool, inspect_mcp_tool, mcp_auth_status, mcp_get_prompt, mcp_list_prompts
 
 
+_TENANT_ID = uuid.uuid4()
+
+
 # ── DB fake ───────────────────────────────────────────────────
 
 
@@ -36,6 +39,9 @@ class _FakeQueryResult:
         self._rows = rows or []
 
     def scalar_one_or_none(self):
+        return self._row
+
+    def one_or_none(self):
         return self._row
 
     def scalars(self):
@@ -51,6 +57,10 @@ class _FakeSession:
             self._results = list(row_or_results)
         else:
             self._results = [_FakeQueryResult(row_or_results)]
+        self._tools = []
+        for result in self._results:
+            values = [result._row, *(result._scalars or [])] if isinstance(result, _FakeQueryResult) else [result]
+            self._tools.extend(value for value in values if getattr(value, "type", None) == "mcp")
         self.executed_statements: list = []
         self.added: list = []
         self.flushed = False
@@ -63,6 +73,26 @@ class _FakeSession:
         # pre-loaded result or pollute executed_statements assertions.
         if "app.current_tenant_id" in str(stmt):
             return _FakeQueryResult(None, scalars=[])
+        from app.models.agent import Agent
+        from app.models.tenant_tool_config import TenantToolConfig
+        columns = getattr(stmt, "column_descriptions", [])
+        if columns and columns[0]["name"] == "company_config":
+            params = stmt.compile().params.values()
+            tool = next(tool for tool in self._tools if tool.id in params)
+            # Existing happy paths declare an explicitly configured company key.
+            # Native API regressions separately prove who may issue this receipt.
+            from app.services.mcp_authz import MCP_COMPANY_CREDENTIAL_SCOPE, mcp_company_credential_binding
+            config = {}
+            if (tool.config or {}).get("api_key"):
+                config[MCP_COMPANY_CREDENTIAL_SCOPE] = {"authorization_id": str(uuid.uuid4()),
+                    "authorized_by": str(uuid.uuid4()), "binding": mcp_company_credential_binding(tool, _TENANT_ID)}
+            return _FakeQueryResult(SimpleNamespace(company_config=config, company_enabled=True,
+                tool_enabled=tool.enabled, tool_config=tool.config, config_schema=getattr(tool, "config_schema", None),
+                server_url=tool.mcp_server_url, fingerprint=tool.mcp_metadata_fingerprint))
+        if columns and columns[0].get("entity") is TenantToolConfig:
+            return _FakeQueryResult(None)
+        if columns and columns[0].get("entity") is Agent:
+            return _FakeQueryResult(SimpleNamespace(tenant_id=_TENANT_ID))
         self.executed_statements.append(stmt)
         if self._results:
             result = self._results.pop(0)
@@ -96,6 +126,10 @@ def _approved_mcp_row(**values):
     from app.services.mcp_metadata_trust import current_mcp_fingerprint, live_mcp_activation
 
     values.setdefault("id", uuid.uuid4())
+    values.setdefault("tenant_id", _TENANT_ID)
+    values.setdefault("config_schema", {})
+    values.setdefault("config", {})
+    values.setdefault("enabled", True)
     tool_type = values.pop("type", "mcp")
     supplied_fingerprint = values.pop("mcp_metadata_fingerprint", None)
     review_supplied = "mcp_reviewed_fingerprint" in values
@@ -133,7 +167,7 @@ def install_fake_session(monkeypatch):
             yield session
 
         async def _fake_resolve_tenant_for_agent(*_a, **_k):
-            return uuid.uuid4()
+            return _TENANT_ID
 
         monkeypatch.setattr("app.database.tenant_scoped_session", _fake_tenant_scoped_session)
         monkeypatch.setattr(

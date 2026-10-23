@@ -136,6 +136,13 @@ class _RoutingSession:
         return False
 
     async def execute(self, stmt):
+        columns = getattr(stmt, "column_descriptions", [])
+        if columns and columns[0]["name"] == "company_config":
+            # Anonymous global fixtures still read the current tool/policy snapshot.
+            snapshot = SimpleNamespace(company_config=None, company_enabled=None,
+                tool_enabled=self.tool.enabled, tool_config=self.tool.config, config_schema=None,
+                server_url=self.tool.mcp_server_url, fingerprint=self.tool.mcp_metadata_fingerprint)
+            return SimpleNamespace(one_or_none=lambda: snapshot)
         text = str(stmt)
         if "FROM tools" in text and "agent_tools" not in text:
             return _ScalarResult(self.tool)

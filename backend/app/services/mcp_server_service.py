@@ -761,6 +761,15 @@ async def resolve_agent_mcp_tool_mode(
     if not is_mcp_metadata_runtime_approved(tool):
         return "deny"
 
+    from app.models.tenant_tool_config import TenantToolConfig
+    from app.database import get_current_tenant_id
+
+    company_enabled = (await db.execute(select(TenantToolConfig.enabled).where(
+        TenantToolConfig.tenant_id == get_current_tenant_id(), TenantToolConfig.tool_id == tool_id,
+    ))).scalar_one_or_none()
+    if company_enabled is False:
+        return "deny"
+
     query = select(MCPServerTool).where(MCPServerTool.tool_id == tool_id)
     if server_id is not None:
         query = query.where(MCPServerTool.mcp_server_id == server_id)

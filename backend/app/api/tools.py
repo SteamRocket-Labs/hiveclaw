@@ -75,6 +75,11 @@ class ToolCreateIn(BaseModel):
 class ToolUpdateIn(BaseModel):
     enabled: bool | None = None
     config: dict | None = None
+    confirm_mcp_credential: bool = Field(False, description=(
+        "Administrator declaration that the existing credential is company-controlled and authorized "
+        "for shared use at this tool's current endpoint. Requires the current MCP fingerprint."
+    ))
+    expected_mcp_fingerprint: str | None = None
 
 
 class AgentToolToggleIn(BaseModel):
@@ -435,7 +440,7 @@ def _serialize_tool(tool: Tool, *, enabled: bool | None = None, config: dict | N
         "icon": tool.icon,
         "parameters_schema": tool.parameters_schema or {},
         "config": mask_agent_tool_config_secrets(
-            config if config is not None else (tool.config or {}), tool.config_schema or {}
+            _public_tool_config(tool, config if config is not None else tool.config), tool.config_schema or {}
         ),
         "config_schema": tool.config_schema or {},
         "mcp_server_url": tool.mcp_server_url,
@@ -454,6 +459,15 @@ def _serialize_tool(tool: Tool, *, enabled: bool | None = None, config: dict | N
     if provider_auth is not None:
         payload["provider_auth"] = provider_auth
     return payload
+
+
+def _public_tool_config(tool: Tool, config: dict | None) -> dict:
+    result = dict(config or {})
+    if tool.type == "mcp":
+        from app.services.mcp_authz import MCP_COMPANY_CREDENTIAL_SCOPE
+
+        result.pop(MCP_COMPANY_CREDENTIAL_SCOPE, None)
+    return result
 
 
 async def _resolve_tenant_scope(
@@ -545,8 +559,8 @@ def _serialize_agent_tool_row(tool: Tool, agent_tool: AgentTool | None, *, base_
         ),
         "agent_tool_id": str(agent_tool.id) if agent_tool else None,
         "source": agent_tool.source if agent_tool else "system",
-        "global_config": mask_agent_tool_config_secrets(defaults, tool.config_schema or {}),
-        "agent_config": mask_agent_tool_config_secrets(agent_config or {}, tool.config_schema or {}),
+        "global_config": mask_agent_tool_config_secrets(_public_tool_config(tool, defaults), tool.config_schema or {}),
+        "agent_config": mask_agent_tool_config_secrets(_public_tool_config(tool, agent_config), tool.config_schema or {}),
     }
 
 
@@ -744,6 +758,9 @@ async def create_tool(
     db.add(tool)
     await db.flush()
 
+    if tool.type == "mcp" and (tool.config or {}).get("api_key"):
+        await _record_company_mcp_credential(db, tool, current_user.id, source="setting")
+
     for agent_id in await _get_tenant_agent_ids(db, current_user.tenant_id):
         await ensure_agent_tool_assignment(
             db,
@@ -775,6 +792,23 @@ async def update_global_tool(
     if tool.tenant_id and current_user.role != "platform_admin" and tool.tenant_id != current_user.tenant_id:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Tool access denied")
 
+    if data.confirm_mcp_credential and tool.type != "mcp":
+        raise HTTPException(status_code=400, detail="Company credential confirmation requires an MCP tool")
+    if data.confirm_mcp_credential and tool.tenant_id is None:
+        raise HTTPException(status_code=400, detail="Company credential confirmation requires a company-owned MCP tool")
+    if tool.type == "mcp" and tool.tenant_id is not None:
+        locked = await db.execute(select(Tool).where(Tool.id == tool_id, Tool.tenant_id == tool.tenant_id)
+            .with_for_update().execution_options(populate_existing=True))
+        tool = locked.scalar_one_or_none()
+        if tool is None:
+            raise HTTPException(status_code=404, detail="Tool changed or is no longer available")
+        await _record_company_mcp_credential(db, tool, current_user.id, source=None)
+        if data.confirm_mcp_credential:
+            from app.services.mcp_metadata_trust import current_mcp_fingerprint
+
+            if not data.expected_mcp_fingerprint or data.expected_mcp_fingerprint != current_mcp_fingerprint(tool):
+                raise HTTPException(status_code=409, detail="MCP configuration changed; reload before confirming company use")
+
     if tool.tenant_id is None:
         if data.enabled is False and is_agent_base_tool(str(tool.name)):
             raise HTTPException(
@@ -804,12 +838,50 @@ async def update_global_tool(
         # Tenant-scoped tool (e.g. MCP): owning tenant can modify directly
         if data.enabled is not None:
             tool.enabled = data.enabled
+            if tool.type == "mcp":
+                policy = (await db.execute(select(TenantToolConfig).where(
+                    TenantToolConfig.tenant_id == tool.tenant_id, TenantToolConfig.tool_id == tool.id,
+                ))).scalar_one_or_none()
+                if policy is not None:
+                    policy.enabled = data.enabled
         if data.config is not None:
-            merged = merge_tool_config_secrets(data.config, tool.config or {}, tool.config_schema or {})
+            incoming = _public_tool_config(tool, data.config)
+            merge = merge_agent_tool_config_secrets if tool.type == "mcp" else merge_tool_config_secrets
+            merged = merge(incoming, tool.config or {}, tool.config_schema or {})
             tool.config = encrypt_tool_config_secrets(merged, tool.config_schema or {})
+
+        if tool.type == "mcp":
+            from app.services.tool_config_service import MASKED_SECRET_SENTINEL
+
+            supplied = data.config is not None and "api_key" in data.config
+            explicit = supplied and data.config["api_key"] != MASKED_SECRET_SENTINEL
+            if explicit or data.confirm_mcp_credential:
+                await _record_company_mcp_credential(db, tool, current_user.id,
+                    source="confirmation" if data.confirm_mcp_credential else "setting")
 
     await db.commit()
     return await _serialize_tool_for_tenant(db, tool, current_user.tenant_id)
+
+
+async def _record_company_mcp_credential(db, tool, actor_id, *, source):
+    from sqlalchemy.exc import DBAPIError
+    from app.services.mcp_authz import (
+        MCPAuthzError, MCPCompanyCredentialAuthorityDenied, record_mcp_company_credential, require_mcp_company_admin,
+    )
+
+    try:
+        if source is None:
+            await require_mcp_company_admin(db, tenant_id=tool.tenant_id, actor_id=actor_id)
+        else:
+            await record_mcp_company_credential(db, tool=tool, actor_id=actor_id, source=source)
+    except MCPCompanyCredentialAuthorityDenied as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except MCPAuthzError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except DBAPIError as exc:
+        if getattr(exc.orig, "sqlstate", None) == "55P03":
+            raise HTTPException(status_code=409, detail="Credential authority is changing; retry confirmation") from exc
+        raise
 
 
 @router.delete("/tools/{tool_id}")

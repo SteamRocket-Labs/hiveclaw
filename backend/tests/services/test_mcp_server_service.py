@@ -43,6 +43,10 @@ class _SpyDB:
         self.committed = False
 
     async def execute(self, _stmt):
+        from app.models.tenant_tool_config import TenantToolConfig
+        columns = getattr(_stmt, "column_descriptions", [])
+        if columns and columns[0].get("entity") is TenantToolConfig:
+            return _Result(scalar=None)  # No company policy override in these fixtures.
         if not self._queue:
             raise AssertionError("Unexpected execute() call")
         return self._queue.pop(0)
@@ -938,6 +942,14 @@ async def test_server_review_rejects_stale_activation_and_accepts_the_live_candi
 
     class _CallSession:
         async def execute(self, _stmt):
+            if _stmt.column_descriptions[0]["name"] == "company_config":
+                from app.services.mcp_authz import MCP_COMPANY_CREDENTIAL_SCOPE, mcp_company_credential_binding
+                receipt = {"authorization_id": str(uuid4()), "authorized_by": str(reviewer_id),
+                    "binding": mcp_company_credential_binding(runtime_tool, tenant_id)}
+                snapshot = SimpleNamespace(company_config={MCP_COMPANY_CREDENTIAL_SCOPE: receipt}, company_enabled=True,
+                    tool_enabled=runtime_tool.enabled, tool_config=runtime_tool.config, config_schema=runtime_tool.config_schema,
+                    server_url=runtime_tool.mcp_server_url, fingerprint=runtime_tool.mcp_metadata_fingerprint)
+                return SimpleNamespace(one_or_none=lambda: snapshot)
             if _stmt.column_descriptions[0].get("entity") is MCPServer:
                 return SimpleNamespace(scalars=lambda: SimpleNamespace(all=lambda: []))
             if _stmt.column_descriptions[0].get("entity") is AgentTool:

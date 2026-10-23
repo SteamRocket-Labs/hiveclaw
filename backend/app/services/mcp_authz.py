@@ -7,6 +7,7 @@ tokens or URL userinfo to arbitrary MCP resource servers.
 from __future__ import annotations
 
 import hashlib
+import uuid
 from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
 PASSTHROUGH_TOKEN_KEYS = {
@@ -31,7 +32,132 @@ class MCPAuthzError(ValueError):
 
 
 class MCPStoredCredentialRequired(MCPAuthzError):
-    """A legacy URL key has no current scoped credential assignment."""
+    """A stored MCP credential has no current scoped assignment."""
+
+
+class MCPCompanyCredentialAuthorityDenied(MCPAuthzError):
+    """The current principal cannot issue company credential authority."""
+
+
+MCP_COMPANY_CREDENTIAL_SCOPE = "_hive_mcp_company_credential_v1"
+
+
+def _company_api_key(tool) -> str | None:
+    from app.services.tool_config_service import decrypt_tool_config_secrets, _ENCRYPTED_SECRET_PREFIX
+
+    config = decrypt_tool_config_secrets(tool.config or {}, getattr(tool, "config_schema", None))
+    key = config.get("api_key")
+    if not key:
+        return None
+    if not isinstance(key, str) or key.startswith(_ENCRYPTED_SECRET_PREFIX):
+        raise MCPStoredCredentialRequired("Company MCP credential storage is unavailable; restore its configuration keyring.")
+    return key
+
+
+def mcp_company_credential_binding(tool, tenant_id) -> dict:
+    """Comparison facts only; authority comes from an administrator-issued receipt."""
+    key = _company_api_key(tool)
+    if not key:
+        raise MCPStoredCredentialRequired("No company MCP credential is configured.")
+    endpoint, _ = split_mcp_server_url_and_api_key(tool.mcp_server_url or "")
+    return {"tenant_id": str(tenant_id), "tool_id": str(tool.id),
+        "endpoint_sha256": hashlib.sha256(endpoint.encode()).hexdigest(),
+        "credential_sha256": hashlib.sha256(key.encode()).hexdigest()}
+
+
+async def require_mcp_company_admin(db, *, tenant_id, actor_id) -> None:
+    """Recheck the live principal and selected company at the write boundary."""
+    from sqlalchemy import select
+    from app.models.tenant import Tenant
+    from app.database import get_current_tenant_id
+    from app.services.runtime_user_identity import load_runtime_user
+
+    company = await db.scalar(select(Tenant).where(Tenant.id == tenant_id).with_for_update(read=True, nowait=True)
+        .execution_options(populate_existing=True))
+    actor = await load_runtime_user(db, actor_id, lock=True)
+    if (actor is None or actor.role not in {"platform_admin", "org_admin"}
+        or (actor.role == "org_admin" and actor.tenant_id != tenant_id)
+        or str(get_current_tenant_id()) != str(tenant_id) or company is None or not company.is_active):
+        raise MCPCompanyCredentialAuthorityDenied("A current administrator in an active selected company is required.")
+
+
+async def record_mcp_company_credential(db, *, tool, actor_id, source: str) -> None:
+    """Called only by the authenticated administrator configuration boundary."""
+    from sqlalchemy import select
+    from app.models.audit import AuditLog
+    from app.models.tenant_tool_config import TenantToolConfig
+
+    tenant_id = tool.tenant_id
+    if tenant_id is None or source not in {"setting", "confirmation"}:
+        raise MCPAuthzError("An owned company MCP tool and explicit administrator action are required.")
+    record = (await db.execute(select(TenantToolConfig).where(
+        TenantToolConfig.tenant_id == tenant_id, TenantToolConfig.tool_id == tool.id))).scalar_one_or_none()
+    await require_mcp_company_admin(db, tenant_id=tenant_id, actor_id=actor_id)
+    config = dict(record.config or {}) if record else {}
+    if not (tool.config or {}).get("api_key"):
+        config.pop(MCP_COMPANY_CREDENTIAL_SCOPE, None)
+        if record:
+            record.config = config
+        return
+    binding = mcp_company_credential_binding(tool, tenant_id)
+    old = config.get(MCP_COMPANY_CREDENTIAL_SCOPE)
+    if record and isinstance(old, dict) and old.get("binding") == binding:
+        return
+    authorization_id = str(uuid.uuid4())
+    config[MCP_COMPANY_CREDENTIAL_SCOPE] = {"authorization_id": authorization_id,
+        "authorized_by": str(actor_id), "binding": binding}
+    if record is None:
+        record = TenantToolConfig(tenant_id=tenant_id, tool_id=tool.id, enabled=True)
+        db.add(record)
+    record.config = config
+    db.add(AuditLog(tenant_id=tenant_id, user_id=actor_id, action="mcp.company_credential.authorized",
+        details={"tool_id": str(tool.id), "authorization_id": authorization_id, "source": source,
+            "status": "company_scope_authorized; external_execution_not_asserted"}))
+
+
+async def resolve_mcp_api_key(db, *, tool, tenant_id, agent_config: dict, oauth_bearer=None):
+    """Resolve a scoped credential without promoting a legacy shared value."""
+    from sqlalchemy import and_, or_, select
+    from types import SimpleNamespace
+    from app.models.tenant_tool_config import TenantToolConfig
+    from app.models.tool import Tool
+
+    row = (await db.execute(select(
+        TenantToolConfig.config.label("company_config"), TenantToolConfig.enabled.label("company_enabled"),
+        Tool.enabled.label("tool_enabled"), Tool.config.label("tool_config"),
+        Tool.config_schema.label("config_schema"), Tool.mcp_server_url.label("server_url"),
+        Tool.mcp_metadata_fingerprint.label("fingerprint"),
+    ).select_from(Tool).outerjoin(TenantToolConfig, and_(
+        TenantToolConfig.tenant_id == tenant_id, TenantToolConfig.tool_id == Tool.id,
+    )).where(Tool.id == tool.id, or_(Tool.tenant_id == tenant_id, Tool.tenant_id.is_(None))))).one_or_none()
+    if row is None or not row.tool_enabled or row.tool_config != tool.config or row.server_url != tool.mcp_server_url or (
+        row.fingerprint != tool.mcp_metadata_fingerprint
+        or (row.config_schema or {}) != (getattr(tool, "config_schema", None) or {})
+    ):
+        raise MCPStoredCredentialRequired("MCP configuration changed while resolving its credential; reload and retry.")
+    if row.company_enabled is False:
+        raise MCPAuthzError("MCP tool is disabled by company policy.")
+    if oauth_bearer:
+        return oauth_bearer
+    if "api_key" in agent_config:
+        return agent_config["api_key"]
+    if not (tool.config or {}).get("api_key"):
+        return None
+    expected = mcp_company_credential_binding(tool, tenant_id)
+    receipt = (row.company_config or {}).get(MCP_COMPANY_CREDENTIAL_SCOPE)
+    valid = row.company_enabled and isinstance(receipt, dict) and receipt.get("binding") == expected
+    if valid:
+        try:
+            uuid.UUID(str(receipt["authorization_id"]))
+            uuid.UUID(str(receipt["authorized_by"]))
+        except (KeyError, TypeError, ValueError):
+            valid = False
+    if not valid:
+        raise MCPStoredCredentialRequired(
+            "This shared MCP credential has no confirmed company scope for the current tool and endpoint. "
+            "A company administrator can confirm the existing value against its current fingerprint or re-enter it securely."
+        )
+    return _company_api_key(SimpleNamespace(config=row.tool_config, config_schema=row.config_schema))
 
 
 def mcp_url_reference(server_url: str) -> str:

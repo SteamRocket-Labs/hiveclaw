@@ -392,7 +392,7 @@ async def resolve_tool_config_for_tenant_display(
     if ttc:
         if ttc.config:
             base_config.update(ttc.config)
-        effective_enabled = ttc.enabled
+        effective_enabled = bool(tool.enabled) and bool(ttc.enabled) if getattr(tool, "type", None) == "mcp" else ttc.enabled
 
     return base_config, effective_enabled
 

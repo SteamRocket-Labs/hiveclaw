@@ -1167,19 +1167,21 @@ def _tool_message_content(text_content: str, raw_result: Any) -> "str | list[dic
     If the raw tool result was a ToolContentEnvelope with image/document blocks,
     return ``[text_block, *media_blocks]`` (text = the possibly-evicted
     ``text_content``; media blocks are never evicted). Otherwise return the plain
-    string. Provider mapping happens in llm_client — Anthropic carries the blocks
-    natively; OpenAI/Gemini fall back to the text part (L3 model equality).
+    string. Provider mapping happens in llm_client, according to the selected
+    model's declared image-input capability and its transport protocol.
     """
-    if not isinstance(raw_result, ToolContentEnvelope):
+    if isinstance(raw_result, ToolContentEnvelope):
+        raw_result = [{"type": b.type, "media_type": b.media_type, "data": b.data}
+            for b in raw_result.blocks if b.type != "text"]
+    if not isinstance(raw_result, list):
         return text_content
-    media_blocks = [b for b in raw_result.blocks if b.type != "text"]
+    media_blocks = [b for b in raw_result if isinstance(b, dict) and b.get("type") != "text"]
     if not media_blocks:
         return text_content
     content: list[dict[str, Any]] = []
     if text_content:
         content.append({"type": "text", "text": text_content})
-    for b in media_blocks:
-        content.append({"type": b.type, "media_type": b.media_type, "data": b.data})
+    content.extend(media_blocks)
     return content
 
 
@@ -2627,6 +2629,10 @@ async def _execute_tool_with_hooks(
             _session.track_tool_outcome(tool_name, result_str)
 
     if side_effect_sink is not None:
+        if isinstance(result, ToolContentEnvelope) and any(b.type != "text" for b in result.blocks):
+            # Preserve media across the text-oriented hook return contract.
+            # This private channel is consumed only when building model inputs.
+            side_effect_sink["tool_result_media"] = _tool_message_content("", result)
         _captured_side_effects = _extract_tool_side_effects(result)
         if _captured_side_effects:
             side_effect_sink.update(_captured_side_effects)

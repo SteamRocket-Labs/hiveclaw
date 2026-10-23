@@ -603,7 +603,7 @@ async def complete_tool_invocation(
     invocation_id: uuid.UUID,
     provider_result_content: str,
     execution_evidence: Mapping[str, Any] | None,
-    model_visible_content: str | None = None,
+    model_visible_content: str | list[dict[str, Any]] | None = None,
     effective_arguments: Mapping[str, Any] | None = None,
     execution_artifacts: list[dict[str, Any]] | None = None,
     parts: list[dict[str, Any]] | None = None,

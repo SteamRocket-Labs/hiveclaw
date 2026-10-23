@@ -268,6 +268,15 @@ class Settings(BaseSettings):
     MEMORY_CONVERGENCE_MAX_CHARS_PER_FILE: float = 6_000.0
     MEMORY_CONVERGENCE_MAX_RETIRED_ENTRIES: int = 2
 
+    # Explicit trusted-host browser device. Empty disables resource creation;
+    # this is not an admitted production Sandbox or the command-provider default.
+    BROWSER_DEVICE_PROFILE: str = ""
+    BROWSER_DEVICE_EXECUTABLE: str = ""
+    BROWSER_PRIVATE_PROFILE_DIR: str = ""
+    BROWSER_DEVICE_IDLE_SECONDS: int = 900
+    BROWSER_HUMAN_CONTROL_SECONDS: int = 120
+    BROWSER_CONTROL_DISCONNECT_SECONDS: int = 15
+
     # Coordination backend (Phase 17 wiring)
     # "postgres" — durable PostgreSQL-backed coordination (default). This keeps
     # prompt-facing Team Context / Teammate Mailbox on the same truth source as

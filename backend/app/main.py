@@ -74,6 +74,7 @@ from app.api.agent_teams import router as agent_teams_router
 from app.api.business_teams import router as business_teams_router
 from app.api.employee_readiness import router as employee_readiness_router
 from app.api.environments import router as environments_router
+from app.api.browser_control import router as browser_control_router
 from app.api.assistant import router as assistant_router
 from app.api.advanced_plan import router as advanced_plan_router
 from app.api.role_templates import router as role_templates_router
@@ -783,6 +784,12 @@ async def lifespan(app: FastAPI):
     yield
 
     # Shutdown
+    from app.services.browser_control import browser_control
+
+    try:
+        await browser_control.close()
+    except Exception:
+        logger.warning("Browser resource termination remains unconfirmed; retain resource recovery evidence")
     stop_channel_ingress_daemon()
     await event_loop_lag_monitor.stop()
     try:
@@ -892,6 +899,7 @@ _api_routers = [
     business_teams_router,
     employee_readiness_router,
     environments_router,
+    browser_control_router,
     assistant_router,
     advanced_plan_router,
     hooks_router,

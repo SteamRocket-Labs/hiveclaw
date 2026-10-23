@@ -1,4 +1,4 @@
-"""Conservative local worker observations for resources that were never launched."""
+"""Conservative local process observations, separate from resource termination."""
 
 import os
 import subprocess
@@ -34,7 +34,12 @@ def observe_prelaunch_worker(lifecycle):
         return "resource_unobserved", False
     if lifecycle.get("phase") != "not_created":
         return "resource_termination_unconfirmed", False
-    worker = lifecycle.get("worker")
+    reason, absent = observe_worker(lifecycle.get("worker"))
+    return ("worker_terminated_before_resource_creation", True) if absent else (reason, False)
+
+
+def observe_worker(worker):
+    """Only same-boot ESRCH proves worker absence; its resources may still exist."""
     if not isinstance(worker, dict) or worker.get("kind") != "darwin_boot_process.v1":
         return "worker_identity_unavailable", False
     boot = _boot_session()
@@ -47,7 +52,7 @@ def observe_prelaunch_worker(lifecycle):
         # Even a reused PID blocks recovery. Only ESRCH on the exact boot proves absence.
         os.kill(pid, 0)
     except ProcessLookupError:
-        return "worker_terminated_before_resource_creation", True
+        return "worker_absent", True
     except OSError:
         return "worker_identity_unavailable", False
     return "worker_still_present", False

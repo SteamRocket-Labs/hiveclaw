@@ -82,4 +82,4 @@ build-backend = "setuptools.build_meta"
 include = ["app*"]
 
 [tool.setuptools.package-data]
-app = ["ontology/domain_packs/*/*.json"]
+app = ["ontology/domain_packs/*/*.json", "services/browser_pipe_bridge.mjs"]

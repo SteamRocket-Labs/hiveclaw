@@ -66,6 +66,7 @@ class AgentActivityLog(Base):
             "delegation_error",
             "tool_call_direct",
             "tool_call_approved",
+            "action_preflight",
             "channel_delivery_success",
             "channel_delivery_failed",
             "channel_delivery_unavailable",

@@ -1495,7 +1495,7 @@ def conversation_from_history_messages(history_messages) -> list[dict]:
             content = msg.get("content")
             has_tool_calls = role == "assistant" and isinstance(msg.get("tool_calls"), list)
             if role in {"system", "user", "assistant", "tool"} and (content is not None or has_tool_calls):
-                entry = {"role": role, "content": None if content is None else str(content)}
+                entry = {"role": role, "content": content if isinstance(content, list) else None if content is None else str(content)}
                 if role == "tool" and msg.get("tool_call_id"):
                     entry["tool_call_id"] = str(msg["tool_call_id"])
                 if has_tool_calls:
@@ -1677,11 +1677,14 @@ async def _sealed_round_runtime_messages(
         ):
             raise RuntimeError("session_round_tool_result_missing")
         payload = dict((result_event.metadata_json or {}).get("v2_payload") or {})
+        provider_content = payload.get("model_visible_content")
+        if not isinstance(provider_content, (str, list)):
+            provider_content = str(payload.get("content") or "")
         tool_messages.append(
             {
                 "role": "tool",
                 "tool_call_id": provider_tool_use_id,
-                "content": str(payload.get("content") or ""),
+                "content": provider_content,
                 "source_ref": f"session-tool-result:{invocation.id}",
             }
         )
@@ -4759,6 +4762,8 @@ async def _persist_tool_call(
                     settlement_invocation_id = invocation.id
                     raw_result = payload.get("result") or ""
                     provider_content = payload.get("model_seen_result")
+                    if isinstance(payload.get("model_seen_content"), list):
+                        provider_content = payload["model_seen_content"]
                     if provider_content is None:
                         provider_content = _knowledge_tool_replay_projection(
                             tool_name=str(payload.get("name") or ""),
@@ -4779,7 +4784,8 @@ async def _persist_tool_call(
                         # model-replay view of that same event.
                         provider_result_content=str(raw_result),
                         model_visible_content=(
-                            str(provider_content) if str(provider_content) != str(raw_result) else None
+                            provider_content if isinstance(provider_content, list)
+                            else str(provider_content) if str(provider_content) != str(raw_result) else None
                         ),
                         execution_evidence=(
                             payload.get("tool_execution_evidence")

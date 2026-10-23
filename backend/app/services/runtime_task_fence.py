@@ -61,6 +61,15 @@ def reset_runtime_task_fence(token: Token[RuntimeTaskFence | None]) -> None:
     _CURRENT_RUNTIME_TASK_FENCE.reset(token)
 
 
+def clear_runtime_task_fence() -> Token[RuntimeTaskFence | None]:
+    """Detach an independent resource observer from an inherited worker claim.
+
+    Runtime effects still require their captured claim. Long-lived observers
+    authorize their own resource identity and must not retain a finished turn.
+    """
+    return _CURRENT_RUNTIME_TASK_FENCE.set(None)
+
+
 def finish_current_runtime_task_claim(*, task_id: uuid.UUID | str | None = None) -> bool:
     """Stop lease renewal after this claim's durable state transition committed.
 

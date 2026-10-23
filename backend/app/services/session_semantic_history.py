@@ -74,7 +74,7 @@ class SessionSemanticMessage:
 
     id: str
     role: str
-    content: str | None
+    content: str | list[dict[str, Any]] | None
     created_at: datetime
     sequence_start: int
     sequence_end: int
@@ -606,9 +606,9 @@ async def _committed_round_messages(
             # receipt carries one; the complete receipt stays as UI/audit
             # evidence and never leaks internal ids into provider context.
             tool_content = payload.get("model_visible_content")
-            if not isinstance(tool_content, str):
+            if not isinstance(tool_content, (str, list)):
                 tool_content = payload.get("content")
-            if not isinstance(tool_content, str):
+            if not isinstance(tool_content, (str, list)):
                 tool_content = ""
             messages.append(
                 SessionSemanticMessage(

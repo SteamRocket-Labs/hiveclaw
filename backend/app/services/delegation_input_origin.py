@@ -211,11 +211,14 @@ async def load_delegation_instruction_origin(db, *, request, tenant_id, content)
 
 
 async def authorize_delegation_instruction(invocation, request):
+    from fastapi import HTTPException
     from app.config import get_settings
     from app.core.execution_context import ExecutionPrincipal
     from app.database import tenant_scoped_session
     from app.kernel.contracts import ContextDependencyUnavailable
-    from app.services.content_input_receipts import ContentInputReceiptError, validate_runtime_input_dependencies
+    from app.services.content_input_receipts import (
+        ContentInputReceiptError, _runtime_input_actor, _validate_input_dependencies, validate_runtime_input_dependencies,
+    )
     from app.tools.runtime import ToolExecutionRequest
 
     if not any("a2a_instruction_origin" in message for message in request.conversation_messages):
@@ -235,11 +238,24 @@ async def authorize_delegation_instruction(invocation, request):
             execution_identity=invocation.execution_identity, authority_frame_required=True,
             delegation_token=invocation.delegation_token)
         try:
-            await validate_runtime_input_dependencies(db,
-                ToolExecutionRequest(tool_name="delegation_instruction_input", arguments={}, context=context), list(origin.sources))
-        except ContentInputReceiptError as exc:
+            runtime_request = ToolExecutionRequest(tool_name="delegation_instruction_input", arguments={}, context=context)
+            _, requester = await _runtime_input_actor(db, invocation.tenant_id, runtime_request)
+            from app.services.machine_runtime_authority import is_machine_runtime_actor
+
+            if is_machine_runtime_actor(requester):
+                await validate_runtime_input_dependencies(db, runtime_request, list(origin.sources))
+            else:
+                from app.core.permissions import require_agent_execution_access
+
+                await require_agent_execution_access(db, requester, request.parent_agent_id)
+                # The canonical parent call above proves this exact instruction's
+                # upstream inputs. Recheck its real requester on those sources;
+                # the child does not become the owner of the parent's context.
+                await _validate_input_dependencies(db, invocation.tenant_id, list(origin.sources), user=requester)
+        except (ContentInputReceiptError, HTTPException) as exc:
+            denied = exc.status_code == 403 or isinstance(exc, HTTPException) and exc.status_code < 500
             raise ContextDependencyUnavailable(dependency="a2a_instruction_origin",
-                code="delegation_instruction_source_access_denied" if exc.status_code == 403 else "delegation_instruction_source_unavailable",
+                code="delegation_instruction_source_access_denied" if denied else "delegation_instruction_source_unavailable",
                 user_message="The delegated instruction's upstream sources are not currently authorized or available. Revise or reconcile this input.") from exc
 
 

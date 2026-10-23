@@ -294,6 +294,7 @@ async def bind_native_recovery_context(db, *, task, session):
 
 async def _facts(db, task):
     from app.agents.orchestrator import _build_delegated_worker_prompt, _permission_profile_mode, _resolve_delegation_tool_profile
+    from app.runtime.ccplus_contracts import permission_profile_snapshot
 
     metadata = task.metadata_json or {}
     if not isinstance(metadata, dict) or not task.child_session_id or not task.parent_session_id:
@@ -308,6 +309,9 @@ async def _facts(db, task):
         return None
     session = await db.get(ChatSession, session_id, populate_existing=True)
     parent = await db.get(Agent, task.parent_agent_id, populate_existing=True)
+    stored_profile = metadata.get("permission_profile")
+    if stored_profile is None:
+        stored_profile = permission_profile_snapshot(None)
     if (not isinstance(authority, dict) or _hash(authority) != metadata.get("authority_snapshot_hash")
         or receipt.get("capability_snapshot_hash") != _hash(authority) or session is None
         or session.tenant_id != task.tenant_id or session.agent_id != task.child_agent_id
@@ -315,7 +319,7 @@ async def _facts(db, task):
         or session.peer_agent_id != task.parent_agent_id or str(session.parent_session_id).replace("-", "") != task.parent_session_id.replace("-", "")
         or parent is None or parent.tenant_id != task.tenant_id or parent.deleted_at is not None
         or (metadata.get("parent_agent_name") and metadata["parent_agent_name"] != parent.name)
-        or (authority.get("permission_profile") or {}) != (metadata.get("permission_profile") or {})):
+        or authority.get("permission_profile") != stored_profile):
         return None
     profile = _resolve_delegation_tool_profile(str(metadata.get("tool_profile") or "worker_safe"))
     permissions = {key: None for key in PERMISSION_INPUT_KEYS}

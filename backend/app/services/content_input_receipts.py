@@ -584,6 +584,9 @@ async def _validate_session_dependency(db, tenant_id, dependency, *, user, runti
         payload = _event_payload(event) if event is not None else {}
         content, version = payload.get("content"), payload.get("content_hash")
         valid = isinstance(content, str) and version == _hash(content)
+        from app.services.session_model_inputs import tool_result_source_hash
+
+        version = tool_result_source_hash(payload)
     if not valid or version != dependency["source_version"]:
         raise ContentInputReceiptError("content_source_changed", "The session source no longer matches its receipt.", 403)
     from app.tools.runtime import ToolExecutionContext
@@ -619,7 +622,7 @@ async def _validate_session_dependency(db, tenant_id, dependency, *, user, runti
 
         if source.tool_name in FEISHU_RESULT_TOOLS and source.effect_state in {"effect_committed", "failed"}:
             proof = await load_feishu_result(db, tenant_id=tenant_id, agent_id=session.agent_id,
-                invocation=source, content_hash=version, current=True)
+                invocation=source, content_hash=payload.get("content_hash"), current=True)
             reader = (await _runtime_input_actor(db, tenant_id, runtime_request))[1] if runtime_request is not None else user
             if proof is None or reader is None or proof["reader_id"] != str(reader.id):
                 raise ContentInputReceiptError("content_source_access_denied",

@@ -5,13 +5,13 @@ import { chatApi } from '../../api/domains/chat';
 import ApprovalRequestSummary from '../../components/ApprovalRequestSummary';
 import { approvalContinuationPresentation, approvalExecutionPresentation } from '../../utils/approvalExecution';
 
-export default function InlineApprovalCard({ agentId, sessionId, approvalId }: {
-  agentId: string; sessionId: string; approvalId: string;
+export default function InlineApprovalCard({ agentId, sessionId, approvalId, authorityKey }: {
+  agentId: string; sessionId: string; approvalId: string; authorityKey?: string;
 }) {
   const { t } = useTranslation();
   const client = useQueryClient();
   const [actionError, setActionError] = useState<string | null>(null);
-  const key = ['session-approval', agentId, sessionId, approvalId] as const;
+  const key = ['session-approval', agentId, sessionId, approvalId, authorityKey || 'session'] as const;
   const query = useQuery({
     queryKey: key,
     queryFn: () => chatApi.getApproval(agentId, sessionId, approvalId),

@@ -6,6 +6,23 @@ from uuid import UUID, uuid4
 import pytest
 
 
+def test_default_delegation_permission_snapshot_uses_the_effective_policy():
+    from app.agents import orchestrator
+    from app.runtime.ccplus_contracts import permission_profile_snapshot, permission_profile_snapshot_hash
+
+    request = _delegation_request()
+    request.permission_profile = None
+    request.execution_receipt = None
+    snapshot = orchestrator._delegation_authority_snapshot(request)
+    assert snapshot["permission_profile"] == permission_profile_snapshot(None)
+    receipt = orchestrator._build_delegation_execution_receipt(
+        request, task_id=request.runtime_task_id, trace_id=request.trace_id, status="pending",
+    )
+    request.execution_receipt = receipt
+    assert receipt["policy_snapshot_hash"] == permission_profile_snapshot_hash(None)
+    assert orchestrator._delegation_authority_receipt_failure(request, required=True) is None
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("drift", [False, True])
 async def test_graph_child_replay_reuses_only_exact_request_and_authority(monkeypatch, drift):

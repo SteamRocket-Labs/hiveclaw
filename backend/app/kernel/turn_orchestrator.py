@@ -3070,6 +3070,8 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                         }
                         if _side_effects and _side_effects.get("artifacts"):
                             done_payload["artifacts"] = list(_side_effects["artifacts"])
+                        if _side_effects and _side_effects.get("tool_result_media"):
+                            done_payload["model_seen_content"] = _tool_message_content(_content, _side_effects["tool_result_media"])
                         if _side_effects and _side_effects.get("tool_execution_evidence"):
                             done_payload["tool_execution_evidence"] = dict(_side_effects["tool_execution_evidence"])
                         if request.on_tool_call:
@@ -3090,7 +3092,7 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                             LLMMessage(
                                 role="tool",
                                 tool_call_id=tc["id"],
-                                content=_tool_message_content(_content, result),
+                                content=_tool_message_content(_content, (_side_effects or {}).get("tool_result_media", result)),
                                 source_ref=f"session-provider-tool-result:{provider_request_id}" if provider_request_id else None,
                             )
                         )
@@ -3269,6 +3271,8 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                         }
                         if _side_effects and _side_effects.get("artifacts"):
                             done_payload["artifacts"] = list(_side_effects["artifacts"])
+                        if _side_effects and _side_effects.get("tool_result_media"):
+                            done_payload["model_seen_content"] = _tool_message_content(_content, _side_effects["tool_result_media"])
                         if _side_effects and _side_effects.get("tool_execution_evidence"):
                             done_payload["tool_execution_evidence"] = dict(_side_effects["tool_execution_evidence"])
                         if request.on_tool_call:
@@ -3289,7 +3293,7 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                             LLMMessage(
                                 role="tool",
                                 tool_call_id=tc["id"],
-                                content=_tool_message_content(_content, result),
+                                content=_tool_message_content(_content, (_side_effects or {}).get("tool_result_media", result)),
                                 source_ref=f"session-provider-tool-result:{provider_request_id}" if provider_request_id else None,
                             )
                         )

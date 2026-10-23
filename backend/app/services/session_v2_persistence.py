@@ -399,6 +399,12 @@ async def _validate_a2a_delegation_peer_binding(
     if root_user_id is None:
         raise PermissionError("a2a_delegation_peer_root_user_missing")
     root_user = await db.get(User, root_user_id)
+    if root_user is None or root_user.tenant_id != tenant_id:
+        from app.services.runtime_user_identity import load_scoped_runtime_user
+
+        # Only an already selected company and the exact live global role can
+        # recover this requester. Its canonical home and role stay unchanged.
+        root_user = await load_scoped_runtime_user(db, root_user_id, tenant_id=tenant_id)
     if root_user is None or not getattr(root_user, "is_active", False) or root_user.tenant_id != tenant_id:
         raise PermissionError("a2a_delegation_peer_root_user_mismatch")
 
@@ -421,14 +427,19 @@ async def _validate_a2a_delegation_peer_binding(
     if delegation_runtime_task_id is None or session.runtime_task_id != delegation_runtime_task_id:
         raise PermissionError("a2a_delegation_peer_runtime_task_mismatch")
     task = await db.get(RuntimeTask, delegation_runtime_task_id)
+    try:
+        child_key = _uuid_or_none(getattr(task, "child_session_id", None))
+        parent_key = _uuid_or_none(getattr(task, "parent_session_id", None))
+    except (TypeError, ValueError) as exc:
+        raise PermissionError("a2a_delegation_peer_runtime_task_mismatch") from exc
     if (
         task is None
         or task.tenant_id != tenant_id
         or str(getattr(task, "task_type", "") or "") != "delegation"
         or task.parent_agent_id != peer_agent_id
         or task.child_agent_id != agent.id
-        or str(getattr(task, "child_session_id", None) or "") != str(session.id)
-        or str(getattr(task, "parent_session_id", None) or "") != str(parent_session.id)
+        or child_key != session.id
+        or parent_key != parent_session.id
         or task.root_user_id != root_user.id
         or not list(getattr(task, "delegation_chain_json", None) or [])
     ):

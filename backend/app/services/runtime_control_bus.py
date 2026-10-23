@@ -707,6 +707,11 @@ async def handle_runtime_control_message(message: dict[str, Any]) -> bool:
     _STATE["received"] = int(_STATE.get("received") or 0) + 1
     _STATE["last_type"] = event_type
 
+    if event_type == "browser_control_request":
+        from app.services.browser_control import browser_control
+
+        return browser_control.enqueue_rpc(message.get("tenant_id"), message.get("resource_id"), message.get("lease_id"))
+
     if event_type == "web_chat_cancel":
         from app.services.web_chat_runtime import apply_remote_web_chat_cancel
 

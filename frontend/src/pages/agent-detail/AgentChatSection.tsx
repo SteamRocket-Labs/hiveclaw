@@ -2419,6 +2419,8 @@ function AgentChatSection({
           onRetrySubagent={canMutateSession ? requestSubagentRetry : undefined}
           sessionDecisions={sessionDecisions}
           onDecisionFeedback={canMutateSession ? submitDecisionFeedback : undefined}
+          browserContinuation={canUseComposer && !operatorView && !isDraftSession && activeSessionId && onSendMessage
+            ? { sessionId: activeSessionId, send: onSendMessage } : undefined}
         />
       ) : null}
     </div>

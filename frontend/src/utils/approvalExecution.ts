@@ -2,6 +2,7 @@ export type ApprovalExecutionLike = {
   status?: string | null;
   tool_name?: string | null;
   execution_status?: string | null;
+  execution_kind?: string | null;
   execution_receipt?: {
     continuation_status?: string | null;
   } | null;
@@ -61,7 +62,7 @@ export function approvalExecutionPresentation(
   if (decisionStatus === 'pending' || decisionStatus === 'rejected') {
     return EXECUTION_PRESENTATIONS[decisionStatus];
   }
-  if (!approval.tool_name) {
+  if (!approval.tool_name && approval.execution_kind !== 'browser_human') {
     return EXECUTION_PRESENTATIONS.approved;
   }
   const executionStatus = String(approval.execution_status || 'approved').trim().toLowerCase();

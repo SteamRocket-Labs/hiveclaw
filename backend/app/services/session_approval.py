@@ -22,7 +22,17 @@ async def load_session_approval(db, *, session, approval_id, for_update=False):
         ApprovalRequest.agent_id == session.agent_id,
     )
     approval = await db.scalar(query.with_for_update() if for_update else query)
-    if approval is None or not approval.tool_name or not is_visible_enterprise_approval(approval):
+    if approval is None or not is_visible_enterprise_approval(approval):
+        return None
+    from app.services.browser_human_approval import envelope as human_envelope, is_human_approval
+    if is_human_approval(approval):
+        try:
+            bound = human_envelope(approval)
+        except Exception:
+            return None
+        return approval if (bound.session_id == session.id and bound.tenant_id == session.tenant_id
+            and bound.agent_id == session.agent_id) else None
+    if not approval.tool_name:
         return None
     try:
         envelope = restore_approval_execution_envelope(
@@ -45,6 +55,7 @@ async def load_session_approval(db, *, session, approval_id, for_update=False):
 
 async def session_approval_projection(approval, *, db, agent, user):
     from app.services.approval_service import can_resolve_approval
+    from app.services.browser_human_approval import is_human_approval
 
     details = {key: value for key, value in (approval.details or {}).items()
         if key in {"reason", "summary", "command", "attachment_count"}}
@@ -57,6 +68,7 @@ async def session_approval_projection(approval, *, db, agent, user):
         "agent_id": str(agent.id), "agent_name": agent.name, "created_at": approval.created_at,
         "resolved_at": approval.resolved_at, "resolved_by": approval.resolved_by,
         "tool_name": approval.tool_name, "execution_status": approval.execution_status,
+        **({"execution_kind": "browser_human"} if is_human_approval(approval) else {}),
         "details": details,
         "execution_receipt": {"continuation_status": (approval.execution_receipt or {}).get("continuation_status")},
         "can_resolve": approval.status == "pending" and await can_resolve_approval(db, agent=agent, user=user, approval=approval),

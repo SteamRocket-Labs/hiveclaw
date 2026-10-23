@@ -29,6 +29,15 @@ def _hash(value: Any) -> str:
         separators=(",", ":")).encode()).hexdigest()
 
 
+def tool_result_source_hash(payload: dict[str, Any]) -> str | None:
+    """Bind persisted media bytes as well as the complete textual tool receipt."""
+    content_hash = payload.get("content_hash")
+    visible = payload.get("model_visible_content")
+    if isinstance(visible, list):
+        return _hash({"content_hash": content_hash, "model_visible_content": visible})
+    return content_hash
+
+
 async def capture_context_message_origins(db, *, tenant_id, agent_id, session_id, run_id, result_id, messages) -> None:
     """Persist only compiler-created origins, without declaring their leaves authorized."""
     from datetime import datetime, timezone
@@ -513,7 +522,7 @@ async def _origin_dependencies(db, *, tenant_id, agent_id, ref):
     dependencies, inherited_complete = _model_dependencies(model)
     # The call's own audience remains a source, including empty searches and private query arguments.
     dependencies = [*dependencies, {"source_kind": "session_tool_invocation", "source_id": str(invocation.id),
-        "source_version": payload["content_hash"]}]
+        "source_version": tool_result_source_hash(payload)}]
     if invocation.permission_state == 'expired':
         valid = await _expired_permission_result_bound(db, invocation=invocation, event=event, content=content)
         return _unique_dependencies(dependencies), inherited_complete and valid
@@ -582,6 +591,18 @@ async def _origin_dependencies(db, *, tenant_id, agent_id, ref):
                 and control.response_payload_hash == _hash(control.response_payload_json))
         except (ValueError, TypeError, KeyError):
             valid = False
+        return _unique_dependencies(dependencies), inherited_complete and valid
+    if invocation.tool_name in {"browser_manage", "browser_observe", "browser_action"}:
+        # Captured device observations and protocol acknowledgements do not
+        # prove that a page's business operation succeeded.
+        try:
+            browser_result = json.loads(content)
+        except (ValueError, TypeError):
+            browser_result = None
+        valid = (isinstance(browser_result, dict) and browser_result.get("ok") is True
+            and browser_result.get("business_outcome") == "unverified"
+            and invocation.effect_state == "effect_committed" and payload.get("outcome") == "success"
+            and str(payload.get("content_or_error_ref") or "").startswith("tool-frame:"))
         return _unique_dependencies(dependencies), inherited_complete and valid
     if invocation.tool_name == "ask_user_question":
         question = await db.scalar(select(ChatTranscriptEvent).where(

@@ -35,7 +35,8 @@ async def _published_owned_delegation_input(db, dependency, task):
         except ValueError:
             return False
         return (row is not None and row.tenant_id == task.tenant_id and row.run_id == task.id
-            and row.session_id == uuid.UUID(task.child_session_id) and row.tool_name in {"write_file", "fs_write", "ask_user_question"})
+            and row.session_id == uuid.UUID(task.child_session_id) and row.tool_name in {
+                "write_file", "fs_write", "ask_user_question", "browser_manage", "browser_observe", "browser_action"})
     if kind == "session_command":
         from app.models.chat_transcript_event import ChatTranscriptEvent
 

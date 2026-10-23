@@ -1,6 +1,8 @@
 import React from 'react';
 import { useTranslation } from 'react-i18next';
 import { IconAlertTriangle, IconChevronLeft, IconChevronRight, IconFileText, IconLoader, IconX } from '@tabler/icons-react';
+import { useAuthStore } from '../../stores';
+import { canOpenWorkBrowser } from '../session-workbench/workBrowserState';
 
 import { SessionGoalPanel } from '../session-workbench/SessionGoalPanel';
 import {
@@ -24,6 +26,9 @@ import type { SessionDecisionTrace } from '../../api/domains/chat';
 import type { AgentChatMessage, ChatArtifactPart } from './chatRuntime';
 import { artifactContributorLabel, formatArtifactSize } from './ArtifactSurface';
 import { SessionDecisionHistory } from './SessionDecisionHistory';
+import type { ArtifactContinuationContext } from './ArtifactContinuation';
+
+const WorkBrowser = React.lazy(() => import('../session-workbench/WorkBrowser'));
 
 const ThreadItemInspector = React.lazy(() => import('../session-workbench/ThreadItemInspector').then((module) => ({
   default: module.ThreadItemInspector,
@@ -316,6 +321,7 @@ export function SessionRuntimePanel({
   onRetrySubagent,
   sessionDecisions = [],
   onDecisionFeedback,
+  browserContinuation,
 }: {
   messages: AgentChatMessage[];
   sessionWorkbench: SessionWorkbench | null;
@@ -333,6 +339,7 @@ export function SessionRuntimePanel({
   agentId?: string;
   sessionId?: string;
   readOnly?: boolean;
+  browserContinuation?: ArtifactContinuationContext;
   onGoalChanged?: () => void | Promise<unknown>;
   onTeamChanged?: () => void | Promise<unknown>;
   onRetrySubagent?: (worker: RuntimeSectionItemModel) => void | Promise<unknown>;
@@ -342,6 +349,7 @@ export function SessionRuntimePanel({
     label: 'useful' | 'misleading',
   ) => void | Promise<unknown>;
 }) {
+  const browserUserId = useAuthStore((state) => state.user?.id);
   const RUNTIME_PANEL_WIDTH_KEY = 'hive.sessionRuntimePanel.width';
   const [panelWidth, setPanelWidth] = React.useState<number | null>(() => {
     try {
@@ -881,6 +889,8 @@ export function SessionRuntimePanel({
       >
         <IconChevronRight size={15} stroke={1.8} />
       </button>
+      {agentId && sessionId && canOpenWorkBrowser(activeSession, readOnly, browserUserId) &&
+        <React.Suspense fallback={null}><WorkBrowser agentId={agentId} sessionId={sessionId} continuation={browserContinuation} /></React.Suspense>}
       <section
         data-testid="session-runtime-deliverables"
         className={`session-runtime-section session-runtime-documents${currentSessionDocumentCount === 0 ? ' is-empty' : ''}`}

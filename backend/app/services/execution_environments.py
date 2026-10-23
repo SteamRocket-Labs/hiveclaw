@@ -172,6 +172,7 @@ class EnvironmentCommandScope:
     machine_credential_id: uuid.UUID | None = None
     external_principal_id: uuid.UUID | None = None
     worker_witness: dict | None = field(default=None, init=False, repr=False)
+    resource_receipt: dict = field(default_factory=dict)
 
     async def _authority(self, db, *, before_command=False):
         from app.models.tenant import Tenant
@@ -273,7 +274,7 @@ class EnvironmentCommandScope:
                 generation=env.generation,
                 fence_version=env.fence_counter,
                 expires_at=datetime.now(UTC) + timedelta(seconds=max(timeout, 1) + 60),
-                outcome={**self._machine_receipt(), "resource_lifecycle": {
+                outcome={**self._machine_receipt(), **({"resource_receipt": dict(self.resource_receipt)} if self.resource_receipt else {}), "resource_lifecycle": {
                     "schema": "hive.environment.resource-lifecycle.v1",
                     "phase": "not_created", "worker": self.worker_witness,
                 }},
@@ -451,14 +452,37 @@ class EnvironmentCommandScope:
             if lease is None or env is None or lease.fence_version != self.fence_version:
                 raise EnvironmentError("environment_release_unknown", 503)
             lifecycle = (lease.outcome or {}).get("resource_lifecycle")
+            browser_reconciliation = (lease.outcome or {}).get("browser_reconciliation")
+            browser_rpc = (lease.outcome or {}).get("browser_rpc")
+            if self.resource_receipt.get("transport") == "browser_rpc" and browser_rpc is None:
+                # No durable RPC admission exists, so no owner may execute it.
+                self.resource_state = "not_created"
+            if isinstance(browser_rpc, dict) and browser_rpc.get("phase") == "pending":
+                # The same lock fences the owner's pending -> executing claim.
+                # Withdrawal before that claim proves no dispatch can follow.
+                browser_rpc = {**browser_rpc, "phase": "cancelled"}
+                self.resource_state = "not_created"
+                self.resource_receipt = {**self.resource_receipt, "effect": "not_started"}
+            if isinstance(browser_rpc, dict) and browser_rpc.get("phase") == "finished":
+                self.resource_state = browser_rpc["resource_state"]
+                self.resource_receipt = dict(browser_rpc["resource_receipt"])
+            if (lease.status == "released" and browser_reconciliation is not None
+                and (lease.outcome or {}).get("resource_state") in {"stopped", "command_completed"}):
+                # A trusted resource reconciliation may finish while its old
+                # caller unwinds. Keep that mechanical result, not a stale
+                # in-memory unknown state; business outcome remains separate.
+                self.resource_state = lease.outcome["resource_state"]
             if isinstance(lifecycle, dict) and self.resource_state != "not_created" and lifecycle.get("phase") == "not_created":
                 lifecycle = {**lifecycle, "phase": "unconfirmed"}
             lease.outcome = {
                 **({"resource_lifecycle": lifecycle} if lifecycle is not None else {}),
+                **({"browser_reconciliation": browser_reconciliation} if browser_reconciliation is not None else {}),
+                **({"browser_rpc": browser_rpc} if browser_rpc is not None else {}),
                 **(self.outcome or {"status": "interrupted"}),
                 "resource_state": self.resource_state,
                 **self._machine_receipt(),
                 **({"source": self.source_binding.receipt()} if self.source_binding is not None else {}),
+                **({"resource_receipt": self.resource_receipt} if self.resource_receipt else {}),
             }
             env.last_used_at = datetime.now(UTC)
             if self.resource_state in {"not_created", "command_completed", "stopped"}:

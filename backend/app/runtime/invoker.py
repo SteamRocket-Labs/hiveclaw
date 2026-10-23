@@ -1553,6 +1553,7 @@ def get_agent_kernel(request: AgentInvocationRequest | None = None) -> AgentKern
             model=model.model,
             base_url=model.base_url,
             timeout=120.0,
+            supports_vision=bool(getattr(model, "supports_vision", False)),
         )
         metadata = _session_metadata(request.session_context)
         budget_run_id = _uuid_or_none(metadata.get("budget_run_id"))

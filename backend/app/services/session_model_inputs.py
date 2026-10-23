@@ -153,6 +153,19 @@ async def load_context_message_origin(db, *, tenant_id, agent_id, source_id, ses
 
 
 async def build_model_input_bindings(
+    db: AsyncSession, **kwargs,
+) -> dict[str, Any]:
+    from app.services.historical_model_inputs import source_resolution
+
+    with source_resolution() as resolution:
+        manifest = await _build_model_input_bindings(db, **kwargs)
+        if resolution["recovered"] or resolution["contexts"]:
+            manifest["historical_source_recovery"] = {"schema": "hive.historical_source_recovery.v1",
+                "models": list(resolution["recovered"].values()), "contexts": list(resolution["contexts"].values())}
+        return manifest
+
+
+async def _build_model_input_bindings(
     db: AsyncSession, *, tenant_id: uuid.UUID, agent_id: uuid.UUID, session_id: uuid.UUID,
     messages: list[Any], wire_messages: list[dict[str, Any]],
 ) -> dict[str, Any]:
@@ -426,12 +439,20 @@ async def permission_abort_result_bound(db, *, invocation, event, content):
 
 
 async def _origin_dependencies(db, *, tenant_id, agent_id, ref):
+    from app.services.historical_model_inputs import source_resolution
+
+    with source_resolution():
+        return await _resolve_origin_dependencies(db, tenant_id=tenant_id, agent_id=agent_id, ref=ref)
+
+
+async def _resolve_origin_dependencies(db, *, tenant_id, agent_id, ref):
     from app.models.chat_transcript_event import ChatTranscriptEvent
     from app.models.organization_identity import ContentInputReceipt
     from app.models.session_v2 import SessionCommand
     from app.services.content_input_receipts import ContentInputReceiptError, load_workspace_input_evidence
     from app.services.knowledge_provenance import KNOWLEDGE_TOOL_NAMES, build_knowledge_provenance
     from app.services.session_semantic_history import _event_payload
+    from app.services.historical_model_inputs import recover_context_dependencies, recover_model_dependencies
 
     try:
         kind, raw_id = ref.split(":", 1)
@@ -442,6 +463,9 @@ async def _origin_dependencies(db, *, tenant_id, agent_id, ref):
         # Complete inventory is separate from the live leaf-authority readers.
         origin = await load_context_message_origin(db, tenant_id=tenant_id, agent_id=agent_id, source_id=source_id)
         dependencies = _stored_dependencies(origin.get("dependencies")) if origin is not None else None
+        if dependencies is not None and origin["dependency_coverage"]["complete"] is False:
+            return await recover_context_dependencies(db, tenant_id=tenant_id, agent_id=agent_id,
+                origin=origin, dependencies=dependencies)
         return dependencies or [], dependencies is not None and origin["dependency_coverage"]["complete"] is True
     if kind == "session-compaction":
         source = await load_compaction_source(db, tenant_id=tenant_id, agent_id=agent_id, source_id=source_id)
@@ -488,7 +512,7 @@ async def _origin_dependencies(db, *, tenant_id, agent_id, ref):
         result = await db.scalar(select(SessionModelResult).join(ChatSession, ChatSession.id == SessionModelResult.session_id)
             .where(SessionModelResult.id == source_id, SessionModelResult.tenant_id == tenant_id,
                 ChatSession.tenant_id == tenant_id, ChatSession.agent_id == agent_id))
-        return _model_dependencies(result)
+        return await recover_model_dependencies(db, tenant_id=tenant_id, agent_id=agent_id, result=result)
     if kind not in {"session-tool-result", "session-tool-permission"}:
         return [], False
     invocation = await db.scalar(select(SessionToolInvocation).join(ChatSession, ChatSession.id == SessionToolInvocation.session_id)
@@ -501,7 +525,7 @@ async def _origin_dependencies(db, *, tenant_id, agent_id, ref):
             SessionModelResult.session_id == invocation.session_id, SessionModelResult.run_id == invocation.run_id,
             SessionModelResult.round_id == invocation.round_id,
             SessionModelResult.provider_request_id == invocation.provider_request_id))
-        dependencies, complete = _model_dependencies(model)
+        dependencies, complete = await recover_model_dependencies(db, tenant_id=tenant_id, agent_id=agent_id, result=model)
         waiting = await db.scalar(select(ChatTranscriptEvent).where(ChatTranscriptEvent.tenant_id == tenant_id,
             ChatTranscriptEvent.agent_id == agent_id, ChatTranscriptEvent.session_id == invocation.session_id,
             ChatTranscriptEvent.run_id == invocation.run_id, ChatTranscriptEvent.invocation_id == invocation.id,
@@ -535,7 +559,7 @@ async def _origin_dependencies(db, *, tenant_id, agent_id, ref):
     model = await db.scalar(select(SessionModelResult).where(SessionModelResult.tenant_id == tenant_id,
         SessionModelResult.session_id == invocation.session_id, SessionModelResult.run_id == invocation.run_id,
         SessionModelResult.provider_request_id == invocation.provider_request_id))
-    dependencies, inherited_complete = _model_dependencies(model)
+    dependencies, inherited_complete = await recover_model_dependencies(db, tenant_id=tenant_id, agent_id=agent_id, result=model)
     # The call's own audience remains a source, including empty searches and private query arguments.
     dependencies = [*dependencies, {"source_kind": "session_tool_invocation", "source_id": str(invocation.id),
         "source_version": tool_result_source_hash(payload)}]

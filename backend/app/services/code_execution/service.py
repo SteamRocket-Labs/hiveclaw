@@ -65,6 +65,11 @@ async def _execute_selected_command(command, *, provider, work_dir, env, timeout
             runtime=runtime,
             network_policy=policy,
         )
+    if provider == "opensandbox":
+        from app.services.code_execution.opensandbox_provider import execute_opensandbox_command
+
+        return await execute_opensandbox_command(command, work_dir=work_dir, env=env, timeout=timeout,
+            network_policy=policy, sandbox_spec=sandbox_spec)
     return CodeExecutionResult(
         error=(
             "❌ Code execution provider unavailable "

@@ -37,10 +37,11 @@ def provider_key(value):
 
 
 def capabilities(provider):
+    persistent = provider == "opensandbox"
     return {
         "scope": "agent_private",
-        "compute_lifetime": "command",
-        "persistent_compute": False,
+        "compute_lifetime": "original_work" if persistent else "command",
+        "persistent_compute": persistent,
         "canonical_workspace": True,
         "browser": False,
         "provider": provider,
@@ -80,6 +81,12 @@ async def project_environment(db, *, tenant_id, agent_id, include_recovery=False
     if lost and include_recovery:
         lease = leases[0]
         reason, allowed = observe_prelaunch_worker((lease.outcome or {}).get("resource_lifecycle"))
+        if env.provider_key == "opensandbox" and env.resource_binding:
+            from app.services.environment_worker_witness import observe_worker
+
+            reason, allowed = observe_worker(((lease.outcome or {}).get("resource_lifecycle") or {}).get("worker"))
+            if allowed and not env.resource_binding.get("resource_id"):
+                reason, allowed = "compute_creation_unconfirmed", False
         recovery = {"lease_id": str(lease.id), "reason_code": reason, "can_reconcile": allowed}
     return {
         "id": str(env.id),
@@ -135,6 +142,12 @@ async def control_environment(db, *, tenant_id, agent_id, action, expected_revis
         if lease.expires_at > datetime.now(UTC):
             raise EnvironmentError("environment_commands_active")
         reason, allowed = observe_prelaunch_worker((lease.outcome or {}).get("resource_lifecycle"))
+        compute_reconciliation = None
+        if env.provider_key == "opensandbox" and env.resource_binding:
+            from app.services.code_execution.opensandbox_provider import reconcile_resource
+
+            compute_reconciliation = await reconcile_resource(db, env, lease)
+            reason, allowed = compute_reconciliation["reason_code"], True
         if not allowed:
             raise EnvironmentError(reason)
         lease.status = "released"
@@ -142,15 +155,17 @@ async def control_environment(db, *, tenant_id, agent_id, action, expected_revis
         lease.outcome = {
             **(lease.outcome or {}),
             "status": "interrupted",
-            "resource_state": "not_created",
+            "resource_state": "stopped" if compute_reconciliation else "not_created",
             "reconciliation": {"reason_code": reason, "observed_at": lease.released_at.isoformat()},
+            **({"compute_reconciliation": compute_reconciliation} if compute_reconciliation else {}),
         }
         env.desired_state = env.observed_state = "stopped"
     else:
         raise EnvironmentError("environment_action_unsupported", 422)
     env.revision += 1
     await db.flush()
-    return await project_environment(db, tenant_id=tenant_id, agent_id=agent_id, include_recovery=True)
+    result = await project_environment(db, tenant_id=tenant_id, agent_id=agent_id, include_recovery=True)
+    return {**result, **({"reconciliation": lease.outcome["reconciliation"]} if action == "reconcile" else {})}
 
 
 @dataclass
@@ -173,6 +188,7 @@ class EnvironmentCommandScope:
     external_principal_id: uuid.UUID | None = None
     worker_witness: dict | None = field(default=None, init=False, repr=False)
     resource_receipt: dict = field(default_factory=dict)
+    runtime_request: Any = field(default=None, repr=False)
 
     async def _authority(self, db, *, before_command=False):
         from app.models.tenant import Tenant
@@ -351,7 +367,7 @@ class EnvironmentCommandScope:
                     self.selected_provider = selected
                 elif selected != self.selected_provider:
                     raise EnvironmentError("environment_provider_changed")
-                elif self.resource_state not in {"not_created", "command_completed", "stopped"}:
+                elif self.resource_state not in {"not_created", "command_completed", "stopped", "paused"}:
                     raise EnvironmentError("environment_reconciliation_required")
                 elif self.source_binding is not None:
                     async with tenant_scoped_session(
@@ -387,7 +403,7 @@ class EnvironmentCommandScope:
                 except Exception as exc:
                     raise EnvironmentError("environment_state_unavailable", 503) from exc
             self.outcome = {
-                "status": "failed" if result.error else "completed",
+                "status": result.evidence.get("status", "failed" if result.error else "completed"),
                 "exit_code": result.exit_code,
                 "timed_out": result.timed_out,
                 "provider_evidence": {
@@ -485,7 +501,7 @@ class EnvironmentCommandScope:
                 **({"resource_receipt": self.resource_receipt} if self.resource_receipt else {}),
             }
             env.last_used_at = datetime.now(UTC)
-            if self.resource_state in {"not_created", "command_completed", "stopped"}:
+            if self.resource_state in {"not_created", "command_completed", "stopped", "paused"}:
                 lease.status = "released"
                 lease.released_at = datetime.now(UTC)
                 if env.desired_state == "stopped":

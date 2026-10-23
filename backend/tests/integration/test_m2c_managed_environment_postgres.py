@@ -23,9 +23,21 @@ from app.models.agent import Agent
 from app.models.llm import LLMModel
 from app.models.runtime_task import RuntimeTask
 from app.models.user import User
+from tests.integration import conftest as integration
 from tests.integration.test_web_chat_worker_restart_kernel_recovery import _seed_run, ScriptedLLMClient
 
 pytestmark = pytest.mark.usefixtures("migrated_pg_url")
+
+
+@pytest.fixture(scope="module")
+def pg_container():
+    # Historical DDL in this module must not change another module's schema.
+    yield from integration.pg_container.__wrapped__()
+
+
+@pytest.fixture(scope="module")
+def migrated_pg_url(pg_container):
+    return integration.migrated_pg_url.__wrapped__(pg_container)
 
 
 async def test_environment_upgrade_preserves_work_and_refuses_lossy_downgrade(
@@ -81,12 +93,17 @@ async def test_environment_upgrade_preserves_work_and_refuses_lossy_downgrade(
     assert refused.returncode != 0 and "Retain environment and command-lease evidence" in refused.stderr
     async with owner_sessionmaker() as db:
         assert (
+            await db.execute(text("SELECT version_num FROM alembic_version"))
+        ).scalar_one() == "private_environment_1018"
+    # A refused older rollback leaves the schema at that older revision. Restore
+    # the current schema before exercising its mapped columns and RLS writes.
+    restored = migrate("upgrade", "head")
+    assert restored.returncode == 0, restored.stderr
+    async with owner_sessionmaker() as db:
+        assert (
             await db.get(ExecutionEnvironment, env_id) is not None
             and await db.get(EnvironmentLease, lease_id) is not None
         )
-        assert (
-            await db.execute(text("SELECT version_num FROM alembic_version"))
-        ).scalar_one() == "private_environment_1018"
     tables = ("execution_environments", "environment_leases")
     async with owner_engine.begin() as conn:
         # Reinstall the same policies used by the fresh-schema bootstrap path.

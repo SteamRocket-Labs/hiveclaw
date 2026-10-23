@@ -136,3 +136,57 @@ checkpoint/fork, server upgrade or rollback, browser takeover, or HiveClaw's
 canonical workspace integration. Docker pause/resume and copying saved files
 are distinct operations. Complete the remaining provider adoption checks before
 adding a production adapter or changing the configured executor.
+
+## Application candidate
+
+The opt-in `opensandbox` command provider is a local engineering candidate. It
+retains a physical resource for the same original work, pauses it between
+commands, and uses the existing tenant-scoped command lease. A new work context
+closes the previous known paused cache before creating another resource. Task
+state remains in `RuntimeTask`; files enter through the authorized staging view
+and return through the existing canonical workspace and artifact receipt paths.
+Previously retained model and file sources are revalidated before reuse. The
+remote `.agents` handoff returns to the existing skill review path. Provider
+control credentials are never passed as workload environment values.
+
+The default executor is unchanged. Selecting this candidate requires the exact
+`opensandbox==1.1.1` SDK in the separately prepared, locked operator environment,
+an explicit `HIVE_OPENSANDBOX_PROFILE_PATH`, and host policy pinning those file
+bytes in `HIVE_OPENSANDBOX_APPROVED_PROFILE_SHA256`. The SDK is not added to the
+default application dependency lock. Missing dependencies or configuration
+produce a typed refusal. A conformance report cannot approve its own profile.
+The control key is supplied only through `HIVE_OPENSANDBOX_API_KEY`.
+
+The profile is a JSON object with this shape; placeholders require an operator's
+verified values and are not a deployable configuration:
+
+```json
+{
+  "schema": "hive.compute-profile.v1",
+  "server_url": "https://sandbox.example.invalid",
+  "image": "registry.example.invalid/workload@sha256:<64 hex characters>",
+  "sdk_version": "1.1.1",
+  "isolation": "<approved deployment profile>",
+  "conformance_sha256": "<64 hex characters>",
+  "resource": {"cpu": "500m", "memory": "512Mi"},
+  "ttl_seconds": 900
+}
+```
+
+Only default-deny egress is supported by this candidate. Receipted original-work
+tools use their existing model, authority and workspace path; diagnostic calls
+without that context and unreceipted legacy inputs return a typed limitation.
+`paused` describes the resource and does not prove the command or business task
+succeeded. A lost creation acknowledgement retains the creation lease and blocks
+replacement. Known-resource reconciliation requires observation that the original
+worker is absent, checks the exact resource identity, and verifies termination
+before releasing the lease; the command outcome remains unknown. An unknown ID,
+unavailable original host or changed profile requires inspection of the original
+resource, not an automatic retry. Schema rollback refuses to discard a retained
+resource binding.
+
+Native application tests use real PostgreSQL, forced RLS and original-work
+model/tool/artifact paths with synthetic model and SDK boundaries. They establish
+local integration only. Actual strong isolation, egress, server/resource recovery,
+snapshot secrets, browser/device operation and production adoption still require
+the designated real profile and acceptance evidence.

@@ -89,7 +89,7 @@ async def change_environment(
                 "environment_id": result["id"],
                 "generation": result["generation"],
                 "revision": result["revision"],
-                **({"lease_id": str(body.expected_lease_id), "reason_code": "worker_terminated_before_resource_creation"}
+                **({"lease_id": str(body.expected_lease_id), "reason_code": result["reconciliation"]["reason_code"]}
                    if action == "reconcile" else {}),
             },
         )

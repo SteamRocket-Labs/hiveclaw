@@ -1482,7 +1482,8 @@ class ToolRuntimeService:
             async def _execute_in_environment_scope():
                 from app.services.execution_environments import environment_command_scope
 
-                async with environment_command_scope(context, tool_call_id):
+                async with environment_command_scope(context, tool_call_id) as environment:
+                    environment.runtime_request = request
                     return await _execute_backend()
 
             if workspace_mutating or tool_name == "load_skill":

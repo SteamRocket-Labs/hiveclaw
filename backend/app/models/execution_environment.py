@@ -48,6 +48,8 @@ class ExecutionEnvironment(Base):
     generation: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     fence_counter: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # A recoverable provider cache, never the canonical task or file store.
+    resource_binding: Mapped[dict | None] = mapped_column(JSON(none_as_null=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
     last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 

@@ -27,6 +27,8 @@ const mocks = vi.hoisted(() => ({
   projectActiveTimeline: false,
   startSessionRun: vi.fn(),
   createSessionRun: vi.fn(),
+  cancelSessionRun: vi.fn(),
+  activeSessionRun: null as null | { run_id: string; status: string },
   chatProps: null as any,
 }));
 
@@ -64,6 +66,9 @@ vi.mock('@tanstack/react-query', () => ({
         isLoading: false,
         error: mocks.agentError,
       };
+    }
+    if (options.queryKey[0] === 'chat-active-run' && options.enabled) {
+      return { data: mocks.activeSessionRun, dataUpdatedAt: 1, isLoading: false, error: null };
     }
     return {
       data: undefined,
@@ -111,6 +116,7 @@ vi.mock('../api/domains/chat', () => ({
     getSessionLineage: mocks.getSessionLineage,
     startSessionRun: mocks.startSessionRun,
     createSessionRun: mocks.createSessionRun,
+    cancelSessionRun: mocks.cancelSessionRun,
   },
 }));
 
@@ -152,7 +158,8 @@ vi.mock('./agent-detail/LocalAgentChatSection', () => ({
   default: () => <div data-testid="local-agent-chat">Local mutable chat</div>,
 }));
 vi.mock('./agent-detail/AgentChatSection', () => ({
-  default: ({ activeSession, chatMessages, historyMsgs, allSessions, chatMessagesSessionId, historyMessagesSessionId, onSendMessage }: {
+  default: ({ activeSession, chatMessages, historyMsgs, allSessions, chatMessagesSessionId, historyMessagesSessionId, onSendMessage,
+    activeRunId, activeRunStatus, onAbortGeneration }: {
     activeSession?: any;
     chatMessages?: Array<{ content?: string }>;
     historyMsgs?: Array<{ content?: string }>;
@@ -160,8 +167,11 @@ vi.mock('./agent-detail/AgentChatSection', () => ({
     chatMessagesSessionId?: string | null;
     historyMessagesSessionId?: string | null;
     onSendMessage?: (text: string, options?: any) => unknown;
+    activeRunId?: string | null;
+    activeRunStatus?: string | null;
+    onAbortGeneration?: () => unknown;
   }) => {
-    mocks.chatProps = { activeSession, onSendMessage, chatMessages };
+    mocks.chatProps = { activeSession, onSendMessage, chatMessages, activeRunId, activeRunStatus, onAbortGeneration };
     return (
     <div data-testid="fabricated-session-shell">
       {activeSession?.operator_view ? <strong>Operator View</strong> : activeSession?.read_only ? 'Read-only · User' : null}
@@ -210,6 +220,8 @@ beforeEach(() => {
   mocks.chatProps = null;
   mocks.startSessionRun.mockReset();
   mocks.createSessionRun.mockReset();
+  mocks.cancelSessionRun.mockReset();
+  mocks.activeSessionRun = null;
 });
 
 afterEach(cleanup);
@@ -223,6 +235,18 @@ async function mountOwnedArtifactWork() {
   await waitFor(() => expect(mocks.chatProps?.activeSession?.id).toBe(mocks.sessionId));
   return mocks.chatProps.onSendMessage as (text: string, options: { expectedSessionId: string; inputId: string; displayContent?: string }) => Promise<unknown>;
 }
+
+it.each(['suspended', 'resumable'])('restores the exact %s run as the cancellation target after a reload', async (status) => {
+  mocks.activeSessionRun = { run_id: 'paused-original-run', status };
+  mocks.cancelSessionRun.mockResolvedValue({ accepted: true });
+  await mountOwnedArtifactWork();
+  await waitFor(() => expect(mocks.chatProps?.activeRunId).toBe('paused-original-run'));
+  expect(mocks.chatProps.activeRunStatus).toBe(status);
+  await act(async () => { await mocks.chatProps.onAbortGeneration(); });
+  expect(mocks.cancelSessionRun).toHaveBeenCalledExactlyOnceWith('agent-1', 'owned-artifact-work', 'paused-original-run');
+  expect(mocks.startSessionRun).not.toHaveBeenCalled();
+  expect(mocks.createSessionRun).not.toHaveBeenCalled();
+});
 
 it('retries an artifact input in the exact original work with the same durable identity', async () => {
   const send = await mountOwnedArtifactWork();

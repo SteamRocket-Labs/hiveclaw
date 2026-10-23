@@ -644,11 +644,14 @@ export function applySessionActiveRunObservedState(
   run: SessionRunState,
 ): { activeRuns: Record<string, SessionRunState>; uiStates: Record<string, SessionUiState> } {
   const currentUi = uiStates[key];
+  const paused = ['suspended', 'resumable'].includes(String(run.status || '').toLowerCase());
+  const pausedUi = currentUi?.phase === 'awaiting_approval' || currentUi?.phase === 'awaiting_budget'
+    ? currentUi : uiForPhase('idle');
   return {
     activeRuns: { ...activeRuns, [key]: run },
     uiStates: {
       ...uiStates,
-      [key]: currentUi?.isStreaming ? currentUi : uiForPhase('resuming'),
+      [key]: paused ? pausedUi : currentUi?.isStreaming ? currentUi : uiForPhase('resuming'),
     },
   };
 }
@@ -695,8 +698,11 @@ export function activeRunPollInterval(
   observedActiveRun: { status?: string | null } | null | undefined,
   hasLocalActiveRuntime: boolean,
 ): number | false {
-  const status = String(observedActiveRun?.status || '').toLowerCase();
-  return hasLocalActiveRuntime || status === 'pending' || status === 'running' ? 3000 : false;
+  return hasLocalActiveRuntime || isUnfinishedSessionRun(observedActiveRun) ? 3000 : false;
+}
+
+export function isUnfinishedSessionRun(run?: { status?: string | null } | null): boolean {
+  return !!run && ['pending', 'running', 'suspended', 'resumable'].includes(String(run.status || '').toLowerCase());
 }
 
 /**
@@ -714,7 +720,7 @@ export function shouldReconcileTranscriptOnActiveRunAbsence(input: {
   if (!input.hasLocalActiveRuntime) return false;
   const run = input.observedActiveRun;
   if (!run) return true;
-  return !['pending', 'running'].includes(String(run.status || '').toLowerCase());
+  return !isUnfinishedSessionRun(run);
 }
 
 /**

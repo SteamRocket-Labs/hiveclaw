@@ -705,6 +705,13 @@ describe('chatRuntime helpers', () => {
     expect(result.uiStates).toEqual({ 'agent-1:session-1': uiForPhase('responding') });
   });
 
+  it.each(['awaiting_approval', 'awaiting_budget'] as const)('preserves the observed %s phase while its run is suspended', (phase) => {
+    const result = applySessionActiveRunObservedState({}, { work: uiForPhase(phase) }, 'work',
+      { runId: 'paused-run', status: 'suspended' });
+    expect(result.activeRuns.work.runId).toBe('paused-run');
+    expect(result.uiStates.work).toEqual(uiForPhase(phase));
+  });
+
   it('ignores observed active runs once a terminal event closed the same session', () => {
     expect(shouldIgnoreObservedActiveRun({
       key: 'agent-1:session-1',
@@ -845,6 +852,13 @@ describe('chatRuntime helpers', () => {
     expect(activeRunPollInterval(null, true)).toBe(3000);
     expect(activeRunPollInterval({ status: 'running' }, false)).toBe(3000);
     expect(activeRunPollInterval(null, false)).toBe(false);
+  });
+
+  it.each(['suspended', 'resumable'])('keeps the observed %s run active while its durable stop can settle', (status) => {
+    expect(activeRunPollInterval({ status }, false)).toBe(3000);
+    expect(shouldReconcileTranscriptOnActiveRunAbsence({
+      observedActiveRun: { status }, hasLocalActiveRuntime: true,
+    })).toBe(false);
   });
 
   it('reconciles the authoritative transcript when the live projection still shows a run the server no longer has', () => {

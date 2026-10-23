@@ -20,6 +20,7 @@ import {
     buildSessionTranscriptLoadFailureMessage,
     createEmptyTranscriptReplayState,
     isDraftHumanChatSession,
+    isUnfinishedSessionRun,
     markActiveRunTerminalInRegistry, normalizeSessionRunId,
     mergePendingUserMessages,
     filterSessionsForAgent,
@@ -409,7 +410,6 @@ function AgentDetailInner() {
         },
     });
     const buildSessionRuntimeKey = (agentId: string, sessionId: string) => `${agentId}:${sessionId}`;
-    const isLiveRun = (run?: SessionRun | null) => !!run && ['pending', 'running'].includes(String(run.status || '').toLowerCase());
 
     const invalidateSessionRuntimeQueries = (agentId: string, sessionId: string, includeActiveRun = true) => {
         if (includeActiveRun) void queryClient.invalidateQueries({ queryKey: ['chat-active-run', agentId, sessionId] });
@@ -2408,7 +2408,7 @@ function AgentDetailInner() {
     useEffect(() => {
         if (!id || !activeSession?.id || !isWritableSession(activeSession)) return;
         const key = buildSessionRuntimeKey(id, String(activeSession.id));
-        if (activeSessionRun && isLiveRun(activeSessionRun)) {
+        if (activeSessionRun && isUnfinishedSessionRun(activeSessionRun)) {
             if (shouldIgnoreObservedActiveRun({
                 key,
                 run: sessionRunStateFromPayload(activeSessionRun),

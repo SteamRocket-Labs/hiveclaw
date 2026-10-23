@@ -88,7 +88,7 @@ async def load_known_native_default_context(db, *, tenant_id, agent_id, ref):
     if (asset_audit is None or asset_audit.details != {"asset_id": str(revision.entity_id), "asset_type": "agent",
         "native_key": native_key, "revision_id": str(revision.id), "version": 1, "content_hash": revision.content_hash}):
         return None
-    known = {"schema": "hive.native_default_context.v1",
+    known = {"schema": "hive.native_default_context.v1", "source_revision_id": str(revision.id),
         "identity": agent_identity_content(ASSISTANT_EMPLOYEE_NAME, ASSISTANT_ROLE)}
     if ref == "memory/self/self.md":
         known["resident_sources"] = {ref: hashlib.sha256(EMPTY_SELF_CONTENT.encode("utf-8")).hexdigest()}

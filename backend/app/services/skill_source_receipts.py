@@ -136,19 +136,22 @@ async def load_skill_input_snapshot(capture, tenant_id, *, runtime_request=None)
         capture.unbound.append("skill_installation_snapshot_unavailable")
 
 
+def _bundled_platform_skill_hashes():
+    from app.services.skill_seeder import builtin_skill_definitions
+
+    backend = Path(__file__).resolve().parents[2]
+    return {f"skills/{skill['folder_name']}/{file['path']}": hashlib.sha256(file["content"].encode("utf-8")).hexdigest()
+        for skill in builtin_skill_definitions(pack_dirs=(backend / "packs",)) if skill.get("is_default")
+        for file in skill["files"]}
+
+
 def original_platform_skill_hashes(workspace):
-    """Witness only bytes supplied by the application package, never a configured custom template."""
+    """Match only application-package bytes, never registry edits or custom templates."""
     from app.services.workspace_resource_authority import WorkspaceAuthorityError, open_workspace_file
 
-    bundled = Path(__file__).resolve().parents[2] / "agent_template"
     hashes = {}
-    for source in sorted((bundled / "skills").rglob("*")):
-        if not source.is_file():
-            continue
-        path = source.relative_to(bundled).as_posix()
+    for path, digest in _bundled_platform_skill_hashes().items():
         try:
-            with open_workspace_file(bundled, path) as reader:
-                digest = hashlib.file_digest(reader, "sha256").hexdigest()
             with open_workspace_file(workspace, path) as reader:
                 if hashlib.file_digest(reader, "sha256").hexdigest() == digest:
                     hashes[path] = digest
@@ -168,8 +171,8 @@ async def record_original_platform_skill_sources(db, *, agent, workspace):
 
 
 async def _platform_skill_sources(db, tenant_id, agent_id):
+    from app.config import get_settings
     from app.models.agent import Agent
-    from app.services.workspace_resource_authority import WorkspaceAuthorityError, open_workspace_file
 
     revision = await db.scalar(select(ConfigRevision).where(ConfigRevision.tenant_id == tenant_id,
         ConfigRevision.entity_type == "agent_bootstrap", ConfigRevision.entity_id == agent_id,
@@ -189,12 +192,28 @@ async def _platform_skill_sources(db, tenant_id, agent_id):
             or canonical_content_hash(content) != revision.content_hash or revision.change_source != "platform_init"
             or revision.changed_by_user_id is not None or revision.changed_by_agent_id is not None
             or not isinstance(content.get("files"), dict)):
-            return {}
-        files = content["files"]
+            # Existing invalid/inactive platform claims cannot become a new
+            # historical witness through default-package recognition.
+            prior = await db.scalar(select(ConfigRevision.id).where(ConfigRevision.tenant_id == tenant_id,
+                ConfigRevision.entity_type == "agent_platform_skill_bootstrap", ConfigRevision.entity_id == agent_id).limit(1))
+            if prior is not None:
+                return {}
+            from app.services.employee_creation_sources import load_known_native_default_context
+
+            known = await load_known_native_default_context(db, tenant_id=tenant_id, agent_id=agent_id, ref="identity")
+            if known is None:
+                return {}
+            files, source_revision_id = {}, known["source_revision_id"]
+        else:
+            files, source_revision_id = content["files"], str(revision.id)
     else:
-        files = content["platform_skill_sources"]
+        files, source_revision_id = content["platform_skill_sources"], str(revision.id)
+    # Keep every original file claim frozen. Missing defaults may be recognized
+    # as exact current application bytes, without attesting their copy history.
+    matching = original_platform_skill_hashes(Path(get_settings().AGENT_DATA_DIR) / str(agent_id))
+    files = {**matching, **files}
     sources = {}
-    bundled = Path(__file__).resolve().parents[2] / "agent_template"
+    bundled = _bundled_platform_skill_hashes()
     for path, digest in files.items():
         parts = Path(path).parts
         if len(parts) < 3 or parts[0] != "skills" or any(p in {".", ".."} for p in parts) or path != Path(path).as_posix():
@@ -204,12 +223,8 @@ async def _platform_skill_sources(db, tenant_id, agent_id):
             ConfigRevision.entity_type == "agent_skill_install", ConfigRevision.entity_id == _installation_id(agent_id, parts[1])).limit(1))
         if superseded is not None:
             continue
-        try:
-            with open_workspace_file(bundled, path) as reader:
-                if hashlib.file_digest(reader, "sha256").hexdigest() == digest:
-                    sources[path] = (str(revision.id), digest)
-        except (OSError, ValueError, WorkspaceAuthorityError):
-            continue
+        if bundled.get(path) == digest:
+            sources[path] = (source_revision_id, digest)
     return sources
 
 

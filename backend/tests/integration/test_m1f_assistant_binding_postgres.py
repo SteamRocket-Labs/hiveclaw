@@ -137,6 +137,27 @@ def _agent_files(tmp_path, monkeypatch):
     monkeypatch.setattr("app.services.runtime_task_worker.runtime_task_worker_snapshot", lambda: {"running": True})
 
 
+@pytest.fixture
+async def builtin_defaults(owner_sessionmaker, monkeypatch):
+    from sqlalchemy import delete
+    from app.models.skill import Skill, SkillFile
+    from app.services import skill_seeder
+
+    async with owner_sessionmaker() as db:
+        before = set((await db.scalars(select(Skill.id))).all())
+    monkeypatch.setattr(skill_seeder, "async_session", owner_sessionmaker)
+    await skill_seeder.seed_skills()
+    async with owner_sessionmaker() as db:
+        owned = set((await db.scalars(select(Skill.id))).all()) - before
+    try:
+        yield
+    finally:
+        async with owner_sessionmaker() as db:
+            await db.execute(delete(SkillFile).where(SkillFile.skill_id.in_(owned)))
+            await db.execute(delete(Skill).where(Skill.id.in_(owned)))
+            await db.commit()
+
+
 def test_assistant_router_is_mounted_for_both_api_prefixes():
     from app.main import _api_routers, app
 
@@ -299,7 +320,7 @@ async def test_unbound_model_preview_uses_only_enabled_same_company_default(
 
 @pytest.mark.parametrize("fail_before_workspace", [False, True])
 async def test_opened_assistant_retains_original_context_sources_without_attesting_existing_files(
-    owner_sessionmaker, app_user_sessionmaker, monkeypatch, fail_before_workspace,
+    owner_sessionmaker, app_user_sessionmaker, monkeypatch, fail_before_workspace, builtin_defaults,
 ):
     import hashlib
 
@@ -308,6 +329,9 @@ async def test_opened_assistant_retains_original_context_sources_without_attesti
     from app.services.config_versioning import canonical_content_hash
     from app.services.content_input_receipts import ContentInputReceiptError, _validate_input_dependencies
     from app.services.native_employee_provisioning import resume_native_employee
+
+    from app.services import skill_seeder
+    from app.services.skill_source_receipts import _platform_skill_sources
 
     tag = uuid.uuid4().hex[:8]
     tenant_id, user_id = uuid.uuid4(), uuid.uuid4()
@@ -357,6 +381,12 @@ async def test_opened_assistant_retains_original_context_sources_without_attesti
         agent = await db.get(Agent, agent_id)
         dependencies = await context_dependencies(agent)
         await _validate_input_dependencies(db, tenant_id, dependencies, user=actor)
+        platform = await _platform_skill_sources(db, tenant_id, agent_id)
+        assert {path.split("/")[1] for path in platform} == (
+            skill_seeder.DEFAULT_BUILTIN_SKILL_FOLDERS | skill_seeder.DEFAULT_PACK_SKILL_FOLDERS)
+        await _validate_input_dependencies(db, tenant_id, [{"source_kind": "agent_platform_skill_file",
+            "source_id": f"{agent_id}\n{path}\n{source_id}", "source_version": digest}
+            for path, (source_id, digest) in platform.items()], user=actor)
         revision = (await db.execute(select(ConfigRevision).where(
             ConfigRevision.tenant_id == tenant_id, ConfigRevision.entity_id == agent_id,
             ConfigRevision.entity_type == "agent_bootstrap",
@@ -385,7 +415,7 @@ async def test_opened_assistant_retains_original_context_sources_without_attesti
 
 @pytest.mark.parametrize("creation_audit_present", [True, False])
 async def test_old_default_assistant_uses_known_sources_without_rewriting_genesis(
-    owner_sessionmaker, app_user_sessionmaker, monkeypatch, creation_audit_present,
+    owner_sessionmaker, app_user_sessionmaker, monkeypatch, creation_audit_present, builtin_defaults,
 ):
     import hashlib
 
@@ -399,6 +429,8 @@ async def test_old_default_assistant_uses_known_sources_without_rewriting_genesi
     from app.services.config_versioning import canonical_content_hash
     from app.services.content_input_receipts import ContentInputReceiptError, _validate_input_dependencies
     from app.services.native_employee_provisioning import resume_native_employee
+    from app.services import skill_seeder
+    from app.services.skill_source_receipts import _platform_skill_sources
 
     tag = uuid.uuid4().hex[:8]
     tenant_id, user_id = uuid.uuid4(), uuid.uuid4()
@@ -461,6 +493,21 @@ async def test_old_default_assistant_uses_known_sources_without_rewriting_genesi
             .where(SecurityAuditEvent.tenant_id == tenant_id).order_by(SecurityAuditEvent.id))).all())
         if creation_audit_present:
             await _validate_input_dependencies(db, tenant_id, dependencies, user=actor)
+            platform = await _platform_skill_sources(db, tenant_id, agent_id)
+            assert {path.split("/")[1] for path in platform} == (
+                skill_seeder.DEFAULT_BUILTIN_SKILL_FOLDERS | skill_seeder.DEFAULT_PACK_SKILL_FOLDERS)
+            skill_dependencies = [{"source_kind": "agent_platform_skill_file",
+                "source_id": f"{agent_id}\n{path}\n{source_id}", "source_version": digest}
+                for path, (source_id, digest) in platform.items()]
+            await _validate_input_dependencies(db, tenant_id, skill_dependencies, user=actor)
+            changed_path = "skills/email-guide/SKILL.md"
+            skill_bytes = (workspace / changed_path).read_bytes()
+            (workspace / changed_path).write_bytes(skill_bytes + b"\nPrivate instructions\n")
+            with pytest.raises(ContentInputReceiptError, match="platform Skill lacks an original package witness"):
+                await _validate_input_dependencies(db, tenant_id, [d for d in skill_dependencies
+                    if d["source_id"].split("\n")[1] == changed_path], user=actor)
+            await _validate_input_dependencies(db, tenant_id, dependencies[:1], user=actor)
+            (workspace / changed_path).write_bytes(skill_bytes)
             self_path = workspace / "memory/self/self.md"
             self_path.write_bytes(original_files["memory/self/self.md"] + b"\nPrivate learned content\n")
             await _validate_input_dependencies(db, tenant_id, dependencies[:2], user=actor)
@@ -474,6 +521,7 @@ async def test_old_default_assistant_uses_known_sources_without_rewriting_genesi
                 await _validate_input_dependencies(db, tenant_id, dependencies[1:2], user=actor)
             (workspace / "soul.md").write_bytes(original_files["soul.md"])
         else:
+            assert await _platform_skill_sources(db, tenant_id, agent_id) == {}
             with pytest.raises(ContentInputReceiptError, match="complete original creation sources"):
                 await _validate_input_dependencies(db, tenant_id, dependencies, user=actor)
         assert list((await db.execute(select(ConfigRevision.id, ConfigRevision.content_hash,
@@ -498,6 +546,7 @@ async def test_old_default_assistant_uses_known_sources_without_rewriting_genesi
             identity = dict(dependencies[0], source_id=f"{lookalike_id}\nidentity")
             with pytest.raises(ContentInputReceiptError, match="complete original creation sources"):
                 await _validate_input_dependencies(db, tenant_id, [identity], user=actor)
+            assert await _platform_skill_sources(db, tenant_id, lookalike_id) == {}
 
 
 async def test_open_is_stable_and_resume_does_not_duplicate(

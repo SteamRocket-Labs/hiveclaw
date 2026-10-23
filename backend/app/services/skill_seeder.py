@@ -66,7 +66,7 @@ def _extract_skill_frontmatter(content: str, *, fallback: str) -> tuple[str, str
     return name, description
 
 
-def _load_pack_skill_dicts() -> list[dict]:
+def _load_pack_skill_dicts(*, pack_dirs: tuple[Path, ...] | None = None) -> list[dict]:
     """Scan backend/packs/*/pack.yaml and yield BUILTIN_SKILLS-shaped dicts.
 
     Each pack manifest's `skills:` entries are resolved against the pack root.
@@ -78,7 +78,7 @@ def _load_pack_skill_dicts() -> list[dict]:
     skill_dicts: list[dict] = []
     seen_folders: set[str] = set()
 
-    for packs_dir in find_pack_dirs(Path(__file__).resolve()):
+    for packs_dir in pack_dirs if pack_dirs is not None else find_pack_dirs(Path(__file__).resolve()):
         reader = PackCatalogReader(packs_dir)
         reader.discover()
         for manifest in reader.list_packs():
@@ -131,7 +131,7 @@ def _load_pack_skill_dicts() -> list[dict]:
                     }
                 )
                 seen_folders.add(folder_name)
-                logger.info(f"[SkillSeeder] Discovered pack skill: {manifest.name}/{folder_name} ({len(files)} files)")
+                logger.debug(f"[SkillSeeder] Discovered pack skill: {manifest.name}/{folder_name} ({len(files)} files)")
 
     return skill_dicts
 
@@ -218,8 +218,8 @@ BUILTIN_SKILLS = [
 ]
 
 
-async def seed_skills():
-    """Insert builtin skills if they don't exist."""
+def builtin_skill_definitions(*, pack_dirs: tuple[Path, ...] | None = None) -> list[dict]:
+    """Load application skill definitions without reading or writing the registry."""
     from app.services.skill_creator_content import get_skill_creator_files
 
     _template_skills_dir = Path(__file__).parent.parent.parent / "agent_template" / "skills"
@@ -285,8 +285,12 @@ async def seed_skills():
             else:
                 logger.warning(f"[SkillSeeder] {s['folder_name']}/ not found in templates/skills/")
 
-    pack_skill_dicts = _load_pack_skill_dicts()
-    all_skill_dicts = BUILTIN_SKILLS + pack_skill_dicts
+    return BUILTIN_SKILLS + _load_pack_skill_dicts(pack_dirs=pack_dirs)
+
+
+async def seed_skills():
+    """Insert builtin skills if they don't exist."""
+    all_skill_dicts = builtin_skill_definitions()
 
     async with (
         async_session() as db,

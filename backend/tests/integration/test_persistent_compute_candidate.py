@@ -148,7 +148,7 @@ def synthetic_sdk(monkeypatch, tmp_path):
     return SimpleNamespace(calls=calls, boxes=boxes, profile=path, faults=faults)
 
 
-@pytest.mark.parametrize("fault", [None, "unapproved", "create_ack_lost", "pause_ack_lost", "worker_restart"])
+@pytest.mark.parametrize("fault", [None, "unapproved", "create_ack_lost", "pause_ack_lost", "worker_restart", "new_work"])
 async def test_original_work_reuses_paused_compute_and_consumes_canonical_file(
     owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, synthetic_sdk, fault,
 ):
@@ -170,8 +170,8 @@ async def test_original_work_reuses_paused_compute_and_consumes_canonical_file(
     from app.services.secrets_provider import get_secrets_provider
     from app.services.web_chat_runtime import execute_web_chat_run
 
-    restart = fault == "worker_restart"
-    if restart:
+    restart, new_work = fault == "worker_restart", fault == "new_work"
+    if restart or new_work:
         fault = None
     seed = await _seed_run(owner_sessionmaker, tmp_path)
     factory, original = database.async_session, llm.create_llm_client
@@ -344,6 +344,67 @@ async def test_original_work_reuses_paused_compute_and_consumes_canonical_file(
             assert delivered.status_code == 200, delivered.text
             assert delivered.json()["content"] == "CANONICAL_COMPUTE_CONTINUED"
     assert "synthetic-control-key-not-for-workload" not in json.dumps(script.requests)
+    if new_work:
+        from uuid import UUID
+        from app.models.chat_session import ChatSession
+        from app.models.execution_environment import ExecutionEnvironment
+        from app.services.runtime_task_claim_service import RuntimeTaskClaimService
+        from app.services.session_live_input import submit_live_human_input
+
+        original_resource = next(iter(synthetic_sdk.boxes))
+        async with app_user_sessionmaker() as db:
+            await pin_rls_tenant_context(db, seed["tenant_id"])
+            receipt = await submit_live_human_input(db=db, agent=await db.get(Agent, seed["agent_id"]),
+                user=await db.get(User, seed["user_id"]), session=await db.get(ChatSession, seed["session_id"]),
+                content="Continue the saved report as a new work item, using a fresh private cache.",
+                source="web", requested_kind="start_turn")
+            assert receipt["admission_state"] == "admitted" and receipt["run"]
+            next_run_id = UUID(receipt["run"]["run_id"])
+            assert next_run_id != seed["run_id"]
+            claims = await RuntimeTaskClaimService(db=db, worker_id="new-work-worker", lease_seconds=600).claim_available()
+            claim = next(row for row in claims if row.id == next_run_id)
+            assert claim.claim_version == 1
+            await db.commit()
+        script = ScriptedLLMClient([
+            call("fresh-compute", 'test ! -e "$HOME/cache" && printf _NEW_WORK >> saved.txt && cat saved.txt'),
+            {"tool_calls": [{"id": "read-new-deliverable", "type": "function", "function": {
+                "name": "read_file", "arguments": json.dumps({"path": "workspace/saved.txt"})}}],
+                "finish_reason": "tool_calls"},
+            {"content": "DELIVERABLE: workspace/saved.txt", "finish_reason": "stop"},
+        ])
+        fence = set_runtime_task_fence(task_id=next_run_id, worker_id="new-work-worker", claim_version=1)
+        try:
+            await execute_web_chat_run(next_run_id)
+        finally:
+            reset_runtime_task_fence(fence)
+        boundary = await RuntimeTerminalBoundaryOutboxService(session_factory=app_user_sessionmaker).drain_once(
+            tenant_id=seed["tenant_id"], worker_id="new-work-boundary", canonical_validator=processor.validate,
+            process_callback=processor, task_types=("web_chat_turn",))
+        assert boundary["delivered"] == 1, boundary
+        expected = "CANONICAL_COMPUTE_CONTINUED_NEW_WORK"
+        assert (seed["agent_root"] / "workspace/saved.txt").read_text() == expected
+        assert synthetic_sdk.boxes[original_resource].state == "Terminated"
+        lifecycle = [(row[0], row[1]) for row in synthetic_sdk.calls if row[0] in {"create", "resume", "kill"}]
+        fresh_resource = next(key for key in synthetic_sdk.boxes if key != original_resource)
+        assert lifecycle == [("create", original_resource), ("resume", original_resource),
+            ("kill", original_resource), ("create", fresh_resource)]
+        async with app_user_sessionmaker() as db:
+            await pin_rls_tenant_context(db, seed["tenant_id"])
+            assert (await db.get(RuntimeTask, next_run_id)).status == "completed"
+            leases = list(await db.scalars(select(EnvironmentLease)))
+            assert len(leases) == 3 and all(row.status == "released" for row in leases)
+            environment = await db.scalar(select(ExecutionEnvironment))
+            assert environment.resource_binding["context"]["runtime_task_id"] == str(next_run_id)
+            assert environment.resource_binding["resource_id"] == fresh_resource
+            versions = list(await db.scalars(select(ChatArtifact).where(ChatArtifact.runtime_task_id == next_run_id,
+                ChatArtifact.path == "workspace/saved.txt")))
+            selected = [row for row in versions if (row.snapshot_json or {}).get("selection_model_result_id")]
+            assert len(selected) == 1 and selected[0].snapshot_json["content_input_receipt_id"]
+            selected_id = selected[0].id
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=web), base_url="http://test") as client:
+            delivered = await client.get(f"/api/agents/{agent.id}/files/artifacts/{selected_id}/content")
+            assert delivered.status_code == 200 and delivered.json()["content"] == expected
+        assert "synthetic-control-key-not-for-workload" not in json.dumps(script.requests)
 
 
 async def test_known_resource_reconciliation_requires_dead_worker_and_preserves_unknown_command(

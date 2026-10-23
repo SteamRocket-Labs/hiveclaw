@@ -15,6 +15,7 @@ from app.config import get_settings
 from app.models.agent import Agent
 
 settings = get_settings()
+EMPTY_SELF_CONTENT = "# Self — 我对自己的认识\n\n## 能力\n\n## 方法\n\n## 失败模式\n\n## 风格\n"
 
 
 def _clean_contract_line(value: str) -> str:
@@ -325,7 +326,7 @@ class AgentManager:
         self_content = None
         if not self_path.exists():
             self_path.parent.mkdir(parents=True, exist_ok=True)
-            self_content = "# Self — 我对自己的认识\n\n## 能力\n\n## 方法\n\n## 失败模式\n\n## 风格\n"
+            self_content = EMPTY_SELF_CONTENT
             self_path.write_text(self_content, encoding="utf-8")
         # Only the authenticated original-form writer may attest genesis, never repairs or model blueprints.
         if original_author_id is not None and not repair_existing and blueprint is None and agent.tenant_id is not None:

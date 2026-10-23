@@ -383,6 +383,123 @@ async def test_opened_assistant_retains_original_context_sources_without_attesti
         ))).scalar_one_or_none() is None
 
 
+@pytest.mark.parametrize("creation_audit_present", [True, False])
+async def test_old_default_assistant_uses_known_sources_without_rewriting_genesis(
+    owner_sessionmaker, app_user_sessionmaker, monkeypatch, creation_audit_present,
+):
+    import hashlib
+
+    from app.core import policy
+    from app.models.config_revision import ConfigRevision
+    from app.models.security_audit import SecurityAuditEvent
+    from app.services.agent_context import agent_identity_content, load_agent_context_resource
+    from app.services.ai_asset_adapters import project_agent
+    from app.services.ai_assets import register_projection
+    from app.services.assistant_binding import ASSISTANT_EMPLOYEE_NAME, ASSISTANT_ROLE
+    from app.services.config_versioning import canonical_content_hash
+    from app.services.content_input_receipts import ContentInputReceiptError, _validate_input_dependencies
+    from app.services.native_employee_provisioning import resume_native_employee
+
+    tag = uuid.uuid4().hex[:8]
+    tenant_id, user_id = uuid.uuid4(), uuid.uuid4()
+    async with owner_sessionmaker() as db:
+        db.add(Tenant(id=tenant_id, name=f"Old default {tag}", slug=f"old-default-{tag}"))
+        await db.flush()
+        model = await _model(db, tenant_id, label=f"Original model {tag}")
+        _user(db, id=user_id, username=f"old-default-{tag}", email=f"old-default-{tag}@example.test", tenant_id=tenant_id)
+        db.add(TenantSetting(tenant_id=tenant_id, key="default_model_id", value={"model_id": str(model.id)}))
+        await db.commit()
+
+    initialize = AgentManager.initialize_agent_files
+
+    async def old_initialize(self, db, agent, *args, **kwargs):
+        kwargs.pop("original_author_id", None)  # The original native constructor omitted this argument.
+        return await initialize(self, db, agent, *args, **kwargs)
+
+    write_audit = policy.write_audit_event
+
+    async def optional_audit(db, **kwargs):
+        if not creation_audit_present and kwargs.get("action") == "assistant.provisioned":
+            return None
+        return await write_audit(db, **kwargs)
+
+    monkeypatch.setattr(AgentManager, "initialize_agent_files", old_initialize)
+    monkeypatch.setattr(policy, "write_audit_event", optional_audit)
+    holder = {"actor": _actor(id=user_id, tenant_id=tenant_id, role="member")}
+    async with _client(app_user_sessionmaker, holder) as client:
+        opened = await client.post("/api/assistant/open", json={"idempotency_key": f"old-default-{tag}"})
+        assert opened.status_code == 200 and opened.json()["state"] == "active", opened.text
+        agent_id = uuid.UUID(opened.json()["agent"]["id"])
+
+    async with app_user_sessionmaker() as db:
+        await pin_rls_tenant_context(db, tenant_id)
+        agent = await db.get(Agent, agent_id)
+        model = await _model(db, tenant_id, label=f"Replacement model {tag}")
+        agent.primary_model_id = model.id
+        await register_projection(db, project_agent(agent), change_source="update", actor_user_id=user_id)
+        await db.commit()
+
+    async with app_user_sessionmaker() as db:
+        await pin_rls_tenant_context(db, tenant_id)
+        actor = await db.get(User, user_id)
+        agent = await db.get(Agent, agent_id)
+        soul = await load_agent_context_resource(agent_id=agent_id, tenant_id=tenant_id, resource_ref="soul")
+        assert soul.status == "ok"
+        workspace = AgentManager()._agent_dir(agent_id)
+        original_files = {ref: (workspace / ref).read_bytes() for ref in ("soul.md", "memory/self/self.md")}
+        dependencies = [
+            {"source_kind": "agent_identity", "source_id": f"{agent_id}\nidentity",
+             "source_version": canonical_content_hash(agent_identity_content(agent.name, agent.role_description))},
+            {"source_kind": "agent_context_resource", "source_id": f"{agent_id}\nsoul", "source_version": soul.sha256},
+            {"source_kind": "agent_resident_memory", "source_id": f"{agent_id}\nmemory/self/self.md",
+             "source_version": hashlib.sha256(original_files["memory/self/self.md"]).hexdigest()},
+        ]
+        original_revisions = list((await db.execute(select(ConfigRevision.id, ConfigRevision.content_hash,
+            ConfigRevision.is_active).where(ConfigRevision.tenant_id == tenant_id).order_by(ConfigRevision.id))).all())
+        assert len(original_revisions) == 2 and sum(row.is_active for row in original_revisions) == 1
+        original_audits = list((await db.execute(select(SecurityAuditEvent.id, SecurityAuditEvent.event_hash)
+            .where(SecurityAuditEvent.tenant_id == tenant_id).order_by(SecurityAuditEvent.id))).all())
+        if creation_audit_present:
+            await _validate_input_dependencies(db, tenant_id, dependencies, user=actor)
+            self_path = workspace / "memory/self/self.md"
+            self_path.write_bytes(original_files["memory/self/self.md"] + b"\nPrivate learned content\n")
+            await _validate_input_dependencies(db, tenant_id, dependencies[:2], user=actor)
+            with pytest.raises(ContentInputReceiptError, match="canonical source bytes no longer match"):
+                await _validate_input_dependencies(db, tenant_id, dependencies[2:], user=actor)
+            self_path.write_bytes(original_files["memory/self/self.md"])
+            (workspace / "soul.md").write_bytes(original_files["soul.md"] + b"\n")
+            unchanged_render = await load_agent_context_resource(agent_id=agent_id, tenant_id=tenant_id, resource_ref="soul")
+            assert unchanged_render.sha256 == soul.sha256
+            with pytest.raises(ContentInputReceiptError, match="canonical source bytes no longer match"):
+                await _validate_input_dependencies(db, tenant_id, dependencies[1:2], user=actor)
+            (workspace / "soul.md").write_bytes(original_files["soul.md"])
+        else:
+            with pytest.raises(ContentInputReceiptError, match="complete original creation sources"):
+                await _validate_input_dependencies(db, tenant_id, dependencies, user=actor)
+        assert list((await db.execute(select(ConfigRevision.id, ConfigRevision.content_hash,
+            ConfigRevision.is_active).where(ConfigRevision.tenant_id == tenant_id).order_by(ConfigRevision.id))).all()) == original_revisions
+        assert list((await db.execute(select(SecurityAuditEvent.id, SecurityAuditEvent.event_hash)
+            .where(SecurityAuditEvent.tenant_id == tenant_id).order_by(SecurityAuditEvent.id))).all()) == original_audits
+        assert {ref: (workspace / ref).read_bytes() for ref in original_files} == original_files
+
+    if creation_audit_present:
+        async with owner_sessionmaker() as db:
+            lookalike = await _agent(db, tenant_id=tenant_id, owner_id=user_id, name=ASSISTANT_EMPLOYEE_NAME)
+            lookalike.role_description = ASSISTANT_ROLE
+            await resume_native_employee(db, lookalike, actor_id=user_id, audit_action="assistant.provisioned")
+            lookalike_id = lookalike.id
+            await db.commit()
+        async with _client(app_user_sessionmaker, holder) as client:
+            selected = await client.post("/api/assistant/select", json={"agent_id": str(lookalike_id)})
+            assert selected.status_code == 200, selected.text
+        async with app_user_sessionmaker() as db:
+            await pin_rls_tenant_context(db, tenant_id)
+            actor = await db.get(User, user_id)
+            identity = dict(dependencies[0], source_id=f"{lookalike_id}\nidentity")
+            with pytest.raises(ContentInputReceiptError, match="complete original creation sources"):
+                await _validate_input_dependencies(db, tenant_id, [identity], user=actor)
+
+
 async def test_open_is_stable_and_resume_does_not_duplicate(
     owner_sessionmaker, app_user_sessionmaker, monkeypatch, owner_engine,
 ):

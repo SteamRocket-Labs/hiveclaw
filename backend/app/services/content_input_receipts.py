@@ -376,10 +376,12 @@ async def _validate_agent_context_dependency(db, tenant_id, dependency, *, user,
         if (revision is None or source is None or content.get("schema") != "hive.agent_bootstrap.v1"
             or canonical_content_hash(content) != revision.content_hash or revision.change_source != "user"
             or revision.changed_by_agent_id is not None or revision.changed_by_user_id != source.creator_id):
-            from app.services.employee_creation_sources import load_employee_creation_context
+            from app.services.employee_creation_sources import load_employee_creation_context, load_known_native_default_context
 
-            content = await load_employee_creation_context(db, tenant_id=tenant_id, agent_id=agent_id,
-                user=user, runtime_request=runtime_request)
+            content = await load_known_native_default_context(db, tenant_id=tenant_id, agent_id=agent_id, ref=ref)
+            if content is None:
+                content = await load_employee_creation_context(db, tenant_id=tenant_id, agent_id=agent_id,
+                    user=user, runtime_request=runtime_request)
         from app.config import get_settings
 
         if identity:

@@ -1,4 +1,4 @@
-"""Original HR-generated context, with creating-model inputs kept distinct from authorship."""
+"""Creation sources, with platform defaults kept distinct from original authorship."""
 
 import hashlib
 import uuid
@@ -10,6 +10,97 @@ from app.models.config_revision import ConfigRevision
 from app.models.hr_creation import HrCreationDraft
 from app.services.config_versioning import canonical_content_hash, save_revision
 from app.services.delegation_input_origin import load_employee_creation_dependencies
+
+
+async def load_known_native_default_context(db, *, tenant_id, agent_id, ref):
+    """Recognize unchanged public defaults without minting a historical bootstrap.
+
+    This is source evidence only. The caller must independently authorize its
+    reader and compare the requested source's complete current bytes.
+    """
+    from datetime import timezone
+
+    from app.core.policy import compute_audit_event_hash
+    from app.models.agent import Agent
+    from app.models.ai_asset import AIAssetRecord
+    from app.models.audit import AuditLog
+    from app.models.security_audit import SecurityAuditEvent
+    from app.models.user import User
+    from app.models.user_assistant_binding import UserAssistantBinding
+    from app.services.agent_context import _strip_primary_heading, agent_identity_content
+    from app.services.agent_manager import EMPTY_SELF_CONTENT, _render_agent_soul_from_blueprint
+    from app.services.assistant_binding import ASSISTANT_EMPLOYEE_NAME, ASSISTANT_ROLE
+
+    if ref not in {"identity", "soul", "memory/self/self.md"}:
+        return None
+    # An existing original-source record, including an invalid one, is never
+    # bypassed by this recognition of the older default constructor.
+    prior = await db.scalar(select(ConfigRevision.id).where(ConfigRevision.tenant_id == tenant_id,
+        ConfigRevision.entity_id == agent_id,
+        ConfigRevision.entity_type.in_(("agent_bootstrap", "agent_hr_bootstrap"))).limit(1))
+    agent = await db.scalar(select(Agent).where(Agent.id == agent_id, Agent.tenant_id == tenant_id)
+        .execution_options(populate_existing=True))
+    if (prior is not None or agent is None or agent.agent_type != "native" or agent.agent_class != "internal_tenant"
+        or agent.name != ASSISTANT_EMPLOYEE_NAME or agent.role_description != ASSISTANT_ROLE or agent.creator_id is None):
+        return None
+    binding = await db.scalar(select(UserAssistantBinding.id).where(UserAssistantBinding.tenant_id == tenant_id,
+        UserAssistantBinding.agent_id == agent_id, UserAssistantBinding.source == "provisioned",
+        UserAssistantBinding.user_id == agent.creator_id, UserAssistantBinding.requester_user_id == agent.creator_id,
+        UserAssistantBinding.owner_user_id_at_bind == agent.creator_id).limit(1))
+    if binding is None:
+        return None
+    audit = await db.scalar(select(SecurityAuditEvent).where(SecurityAuditEvent.tenant_id == tenant_id,
+        SecurityAuditEvent.resource_type == "agent", SecurityAuditEvent.resource_id == agent_id,
+        SecurityAuditEvent.event_type == "agent.created", SecurityAuditEvent.action == "assistant.provisioned",
+        SecurityAuditEvent.actor_type == "user", SecurityAuditEvent.actor_id == agent.creator_id,
+        SecurityAuditEvent.created_at == agent.created_at).limit(1).execution_options(populate_existing=True))
+    if (audit is None or audit.details != {"name": ASSISTANT_EMPLOYEE_NAME, "agent_type": "native",
+        "source": "approved_default", "blueprint_click": False, "hr_conversation": False}):
+        return None
+    fields = {key: getattr(audit, key) for key in ("event_type", "severity", "actor_type", "actor_id", "tenant_id",
+        "action", "resource_type", "resource_id", "details", "ip_address", "request_id",
+        "execution_identity_type", "execution_identity_id", "execution_identity_label", "prev_hash")}
+    if compute_audit_event_hash(**fields) != audit.event_hash:
+        return None
+    native_key = f"agent:{agent_id}"
+    revision = await db.scalar(select(ConfigRevision).join(AIAssetRecord, AIAssetRecord.id == ConfigRevision.entity_id)
+        .where(AIAssetRecord.tenant_id == tenant_id, AIAssetRecord.asset_type == "agent",
+            AIAssetRecord.native_key == native_key, AIAssetRecord.native_entity_id == agent_id,
+            ConfigRevision.tenant_id == tenant_id, ConfigRevision.entity_type == "ai_asset", ConfigRevision.version == 1,
+            ConfigRevision.change_source == "create", ConfigRevision.changed_by_user_id == agent.creator_id,
+            ConfigRevision.changed_by_agent_id.is_(None), ConfigRevision.created_at == agent.created_at)
+        .execution_options(populate_existing=True))
+    content = revision.content if revision is not None and isinstance(revision.content, dict) else {}
+    config = content.get("config")
+    if (revision is None or canonical_content_hash(content) != revision.content_hash
+        or content.get("schema") != "hive.ai_asset.agent.v1" or content.get("asset_type") != "agent"
+        or not isinstance(config, dict) or config.get("name") != ASSISTANT_EMPLOYEE_NAME
+        or config.get("role_description") != ASSISTANT_ROLE or config.get("agent_type") != "native"
+        or config.get("agent_class") != "internal_tenant"):
+        return None
+    # The append-only creation event binds the original revision to the native
+    # identity; the mutable control index alone is not that evidence. Version 1
+    # may be inactive after a legitimate model change.
+    asset_audit = await db.scalar(select(AuditLog).where(AuditLog.tenant_id == tenant_id,
+        AuditLog.user_id == agent.creator_id, AuditLog.agent_id.is_(None), AuditLog.action == "ai_asset.create",
+        AuditLog.created_at == agent.created_at, AuditLog.details["revision_id"].as_string() == str(revision.id))
+        .limit(1).execution_options(populate_existing=True))
+    if (asset_audit is None or asset_audit.details != {"asset_id": str(revision.entity_id), "asset_type": "agent",
+        "native_key": native_key, "revision_id": str(revision.id), "version": 1, "content_hash": revision.content_hash}):
+        return None
+    known = {"schema": "hive.native_default_context.v1",
+        "identity": agent_identity_content(ASSISTANT_EMPLOYEE_NAME, ASSISTANT_ROLE)}
+    if ref == "memory/self/self.md":
+        known["resident_sources"] = {ref: hashlib.sha256(EMPTY_SELF_CONTENT.encode("utf-8")).hexdigest()}
+    elif ref == "soul":
+        creator = await db.get(User, agent.creator_id, populate_existing=True)
+        if creator is None:
+            return None
+        soul = _render_agent_soul_from_blueprint(agent_name=ASSISTANT_EMPLOYEE_NAME, role_description=ASSISTANT_ROLE,
+            creator_name=creator.display_name, created_at=agent.created_at.astimezone(timezone.utc).strftime("%Y-%m-%d"))
+        known["soul"] = {"content_sha256": hashlib.sha256(soul.encode("utf-8")).hexdigest(),
+            "resource_sha256": hashlib.sha256(_strip_primary_heading(soul.strip()).strip().encode("utf-8")).hexdigest()}
+    return known
 
 
 async def record_employee_creation_context(db, *, draft, agent, workspace, template_dir, model_used, refinement=None):

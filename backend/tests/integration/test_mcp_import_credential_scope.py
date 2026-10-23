@@ -24,7 +24,7 @@ pytestmark = pytest.mark.usefixtures("migrated_pg_url")
 @pytest.mark.parametrize("stored_legacy", [False, True])
 async def test_direct_import_uses_only_the_current_employee_or_explicit_company_credential(
     owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, scoped_runtime_factories, entry, company_default,  # noqa: F811
-    credential_location, stored_legacy, legacy_unattributed,
+    credential_location, stored_legacy, legacy_unattributed, created_company=False,
 ):
     from app import database
     from app.api.mcp_servers import router
@@ -109,6 +109,16 @@ async def test_direct_import_uses_only_the_current_employee_or_explicit_company_
         return await mcp.import_mcp_server(employee, {"server_id": "Public Ledger",
             "config": {"mcp_url": url, **config}})
 
+    if created_company:
+        from app.services.mcp_naming import build_mcp_tool_name
+
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://mcp-credential.test") as client:
+            created = await client.post("/api/tools", json={"name": build_mcp_tool_name("Public Ledger", "lookup"),
+                "display_name": "Public ledger", "type": "mcp", "category": "mcp", "enabled": True,
+                "is_default": True, "mcp_server_name": "Public Ledger", "mcp_server_url": endpoint,
+                "mcp_tool_name": "lookup", "config": {"api_key": "synthetic-company-key"}})
+            assert created.status_code == 200, created.text
+            assert "synthetic-company-key" not in created.text
     assert "Imported MCP server" in await install(peer)
     async with app_user_sessionmaker() as db:
         await pin_rls_tenant_context(db, tenant)
@@ -197,6 +207,29 @@ async def test_direct_import_uses_only_the_current_employee_or_explicit_company_
         expected_peer = "Bearer synthetic-company-key" if company_default else None
         if not (legacy_unattributed or stored_legacy and not company_default):
             assert observed[1]["authorization"] == expected_peer, snapshot
+        if created_company:
+            rotated = await client.put(f"/api/tools/{tool_id}", json={"config": {
+                **shared.config, "api_key": "synthetic-rotated-company-key"}})
+            assert rotated.status_code == 200, rotated.text
+            before_attempts = len(attempts)
+            if entry == "resources":
+                assert "not_found" in await invoke(peer)
+            else:
+                assert "not approved" in await invoke(peer)
+            assert len(attempts) == before_attempts
+            rotated_fact = (await client.get(review_path)).json()[0]
+            rotated_review = await client.put(review_path + "/lookup/metadata-review", json={"decision": "approve",
+                "expected_fingerprint": rotated_fact["metadata_fingerprint"],
+                "canonical_description": "Read a reviewed public ledger entry."})
+            assert rotated_review.status_code == 200, rotated_review.text
+            assert "Public ledger" in await invoke(agent)
+            assert "Public ledger" in await invoke(peer)
+            (tmp_path / "company-credential-rotation.json").write_text(json.dumps({
+                "observed": list(observed), "employee_config": first_config,
+                "company_employee_assignment": second_config}, indent=2))
+            assert observed[-2]["authorization"] == "Bearer synthetic-employee-key"
+            expected_peer = "Bearer synthetic-rotated-company-key"
+            assert observed[-1]["authorization"] == expected_peer
         assert first_config.get("api_key") == "synthetic-employee-key" and not second_config.get("api_key")
         assert "synthetic-employee-key" not in json.dumps(shared.config) and "synthetic-employee-key" not in raw
         if legacy_unattributed:
@@ -312,3 +345,13 @@ async def test_direct_import_uses_only_the_current_employee_or_explicit_company_
         async with app_user_sessionmaker() as db:
             await pin_rls_tenant_context(db, tenant)
             assert (await db.get(Tool, tool_id)).mcp_server_url == (legacy_url if stored_legacy else endpoint)
+
+
+@pytest.mark.parametrize("entry", ["native", "generic", "resources"])
+async def test_company_created_credentials_rotate_without_becoming_employee_overrides(
+    owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, scoped_runtime_factories, entry,  # noqa: F811
+):
+    await test_direct_import_uses_only_the_current_employee_or_explicit_company_credential(
+        owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, scoped_runtime_factories,
+        entry, True, "config", False, False, created_company=True,
+    )

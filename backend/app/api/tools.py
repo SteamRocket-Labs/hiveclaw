@@ -768,7 +768,9 @@ async def create_tool(
             tool_id=tool.id,
             tenant_id=current_user.tenant_id,
             enabled=data.enabled,
-            config=data.config or {},
+            # Company MCP configuration stays on Tool; copying it would turn
+            # defaults into employee overrides that survive company rotation.
+            config={} if tool.type == "mcp" else data.config or {},
             source="system",
             merge_config=False,
         )

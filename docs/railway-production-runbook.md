@@ -40,6 +40,15 @@ Before submitting:
 
 ## Submit the exact committed source
 
+For a populated database migration that can outlast the web-service health deadline,
+run the reviewed migration from the exact committed backend package as a separately
+observed schema-owner operation before uploading services. Keep credentials inside
+the trusted operator process. Verify its terminal result and committed schema before
+continuing; a lost process or timeout requires inspection of database activity and
+committed progress before any retry. Do not extend a web health timeout to conceal a
+blocking migration. Online backfills must release DDL locks before processing data
+and retain committed batches when interrupted.
+
 Run from the repository root. Set `RAILWAY_PROJECT_ID` in your local shell from the
 authenticated Railway project settings, and verify the selected environment before
 use. A project identifier is not a credential, but real infrastructure identifiers

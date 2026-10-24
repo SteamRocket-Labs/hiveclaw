@@ -109,7 +109,7 @@ async def _start_feishu_creation_work(seed, app_user_sessionmaker, monkeypatch):
         return command.id
 
 
-@pytest.mark.parametrize("input_case", ["complete", "unbound", "revoked", "first_task", "first_task_unbound", "first_task_revoked", "first_task_refined", "first_task_delivery", "first_task_parent_model", "first_task_refined_native", "first_task_native_creation", "first_task_fresh_employee", "first_task_slow_provider", "first_task_saved_reopen", "first_task_question", "first_task_question_after_write", "first_task_feishu_question", "first_task_feishu_quoted_question", "first_task_feishu_question_source_changed", "first_task_feishu_question_body_changed", "first_task_feishu_question_already_answered", "first_task_feishu_question_projection_missing", "first_task_feishu_question_recipient_changed", "first_task_feishu_question_legacy_status", "first_task_feishu_permission_allow", "first_task_feishu_permission_deny", "first_task_feishu_permission_cancel", "first_task_feishu_permission_unknown", "first_task_feishu_permission_expired", "first_task_feishu_permission_source_changed", "delegation_permission_allow", "first_task_recall", "first_task_ledger", "first_task_ledger_unknown", "first_task_parent_status", "first_task_parent_status_unknown", "first_task_child_command", "first_task_child_code", "first_task_parent_creation_result", "first_task_parent_result_denial", "first_task_context", "first_task_discovery", "first_task_unverified_memory", "first_task_explicit_unverified_memory", "first_task_feishu_permission_channel_allow", "first_task_feishu_permission_channel_deny", "first_task_feishu_permission_channel_unknown", "first_task_feishu_permission_channel_legacy", "first_task_feishu_permission_channel_scope", "first_task_feishu_permission_channel_feedback_retry", "first_task_feishu_progress"])
+@pytest.mark.parametrize("input_case", ["complete", "unbound", "revoked", "first_task", "first_task_unbound", "first_task_revoked", "first_task_refined", "first_task_delivery", "first_task_parent_model", "first_task_refined_native", "first_task_native_creation", "first_task_fresh_employee", "first_task_slow_provider", "first_task_saved_reopen", "first_task_question", "first_task_question_after_write", "first_task_feishu_question", "first_task_feishu_quoted_question", "first_task_feishu_question_source_changed", "first_task_feishu_question_body_changed", "first_task_feishu_question_already_answered", "first_task_feishu_question_projection_missing", "first_task_feishu_question_recipient_changed", "first_task_feishu_question_legacy_status", "first_task_feishu_permission_allow", "first_task_feishu_permission_deny", "first_task_feishu_permission_cancel", "first_task_feishu_permission_unknown", "first_task_feishu_permission_expired", "first_task_feishu_permission_source_changed", "delegation_permission_allow", "first_task_recall", "first_task_ledger", "first_task_ledger_unknown", "first_task_parent_status", "first_task_parent_status_unknown", "first_task_child_command", "first_task_child_code", "first_task_parent_creation_result", "first_task_parent_result_denial", "first_task_parent_public_directory", "first_task_context", "first_task_discovery", "first_task_unverified_memory", "first_task_explicit_unverified_memory", "first_task_feishu_permission_channel_allow", "first_task_feishu_permission_channel_deny", "first_task_feishu_permission_channel_unknown", "first_task_feishu_permission_channel_legacy", "first_task_feishu_permission_channel_scope", "first_task_feishu_permission_channel_feedback_retry", "first_task_feishu_progress"])
 async def test_governed_delegation_preserves_its_parent_instruction_origin(
     owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, input_case, migrated_pg_url,
 ):
@@ -127,6 +127,9 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
     from app.services.secrets_provider import get_secrets_provider
     from app.services.web_chat_runtime import _persist_tool_call
 
+    public_directory_case = input_case == "first_task_parent_public_directory"
+    if public_directory_case:
+        input_case = "first_task_parent_status"
     result_denial_case = input_case == "first_task_parent_result_denial"
     if result_denial_case:
         input_case = "first_task_child_command"
@@ -203,6 +206,19 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
                 owner_user_id=seed["user_id"], primary_model_id=model.id))
         db.add(CapabilityPolicy(tenant_id=seed["tenant_id"], capability="agent.message.send", allowed=True,
             requires_approval=False))
+        if public_directory_case:
+            from app.models.agent import AgentPermission
+            from app.models.user import User
+
+            peer_owner, peer_id, public_permission_id = uuid4(), uuid4(), uuid4()
+            db.add(User(id=peer_owner, tenant_id=seed["tenant_id"], username=f"directory-{peer_owner.hex}",
+                email=f"{peer_owner.hex}@directory.test", password_hash="synthetic", display_name="Directory peer owner"))
+            await db.flush()
+            db.add(Agent(id=peer_id, tenant_id=seed["tenant_id"], name="Public synthetic teammate",
+                creator_id=peer_owner, owner_user_id=peer_owner, primary_model_id=model.id))
+            await db.flush()
+            db.add(AgentPermission(id=public_permission_id, tenant_id=seed["tenant_id"], agent_id=peer_id,
+                scope_type="company", access_level="use"))
         if child_command_case:
             db.add(CapabilityPolicy(tenant_id=seed["tenant_id"],
                 capability="workspace.code.execute" if child_tool == "execute_code" else "workspace.command.execute",
@@ -1742,7 +1758,13 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
                 resource_ref="a2a-collaborators")
             roster = {"source_kind": "agent_context_resource", "source_id": f"{receiver}\na2a-collaborators",
                 "source_version": legacy_roster.sha256}
-            await validate_browser_input_dependencies(db, seed["tenant_id"], await db.get(User, seed["user_id"]), [roster])
+            if public_directory_case:
+                # A legacy file has no receipt for foreign public identities; the native directory does.
+                with pytest.raises(ContentInputReceiptError) as unavailable:
+                    await validate_browser_input_dependencies(db, seed["tenant_id"], await db.get(User, seed["user_id"]), [roster])
+                assert unavailable.value.status_code == 503
+            else:
+                await validate_browser_input_dependencies(db, seed["tenant_id"], await db.get(User, seed["user_id"]), [roster])
             control = await db.begin_nested()
             witness = await db.scalar(select(ConfigRevision).where(ConfigRevision.entity_id == seed["agent_id"],
                 ConfigRevision.entity_type == "agent_bootstrap", ConfigRevision.version == 1))
@@ -1968,6 +1990,37 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
             parent_artifact_id = artifact.id
             models = list(await db.scalars(select(SessionModelResult).where(SessionModelResult.run_id == return_id)))
             assert len(models) == 3 and all(model.model_request_snapshot_json["input_bindings"]["dependency_coverage"]["complete"] for model in models)
+            if public_directory_case:
+                from app.models.invocation_span import InvocationSpan
+                from app.services.agent_directory_sources import owned_directory_source
+                from app.services.runtime_result_sources import load_canonical_result_sources, validate_runtime_result_sources
+                from app.models.runtime_result import RuntimeResultObject
+
+                result_object = await db.get(RuntimeResultObject, UUID(result_ref.split("/")[2]))
+                _task, dependencies, _receipts = await load_canonical_result_sources(db, result_object)
+                directory_sources = [ref for ref in dependencies if ref["source_kind"] == "agent_directory_observation"]
+                child_directory = None
+                for ref in directory_sources:
+                    if (await db.get(InvocationSpan, UUID(ref["source_id"]))).agent_id == receiver:
+                        child_directory = ref
+                        break
+                assert child_directory is not None
+                witness = await db.get(InvocationSpan, UUID(child_directory["source_id"]))
+                proof = witness.metadata_json["agent_directory_observation"]
+                assert any(entry["section"] == "public_agents" and entry["id"] == str(peer_id)
+                    for entry in proof["inventory"])
+                assert await owned_directory_source(db, dependency=child_directory, agent_id=receiver,
+                    tenant_id=seed["tenant_id"], session_id=UUID(request.session_id), user_id=seed["user_id"])
+                assert not await owned_directory_source(db, dependency=child_directory, agent_id=receiver,
+                    tenant_id=seed["tenant_id"], session_id=UUID(request.session_id), user_id=peer_owner)
+                control = await db.begin_nested()
+                await db.delete(await db.get(AgentPermission, public_permission_id))
+                await db.flush()
+                with pytest.raises(ContentInputReceiptError) as denied:
+                    await validate_runtime_result_sources(db, ToolExecutionRequest(tool_name="read_runtime_result",
+                        arguments={"result_ref": result_ref}, context=observed["context"]), result_object)
+                assert denied.value.status_code == 403
+                await control.rollback()
             parent_receipt = await db.get(ContentInputReceipt, UUID(artifact.snapshot_json["content_input_receipt_id"]))
             source = next(ref for ref in parent_receipt.dependencies_json if ref["source_kind"] == "runtime_result")
             await validate_runtime_input_dependencies(db, ToolExecutionRequest(tool_name="read_file", arguments={},

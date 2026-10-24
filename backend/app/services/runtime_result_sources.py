@@ -46,7 +46,10 @@ async def _published_owned_delegation_input(db, dependency, task, *, receipt_ids
                 "write_file", "fs_write", "run_command", "execute_code", "ask_user_question",
                 "browser_manage", "browser_observe", "browser_action"}:
             return True
-        if row.tool_name not in {"read_file", "read_document", "fs_read"} or not receipt_ids:
+        from app.services.work_ledger_tool_sources import LEDGER_RESULT_TOOLS, ledger_result_sources
+
+        ledger_read = row.tool_name in LEDGER_RESULT_TOOLS
+        if not ledger_read and (row.tool_name not in {"read_file", "read_document", "fs_read"} or not receipt_ids):
             return False
         from app.models.chat_transcript_event import ChatTranscriptEvent
         from app.services.content_input_receipts import load_workspace_input_evidence
@@ -57,11 +60,17 @@ async def _published_owned_delegation_input(db, dependency, task, *, receipt_ids
             ChatTranscriptEvent.session_id == row.session_id, ChatTranscriptEvent.run_id == task.id,
             ChatTranscriptEvent.invocation_id == row.id))
         payload = _event_payload(event) if event else {}
-        pointer = (payload.get("metadata") or {}).get("workspace_input_receipt")
         model = await db.scalar(select(SessionModelResult).where(SessionModelResult.tenant_id == task.tenant_id,
             SessionModelResult.session_id == row.session_id, SessionModelResult.run_id == task.id,
             SessionModelResult.provider_request_id == row.provider_request_id))
-        if not isinstance(pointer, dict) or model is None:
+        if model is None:
+            return False
+        if ledger_read:
+            _sources, complete = await ledger_result_sources(db, tenant_id=task.tenant_id, agent_id=task.child_agent_id,
+                invocation=row, model=model, content_hash=payload.get("content_hash"))
+            return complete
+        pointer = (payload.get("metadata") or {}).get("workspace_input_receipt")
+        if not isinstance(pointer, dict):
             return False
         try:
             bound = await load_workspace_input_evidence(db, agent_id=task.child_agent_id, invocation=row,

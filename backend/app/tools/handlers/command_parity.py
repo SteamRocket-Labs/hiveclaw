@@ -39,6 +39,7 @@ from app.services.session_goal_service import (
 from app.services.task_command_adapter import TaskCommandKind, adapt_task_command
 from app.tools.decorator import ToolMeta, tool
 from app.tools.runtime import ToolExecutionRequest
+from app.tools.handlers.work_ledger import _observed_result
 
 
 def _json(payload: dict[str, Any]) -> str:
@@ -83,6 +84,7 @@ async def task_create(request: ToolExecutionRequest) -> str:
         blocks=payload.get("blocks"),
         blocked_by=payload.get("blockedBy"),
         session_id=_session_id(request),
+        capture_source=True,
     )
     task = result["item"]
     await emit_hook(
@@ -99,7 +101,8 @@ async def task_create(request: ToolExecutionRequest) -> str:
             "starts_execution": False,
         },
     )
-    return _json({"ok": True, "starts_execution": False, "task": result["item"]})
+    return await _observed_result(request, {"ok": True, "starts_execution": False, "task": result["item"]},
+        snapshot=result.get("source_snapshot"), scope=(None, None, _session_id(request)))
 
 
 @tool(
@@ -129,6 +132,7 @@ async def task_update(request: ToolExecutionRequest) -> str:
         status=request.arguments.get("status"),
         owner=request.arguments.get("owner"),
         session_id=_session_id(request),
+        capture_source=True,
     )
     task = result["item"]
     if str(task.get("status") or "").strip() == "completed":
@@ -146,7 +150,8 @@ async def task_update(request: ToolExecutionRequest) -> str:
                 "starts_execution": False,
             },
         )
-    return _json({"ok": True, "starts_execution": False, "task": result["item"]})
+    return await _observed_result(request, {"ok": True, "starts_execution": False, "task": result["item"]},
+        snapshot=result.get("source_snapshot"), scope=(None, None, _session_id(request)))
 
 
 @tool(
@@ -163,8 +168,10 @@ async def task_update(request: ToolExecutionRequest) -> str:
     )
 )
 async def task_list(request: ToolExecutionRequest) -> str:
-    view = read_agent_work_ledger_view(agent_id=request.context.agent_id, session_id=_session_id(request))
-    return _json({"ok": True, "tasks": (view or {}).get("todo_items", []), "ledger": view})
+    view, snapshot = read_agent_work_ledger_view(agent_id=request.context.agent_id, session_id=_session_id(request),
+        capture_source=True)
+    return await _observed_result(request, {"ok": True, "tasks": (view or {}).get("todo_items", []), "ledger": view},
+        snapshot=snapshot, scope=(None, None, _session_id(request)))
 
 
 @tool(
@@ -182,9 +189,11 @@ async def task_list(request: ToolExecutionRequest) -> str:
 )
 async def task_get(request: ToolExecutionRequest) -> str:
     task_id = str(request.arguments.get("task_id") or "").strip()
-    view = read_agent_work_ledger_view(agent_id=request.context.agent_id, session_id=_session_id(request))
+    view, snapshot = read_agent_work_ledger_view(agent_id=request.context.agent_id, session_id=_session_id(request),
+        capture_source=True)
     task = next((item for item in (view or {}).get("todo_items", []) if str(item.get("id")) == task_id), None)
-    return _json({"ok": task is not None, "task": task, "error": "" if task else "Task not found."})
+    return await _observed_result(request, {"ok": task is not None, "task": task, "error": "" if task else "Task not found."},
+        snapshot=snapshot, scope=(None, None, _session_id(request)))
 
 
 @tool(

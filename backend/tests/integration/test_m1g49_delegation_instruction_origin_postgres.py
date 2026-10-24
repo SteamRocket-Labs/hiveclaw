@@ -109,7 +109,7 @@ async def _start_feishu_creation_work(seed, app_user_sessionmaker, monkeypatch):
         return command.id
 
 
-@pytest.mark.parametrize("input_case", ["complete", "unbound", "revoked", "first_task", "first_task_unbound", "first_task_revoked", "first_task_refined", "first_task_delivery", "first_task_parent_model", "first_task_refined_native", "first_task_native_creation", "first_task_fresh_employee", "first_task_slow_provider", "first_task_saved_reopen", "first_task_question", "first_task_question_after_write", "first_task_feishu_question", "first_task_feishu_quoted_question", "first_task_feishu_question_source_changed", "first_task_feishu_question_body_changed", "first_task_feishu_question_already_answered", "first_task_feishu_question_projection_missing", "first_task_feishu_question_recipient_changed", "first_task_feishu_question_legacy_status", "first_task_feishu_permission_allow", "first_task_feishu_permission_deny", "first_task_feishu_permission_cancel", "first_task_feishu_permission_unknown", "first_task_feishu_permission_expired", "first_task_feishu_permission_source_changed", "delegation_permission_allow", "first_task_recall", "first_task_ledger", "first_task_ledger_unknown", "first_task_parent_status", "first_task_parent_status_unknown", "first_task_child_command", "first_task_child_code", "first_task_parent_creation_result", "first_task_parent_historical_creation_result", "first_task_parent_historical_creation_unknown", "first_task_parent_result_denial", "first_task_parent_public_directory", "first_task_child_readback", "first_task_context", "first_task_discovery", "first_task_unverified_memory", "first_task_explicit_unverified_memory", "first_task_feishu_permission_channel_allow", "first_task_feishu_permission_channel_deny", "first_task_feishu_permission_channel_unknown", "first_task_feishu_permission_channel_legacy", "first_task_feishu_permission_channel_scope", "first_task_feishu_permission_channel_feedback_retry", "first_task_feishu_progress"])
+@pytest.mark.parametrize("input_case", ["complete", "unbound", "revoked", "first_task", "first_task_unbound", "first_task_revoked", "first_task_refined", "first_task_delivery", "first_task_parent_model", "first_task_refined_native", "first_task_native_creation", "first_task_fresh_employee", "first_task_slow_provider", "first_task_saved_reopen", "first_task_question", "first_task_question_after_write", "first_task_feishu_question", "first_task_feishu_quoted_question", "first_task_feishu_question_source_changed", "first_task_feishu_question_body_changed", "first_task_feishu_question_already_answered", "first_task_feishu_question_projection_missing", "first_task_feishu_question_recipient_changed", "first_task_feishu_question_legacy_status", "first_task_feishu_permission_allow", "first_task_feishu_permission_deny", "first_task_feishu_permission_cancel", "first_task_feishu_permission_unknown", "first_task_feishu_permission_expired", "first_task_feishu_permission_source_changed", "delegation_permission_allow", "first_task_recall", "first_task_ledger", "first_task_ledger_unknown", "first_task_parent_status", "first_task_parent_status_unknown", "first_task_child_command", "first_task_child_code", "first_task_parent_creation_result", "first_task_parent_historical_creation_result", "first_task_parent_historical_creation_unknown", "first_task_parent_result_denial", "first_task_parent_public_directory", "first_task_child_readback", "first_task_parity_list", "first_task_parity_ledger", "first_task_parity_ledger_unknown", "first_task_context", "first_task_discovery", "first_task_unverified_memory", "first_task_explicit_unverified_memory", "first_task_feishu_permission_channel_allow", "first_task_feishu_permission_channel_deny", "first_task_feishu_permission_channel_unknown", "first_task_feishu_permission_channel_legacy", "first_task_feishu_permission_channel_scope", "first_task_feishu_permission_channel_feedback_retry", "first_task_feishu_progress"])
 async def test_governed_delegation_preserves_its_parent_instruction_origin(
     owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, input_case, migrated_pg_url,
 ):
@@ -127,9 +127,14 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
     from app.services.secrets_provider import get_secrets_provider
     from app.services.web_chat_runtime import _persist_tool_call
 
-    child_readback_case = input_case == "first_task_child_readback"
+    parity_list_case = input_case == "first_task_parity_list"
+    parity_sequence_case = input_case in {"first_task_parity_ledger", "first_task_parity_ledger_unknown"}
+    parity_unknown = input_case == "first_task_parity_ledger_unknown"
+    child_readback_case = input_case in {"first_task_child_readback", "first_task_parity_list", "first_task_parity_ledger"}
     if child_readback_case:
         input_case = "first_task_parent_status"
+    if parity_unknown:
+        input_case = "first_task_ledger_unknown"
     public_directory_case = input_case == "first_task_parent_public_directory"
     if public_directory_case:
         input_case = "first_task_parent_status"
@@ -444,7 +449,7 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
             creator_client.script.insert(0, {"tool_calls": [
                 {"id": f"creator-discovery-{index}-{name}-{args.get('ref', '')}", "type": "function", "function": {
                     "name": name, "arguments": json.dumps(args)}}
-                for index, (name, args) in enumerate(([
+                for index, (name, args) in enumerate(([("task_list", {})] if parity_list_case else [
                     ("track_todo", {"action": "add", "title": "Create the research employee"}),
                     ("track_todo", {"action": "add", "title": "Start the explicit first task once"}),
                     ("track_todo", {"action": "add", "title": "Consume the returned report"}),
@@ -458,6 +463,35 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
                     ("read_ledger", {}), ("list_files", {"path": "workspace"}),
                     ("tool_search", {"query": "list_employees"})]))
             ], "finish_reason": "tool_calls"})
+        if parity_sequence_case:
+            def parity_call(identity, name, arguments):
+                return {"id": identity, "type": "function", "function": {"name": name, "arguments": json.dumps(arguments)}}
+
+            creator_client.script[0] = {"tool_calls": [
+                parity_call("creator-parity-empty-list", "task_list", {}),
+                parity_call("creator-parity-missing-get", "task_get", {"task_id": str(uuid4())}),
+                parity_call("creator-parity-create", "task_create", {"subject": "Create the research employee"}),
+            ], "finish_reason": "tool_calls"}
+            creator_client.script.insert(1, {"tool_calls": [
+                parity_call("creator-parity-get", "task_get", {}),
+                parity_call("creator-parity-update", "task_update", {"status": "in_progress"}),
+                parity_call("creator-parity-list", "task_list", {}),
+            ], "finish_reason": "tool_calls"})
+            native_parity_stream = creator_client.stream
+
+            async def continue_parity_ledger(**kwargs):
+                if len(creator_client.requests) == 1:
+                    created = next(message for message in kwargs["messages"]
+                        if (message.get("tool_call_id") if isinstance(message, dict) else message.tool_call_id) == "creator-parity-create")
+                    body = json.loads(created["content"] if isinstance(created, dict) else created.content)
+                    task_identity = body["task"]["id"]
+                    for call in creator_client.script[0]["tool_calls"]:
+                        if call["function"]["name"] in {"task_get", "task_update"}:
+                            args = json.loads(call["function"]["arguments"])
+                            call["function"]["arguments"] = json.dumps({**args, "task_id": task_identity})
+                return await native_parity_stream(**kwargs)
+
+            monkeypatch.setattr(creator_client, "stream", continue_parity_ledger)
         if input_case == "first_task_explicit_unverified_memory":
             creator_client.script.insert(0, {"tool_calls": [{"id": "read-old-memory", "type": "function",
                 "function": {"name": "read_file", "arguments": json.dumps({"path": old_memory_path + "/summary.md"})}}],
@@ -484,7 +518,10 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
             assert old_memory_path in visible and "source_unverified" in visible
             assert "OLD_UNVERIFIED_CREATION_MEMORY" not in visible
         if discovery_case:
-            assert len(creator_client.requests) == 3
+            if parity_sequence_case:
+                assert len(creator_client.requests) == 4
+            else:
+                assert len(creator_client.requests) == 3
         if ledger_unknown_case:
             assert "LEGACY_PRIVATE_LEDGER_WITHOUT_NATIVE_RECEIPT" in json.dumps(creator_client.requests[1]["messages"])
         if input_case != "first_task_explicit_unverified_memory" and not discovery_case:
@@ -510,11 +547,17 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
             creating_rounds = list(await db.scalars(select(SessionModelResult).where(SessionModelResult.run_id == seed["run_id"])))
             if input_case == "first_task_explicit_unverified_memory" or ledger_unknown_case:
                 ordered = sorted(creating_rounds, key=lambda row: session_model_round._root_round_index_from_id(row.round_id))
-                assert len(ordered) == 3
+                if parity_sequence_case:
+                    assert len(ordered) == 4
+                else:
+                    assert len(ordered) == 3
                 assert ordered[0].model_request_snapshot_json["input_bindings"]["dependency_coverage"]["complete"]
                 assert not ordered[1].model_request_snapshot_json["input_bindings"]["dependency_coverage"]["complete"]
             elif discovery_case:
-                assert len(creating_rounds) == 3 and all(row.model_request_snapshot_json["input_bindings"]["dependency_coverage"]["complete"] for row in creating_rounds)
+                if parity_sequence_case:
+                    assert len(creating_rounds) == 4 and all(row.model_request_snapshot_json["input_bindings"]["dependency_coverage"]["complete"] for row in creating_rounds)
+                else:
+                    assert len(creating_rounds) == 3 and all(row.model_request_snapshot_json["input_bindings"]["dependency_coverage"]["complete"] for row in creating_rounds)
             else:
                 assert len(creating_rounds) == 2 and all(row.model_request_snapshot_json["input_bindings"]["dependency_coverage"]["complete"] for row in creating_rounds)
     else:
@@ -646,6 +689,9 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
     if child_readback_case:
         client.script.insert(1, {"tool_calls": [{"id": "child-report-read", "type": "function", "function": {
             "name": "read_file", "arguments": json.dumps({"path": report_path})}}], "finish_reason": "tool_calls"})
+    if parity_list_case or parity_sequence_case:
+        client.script[0]["tool_calls"].insert(0, {"id": "child-parity-list", "type": "function", "function": {
+            "name": "task_list", "arguments": "{}"}})
     if slow_first_task:
         import asyncio
 

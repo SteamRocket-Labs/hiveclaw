@@ -11,7 +11,8 @@ from app.models.invocation_span import InvocationSpan
 from app.services.content_input_receipts import ContentInputReceiptError
 from app.services.session_model_inputs import _hash, _model_dependencies, _unique_dependencies, tool_result_source_hash
 
-LEDGER_RESULT_TOOLS = frozenset({"track_todo", "record_finding", "read_ledger", "report_progress"})
+LEDGER_RESULT_TOOLS = frozenset({"track_todo", "record_finding", "read_ledger", "report_progress",
+    "task_create", "task_update", "task_list", "task_get"})
 _LISTS = {"todo_items", "findings", "progress", "failures", "replans", "verification", "open_questions", "evidence_refs"}
 
 
@@ -50,11 +51,13 @@ async def ledger_result_sources(db, *, tenant_id, agent_id, invocation, model, c
     row = await db.get(InvocationSpan, uuid.uuid5(invocation.id, "work-ledger-tool-result"), populate_existing=True)
     proof = (row.metadata_json or {}).get("ledger_result") if row else None
     session = await db.get(ChatSession, invocation.session_id, populate_existing=True)
+    settled_states = {"effect_committed"} | ({"failed"} if invocation.tool_name == "task_get"
+        and isinstance(proof, dict) and proof.get("query_miss") is True else set())
     valid = (row is not None and row.tenant_id == tenant_id and row.agent_id == agent_id
         and row.session_id == str(invocation.session_id) and row.runtime_task_id == invocation.run_id
         and row.span_type == "work_ledger_result" and row.name == invocation.tool_name and row.status == "captured"
         and invocation.tool_name in LEDGER_RESULT_TOOLS and invocation.effect_state in (
-            {"effect_committed"} if _settled else {"prepared_not_started", "effect_started", "effect_committed"})
+            settled_states if _settled else settled_states | {"prepared_not_started", "effect_started"})
         and isinstance(proof, dict) and proof.get("schema") == "hive.work_ledger_tool_result.v1"
         and proof.get("invocation_id") == str(invocation.id) and proof.get("actor_id") == str(row.user_id)
         and proof.get("content_hash") == content_hash and proof.get("args_hash") == (
@@ -106,7 +109,8 @@ async def _snapshot_sources(db, *, tenant_id, agent_id, actor_id, session_id, sc
     except (ValueError, KeyError, TypeError):
         return [], False
     if (call is None or model is None or row.id != uuid.uuid5(call.id, "work-ledger-tool-result")
-        or call.effect_state != "effect_committed" or not _model_dependencies(model)[1]):
+        or (call.effect_state != "effect_committed" and not (call.tool_name == "task_get"
+            and call.effect_state == "failed" and proof.get("query_miss") is True)) or not _model_dependencies(model)[1]):
         return [], False
     _sources, complete = await ledger_result_sources(db, tenant_id=tenant_id, agent_id=agent_id,
         invocation=call, model=model, content_hash=proof.get("content_hash"), _settled=False)
@@ -186,14 +190,22 @@ async def record_ledger_result(request, *, content, snapshot=None, scope=None):
         prior_complete = prior_complete or _empty_ledger(before, agent_id=context.agent_id, scope=actual_scope)
         body = json.loads(content)
         operation = snapshot.get("operation")
-        complete = same_scope and body.get("ok") is True and (
+        query_miss = (request.tool_name == "task_get"
+            and body == {"ok": False, "task": None, "error": "Task not found."})
+        successful = body.get("ok") is True or query_miss
+        complete = same_scope and successful and (
             request.tool_name == "report_progress" and body == {"ok": True, "acknowledged": True}
             or request.tool_name == "track_todo" and (
                 operation == "todo_add" and body.get("action") == "added"
                 or operation == "todo_update" and body.get("action") == "updated" and prior_complete)
             or request.tool_name == "record_finding" and operation == "finding_append"
+            or request.tool_name in {"task_create", "task_update"} and body.get("starts_execution") is False
+                and isinstance(body.get("task"), dict) and (operation == "todo_add"
+                    or operation == "todo_update" and prior_complete)
             or request.tool_name == "read_ledger" and operation == "ledger_read" and (
-                prior_complete or body.get("ledger") is None and snapshot.get("missing") is True))
+                prior_complete or body.get("ledger") is None and snapshot.get("missing") is True)
+            or request.tool_name in {"task_list", "task_get"} and operation == "ledger_read" and (
+                prior_complete or before is None and snapshot.get("missing") is True))
         writer_complete = _model_dependencies(model)[1]
         sources = prior if operation in {"todo_update", "ledger_read"} else []
         proof = {"schema": "hive.work_ledger_tool_result.v1", "invocation_id": str(call.id),
@@ -206,6 +218,8 @@ async def record_ledger_result(request, *, content, snapshot=None, scope=None):
             "ledger_inputs": prior, "prior_ledger_hash": _hash(before) if before is not None else None,
             "capture_effect_state": call.effect_state,
             "ledger_complete": bool(after is not None and complete and writer_complete and prior_complete)}
+        if query_miss:
+            proof["query_miss"] = True
         identity = uuid.uuid5(call.id, "work-ledger-tool-result")
         row = await db.get(InvocationSpan, identity, populate_existing=True)
         if row is None:

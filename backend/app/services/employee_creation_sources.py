@@ -313,13 +313,16 @@ async def _owned_context_source(db, *, dependency, agent_id, tenant_id, session_
         )
         from app.services.session_model_inputs import _context_resource_dependency, _model_dependencies, tool_result_source_hash
         from app.services.session_semantic_history import _event_payload
+        from app.services.work_ledger_tool_sources import LEDGER_RESULT_TOOLS, ledger_result_sources
 
         try:
             call = await db.get(SessionToolInvocation, uuid.UUID(source_id), populate_existing=True)
         except ValueError:
             return False
         if (call is None or call.tenant_id != tenant_id or call.session_id != session_id
-            or call.effect_state != 'effect_committed' or call.tool_name not in {'read_ledger', 'list_files', 'tool_search', 'read_context_resource', 'search_memory', 'track_todo', 'record_finding', 'report_progress'}):
+            or (call.effect_state != 'effect_committed' and not (
+                call.tool_name == 'task_get' and call.effect_state == 'failed')) or call.tool_name not in (
+                LEDGER_RESULT_TOOLS | {'list_files', 'tool_search', 'read_context_resource', 'search_memory'})):
             return False
         event = await db.scalar(select(ChatTranscriptEvent).where(
             ChatTranscriptEvent.id == call.result_event_id, ChatTranscriptEvent.tenant_id == tenant_id,
@@ -334,8 +337,6 @@ async def _owned_context_source(db, *, dependency, agent_id, tenant_id, session_
         if (model is None or not _model_dependencies(model)[1]
             or tool_result_source_hash(payload) != dependency['source_version']):
             return False
-        from app.services.work_ledger_tool_sources import LEDGER_RESULT_TOOLS, ledger_result_sources
-
         if call.tool_name in LEDGER_RESULT_TOOLS:
             _sources, complete = await ledger_result_sources(db, tenant_id=tenant_id, agent_id=agent_id,
                 invocation=call, model=model, content_hash=payload.get('content_hash'))

@@ -118,3 +118,49 @@ def test_grep_search_defaults_to_complete_results_and_honors_explicit_limit(monk
     assert "/dev/fd/" not in complete
     single = workspace._grep_search(tmp_path, "needle", root="workspace/record-074.txt")
     assert "1 match(es)" in single and "record-074.txt:1:needle 74" in single
+
+
+@pytest.mark.parametrize("native", [False, True])
+def test_grep_search_binds_and_searches_the_same_snapshot_bytes(monkeypatch, tmp_path, native):
+    import hashlib
+    import os
+    from uuid import uuid4
+    from app.services.agent_tool_domains import workspace
+    from app.services.workspace_resource_authority import WorkspaceAuthorityScope, WorkspaceExecutionInputs, WorkspaceInputRead
+
+    relative = "workspace/report.txt"
+    target = tmp_path / relative
+    target.parent.mkdir()
+    original = b"verified line\n"
+    target.write_bytes(original)
+    digest = hashlib.sha256(original).hexdigest()
+    receipt = uuid4()
+    scope = WorkspaceAuthorityScope(agent_id=uuid4(), user_id=uuid4(), root_session_id=uuid4(),
+        allowed_paths=frozenset({relative}), operator_view=False, authority_source="resource_owner",
+        input_reads=(WorkspaceInputRead(relative, receipt, 1, digest, "synthetic-dependencies"),),
+        execution_inputs=WorkspaceExecutionInputs())
+    descriptors = []
+    if native:
+        assert workspace.shutil.which("rg")
+        real_run = workspace.subprocess.run
+        def change_original_before_search(command, **kwargs):
+            descriptors.extend(kwargs["pass_fds"])
+            target.write_text("changed private line\n")
+            return real_run(command, **kwargs)
+        monkeypatch.setattr(workspace.subprocess, "run", change_original_before_search)
+    else:
+        monkeypatch.setattr(workspace.shutil, "which", lambda _name: None)
+        native_read = workspace._read_receipted_workspace_bytes
+        def change_original_after_read(*args, **kwargs):
+            raw = native_read(*args, **kwargs)
+            target.write_text("changed private line\n")
+            return raw
+        monkeypatch.setattr(workspace, "_read_receipted_workspace_bytes", change_original_after_read)
+    result = workspace._grep_search(tmp_path, "line", root="workspace", authority_scope=scope)
+    assert "workspace/report.txt:1:verified line" in result and "changed private" not in result
+    assert target.read_text() == "changed private line\n"
+    assert scope.execution_inputs.snapshot() == {"schema": "hive.workspace_execution_inputs.v1", "observed": True,
+        "sources": [{"source_kind": "workspace_artifact", "source_id": str(receipt), "source_version": digest}], "unbound": []}
+    for descriptor in descriptors:
+        with pytest.raises(OSError):
+            os.fstat(descriptor)

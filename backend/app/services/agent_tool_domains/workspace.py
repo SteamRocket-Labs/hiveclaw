@@ -7,6 +7,7 @@ import hashlib
 import re
 import shutil
 import subprocess
+import tempfile
 import uuid
 import json
 from contextlib import ExitStack
@@ -1501,6 +1502,16 @@ def _grep_search(
     authority_scope=None,
     permission_profile=None,
 ) -> str:
+    execution_inputs = getattr(authority_scope, "execution_inputs", None)
+    if execution_inputs is not None:
+        execution_inputs.observe({}, authority_scope)
+
+    def read_search_bytes(path):
+        raw = _read_receipted_workspace_bytes(ws, path, authority_scope, path)
+        if execution_inputs is not None:
+            execution_inputs.observe({path: {"path": path, "sha256": hashlib.sha256(raw).hexdigest()}}, authority_scope)
+        return raw
+
     if _authority_known_foreign_path(authority_scope, root):
         return _workspace_error(tool_name, "auth_or_permission", "Access denied for this resource owner.")
     search_root = _resolved_workspace_path(ws, root, permission_profile)
@@ -1545,7 +1556,12 @@ def _grep_search(
                 with ExitStack() as inputs:
                     descriptors = {}
                     for rel_path in paths[offset : offset + 32]:
-                        source = inputs.enter_context(open_workspace_file(ws, rel_path))
+                        # rg consumes the exact verified snapshot, even if the
+                        # original inode changes after its source check.
+                        raw = read_search_bytes(rel_path)
+                        source = inputs.enter_context(tempfile.TemporaryFile())
+                        source.write(raw)
+                        source.seek(0)
                         descriptors[f"/dev/fd/{source.fileno()}"] = (rel_path, source.fileno())
                     command = ["rg", "--with-filename", "--line-number", "--color", "never"]
                     if explicit_limit is not None:
@@ -1570,7 +1586,8 @@ def _grep_search(
                 if explicit_limit is not None and len(matches) >= explicit_limit:
                     break
                 try:
-                    with open_workspace_file(ws, rel_path) as source, io.TextIOWrapper(source, encoding="utf-8", errors="replace") as handle:
+                    raw = read_search_bytes(rel_path)
+                    with io.TextIOWrapper(io.BytesIO(raw), encoding="utf-8", errors="replace") as handle:
                         for idx, line in enumerate(handle, start=1):
                             if compiled.search(line):
                                 matches.append(f"{rel_path}:{idx}:{line.strip()}")

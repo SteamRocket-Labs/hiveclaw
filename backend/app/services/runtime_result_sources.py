@@ -50,7 +50,8 @@ async def _published_owned_delegation_input(db, dependency, task, *, receipt_ids
 
         ledger_read = row.tool_name in LEDGER_RESULT_TOOLS
         directory_read = row.tool_name in {"list_files", "fs_list", "glob_search"}
-        if not ledger_read and not directory_read and row.tool_name not in {"read_file", "read_document", "fs_read"}:
+        search_read = row.tool_name == "grep_search"
+        if not ledger_read and not directory_read and not search_read and row.tool_name not in {"read_file", "read_document", "fs_read"}:
             return False
         from app.models.chat_transcript_event import ChatTranscriptEvent
         from app.services.content_input_receipts import load_native_read_denial_evidence, load_workspace_input_evidence
@@ -66,6 +67,16 @@ async def _published_owned_delegation_input(db, dependency, task, *, receipt_ids
             SessionModelResult.provider_request_id == row.provider_request_id))
         if model is None:
             return False
+        if search_read:
+            from app.services.content_input_receipts import load_workspace_execution_input_evidence
+
+            try:
+                _ref, sources = await load_workspace_execution_input_evidence(db, agent_id=task.child_agent_id,
+                    invocation=row, model_result=model, arguments=row.effective_arguments_json or row.provider_arguments_json,
+                    content_hash=payload.get("content_hash"))
+                return all(uuid.UUID(source["source_id"]) in receipt_ids for source in sources)
+            except (ContentInputReceiptError, KeyError, TypeError, ValueError):
+                return False
         if ledger_read:
             _sources, complete = await ledger_result_sources(db, tenant_id=task.tenant_id, agent_id=task.child_agent_id,
                 invocation=row, model=model, content_hash=payload.get("content_hash"))

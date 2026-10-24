@@ -765,7 +765,7 @@ async def _resolve_origin_dependencies(db, *, tenant_id, agent_id, ref):
             return _unique_dependencies(dependencies), inherited_complete and arguments.get("path") in hashes
         except (ContentInputReceiptError, ValueError, TypeError):
             return _unique_dependencies(dependencies), False
-    if invocation.tool_name in {"run_command", "execute_code", "office_document_create", "office_document_apply"}:
+    if invocation.tool_name in {"grep_search", "run_command", "execute_code", "office_document_create", "office_document_apply"}:
         from app.services.content_input_receipts import load_workspace_execution_input_evidence, load_workspace_execution_evidence
 
         try:

@@ -1356,7 +1356,7 @@ class ToolRuntimeService:
                     trace_metadata_sink.pop("native_directory_read_evidence", None)
                     trace_metadata_sink.pop("native_read_denial_evidence", None)
                     trace_metadata_sink.pop("agent_directory_sources", None)
-                    if workspace_mutating:
+                    if workspace_mutating or tool_name == "grep_search":
                         for key in ("workspace_mutation_evidence_captured", "workspace_mutation_states",
                             "workspace_mutation_state_errors", "workspace_mutation_lineage", "workspace_execution_evidence"):
                             trace_metadata_sink.pop(key, None)
@@ -1382,7 +1382,7 @@ class ToolRuntimeService:
 
                     context.workspace_authority_scope = replace(scope, output_writes=(), skill_inputs=None,
                         execution_inputs=WorkspaceExecutionInputs() if tool_name in {
-                            "run_command", "execute_code", "office_document_create", "office_document_apply"} else None)
+                            "grep_search", "run_command", "execute_code", "office_document_create", "office_document_apply"} else None)
                     text_write = tool_name in {"write_file", "edit_file"} or (
                         tool_name == "fs_write" and str(arguments.get("mode") or "write").strip().lower() in {"write", "edit"})
                     office_write = tool_name in {"office_document_create", "office_document_apply"}
@@ -1492,6 +1492,12 @@ class ToolRuntimeService:
                         arguments=arguments,
                         result=value,
                     )
+                if tool_name == "grep_search" and trace_metadata_sink is not None:
+                    from app.services.content_input_receipts import persist_workspace_execution_evidence
+
+                    trace_metadata_sink["workspace_execution_evidence"] = await persist_workspace_execution_evidence(
+                        context=context, tool_name=tool_name, tool_call_id=tool_call_id, arguments=arguments,
+                        result=value, states={}, lineage=[], errors={})
                 if workspace_mutating and trace_metadata_sink is not None:
                     states, errors, lineage = _capture_workspace_mutation_evidence(
                         tool_name=tool_name,

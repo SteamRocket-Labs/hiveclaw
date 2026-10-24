@@ -956,7 +956,7 @@ async def authorize_workspace_execution_inputs(request) -> list[dict]:
 
     context = request.context
     scope = context.workspace_authority_scope
-    if request.tool_name not in {"execute_code", "run_command", "run_skill_tool", "office_document_create", "office_document_apply"} or not isinstance(scope, WorkspaceAuthorityScope):
+    if request.tool_name not in {"grep_search", "execute_code", "run_command", "run_skill_tool", "office_document_create", "office_document_apply"} or not isinstance(scope, WorkspaceAuthorityScope):
         return []
     paths = {path for path in scope.allowed_paths if path.startswith("workspace/")}
     reads, denied = [], []

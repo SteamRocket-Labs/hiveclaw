@@ -157,6 +157,12 @@ class RuntimeTask(Base):
             postgresql_where=text(TERMINAL_BOUNDARY_PENDING_SQL),
             sqlite_where=text(TERMINAL_BOUNDARY_PENDING_SQL),
         ),
+        Index(
+            "ix_runtime_tasks_terminal_discovery",
+            "task_type", "terminal_boundary_reconcile_attempted_at", "created_at", "tenant_id", "id",
+            postgresql_where=text("terminal_boundary_generation IS NOT NULL AND terminal_boundary_enqueued_at IS NULL"),
+            sqlite_where=text("terminal_boundary_generation IS NOT NULL AND terminal_boundary_enqueued_at IS NULL"),
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(

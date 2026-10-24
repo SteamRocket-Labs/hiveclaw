@@ -389,6 +389,7 @@ async def enqueue_terminal_boundary(
             id=outbox_id,
             tenant_id=tenant_id,
             runtime_task_id=task_id,
+            task_type=task.task_type,
             agent_id=normalized_agent_id,
             session_id=normalized_session_id,
             event_kind=normalized_event_kind,
@@ -611,6 +612,8 @@ class RuntimeTerminalBoundaryOutboxService:
                 # Read a bounded ordered page without locks. A page with only
                 # sibling lanes or locked rows must not hide later ready work.
                 page_query = select(queue.id, queue.available_at, queue.created_at).where(*ready)
+                if task_types:
+                    page_query = page_query.where(queue.task_type.in_(tuple(task_types)))
                 if cursor is not None:
                     page_query = page_query.where(tuple_(*order) > cursor)
                 page = list((await db.execute(page_query.order_by(*order).limit(_CLAIM_SCAN_PAGE_SIZE))).all())

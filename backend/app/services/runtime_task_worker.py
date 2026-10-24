@@ -9,7 +9,7 @@ from typing import Any
 from uuid import UUID
 
 from loguru import logger
-from sqlalchemy import and_, case, func, or_, select, union_all
+from sqlalchemy import and_, case, exists, func, literal_column, or_, select, union_all
 
 from app.config import get_settings
 from app.database import async_session, enter_rls_bypass, tenant_scoped_session
@@ -349,15 +349,16 @@ async def _discover_terminal_boundary_tenants(
             RuntimeTerminalBoundaryOutbox.tenant_id.label("tenant_id"),
             outbox_ready_at.label("ready_at"),
         )
-        .join(
-            RuntimeTask,
-            and_(
+        .where(
+            RuntimeTerminalBoundaryOutbox.task_type.in_(task_types),
+            RuntimeTerminalBoundaryOutbox.status.in_((literal_column("'pending'"), literal_column("'processing'"))),
+            # Route through active lanes first. Recheck the canonical task per
+            # candidate without materializing every historical task identity.
+            exists(select(RuntimeTask.id).where(
                 RuntimeTask.id == RuntimeTerminalBoundaryOutbox.runtime_task_id,
                 RuntimeTask.tenant_id == RuntimeTerminalBoundaryOutbox.tenant_id,
-            ),
-        )
-        .where(
-            RuntimeTask.task_type.in_(task_types),
+                RuntimeTask.task_type.in_(task_types),
+            ).correlate(RuntimeTerminalBoundaryOutbox).offset(0)),
             or_(
                 and_(
                     RuntimeTerminalBoundaryOutbox.status == "pending",

@@ -253,7 +253,7 @@ async def resume_first_task_from_tool(context, arguments) -> str:
 
 
 async def dispatch_first_task(db, draft, *, execution_context=None, arguments=None) -> bool:
-    from app.agents.orchestrator import OrchestrationPolicy, delegate_async
+    from app.agents.orchestrator import ASYNC_DELEGATION_TIMEOUT_SECONDS, OrchestrationPolicy, delegate_async
     from app.core.execution_context import ExecutionPrincipal
     from app.kernel.contracts import ExecutionIdentityRef
     from app.core.permissions import check_agent_access
@@ -359,7 +359,8 @@ async def dispatch_first_task(db, draft, *, execution_context=None, arguments=No
                 parent_session_id=str(draft.session_id), tenant_id=draft.tenant_id,
                 root_runtime_task_id=str(source_run.id), execution_principal=principal.to_evidence(),
                 execution_identity=ExecutionIdentityRef("delegated_user", draft.requested_by_user_id, "Explicit employee first task"),
-                policy=OrchestrationPolicy(tool_profile="peer_agent"), runtime_task_id=task_id,
+                policy=OrchestrationPolicy(timeout_seconds=ASYNC_DELEGATION_TIMEOUT_SECONDS,
+                                           tool_profile="peer_agent"), runtime_task_id=task_id,
                 trace_id=f"employee-first-task:{draft.id}", budget_run_id=source_run.budget_run_id,
                 permission_profile=policy_evidence["permission_profile"],
             )

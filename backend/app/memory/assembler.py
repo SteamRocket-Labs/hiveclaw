@@ -128,6 +128,8 @@ def _loadable_id(item: MemoryItem) -> str:
 def _reference_line(item: MemoryItem) -> str:
     memory_id = _loadable_id(item)
     source = str(item.metadata.get("source_ref") or item.source or "memory").strip()
+    if item.metadata.get("native_reference") is True:
+        return f"  [memory_ref source={source}]"
     if memory_id:
         return f'  [memory_ref id={memory_id} source={source}; load_memory(ids=["{memory_id}"])]'
     session_id = str(item.metadata.get("session_id") or "").strip()

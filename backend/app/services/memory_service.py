@@ -409,6 +409,12 @@ async def _build_memory_context_result(
             degraded_components.append("working_set_checkpoint")
 
     try:
+        from app.services.memory_resource_references import project_unverified_t2
+        from app.services.personal_knowledge_access import AgentRuntimePrincipal
+
+        presented_items, references_unavailable = await project_unverified_t2(items, data_root=data_root_settings, tenant_id=tenant_id,
+            principal=AgentRuntimePrincipal(agent_id=agent_id, requester_user_id=current_user_id,
+                session_id=str(session_id), runtime_task_id=runtime_task_id, purpose="interactive_session"))
         assembler = MemoryAssembler()
         retrieval_budget = max(0, int(retrieval_profile.memory_budget_chars - resident.chars))
         assembled_sources = []
@@ -429,7 +435,7 @@ async def _build_memory_context_result(
                 assemble_kwargs["source_observer"] = observe_memory_source
             elif items:
                 assembled_unbound.append("recalled_memory_source_observer_unavailable")
-            return assembler.assemble(items, **assemble_kwargs) or ""
+            return assembler.assemble(presented_items, **assemble_kwargs) or ""
 
         surfacing = surface_with_session_budget(
             data_root=data_root_settings,
@@ -504,6 +510,12 @@ async def _build_memory_context_result(
             degraded_components=tuple(dict.fromkeys(degraded_components)),
             **common_surfacing,
         )
+    if references_unavailable:
+        return MemoryContextResult(content=content, status="degraded", code="episodic_resource_reference_unavailable",
+            user_message="Some earlier session memory references are temporarily unavailable. Other context remains active; retry the authorized file read when needed.",
+            retryable=True, attempts=attempts,
+            degraded_components=tuple(dict.fromkeys((*degraded_components, "episodic_resource_reference"))),
+            **common_surfacing)
     if items and not assembled:
         degraded_components.append("memory_auto_surface_turn_budget")
         return MemoryContextResult(
@@ -519,6 +531,12 @@ async def _build_memory_context_result(
             degraded_components=tuple(dict.fromkeys(degraded_components)),
             **common_surfacing,
         )
+    if any(source["source_kind"] == "memory_resource_reference" for source in assembled_sources):
+        return MemoryContextResult(content=content, status="degraded", code="episodic_body_source_unverified",
+            user_message="Some earlier session memories have unverified original sources. Their full files remain available on request; only resource references were prefetched.",
+            retryable=False, attempts=attempts,
+            degraded_components=tuple(dict.fromkeys((*degraded_components, "episodic_body_provenance"))),
+            **common_surfacing)
     if degraded_components:
         return MemoryContextResult(
             content=content,

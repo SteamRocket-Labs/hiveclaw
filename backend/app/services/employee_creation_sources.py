@@ -293,7 +293,7 @@ async def _owned_context_source(db, *, dependency, agent_id, tenant_id, session_
     if (kind in {*allowed, 'agent_platform_skill_file', 'owner_action_policy'} and parts[0] == str(agent_id)
         and len(parts) > 1 and (kind not in allowed or parts[1] in allowed[kind])):
         return True
-    if kind == 'session_actor_identity':
+    if kind in {'session_actor_identity', 'memory_resource_reference'}:
         try:
             row = await db.get(InvocationSpan, uuid.UUID(source_id), populate_existing=True)
         except ValueError:

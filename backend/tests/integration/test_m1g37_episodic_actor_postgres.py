@@ -9,12 +9,12 @@ import pytest
 
 from app.memory.activation import ActivationContext
 from app.memory.retriever import MemoryRetriever, _selection_descriptor
-from app.memory.types import MemoryKind
+from app.memory.types import MemoryItem, MemoryKind
 from app.models.agent import Agent
 from app.models.chat_session import ChatSession
 from app.models.user import User
 from app.services.principal_context import Principal, PrincipalRole, PrincipalStack
-from tests.memory.test_retrieval_pipeline import _write_overlay_entry, _write_t2_package
+from tests.memory.test_retrieval_pipeline import _write_t2_package
 from tests.services.test_session_input_control_v2 import _seed_session
 
 pytestmark = pytest.mark.usefixtures("migrated_pg_url")
@@ -36,7 +36,12 @@ async def episodic_reader(owner_sessionmaker, app_user_sessionmaker, monkeypatch
     for source, body in [(previous, "OWN_PRIVATE_T2_BODY"), (foreign_session, "OTHER_REQUESTER_PRIVATE_T2_BODY"),
         (other_session, "OTHER_TENANT_PRIVATE_T2_BODY")]:
         _write_t2_package(tmp_path, agent, session_id=str(source), segment_id=f"seg-{source.hex}", summary=body)
-    _write_overlay_entry(tmp_path, agent, entry_id="unrelated", content="UNRELATED_AVAILABLE_CONTEXT")
+    # This independent backend fixture is not a private explicit-memory grant.
+    # Explicit memory needs native author receipts even when marked public.
+    async def unrelated_backend(_self, *_args, **_kwargs):
+        return [MemoryItem(kind=MemoryKind.SEMANTIC, content="UNRELATED_AVAILABLE_CONTEXT", score=0.5,
+            source="synthetic-independent-backend")]
+    monkeypatch.setattr(MemoryRetriever, "_retrieve_semantic_backend", unrelated_backend)
     monkeypatch.setattr("app.database.async_session", app_user_sessionmaker)
     context = ActivationContext(query="review", principal_stack=PrincipalStack(
         current_user=Principal(PrincipalRole.CURRENT_USER, str(user)),
@@ -124,8 +129,11 @@ async def test_actual_memory_service_reports_source_outage_without_disabling_oth
     monkeypatch.setattr(memory_service, "_resolve_activation_context", activation)
     monkeypatch.setattr(memory_service, "_get_rerank_model_config", lambda _tenant: {"provider": "synthetic", "model": "no-provider"})
     monkeypatch.setattr(MemoryRetriever, "_select_with_model", select)
+    from app.memory.profile_plane import ResidentMemory
+
     monkeypatch.setattr("app.memory.profile_plane.load_resident_memory", lambda **_kwargs:
-        SimpleNamespace(text="AUTHENTICATED_RESIDENT_CONTEXT", chars=30, read_errors=[]))
+        ResidentMemory(text="AUTHENTICATED_RESIDENT_CONTEXT", chars=30, budget_chars=20000,
+            over_budget=False, sections=(), active_failure_modes=""))
     monkeypatch.setattr("app.memory.profile_plane.check_resident_budget", budget)
     monkeypatch.setattr("app.database.tenant_scoped_session", _unavailable)
     result = await memory_service.build_memory_context(s.agent, s.tenant, session_id=str(s.session), query="review",

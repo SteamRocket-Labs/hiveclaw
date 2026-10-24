@@ -176,6 +176,11 @@ async def _validate_input_dependency_batch(db, tenant_id: uuid.UUID, dependencie
         if dependency["source_kind"] == "session_actor_identity":
             await _validate_session_actor_identity(db, tenant_id, dependency, user=user, runtime_request=runtime_request)
             continue
+        if dependency["source_kind"] == "memory_resource_reference":
+            from app.services.memory_resource_references import validate_reference
+
+            await validate_reference(db, tenant_id, dependency, user=user, runtime_request=runtime_request)
+            continue
         if dependency["source_kind"] == "remote_a2a_result":
             from app.services.remote_a2a_artifacts import validate_remote_dependency
 

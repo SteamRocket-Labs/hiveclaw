@@ -82,7 +82,7 @@ const isOfficeFile = (path: string) => /\.(docx|xlsx|pptx)$/i.test(path);
 
 // ─── Text file detection ───────────────────────────────
 
-const TEXT_EXTS = ['.txt', '.md', '.csv', '.json', '.xml', '.yaml', '.yml', '.js', '.ts', '.py', '.html', '.css', '.sh', '.log', '.gitkeep', '.env'];
+const TEXT_EXTS = ['.txt', '.md', '.csv', '.json', '.jsonl', '.xml', '.yaml', '.yml', '.js', '.ts', '.py', '.html', '.css', '.sh', '.log', '.gitkeep', '.env'];
 
 function isTextFile(name: string): boolean {
     const n = name.toLowerCase();

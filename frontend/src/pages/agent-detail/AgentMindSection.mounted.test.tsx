@@ -22,6 +22,7 @@ afterEach(() => { cleanup(); clients.splice(0).forEach(client => client.clear())
 
 it.each([
   { root: 'memory', folder: 'knowledge', name: 'entry.md' },
+  { root: 'memory', folder: 't0', name: 'events.jsonl' },
   { root: 'evolution', folder: 'snapshots', name: 'ledger.json' },
 ])('browses $root descendants and returns to its root without mutation controls', async ({ root, folder, name }) => {
   vi.mocked(fileApi.list).mockImplementation(async (_agent, path) => {

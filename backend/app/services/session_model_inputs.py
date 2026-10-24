@@ -680,7 +680,31 @@ async def _resolve_origin_dependencies(db, *, tenant_id, agent_id, ref):
             invocation=invocation, content=content)
         return _unique_dependencies(dependencies), inherited_complete and complete
     if invocation.tool_name == "read_context_resource":
-        dependency = _channel_context_dependency(agent_id, content,
+        directory = (payload.get("metadata") or {}).get("agent_directory_sources")
+        if isinstance(directory, dict):
+            from app.services.agent_directory_sources import directory_page_sources
+
+            if directory.get("status") != "verified":
+                return _unique_dependencies(dependencies), False
+            try:
+                sources = await directory_page_sources(db, agent_id=agent_id, invocation=invocation,
+                    content=content, sources=directory.get("sources"))
+                return _unique_dependencies([*dependencies, *sources]), inherited_complete
+            except (ContentInputReceiptError, ValueError, TypeError):
+                return _unique_dependencies(dependencies), False
+        pointer = (payload.get("metadata") or {}).get("native_empty_read_receipt")
+        if isinstance(pointer, dict) and pointer.get("status") == "verified":
+            from app.services.content_input_receipts import load_native_empty_read_evidence
+
+            try:
+                bound = await load_native_empty_read_evidence(db, agent_id=agent_id, invocation=invocation,
+                    model_result=model, arguments=invocation.effective_arguments_json or invocation.provider_arguments_json,
+                    content_hash=payload["content_hash"],
+                    capture={"status": "captured", "receipt_ref": pointer.get("evidence_ref")})
+                return _unique_dependencies(dependencies), inherited_complete and bound == pointer
+            except (ContentInputReceiptError, ValueError, TypeError):
+                return _unique_dependencies(dependencies), False
+        dependency = _context_resource_dependency(agent_id, content,
             invocation.effective_arguments_json or invocation.provider_arguments_json)
         return _unique_dependencies([*dependencies, *([dependency] if dependency else [])]), bool(dependency) and inherited_complete
     arguments = invocation.effective_arguments_json or invocation.provider_arguments_json
@@ -819,7 +843,7 @@ async def _resolve_origin_dependencies(db, *, tenant_id, agent_id, ref):
     return _unique_dependencies(dependencies), complete and inherited_complete
 
 
-def _channel_context_dependency(agent_id, content, arguments):
+def _context_resource_dependency(agent_id, content, arguments):
     # Other context resources still need their own upstream source and audience readers.
     try:
         page = json.loads(content)
@@ -829,11 +853,12 @@ def _channel_context_dependency(agent_id, content, arguments):
         "sha256", "offset", "next_offset", "complete", "total_chars", "content"} or not isinstance(arguments, dict):
         return None
     body = page["content"]
-    if (arguments.get("ref") != "channels" or page["schema"] != "hive.agent_context_resource_page.v1"
-        or page["status"] != "ok" or page["ref"] != "channels" or page["complete"] is not True
-        or page["context_ref"] != "agent-context://channels" or page["source_ref"] != "agent-context://channels"
+    ref = arguments.get("ref")
+    if (ref not in {"channels", "a2a-collaborators"} or page["schema"] != "hive.agent_context_resource_page.v1"
+        or page["status"] != "ok" or page["ref"] != ref or page["complete"] is not True
+        or page["context_ref"] != f"agent-context://{ref}" or page["source_ref"] != f"agent-context://{ref}"
         or not isinstance(body, str) or any(type(page[key]) is not int for key in ("offset", "next_offset", "total_chars"))
         or page["offset"] != 0 or page["next_offset"] != len(body) or page["total_chars"] != len(body)
         or page["sha256"] != hashlib.sha256(body.encode("utf-8")).hexdigest()):
         return None
-    return {"source_kind": "agent_context_resource", "source_id": f"{agent_id}\nchannels", "source_version": page["sha256"]}
+    return {"source_kind": "agent_context_resource", "source_id": f"{agent_id}\n{ref}", "source_version": page["sha256"]}

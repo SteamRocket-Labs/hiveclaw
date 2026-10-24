@@ -281,3 +281,27 @@ async def test_context_resource_tool_rejects_tampered_recovery_snapshot(monkeypa
     assert result["status"] == "integrity_mismatch"
     assert "content" not in result
     assert "FORGED_RECOVERY_SENTINEL" not in json.dumps(result)
+
+
+@pytest.mark.parametrize("ref", ["company", "organization"])
+def test_native_empty_context_observation_does_not_attest_nonempty_or_forged_pages(ref):
+    import hashlib
+
+    from app.services.content_input_receipts import _native_empty_read_matches
+
+    observation = {"kind": "context_resource_empty", "ref": ref}
+    page = {"schema": "hive.agent_context_resource_page.v1", "status": "ok", "ref": ref,
+        "context_ref": f"agent-context://{ref}", "source_ref": f"agent-context://{ref}",
+        "sha256": hashlib.sha256(b"").hexdigest(), "offset": 0, "next_offset": 0,
+        "complete": True, "total_chars": 0, "content": ""}
+    def matches(body, *, arguments=None, proof=None):
+        return _native_empty_read_matches("read_context_resource", arguments or {"ref": ref},
+            proof or observation, session_id=str(uuid4()), content=json.dumps(body))
+
+    assert matches(page)
+    for altered in [dict(page, content="Private organization body"), dict(page, sha256="0" * 64),
+        dict(page, offset=True), dict(page, complete=False), dict(page, total_chars=1),
+        dict(page, source_ref="agent-context://soul"), dict(page, additional="forged")]:
+        assert not matches(altered)
+    assert not matches(page, arguments={"ref": "soul"})
+    assert not matches(page, proof=dict(observation, additional="forged"))

@@ -250,11 +250,13 @@ async def list_same_owner_agents(db: AsyncSession, source_agent: Agent) -> list[
             Agent.id != source_agent.id,
             Agent.tenant_id == source_agent.tenant_id,
             Agent.deleted_at.is_(None),
+            Agent.deactivated_at.is_(None),
             Agent.status.in_(list(ACTIVE_AGENT_STATUSES)),
             _a2a_agent_sql_filter(),
             or_(Agent.owner_user_id == owner_id, and_(Agent.owner_user_id.is_(None), Agent.creator_id == owner_id)),
         )
         .order_by(Agent.name.asc())
+        .execution_options(populate_existing=True)
     )
     return list(result.scalars().all())
 
@@ -274,6 +276,7 @@ async def list_public_agents(db: AsyncSession, source_agent: Agent) -> list[Agen
         Agent.id != source_agent.id,
         Agent.tenant_id == source_agent.tenant_id,
         Agent.deleted_at.is_(None),
+        Agent.deactivated_at.is_(None),
         Agent.status.in_(list(ACTIVE_AGENT_STATUSES)),
         _a2a_agent_sql_filter(),
         exists(
@@ -287,7 +290,7 @@ async def list_public_agents(db: AsyncSession, source_agent: Agent) -> list[Agen
     if same_owner_filter is not False:
         public_filters.append(~same_owner_filter)
 
-    result = await db.execute(select(Agent).where(*public_filters).order_by(Agent.name.asc()))
+    result = await db.execute(select(Agent).where(*public_filters).order_by(Agent.name.asc()).execution_options(populate_existing=True))
     return list(result.scalars().all())
 
 
@@ -302,6 +305,7 @@ async def list_active_collaboration_groups_for_agent(db: AsyncSession, source_ag
             AgentCollaborationGroupMember.status == ACTIVE_MEMBER_STATUS,
         )
         .order_by(AgentCollaborationGroup.updated_at.desc())
+        .execution_options(populate_existing=True)
     )
     groups: list[SimpleNamespace] = []
     for group, _membership in source_memberships.all():
@@ -315,10 +319,12 @@ async def list_active_collaboration_groups_for_agent(db: AsyncSession, source_ag
                 AgentCollaborationGroupMember.status == ACTIVE_MEMBER_STATUS,
                 Agent.id != source_agent.id,
                 Agent.deleted_at.is_(None),
+                Agent.deactivated_at.is_(None),
                 Agent.status.in_(list(ACTIVE_AGENT_STATUSES)),
                 _a2a_agent_sql_filter(),
             )
             .order_by(Agent.name.asc())
+            .execution_options(populate_existing=True)
         )
         members = [
             SimpleNamespace(
@@ -347,7 +353,7 @@ async def list_active_collaboration_groups_for_agent(db: AsyncSession, source_ag
 
 
 async def build_a2a_collaboration_read_model(db: AsyncSession, agent_id: uuid.UUID) -> dict[str, Any]:
-    source_agent = await db.get(Agent, agent_id)
+    source_agent = await db.get(Agent, agent_id, populate_existing=True)
     if source_agent is None:
         return {"same_owner_agents": [], "public_agents": [], "collaboration_groups": []}
     if not is_a2a_participating_agent(source_agent):

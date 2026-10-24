@@ -287,6 +287,11 @@ async def _owned_context_source(db, *, dependency, agent_id, tenant_id, session_
     from app.models.invocation_span import InvocationSpan
 
     kind, source_id = dependency['source_kind'], dependency['source_id']
+    if kind == 'agent_directory_observation':
+        from app.services.agent_directory_sources import owned_directory_source
+
+        return await owned_directory_source(db, dependency=dependency, agent_id=agent_id, tenant_id=tenant_id,
+            session_id=session_id, user_id=user_id)
     allowed = {'agent_identity': {'identity'}, 'agent_context_resource': {'soul', 'a2a-collaborators', 'channels'},
         'agent_resident_memory': {'memory/self/self.md'}}
     parts = source_id.split('\n')
@@ -306,7 +311,7 @@ async def _owned_context_source(db, *, dependency, agent_id, tenant_id, session_
         from app.services.content_input_receipts import (
             ContentInputReceiptError, load_native_empty_read_evidence, load_skill_input_evidence,
         )
-        from app.services.session_model_inputs import _model_dependencies, tool_result_source_hash
+        from app.services.session_model_inputs import _context_resource_dependency, _model_dependencies, tool_result_source_hash
         from app.services.session_semantic_history import _event_payload
 
         try:
@@ -314,7 +319,7 @@ async def _owned_context_source(db, *, dependency, agent_id, tenant_id, session_
         except ValueError:
             return False
         if (call is None or call.tenant_id != tenant_id or call.session_id != session_id
-            or call.effect_state != 'effect_committed' or call.tool_name not in {'read_ledger', 'list_files', 'tool_search'}):
+            or call.effect_state != 'effect_committed' or call.tool_name not in {'read_ledger', 'list_files', 'tool_search', 'read_context_resource'}):
             return False
         event = await db.scalar(select(ChatTranscriptEvent).where(
             ChatTranscriptEvent.id == call.result_event_id, ChatTranscriptEvent.tenant_id == tenant_id,
@@ -330,6 +335,18 @@ async def _owned_context_source(db, *, dependency, agent_id, tenant_id, session_
             or tool_result_source_hash(payload) != dependency['source_version']):
             return False
         metadata = payload.get('metadata') or {}
+        if call.tool_name == 'read_context_resource' and metadata.get('agent_directory_sources'):
+            from app.services.agent_directory_sources import directory_page_sources
+
+            directory = metadata['agent_directory_sources']
+            try:
+                return directory.get('status') == 'verified' and bool(await directory_page_sources(
+                    db, agent_id=agent_id, invocation=call, content=payload.get('content'), sources=directory.get('sources')))
+            except (ContentInputReceiptError, ValueError, TypeError):
+                return False
+        if call.tool_name == 'read_context_resource' and not metadata.get('native_empty_read_receipt'):
+            return _context_resource_dependency(agent_id, payload.get('content'),
+                call.effective_arguments_json or call.provider_arguments_json) is not None
         key = 'skill_input_receipt' if call.tool_name == 'tool_search' else 'native_empty_read_receipt'
         pointer = metadata.get(key)
         if not isinstance(pointer, dict) or pointer.get('status') != 'verified':

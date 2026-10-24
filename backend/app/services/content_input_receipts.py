@@ -135,6 +135,11 @@ async def _validate_input_dependency_batch(db, tenant_id: uuid.UUID, dependencie
             await _validate_input_dependencies(db, tenant_id, [dependency], user=published_user,
                 active_workspace_receipts=active_workspace_receipts)
             continue
+        if dependency["source_kind"] == "agent_directory_observation":
+            from app.services.agent_directory_sources import validate_directory
+
+            await validate_directory(db, tenant_id, dependency, user=user, runtime_request=runtime_request)
+            continue
         if dependency["source_kind"] == "team_task_input":
             from app.services.team_task_context import validate_source
 
@@ -1300,6 +1305,24 @@ def _native_empty_read_matches(tool_name, arguments, observation, *, session_id,
             except (ValueError, TypeError):
                 return False
         return True
+    if tool_name == "read_context_resource":
+        ref = arguments.get("ref")
+        if (ref not in {"company", "organization"} or set(observation) != {"kind", "ref"}
+            or observation != {"kind": "context_resource_empty", "ref": ref}):
+            return False
+        if content is None:
+            return True
+        try:
+            page = json.loads(content)
+        except (ValueError, TypeError):
+            return False
+        return (isinstance(page, dict) and set(page) == {"schema", "status", "ref", "context_ref", "source_ref",
+            "sha256", "offset", "next_offset", "complete", "total_chars", "content"}
+            and page["schema"] == "hive.agent_context_resource_page.v1" and page["status"] == "ok"
+            and page["ref"] == ref and page["source_ref"] == page["context_ref"] == f"agent-context://{ref}"
+            and page["content"] == "" and page["sha256"] == hashlib.sha256(b"").hexdigest()
+            and page["complete"] is True and all(type(page[k]) is int and page[k] == 0
+                for k in ("offset", "next_offset", "total_chars")))
     if tool_name == "list_files":
         from app.services.workspace_resource_authority import normalize_workspace_resource_path
 

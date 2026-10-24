@@ -920,7 +920,17 @@ async def complete_tool_invocation(
     knowledge_metadata = enrich_knowledge_event_metadata(
         event_type="tool_result", content={"name": invocation.tool_name, "result": content}, metadata={},
     )
-    if invocation.tool_name in {"read_ledger", "list_files"} and (execution_evidence or {}).get("native_empty_read_evidence"):
+    if invocation.tool_name == "read_context_resource" and (execution_evidence or {}).get("agent_directory_sources"):
+        from app.services.agent_directory_sources import directory_page_sources
+        from app.services.content_input_receipts import ContentInputReceiptError
+
+        try:
+            sources = await directory_page_sources(db, agent_id=agent_id, invocation=invocation,
+                content=content, sources=execution_evidence["agent_directory_sources"])
+            knowledge_metadata["agent_directory_sources"] = {"status": "verified", "sources": sources}
+        except ContentInputReceiptError as exc:
+            knowledge_metadata["agent_directory_sources"] = {"status": "unavailable", "reason_code": exc.code}
+    if invocation.tool_name in {"read_ledger", "list_files", "read_context_resource"} and (execution_evidence or {}).get("native_empty_read_evidence"):
         from app.services.content_input_receipts import ContentInputReceiptError, load_native_empty_read_evidence
 
         try:

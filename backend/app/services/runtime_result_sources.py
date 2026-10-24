@@ -19,6 +19,11 @@ from app.services.session_model_inputs import _model_dependencies, _stored_depen
 
 async def _published_owned_delegation_input(db, dependency, task):
     kind, source_id = dependency["source_kind"], dependency["source_id"]
+    if kind == "agent_directory_observation":
+        from app.services.agent_directory_sources import owned_directory_source
+
+        return await owned_directory_source(db, dependency=dependency, agent_id=task.child_agent_id,
+            tenant_id=task.tenant_id, session_id=uuid.UUID(task.child_session_id), user_id=task.root_user_id)
     if kind in {"agent_identity", "agent_context_resource", "agent_resident_memory", "agent_platform_skill_file", "owner_action_policy"}:
         try:
             agent_id = uuid.UUID(source_id.split("\n")[0])

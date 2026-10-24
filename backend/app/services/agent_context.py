@@ -51,6 +51,7 @@ class AgentContextResource:
     source_ref: str
     content: str
     status: str = "ok"
+    source_refs: tuple[dict[str, str], ...] = ()
 
     @property
     def sha256(self) -> str:
@@ -497,6 +498,7 @@ async def load_agent_context_resource(
     agent_id: uuid.UUID,
     tenant_id: uuid.UUID | str | None,
     resource_ref: str,
+    runtime_request=None,
 ) -> AgentContextResource:
     """Resolve an agent-bound full context resource from trusted authority."""
 
@@ -536,6 +538,20 @@ async def load_agent_context_resource(
             status="ok" if channels is not None else "unavailable")
 
     if resource_ref == "a2a-collaborators":
+        if runtime_request is not None and tenant_id is not None:
+            try:
+                from app.database import tenant_scoped_session
+                from app.services.agent_directory_sources import observe_directory
+
+                async with tenant_scoped_session(uuid.UUID(str(tenant_id))) as db:
+                    content, source = await observe_directory(db, tenant_id=uuid.UUID(str(tenant_id)),
+                        agent_id=agent_id, runtime_request=runtime_request)
+                    await db.commit()
+                return AgentContextResource(ref=resource_ref, source_ref=source_ref, content=content,
+                    source_refs=(source,))
+            except Exception as exc:
+                # Legacy readers keep their existing source checks; no old identity is attested here.
+                logger.debug("Directory observation unavailable: {}", type(exc).__name__)
         content = await _build_a2a_collaborators_context(
             agent_id,
             tenant_id=tenant_id,
@@ -619,6 +635,7 @@ async def build_agent_context(
     owner_action_policy_section: str = "",
     source_refs: list[dict[str, str]] | None = None,
     source_unbound: list[str] | None = None,
+    runtime_request=None,
 ) -> str:
     """Build a rich system prompt incorporating agent's full context.
 
@@ -722,6 +739,7 @@ async def build_agent_context(
         agent_id=agent_id,
         tenant_id=_agent_tenant_id,
         resource_ref="a2a-collaborators",
+        runtime_request=runtime_request,
     )
     a2a_section = a2a_resource.content.strip()
 
@@ -768,6 +786,9 @@ async def build_agent_context(
             "source_version": canonical_content_hash(agent_identity_content(agent_name, role_description))})
         for resource in (soul_resource, channels_resource, company_resource, organization_resource, a2a_resource):
             if resource.status == "ok" and resource.content.strip():
-                source_refs.append({"source_kind": "agent_context_resource",
-                    "source_id": f"{agent_id}\n{resource.ref}", "source_version": resource.sha256})
+                if resource.source_refs:
+                    source_refs.extend(dict(source) for source in resource.source_refs)
+                else:
+                    source_refs.append({"source_kind": "agent_context_resource",
+                        "source_id": f"{agent_id}\n{resource.ref}", "source_version": resource.sha256})
     return "\n\n".join(part.strip() for part in rendered_parts if part and part.strip())

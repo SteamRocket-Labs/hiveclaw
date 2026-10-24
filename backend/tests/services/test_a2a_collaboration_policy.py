@@ -304,7 +304,8 @@ async def test_a2a_read_model_includes_public_agents(monkeypatch):
     )
 
     class FakeDb:
-        async def get(self, model, agent_id):  # noqa: ARG002
+        async def get(self, model, agent_id, *, populate_existing=False):  # noqa: ARG002
+            assert populate_existing is True
             return source
 
     async def fake_same_owner(*_args, **_kwargs):
@@ -352,7 +353,8 @@ async def test_system_hr_source_read_model_is_empty(monkeypatch):
     source = _agent(name="__system_hr__", agent_class="internal_system")
 
     class FakeDb:
-        async def get(self, model, agent_id):  # noqa: ARG002
+        async def get(self, model, agent_id, *, populate_existing=False):  # noqa: ARG002
+            assert populate_existing is True
             return source
 
     async def fake_same_owner(*_args, **_kwargs):

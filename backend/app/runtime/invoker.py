@@ -698,6 +698,17 @@ async def _build_system_prompt(
         source_refs=source_refs,
         source_unbound=source_unbound,
     )
+    directory_request = None
+    if source_refs is not None and request.session_context is not None:
+        from app.services.personal_knowledge_access import AgentRuntimePrincipal
+
+        metadata = _session_metadata(request.session_context)
+        delegation_id = getattr(request.delegation_token, "delegation_id", None)
+        directory_request = AgentRuntimePrincipal(agent_id=request.agent_id, requester_user_id=request.user_id,
+            session_id=request.session_context.session_id,
+            runtime_task_id=str(metadata.get("runtime_task_id") or metadata.get("task_id") or ""),
+            delegation_id=str(delegation_id) if delegation_id else None,
+            purpose="a2a_delegation" if delegation_id else "interactive_session")
     agent_context = await build_agent_context(
         agent_id=request.agent_id,
         agent_name=request.agent_name,
@@ -713,6 +724,7 @@ async def _build_system_prompt(
         owner_action_policy_section=owner_action_policy_section,
         source_refs=source_refs,
         source_unbound=source_unbound,
+        runtime_request=directory_request,
     )
     return build_frozen_prompt_prefix(
         agent_context=agent_context,

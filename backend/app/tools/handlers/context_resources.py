@@ -15,6 +15,7 @@ from app.models.runtime_result import RuntimeResultObject
 from app.services.agent_context import AGENT_CONTEXT_RESOURCE_REFS, load_agent_context_resource
 from app.tools.decorator import RESULT_CHARS_UNLIMITED, ToolMeta, tool
 from app.tools.runtime import ToolExecutionRequest
+from app.tools.result_envelope import ToolContentEnvelope
 
 _ALLOWED_ARGUMENTS = frozenset({"ref", "offset", "limit", "expected_sha256"})
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -99,7 +100,7 @@ def _invalid(reason: str, **extra: Any) -> str:
         adapter="request",
     )
 )
-async def read_context_resource(request: ToolExecutionRequest) -> str:
+async def read_context_resource(request: ToolExecutionRequest) -> str | ToolContentEnvelope:
     arguments = request.arguments
     unknown_fields = sorted(set(arguments) - _ALLOWED_ARGUMENTS)
     if unknown_fields:
@@ -181,6 +182,7 @@ async def read_context_resource(request: ToolExecutionRequest) -> str:
         agent_id=request.context.agent_id,
         tenant_id=request.context.tenant_id,
         resource_ref=ref,
+        **({"runtime_request": request} if ref == "a2a-collaborators" else {}),
     )
     if resource.status != "ok":
         return _json({"schema": "hive.agent_context_resource_page.v1", "status": "unavailable",
@@ -202,7 +204,7 @@ async def read_context_resource(request: ToolExecutionRequest) -> str:
 
     content = resource.content[offset : offset + limit]
     next_offset = min(offset + len(content), len(resource.content))
-    return _json(
+    rendered = _json(
         {
             "schema": "hive.agent_context_resource_page.v1",
             "status": "ok",
@@ -217,6 +219,13 @@ async def read_context_resource(request: ToolExecutionRequest) -> str:
             "content": content,
         }
     )
+    if resource.source_refs:
+        return ToolContentEnvelope(text=rendered, metadata={"agent_directory_sources": list(resource.source_refs)})
+    if ref in {"company", "organization"} and resource.content == "" and offset == 0:
+        return ToolContentEnvelope(text=rendered, metadata={"native_empty_read": {
+            "kind": "context_resource_empty", "ref": ref,
+        }})
+    return rendered
 
 
 @tool(

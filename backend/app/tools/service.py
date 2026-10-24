@@ -1353,6 +1353,7 @@ class ToolRuntimeService:
                     trace_metadata_sink.pop("workspace_input_evidence", None)
                     trace_metadata_sink.pop("skill_input_evidence", None)
                     trace_metadata_sink.pop("native_empty_read_evidence", None)
+                    trace_metadata_sink.pop("agent_directory_sources", None)
                     if workspace_mutating:
                         for key in ("workspace_mutation_evidence_captured", "workspace_mutation_states",
                             "workspace_mutation_state_errors", "workspace_mutation_lineage", "workspace_execution_evidence"):
@@ -1427,6 +1428,8 @@ class ToolRuntimeService:
                     trace_metadata_sink=trace_metadata_sink,
                 )
                 if trace_metadata_sink is not None and isinstance(value, ToolContentEnvelope):
+                    if isinstance(value.metadata.get("agent_directory_sources"), list):
+                        trace_metadata_sink["agent_directory_sources"] = list(value.metadata["agent_directory_sources"])
                     proof = value.metadata.get("feishu_approved_result")
                     if isinstance(proof, dict):
                         trace_metadata_sink["feishu_approved_result"] = dict(proof)

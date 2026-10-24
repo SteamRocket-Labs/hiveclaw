@@ -635,11 +635,12 @@ class RuntimeTerminalBoundaryOutboxService:
             rows = list(await db.scalars(select(queue).where(
                 queue.tenant_id == tenant_uuid, queue.id.in_(identities))))
             claimed: list[ClaimedTerminalBoundary] = []
+            claim_time = now if now is not None else datetime.now(UTC)
             for row in rows:
                 row.status = "processing"
                 row.claimed_by = normalized_worker
                 row.claim_token = uuid.uuid4()
-                row.lease_expires_at = current + timedelta(seconds=self._lease_seconds)
+                row.lease_expires_at = claim_time + timedelta(seconds=self._lease_seconds)
                 row.attempt_count = int(row.attempt_count or 0) + 1
                 claimed.append(self._claimed(row))
             await db.flush()

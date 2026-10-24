@@ -97,6 +97,41 @@ async def test_terminal_claim_keeps_large_task_bodies_out_of_the_locked_queue_so
         'role': 'rls_app_user', 'superuser': False, 'bypassrls': False}, indent=2))
 
 
+async def test_terminal_claim_lease_starts_after_a_long_identity_scan(
+    owner_sessionmaker, app_user_sessionmaker, monkeypatch,
+):
+    from datetime import UTC, datetime, timedelta
+    from app.services import runtime_terminal_boundary_outbox as boundary
+
+    seeded = await _seed_terminal_task(owner_sessionmaker, tenant_name='Long terminal identity scan')
+    await _enqueue(owner_sessionmaker, seeded, event_kind='turn_stop', binding=_binding())
+    clock = {'now': datetime.now(UTC), 'advanced': False}
+
+    class ScanClock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            value = clock['now']
+            return value.astimezone(tz) if tz else value.replace(tzinfo=None)
+
+    class DelayedScanSession(AsyncSession):
+        async def execute(self, statement, *args, **kwargs):
+            result = await super().execute(statement, *args, **kwargs)
+            if isinstance(statement, Select) and statement._for_update_arg is None and not clock['advanced']:
+                clock['advanced'] = True
+                clock['now'] += timedelta(seconds=120)
+            return result
+
+    monkeypatch.setattr(boundary, 'datetime', ScanClock)
+    factory = async_sessionmaker(app_user_sessionmaker.kw['bind'], class_=DelayedScanSession,
+        expire_on_commit=False)
+    service = RuntimeTerminalBoundaryOutboxService(session_factory=factory, lease_seconds=60)
+    [item] = await service.claim_batch(tenant_id=seeded.tenant_id, worker_id='long-scan-claim')
+    assert clock['advanced']
+    async with owner_sessionmaker() as db:
+        row = await db.get(RuntimeTerminalBoundaryOutbox, item.id)
+        assert row.lease_expires_at > clock['now']
+
+
 @pytest.mark.parametrize('operation', ['renew', 'process'])
 @pytest.mark.parametrize('expires_during_wait', [False, True])
 async def test_terminal_claim_checks_current_deadline_after_row_lock(

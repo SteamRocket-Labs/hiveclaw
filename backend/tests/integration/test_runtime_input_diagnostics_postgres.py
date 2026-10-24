@@ -28,14 +28,16 @@ async def _input_diagnostic_app(owner_sessionmaker, app_user_sessionmaker, *, ex
     from app.models.runtime_task import RuntimeTask
     from app.models.user import User
     from app.services.session_model_inputs import _hash, capture_context_message_origins
+    from app.services.skill_source_receipts import _bundled_platform_skill_hashes
     from tests.integration.test_m1g46_historical_input_recovery_postgres import _catalog_notice
 
     tenant, agent, session, run, bound = await _bound_input(owner_sessionmaker)
     private = "PRIVATE-PROMPT-" + uuid.uuid4().hex
+    package_path = next(path for path in _bundled_platform_skill_hashes() if path.endswith("/SKILL.md"))
     prefix = _context_message(role="system", kind="frozen_prompt", content=private, unbound=())
     leaf = {"source_kind": "agent_context_resource", "source_id": f"{agent}\noriginal-context",
         "source_version": "a" * 64}
-    notice = _catalog_notice(source=leaf, unbound=("skill_file_unbound:skills/public-probe/SKILL.md",))
+    notice = _catalog_notice(source=leaf, unbound=(f"skill_file_unbound:{package_path}",))
     messages = [prefix, *_mid_run_items_to_user_messages(bound), notice]
     cached = apply_cache_hints(messages, "minimax")
     async with owner_sessionmaker() as db:
@@ -64,11 +66,19 @@ async def _input_diagnostic_app(owner_sessionmaker, app_user_sessionmaker, *, ex
         task.status = "needs_reconciliation"
         task.metadata_json = {**task.metadata_json, "reconciliation_reason": "synthetic_source_gap"}
         public = {"source_kind": "agent_platform_skill_file",
-            "source_id": f"{agent}\nskills/public-probe/SKILL.md\noriginal-scope", "source_version": "b" * 64}
+            "source_id": f"{agent}\n{package_path}\noriginal-scope", "source_version": "b" * 64}
         options = {"catalog": private} if changed_catalog else {}
         witness = _catalog_notice(source=public, **options)
         await capture_context_message_origins(db, tenant_id=tenant, agent_id=agent, session_id=session,
             run_id=run, result_id=uuid.uuid4(), messages=[witness])
+        current_notice = _catalog_notice(source=leaf,
+            unbound=("skill_installation_snapshot_unavailable", private))
+        current_request = await prepare_model_request(db, tenant_id=tenant, agent_id=agent, session_id=session,
+            run_id=run, turn_id=f"turn-{run.hex}", round_index=2,
+            messages=[prefix, *_mid_run_items_to_user_messages(bound), current_notice], tools=[],
+            provider="minimax", model="synthetic-no-provider")
+        await _seal_round(db, tenant_id=tenant, agent_id=agent, session_id=session, run_id=run,
+            turn_id=f"turn-{run.hex}", round_index=2, provider_request_id=current_request, content=private)
         await db.commit()
 
     app = FastAPI()
@@ -110,12 +120,17 @@ async def test_admin_input_source_detail_is_opt_in_scoped_and_read_only(
         assert diagnostics["models"][0]["request_hash_matches"] is True
         assert diagnostics["models"][0]["incomplete_messages"][0]["code"] == "source_wire_mismatch"
         assert diagnostics["compiler_witnesses"]["cache_presentation_matches"] >= 1
-        context = diagnostics["context_sources"][0]
+        contexts = diagnostics["context_sources"]
+        assert len(contexts) == 2
+        context = contexts[0]
         assert context["available"] is True and context["dependencies_valid"] is True
         assert context["missing_skill_file_count"] == 1 and context["other_missing_count"] == 0
+        assert context["missing_packaged_path_count"] == 1
         assert context["catalog"]["available"] is True
         assert context["witnesses"][0]["catalog_matches"] is (not changed_catalog)
         assert context["witnesses"][0]["missing_skill_paths_covered"] == 1
+        assert contexts[1]["known_unbound_codes"] == ["skill_installation_snapshot_unavailable"]
+        assert contexts[1]["other_missing_count"] == 2
         assert private not in json.dumps(diagnostics)
         foreign = await client.get(f"/admin/runtime-reconciliation/{run}", params={
             "tenant_id": str(uuid.uuid4()), "include_input_sources": "true",

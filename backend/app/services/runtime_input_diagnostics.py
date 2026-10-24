@@ -65,7 +65,7 @@ def _message_shape(message):
             else [len(content)] if isinstance(content, str) else [], "sha256": _hash(message_snapshot(message))}
 
 
-def _context_view(ref, origin, origins, agent_id):
+def _context_view(ref, origin, origins, agent_id, packaged_paths):
     from app.services.historical_model_inputs import _catalog_section
 
     def catalog_view(value):
@@ -82,7 +82,12 @@ def _context_view(ref, origin, origins, agent_id):
         "message": _message_shape(origin["message"]),
         "dependencies_valid": _stored_dependencies(origin.get("dependencies")) is not None,
         "missing_skill_file_count": len(paths),
+        "missing_packaged_path_count": len(paths & packaged_paths),
         "other_missing_count": sum(not value.startswith("skill_file_unbound:") for value in missing),
+        "known_unbound_codes": sorted({value.partition(":")[0] for value in missing
+            if value.partition(":")[0] in {"skill_file_unbound", "skill_installation_snapshot_unavailable",
+                "skill_installation_in_progress", "skill_source_not_observed", "skill_catalog_authority_unavailable",
+                "skill_catalog_workspace_unverified", "skill_workspace_source_unverified", "skill_installation_unverified"}}),
         "catalog": catalog_view(catalog), "selected_sections": [], "witnesses": []}
     for section in origin.get("sections") or []:
         if isinstance(section, dict) and section.get("selected") is True:
@@ -175,11 +180,15 @@ async def runtime_input_diagnostics(db, *, task):
             "message": _message_shape(origin["message"]), "exact_message_match": exact, "cache_match": cached})
     report["compiler_witnesses"] = witnesses
     context_refs = dict.fromkeys(entry["source_ref"]
-        for entry in report["first_dependency_chain"][-1]["incomplete_messages"]
+        for view in [*report["models"], report["first_dependency_chain"][-1]]
+        for entry in view["incomplete_messages"]
         if (entry.get("source_ref") or "").startswith("session-kernel-context:"))
+    from app.services.skill_source_receipts import _bundled_platform_skill_hashes
+
+    packaged_paths = set(_bundled_platform_skill_hashes()) if context_refs else set()
     report["context_sources"] = []
     for ref in context_refs:
         origin = await load_context_message_origin(db, tenant_id=task.tenant_id, agent_id=task.parent_agent_id,
             session_id=session_id, source_id=uuid.UUID(ref.split(":", 1)[1]))
-        report["context_sources"].append(_context_view(ref, origin, origins, task.parent_agent_id))
+        report["context_sources"].append(_context_view(ref, origin, origins, task.parent_agent_id, packaged_paths))
     return report

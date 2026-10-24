@@ -1859,6 +1859,8 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
                 await db.commit()
         parent_path = "workspace/parent-review.md"
         parent_reads = ([
+            {"id": "parent-check-task", "type": "function", "function": {
+                "name": "check_async_task", "arguments": json.dumps({"task_id": task_id.hex})}},
             {"id": "parent-task-output", "type": "function", "function": {
                 "name": "task_output", "arguments": json.dumps({"runtime_task_id": task_id.hex})}},
             {"id": "parent-task-list", "type": "function", "function": {

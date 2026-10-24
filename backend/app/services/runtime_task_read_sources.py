@@ -14,7 +14,7 @@ from app.models.session_v2 import SessionModelResult
 from app.services.content_input_receipts import ContentInputReceiptError
 from app.services.session_model_inputs import _hash, _model_dependencies, _stored_dependencies, _unique_dependencies
 
-TASK_READ_TOOLS = frozenset({"task_output", "list_async_tasks"})
+TASK_READ_TOOLS = frozenset({"task_output", "list_async_tasks", "check_async_task"})
 _KIND = "runtime_task_read"
 
 
@@ -91,6 +91,23 @@ async def record_task_read(request, content):
             body = json.loads(content)
             if call.tool_name == "task_output":
                 records = [body["task"]] if body.get("ok") is True else None
+            elif call.tool_name == "check_async_task":
+                task_id = request.arguments.get("task_id")
+                task = await db.get(RuntimeTask, uuid.UUID(task_id), populate_existing=True)
+                if task is None:
+                    return content
+                record = _task_to_dict(task)
+                expected = {"task_id": task_id, "status": record["status"], "result": record["result"],
+                    "timed_out": bool(record["metadata"].get("timed_out", False)),
+                    "receipt": record["metadata"].get("execution_receipt"),
+                    "session_id": record["child_session_id"], "child_session_id": record["child_session_id"],
+                    "parent_session_id": record["parent_session_id"]}
+                # An in-process running handle has no terminal output or parent-session projection yet.
+                running = {k: v for k, v in expected.items() if k != "timed_out"}
+                running.update(status="running", result=None, parent_session_id=None)
+                if body != expected and not (record["status"] in {"pending", "running"} and body == running):
+                    return content
+                records = [record]
             else:
                 records = body if isinstance(body, list) else None
             if records is None:

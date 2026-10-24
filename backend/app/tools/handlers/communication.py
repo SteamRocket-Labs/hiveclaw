@@ -477,15 +477,16 @@ async def check_async_task(request: ToolExecutionRequest) -> str:
     from app.services.agent_tool_domains.messaging import _normalize_messaging_result
     from app.services.agent_tools import _check_async_task
     from app.services.runtime_task_authority import execution_principal_from_tool_context
+    from app.services.runtime_task_read_sources import record_task_read
 
-    return _normalize_messaging_result(
+    return await record_task_read(request, _normalize_messaging_result(
         "check_async_task",
         await _check_async_task(
             request.context.agent_id,
             request.arguments,
             principal=execution_principal_from_tool_context(request.context),
         ),
-    )
+    ))
 
 
 # -- cancel_async_task -------------------------------------------------------

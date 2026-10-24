@@ -1402,6 +1402,35 @@ def _native_read_denial_matches(tool_name, arguments, observation, *, content_ha
     from app.core.resource_authority import normalize_workspace_resource_path
     from app.services.session_tool_runtime import _sha256
 
+    if isinstance(observation, dict) and observation.get("kind") in {"filesystem_read_not_found", "filesystem_read_denied"}:
+        from app.tools.result_envelope import render_tool_error
+
+        if (tool_name not in {"read_file", "read_document", "fs_read"} or not isinstance(arguments, dict)
+            or "original_attachment_id" in arguments or not isinstance(arguments.get("path"), str)
+            or observation.get("path") != arguments["path"]):
+            return False
+        producer = tool_name
+        if tool_name == "fs_read":
+            mode = str(arguments.get("mode") or "text").strip().lower()
+            if mode not in {"text", "document"}:
+                return False
+            producer = "read_file" if mode == "text" else "read_document"
+        hint = None
+        if observation["kind"] == "filesystem_read_not_found":
+            if set(observation) != {"kind", "path"}:
+                return False
+            error_class, message = "not_found", f"File not found: {arguments['path']}"
+            if producer == "read_file":
+                hint = "Check the path or use glob_search/list_files to discover the correct file first."
+        else:
+            messages = {"resource_owner": "Access denied for this resource owner.", "path": "Access denied for this path.",
+                "company_context": "Only generated company context is available."}
+            if set(observation) != {"kind", "path", "boundary"} or observation.get("boundary") not in messages:
+                return False
+            error_class, message = "auth_or_permission", messages[observation["boundary"]]
+        expected = render_tool_error(tool_name=producer, error_class=error_class, message=message, provider="workspace",
+            retryable=False, actionable_hint=hint)
+        return content_hash == _sha256(expected)
     if (tool_name not in {"read_file", "read_document", "fs_read", "exit_plan_mode"}
         or not isinstance(arguments, dict) or "original_attachment_id" in arguments
         or not isinstance(observation, dict) or set(observation) != {"kind", "path", "http_status", "reason_code"}

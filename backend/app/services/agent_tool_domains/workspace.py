@@ -66,6 +66,22 @@ def _workspace_error(
     )
 
 
+def _file_read_failure(tool_name, error_class, message, *, path, typed_errors, **options):
+    text = _workspace_error(tool_name, error_class, message, **options)
+    if not typed_errors:
+        return text
+    metadata = {"filesystem_read_error": True}
+    if error_class == "not_found" and message == f"File not found: {path}":
+        metadata["native_read_denial"] = {"kind": "filesystem_read_not_found", "path": path}
+    elif error_class == "auth_or_permission":
+        boundary = {"Access denied for this resource owner.": "resource_owner",
+            "Access denied for this path.": "path",
+            "Only generated company context is available.": "company_context"}.get(message)
+        if boundary is not None:
+            metadata["native_read_denial"] = {"kind": "filesystem_read_denied", "path": path, "boundary": boundary}
+    return ToolContentEnvelope(text=text, metadata=metadata)
+
+
 def _workspace_storage_error(tool_name: str, exc: WorkspaceAuthorityError, *, mutation: bool = False) -> str:
     conflict = exc.code == "workspace_predecessor_changed"
     status = 503 if exc.code == "workspace_storage_unavailable" else 409 if conflict or exc.code == "workspace_resource_changed" else 403
@@ -351,7 +367,7 @@ def _read_file(
         return ToolContentEnvelope(text=value, metadata={"filesystem_read_error": True}) if typed_errors else value
 
     def _failure(*args, **kwargs):
-        return _typed_failure(_workspace_error(*args, **kwargs))
+        return _file_read_failure(*args, path=rel_path, typed_errors=typed_errors, **kwargs)
 
     # Storage reserved for authority-bound recovery refs is denied regardless of
     # existence; every other workspace read decides KNOWN FOREIGN OWNERSHIP from
@@ -1056,7 +1072,7 @@ async def _read_document(
         return ToolContentEnvelope(text=value, metadata={"filesystem_read_error": True}) if typed_errors else value
 
     def _failure(*args, **kwargs):
-        return _typed_failure(_workspace_error(*args, **kwargs))
+        return _file_read_failure(*args, path=rel_path, typed_errors=typed_errors, **kwargs)
 
     # Same ordering as _read_file: known foreign ownership denies before any
     # existence probe; a not-yet-created workspace path is ``not_found``; an

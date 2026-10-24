@@ -54,25 +54,61 @@ async def test_backend_without_a_real_read_cannot_claim_verified_bytes(native_wo
     assert "FORGED_UNOBSERVED_BACKEND_OUTPUT" not in result and "workspace_input_read_unverified" in result, result
 
 
-async def _native_read(db, n, path):
+async def _native_read(db, n, path, *, tool="read_file", mode=None, messages=None):
     from app.services.session_model_round import prepare_model_request, seal_model_response, commit_sealed_model_round
     from app.services.session_tool_runtime import prepare_tool_invocation
 
     turn, call = f"turn-{n.run.hex}", f"read-{n.run.hex}"
-    args = {"path": path}
+    args = {"path": path, **({"mode": mode} if mode else {})}
     request = await prepare_model_request(db, tenant_id=n.tenant, agent_id=n.agent, session_id=n.session,
-        run_id=n.run, turn_id=turn, round_index=1, messages=[{"role": "user", "content": "Read the file"}],
+        run_id=n.run, turn_id=turn, round_index=1, messages=messages if messages is not None else [{"role": "user", "content": "Read the file"}],
         tools=[], provider="openai", model="synthetic-no-provider")
     await seal_model_response(db, tenant_id=n.tenant, agent_id=n.agent, session_id=n.session,
         run_id=n.run, turn_id=turn, round_index=1, provider_request_id=request,
         response={"content": None, "tool_calls": [{"id": call, "type": "function", "function": {
-            "name": "read_file", "arguments": json.dumps(args)}}], "finish_reason": "tool_calls", "usage": {}})
+            "name": tool, "arguments": json.dumps(args)}}], "finish_reason": "tool_calls", "usage": {}})
     await commit_sealed_model_round(db, tenant_id=n.tenant, agent_id=n.agent, session_id=n.session,
         run_id=n.run, turn_id=turn, round_index=1, provider_request_id=request)
     invocation = await prepare_tool_invocation(db, tenant_id=n.tenant, agent_id=n.agent, session_id=n.session,
-        run_id=n.run, provider_request_id=request, provider_tool_use_id=call, tool_name="read_file", arguments=args)
+        run_id=n.run, provider_request_id=request, provider_tool_use_id=call, tool_name=tool, arguments=args)
     await db.commit()
     return invocation, args
+
+
+@pytest.mark.parametrize("tool,mode", [("read_file", None), ("read_document", None), ("fs_read", "text"), ("fs_read", "document")])
+@pytest.mark.parametrize("foreign", [False, True])
+async def test_native_file_failure_is_a_bound_no_body_observation(
+    native_workspace, app_user_sessionmaker, tool, mode, foreign,  # noqa: F811
+):
+    from app.services.session_model_inputs import _origin_dependencies
+    from app.services.session_permission_runtime import _execution_evidence
+    from app.services.web_chat_runtime import _persist_tool_call
+    from tests.integration.test_m1g24_workspace_artifact_authority_postgres import _admitted_write_messages
+
+    n = native_workspace
+    path = n.path if foreign else "workspace/not-created.md"
+    before = n.target.read_bytes()
+    async with app_user_sessionmaker() as db:
+        await pin_rls_tenant_context(db, n.tenant)
+        messages = await _admitted_write_messages(db, n)
+        invocation, args = await _native_read(db, n, path, tool=tool, mode=mode, messages=messages)
+    trace = {}
+    value = await n.service.execute(tool, args, agent_id=n.agent, user_id=n.user, session_id=str(n.session),
+        runtime_task_id=str(n.run), tool_call_id=invocation.provider_tool_use_id,
+        trace_metadata_sink=trace, emit_runtime_hooks=False)
+    assert before.decode() not in str(value)
+    assert n.target.read_bytes() == before
+    assert (n.root / path).exists() is foreign
+    events = await _persist_tool_call(agent_id=n.agent, user_id=n.user, session_id=str(n.session), data={
+        "name": tool, "args": args, "status": "done", "result": str(value),
+        "tool_call_id": invocation.provider_tool_use_id, "provider_request_id": invocation.provider_request_id,
+        "runtime_task_id": str(n.run), "tool_execution_evidence": _execution_evidence(trace)})
+    result = next(event["payload"] for event in events if event["item_kind"] == "tool_result")
+    assert result["metadata"]["native_read_denial_receipt"]["status"] == "verified"
+    async with app_user_sessionmaker() as db:
+        await pin_rls_tenant_context(db, n.tenant)
+        assert (await _origin_dependencies(db, tenant_id=n.tenant, agent_id=n.agent,
+            ref=f"session-tool-result:{invocation.id}"))[1]
 
 
 @pytest.mark.parametrize("tamper", [None, "receipt_dependencies", "result_hash", "capture_unavailable"])

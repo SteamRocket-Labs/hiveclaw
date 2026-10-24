@@ -1444,6 +1444,17 @@ class ToolRuntimeService:
                     failure = value.metadata.get("feishu_failure")
                     if isinstance(failure, dict) and failure.get("tool_name") == tool_name:
                         trace_metadata_sink["feishu_failure"] = dict(failure)
+                if (tool_name in {"read_file", "read_document", "fs_read"} and isinstance(value, ToolContentEnvelope)
+                    and isinstance(value.metadata.get("native_read_denial"), dict)):
+                    # The native reader returned no source bytes. Do not require
+                    # a content receipt for the refused body's mechanical status.
+                    if trace_metadata_sink is not None:
+                        from app.services.content_input_receipts import persist_workspace_execution_evidence
+
+                        trace_metadata_sink["native_read_denial_evidence"] = await persist_workspace_execution_evidence(
+                            context=context, tool_name=tool_name, tool_call_id=tool_call_id, arguments=arguments,
+                            result=value, states={}, lineage=[], errors={}, native_read_denial=value.metadata["native_read_denial"])
+                    return value
                 if input_read is not None:
                     receipt_block, input_evidence = await settle_workspace_receipt_read(
                         request=request, read=input_read, tool_call_id=tool_call_id, result=value)

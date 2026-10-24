@@ -10,7 +10,7 @@ from typing import Any
 from uuid import UUID
 
 from loguru import logger
-from sqlalchemy import and_, case, exists, func, literal_column, or_, select, union_all
+from sqlalchemy import and_, case, exists, func, literal, literal_column, or_, select, union_all
 
 from app.config import get_settings
 from app.database import async_session, enter_rls_bypass, tenant_scoped_session
@@ -338,6 +338,9 @@ async def _discover_terminal_boundary_tenants(
 
     current = now or _utcnow()
     retry_before = current - timedelta(seconds=TERMINAL_BOUNDARY_RETRY_SECONDS)
+    # These are fixed routing values. Keep them visible to generic prepared
+    # plans so a large sibling lane cannot determine this lane's scan.
+    route_types = tuple(literal(task_type, literal_execute=True) for task_type in task_types)
     outbox_ready_at = case(
         (RuntimeTerminalBoundaryOutbox.status == "pending", RuntimeTerminalBoundaryOutbox.available_at),
         else_=func.coalesce(
@@ -351,14 +354,14 @@ async def _discover_terminal_boundary_tenants(
             outbox_ready_at.label("ready_at"),
         )
         .where(
-            RuntimeTerminalBoundaryOutbox.task_type.in_(task_types),
+            RuntimeTerminalBoundaryOutbox.task_type.in_(route_types),
             RuntimeTerminalBoundaryOutbox.status.in_((literal_column("'pending'"), literal_column("'processing'"))),
             # Route through active lanes first. Recheck the canonical task per
             # candidate without materializing every historical task identity.
             exists(select(RuntimeTask.id).where(
                 RuntimeTask.id == RuntimeTerminalBoundaryOutbox.runtime_task_id,
                 RuntimeTask.tenant_id == RuntimeTerminalBoundaryOutbox.tenant_id,
-                RuntimeTask.task_type.in_(task_types),
+                RuntimeTask.task_type.in_(route_types),
             ).correlate(RuntimeTerminalBoundaryOutbox).offset(0)),
             or_(
                 and_(
@@ -382,7 +385,7 @@ async def _discover_terminal_boundary_tenants(
             RuntimeTask.created_at,
         ).label("ready_at"),
     ).where(
-        RuntimeTask.task_type.in_(task_types),
+        RuntimeTask.task_type.in_(route_types),
         RuntimeTask.terminal_boundary_generation.is_not(None),
         RuntimeTask.terminal_boundary_enqueued_at.is_(None),
         RuntimeTask.status.in_(TERMINAL_BOUNDARY_TERMINAL_STATUSES),
@@ -497,10 +500,14 @@ async def drain_direct_terminal_boundary_outbox_once(
     limit: int = 20,
     session_factory=async_session,
     builder=None,
+    task_type: str | None = None,
 ) -> dict[str, int]:
+    if task_type is not None and task_type not in DIRECT_INVOCATION_TASK_TYPES:
+        raise ValueError("direct terminal boundary lane has an unsupported task type")
+    task_types = (task_type,) if task_type is not None else DIRECT_INVOCATION_TASK_TYPES
     tenant_ids = await _discover_terminal_boundary_tenants(
         worker_id=worker_id,
-        task_types=DIRECT_INVOCATION_TASK_TYPES,
+        task_types=task_types,
         limit=limit,
         session_factory=session_factory,
     )
@@ -522,7 +529,7 @@ async def drain_direct_terminal_boundary_outbox_once(
             tenant_id=tenant_id,
             builder=builder or _build_direct_terminal_boundaries,
             limit=limit,
-            task_types=DIRECT_INVOCATION_TASK_TYPES,
+            task_types=task_types,
         )
         drained = await service.drain_once(
             tenant_id=tenant_id,
@@ -530,12 +537,13 @@ async def drain_direct_terminal_boundary_outbox_once(
             canonical_validator=processor.validate,
             process_callback=processor,
             limit=limit,
-            task_types=DIRECT_INVOCATION_TASK_TYPES,
+            task_types=task_types,
         )
         return reconciled, drained
 
+    lane = f"direct-{task_type}" if task_type is not None else "direct"
     results = await asyncio.gather(*(asyncio.create_task(_drain_tenant(tenant_id),
-        name="runtime-terminal-boundary-direct-tenant") for tenant_id in tenant_ids), return_exceptions=True)
+        name=f"runtime-terminal-boundary-{lane}-tenant") for tenant_id in tenant_ids), return_exceptions=True)
     for tenant_id, result in zip(tenant_ids, results, strict=True):
         if isinstance(result, BaseException):
             counts["failed"] += 1
@@ -1288,7 +1296,10 @@ async def _terminal_boundary_lane_loop(*, worker_id: str, lane: str) -> None:
     poll_seconds = max(0.05, float(_settings().RUNTIME_TASK_CLAIM_POLL_SECONDS))
     while True:
         try:
-            await drain(worker_id=worker_id)
+            if lane.startswith("direct-"):
+                await drain(worker_id=worker_id, task_type=lane.removeprefix("direct-"))
+            else:
+                await drain(worker_id=worker_id)
         except Exception as exc:  # noqa: BLE001 - the durable claim remains retryable.
             _STATE["last_error"] = f"{lane}_terminal_boundary:{type(exc).__name__}: {exc}"
             logger.exception("[RuntimeTaskWorker] {} terminal boundary tick failed", lane)
@@ -1304,7 +1315,7 @@ async def start_terminal_boundary_worker_loop(*, worker_id: str | None = None) -
             _terminal_boundary_lane_loop(worker_id=exact_worker_id, lane=lane),
             name=f"runtime-terminal-boundary-{lane}",
         )
-        for lane in ("web", "direct")
+        for lane in ("web", *(f"direct-{task_type}" for task_type in DIRECT_INVOCATION_TASK_TYPES))
     ]
     _STATE["terminal_boundary_worker_running"] = True
     try:
@@ -1426,8 +1437,8 @@ async def start_runtime_task_worker_loop() -> None:
 
 def _terminal_boundary_execution_snapshot() -> dict[str, Any]:
     """Observe native wait locations without reading arguments or frame locals."""
-    names = {f"runtime-terminal-boundary-{lane}{suffix}"
-        for lane in ("web", "direct") for suffix in ("", "-tenant")}
+    lanes = ("web", "direct", *(f"direct-{task_type}" for task_type in DIRECT_INVOCATION_TASK_TYPES))
+    names = {f"runtime-terminal-boundary-{lane}{suffix}" for lane in lanes for suffix in ("", "-tenant")}
     try:
         tasks = asyncio.all_tasks()
     except RuntimeError:

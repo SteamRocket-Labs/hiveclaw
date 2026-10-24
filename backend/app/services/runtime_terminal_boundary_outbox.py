@@ -17,7 +17,7 @@ import re
 from typing import Any
 import uuid
 
-from sqlalchemy import and_, exists, literal_column, or_, select, tuple_
+from sqlalchemy import and_, exists, literal, literal_column, or_, select, tuple_
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -594,6 +594,7 @@ class RuntimeTerminalBoundaryOutboxService:
         requested_limit = max(1, int(limit))
         current = now or datetime.now(UTC)
         queue = RuntimeTerminalBoundaryOutbox
+        route_types = tuple(literal(task_type, literal_execute=True) for task_type in (task_types or ()))
         order = (queue.available_at, queue.created_at, queue.id)
         ready = (
             queue.tenant_id == tenant_uuid,
@@ -613,7 +614,7 @@ class RuntimeTerminalBoundaryOutboxService:
                 # sibling lanes or locked rows must not hide later ready work.
                 page_query = select(queue.id, queue.available_at, queue.created_at).where(*ready)
                 if task_types:
-                    page_query = page_query.where(queue.task_type.in_(tuple(task_types)))
+                    page_query = page_query.where(queue.task_type.in_(route_types))
                 if cursor is not None:
                     page_query = page_query.where(tuple_(*order) > cursor)
                 page = list((await db.execute(page_query.order_by(*order).limit(_CLAIM_SCAN_PAGE_SIZE))).all())
@@ -624,7 +625,7 @@ class RuntimeTerminalBoundaryOutboxService:
                     statement = statement.where(exists(select(RuntimeTask.id).where(
                         RuntimeTask.id == queue.runtime_task_id,
                         RuntimeTask.tenant_id == tenant_uuid,
-                        RuntimeTask.task_type.in_(tuple(task_types)),
+                        RuntimeTask.task_type.in_(route_types),
                     ).offset(0)))
                 # The correlated lookup stays inside this page; OFFSET 0
                 # prevents a semijoin from materializing all historical tasks.
@@ -1015,7 +1016,7 @@ class RuntimeTerminalBoundaryOutboxService:
             ),
         ]
         if task_types:
-            filters.append(RuntimeTask.task_type.in_(tuple(task_types)))
+            filters.append(RuntimeTask.task_type.in_(tuple(literal(kind, literal_execute=True) for kind in task_types)))
         async with self._tenant_session(tenant_id, operation="reconcile_claim") as db:
             tasks = list(
                 (

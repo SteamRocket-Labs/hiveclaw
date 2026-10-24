@@ -21,19 +21,27 @@ async def test_empty_delegation_permission_contract_round_trips_exact_guards(mig
     assert live_sql() == frozen_sql()
     async with owner_sessionmaker() as db:
         before = await db.scalar(text("SELECT pg_get_functiondef('public.enforce_session_v2_tenant_binding()'::regprocedure)"))
+        original_revision = await db.scalar(text('SELECT version_num FROM alembic_version'))
     assert "NEW.kind='permission_response' AND run.task_type='delegation'" in before
-    previous = _migrate(migrated_pg_url, 'downgrade', 'business_permissions_1022', tmp_path)
-    assert previous.returncode == 0, previous.stderr
-    async with owner_sessionmaker() as db:
-        restored = await db.scalar(text("SELECT pg_get_functiondef('public.enforce_session_v2_tenant_binding()'::regprocedure)"))
-        assert "NEW.kind='permission_response' AND run.task_type='delegation'" not in restored
-        assert "NEW.kind='permission_response' AND run.task_type='business_task'" in restored
-        assert await db.scalar(text('SELECT version_num FROM alembic_version')) == 'business_permissions_1022'
-    upgraded = _migrate(migrated_pg_url, 'upgrade', 'head', tmp_path)
-    assert upgraded.returncode == 0, upgraded.stderr
+    try:
+        previous = _migrate(migrated_pg_url, 'downgrade', 'business_permissions_1022', tmp_path)
+        assert previous.returncode == 0, previous.stderr
+        async with owner_sessionmaker() as db:
+            restored = await db.scalar(text("SELECT pg_get_functiondef('public.enforce_session_v2_tenant_binding()'::regprocedure)"))
+            assert "NEW.kind='permission_response' AND run.task_type='delegation'" not in restored
+            assert "NEW.kind='permission_response' AND run.task_type='business_task'" in restored
+            assert await db.scalar(text('SELECT version_num FROM alembic_version')) == 'business_permissions_1022'
+        upgraded = _migrate(migrated_pg_url, 'upgrade', 'delegation_permissions_1022', tmp_path)
+        assert upgraded.returncode == 0, upgraded.stderr
+        async with owner_sessionmaker() as db:
+            assert await db.scalar(text("SELECT pg_get_functiondef('public.enforce_session_v2_tenant_binding()'::regprocedure)")) == before
+            assert await db.scalar(text('SELECT version_num FROM alembic_version')) == 'delegation_permissions_1022'
+    finally:
+        restored_head = _migrate(migrated_pg_url, 'upgrade', original_revision, tmp_path)
+        assert restored_head.returncode == 0, restored_head.stderr
     async with owner_sessionmaker() as db:
         assert await db.scalar(text("SELECT pg_get_functiondef('public.enforce_session_v2_tenant_binding()'::regprocedure)")) == before
-        assert await db.scalar(text('SELECT version_num FROM alembic_version')) == 'delegation_permissions_1022'
+        assert await db.scalar(text('SELECT version_num FROM alembic_version')) == original_revision
 
 
 async def verify_delegated_permission_binding(*, owner, factory, tenant_id, session_id, control_id, parent_agent_id, url, tmp_path):
@@ -63,8 +71,17 @@ async def verify_delegated_permission_binding(*, owner, factory, tenant_id, sess
         with pytest.raises(DBAPIError, match='session_v2_authority_binding_mismatch'):
             await db.flush()
         await db.rollback()
-    refused = _migrate(url, 'downgrade', 'business_permissions_1022', tmp_path)
-    assert refused.returncode != 0 and 'Retain native delegation permission responses before downgrade' in refused.stderr
     async with owner() as db:
-        assert await db.scalar(text('SELECT version_num FROM alembic_version')) == 'delegation_permissions_1022'
+        original_revision = await db.scalar(text('SELECT version_num FROM alembic_version'))
+    try:
+        refused = _migrate(url, 'downgrade', 'business_permissions_1022', tmp_path)
+        assert refused.returncode != 0 and 'Retain native delegation permission responses before downgrade' in refused.stderr
+        async with owner() as db:
+            assert await db.scalar(text('SELECT version_num FROM alembic_version')) == 'delegation_permissions_1022'
+            assert await db.get(SessionControlInput, control_id) is not None
+    finally:
+        restored_head = _migrate(url, 'upgrade', original_revision, tmp_path)
+        assert restored_head.returncode == 0, restored_head.stderr
+    async with owner() as db:
+        assert await db.scalar(text('SELECT version_num FROM alembic_version')) == original_revision
         assert await db.get(SessionControlInput, control_id) is not None

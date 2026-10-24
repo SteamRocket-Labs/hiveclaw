@@ -24,6 +24,7 @@ async def _start_feishu_creation_work(seed, app_user_sessionmaker, monkeypatch):
     from app.models.runtime_task import RuntimeTask
     from app.models.session_v2 import SessionCommand, SessionTurnInput
     from app.services.channel_ingress_inbox import accept_authenticated_channel_event, ChannelIngressInboxService
+    from app.services.channel_provider_receipts import feishu_message_scope
     from app.services.external_principal_service import bind_authenticated_self_channel_principal
     from app.services.session_input_dispatch import recover_admitted_session_inputs_once
     from app.services.direct_employee_creation import _human_request
@@ -64,7 +65,7 @@ async def _start_feishu_creation_work(seed, app_user_sessionmaker, monkeypatch):
         await pin_rls_tenant_context(db, seed["tenant_id"])
         receipt = await accept_authenticated_channel_event(db, tenant_id=seed["tenant_id"], agent_id=seed["agent_id"],
             provider="feishu", installation_ref=installation, provider_event_id="synthetic-create-event",
-            handler_key="feishu.event", body=body)
+            handler_key="feishu.event", body=body, metadata={"feishu_message_scope": feishu_message_scope(config)})
     stats = await ChannelIngressInboxService(session_factory=app_user_sessionmaker).drain_once(worker_id="creation-ingress")
     assert stats["processed"] == 1 and stats["retried"] == 0, stats
     async with app_user_sessionmaker() as db:
@@ -1259,7 +1260,9 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
             if input_case == "first_task_feishu_quoted_question":
                 from app.models.audit import ChatMessage
                 from app.services.channel_ingress_dispatcher import dispatch_channel_ingress_event
-                from app.services.channel_ingress_inbox import ChannelIngressInboxService, ChannelIngressSubmission, enqueue_channel_ingress_event
+                from app.models.channel_config import ChannelConfig
+                from app.services.channel_ingress_inbox import ChannelIngressInboxService, accept_authenticated_channel_event
+                from app.services.channel_provider_receipts import feishu_message_scope
                 from app.services.session_input_dispatch import recover_admitted_session_inputs_once
 
                 async with app_user_sessionmaker() as db:
@@ -1276,10 +1279,13 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
                                 "parent_id": "synthetic-question-notice-2", "content": json.dumps({"text": "Audience: Team"})}}}
                     async with app_user_sessionmaker() as db:
                         await pin_rls_tenant_context(db, seed["tenant_id"])
-                        admitted = await enqueue_channel_ingress_event(db, ChannelIngressSubmission(
+                        config = await db.get(ChannelConfig, notice.channel_config_id)
+                        assert config is not None
+                        admitted = await accept_authenticated_channel_event(db,
                             tenant_id=seed["tenant_id"], agent_id=seed["agent_id"], provider="feishu",
                             installation_ref=str(notice.channel_config_id), provider_event_id=reply["header"]["event_id"],
-                            handler_key="feishu.event", payload={"body": reply}))
+                            handler_key="feishu.event", body=reply,
+                            metadata={"feishu_message_scope": feishu_message_scope(config)})
                         await db.commit()
                     items = await reply_service.claim_batch(worker_id="first-task-answer", limit=10)
                     assert [item.id for item in items] == [admitted.event_id]

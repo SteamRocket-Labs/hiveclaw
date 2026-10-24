@@ -199,7 +199,7 @@ async def test_real_worker_command_environment_stop_resume_and_saved_files(
 async def _exercise_real_worker_environment(
     owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, *, recovery=None,
     initial_delivery=False, recovery_invocation_key="crashed-before-resource",
-    initial_command=None, initial_artifact_paths=None,
+    initial_command=None, initial_artifact_paths=None, unavailable_saved_content=None,
 ):
     from app.api.environments import router
     import app.database as database
@@ -213,11 +213,19 @@ async def _exercise_real_worker_environment(
 
     seed = await _seed_run(owner_sessionmaker, tmp_path)
     factory = database.async_session
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+
+    late_bindings = []
     for module in list(sys.modules.values()):
         if module is not None and getattr(module, "__name__", "").startswith("app."):
             for name, value in list(vars(module).items()):
-                if value is factory:
+                canonical_alias = name == "async_session" and isinstance(value, async_sessionmaker)
+                if canonical_alias and value is not factory and value is not app_user_sessionmaker:
+                    late_bindings.append(module.__name__)
+                if value is factory or canonical_alias:
                     monkeypatch.setattr(module, name, app_user_sessionmaker)
+    (tmp_path / "native-session-factory-isolation.json").write_text(json.dumps({
+        "rebound_lazy_imports": sorted(late_bindings), "current_factory_applied": True}, indent=2))
     monkeypatch.setattr(get_settings(), "AGENT_DATA_DIR", str(seed["data_root"]))
     monkeypatch.setattr(agent_tools, "WORKSPACE_ROOT", seed["data_root"])
     monkeypatch.setattr("app.tools.workspace.WORKSPACE_ROOT", seed["data_root"])
@@ -409,7 +417,14 @@ async def _exercise_real_worker_environment(
             f"{python} -I -c \"print(open('saved.txt').read()); open('saved.txt','a').write('_CONTINUED')\""
         )
         assert "CANONICAL_ENVIRONMENT_FILE" in json.dumps(script.requests[-1]["messages"])
-        assert (seed["agent_root"] / "workspace/saved.txt").read_text().endswith("_CONTINUED")
+        if unavailable_saved_content is None:
+            assert (seed["agent_root"] / "workspace/saved.txt").read_text().endswith("_CONTINUED")
+        else:
+            assert (seed["agent_root"] / "workspace/saved.txt").read_text() == unavailable_saved_content
+            returned = next(message["content"] for message in reversed(script.requests[-1]["messages"])
+                if message.get("role") == "tool" and message.get("tool_call_id") == "managed-command")
+            assert "workspace_input_denials" in returned and "FileNotFoundError" in returned
+            assert unavailable_saved_content not in returned
 
         from app.services.code_execution import local_provider
         from app.models.execution_environment import EnvironmentLease, ExecutionEnvironment

@@ -109,7 +109,7 @@ async def _start_feishu_creation_work(seed, app_user_sessionmaker, monkeypatch):
         return command.id
 
 
-@pytest.mark.parametrize("input_case", ["complete", "unbound", "revoked", "first_task", "first_task_unbound", "first_task_revoked", "first_task_refined", "first_task_delivery", "first_task_parent_model", "first_task_refined_native", "first_task_native_creation", "first_task_fresh_employee", "first_task_slow_provider", "first_task_saved_reopen", "first_task_question", "first_task_question_after_write", "first_task_feishu_question", "first_task_feishu_quoted_question", "first_task_feishu_question_source_changed", "first_task_feishu_question_body_changed", "first_task_feishu_question_already_answered", "first_task_feishu_question_projection_missing", "first_task_feishu_question_recipient_changed", "first_task_feishu_question_legacy_status", "first_task_feishu_permission_allow", "first_task_feishu_permission_deny", "first_task_feishu_permission_cancel", "first_task_feishu_permission_unknown", "first_task_feishu_permission_expired", "first_task_feishu_permission_source_changed", "delegation_permission_allow", "first_task_recall", "first_task_ledger", "first_task_ledger_unknown", "first_task_parent_status", "first_task_parent_status_unknown", "first_task_child_command", "first_task_child_code", "first_task_parent_creation_result", "first_task_parent_historical_creation_result", "first_task_parent_historical_creation_unknown", "first_task_parent_result_denial", "first_task_parent_public_directory", "first_task_child_readback", "first_task_workspace_listing", "first_task_workspace_listing_alias", "first_task_parity_list", "first_task_parity_ledger", "first_task_parity_ledger_unknown", "first_task_context", "first_task_discovery", "first_task_unverified_memory", "first_task_explicit_unverified_memory", "first_task_feishu_permission_channel_allow", "first_task_feishu_permission_channel_deny", "first_task_feishu_permission_channel_unknown", "first_task_feishu_permission_channel_legacy", "first_task_feishu_permission_channel_scope", "first_task_feishu_permission_channel_feedback_retry", "first_task_feishu_progress"])
+@pytest.mark.parametrize("input_case", ["complete", "unbound", "revoked", "first_task", "first_task_unbound", "first_task_revoked", "first_task_refined", "first_task_delivery", "first_task_parent_model", "first_task_refined_native", "first_task_native_creation", "first_task_fresh_employee", "first_task_slow_provider", "first_task_saved_reopen", "first_task_question", "first_task_question_after_write", "first_task_feishu_question", "first_task_feishu_quoted_question", "first_task_feishu_question_source_changed", "first_task_feishu_question_body_changed", "first_task_feishu_question_already_answered", "first_task_feishu_question_projection_missing", "first_task_feishu_question_recipient_changed", "first_task_feishu_question_legacy_status", "first_task_feishu_permission_allow", "first_task_feishu_permission_deny", "first_task_feishu_permission_cancel", "first_task_feishu_permission_unknown", "first_task_feishu_permission_expired", "first_task_feishu_permission_source_changed", "delegation_permission_allow", "first_task_recall", "first_task_ledger", "first_task_ledger_unknown", "first_task_parent_status", "first_task_parent_status_unknown", "first_task_child_command", "first_task_child_code", "first_task_parent_creation_result", "first_task_parent_historical_creation_result", "first_task_parent_historical_creation_unknown", "first_task_parent_result_denial", "first_task_parent_public_directory", "first_task_child_readback", "first_task_workspace_listing", "first_task_workspace_listing_alias", "first_task_completion_sweep", "first_task_parent_wait_legacy", "first_task_parent_code_legacy", "first_task_parity_list", "first_task_parity_ledger", "first_task_parity_ledger_unknown", "first_task_context", "first_task_discovery", "first_task_unverified_memory", "first_task_explicit_unverified_memory", "first_task_feishu_permission_channel_allow", "first_task_feishu_permission_channel_deny", "first_task_feishu_permission_channel_unknown", "first_task_feishu_permission_channel_legacy", "first_task_feishu_permission_channel_scope", "first_task_feishu_permission_channel_feedback_retry", "first_task_feishu_progress"])
 async def test_governed_delegation_preserves_its_parent_instruction_origin(
     owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, input_case, migrated_pg_url,
 ):
@@ -127,12 +127,24 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
     from app.services.secrets_provider import get_secrets_provider
     from app.services.web_chat_runtime import _persist_tool_call
 
-    workspace_listing_case = input_case in {"first_task_workspace_listing", "first_task_workspace_listing_alias"}
+    completion_sweep_case = input_case == "first_task_completion_sweep"
+    legacy_code_case = input_case == "first_task_parent_code_legacy"
+    legacy_wait_case = legacy_code_case or input_case == "first_task_parent_wait_legacy"
+    workspace_listing_case = legacy_wait_case or input_case in {"first_task_workspace_listing", "first_task_workspace_listing_alias"}
     listing_tool = "fs_list" if input_case == "first_task_workspace_listing_alias" else "list_files"
     parity_list_case = input_case == "first_task_parity_list"
     parity_sequence_case = input_case in {"first_task_parity_ledger", "first_task_parity_ledger_unknown"}
     parity_unknown = input_case == "first_task_parity_ledger_unknown"
-    child_readback_case = workspace_listing_case or input_case in {"first_task_child_readback", "first_task_parity_list", "first_task_parity_ledger"}
+    child_readback_case = completion_sweep_case or workspace_listing_case or input_case in {"first_task_child_readback", "first_task_parity_list", "first_task_parity_ledger"}
+    if legacy_wait_case:
+        import platform
+
+        if platform.system() != "Darwin":
+            pytest.skip("Native macOS process gate; Linux delivery is deferred.")
+        assert platform.system() == "Darwin"
+        for key, value in {"HIVE_CODE_EXEC_PROVIDER": "local_os_sandbox", "HIVE_CODE_SANDBOX_MODE": "auto",
+            "HIVE_ALLOW_UNSANDBOXED_CODE_EXEC": "0"}.items():
+            monkeypatch.setenv(key, value)
     if child_readback_case:
         input_case = "first_task_parent_status"
     if parity_unknown:
@@ -231,9 +243,9 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
             await db.flush()
             db.add(AgentPermission(id=public_permission_id, tenant_id=seed["tenant_id"], agent_id=peer_id,
                 scope_type="company", access_level="use"))
-        if child_command_case:
+        if child_command_case or legacy_wait_case:
             db.add(CapabilityPolicy(tenant_id=seed["tenant_id"],
-                capability="workspace.code.execute" if child_tool == "execute_code" else "workspace.command.execute",
+                capability="workspace.code.execute" if legacy_code_case or child_tool == "execute_code" else "workspace.command.execute",
                 allowed=True, requires_approval=False))
         if ledger_case:
             db.add(CapabilityPolicy(tenant_id=seed["tenant_id"], capability="agent.task.track", allowed=True,
@@ -480,6 +492,11 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
                     ("read_ledger", {}), ("list_files", {"path": "workspace"}),
                     ("tool_search", {"query": "list_employees"})]))
             ], "finish_reason": "tool_calls"})
+        if legacy_wait_case:
+            creator_client.script[0]["tool_calls"].append({"id": "creator-wait", "type": "function", "function": {
+                "name": "execute_code" if legacy_code_case else "run_command",
+                "arguments": json.dumps({"language": "python", "code": "print('waited')", "timeout": 10}
+                    if legacy_code_case else {"command": "echo waited", "timeout": 10})}})
         if parity_sequence_case:
             def parity_call(identity, name, arguments):
                 return {"id": identity, "type": "function", "function": {"name": name, "arguments": json.dumps(arguments)}}
@@ -549,6 +566,35 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
             assert len(creator_client.requests) == 2 and "NATIVE_PARENT_CONTEXT" in json.dumps(creator_client.requests[0]["messages"])
         async with app_user_sessionmaker() as db:
             await pin_rls_tenant_context(db, seed["tenant_id"])
+            if legacy_wait_case:
+                from app.models.invocation_span import InvocationSpan
+
+                wait = await db.scalar(select(SessionToolInvocation).where(SessionToolInvocation.run_id == seed["run_id"],
+                    SessionToolInvocation.provider_tool_use_id == "creator-wait"))
+                proof = await db.get(InvocationSpan, uuid5(wait.id, "workspace-output-evidence"))
+                inputs = proof.metadata_json["workspace_execution_evidence"]["execution_inputs"]
+                assert inputs == {"schema": "hive.workspace_execution_inputs.v1", "observed": True,
+                    "sources": [], "unbound": []}, inputs
+                result = _event_payload(await db.get(ChatTranscriptEvent, wait.result_event_id))["content"]
+                assert "waited" in result and "workspace_input_denials" in result and prior_body not in result
+                from app.services.employee_creation_sources import _owned_context_source
+                from app.services.session_model_inputs import tool_result_source_hash
+
+                event_payload = _event_payload(await db.get(ChatTranscriptEvent, wait.result_event_id))
+                source = {"source_kind": "session_tool_invocation", "source_id": str(wait.id),
+                    "source_version": tool_result_source_hash(event_payload)}
+                async def wait_published():
+                    return await _owned_context_source(db, dependency=source, agent_id=seed["agent_id"],
+                        tenant_id=seed["tenant_id"], session_id=seed["session_id"], user_id=seed["user_id"])
+                assert await wait_published()
+                control = await db.begin_nested()
+                proof.metadata_json = {**proof.metadata_json, "workspace_execution_evidence": {
+                    **proof.metadata_json["workspace_execution_evidence"], "execution_inputs": {
+                        **inputs, "unbound": [prior_path]}}}
+                await db.flush()
+                assert not await wait_published()
+                await control.rollback()
+                assert await wait_published()
             invocation = await db.scalar(select(SessionToolInvocation).where(SessionToolInvocation.run_id == seed["run_id"],
                 SessionToolInvocation.provider_tool_use_id == call_id))
             assert invocation is not None and invocation.result_event_id is not None
@@ -1963,6 +2009,23 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
         assert len(client.requests) == 3 and marker.stat().st_mtime_ns == written_at
     else:
         assert len(client.requests) == 2 and marker.stat().st_mtime_ns == written_at
+    if completion_sweep_case:
+        from app.models.runtime_result import RuntimeResultObject
+
+        async with owner_sessionmaker() as db:
+            child = await db.get(RuntimeTask, task_id)
+            child.metadata_json = {**child.metadata_json, "parent_agent_id": str(receiver)}
+            await db.commit()
+        service = RuntimeNotificationOutboxService(session_factory=app_user_sessionmaker)
+        assert await service.reconcile_terminal_tasks_once(limit=100) == 0
+        assert await service.reconcile_terminal_tasks_once(limit=100) == 0
+        async with app_user_sessionmaker() as db:
+            await pin_rls_tenant_context(db, seed["tenant_id"])
+            assert not await db.scalar(select(RuntimeNotificationOutbox.id).where(
+                RuntimeNotificationOutbox.tenant_id == seed["tenant_id"],
+                RuntimeNotificationOutbox.source_run_id == str(task_id)))
+            assert not await db.scalar(select(RuntimeResultObject.id).where(
+                RuntimeResultObject.tenant_id == seed["tenant_id"], RuntimeResultObject.source_run_id == str(task_id)))
     processor = DirectInvocationTerminalBoundaryProcessor(session_factory=app_user_sessionmaker, data_root=seed["data_root"])
     boundaries = await RuntimeTerminalBoundaryOutboxService(session_factory=app_user_sessionmaker).drain_once(
         tenant_id=seed["tenant_id"], worker_id="native-first-task-terminal", canonical_validator=processor.validate,
@@ -1990,6 +2053,7 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
         notification = await db.scalar(select(RuntimeNotificationOutbox).where(RuntimeNotificationOutbox.source_run_id == str(task_id),
             RuntimeNotificationOutbox.source_kind == "a2a_delegation"))
         assert notification is not None and notification.parent_session_id == seed["session_id"]
+        assert notification.parent_agent_id == seed["agent_id"] and notification.parent_agent_id != receiver
         returns = list(await db.scalars(select(RuntimeTask).where(RuntimeTask.parent_agent_id == seed["agent_id"],
             RuntimeTask.metadata_json["integration_page_id"].astext.in_([str(page.id) for page in pages]))))
         assert len(returns) == 1 and returns[0].parent_session_id == str(seed["session_id"])

@@ -17,7 +17,7 @@ import re
 from typing import Any
 import uuid
 
-from sqlalchemy import and_, or_, select
+from sqlalchemy import and_, exists, or_, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -591,16 +591,17 @@ class RuntimeTerminalBoundaryOutboxService:
             raise ValueError("worker_id must contain 1-200 characters")
         requested_limit = max(1, int(limit))
         current = now or datetime.now(UTC)
-        statement = select(RuntimeTerminalBoundaryOutbox)
+        # Sort and lock only queue identities. Hydrate the single claimed body
+        # afterward so large bindings or RuntimeTask payloads cannot spill the
+        # claim sort, and unrelated task-row locks cannot skip ready boundaries.
+        statement = select(RuntimeTerminalBoundaryOutbox.id)
         if task_types:
-            statement = statement.join(
-                RuntimeTask,
-                and_(
+            statement = statement.where(exists(
+                select(RuntimeTask.id).where(
                     RuntimeTask.id == RuntimeTerminalBoundaryOutbox.runtime_task_id,
                     RuntimeTask.tenant_id == RuntimeTerminalBoundaryOutbox.tenant_id,
                     RuntimeTask.task_type.in_(tuple(task_types)),
-                ),
-            )
+                )))
         statement = (
             statement.where(
                 RuntimeTerminalBoundaryOutbox.tenant_id == tenant_uuid,
@@ -623,10 +624,13 @@ class RuntimeTerminalBoundaryOutboxService:
                 RuntimeTerminalBoundaryOutbox.created_at,
             )
             .limit(min(requested_limit, 1))
-            .with_for_update(skip_locked=True)
+            .with_for_update(of=RuntimeTerminalBoundaryOutbox, skip_locked=True)
         )
         async with self._tenant_session(tenant_uuid, operation="claim") as db:
-            rows = list((await db.execute(statement)).scalars())
+            identities = list((await db.execute(statement)).scalars())
+            rows = list(await db.scalars(select(RuntimeTerminalBoundaryOutbox).where(
+                RuntimeTerminalBoundaryOutbox.tenant_id == tenant_uuid,
+                RuntimeTerminalBoundaryOutbox.id.in_(identities)))) if identities else []
             claimed: list[ClaimedTerminalBoundary] = []
             for row in rows:
                 row.status = "processing"

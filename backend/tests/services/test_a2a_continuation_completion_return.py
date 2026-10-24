@@ -526,7 +526,7 @@ async def test_conflicting_metadata_cannot_reroute_a2a_continuation(owner_sessio
 
 @pytest.mark.usefixtures("migrated_pg_url")
 async def test_non_a2a_metadata_cannot_override_task_parent_agent_id(owner_sessionmaker):
-    """For existing types, parent-agent authority is ``task.parent_agent_id``
+    """For existing workflow returns, parent-agent authority is ``task.parent_agent_id``
     only (the legacy target-session/owner metadata fallback is unchanged). A
     conflicting ``metadata.parent_agent_id`` must neither reroute nor wedge
     the return."""
@@ -549,7 +549,7 @@ async def test_non_a2a_metadata_cannot_override_task_parent_agent_id(owner_sessi
             RuntimeTask(
                 id=task_id,
                 tenant_id=tenant_id,
-                task_type="delegation",
+                task_type="workflow",
                 status="completed",
                 parent_agent_id=parent_agent_id,
                 parent_session_id=str(parent_session_id),

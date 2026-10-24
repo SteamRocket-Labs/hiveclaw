@@ -466,6 +466,12 @@ async def produce_terminal_task_completion_notification(
 
     if not _completion_outbox_eligible(task):
         return None
+    if task.task_type == "delegation" and task.terminal_boundary_generation is not None:
+        # The canonical boundary publishes the complete child artifact pins.
+        # A summary-only recovery packet must not race that required producer.
+        _hold_runtime_task_completion_outbox(task, reason="awaiting_canonical_delegation_projection",
+            attempted_at=attempted_at)
+        return None
     metadata = dict(task.metadata_json or {})
     route = await _resolve_completion_route(db, task, metadata=metadata, attempted_at=attempted_at)
     if route is None:
@@ -1545,12 +1551,19 @@ class RuntimeNotificationOutboxService:
         ]
         subagent_summaries: dict[uuid.UUID, str] = {}
 
+        root_status = None
         async with tenant_scoped_session(
             page.tenant_id,
             session_factory=self._session_factory,
             require_tenant=True,
             source="runtime_result_page_sequence_preflight",
         ) as sequence_db:
+            if page.root_runtime_task_id is not None and page.delivery_mode == "parent_continuation":
+                root_status = await sequence_db.scalar(select(RuntimeTask.status).where(
+                    RuntimeTask.id == page.root_runtime_task_id, RuntimeTask.tenant_id == page.tenant_id,
+                    RuntimeTask.parent_agent_id == page.parent_agent_id,
+                    RuntimeTask.parent_session_id == str(page.parent_session_id),
+                    RuntimeTask.root_user_id == page.parent_user_id))
             prior_pending_page = (
                 await sequence_db.execute(
                     select(RuntimeResultIntegrationPage.id)
@@ -1633,8 +1646,9 @@ class RuntimeNotificationOutboxService:
         admission: ExecutionAdmission | None = None
         admission_decision: ExecutionAdmissionDecision | None = None
         budget_run_id: uuid.UUID | None = None
-        continuation_denial: str | None = None
-        if page.delivery_mode == "parent_continuation" and budget_run_ids:
+        continuation_denial = {"killed": "runtime_root_cancelled",
+            "needs_reconciliation": "runtime_root_needs_reconciliation"}.get(root_status)
+        if page.delivery_mode == "parent_continuation" and budget_run_ids and continuation_denial is None:
             try:
                 budget_run_id = _uuid(next(iter(budget_run_ids)), field="budget_run_id")
             except ValueError:

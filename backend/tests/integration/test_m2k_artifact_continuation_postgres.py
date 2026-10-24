@@ -98,7 +98,8 @@ async def test_artifact_editor_continues_saved_bytes_once_in_the_original_work(
             {"tool_calls": [{"id": "artifact-follow-up-command", "type": "function", "function": {
                 "name": producer, "arguments": json.dumps({"command": command, "timeout": 10} if producer == "run_command"
                     else {"language": "python", "code": code, "timeout": 10})}}], "finish_reason": "tool_calls"},
-            {"content": "Saved correction continued.\nDELIVERABLE: workspace/saved.txt", "finish_reason": "stop"},
+            {"content": ("Saved correction continued.\nDELIVERABLE: workspace/saved.txt" if receipted
+                else "The saved file was unavailable; no change was made."), "finish_reason": "stop"},
         ])
         monkeypatch.setattr(invoker, "create_llm_client", lambda **_kwargs: script)
         fence = set_runtime_task_fence(task_id=run_id, worker_id="artifact-follow-up", claim_version=version)
@@ -112,7 +113,14 @@ async def test_artifact_editor_continues_saved_bytes_once_in_the_original_work(
             process_callback=processor, task_types=("web_chat_turn",))
         assert boundary["delivered"] == 1, boundary
         assert "_HUMAN_CORRECTION_决定性尾部" in json.dumps(script.requests[-1]["messages"], ensure_ascii=False)
-        assert (seed["agent_root"] / "workspace/saved.txt").read_text().endswith("_ARTIFACT_FOLLOWED")
+        if receipted:
+            assert (seed["agent_root"] / "workspace/saved.txt").read_text().endswith("_ARTIFACT_FOLLOWED")
+        else:
+            assert (seed["agent_root"] / "workspace/saved.txt").read_text() == "CANONICAL_ENVIRONMENT_FILE_HUMAN_CORRECTION_决定性尾部"
+            result = next(message["content"] for message in script.requests[-1]["messages"]
+                if message.get("tool_call_id") == "artifact-follow-up-command")
+            assert "workspace_input_denials" in result and "FileNotFoundError" in result
+            assert "CANONICAL_ENVIRONMENT_FILE_HUMAN_CORRECTION_决定性尾部" not in result
         async with app_user_sessionmaker() as db:
             await pin_rls_tenant_context(db, seed["tenant_id"])
             assert (await db.get(RuntimeTask, run_id)).status == "completed"
@@ -133,9 +141,10 @@ async def test_artifact_editor_continues_saved_bytes_once_in_the_original_work(
                 assert not continued
                 proof = await db.scalar(select(InvocationSpan).where(
                     InvocationSpan.runtime_task_id == run_id, InvocationSpan.span_type == "workspace_output"))
-                assert proof.metadata_json["workspace_execution_evidence"]["execution_inputs"]["unbound"] == ["workspace/saved.txt"]
+                assert proof.metadata_json["workspace_execution_evidence"]["execution_inputs"] == {
+                    "schema": "hive.workspace_execution_inputs.v1", "observed": True, "sources": [], "unbound": []}
                 assert proof.metadata_json["native_content_receipts"] == {
-                    "status": "unavailable", "reason_code": "workspace_execution_inputs_unverified", "receipts": {}}
+                    "status": "unavailable", "reason_code": "workspace_output_not_observed", "receipts": {}}
         (tmp_path / "artifact-continuation-observation.json").write_text(json.dumps({
             "input_id": str(input_id), "run_id": str(run_id), "session_id": str(seed["session_id"]),
             "original_artifact_id": artifact_id, "original_snapshot_hash": snapshot_hash,
@@ -143,4 +152,5 @@ async def test_artifact_editor_continues_saved_bytes_once_in_the_original_work(
         return (await client.get(url, params=scope)).json()["environment"]
 
     await _exercise_real_worker_environment(owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path,
-        recovery=continue_file, initial_delivery=True, recovery_invocation_key="artifact-follow-up-command")
+        recovery=continue_file, initial_delivery=True, recovery_invocation_key="artifact-follow-up-command",
+        unavailable_saved_content=None if receipted else "CANONICAL_ENVIRONMENT_FILE_HUMAN_CORRECTION_决定性尾部")

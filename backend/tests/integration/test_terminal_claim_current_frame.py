@@ -17,6 +17,66 @@ from tests.services.test_runtime_terminal_boundary_outbox import _binding, _enqu
 pytestmark = pytest.mark.usefixtures('migrated_pg_url')
 
 
+@pytest.mark.parametrize('task_type', ['business_task', 'delegation'])
+async def test_terminal_claim_keeps_large_task_bodies_out_of_the_locked_queue_sort(
+    owner_sessionmaker, tmp_path, task_type,
+):
+    from types import SimpleNamespace
+    import secrets
+    import uuid
+
+    from app.models.runtime_task import RuntimeTask
+
+    seeded = await _seed_terminal_task(owner_sessionmaker, tenant_name='Large terminal claim', task_type=task_type)
+    identities = [seeded.task_id, *(uuid.uuid4() for _ in range(23))]
+    padding = secrets.token_hex(128 * 1024)
+    async with owner_sessionmaker() as db:
+        original = await db.get(RuntimeTask, seeded.task_id)
+        original.metadata_json = {'synthetic_padding': padding}
+        for identity in identities[1:]:
+            db.add(RuntimeTask(id=identity, tenant_id=seeded.tenant_id, task_type=task_type, status='completed',
+                parent_agent_id=seeded.agent_id, parent_session_id=str(seeded.session_id),
+                root_user_id=seeded.user_id, root_session_id=str(seeded.session_id),
+                prompt='Synthetic queue input', result_summary='Synthetic queue result',
+                metadata_json={'synthetic_padding': padding}))
+        await db.commit()
+    for identity in identities:
+        binding = _binding()
+        binding['source_refs'] = [{'event_id': str(uuid.uuid4()), 'sequence': index,
+            'sha256': secrets.token_hex(32)} for index in range(128)]
+        await _enqueue(owner_sessionmaker, SimpleNamespace(**{**vars(seeded), 'task_id': identity}),
+            event_kind='turn_stop', binding=binding)
+
+    class LimitedSession(AsyncSession):
+        async def execute(self, statement, *args, **kwargs):
+            if not self.info.get('limited_queue_role'):
+                self.info['limited_queue_role'] = True
+                for setting in ["SET LOCAL temp_file_limit='128kB'", "SET LOCAL work_mem='64kB'",
+                    'SET LOCAL enable_nestloop=off', 'SET LOCAL enable_mergejoin=off', 'SET LOCAL ROLE rls_app_user']:
+                    await super().execute(text(setting))
+                role = (await super().execute(text('SELECT current_user, rolsuper, rolbypassrls '
+                    'FROM pg_roles WHERE rolname=current_user'))).one()
+                assert role == ('rls_app_user', False, False)
+            return await super().execute(statement, *args, **kwargs)
+
+    factory = async_sessionmaker(owner_sessionmaker.kw['bind'], class_=LimitedSession, expire_on_commit=False)
+    service = RuntimeTerminalBoundaryOutboxService(session_factory=factory)
+    claimed = await service.claim_batch(tenant_id=seeded.tenant_id, worker_id='limited-terminal-queue',
+        task_types=(task_type,), limit=100)
+    assert len(claimed) == 1 and claimed[0].runtime_task_id in identities
+    assert claimed[0].tenant_id == seeded.tenant_id
+    async with owner_sessionmaker() as blocker:
+        await blocker.scalar(select(RuntimeTask).where(RuntimeTask.id == identities[1]).with_for_update())
+        next_claim = await service.claim_batch(tenant_id=seeded.tenant_id, worker_id='next-terminal-queue',
+            task_types=(task_type,), limit=100)
+        assert len(next_claim) == 1 and next_claim[0].id != claimed[0].id
+        assert next_claim[0].runtime_task_id == identities[1]
+    (tmp_path / 'bounded-terminal-queue.json').write_text(json.dumps({
+        'task_type': task_type, 'queued': len(identities), 'task_padding_bytes': len(padding),
+        'temp_file_limit_kb': 128, 'work_mem_kb': 64, 'claimed': len(claimed), 'next_claim': len(next_claim),
+        'role': 'rls_app_user', 'superuser': False, 'bypassrls': False}, indent=2))
+
+
 @pytest.mark.parametrize('operation', ['renew', 'process'])
 @pytest.mark.parametrize('expires_during_wait', [False, True])
 async def test_terminal_claim_checks_current_deadline_after_row_lock(

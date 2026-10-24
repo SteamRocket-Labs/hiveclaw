@@ -947,7 +947,7 @@ async def _validate_workspace_receipt_inputs(db, receipt, *, user=None, runtime_
 
 
 async def authorize_workspace_execution_inputs(request) -> list[dict]:
-    """Exclude unavailable receipted inputs, preserving other process capabilities."""
+    """Exclude unavailable inputs, preserving other process capabilities."""
     from dataclasses import replace
     from sqlalchemy.exc import SQLAlchemyError
     from app.database import tenant_scoped_session
@@ -977,7 +977,9 @@ async def authorize_workspace_execution_inputs(request) -> list[dict]:
             for path in sorted(paths):
                 receipt = await latest_workspace_receipt(db, tenant_id, context.agent_id, path)
                 if receipt is None:
-                    continue  # Do not invent receipts for unmigrated legacy carriers.
+                    denied.append({"path": path, "reason_code": "workspace_execution_inputs_unverified",
+                        "status": "unavailable", "retryable": False})
+                    continue  # Preserve legacy bytes without mounting or inventing their source receipts.
                 try:
                     await _validate_workspace_receipt_inputs(db, receipt, runtime_request=request,
                         active_receipts=frozenset({receipt.id}))

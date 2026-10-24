@@ -139,6 +139,45 @@ async def test_budget_denied_parent_wake_projects_evidence_without_blocking_late
     assert second["deferred"] == 0
 
 
+@pytest.mark.usefixtures("migrated_pg_url")
+@pytest.mark.parametrize("root_status", ["killed", "needs_reconciliation"])
+async def test_late_result_projects_once_without_restarting_a_cancelled_original_work(owner_sessionmaker, monkeypatch, root_status):
+    from dataclasses import replace
+
+    await _clear_outbox(owner_sessionmaker)
+    tenant_id, user_id, agent_id, session_id = await _seed_parent_session(owner_sessionmaker)
+    root_id = uuid.uuid4()
+    async with tenant_scoped_session(tenant_id, session_factory=owner_sessionmaker) as db:
+        db.add(RuntimeTask(id=root_id, tenant_id=tenant_id, task_type="web_chat_turn", status=root_status,
+            parent_agent_id=agent_id, parent_session_id=str(session_id), root_user_id=user_id,
+            root_session_id=str(session_id), prompt="Cancelled original work", result_summary="Owner stopped work"))
+        await db.flush()
+        identity = await enqueue_completion_notification(db, replace(_notification(tenant_id=tenant_id,
+            user_id=user_id, agent_id=agent_id, session_id=session_id, source_run_id=str(uuid.uuid4())),
+            source_kind="workflow", task_type="workflow", root_runtime_task_id=root_id,
+            delivery_mode="parent_continuation", metadata={"budget_run_id": str(uuid.uuid4())}))
+        await db.commit()
+
+    async def forbidden_resume(*_args, **_kwargs):
+        pytest.fail("A late result cannot reserve inference or restart an owner-cancelled root")
+
+    monkeypatch.setattr("app.services.execution_admission.ExecutionAdmission.admit", forbidden_resume)
+    monkeypatch.setattr("app.services.agent_session_continuation.start_web_chat_run", forbidden_resume)
+    service = RuntimeNotificationOutboxService(session_factory=owner_sessionmaker)
+    assert (await service.drain_once(worker_id="cancelled-root-return"))["delivered"] == 1
+    assert (await service.drain_once(worker_id="cancelled-root-repeat"))["delivered"] == 0
+    async with owner_sessionmaker() as db:
+        row = await db.get(RuntimeNotificationOutbox, identity)
+        assert row.status == "delivered" and row.delivery_receipt_json["consumer"] == "session_projection"
+        assert row.delivery_receipt_json["continuation_denial"] == (
+            "runtime_root_cancelled" if root_status == "killed" else "runtime_root_needs_reconciliation")
+        assert (await db.get(RuntimeTask, root_id)).status == root_status
+        assert await db.scalar(select(func.count()).select_from(ChatTranscriptEvent).where(
+            ChatTranscriptEvent.tenant_id == tenant_id, ChatTranscriptEvent.session_id == session_id,
+            ChatTranscriptEvent.causation_id == row.integration_page_id,
+            ChatTranscriptEvent.event_type == "agent_task_notification")) == 1
+
+
 def _notification(*, tenant_id, user_id, agent_id, session_id, source_run_id="run-1", status="completed"):
     return CompletionNotification(
         tenant_id=tenant_id,

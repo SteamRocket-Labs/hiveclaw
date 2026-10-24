@@ -5,6 +5,7 @@ import json
 import os
 import socket
 from datetime import datetime, timedelta, timezone
+from types import CoroutineType, GeneratorType
 from typing import Any
 from uuid import UUID
 
@@ -460,7 +461,8 @@ async def drain_web_terminal_boundary_outbox_once(
         )
         return reconciled, drained
 
-    results = await asyncio.gather(*(_drain_tenant(tenant_id) for tenant_id in tenant_ids), return_exceptions=True)
+    results = await asyncio.gather(*(asyncio.create_task(_drain_tenant(tenant_id),
+        name="runtime-terminal-boundary-web-tenant") for tenant_id in tenant_ids), return_exceptions=True)
     for tenant_id, result in zip(tenant_ids, results, strict=True):
         if isinstance(result, BaseException):
             counts["failed"] += 1
@@ -532,7 +534,8 @@ async def drain_direct_terminal_boundary_outbox_once(
         )
         return reconciled, drained
 
-    results = await asyncio.gather(*(_drain_tenant(tenant_id) for tenant_id in tenant_ids), return_exceptions=True)
+    results = await asyncio.gather(*(asyncio.create_task(_drain_tenant(tenant_id),
+        name="runtime-terminal-boundary-direct-tenant") for tenant_id in tenant_ids), return_exceptions=True)
     for tenant_id, result in zip(tenant_ids, results, strict=True):
         if isinstance(result, BaseException):
             counts["failed"] += 1
@@ -1421,5 +1424,34 @@ async def start_runtime_task_worker_loop() -> None:
         await asyncio.gather(listener_task, terminal_boundary_task, return_exceptions=True)
 
 
+def _terminal_boundary_execution_snapshot() -> dict[str, Any]:
+    """Observe native wait locations without reading arguments or frame locals."""
+    names = {f"runtime-terminal-boundary-{lane}{suffix}"
+        for lane in ("web", "direct") for suffix in ("", "-tenant")}
+    try:
+        tasks = asyncio.all_tasks()
+    except RuntimeError:
+        return {"status": "unavailable", "reason_code": "event_loop_unavailable", "tasks": []}
+    observations = []
+    for task in sorted(tasks, key=lambda row: row.get_name()):
+        if task.get_name() not in names:
+            continue
+        current, seen, frames = task.get_coro(), set(), []
+        cycle = False
+        while isinstance(current, (CoroutineType, GeneratorType)):
+            if id(current) in seen:
+                cycle = True
+                break
+            seen.add(id(current))
+            frame = current.cr_frame if isinstance(current, CoroutineType) else current.gi_frame
+            if frame is not None:
+                frames.append({"module": frame.f_globals.get("__name__", ""),
+                    "function": frame.f_code.co_name, "line": frame.f_lineno})
+            current = current.cr_await if isinstance(current, CoroutineType) else current.gi_yieldfrom
+        observations.append({"name": task.get_name(), "frames": frames, "cycle_detected": cycle,
+            "terminal_awaiter_type": f"{type(current).__module__}.{type(current).__name__}" if current is not None else None})
+    return {"status": "observed", "tasks": observations}
+
+
 def runtime_task_worker_snapshot() -> dict[str, Any]:
-    return dict(_STATE)
+    return {**_STATE, "terminal_boundary_execution": _terminal_boundary_execution_snapshot()}

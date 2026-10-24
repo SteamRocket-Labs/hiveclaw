@@ -1333,3 +1333,75 @@ async def test_runtime_worker_claim_path_does_not_wait_for_slow_terminal_boundar
         await worker.start_runtime_task_worker_loop()
 
     assert calls == ["terminal_recovery", "terminal_boundary", "input_dispatch"]
+
+
+@pytest.mark.parametrize("lane", ["web", "direct"])
+async def test_terminal_lane_snapshot_locates_wait_without_disclosing_runtime_inputs(monkeypatch, lane):
+    import asyncio
+    import json
+
+    import app.services.runtime_task_worker as worker
+
+    entered, release, delivered = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    tenant_id = uuid4()
+    private_input = "PRIVATE_RUNTIME_INPUT_SENTINEL"
+
+    async def discover(**_kwargs):
+        return [tenant_id]
+
+    class Service:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def reconcile_terminal_tasks_once(self, **kwargs):
+            assert kwargs["tenant_id"] == tenant_id
+            entered.set()
+            await release.wait()
+            return {"enqueued": 0, "held": 0}
+
+        async def drain_once(self, **_kwargs):
+            delivered.set()
+            return {"claimed": 1, "delivered": 1, "retried": 0, "dead_lettered": 0}
+
+    class Processor:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def validate(self, *_args):
+            return {}
+
+        async def __call__(self, *_args):
+            return {}
+
+    monkeypatch.setattr(worker, "_STATE", dict(worker._STATE))
+    monkeypatch.setattr(worker, "_settings", lambda: SimpleNamespace(RUNTIME_TASK_CLAIM_POLL_SECONDS=0.05))
+    monkeypatch.setattr(worker, "_discover_terminal_boundary_tenants", discover)
+    monkeypatch.setattr(worker, "RuntimeTerminalBoundaryOutboxService", Service)
+    monkeypatch.setattr(worker, "WebTerminalBoundaryProcessor", Processor)
+    monkeypatch.setattr(worker, "DirectInvocationTerminalBoundaryProcessor", Processor)
+    task = asyncio.create_task(worker._terminal_boundary_lane_loop(worker_id=private_input, lane=lane),
+        name=f"runtime-terminal-boundary-{lane}")
+    try:
+        await asyncio.wait_for(entered.wait(), 2)
+        observation = worker.runtime_task_worker_snapshot()["terminal_boundary_execution"]
+        assert observation["status"] == "observed"
+        tenant = next(row for row in observation["tasks"] if row["name"] == f"runtime-terminal-boundary-{lane}-tenant")
+        assert any(frame["function"] == "reconcile_terminal_tasks_once" for frame in tenant["frames"])
+        assert all(set(frame) == {"module", "function", "line"} for row in observation["tasks"] for frame in row["frames"])
+        encoded = json.dumps(observation)
+        assert private_input not in encoded and str(tenant_id) not in encoded
+        assert not release.is_set() and not task.done() and not delivered.is_set()
+        release.set()
+        await asyncio.wait_for(delivered.wait(), 2)
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+    assert not [row for row in worker.runtime_task_worker_snapshot()["terminal_boundary_execution"]["tasks"]
+        if row["name"].startswith(f"runtime-terminal-boundary-{lane}")]
+
+
+def test_terminal_lane_snapshot_reports_missing_event_loop():
+    import app.services.runtime_task_worker as worker
+
+    observation = worker.runtime_task_worker_snapshot()["terminal_boundary_execution"]
+    assert observation == {"status": "unavailable", "reason_code": "event_loop_unavailable", "tasks": []}

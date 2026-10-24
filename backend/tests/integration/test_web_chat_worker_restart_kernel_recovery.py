@@ -233,17 +233,12 @@ async def _seed_run(owner_sessionmaker, tmp_path: Path, *, prompt: str = "write 
 
 def _patch_runtime_seams(monkeypatch, seed: dict, owner_sessionmaker) -> None:
     import app.services.web_chat_runtime as runtime
+    from app.database import tenant_scoped_session
 
     @asynccontextmanager
     async def _tenant_session(_tenant_id=None, **_kwargs):
-        # Mirrors app.database.tenant_scoped_session: commit on clean exit.
-        async with owner_sessionmaker() as db:
-            try:
-                yield db
-                await db.commit()
-            except BaseException:
-                await db.rollback()
-                raise
+        async with tenant_scoped_session(_tenant_id, session_factory=owner_sessionmaker, require_tenant=True) as db:
+            yield db
 
     async def _resolve_tenant(_agent_id):
         return seed["tenant_id"]

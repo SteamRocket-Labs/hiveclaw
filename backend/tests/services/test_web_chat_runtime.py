@@ -1502,6 +1502,9 @@ async def test_load_runtime_context_resolves_model_inside_tenant_transaction(mon
                 return _QueuedScalarResult(model)
             return _QueuedScalarResult([])
 
+        async def scalar(self, _stmt):
+            return task
+
         async def commit(self):
             self.commits += 1
 
@@ -1550,7 +1553,7 @@ async def test_load_runtime_context_resolves_model_inside_tenant_transaction(mon
     assert resolved_model is model
     assert task.metadata_json["initial_user_message_t0_materialized"] is True
     assert task.metadata_json["initial_user_message_t0_event_id"] == "event-1"
-    assert db.commits == 1
+    assert db.commits == 2
 
 
 @pytest.mark.asyncio
@@ -1624,6 +1627,9 @@ async def test_load_runtime_context_uses_validated_team_member_model_override(mo
             self.calls += 1
             values = [task, session_row, agent, []]
             return _QueuedScalarResult(values[self.calls - 1] if self.calls <= len(values) else [])
+
+        async def scalar(self, _stmt):
+            return task
 
         async def commit(self):
             return None

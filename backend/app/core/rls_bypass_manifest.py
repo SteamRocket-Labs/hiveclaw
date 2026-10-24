@@ -809,7 +809,9 @@ def fingerprint_rls_bypass_scopes(app_root: Path) -> str:
 # Exact registered query shapes, scanner and expiry checks remain unchanged.
 # Provider quota holds without reported usage remain pending reconciliation.
 # Existing audited call signatures and grants remain unchanged.
-RLS_BYPASS_SCOPES_SHA256 = "be2244d7ae3f03eff7e8688eb24b4ce15e8c47ddad561c7d8079f558706f88b6"
+# Context recovery releases bootstrap writes before history; its final scoped
+# merge rechecks the current worker claim.
+RLS_BYPASS_SCOPES_SHA256 = "9277a16c17bbf6f30d27e6ae0c7ad51283384284a405b5ee60738c7d42ebefab"
 
 
 def scan_rls_bypass_callsites(app_root: Path) -> list[RLSBypassCallsite]:

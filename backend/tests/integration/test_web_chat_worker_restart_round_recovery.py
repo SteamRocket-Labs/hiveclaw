@@ -844,6 +844,7 @@ async def test_dead_owner_callback_cannot_commit_into_retaken_request(owner_sess
         pass
 
     state = SimpleNamespace(
+        stream_batcher=None,
         agent=SimpleNamespace(id=seed["agent_id"], tenant_id=seed["tenant_id"]),
         session_id=str(seed["session_id"]),
         run_uuid=seed["run_id"],

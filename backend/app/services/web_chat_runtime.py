@@ -5755,6 +5755,11 @@ async def _load_runtime_context(
             raise RuntimeError(f"RuntimeTask {run_uuid.hex} has no canonical ChatSession")
         from app.services.session_semantic_history import load_session_semantic_history
 
+        # Bootstrap writes must release the task row before history/recovery
+        # reads: their autoflush otherwise blocks the independent lease renewer.
+        stored_metadata = dict(runtime_task.metadata_json or {})
+        await db.commit()
+        metadata = dict(metadata)
         semantic_history = await load_session_semantic_history(
             db,
             tenant_id=tenant_id,
@@ -5764,12 +5769,7 @@ async def _load_runtime_context(
         )
         history_messages: list[Any] = list(semantic_history.messages)
         metadata["session_semantic_history"] = dict(semantic_history.receipt)
-        # Bind a COPY, never the local dict: SQLAlchemy's committed-state
-        # snapshot would otherwise alias this exact object, and later in-place
-        # mutations (the restart receipt below) would edit the snapshot itself,
-        # producing no attribute-history change and no UPDATE — the receipt
-        # would silently never reach PostgreSQL (in-memory only).
-        runtime_task.metadata_json = dict(metadata)
+        # Keep diagnostics local until all potentially slow recovery reads end.
         history_messages = await _apply_active_projection_to_history(db, session, history_messages)
         # Shared recovery root: any re-dispatch of a run that already lost its
         # in-memory conversation — a worker restart (reclaimed lease sets
@@ -5810,7 +5810,6 @@ async def _load_runtime_context(
             # sealed-replay lane itself derives eligibility from durable round
             # facts (session_model_round.committed_final_round_at_frontier and
             # this loader's round scan), never from this metadata hint.
-            runtime_task.metadata_json = dict(metadata)
         else:
             resume_history, resume_round_index, resume_tokens_used = await _session_permission_resume_history(
                 db, runtime_task
@@ -5819,7 +5818,20 @@ async def _load_runtime_context(
                 history_messages = [*history_messages, *resume_history]
                 metadata["session_resume_round_index"] = resume_round_index
                 metadata["session_resume_tokens_used"] = resume_tokens_used
-                runtime_task.metadata_json = metadata
+        # Recheck the current claim and merge only this loader's changes under
+        # a short lock. A superseded worker cannot publish recovery state, and
+        # concurrent control metadata must survive the unlocked history read.
+        runtime_task = await db.scalar(select(RuntimeTask).where(
+            RuntimeTask.id == run_uuid, RuntimeTask.tenant_id == tenant_id,
+        ).with_for_update().execution_options(populate_existing=True))
+        if runtime_task is None:
+            raise RuntimeError(f"RuntimeTask {run_uuid.hex} disappeared during context recovery")
+        from app.services.runtime_task_fence import assert_runtime_task_fence
+
+        assert_runtime_task_fence(runtime_task)
+        updates = {key: value for key, value in metadata.items()
+            if key not in stored_metadata or value != stored_metadata[key]}
+        runtime_task.metadata_json = {**dict(runtime_task.metadata_json or {}), **updates}
         return runtime_task, agent, user, primary_model, fallback_model, history_messages, session
 
 

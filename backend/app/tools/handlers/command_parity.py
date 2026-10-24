@@ -225,7 +225,9 @@ async def task_output(request: ToolExecutionRequest) -> str:
                 "reason": authority.reason,
             }
         )
-    return _json({"ok": True, "runtime_task_id": plan.runtime_task_id, "task": record})
+    from app.services.runtime_task_read_sources import record_task_read
+
+    return await record_task_read(request, _json({"ok": True, "runtime_task_id": plan.runtime_task_id, "task": record}))
 
 
 @tool(

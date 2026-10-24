@@ -565,14 +565,15 @@ async def list_async_tasks(request: ToolExecutionRequest) -> str:
     from app.services.agent_tool_domains.messaging import _normalize_messaging_result
     from app.services.agent_tools import _list_async_tasks
     from app.services.runtime_task_authority import execution_principal_from_tool_context
+    from app.services.runtime_task_read_sources import record_task_read
 
-    return _normalize_messaging_result(
+    return await record_task_read(request, _normalize_messaging_result(
         "list_async_tasks",
         await _list_async_tasks(
             request.context.agent_id,
             principal=execution_principal_from_tool_context(request.context),
         ),
-    )
+    ))
 
 
 # -- get_current_time --------------------------------------------------------

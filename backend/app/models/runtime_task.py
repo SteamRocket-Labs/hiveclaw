@@ -113,6 +113,7 @@ class RuntimeTask(Base):
             name="ck_runtime_tasks_status",
         ),
         UniqueConstraint("root_idempotency_key", name="uq_runtime_tasks_root_idempotency_key"),
+        Index("ix_runtime_tasks_tenant_type_id", "tenant_id", "task_type", "id"),
         Index(
             "ix_runtime_tasks_root_authority",
             "tenant_id",

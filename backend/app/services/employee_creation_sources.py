@@ -314,6 +314,7 @@ async def _owned_context_source(db, *, dependency, agent_id, tenant_id, session_
         )
         from app.services.session_model_inputs import _context_resource_dependency, _model_dependencies, tool_result_source_hash
         from app.services.session_semantic_history import _event_payload
+        from app.services.runtime_task_read_sources import TASK_READ_TOOLS, task_read_sources
         from app.services.work_ledger_tool_sources import LEDGER_RESULT_TOOLS, ledger_result_sources
 
         try:
@@ -323,7 +324,7 @@ async def _owned_context_source(db, *, dependency, agent_id, tenant_id, session_
         if (call is None or call.tenant_id != tenant_id or call.session_id != session_id
             or (call.effect_state != 'effect_committed' and not (
                 call.tool_name == 'task_get' and call.effect_state == 'failed')) or call.tool_name not in (
-                LEDGER_RESULT_TOOLS | {'list_files', 'fs_list', 'tool_search', 'read_context_resource', 'search_memory',
+                LEDGER_RESULT_TOOLS | TASK_READ_TOOLS | {'list_files', 'fs_list', 'tool_search', 'read_context_resource', 'search_memory',
                     'run_command', 'execute_code'})):
             return False
         event = await db.scalar(select(ChatTranscriptEvent).where(
@@ -339,6 +340,10 @@ async def _owned_context_source(db, *, dependency, agent_id, tenant_id, session_
         if (model is None or not _model_dependencies(model)[1]
             or tool_result_source_hash(payload) != dependency['source_version']):
             return False
+        if call.tool_name in TASK_READ_TOOLS:
+            _sources, complete = await task_read_sources(db, tenant_id=tenant_id, agent_id=agent_id,
+                invocation=call, model=model, content_hash=payload.get('content_hash'))
+            return complete
         if call.tool_name in {'run_command', 'execute_code'}:
             try:
                 _ref, sources = await load_workspace_execution_input_evidence(db, agent_id=agent_id, invocation=call,

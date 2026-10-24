@@ -17,7 +17,7 @@ from app.services.content_input_receipts import ContentInputReceiptError, _runti
 from app.services.session_model_inputs import _model_dependencies, _stored_dependencies
 
 
-async def _published_owned_delegation_input(db, dependency, task):
+async def _published_owned_delegation_input(db, dependency, task, *, receipt_ids=frozenset()):
     kind, source_id = dependency["source_kind"], dependency["source_id"]
     if kind == "agent_directory_observation":
         from app.services.agent_directory_sources import owned_directory_source
@@ -39,10 +39,38 @@ async def _published_owned_delegation_input(db, dependency, task):
             row = await db.get(SessionToolInvocation, uuid.UUID(source_id), populate_existing=True)
         except ValueError:
             return False
-        return (row is not None and row.tenant_id == task.tenant_id and row.run_id == task.id
-            and row.session_id == uuid.UUID(task.child_session_id) and row.tool_name in {
+        if (row is None or row.tenant_id != task.tenant_id or row.run_id != task.id
+            or row.session_id != uuid.UUID(task.child_session_id)):
+            return False
+        if row.tool_name in {
                 "write_file", "fs_write", "run_command", "execute_code", "ask_user_question",
-                "browser_manage", "browser_observe", "browser_action"})
+                "browser_manage", "browser_observe", "browser_action"}:
+            return True
+        if row.tool_name not in {"read_file", "read_document", "fs_read"} or not receipt_ids:
+            return False
+        from app.models.chat_transcript_event import ChatTranscriptEvent
+        from app.services.content_input_receipts import load_workspace_input_evidence
+        from app.services.session_semantic_history import _event_payload
+
+        event = await db.scalar(select(ChatTranscriptEvent).where(ChatTranscriptEvent.id == row.result_event_id,
+            ChatTranscriptEvent.tenant_id == task.tenant_id, ChatTranscriptEvent.agent_id == task.child_agent_id,
+            ChatTranscriptEvent.session_id == row.session_id, ChatTranscriptEvent.run_id == task.id,
+            ChatTranscriptEvent.invocation_id == row.id))
+        payload = _event_payload(event) if event else {}
+        pointer = (payload.get("metadata") or {}).get("workspace_input_receipt")
+        model = await db.scalar(select(SessionModelResult).where(SessionModelResult.tenant_id == task.tenant_id,
+            SessionModelResult.session_id == row.session_id, SessionModelResult.run_id == task.id,
+            SessionModelResult.provider_request_id == row.provider_request_id))
+        if not isinstance(pointer, dict) or model is None:
+            return False
+        try:
+            bound = await load_workspace_input_evidence(db, agent_id=task.child_agent_id, invocation=row,
+                model_result=model, arguments=row.effective_arguments_json or row.provider_arguments_json,
+                content_hash=payload.get("content_hash"),
+                capture={"status": "captured", "receipt_ref": pointer.get("evidence_ref")})
+            return bound == pointer and uuid.UUID(bound["content_input_receipt_id"]) in receipt_ids
+        except (ContentInputReceiptError, KeyError, TypeError, ValueError):
+            return False
     if kind == "session_command":
         from app.models.chat_transcript_event import ChatTranscriptEvent
 
@@ -119,7 +147,7 @@ async def load_canonical_result_sources(db, result_object):
     payload = json.loads(bytes(result_object.payload_bytes).decode(result_object.encoding))
     if payload.get("summary") != task.result_summary:
         raise ContentInputReceiptError("runtime_result_source_changed", "The result does not match its canonical completion.", 409)
-    receipt_ids = set()
+    receipt_ids, returned_sources, artifact_dependencies = set(), set(), []
     for part in payload.get("artifacts") or []:
         try:
             artifact_id = uuid.UUID(part.get("source_artifact_id") or part["artifact_id"])
@@ -135,7 +163,12 @@ async def load_canonical_result_sources(db, result_object):
             or receipt.carrier_ref != f"{artifact.agent_id}\n{artifact.path}" or receipt.content_sha256 != snapshot.get("content_hash")):
             raise ContentInputReceiptError("runtime_result_artifact_unverified", "The returned artifact no longer matches its original source pin.", 503)
         receipt_ids.add(receipt.id)
-        dependencies.extend(receipt.dependencies_json)
+        returned_sources.add((str(receipt.id), receipt.content_sha256))
+        artifact_dependencies.extend(receipt.dependencies_json)
+    # A read of the exact returned version is already represented by its artifact pin.
+    # Keep every carrier's inputs, including a real self-reference, in the source graph.
+    dependencies = [source for source in dependencies if not (source["source_kind"] == "workspace_artifact"
+        and (source["source_id"], source["source_version"]) in returned_sources)] + artifact_dependencies
     dependencies = _stored_dependencies(dependencies)
     if dependencies is None:
         raise ContentInputReceiptError("runtime_result_sources_unbound", "The result's input source inventory is invalid.", 503)
@@ -407,7 +440,8 @@ async def validate_runtime_result_sources(db, request, result_object, *, user=No
             and await runtime_result_publication_bound(db, result=result_object, agent_id=reader_agent,
                 session_id=reader_session, user_id=requester.id))
     for dependency in dependencies:
-        published = (first_task or owned_return) and await _published_owned_delegation_input(db, dependency, task)
+        published = (first_task or owned_return) and await _published_owned_delegation_input(db, dependency, task,
+            receipt_ids=receipt_ids)
         await _validate_input_dependencies(db, task.tenant_id, [dependency],
             user=requester if published else user, runtime_request=None if published else request,
             active_workspace_receipts=frozenset(receipt_ids))
@@ -428,6 +462,9 @@ async def validate_published_workspace_inputs(db, request, receipt, *, active_re
     if draft is None:
         return False
     task_id = uuid.uuid5(draft.id, "explicit-first-task.v1")
+    if (str(principal.runtime_task_id) in {str(task_id), task_id.hex}
+        and uuid.UUID(str(principal.session_id)) == uuid.uuid5(task_id, "session")):
+        return False  # The producing run uses its live input grants, before terminal publication exists.
     artifact = await db.scalar(select(ChatArtifact).where(ChatArtifact.tenant_id == receipt.tenant_id,
         ChatArtifact.agent_id == principal.agent_id, ChatArtifact.runtime_task_id == task_id,
         ChatArtifact.session_id == uuid.uuid5(task_id, "session"),

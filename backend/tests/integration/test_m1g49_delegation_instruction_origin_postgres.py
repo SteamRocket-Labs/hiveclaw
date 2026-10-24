@@ -109,7 +109,7 @@ async def _start_feishu_creation_work(seed, app_user_sessionmaker, monkeypatch):
         return command.id
 
 
-@pytest.mark.parametrize("input_case", ["complete", "unbound", "revoked", "first_task", "first_task_unbound", "first_task_revoked", "first_task_refined", "first_task_delivery", "first_task_parent_model", "first_task_refined_native", "first_task_native_creation", "first_task_fresh_employee", "first_task_slow_provider", "first_task_saved_reopen", "first_task_question", "first_task_question_after_write", "first_task_feishu_question", "first_task_feishu_quoted_question", "first_task_feishu_question_source_changed", "first_task_feishu_question_body_changed", "first_task_feishu_question_already_answered", "first_task_feishu_question_projection_missing", "first_task_feishu_question_recipient_changed", "first_task_feishu_question_legacy_status", "first_task_feishu_permission_allow", "first_task_feishu_permission_deny", "first_task_feishu_permission_cancel", "first_task_feishu_permission_unknown", "first_task_feishu_permission_expired", "first_task_feishu_permission_source_changed", "delegation_permission_allow", "first_task_recall", "first_task_ledger", "first_task_ledger_unknown", "first_task_parent_status", "first_task_parent_status_unknown", "first_task_child_command", "first_task_child_code", "first_task_parent_creation_result", "first_task_parent_historical_creation_result", "first_task_parent_historical_creation_unknown", "first_task_parent_result_denial", "first_task_parent_public_directory", "first_task_context", "first_task_discovery", "first_task_unverified_memory", "first_task_explicit_unverified_memory", "first_task_feishu_permission_channel_allow", "first_task_feishu_permission_channel_deny", "first_task_feishu_permission_channel_unknown", "first_task_feishu_permission_channel_legacy", "first_task_feishu_permission_channel_scope", "first_task_feishu_permission_channel_feedback_retry", "first_task_feishu_progress"])
+@pytest.mark.parametrize("input_case", ["complete", "unbound", "revoked", "first_task", "first_task_unbound", "first_task_revoked", "first_task_refined", "first_task_delivery", "first_task_parent_model", "first_task_refined_native", "first_task_native_creation", "first_task_fresh_employee", "first_task_slow_provider", "first_task_saved_reopen", "first_task_question", "first_task_question_after_write", "first_task_feishu_question", "first_task_feishu_quoted_question", "first_task_feishu_question_source_changed", "first_task_feishu_question_body_changed", "first_task_feishu_question_already_answered", "first_task_feishu_question_projection_missing", "first_task_feishu_question_recipient_changed", "first_task_feishu_question_legacy_status", "first_task_feishu_permission_allow", "first_task_feishu_permission_deny", "first_task_feishu_permission_cancel", "first_task_feishu_permission_unknown", "first_task_feishu_permission_expired", "first_task_feishu_permission_source_changed", "delegation_permission_allow", "first_task_recall", "first_task_ledger", "first_task_ledger_unknown", "first_task_parent_status", "first_task_parent_status_unknown", "first_task_child_command", "first_task_child_code", "first_task_parent_creation_result", "first_task_parent_historical_creation_result", "first_task_parent_historical_creation_unknown", "first_task_parent_result_denial", "first_task_parent_public_directory", "first_task_child_readback", "first_task_context", "first_task_discovery", "first_task_unverified_memory", "first_task_explicit_unverified_memory", "first_task_feishu_permission_channel_allow", "first_task_feishu_permission_channel_deny", "first_task_feishu_permission_channel_unknown", "first_task_feishu_permission_channel_legacy", "first_task_feishu_permission_channel_scope", "first_task_feishu_permission_channel_feedback_retry", "first_task_feishu_progress"])
 async def test_governed_delegation_preserves_its_parent_instruction_origin(
     owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, input_case, migrated_pg_url,
 ):
@@ -127,6 +127,9 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
     from app.services.secrets_provider import get_secrets_provider
     from app.services.web_chat_runtime import _persist_tool_call
 
+    child_readback_case = input_case == "first_task_child_readback"
+    if child_readback_case:
+        input_case = "first_task_parent_status"
     public_directory_case = input_case == "first_task_parent_public_directory"
     if public_directory_case:
         input_case = "first_task_parent_status"
@@ -640,6 +643,9 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
     client = ScriptedLLMClient([{"tool_calls": [*child_commands, {"id": "child-report-write", "type": "function", "function": {
         "name": "write_file", "arguments": json.dumps({"path": report_path, "content": "DELEGATED_REPORT"})}}],
         "finish_reason": "tool_calls"}, {"content": "Report generated.", "finish_reason": "stop"}])
+    if child_readback_case:
+        client.script.insert(1, {"tool_calls": [{"id": "child-report-read", "type": "function", "function": {
+            "name": "read_file", "arguments": json.dumps({"path": report_path})}}], "finish_reason": "tool_calls"})
     if slow_first_task:
         import asyncio
 
@@ -1645,7 +1651,13 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
             assert not list(await db.scalars(select(ChatTranscriptEvent).where(ChatTranscriptEvent.run_id == task_id,
                 ChatTranscriptEvent.event_type == "user_message")))
         return
-    assert not result.failed and result.transcript_committed and len(client.requests) == 2, result
+    if child_readback_case:
+        assert not result.failed and result.transcript_committed and len(client.requests) == 3, result
+        readback = next(m["content"] for m in client.requests[2]["messages"]
+            if m.get("role") == "tool" and m.get("tool_call_id") == "child-report-read")
+        assert "DELEGATED_REPORT" in readback and "<tool_error>" not in readback, readback
+    else:
+        assert not result.failed and result.transcript_committed and len(client.requests) == 2, result
     (tmp_path / "native-child-tool-results.json").write_text(json.dumps(client.requests, indent=2, default=str))
     assert (seed["data_root"] / str(receiver) / report_path).exists(), [m for m in client.requests[-1]["messages"] if m.get("role") == "tool"]
     assert (seed["data_root"] / str(receiver) / report_path).read_text() == "DELEGATED_REPORT"
@@ -1848,7 +1860,10 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
         result = next(m["content"] for m in client.requests[1]["messages"]
             if m.get("role") == "tool" and m.get("tool_call_id") == "child-calculate")
         assert "360" in result and "<tool_error>" not in result, result
-    assert len(client.requests) == 2 and marker.stat().st_mtime_ns == written_at
+    if child_readback_case:
+        assert len(client.requests) == 3 and marker.stat().st_mtime_ns == written_at
+    else:
+        assert len(client.requests) == 2 and marker.stat().st_mtime_ns == written_at
     processor = DirectInvocationTerminalBoundaryProcessor(session_factory=app_user_sessionmaker, data_root=seed["data_root"])
     boundaries = await RuntimeTerminalBoundaryOutboxService(session_factory=app_user_sessionmaker).drain_once(
         tenant_id=seed["tenant_id"], worker_id="native-first-task-terminal", canonical_validator=processor.validate,
@@ -2009,6 +2024,52 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
             parent_artifact_id = artifact.id
             models = list(await db.scalars(select(SessionModelResult).where(SessionModelResult.run_id == return_id)))
             assert len(models) == 3 and all(model.model_request_snapshot_json["input_bindings"]["dependency_coverage"]["complete"] for model in models)
+            if child_readback_case:
+                from app.models.invocation_span import InvocationSpan
+                from app.models.runtime_result import RuntimeResultObject
+                from app.models.session_v2 import SessionToolInvocation
+                from app.services.runtime_result_sources import (
+                    _published_owned_delegation_input, load_canonical_result_sources, validate_runtime_result_sources,
+                )
+
+                result_object = await db.get(RuntimeResultObject, UUID(result_ref.split("/")[2]))
+                task, dependencies, pins = await load_canonical_result_sources(db, result_object)
+                read_call = await db.scalar(select(SessionToolInvocation).where(
+                    SessionToolInvocation.run_id == task_id, SessionToolInvocation.provider_tool_use_id == "child-report-read"))
+                read_source = next(ref for ref in dependencies if ref["source_kind"] == "session_tool_invocation"
+                    and ref["source_id"] == str(read_call.id))
+                assert await _published_owned_delegation_input(db, read_source, task, receipt_ids=pins)
+                assert not await _published_owned_delegation_input(db, read_source, task)
+                assert not await _published_owned_delegation_input(db, read_source, task, receipt_ids={uuid4()})
+                consumer = ToolExecutionRequest(tool_name="read_runtime_result", arguments={"result_ref": result_ref},
+                    context=observed["context"])
+                with pytest.raises(ContentInputReceiptError) as denied:
+                    await validate_runtime_input_dependencies(db, consumer, [read_source])
+                assert denied.value.status_code == 403
+                control = await db.begin_nested()
+                evidence = await db.get(InvocationSpan, uuid5(read_call.id, "workspace-input-evidence"))
+                evidence.metadata_json = {**evidence.metadata_json, "workspace_input_evidence": {
+                    **evidence.metadata_json["workspace_input_evidence"], "observed_sha256": "0" * 64}}
+                await db.flush()
+                with pytest.raises(ContentInputReceiptError) as denied:
+                    await validate_runtime_result_sources(db, consumer, result_object)
+                assert denied.value.status_code == 403
+                await control.rollback()
+                assert await validate_runtime_result_sources(db, consumer, result_object)
+                control = await db.begin_nested()
+                pin = await db.get(ContentInputReceipt, next(iter(pins)), populate_existing=True)
+                cyclic = {"source_kind": "workspace_artifact", "source_id": str(pin.id), "source_version": pin.content_sha256}
+                pin.dependencies_json = [*pin.dependencies_json, cyclic]
+                await db.flush()
+                assert cyclic in (await load_canonical_result_sources(db, result_object))[1]
+                from app.services.content_input_receipts import _validate_input_dependencies
+
+                with pytest.raises(ContentInputReceiptError) as unavailable:
+                    await _validate_input_dependencies(db, seed["tenant_id"], [cyclic],
+                        active_workspace_receipts=frozenset(pins))
+                assert unavailable.value.status_code == 503 and "cyclic" in str(unavailable.value)
+                await control.rollback()
+                assert await validate_runtime_result_sources(db, consumer, result_object)
             if public_directory_case:
                 from app.models.invocation_span import InvocationSpan
                 from app.services.agent_directory_sources import owned_directory_source
@@ -2203,7 +2264,10 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
     soul.write_text(soul.read_text() + "\nChanged after first-task delivery.\n")
     stale = await read_return()
     assert stale["status"] == "source_access_denied" and stale["reason_code"] == "content_source_changed", stale
-    assert "DELEGATED_REPORT" not in json.dumps(stale) and len(client.requests) == 2
+    if child_readback_case:
+        assert "DELEGATED_REPORT" not in json.dumps(stale) and len(client.requests) == 3
+    else:
+        assert "DELEGATED_REPORT" not in json.dumps(stale) and len(client.requests) == 2
     if parent_model_case:
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://fixture.local") as browser:
             stale_review = await browser.get(f"/agents/{seed['agent_id']}/files/artifacts/{parent_artifact_id}/content")

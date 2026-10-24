@@ -192,6 +192,8 @@ async def resume_first_task_from_tool(context, arguments) -> str:
     from app.services.hr_provisioning_runtime import _mark_task_completed, _runtime_authority_issues
     from app.tools.result_envelope import render_tool_error
 
+    dispatch_started = False
+    preflight_proof = None
     try:
         if context is None:
             raise HrCreationConflict("first_task_authority_required", "Resume the first task from its original governed work.")
@@ -199,6 +201,17 @@ async def resume_first_task_from_tool(context, arguments) -> str:
             context.tenant_id, context.session_id, arguments.get("first_task_draft_id"),
         ))
         async with tenant_scoped_session(tenant_id) as db:
+            from app.services.delegation_input_origin import _parent_call
+
+            parent = await _parent_call(db, tenant_id=tenant_id, agent_id=context.agent_id,
+                session_id=session_id, run_id=uuid.UUID(str(context.runtime_task_id)), call_id=context.tool_call_id)
+            if parent is not None:
+                call, _model, _arguments = parent
+                if call.effect_state == "effect_started" and call.result_event_id is None:
+                    # The handler receives runtime-injected authority fields; bind
+                    # the canonical request captured before that injection.
+                    preflight_proof = _first_task_preflight_binding(context,
+                        call.effective_arguments_json or call.provider_arguments_json)
             requester = await load_creation_requester(db, context.user_id)
             if requester is None:
                 raise HrCreationConflict("source_execute_denied", "The first-task requester is unavailable.")
@@ -228,6 +241,7 @@ async def resume_first_task_from_tool(context, arguments) -> str:
                     or str(arguments.get("target_agent_id") or target.id) != str(target.id)
                     or any(key not in allowed and not key.startswith("_") for key in arguments)):
                 raise HrCreationConflict("first_task_arguments_mismatch", "Use the exact recorded employee and first task, without worker overrides.")
+            dispatch_started = True
             sent = await dispatch_first_task(db, draft, execution_context=context, arguments=arguments)
             receipt = (draft.provisioning_json or {}).get("first_task") or {}
             if sent:
@@ -248,8 +262,52 @@ async def resume_first_task_from_tool(context, arguments) -> str:
             }).to_tool_result()
     except (HrCreationConflict, HTTPException, ValueError, TypeError) as exc:
         code = getattr(exc, "code", "first_task_authority_required")
+        proof = None if dispatch_started else preflight_proof
         return render_tool_error(tool_name="delegate_to_agent", error_class=code, retryable=False,
-                                 message=getattr(exc, "message", "The first task cannot be resumed from this work."))
+                                 message=getattr(exc, "message", "The first task cannot be resumed from this work."),
+                                 extra={"native_first_task_preflight": proof} if proof else None)
+
+
+def _first_task_preflight_binding(context, arguments):
+    from app.services.approval_ticket import hash_tool_input
+
+    try:
+        ids = {key: str(uuid.UUID(str(getattr(context, key))))
+            for key in ("tenant_id", "agent_id", "session_id", "runtime_task_id")}
+        uuid.UUID(str(arguments["first_task_draft_id"]))
+        if not isinstance(context.tool_call_id, str) or not context.tool_call_id:
+            return None
+        return {"schema": "hive.first_task_preflight.v1", "effect": "not_started", **ids,
+            "tool_call_id": context.tool_call_id, "arguments_hash": hash_tool_input("delegate_to_agent", arguments)}
+    except (AttributeError, KeyError, ValueError, TypeError):
+        return None
+
+
+def first_task_preflight_result_bound(*, agent_id, invocation, payload, content):
+    """Bind a native pre-dispatch refusal; no target content or execution is attested."""
+    from types import SimpleNamespace
+    from app.services.session_model_inputs import _hash
+    from app.tools.result_envelope import render_tool_error
+
+    try:
+        arguments = invocation.effective_arguments_json or invocation.provider_arguments_json
+        proof = _first_task_preflight_binding(SimpleNamespace(tenant_id=invocation.tenant_id, agent_id=agent_id,
+            session_id=invocation.session_id, runtime_task_id=invocation.run_id,
+            tool_call_id=invocation.provider_tool_use_id), arguments)
+        _prefix, marker, encoded = content.rpartition("<tool_error>")
+        if not marker or not encoded.endswith("</tool_error>"):
+            return False
+        body = json.loads(encoded[:-len("</tool_error>")])
+        return (proof is not None and invocation.tool_name == "delegate_to_agent" and invocation.effect_state == "failed"
+            and payload.get("outcome") == "failed" and invocation.effective_args_hash == proof["arguments_hash"]
+            and invocation.args_hash == _hash({"tool_name": invocation.tool_name, "arguments": invocation.provider_arguments_json})
+            and payload.get("content_or_error_ref") == invocation.receipt_ref == f"tool-frame:{_hash(content)}"
+            and body.get("native_first_task_preflight") == proof
+            and isinstance(body.get("error_class"), str) and isinstance(body.get("message"), str)
+            and content == render_tool_error(tool_name="delegate_to_agent", error_class=body["error_class"],
+                message=body["message"], retryable=False, extra={"native_first_task_preflight": proof}))
+    except (AttributeError, KeyError, ValueError, TypeError):
+        return False
 
 
 async def dispatch_first_task(db, draft, *, execution_context=None, arguments=None) -> bool:

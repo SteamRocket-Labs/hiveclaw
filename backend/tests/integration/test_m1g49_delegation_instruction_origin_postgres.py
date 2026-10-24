@@ -109,7 +109,7 @@ async def _start_feishu_creation_work(seed, app_user_sessionmaker, monkeypatch):
         return command.id
 
 
-@pytest.mark.parametrize("input_case", ["complete", "unbound", "revoked", "first_task", "first_task_unbound", "first_task_revoked", "first_task_refined", "first_task_delivery", "first_task_parent_model", "first_task_refined_native", "first_task_native_creation", "first_task_fresh_employee", "first_task_slow_provider", "first_task_saved_reopen", "first_task_question", "first_task_question_after_write", "first_task_feishu_question", "first_task_feishu_quoted_question", "first_task_feishu_question_source_changed", "first_task_feishu_question_body_changed", "first_task_feishu_question_already_answered", "first_task_feishu_question_projection_missing", "first_task_feishu_question_recipient_changed", "first_task_feishu_question_legacy_status", "first_task_feishu_permission_allow", "first_task_feishu_permission_deny", "first_task_feishu_permission_cancel", "first_task_feishu_permission_unknown", "first_task_feishu_permission_expired", "first_task_feishu_permission_source_changed", "delegation_permission_allow", "first_task_recall", "first_task_ledger", "first_task_ledger_unknown", "first_task_parent_status", "first_task_parent_status_unknown", "first_task_child_command", "first_task_child_code", "first_task_child_command_then_write", "first_task_child_code_then_write", "first_task_creator_task_inventory", "first_task_parent_creation_result", "first_task_parent_historical_creation_result", "first_task_parent_historical_creation_unknown", "first_task_parent_result_denial", "first_task_parent_public_directory", "first_task_child_readback", "first_task_workspace_listing", "first_task_workspace_listing_alias", "first_task_completion_sweep", "first_task_parent_wait_legacy", "first_task_parent_code_legacy", "first_task_parity_list", "first_task_parity_ledger", "first_task_parity_ledger_unknown", "first_task_context", "first_task_discovery", "first_task_unverified_memory", "first_task_explicit_unverified_memory", "first_task_feishu_permission_channel_allow", "first_task_feishu_permission_channel_deny", "first_task_feishu_permission_channel_unknown", "first_task_feishu_permission_channel_legacy", "first_task_feishu_permission_channel_scope", "first_task_feishu_permission_channel_feedback_retry", "first_task_feishu_progress"])
+@pytest.mark.parametrize("input_case", ["complete", "unbound", "revoked", "first_task", "first_task_unbound", "first_task_revoked", "first_task_refined", "first_task_delivery", "first_task_parent_model", "first_task_refined_native", "first_task_native_creation", "first_task_fresh_employee", "first_task_slow_provider", "first_task_saved_reopen", "first_task_question", "first_task_question_after_write", "first_task_feishu_question", "first_task_feishu_quoted_question", "first_task_feishu_question_source_changed", "first_task_feishu_question_body_changed", "first_task_feishu_question_already_answered", "first_task_feishu_question_projection_missing", "first_task_feishu_question_recipient_changed", "first_task_feishu_question_legacy_status", "first_task_feishu_permission_allow", "first_task_feishu_permission_deny", "first_task_feishu_permission_cancel", "first_task_feishu_permission_unknown", "first_task_feishu_permission_expired", "first_task_feishu_permission_source_changed", "delegation_permission_allow", "first_task_recall", "first_task_ledger", "first_task_ledger_unknown", "first_task_parent_status", "first_task_parent_status_unknown", "first_task_child_command", "first_task_child_code", "first_task_child_command_then_write", "first_task_child_code_then_write", "first_task_creator_task_inventory", "first_task_creator_readiness_feedback", "first_task_parent_creation_result", "first_task_parent_historical_creation_result", "first_task_parent_historical_creation_unknown", "first_task_parent_result_denial", "first_task_parent_public_directory", "first_task_child_readback", "first_task_workspace_listing", "first_task_workspace_listing_alias", "first_task_completion_sweep", "first_task_parent_wait_legacy", "first_task_parent_code_legacy", "first_task_parity_list", "first_task_parity_ledger", "first_task_parity_ledger_unknown", "first_task_context", "first_task_discovery", "first_task_unverified_memory", "first_task_explicit_unverified_memory", "first_task_feishu_permission_channel_allow", "first_task_feishu_permission_channel_deny", "first_task_feishu_permission_channel_unknown", "first_task_feishu_permission_channel_legacy", "first_task_feishu_permission_channel_scope", "first_task_feishu_permission_channel_feedback_retry", "first_task_feishu_progress"])
 async def test_governed_delegation_preserves_its_parent_instruction_origin(
     owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, input_case, migrated_pg_url,
 ):
@@ -127,7 +127,8 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
     from app.services.secrets_provider import get_secrets_provider
     from app.services.web_chat_runtime import _persist_tool_call
 
-    creator_task_inventory_case = input_case == "first_task_creator_task_inventory"
+    creator_readiness_case = input_case == "first_task_creator_readiness_feedback"
+    creator_task_inventory_case = creator_readiness_case or input_case == "first_task_creator_task_inventory"
     sequential_child_case = creator_task_inventory_case or input_case in {"first_task_child_command_then_write", "first_task_child_code_then_write"}
     sequential_code_case = creator_task_inventory_case or input_case == "first_task_child_code_then_write"
     completion_sweep_case = input_case == "first_task_completion_sweep"
@@ -498,6 +499,22 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
         if creator_task_inventory_case:
             creator_client.script[0]["tool_calls"].append({"id": "creator-task-inventory", "type": "function",
                 "function": {"name": "list_async_tasks", "arguments": "{}"}})
+        if creator_readiness_case:
+            creator_client.script.insert(2, {"tool_calls": [{"id": "creator-early-first-task", "type": "function",
+                "function": {"name": "delegate_to_agent", "arguments": "{}"}}], "finish_reason": "tool_calls"})
+            native_readiness_stream = creator_client.stream
+
+            async def continue_first_task_readiness(**kwargs):
+                if len(creator_client.requests) == 2:
+                    created = next(message for message in kwargs["messages"]
+                        if (message.get("tool_call_id") if isinstance(message, dict) else message.tool_call_id) == call_id)
+                    body = json.loads(created["content"] if isinstance(created, dict) else created.content)
+                    creator_client.script[0]["tool_calls"][0]["function"]["arguments"] = json.dumps({
+                        "first_task_draft_id": body["blueprint_id"], "agent_name": arguments["name"],
+                        "message": instruction})
+                return await native_readiness_stream(**kwargs)
+
+            monkeypatch.setattr(creator_client, "stream", continue_first_task_readiness)
         if legacy_wait_case:
             creator_client.script[0]["tool_calls"].append({"id": "creator-wait", "type": "function", "function": {
                 "name": "execute_code" if legacy_code_case else "run_command",
@@ -562,7 +579,9 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
             assert "prior-unverified-report.md" in listed and prior_body not in listed
             assert (seed["agent_root"] / prior_path).read_text() == prior_body
         if discovery_case:
-            if parity_sequence_case:
+            if creator_readiness_case:
+                assert len(creator_client.requests) == 4
+            elif parity_sequence_case:
                 assert len(creator_client.requests) == 4
             else:
                 assert len(creator_client.requests) == 3
@@ -627,12 +646,54 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
                 assert ordered[0].model_request_snapshot_json["input_bindings"]["dependency_coverage"]["complete"]
                 assert not ordered[1].model_request_snapshot_json["input_bindings"]["dependency_coverage"]["complete"]
             elif discovery_case:
-                if parity_sequence_case:
+                if creator_readiness_case:
+                    assert len(creating_rounds) == 4 and all(row.model_request_snapshot_json["input_bindings"]["dependency_coverage"]["complete"] for row in creating_rounds)
+                elif parity_sequence_case:
                     assert len(creating_rounds) == 4 and all(row.model_request_snapshot_json["input_bindings"]["dependency_coverage"]["complete"] for row in creating_rounds)
                 else:
                     assert len(creating_rounds) == 3 and all(row.model_request_snapshot_json["input_bindings"]["dependency_coverage"]["complete"] for row in creating_rounds)
             else:
                 assert len(creating_rounds) == 2 and all(row.model_request_snapshot_json["input_bindings"]["dependency_coverage"]["complete"] for row in creating_rounds)
+            if creator_readiness_case:
+                from types import SimpleNamespace
+                from app.services.employee_creation_sources import _owned_context_source
+                from app.services.employee_first_task import first_task_preflight_result_bound
+                from app.services.session_model_inputs import _origin_dependencies
+
+                created = json.loads(result)
+                assert created["first_task_autostart"] is False
+                assert created["provisioning"]["first_task"] == {"status": "waiting_for_employee",
+                    "auto_dispatch": True, "authorization": "original_human_request"}
+                assert "already authorized" in created["creation_flow"]["instruction"]
+                early = await db.scalar(select(SessionToolInvocation).where(
+                    SessionToolInvocation.run_id == seed["run_id"],
+                    SessionToolInvocation.provider_tool_use_id == "creator-early-first-task"))
+                early_payload = _event_payload(await db.get(ChatTranscriptEvent, early.result_event_id))
+                assert early.effect_state == "failed" and "employee_not_ready" in early_payload["content"]
+                assert not list(await db.scalars(select(RuntimeTask.id).where(RuntimeTask.tenant_id == seed["tenant_id"],
+                    RuntimeTask.parent_agent_id == seed["agent_id"], RuntimeTask.task_type == "delegation")))
+                deps, complete = await _origin_dependencies(db, tenant_id=seed["tenant_id"], agent_id=seed["agent_id"],
+                    ref=f"session-tool-result:{early.id}")
+                source = next(item for item in deps if item["source_id"] == str(early.id))
+                assert complete
+                scope = {"agent_id": seed["agent_id"], "tenant_id": seed["tenant_id"],
+                    "session_id": seed["session_id"], "user_id": seed["user_id"]}
+                assert await _owned_context_source(db, dependency=source, **scope)
+                assert not await _owned_context_source(db, dependency={**source, "source_version": "0" * 64}, **scope)
+                assert not await _owned_context_source(db, dependency=source, **{**scope, "session_id": uuid4()})
+                fields = {key: getattr(early, key) for key in ("tenant_id", "session_id", "run_id", "tool_name",
+                    "effect_state", "provider_tool_use_id", "provider_arguments_json", "effective_arguments_json",
+                    "args_hash", "effective_args_hash", "receipt_ref")}
+                def check(call, payload=early_payload, content=early_payload["content"]):
+                    return first_task_preflight_result_bound(
+                        agent_id=seed["agent_id"], invocation=call, payload=payload, content=content)
+                assert check(SimpleNamespace(**fields))
+                for key, value in {"effect_state": "needs_reconciliation", "session_id": uuid4(), "run_id": uuid4(),
+                    "tenant_id": uuid4(), "provider_tool_use_id": "another-call", "effective_args_hash": "0" * 64}.items():
+                    assert not check(SimpleNamespace(**{**fields, key: value}))
+                assert not check(SimpleNamespace(**fields), payload={**early_payload, "outcome": "unknown"})
+                assert not check(SimpleNamespace(**fields), content=early_payload["content"].replace(
+                    'hive.first_task_preflight.v1', 'hive.first_task_preflight.forged'))
             if workspace_listing_case:
                 from copy import deepcopy
                 from app.models.invocation_span import InvocationSpan

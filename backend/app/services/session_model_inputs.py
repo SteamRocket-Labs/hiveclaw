@@ -690,8 +690,12 @@ async def _resolve_origin_dependencies(db, *, tenant_id, agent_id, ref):
     if invocation.tool_name == 'delegate_to_agent':
         from app.services.delegation_input_origin import delegation_tool_result_bound
 
-        complete = await delegation_tool_result_bound(db, tenant_id=tenant_id, agent_id=agent_id,
-            invocation=invocation, content=content)
+        from app.services.employee_first_task import first_task_preflight_result_bound
+
+        complete = first_task_preflight_result_bound(agent_id=agent_id, invocation=invocation, payload=payload, content=content)
+        if not complete:
+            complete = await delegation_tool_result_bound(db, tenant_id=tenant_id, agent_id=agent_id,
+                invocation=invocation, content=content)
         return _unique_dependencies(dependencies), inherited_complete and complete
     if invocation.tool_name == "read_context_resource":
         directory = (payload.get("metadata") or {}).get("agent_directory_sources")

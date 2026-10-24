@@ -259,7 +259,12 @@ async def create_from_request(db, request):
         **preview["creation_flow"], "mode": "policy_direct",
         "instruction": (
             "The approved private package is authorized by this human request and current policy; no preview click is needed. "
-            "Read the durable provisioning receipt. Creation is separate from first-task authorization and task completion."
+            "Read draft_status and the durable provisioning receipt for execution state. "
+            "first_task_autostart controls the generic boot task only. "
+            + ("The explicit first task in creation_authorization is already authorized by the original request; "
+               "the provisioning worker dispatches it once after the employee is ready. Do not dispatch another copy. "
+               "Read provisioning.first_task and the original-work result for its progress and outcome."
+               if evidence["first_task"] else "No explicit first task was requested; creation does not authorize unrelated work.")
         ),
     }
     preview["confirmation_requirements"] = {"required": False, "authorization_mode": "policy_direct"}
@@ -290,6 +295,9 @@ async def create_from_request(db, request):
     await db.flush()
     draft.provisioning_task_id = task.id
     draft.provisioning_json = {"runtime_task_id": str(task.id), "runtime_status": "pending"}
+    if evidence["first_task"]:
+        draft.provisioning_json["first_task"] = {"status": "waiting_for_employee", "auto_dispatch": True,
+            "authorization": "original_human_request"}
     from app.core.policy import write_audit_event
 
     await write_audit_event(db, event_type="hr.creation_policy_authorized", severity="info", actor_type="user",

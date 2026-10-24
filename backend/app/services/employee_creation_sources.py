@@ -323,9 +323,9 @@ async def _owned_context_source(db, *, dependency, agent_id, tenant_id, session_
             return False
         if (call is None or call.tenant_id != tenant_id or call.session_id != session_id
             or (call.effect_state != 'effect_committed' and not (
-                call.tool_name == 'task_get' and call.effect_state == 'failed')) or call.tool_name not in (
+                call.tool_name in {'task_get', 'delegate_to_agent'} and call.effect_state == 'failed')) or call.tool_name not in (
                 LEDGER_RESULT_TOOLS | TASK_READ_TOOLS | {'list_files', 'fs_list', 'tool_search', 'read_context_resource', 'search_memory',
-                    'run_command', 'execute_code'})):
+                    'run_command', 'execute_code', 'delegate_to_agent'})):
             return False
         event = await db.scalar(select(ChatTranscriptEvent).where(
             ChatTranscriptEvent.id == call.result_event_id, ChatTranscriptEvent.tenant_id == tenant_id,
@@ -340,6 +340,11 @@ async def _owned_context_source(db, *, dependency, agent_id, tenant_id, session_
         if (model is None or not _model_dependencies(model)[1]
             or tool_result_source_hash(payload) != dependency['source_version']):
             return False
+        if call.tool_name == 'delegate_to_agent':
+            from app.services.employee_first_task import first_task_preflight_result_bound
+
+            return first_task_preflight_result_bound(agent_id=agent_id, invocation=call,
+                payload=payload, content=payload.get('content'))
         if call.tool_name in TASK_READ_TOOLS:
             _sources, complete = await task_read_sources(db, tenant_id=tenant_id, agent_id=agent_id,
                 invocation=call, model=model, content_hash=payload.get('content_hash'))

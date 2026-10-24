@@ -21,18 +21,22 @@ from tests.services.test_session_semantic_history import _seal_round
 pytestmark = pytest.mark.usefixtures("migrated_pg_url")
 
 
-async def _input_diagnostic_app(owner_sessionmaker, app_user_sessionmaker, *, extension=False):
+async def _input_diagnostic_app(owner_sessionmaker, app_user_sessionmaker, *, extension=False, changed_catalog=False):
     from app.api.admin import router
     from app.core.security import get_current_user
     from app.models.chat_session import ChatSession
     from app.models.runtime_task import RuntimeTask
     from app.models.user import User
-    from app.services.session_model_inputs import _hash
+    from app.services.session_model_inputs import _hash, capture_context_message_origins
+    from tests.integration.test_m1g46_historical_input_recovery_postgres import _catalog_notice
 
     tenant, agent, session, run, bound = await _bound_input(owner_sessionmaker)
     private = "PRIVATE-PROMPT-" + uuid.uuid4().hex
     prefix = _context_message(role="system", kind="frozen_prompt", content=private, unbound=())
-    messages = [prefix, *_mid_run_items_to_user_messages(bound)]
+    leaf = {"source_kind": "agent_context_resource", "source_id": f"{agent}\noriginal-context",
+        "source_version": "a" * 64}
+    notice = _catalog_notice(source=leaf, unbound=("skill_file_unbound:skills/public-probe/SKILL.md",))
+    messages = [prefix, *_mid_run_items_to_user_messages(bound), notice]
     cached = apply_cache_hints(messages, "minimax")
     async with owner_sessionmaker() as db:
         user_id = await db.scalar(select(ChatSession.user_id).where(ChatSession.id == session))
@@ -59,6 +63,12 @@ async def _input_diagnostic_app(owner_sessionmaker, app_user_sessionmaker, *, ex
         task = await db.get(RuntimeTask, run)
         task.status = "needs_reconciliation"
         task.metadata_json = {**task.metadata_json, "reconciliation_reason": "synthetic_source_gap"}
+        public = {"source_kind": "agent_platform_skill_file",
+            "source_id": f"{agent}\nskills/public-probe/SKILL.md\noriginal-scope", "source_version": "b" * 64}
+        options = {"catalog": private} if changed_catalog else {}
+        witness = _catalog_notice(source=public, **options)
+        await capture_context_message_origins(db, tenant_id=tenant, agent_id=agent, session_id=session,
+            run_id=run, result_id=uuid.uuid4(), messages=[witness])
         await db.commit()
 
     app = FastAPI()
@@ -82,11 +92,12 @@ async def _input_diagnostic_app(owner_sessionmaker, app_user_sessionmaker, *, ex
 
 
 @pytest.mark.parametrize("extension", [False, True])
+@pytest.mark.parametrize("changed_catalog", [False, True])
 async def test_admin_input_source_detail_is_opt_in_scoped_and_read_only(
-    owner_sessionmaker, app_user_sessionmaker, extension,
+    owner_sessionmaker, app_user_sessionmaker, extension, changed_catalog,
 ):
     app, tenant, run, model_id, private, frozen = await _input_diagnostic_app(
-        owner_sessionmaker, app_user_sessionmaker, extension=extension)
+        owner_sessionmaker, app_user_sessionmaker, extension=extension, changed_catalog=changed_catalog)
     async with AsyncClient(transport=ASGITransport(app), base_url="http://test") as client:
         default = await client.get(f"/admin/runtime-reconciliation/{run}", params={"tenant_id": str(tenant)})
         assert default.status_code == 200 and "input_sources" not in default.json()
@@ -99,6 +110,12 @@ async def test_admin_input_source_detail_is_opt_in_scoped_and_read_only(
         assert diagnostics["models"][0]["request_hash_matches"] is True
         assert diagnostics["models"][0]["incomplete_messages"][0]["code"] == "source_wire_mismatch"
         assert diagnostics["compiler_witnesses"]["cache_presentation_matches"] >= 1
+        context = diagnostics["context_sources"][0]
+        assert context["available"] is True and context["dependencies_valid"] is True
+        assert context["missing_skill_file_count"] == 1 and context["other_missing_count"] == 0
+        assert context["catalog"]["available"] is True
+        assert context["witnesses"][0]["catalog_matches"] is (not changed_catalog)
+        assert context["witnesses"][0]["missing_skill_paths_covered"] == 1
         assert private not in json.dumps(diagnostics)
         foreign = await client.get(f"/admin/runtime-reconciliation/{run}", params={
             "tenant_id": str(uuid.uuid4()), "include_input_sources": "true",

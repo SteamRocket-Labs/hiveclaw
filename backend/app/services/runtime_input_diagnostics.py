@@ -1,5 +1,6 @@
 """Read-only mechanical source diagnostics for an operator-selected web run."""
 
+import hashlib
 import uuid
 
 from sqlalchemy import select
@@ -7,7 +8,7 @@ from sqlalchemy import select
 from app.models.chat_session import ChatSession
 from app.models.invocation_span import InvocationSpan
 from app.models.session_v2 import SessionModelResult
-from app.services.session_model_inputs import _hash, load_context_message_origin, message_snapshot
+from app.services.session_model_inputs import _hash, _stored_dependencies, load_context_message_origin, message_snapshot
 
 
 def _source_ref(value):
@@ -64,6 +65,45 @@ def _message_shape(message):
             else [len(content)] if isinstance(content, str) else [], "sha256": _hash(message_snapshot(message))}
 
 
+def _context_view(ref, origin, origins, agent_id):
+    from app.services.historical_model_inputs import _catalog_section
+
+    def catalog_view(value):
+        return {"available": value is not None, "chars": len(value) if value is not None else None,
+            "sha256": hashlib.sha256(value.encode()).hexdigest() if value is not None else None}
+
+    if origin is None:
+        return {"source_ref": ref, "available": False}
+    missing = origin["dependency_coverage"].get("unbound") or []
+    paths = {value.removeprefix("skill_file_unbound:") for value in missing
+        if value.startswith("skill_file_unbound:")}
+    catalog = _catalog_section(origin)
+    view = {"source_ref": ref, "available": True, "kind": origin.get("kind"),
+        "message": _message_shape(origin["message"]),
+        "dependencies_valid": _stored_dependencies(origin.get("dependencies")) is not None,
+        "missing_skill_file_count": len(paths),
+        "other_missing_count": sum(not value.startswith("skill_file_unbound:") for value in missing),
+        "catalog": catalog_view(catalog), "selected_sections": [], "witnesses": []}
+    for section in origin.get("sections") or []:
+        if isinstance(section, dict) and section.get("selected") is True:
+            view["selected_sections"].append({"is_skill_catalog": section.get("name") == "skill_catalog",
+                **{key: section.get(key) if type(section.get(key)) is int else None
+                    for key in ("render_order", "rendered_chars")}})
+    for witness_ref, witness in origins:
+        if witness.get("kind") != "dynamic_prompt":
+            continue
+        witness_catalog = _catalog_section(witness)
+        public_paths = set()
+        for leaf in _stored_dependencies(witness.get("dependencies")) or []:
+            parts = leaf["source_id"].split("\n")
+            if leaf["source_kind"] == "agent_platform_skill_file" and len(parts) == 3 and parts[0] == str(agent_id):
+                public_paths.add(parts[1])
+        view["witnesses"].append({"source_ref": witness_ref, "catalog": catalog_view(witness_catalog),
+            "catalog_matches": catalog is not None and catalog == witness_catalog,
+            "missing_skill_paths_covered": len(paths & public_paths)})
+    return view
+
+
 async def runtime_input_diagnostics(db, *, task):
     report = {"schema": "hive.runtime_input_sources.v1", "status": "unavailable",
         "source_authority": "not_evaluated", "models": [], "first_dependency_chain": []}
@@ -115,11 +155,16 @@ async def runtime_input_diagnostics(db, *, task):
     ids = list(await db.scalars(select(InvocationSpan.id).where(InvocationSpan.tenant_id == task.tenant_id,
         InvocationSpan.agent_id == task.parent_agent_id, InvocationSpan.session_id == str(session_id),
         InvocationSpan.span_type == "kernel_context", InvocationSpan.status == "captured",
-        InvocationSpan.name == "frozen_prompt").order_by(InvocationSpan.started_at, InvocationSpan.id)))
+        InvocationSpan.name.in_(("frozen_prompt", "dynamic_prompt")))
+        .order_by(InvocationSpan.started_at, InvocationSpan.id)))
+    origins = []
     for source_id in ids:
         origin = await load_context_message_origin(db, tenant_id=task.tenant_id, agent_id=task.parent_agent_id,
             session_id=session_id, source_id=source_id)
         if origin is None or origin["dependency_coverage"].get("complete") is not True:
+            continue
+        origins.append((f"session-kernel-context:{source_id}", origin))
+        if origin.get("kind") != "frozen_prompt":
             continue
         exact = origin["message"] == wire[0]
         cached = match_cache_hint_presentation(origin["message"], wire[0]) is not None
@@ -129,4 +174,12 @@ async def runtime_input_diagnostics(db, *, task):
         witnesses["origins"].append({"source_ref": f"session-kernel-context:{source_id}",
             "message": _message_shape(origin["message"]), "exact_message_match": exact, "cache_match": cached})
     report["compiler_witnesses"] = witnesses
+    context_refs = dict.fromkeys(entry["source_ref"]
+        for entry in report["first_dependency_chain"][-1]["incomplete_messages"]
+        if (entry.get("source_ref") or "").startswith("session-kernel-context:"))
+    report["context_sources"] = []
+    for ref in context_refs:
+        origin = await load_context_message_origin(db, tenant_id=task.tenant_id, agent_id=task.parent_agent_id,
+            session_id=session_id, source_id=uuid.UUID(ref.split(":", 1)[1]))
+        report["context_sources"].append(_context_view(ref, origin, origins, task.parent_agent_id))
     return report

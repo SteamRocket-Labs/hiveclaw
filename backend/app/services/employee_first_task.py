@@ -385,8 +385,9 @@ async def dispatch_first_task(db, draft, *, execution_context=None, arguments=No
     return receipt["status"] == "dispatched"
 
 
-async def enqueue_creation_receipt(db, draft, task):
-    from app.services.runtime_notification_outbox import CompletionNotification, enqueue_completion_notification
+async def creation_receipt_notification(db, draft, task):
+    """Render the native creation observation without publishing or changing it."""
+    from app.services.runtime_notification_outbox import CompletionNotification
 
     evidence = direct_creation_authorization(draft)
     if evidence is None:
@@ -404,7 +405,7 @@ async def enqueue_creation_receipt(db, draft, task):
                 "target_agent_id": str(draft.created_agent_id), "message": evidence["first_task"],
             },
         }, ensure_ascii=False)
-    await enqueue_completion_notification(db, CompletionNotification(
+    return CompletionNotification(
         tenant_id=draft.tenant_id, source_kind="employee_creation", source_run_id=str(task.id),
         parent_session_id=str(draft.session_id), parent_agent_id=draft.hr_agent_id,
         parent_user_id=draft.requested_by_user_id, terminal_status=task.status, task_type="hr_provisioning",
@@ -412,4 +413,12 @@ async def enqueue_creation_receipt(db, draft, task):
         metadata={"draft_id": str(draft.id), "created_agent_id": str(draft.created_agent_id or ""),
                   "first_task_status": first.get("status"), "first_task_runtime_id": first.get("runtime_task_id"),
                   "first_task_error": first.get("error"), "creation_error": draft.failure_code},
-    ))
+    )
+
+
+async def enqueue_creation_receipt(db, draft, task):
+    from app.services.runtime_notification_outbox import enqueue_completion_notification
+
+    notification = await creation_receipt_notification(db, draft, task)
+    if notification is not None:
+        await enqueue_completion_notification(db, notification)

@@ -729,10 +729,11 @@ async def _resolve_origin_dependencies(db, *, tenant_id, agent_id, ref):
             invocation=invocation, content_hash=payload["content_hash"])
         return _unique_dependencies([*dependencies, *sources]), inherited_complete and complete
     if invocation.tool_name == "read_runtime_result":
-        from app.services.runtime_result_sources import runtime_result_tool_sources
+        from app.services.runtime_result_sources import runtime_result_denial_bound, runtime_result_tool_sources
 
         dependency = await runtime_result_tool_sources(db, agent_id=agent_id, invocation=invocation, content=content)
-        return _unique_dependencies([*dependencies, *([dependency] if dependency else [])]), bool(dependency) and inherited_complete
+        complete = bool(dependency) or runtime_result_denial_bound(invocation=invocation, payload=payload, content=content)
+        return _unique_dependencies([*dependencies, *([dependency] if dependency else [])]), complete and inherited_complete
     if invocation.tool_name in {"write_file", "fs_write"}:
         from app.services.content_input_receipts import load_workspace_execution_evidence
 

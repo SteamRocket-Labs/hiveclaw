@@ -109,7 +109,7 @@ async def _start_feishu_creation_work(seed, app_user_sessionmaker, monkeypatch):
         return command.id
 
 
-@pytest.mark.parametrize("input_case", ["complete", "unbound", "revoked", "first_task", "first_task_unbound", "first_task_revoked", "first_task_refined", "first_task_delivery", "first_task_parent_model", "first_task_refined_native", "first_task_native_creation", "first_task_fresh_employee", "first_task_slow_provider", "first_task_saved_reopen", "first_task_question", "first_task_question_after_write", "first_task_feishu_question", "first_task_feishu_quoted_question", "first_task_feishu_question_source_changed", "first_task_feishu_question_body_changed", "first_task_feishu_question_already_answered", "first_task_feishu_question_projection_missing", "first_task_feishu_question_recipient_changed", "first_task_feishu_question_legacy_status", "first_task_feishu_permission_allow", "first_task_feishu_permission_deny", "first_task_feishu_permission_cancel", "first_task_feishu_permission_unknown", "first_task_feishu_permission_expired", "first_task_feishu_permission_source_changed", "delegation_permission_allow", "first_task_recall", "first_task_ledger", "first_task_ledger_unknown", "first_task_parent_status", "first_task_parent_status_unknown", "first_task_context", "first_task_discovery", "first_task_unverified_memory", "first_task_explicit_unverified_memory", "first_task_feishu_permission_channel_allow", "first_task_feishu_permission_channel_deny", "first_task_feishu_permission_channel_unknown", "first_task_feishu_permission_channel_legacy", "first_task_feishu_permission_channel_scope", "first_task_feishu_permission_channel_feedback_retry", "first_task_feishu_progress"])
+@pytest.mark.parametrize("input_case", ["complete", "unbound", "revoked", "first_task", "first_task_unbound", "first_task_revoked", "first_task_refined", "first_task_delivery", "first_task_parent_model", "first_task_refined_native", "first_task_native_creation", "first_task_fresh_employee", "first_task_slow_provider", "first_task_saved_reopen", "first_task_question", "first_task_question_after_write", "first_task_feishu_question", "first_task_feishu_quoted_question", "first_task_feishu_question_source_changed", "first_task_feishu_question_body_changed", "first_task_feishu_question_already_answered", "first_task_feishu_question_projection_missing", "first_task_feishu_question_recipient_changed", "first_task_feishu_question_legacy_status", "first_task_feishu_permission_allow", "first_task_feishu_permission_deny", "first_task_feishu_permission_cancel", "first_task_feishu_permission_unknown", "first_task_feishu_permission_expired", "first_task_feishu_permission_source_changed", "delegation_permission_allow", "first_task_recall", "first_task_ledger", "first_task_ledger_unknown", "first_task_parent_status", "first_task_parent_status_unknown", "first_task_child_command", "first_task_child_code", "first_task_parent_creation_result", "first_task_parent_result_denial", "first_task_context", "first_task_discovery", "first_task_unverified_memory", "first_task_explicit_unverified_memory", "first_task_feishu_permission_channel_allow", "first_task_feishu_permission_channel_deny", "first_task_feishu_permission_channel_unknown", "first_task_feishu_permission_channel_legacy", "first_task_feishu_permission_channel_scope", "first_task_feishu_permission_channel_feedback_retry", "first_task_feishu_progress"])
 async def test_governed_delegation_preserves_its_parent_instruction_origin(
     owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, input_case, migrated_pg_url,
 ):
@@ -127,6 +127,24 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
     from app.services.secrets_provider import get_secrets_provider
     from app.services.web_chat_runtime import _persist_tool_call
 
+    result_denial_case = input_case == "first_task_parent_result_denial"
+    if result_denial_case:
+        input_case = "first_task_child_command"
+    creation_result_case = input_case == "first_task_parent_creation_result"
+    if creation_result_case:
+        input_case = "first_task_parent_status"
+    child_command_case = input_case in {"first_task_child_command", "first_task_child_code"}
+    child_tool = "execute_code" if input_case == "first_task_child_code" else "run_command"
+    if child_command_case:
+        import platform
+
+        if platform.system() != "Darwin":
+            pytest.skip("Native macOS process gate; Linux delivery is deferred.")
+        assert platform.system() == "Darwin"
+        for key, value in {"HIVE_CODE_EXEC_PROVIDER": "local_os_sandbox", "HIVE_CODE_SANDBOX_MODE": "auto",
+            "HIVE_ALLOW_UNSANDBOXED_CODE_EXEC": "0"}.items():
+            monkeypatch.setenv(key, value)
+        input_case = "first_task_parent_status"
     parent_status_unknown = input_case == "first_task_parent_status_unknown"
     parent_status_case = input_case in {"first_task_parent_status", "first_task_parent_status_unknown"}
     if parent_status_case:
@@ -185,6 +203,10 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
                 owner_user_id=seed["user_id"], primary_model_id=model.id))
         db.add(CapabilityPolicy(tenant_id=seed["tenant_id"], capability="agent.message.send", allowed=True,
             requires_approval=False))
+        if child_command_case:
+            db.add(CapabilityPolicy(tenant_id=seed["tenant_id"],
+                capability="workspace.code.execute" if child_tool == "execute_code" else "workspace.command.execute",
+                allowed=True, requires_approval=False))
         if ledger_case:
             db.add(CapabilityPolicy(tenant_id=seed["tenant_id"], capability="agent.task.track", allowed=True,
                 requires_approval=False))
@@ -593,7 +615,11 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
             parent.deactivated_at = datetime.now(timezone.utc)
         await db.commit()
     report_path = "workspace/delegated-report.md"
-    client = ScriptedLLMClient([{"tool_calls": [{"id": "child-report-write", "type": "function", "function": {
+    child_commands = ([{"id": "child-calculate", "type": "function", "function": {
+        "name": child_tool, "arguments": json.dumps({"language": "python", "code": "print(120 + 90 + 150)",
+            "timeout": 10} if child_tool == "execute_code" else {
+            "command": "python3 -c 'print(120 + 90 + 150)'", "timeout": 10})}}] if child_command_case else [])
+    client = ScriptedLLMClient([{"tool_calls": [*child_commands, {"id": "child-report-write", "type": "function", "function": {
         "name": "write_file", "arguments": json.dumps({"path": report_path, "content": "DELEGATED_REPORT"})}}],
         "finish_reason": "tool_calls"}, {"content": "Report generated.", "finish_reason": "stop"}])
     if slow_first_task:
@@ -1794,6 +1820,10 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
         assert await orchestrator.dispatch_persisted_async_delegation(task_id.hex, wait_for_completion=True)
     finally:
         reset_runtime_task_fence(fence)
+    if child_command_case:
+        result = next(m["content"] for m in client.requests[1]["messages"]
+            if m.get("role") == "tool" and m.get("tool_call_id") == "child-calculate")
+        assert "360" in result and "<tool_error>" not in result, result
     assert len(client.requests) == 2 and marker.stat().st_mtime_ns == written_at
     processor = DirectInvocationTerminalBoundaryProcessor(session_factory=app_user_sessionmaker, data_root=seed["data_root"])
     boundaries = await RuntimeTerminalBoundaryOutboxService(session_factory=app_user_sessionmaker).drain_once(
@@ -1827,6 +1857,14 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
         assert len(returns) == 1 and returns[0].parent_session_id == str(seed["session_id"])
         return_id = returns[0].id
         result_ref = notification.result_ref
+        creation_result_ref = await db.scalar(select(RuntimeNotificationOutbox.result_ref).where(
+            RuntimeNotificationOutbox.tenant_id == seed["tenant_id"],
+            RuntimeNotificationOutbox.parent_session_id == seed["session_id"],
+            RuntimeNotificationOutbox.parent_agent_id == seed["agent_id"],
+            RuntimeNotificationOutbox.parent_user_id == seed["user_id"],
+            RuntimeNotificationOutbox.source_kind == "employee_creation")) if creation_result_case else None
+        if creation_result_case:
+            assert creation_result_ref
         from app.services.session_semantic_history import load_session_semantic_history
 
         history = await load_session_semantic_history(db, tenant_id=seed["tenant_id"], agent_id=seed["agent_id"],
@@ -1866,6 +1904,20 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
             {"id": "parent-task-list", "type": "function", "function": {
                 "name": "list_async_tasks", "arguments": "{}"}},
         ] if parent_status_case else [])
+        if result_denial_case:
+            from app.services import runtime_result_sources
+
+            native_result_validator = runtime_result_sources.validate_runtime_result_sources
+            async def controlled_source_denial(db, request, result_object, **kwargs):
+                if request is not None and request.context.tool_call_id == "parent-read-result-denied":
+                    raise ContentInputReceiptError("content_source_access_denied", "Controlled source denial.", 403)
+                return await native_result_validator(db, request, result_object, **kwargs)
+            monkeypatch.setattr(runtime_result_sources, "validate_runtime_result_sources", controlled_source_denial)
+            parent_reads.append({"id": "parent-read-result-denied", "type": "function", "function": {
+                "name": "read_runtime_result", "arguments": json.dumps({"result_ref": result_ref})}})
+        if creation_result_case:
+            parent_reads.append({"id": "parent-read-creation", "type": "function", "function": {
+                "name": "read_runtime_result", "arguments": json.dumps({"result_ref": creation_result_ref})}})
         parent_client = ScriptedLLMClient([
             {"tool_calls": [*parent_reads, {"id": "parent-read-return", "type": "function", "function": {
                 "name": "read_runtime_result", "arguments": json.dumps({"result_ref": result_ref})}}],
@@ -1891,6 +1943,15 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
         second_request = json.dumps(parent_client.requests[1]["messages"])
         assert "DELEGATED_REPORT" in second_request and "A later local edit" not in second_request
         assert (seed["agent_root"] / parent_path).read_text() == "ORIGINAL_WORK_REVIEW: DELEGATED_REPORT"
+        if result_denial_case:
+            denial = json.loads(next(m["content"] for m in parent_client.requests[1]["messages"]
+                if m.get("role") == "tool" and m.get("tool_call_id") == "parent-read-result-denied"))
+            assert denial["status"] == "source_access_denied" and "content" not in denial
+        if creation_result_case:
+            creation_result = json.loads(next(m["content"] for m in parent_client.requests[1]["messages"]
+                if m.get("role") == "tool" and m.get("tool_call_id") == "parent-read-creation"))
+            assert creation_result["status"] == "ok" and "Employee creation: completed" in creation_result["content"]
+            assert creation_result["dependency_coverage"]["complete"] is True
         if parent_status_unknown:
             assert "Unverified legacy task result" in second_request
             assert observed["status"]["status"] == "unavailable", observed["status"]

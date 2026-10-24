@@ -41,7 +41,8 @@ async def _published_owned_delegation_input(db, dependency, task):
             return False
         return (row is not None and row.tenant_id == task.tenant_id and row.run_id == task.id
             and row.session_id == uuid.UUID(task.child_session_id) and row.tool_name in {
-                "write_file", "fs_write", "ask_user_question", "browser_manage", "browser_observe", "browser_action"})
+                "write_file", "fs_write", "run_command", "execute_code", "ask_user_question",
+                "browser_manage", "browser_observe", "browser_action"})
     if kind == "session_command":
         from app.models.chat_transcript_event import ChatTranscriptEvent
 
@@ -80,6 +81,8 @@ async def _published_owned_delegation_input(db, dependency, task):
 
 
 async def load_canonical_result_sources(db, result_object):
+    if result_object.source_kind == "employee_creation":
+        return await _load_creation_result_sources(db, result_object)
     if result_object.source_kind == "approval":
         return await _load_company_result_sources(db, result_object)
     if result_object.source_kind != "a2a_delegation":
@@ -137,6 +140,55 @@ async def load_canonical_result_sources(db, result_object):
     if dependencies is None:
         raise ContentInputReceiptError("runtime_result_sources_unbound", "The result's input source inventory is invalid.", 503)
     return task, dependencies, receipt_ids
+
+
+async def _load_creation_result_sources(db, result):
+    """Verify a completed native provisioning receipt against its original creator and exact producer."""
+    from app.models.runtime_notification_outbox import RuntimeNotificationOutbox
+    from app.services.delegation_input_origin import load_employee_creation_dependencies
+    from app.services.employee_first_task import creation_receipt_notification
+    from app.services.runtime_notification_outbox import _normalized_base_values
+    from app.services.runtime_result_store import decode_runtime_result_payload, encode_runtime_result_payload, runtime_result_object_id
+
+    try:
+        payload = decode_runtime_result_payload(bytes(result.payload_bytes))
+        draft = await db.get(HrCreationDraft, uuid.UUID(payload["metadata"]["draft_id"]), populate_existing=True)
+        task = await db.get(RuntimeTask, uuid.UUID(result.source_run_id), populate_existing=True)
+        if (draft is None or task is None or draft.tenant_id != result.tenant_id or task.tenant_id != result.tenant_id
+            or draft.status != "completed" or task.status != "completed" or draft.provisioning_task_id != task.id
+            or str(task.id) != result.source_run_id or task.task_type != "hr_provisioning"):
+            return False
+        original = await load_employee_creation_dependencies(db, draft=draft)
+        if original is None or not original[1]:
+            return False
+        notification = await creation_receipt_notification(db, draft, task)
+        if notification is None:
+            return False
+        values = _normalized_base_values(notification)
+        encoded = encode_runtime_result_payload(summary=values["summary"], artifacts=values["artifacts"], metadata=values["metadata"])
+        row = await db.get(RuntimeNotificationOutbox, values["id"], populate_existing=True)
+        if (row is None or any(getattr(row, key) != values[key] for key in (
+            "tenant_id", "source_kind", "source_run_id", "parent_session_id", "parent_agent_id", "parent_user_id",
+            "terminal_status", "task_type", "delivery_mode"))
+            or row.root_runtime_task_id != uuid.UUID(str(notification.root_runtime_task_id))
+            or row.result_object_id != result.id or row.result_sha256 != result.sha256 or row.result_size_bytes != result.size_bytes
+            or row.result_ref != f"runtime-result://{result.id}/{result.sha256}" or row.artifact_count != 0
+            or encoded.payload_bytes != bytes(result.payload_bytes) or encoded.sha256 != result.sha256
+            or encoded.size_bytes != result.size_bytes or result.id != runtime_result_object_id(tenant_id=result.tenant_id,
+                source_kind="employee_creation", source_run_id=result.source_run_id, sha256=result.sha256)):
+            return False
+        first_id = values["metadata"].get("first_task_runtime_id")
+        if first_id is not None:
+            first = await db.get(RuntimeTask, uuid.UUID(first_id), populate_existing=True)
+            if (first is None or first.id != uuid.uuid5(draft.id, "explicit-first-task.v1") or first.tenant_id != draft.tenant_id
+                or first.parent_agent_id != draft.hr_agent_id or first.parent_session_id != str(draft.session_id)
+                or first.child_agent_id != draft.created_agent_id or first.root_user_id != draft.requested_by_user_id
+                or first.root_runtime_task_id != row.root_runtime_task_id):
+                return False
+        return task, original[0], set()
+    except (ValueError, TypeError, KeyError, AttributeError):
+        # Legacy or changed observations remain readable with unknown source coverage.
+        return False
 
 
 async def _load_company_result_sources(db, result):
@@ -509,6 +561,27 @@ async def validate_runtime_return_dependency(db, tenant_id, dependency, *, user,
         raise ContentInputReceiptError("content_source_access_denied", "The result is not published to this original work.", 403)
     if not await validate_runtime_result_sources(db, runtime_request, result, user=user, session=session):
         raise ContentInputReceiptError("content_source_unavailable", "The runtime result source inventory is incomplete.", 503)
+
+
+def runtime_result_denial_bound(*, invocation, payload, content):
+    """Bind only an observed native no-data denial, never the denied target's bytes or authority."""
+    from app.tools.handlers.context_resources import _RUNTIME_RESULT_REF_RE
+
+    try:
+        body = json.loads(content)
+        arguments = invocation.effective_arguments_json or invocation.provider_arguments_json
+        return (invocation.tool_name == "read_runtime_result" and invocation.effect_state == "effect_committed"
+            and payload.get("outcome") == "success"
+            and str(payload.get("content_or_error_ref") or "").startswith("tool-frame:")
+            and isinstance(body, dict) and set(body) == {
+                "schema", "status", "reason_code", "result_ref", "retryable", "recovery_action"}
+            and body["schema"] == "hive.runtime_result_page.v1" and body["status"] == "source_access_denied"
+            and body["reason_code"] == "content_source_access_denied" and body["retryable"] is False
+            and body["recovery_action"] == "reconcile_result_sources"
+            and body["result_ref"] == arguments.get("result_ref")
+            and _RUNTIME_RESULT_REF_RE.fullmatch(body["result_ref"]) is not None)
+    except (ValueError, TypeError):
+        return False
 
 
 async def runtime_result_tool_sources(db, *, agent_id, invocation, content):

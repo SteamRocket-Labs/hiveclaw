@@ -1092,6 +1092,11 @@ async def search_memory(agent_id: uuid.UUID, arguments: dict, tenant_id: str | N
                         for snippet in display_snippets:
                             results.append(f"  - {snippet}")
         except SessionRecallError as exc:
+            if scope == "sessions" and execution_context is not None:
+                from app.services.content_input_receipts import ContentInputReceiptError
+
+                return await _record_memory_error("search_memory", agent_id, arguments, execution_context,
+                    ContentInputReceiptError(exc.code, str(exc), 403 if exc.status == "denied" else 503))
             results.append("## Session Recall\n" + json.dumps({"schema": "hive.session_recall_error.v1",
                 "status": exc.status, "code": exc.code, "retryable": exc.retryable, "message": str(exc)}))
         except Exception:

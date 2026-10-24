@@ -2,7 +2,7 @@
 
 import uuid
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -50,6 +50,41 @@ async def _search(n, **extra):
         agent_id=n.agent, user_id=n.user, session_id=str(n.session), runtime_task_id=str(n.run), emit_runtime_hooks=False))
 
 
+async def _shared_reader(n, owner_sessionmaker, monkeypatch):
+    from app.models.channel_config import ChannelConfig
+    from app.models.runtime_task import RuntimeTask
+    from app.services.channel_session import find_or_create_shared_group_session
+    from app.services.external_principal_service import bind_authenticated_self_channel_principal
+    from app.services.feishu_service import FeishuService
+    from app.services.session_live_input import submit_live_human_input
+
+    async def members(_self, *_args, **_kwargs):
+        return {"ou_recall_member"}
+    monkeypatch.setattr(FeishuService, "get_chat_member_open_ids", members)
+    async with owner_sessionmaker() as db:
+        config = ChannelConfig(id=uuid.uuid4(), tenant_id=n.tenant, agent_id=n.agent,
+            channel_type="feishu", app_id="synthetic-recall-app", app_secret="synthetic-recall-secret",
+            is_configured=True)
+        db.add(config)
+        await db.flush()
+        await bind_authenticated_self_channel_principal(db, tenant_id=n.tenant, config=config,
+            provider_subject_id="ou_recall_member", user_id=n.user, actor_user_id=n.user)
+        session = await find_or_create_shared_group_session(db, tenant_id=n.tenant, agent_id=n.agent,
+            installation_ref=str(config.id), chat_id="oc_recall_group", first_message_title="Shared recall")
+        n.session = session.id
+        receipt = await submit_live_human_input(db=db, agent=await db.get(Agent, n.agent),
+            user=await db.get(User, n.user), session=session, content="Find the previous meeting",
+            source="test_shared_recall", input_id=uuid.uuid4(), idempotency_key=f"recall:{session.id}")
+        n.run = uuid.UUID(receipt["run"]["run_id"])
+        await db.commit()
+    async with owner_sessionmaker() as db:
+        task = await db.get(RuntimeTask, n.run)
+        task.status = "running"
+        task.claimed_by = "native-shared-recall"
+        task.claim_expires_at = datetime.now(timezone.utc) + timedelta(minutes=5)
+        await db.commit()
+
+
 @pytest.mark.parametrize("source", ["ledger", "legacy", "db"])
 @pytest.mark.parametrize("admin", [False, True])
 async def test_each_native_source_filters_authority_before_the_requested_result_limit(
@@ -62,7 +97,7 @@ async def test_each_native_source_filters_authority_before_the_requested_result_
     assert "OTHER_REQUESTER_PRIVATE_EVIDENCE" not in result and "UNKNOWN_PRIVATE_EVIDENCE" not in result
 
 
-@pytest.mark.parametrize("case", ["shared_worker", "outage", "during_read", "during_source_change", "caller_identity"])
+@pytest.mark.parametrize("case", ["shared_worker", "shared_worker_all", "shared_identity_missing", "outage", "during_read", "during_source_change", "caller_identity"])
 async def test_native_recall_never_falls_back_around_missing_current_authority(
     native_workspace, owner_sessionmaker, monkeypatch, case,  # noqa: F811
 ):
@@ -71,7 +106,9 @@ async def test_native_recall_never_falls_back_around_missing_current_authority(
     n = native_workspace
     own, _foreign = await _sources(n, owner_sessionmaker,
         source="db" if case in {"during_read", "during_source_change"} else "ledger")
-    if case == "shared_worker":
+    if case in {"shared_worker", "shared_worker_all"}:
+        await _shared_reader(n, owner_sessionmaker, monkeypatch)
+    elif case == "shared_identity_missing":
         async with owner_sessionmaker() as db:
             (await db.get(ChatSession, n.session)).audience_kind = "group"
             await db.commit()
@@ -93,9 +130,19 @@ async def test_native_recall_never_falls_back_around_missing_current_authority(
                 await db.commit()
             return hits
         monkeypatch.setattr(session_recall, "_search_session_history_db", change_owner)
-    result = await _search(n, **({"user_id": str(n.foreign)} if case == "caller_identity" else {}))
+    if case == "shared_identity_missing":
+        from fastapi import HTTPException
+
+        with pytest.raises(HTTPException) as denied:
+            await _search(n)
+        assert denied.value.status_code == 403 and denied.value.detail == {"code": "shared_group_identity_mismatch"}
+        return
+    extra = {"user_id": str(n.foreign)} if case == "caller_identity" else {"scope": "all"} if case == "shared_worker_all" else {}
+    result = await _search(n, **extra)
     assert "PRIVATE_EVIDENCE" not in result, result
-    expected = {"shared_worker": "session_recall_shared_audience_unavailable", "outage": "session_recall_authority_unavailable",
+    expected = {"shared_worker": "session_recall_shared_audience_unavailable",
+        "shared_worker_all": "session_recall_shared_audience_unavailable",
+        "outage": "session_recall_authority_unavailable",
         "during_read": "session_recall_access_denied", "caller_identity": "session_recall_arguments_invalid"}
     if case in expected:
         assert expected[case] in result, result

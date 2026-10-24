@@ -17,7 +17,7 @@ import re
 from typing import Any
 import uuid
 
-from sqlalchemy import and_, exists, or_, select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -596,12 +596,13 @@ class RuntimeTerminalBoundaryOutboxService:
         # claim sort, and unrelated task-row locks cannot skip ready boundaries.
         statement = select(RuntimeTerminalBoundaryOutbox.id)
         if task_types:
-            statement = statement.where(exists(
-                select(RuntimeTask.id).where(
-                    RuntimeTask.id == RuntimeTerminalBoundaryOutbox.runtime_task_id,
-                    RuntimeTask.tenant_id == RuntimeTerminalBoundaryOutbox.tenant_id,
-                    RuntimeTask.task_type.in_(tuple(task_types)),
-                )))
+            # Keep sibling-lane history out of the task lookup and queue sort.
+            eligible_tasks = select(RuntimeTask.id).where(
+                RuntimeTask.tenant_id == tenant_uuid,
+                RuntimeTask.task_type.in_(tuple(task_types)),
+            ).cte("terminal_claim_task_ids").prefix_with("MATERIALIZED")
+            statement = statement.join(eligible_tasks,
+                eligible_tasks.c.id == RuntimeTerminalBoundaryOutbox.runtime_task_id)
         statement = (
             statement.where(
                 RuntimeTerminalBoundaryOutbox.tenant_id == tenant_uuid,

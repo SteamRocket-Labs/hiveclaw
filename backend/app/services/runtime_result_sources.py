@@ -602,12 +602,23 @@ async def runtime_result_tool_sources(db, *, agent_id, invocation, content):
             return None
         offset, limit = arguments.get("offset", 0), arguments.get("limit", _DEFAULT_PAGE_CHARS)
         text = bytes(result.payload_bytes).decode(result.encoding or "utf-8")
-        if (body.get("offset") != offset or body.get("content") != text[offset:offset + limit]
-            or body.get("dependency_coverage") != {"complete": True}):
+        if body.get("offset") != offset or body.get("content") != text[offset:offset + limit]:
             return None
+        if body.get("dependency_coverage") != {"complete": True}:
+            # A compiler gap is recoverable only from the original native producer and publication.
+            if body.get("schema") != "hive.runtime_result_page.v1" or body.get("dependency_coverage") != {"complete": False}:
+                return None
+            canonical = await load_canonical_result_sources(db, result)
+            if not canonical:
+                return None
+            task, _dependencies, _receipts = canonical
+            if (task.parent_agent_id != agent_id or uuid.UUID(task.parent_session_id) != invocation.session_id
+                or not await runtime_result_publication_bound(db, result=result, agent_id=agent_id,
+                    session_id=invocation.session_id, user_id=task.root_user_id)):
+                return None
         return {"source_kind": "runtime_result", "source_id": f"{agent_id}\n{invocation.session_id}\n{result.id}",
             "source_version": result.sha256}
-    except (ValueError, TypeError, KeyError, LookupError):
+    except (ContentInputReceiptError, ValueError, TypeError, KeyError, LookupError):
         return None
 
 

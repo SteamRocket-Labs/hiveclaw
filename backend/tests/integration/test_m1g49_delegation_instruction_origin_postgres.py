@@ -109,7 +109,7 @@ async def _start_feishu_creation_work(seed, app_user_sessionmaker, monkeypatch):
         return command.id
 
 
-@pytest.mark.parametrize("input_case", ["complete", "unbound", "revoked", "first_task", "first_task_unbound", "first_task_revoked", "first_task_refined", "first_task_delivery", "first_task_parent_model", "first_task_refined_native", "first_task_native_creation", "first_task_fresh_employee", "first_task_slow_provider", "first_task_saved_reopen", "first_task_question", "first_task_question_after_write", "first_task_feishu_question", "first_task_feishu_quoted_question", "first_task_feishu_question_source_changed", "first_task_feishu_question_body_changed", "first_task_feishu_question_already_answered", "first_task_feishu_question_projection_missing", "first_task_feishu_question_recipient_changed", "first_task_feishu_question_legacy_status", "first_task_feishu_permission_allow", "first_task_feishu_permission_deny", "first_task_feishu_permission_cancel", "first_task_feishu_permission_unknown", "first_task_feishu_permission_expired", "first_task_feishu_permission_source_changed", "delegation_permission_allow", "first_task_recall", "first_task_ledger", "first_task_ledger_unknown", "first_task_parent_status", "first_task_parent_status_unknown", "first_task_child_command", "first_task_child_code", "first_task_parent_creation_result", "first_task_parent_result_denial", "first_task_parent_public_directory", "first_task_context", "first_task_discovery", "first_task_unverified_memory", "first_task_explicit_unverified_memory", "first_task_feishu_permission_channel_allow", "first_task_feishu_permission_channel_deny", "first_task_feishu_permission_channel_unknown", "first_task_feishu_permission_channel_legacy", "first_task_feishu_permission_channel_scope", "first_task_feishu_permission_channel_feedback_retry", "first_task_feishu_progress"])
+@pytest.mark.parametrize("input_case", ["complete", "unbound", "revoked", "first_task", "first_task_unbound", "first_task_revoked", "first_task_refined", "first_task_delivery", "first_task_parent_model", "first_task_refined_native", "first_task_native_creation", "first_task_fresh_employee", "first_task_slow_provider", "first_task_saved_reopen", "first_task_question", "first_task_question_after_write", "first_task_feishu_question", "first_task_feishu_quoted_question", "first_task_feishu_question_source_changed", "first_task_feishu_question_body_changed", "first_task_feishu_question_already_answered", "first_task_feishu_question_projection_missing", "first_task_feishu_question_recipient_changed", "first_task_feishu_question_legacy_status", "first_task_feishu_permission_allow", "first_task_feishu_permission_deny", "first_task_feishu_permission_cancel", "first_task_feishu_permission_unknown", "first_task_feishu_permission_expired", "first_task_feishu_permission_source_changed", "delegation_permission_allow", "first_task_recall", "first_task_ledger", "first_task_ledger_unknown", "first_task_parent_status", "first_task_parent_status_unknown", "first_task_child_command", "first_task_child_code", "first_task_parent_creation_result", "first_task_parent_historical_creation_result", "first_task_parent_historical_creation_unknown", "first_task_parent_result_denial", "first_task_parent_public_directory", "first_task_context", "first_task_discovery", "first_task_unverified_memory", "first_task_explicit_unverified_memory", "first_task_feishu_permission_channel_allow", "first_task_feishu_permission_channel_deny", "first_task_feishu_permission_channel_unknown", "first_task_feishu_permission_channel_legacy", "first_task_feishu_permission_channel_scope", "first_task_feishu_permission_channel_feedback_retry", "first_task_feishu_progress"])
 async def test_governed_delegation_preserves_its_parent_instruction_origin(
     owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, input_case, migrated_pg_url,
 ):
@@ -133,7 +133,9 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
     result_denial_case = input_case == "first_task_parent_result_denial"
     if result_denial_case:
         input_case = "first_task_child_command"
-    creation_result_case = input_case == "first_task_parent_creation_result"
+    historical_creation_case = input_case in {"first_task_parent_historical_creation_result", "first_task_parent_historical_creation_unknown"}
+    historical_creation_unknown = input_case == "first_task_parent_historical_creation_unknown"
+    creation_result_case = input_case == "first_task_parent_creation_result" or historical_creation_case
     if creation_result_case:
         input_case = "first_task_parent_status"
     child_command_case = input_case in {"first_task_child_command", "first_task_child_code"}
@@ -1926,15 +1928,25 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
             {"id": "parent-task-list", "type": "function", "function": {
                 "name": "list_async_tasks", "arguments": "{}"}},
         ] if parent_status_case else [])
-        if result_denial_case:
+        if result_denial_case or historical_creation_case:
             from app.services import runtime_result_sources
 
             native_result_validator = runtime_result_sources.validate_runtime_result_sources
             async def controlled_source_denial(db, request, result_object, **kwargs):
+                if historical_creation_case and request is not None and request.context.tool_call_id == "parent-read-creation":
+                    return False  # The original native page predates canonical creation-source support.
                 if request is not None and request.context.tool_call_id == "parent-read-result-denied":
                     raise ContentInputReceiptError("content_source_access_denied", "Controlled source denial.", 403)
                 return await native_result_validator(db, request, result_object, **kwargs)
             monkeypatch.setattr(runtime_result_sources, "validate_runtime_result_sources", controlled_source_denial)
+            if historical_creation_unknown:
+                native_canonical_loader = runtime_result_sources.load_canonical_result_sources
+                async def missing_creation_producer(db, result_object):
+                    if result_object.source_kind == "employee_creation":
+                        return False
+                    return await native_canonical_loader(db, result_object)
+                monkeypatch.setattr(runtime_result_sources, "load_canonical_result_sources", missing_creation_producer)
+        if result_denial_case:
             parent_reads.append({"id": "parent-read-result-denied", "type": "function", "function": {
                 "name": "read_runtime_result", "arguments": json.dumps({"result_ref": result_ref})}})
         if creation_result_case:
@@ -1973,9 +1985,16 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
             creation_result = json.loads(next(m["content"] for m in parent_client.requests[1]["messages"]
                 if m.get("role") == "tool" and m.get("tool_call_id") == "parent-read-creation"))
             assert creation_result["status"] == "ok" and "Employee creation: completed" in creation_result["content"]
-            assert creation_result["dependency_coverage"]["complete"] is True
+            if historical_creation_case:
+                assert creation_result["dependency_coverage"]["complete"] is False
+            else:
+                assert creation_result["dependency_coverage"]["complete"] is True
         if parent_status_unknown:
             assert "Unverified legacy task result" in second_request
+            assert observed["status"]["status"] == "unavailable", observed["status"]
+            assert observed["status"]["reason_code"] == "model_input_inventory_incomplete"
+            return
+        if historical_creation_unknown:
             assert observed["status"]["status"] == "unavailable", observed["status"]
             assert observed["status"]["reason_code"] == "model_input_inventory_incomplete"
             return

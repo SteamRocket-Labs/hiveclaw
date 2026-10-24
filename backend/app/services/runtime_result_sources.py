@@ -49,7 +49,7 @@ async def _published_owned_delegation_input(db, dependency, task, *, receipt_ids
         from app.services.work_ledger_tool_sources import LEDGER_RESULT_TOOLS, ledger_result_sources
 
         ledger_read = row.tool_name in LEDGER_RESULT_TOOLS
-        directory_read = row.tool_name in {"list_files", "fs_list"}
+        directory_read = row.tool_name in {"list_files", "fs_list", "glob_search"}
         if not ledger_read and not directory_read and (row.tool_name not in {"read_file", "read_document", "fs_read"} or not receipt_ids):
             return False
         from app.models.chat_transcript_event import ChatTranscriptEvent

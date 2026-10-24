@@ -1348,9 +1348,14 @@ def _native_empty_read_matches(tool_name, arguments, observation, *, session_id,
 
 
 def _native_directory_read_matches(tool_name, arguments, observation):
-    from app.services.workspace_resource_authority import normalize_workspace_resource_path
+    from app.services.workspace_resource_authority import normalize_workspace_resource_path, workspace_glob_read_observation
 
-    if tool_name not in {"list_files", "fs_list"} or not isinstance(arguments, dict) or not isinstance(observation, dict):
+    if not isinstance(arguments, dict) or not isinstance(observation, dict):
+        return False
+    if tool_name == "glob_search":
+        expected = workspace_glob_read_observation(arguments.get("root") or "", arguments.get("pattern"))
+        return expected is not None and observation == expected
+    if tool_name not in {"list_files", "fs_list"}:
         return False
     try:
         path = normalize_workspace_resource_path(arguments.get("path") or "")

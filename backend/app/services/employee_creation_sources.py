@@ -324,7 +324,7 @@ async def _owned_context_source(db, *, dependency, agent_id, tenant_id, session_
         if (call is None or call.tenant_id != tenant_id or call.session_id != session_id
             or (call.effect_state != 'effect_committed' and not (
                 call.tool_name in {'task_get', 'delegate_to_agent'} and call.effect_state == 'failed')) or call.tool_name not in (
-                LEDGER_RESULT_TOOLS | TASK_READ_TOOLS | {'list_files', 'fs_list', 'tool_search', 'read_context_resource', 'search_memory',
+                LEDGER_RESULT_TOOLS | TASK_READ_TOOLS | {'list_files', 'fs_list', 'glob_search', 'tool_search', 'read_context_resource', 'search_memory',
                     'run_command', 'execute_code', 'delegate_to_agent'})):
             return False
         event = await db.scalar(select(ChatTranscriptEvent).where(
@@ -384,7 +384,7 @@ async def _owned_context_source(db, *, dependency, agent_id, tenant_id, session_
         if call.tool_name == 'read_context_resource' and not metadata.get('native_empty_read_receipt'):
             return _context_resource_dependency(agent_id, payload.get('content'),
                 call.effective_arguments_json or call.provider_arguments_json) is not None
-        directory = call.tool_name in {'list_files', 'fs_list'} and 'native_directory_read_receipt' in metadata
+        directory = call.tool_name in {'list_files', 'fs_list', 'glob_search'} and 'native_directory_read_receipt' in metadata
         key = 'native_directory_read_receipt' if directory else 'skill_input_receipt' if call.tool_name == 'tool_search' else 'native_empty_read_receipt'
         pointer = metadata.get(key)
         if not isinstance(pointer, dict) or pointer.get('status') != 'verified':

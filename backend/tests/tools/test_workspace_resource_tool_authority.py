@@ -24,6 +24,55 @@ def _scope(known_paths=frozenset()):
     )
 
 
+@pytest.mark.parametrize("root,pattern", [("", "workspace/mine/*.md"), ("workspace/mine", "*.md")])
+def test_workspace_glob_attests_authorized_query_without_attesting_file_bodies(tmp_path, root, pattern):
+    from app.services.agent_tool_domains.workspace import _glob_search
+    from app.services.content_input_receipts import _native_directory_read_matches
+    from app.tools.result_envelope import ToolContentEnvelope
+
+    target = tmp_path / "workspace/mine/report.md"
+    target.parent.mkdir(parents=True)
+    for exists in (False, True):
+        if exists:
+            target.write_text("PRIVATE_BODY_SENTINEL")
+        result = _glob_search(tmp_path, pattern, root, authority_scope=_scope())
+        assert isinstance(result, ToolContentEnvelope)
+        observation = result.metadata["native_directory_read"]
+        assert _native_directory_read_matches("glob_search", {"root": root, "pattern": pattern}, observation)
+        assert "PRIVATE_BODY_SENTINEL" not in result
+        assert ("workspace/mine/report.md" in result) is exists
+        assert ("No files matched" in result) is not exists
+        assert not _native_directory_read_matches("glob_search", {"root": root, "pattern": "*.csv"}, observation)
+        assert not _native_directory_read_matches("glob_search", {"root": root, "pattern": pattern},
+            {**observation, "extra": "forged"})
+
+
+@pytest.mark.parametrize("root,pattern", [
+    ("", "**/*.md"), ("skills", "*.md"), ("workspace", "../skills/*.md"),
+    ("workspace/../skills", "*.md"), ("/workspace", "*.md"), ("", "/workspace/*.md"),
+    ("", "workspace\\*.md"),
+])
+def test_workspace_glob_does_not_attest_queries_outside_owned_workspace(root, pattern):
+    from app.services.workspace_resource_authority import workspace_glob_read_observation
+
+    assert workspace_glob_read_observation(root, pattern) is None
+
+
+def test_workspace_glob_does_not_attest_resolved_alias_outside_workspace(tmp_path):
+    from app.services.agent_tool_domains.workspace import _glob_search
+    from app.tools.result_envelope import ToolContentEnvelope
+
+    skills = tmp_path / "skills"
+    skills.mkdir()
+    (tmp_path / "workspace").mkdir()
+    (tmp_path / "workspace/alias").symlink_to(skills, target_is_directory=True)
+    (skills / "entry.md").write_text("PRIVATE_BODY_SENTINEL")
+    result = _glob_search(tmp_path, "*.md", root="workspace/alias", authority_scope=_scope())
+    assert not isinstance(result, ToolContentEnvelope)
+    assert "auth_or_permission" in result
+    assert "PRIVATE_BODY_SENTINEL" not in result
+
+
 def test_edit_file_preserves_match_errors_and_truncates_utf8_revisions(tmp_path):
     from app.services.agent_tool_domains.workspace import _edit_file
 

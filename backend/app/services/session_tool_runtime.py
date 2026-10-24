@@ -939,7 +939,7 @@ async def complete_tool_invocation(
                 content_hash=content_hash, capture=execution_evidence["native_empty_read_evidence"])
         except ContentInputReceiptError as exc:
             knowledge_metadata["native_empty_read_receipt"] = {"status": "unavailable", "reason_code": exc.code}
-    if invocation.tool_name in {"list_files", "fs_list"} and (execution_evidence or {}).get("native_directory_read_evidence"):
+    if invocation.tool_name in {"list_files", "fs_list", "glob_search"} and (execution_evidence or {}).get("native_directory_read_evidence"):
         from app.services.content_input_receipts import ContentInputReceiptError, load_native_directory_read_evidence
 
         try:

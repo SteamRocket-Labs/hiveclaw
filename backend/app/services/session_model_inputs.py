@@ -781,10 +781,10 @@ async def _resolve_origin_dependencies(db, *, tenant_id, agent_id, ref):
     metadata = payload.get("metadata")
     if not isinstance(metadata, dict):
         return _unique_dependencies(dependencies), False
-    if invocation.tool_name in {"read_ledger", "list_files", "fs_list"}:
+    if invocation.tool_name in {"read_ledger", "list_files", "fs_list", "glob_search"}:
         from app.services.content_input_receipts import load_native_directory_read_evidence, load_native_empty_read_evidence
 
-        directory = invocation.tool_name in {"list_files", "fs_list"} and "native_directory_read_receipt" in metadata
+        directory = invocation.tool_name in {"list_files", "fs_list", "glob_search"} and "native_directory_read_receipt" in metadata
         pointer = metadata.get("native_directory_read_receipt" if directory else "native_empty_read_receipt")
         if not isinstance(pointer, dict) or pointer.get("status") != "verified":
             return _unique_dependencies(dependencies), False

@@ -12,7 +12,7 @@ import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from tempfile import TemporaryDirectory
 from typing import Any
 
@@ -46,6 +46,21 @@ class WorkspaceAuthorityError(RuntimeError):
 
 def _is_workspace_path(path: str) -> bool:
     return path == "workspace" or path.startswith("workspace/")
+
+
+def workspace_glob_read_observation(root: str, pattern: str) -> dict[str, str] | None:
+    """Describe a workspace-confined glob query, without attesting file bodies."""
+    if not isinstance(root, str) or not isinstance(pattern, str) or not pattern:
+        return None
+    for value in (root, pattern):
+        path = PurePosixPath(value)
+        if path.is_absolute() or ".." in path.parts or "\\" in value:
+            return None
+    normalized_root = normalize_workspace_resource_path(root)
+    query = PurePosixPath(normalized_root, pattern)
+    if not query.parts or query.parts[0] != "workspace":
+        return None
+    return {"kind": "authorized_workspace_glob_listing", "root": normalized_root, "pattern": pattern}
 
 
 def _is_session_source_path(path: str) -> bool:

@@ -26,6 +26,7 @@ from app.services.workspace_resource_authority import (
     resolve_workspace_storage_path,
     open_workspace_file,
     write_workspace_file,
+    workspace_glob_read_observation,
 )
 from app.skills import SkillRegistry, WorkspaceSkillLoader
 from app.runtime.ccplus_contracts import permission_profile_snapshot
@@ -1461,10 +1462,18 @@ def _glob_search(
         return _workspace_error(tool_name, "operation_failed", f"Glob search failed: {e}", retryable=True)
 
     if not matches:
-        return f"🔎 No files matched pattern '{pattern}'"
-    lines = [f"🔎 Glob results for '{pattern}' ({len(matches)} match(es)):"]
-    lines.extend(f"- {match}" for match in matches)
-    return "\n".join(lines)
+        result = f"🔎 No files matched pattern '{pattern}'"
+    else:
+        lines = [f"🔎 Glob results for '{pattern}' ({len(matches)} match(es)):"]
+        lines.extend(f"- {match}" for match in matches)
+        result = "\n".join(lines)
+    observation = workspace_glob_read_observation(root, pattern)
+    resolved_root = search_root.relative_to(ws.resolve()).as_posix()
+    if (authority_scope is not None and observation is not None
+        and (resolved_root == "." or resolved_root == "workspace" or resolved_root.startswith("workspace/"))
+        and all(match == "workspace" or match.startswith("workspace/") for match in matches)):
+        return ToolContentEnvelope(result, metadata={"native_directory_read": observation})
+    return result
 
 
 def _grep_search(

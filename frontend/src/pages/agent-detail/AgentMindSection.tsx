@@ -83,7 +83,7 @@ export default function AgentMindSection({ agentId, canEdit }: AgentMindSectionP
         <p style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '12px' }}>
           {t('agent.mind.memoryDesc', 'Long-term knowledge curated from conversations. Feedback, strategies, blocked patterns, and project knowledge.')}
         </p>
-        <FileBrowser api={adapter} rootPath="memory" readOnly features={{}} />
+        <FileBrowser api={adapter} rootPath="memory" readOnly features={{ directoryNavigation: true }} />
       </div>
 
       <div>
@@ -91,7 +91,7 @@ export default function AgentMindSection({ agentId, canEdit }: AgentMindSectionP
         <p style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '12px' }}>
           {t('agent.mind.evolutionDesc', 'Curation history, performance scorecard, and blocked approaches.')}
         </p>
-        <FileBrowser api={adapter} rootPath="evolution" readOnly features={{}} />
+        <FileBrowser api={adapter} rootPath="evolution" readOnly features={{ directoryNavigation: true }} />
       </div>
     </div>
   );

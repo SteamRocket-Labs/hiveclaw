@@ -17,7 +17,7 @@ import re
 from typing import Any
 import uuid
 
-from sqlalchemy import and_, or_, select
+from sqlalchemy import and_, exists, literal_column, or_, select, tuple_
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -39,6 +39,7 @@ _SOURCE_REF_RE = re.compile(r"^(?P<scheme>[a-z][a-z0-9-]{0,63})://(?P<identifier
 _MAX_BINDING_BYTES = 64 * 1024
 _MAX_BINDING_DEPTH = 5
 _MAX_CONTAINER_ITEMS = 256
+_CLAIM_SCAN_PAGE_SIZE = 100
 
 _IDENTIFIER_KEYS = frozenset(
     {
@@ -591,47 +592,48 @@ class RuntimeTerminalBoundaryOutboxService:
             raise ValueError("worker_id must contain 1-200 characters")
         requested_limit = max(1, int(limit))
         current = now or datetime.now(UTC)
-        # Sort and lock only queue identities. Hydrate the single claimed body
-        # afterward so large bindings or RuntimeTask payloads cannot spill the
-        # claim sort, and unrelated task-row locks cannot skip ready boundaries.
-        statement = select(RuntimeTerminalBoundaryOutbox.id)
-        if task_types:
-            # Keep sibling-lane history out of the task lookup and queue sort.
-            eligible_tasks = select(RuntimeTask.id).where(
-                RuntimeTask.tenant_id == tenant_uuid,
-                RuntimeTask.task_type.in_(tuple(task_types)),
-            ).cte("terminal_claim_task_ids").prefix_with("MATERIALIZED")
-            statement = statement.join(eligible_tasks,
-                eligible_tasks.c.id == RuntimeTerminalBoundaryOutbox.runtime_task_id)
-        statement = (
-            statement.where(
-                RuntimeTerminalBoundaryOutbox.tenant_id == tenant_uuid,
-                or_(
-                    and_(
-                        RuntimeTerminalBoundaryOutbox.status == "pending",
-                        RuntimeTerminalBoundaryOutbox.available_at <= current,
-                    ),
-                    and_(
-                        RuntimeTerminalBoundaryOutbox.status == "processing",
-                        or_(
-                            RuntimeTerminalBoundaryOutbox.lease_expires_at.is_(None),
-                            RuntimeTerminalBoundaryOutbox.lease_expires_at <= current,
-                        ),
-                    ),
-                ),
-            )
-            .order_by(
-                RuntimeTerminalBoundaryOutbox.available_at,
-                RuntimeTerminalBoundaryOutbox.created_at,
-            )
-            .limit(min(requested_limit, 1))
-            .with_for_update(of=RuntimeTerminalBoundaryOutbox, skip_locked=True)
+        queue = RuntimeTerminalBoundaryOutbox
+        order = (queue.available_at, queue.created_at, queue.id)
+        ready = (
+            queue.tenant_id == tenant_uuid,
+            # Keep the exact active-state predicate visible to prepared plans
+            # so the ordered partial index also excludes delivered history.
+            queue.status.in_((literal_column("'pending'"), literal_column("'processing'"))),
+            or_(
+                and_(queue.status == "pending", queue.available_at <= current),
+                and_(queue.status == "processing",
+                    or_(queue.lease_expires_at.is_(None), queue.lease_expires_at <= current)),
+            ),
         )
         async with self._tenant_session(tenant_uuid, operation="claim") as db:
-            identities = list((await db.execute(statement)).scalars())
-            rows = list(await db.scalars(select(RuntimeTerminalBoundaryOutbox).where(
-                RuntimeTerminalBoundaryOutbox.tenant_id == tenant_uuid,
-                RuntimeTerminalBoundaryOutbox.id.in_(identities)))) if identities else []
+            cursor = None
+            while True:
+                # Read a bounded ordered page without locks. A page with only
+                # sibling lanes or locked rows must not hide later ready work.
+                page_query = select(queue.id, queue.available_at, queue.created_at).where(*ready)
+                if cursor is not None:
+                    page_query = page_query.where(tuple_(*order) > cursor)
+                page = list((await db.execute(page_query.order_by(*order).limit(_CLAIM_SCAN_PAGE_SIZE))).all())
+                if not page:
+                    return []
+                statement = select(queue.id).where(*ready, queue.id.in_([row.id for row in page]))
+                if task_types:
+                    statement = statement.where(exists(select(RuntimeTask.id).where(
+                        RuntimeTask.id == queue.runtime_task_id,
+                        RuntimeTask.tenant_id == tenant_uuid,
+                        RuntimeTask.task_type.in_(tuple(task_types)),
+                    ).offset(0)))
+                # The correlated lookup stays inside this page; OFFSET 0
+                # prevents a semijoin from materializing all historical tasks.
+                identities = list((await db.execute(statement.order_by(*order)
+                    .limit(min(requested_limit, 1))
+                    .with_for_update(of=queue, skip_locked=True))).scalars())
+                if identities:
+                    break
+                last = page[-1]
+                cursor = (last.available_at, last.created_at, last.id)
+            rows = list(await db.scalars(select(queue).where(
+                queue.tenant_id == tenant_uuid, queue.id.in_(identities))))
             claimed: list[ClaimedTerminalBoundary] = []
             for row in rows:
                 row.status = "processing"

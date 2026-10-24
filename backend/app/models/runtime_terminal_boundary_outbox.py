@@ -70,6 +70,14 @@ class RuntimeTerminalBoundaryOutbox(Base):
             "lease_expires_at",
         ),
         Index(
+            "ix_runtime_terminal_boundary_ready_order",
+            "tenant_id",
+            "available_at",
+            "created_at",
+            "id",
+            postgresql_where=text("status IN ('pending','processing')"),
+        ),
+        Index(
             "ix_runtime_terminal_boundary_task",
             "tenant_id",
             "runtime_task_id",

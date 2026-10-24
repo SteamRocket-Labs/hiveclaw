@@ -28,7 +28,7 @@ async def test_terminal_claim_keeps_large_task_bodies_out_of_the_locked_queue_so
     from app.models.runtime_task import RuntimeTask
 
     seeded = await _seed_terminal_task(owner_sessionmaker, tenant_name='Large terminal claim', task_type=task_type)
-    identities = [seeded.task_id, *(uuid.uuid4() for _ in range(23))]
+    identities = [seeded.task_id, *(uuid.uuid4() for _ in range(131))]
     sibling_identities = [uuid.uuid4() for _ in range(128)]
     padding = secrets.token_hex(128 * 1024)
     async with owner_sessionmaker() as db:
@@ -41,6 +41,11 @@ async def test_terminal_claim_keeps_large_task_bodies_out_of_the_locked_queue_so
                 root_user_id=seeded.user_id, root_session_id=str(seeded.session_id),
                 prompt='Synthetic queue input', result_summary='Synthetic queue result',
                 metadata_json={'synthetic_padding': padding}))
+        for _ in range(8192):
+            db.add(RuntimeTask(id=uuid.uuid4(), tenant_id=seeded.tenant_id, task_type=task_type,
+                status='completed', parent_agent_id=seeded.agent_id,
+                parent_session_id=str(seeded.session_id), root_user_id=seeded.user_id,
+                root_session_id=str(seeded.session_id), prompt='Synthetic unqueued historical task'))
         await db.commit()
     for identity in [*sibling_identities, *identities]:
         binding = _binding()
@@ -73,6 +78,12 @@ async def test_terminal_claim_keeps_large_task_bodies_out_of_the_locked_queue_so
             task_types=(task_type,), limit=100)
         assert len(next_claim) == 1 and next_claim[0].id != claimed[0].id
         assert next_claim[0].runtime_task_id == identities[1]
+        await blocker.execute(select(RuntimeTerminalBoundaryOutbox.id).where(
+            RuntimeTerminalBoundaryOutbox.tenant_id == seeded.tenant_id,
+            RuntimeTerminalBoundaryOutbox.runtime_task_id.in_(identities[2:102])).with_for_update())
+        after_locked_page = await service.claim_batch(tenant_id=seeded.tenant_id,
+            worker_id='after-locked-terminal-page', task_types=(task_type,), limit=100)
+        assert len(after_locked_page) == 1 and after_locked_page[0].runtime_task_id == identities[102]
     async with owner_sessionmaker() as db:
         pending_siblings = await db.scalar(select(func.count()).select_from(RuntimeTerminalBoundaryOutbox).where(
             RuntimeTerminalBoundaryOutbox.tenant_id == seeded.tenant_id,
@@ -81,7 +92,7 @@ async def test_terminal_claim_keeps_large_task_bodies_out_of_the_locked_queue_so
         assert pending_siblings == len(sibling_identities)
     (tmp_path / 'bounded-terminal-queue.json').write_text(json.dumps({
         'task_type': task_type, 'queued': len(identities), 'sibling_lane_backlog': len(sibling_identities),
-        'task_padding_bytes': len(padding),
+        'task_padding_bytes': len(padding), 'unqueued_historical_tasks': 8192,
         'temp_file_limit_kb': 128, 'work_mem_kb': 64, 'claimed': len(claimed), 'next_claim': len(next_claim),
         'role': 'rls_app_user', 'superuser': False, 'bypassrls': False}, indent=2))
 

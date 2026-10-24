@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from copy import deepcopy
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -477,6 +478,7 @@ def upsert_agent_work_ledger_todo(
     session_id: uuid.UUID | str | None = None,
     source: str = "agent_authored",
     data_root: str | Path | None = None,
+    capture_source: bool = False,
 ) -> dict[str, Any]:
     """Add a new todo or update an existing one in place — a pure cognitive write.
 
@@ -509,6 +511,7 @@ def upsert_agent_work_ledger_todo(
         session_id=session_id,
         data_root=data_root,
     )
+    before = deepcopy(ledger) if capture_source else None
     todos: list[dict[str, Any]] = list(ledger.get("todo_items") or [])
 
     target_id = _clean_text(item_id)
@@ -568,7 +571,9 @@ def upsert_agent_work_ledger_todo(
 
     ledger["todo_items"] = todos
     _write_ledger(agent_id=agent_id, payload=ledger, path=path, data_root=data_root)
-    return {"action": action, "item": _display_item(normalized)}
+    return {"action": action, "item": _display_item(normalized), **({"source_snapshot": {
+        "before": before, "after": ledger, "operation": "todo_add" if action == "added" else "todo_update",
+    }} if capture_source else {})}
 
 
 def assign_todo_owner(
@@ -668,6 +673,7 @@ def append_agent_work_ledger_finding(
     session_id: uuid.UUID | str | None = None,
     source: str = "agent_authored",
     data_root: str | Path | None = None,
+    capture_source: bool = False,
 ) -> dict[str, Any]:
     """Append a finding / open_question / failure / replan — a pure cognitive write.
 
@@ -700,6 +706,7 @@ def append_agent_work_ledger_finding(
         data_root=data_root,
     )
 
+    before = deepcopy(ledger) if capture_source else None
     if kind == "finding":
         findings = list(ledger.get("findings") or [])
         entry = _normalize_finding(
@@ -747,7 +754,9 @@ def append_agent_work_ledger_finding(
         recorded = _display_replan(entry)
 
     _write_ledger(agent_id=agent_id, payload=ledger, path=path, data_root=data_root)
-    return {"type": kind, "recorded": recorded}
+    return {"type": kind, "recorded": recorded, **({"source_snapshot": {
+        "before": before, "after": ledger, "operation": "finding_append",
+    }} if capture_source else {})}
 
 
 def build_agent_work_ledger_resume_summary(ledger: dict[str, Any] | None) -> dict[str, Any]:
@@ -1393,7 +1402,8 @@ def read_agent_work_ledger_view(
     runtime_task_id: uuid.UUID | str | None = None,
     session_id: uuid.UUID | str | None = None,
     data_root: str | Path | None = None,
-) -> dict[str, Any] | None:
+    capture_source: bool = False,
+) -> dict[str, Any] | None | tuple[dict[str, Any] | None, dict[str, Any]]:
     path = _ledger_path(
         agent_id=agent_id,
         plan_id=plan_id,
@@ -1409,17 +1419,15 @@ def read_agent_work_ledger_view(
         data_root=data_root,
     )
     if ledger is None:
+        view = None
         if runtime_task_id is not None and plan_id is None:
-            return _build_legacy_long_task_ledger_view(
-                agent_id=agent_id,
-                runtime_task_id=runtime_task_id,
-                data_root=data_root,
-            )
-        return None
-    return build_agent_work_ledger_display_view(
-        ledger,
-        path=_relative_to_agent(agent_id, path, data_root=data_root),
-    )
+            view = _build_legacy_long_task_ledger_view(
+                agent_id=agent_id, runtime_task_id=runtime_task_id, data_root=data_root)
+    else:
+        view = build_agent_work_ledger_display_view(
+            ledger, path=_relative_to_agent(agent_id, path, data_root=data_root))
+    return (view, {"before": ledger, "after": ledger, "operation": "ledger_read",
+        "missing": not path.exists() and not path.is_symlink()}) if capture_source else view
 
 
 async def read_latest_session_work_ledger_view(

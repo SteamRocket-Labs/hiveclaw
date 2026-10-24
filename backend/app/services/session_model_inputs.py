@@ -567,6 +567,14 @@ async def _resolve_origin_dependencies(db, *, tenant_id, agent_id, ref):
     # The call's own audience remains a source, including empty searches and private query arguments.
     dependencies = [*dependencies, {"source_kind": "session_tool_invocation", "source_id": str(invocation.id),
         "source_version": tool_result_source_hash(payload)}]
+    from app.services.work_ledger_tool_sources import LEDGER_RESULT_TOOLS, ledger_result_sources
+
+    if invocation.tool_name in LEDGER_RESULT_TOOLS:
+        sources, complete = await ledger_result_sources(db, tenant_id=tenant_id, agent_id=agent_id,
+            invocation=invocation, model=model, content_hash=payload["content_hash"])
+        # Older empty-ledger reads retain their existing typed absence receipt.
+        if complete or invocation.tool_name != "read_ledger":
+            return _unique_dependencies([*dependencies, *sources]), inherited_complete and complete
     if invocation.permission_state == 'expired':
         valid = await _expired_permission_result_bound(db, invocation=invocation, event=event, content=content)
         return _unique_dependencies(dependencies), inherited_complete and valid

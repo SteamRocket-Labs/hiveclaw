@@ -43,6 +43,14 @@ def _json(payload: dict[str, Any]) -> str:
     return json.dumps(payload, ensure_ascii=False, default=str)
 
 
+async def _observed_result(request, payload, *, snapshot=None, scope=None):
+    from app.services.work_ledger_tool_sources import record_ledger_result
+
+    content = _json(payload)
+    await record_ledger_result(request, content=content, snapshot=snapshot, scope=scope)
+    return content
+
+
 def _scope(request: ToolExecutionRequest) -> tuple[str | None, str | None, str | None]:
     """Optional plan/runtime-task scope; otherwise use the current chat session."""
 
@@ -116,7 +124,7 @@ async def report_progress(request: ToolExecutionRequest) -> str:
                 "error": "`message` must contain the model-authored public progress update.",
             }
         )
-    return _json({"ok": True, "acknowledged": True})
+    return await _observed_result(request, {"ok": True, "acknowledged": True})
 
 
 @tool(
@@ -247,11 +255,13 @@ async def track_todo(request: ToolExecutionRequest) -> str:
             plan_id=plan_id,
             runtime_task_id=runtime_task_id,
             session_id=session_id,
+            capture_source=True,
         )
     except KeyError:
         return _json({"ok": False, "error": f"Todo '{item_id}' not found in the current ledger."})
 
-    return _json({"ok": True, "action": result["action"], "item": result["item"]})
+    return await _observed_result(request, {"ok": True, "action": result["action"], "item": result["item"]},
+        snapshot=result.get("source_snapshot"), scope=(plan_id, runtime_task_id, session_id))
 
 
 @tool(
@@ -330,11 +340,13 @@ async def record_finding(request: ToolExecutionRequest) -> str:
             plan_id=plan_id,
             runtime_task_id=runtime_task_id,
             session_id=session_id,
+            capture_source=True,
         )
     except ValueError as exc:
         return _json({"ok": False, "error": f"Could not record finding: {exc}"})
 
-    return _json({"ok": True, "type": result["type"], "recorded": result["recorded"]})
+    return await _observed_result(request, {"ok": True, "type": result["type"], "recorded": result["recorded"]},
+        snapshot=result.get("source_snapshot"), scope=(plan_id, runtime_task_id, session_id))
 
 
 @tool(
@@ -364,13 +376,15 @@ async def record_finding(request: ToolExecutionRequest) -> str:
 )
 async def read_ledger(request: ToolExecutionRequest) -> str | ToolContentEnvelope:
     plan_id, runtime_task_id, session_id = _scope(request)
-    view = read_agent_work_ledger_view(
+    view, snapshot = read_agent_work_ledger_view(
         agent_id=request.context.agent_id,
         plan_id=plan_id,
         runtime_task_id=runtime_task_id,
         session_id=session_id,
+        capture_source=True,
     )
-    result = _json({"ok": True, "ledger": view})
+    result = await _observed_result(request, {"ok": True, "ledger": view}, snapshot=snapshot,
+        scope=(plan_id, runtime_task_id, session_id))
     if view is None and plan_id is None and runtime_task_id is None and session_id:
         from app.services.agent_work_ledger import _ledger_path
 

@@ -109,7 +109,7 @@ async def _start_feishu_creation_work(seed, app_user_sessionmaker, monkeypatch):
         return command.id
 
 
-@pytest.mark.parametrize("input_case", ["complete", "unbound", "revoked", "first_task", "first_task_unbound", "first_task_revoked", "first_task_refined", "first_task_delivery", "first_task_parent_model", "first_task_refined_native", "first_task_native_creation", "first_task_fresh_employee", "first_task_slow_provider", "first_task_saved_reopen", "first_task_question", "first_task_question_after_write", "first_task_feishu_question", "first_task_feishu_quoted_question", "first_task_feishu_question_source_changed", "first_task_feishu_question_body_changed", "first_task_feishu_question_already_answered", "first_task_feishu_question_projection_missing", "first_task_feishu_question_recipient_changed", "first_task_feishu_question_legacy_status", "first_task_feishu_permission_allow", "first_task_feishu_permission_deny", "first_task_feishu_permission_cancel", "first_task_feishu_permission_unknown", "first_task_feishu_permission_expired", "first_task_feishu_permission_source_changed", "delegation_permission_allow", "first_task_recall", "first_task_context", "first_task_discovery", "first_task_unverified_memory", "first_task_explicit_unverified_memory", "first_task_feishu_permission_channel_allow", "first_task_feishu_permission_channel_deny", "first_task_feishu_permission_channel_unknown", "first_task_feishu_permission_channel_legacy", "first_task_feishu_permission_channel_scope", "first_task_feishu_permission_channel_feedback_retry", "first_task_feishu_progress"])
+@pytest.mark.parametrize("input_case", ["complete", "unbound", "revoked", "first_task", "first_task_unbound", "first_task_revoked", "first_task_refined", "first_task_delivery", "first_task_parent_model", "first_task_refined_native", "first_task_native_creation", "first_task_fresh_employee", "first_task_slow_provider", "first_task_saved_reopen", "first_task_question", "first_task_question_after_write", "first_task_feishu_question", "first_task_feishu_quoted_question", "first_task_feishu_question_source_changed", "first_task_feishu_question_body_changed", "first_task_feishu_question_already_answered", "first_task_feishu_question_projection_missing", "first_task_feishu_question_recipient_changed", "first_task_feishu_question_legacy_status", "first_task_feishu_permission_allow", "first_task_feishu_permission_deny", "first_task_feishu_permission_cancel", "first_task_feishu_permission_unknown", "first_task_feishu_permission_expired", "first_task_feishu_permission_source_changed", "delegation_permission_allow", "first_task_recall", "first_task_ledger", "first_task_ledger_unknown", "first_task_context", "first_task_discovery", "first_task_unverified_memory", "first_task_explicit_unverified_memory", "first_task_feishu_permission_channel_allow", "first_task_feishu_permission_channel_deny", "first_task_feishu_permission_channel_unknown", "first_task_feishu_permission_channel_legacy", "first_task_feishu_permission_channel_scope", "first_task_feishu_permission_channel_feedback_retry", "first_task_feishu_progress"])
 async def test_governed_delegation_preserves_its_parent_instruction_origin(
     owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, input_case, migrated_pg_url,
 ):
@@ -141,7 +141,9 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
     memory_case = input_case in {"first_task_unverified_memory", "first_task_explicit_unverified_memory"}
     context_case = input_case == "first_task_context"
     recall_case = input_case == "first_task_recall"
-    discovery_case = input_case in {"first_task_discovery", "first_task_context", "first_task_recall"}
+    ledger_unknown_case = input_case == "first_task_ledger_unknown"
+    ledger_case = input_case in {"first_task_ledger", "first_task_ledger_unknown"}
+    discovery_case = input_case in {"first_task_discovery", "first_task_context", "first_task_recall", "first_task_ledger", "first_task_ledger_unknown"}
     native_creation = feishu_creation or input_case == "delegation_permission_allow" or input_case in {"first_task_native_creation", "first_task_fresh_employee", "first_task_saved_reopen", "first_task_question", "first_task_question_after_write"}
     parent_model_case = feishu_creation or input_case in {"first_task_parent_model", "first_task_refined_native", "first_task_native_creation", "first_task_fresh_employee", "first_task_saved_reopen", "first_task_question", "first_task_question_after_write"}
     delivery_case = input_case == "first_task_delivery" or parent_model_case
@@ -151,7 +153,7 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
     delivery_case = delivery_case or memory_case or discovery_case
     native_refined = native_refined or memory_case or discovery_case
     refined_input = input_case == "first_task_refined"
-    unbound_input = input_case in {"unbound", "first_task_unbound", "first_task_explicit_unverified_memory"}
+    unbound_input = input_case in {"unbound", "first_task_unbound", "first_task_explicit_unverified_memory"} or ledger_unknown_case
     revoked_input = input_case in {"revoked", "first_task_revoked"}
     parent_complete = not unbound_input
     seed = await _seed_run(owner_sessionmaker, tmp_path, prompt=(
@@ -179,6 +181,9 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
                 owner_user_id=seed["user_id"], primary_model_id=model.id))
         db.add(CapabilityPolicy(tenant_id=seed["tenant_id"], capability="agent.message.send", allowed=True,
             requires_approval=False))
+        if ledger_case:
+            db.add(CapabilityPolicy(tenant_id=seed["tenant_id"], capability="agent.task.track", allowed=True,
+                requires_approval=False))
         if not permission_case:
             db.add(CapabilityPolicy(tenant_id=seed["tenant_id"], capability="workspace.file.write", allowed=True,
                 requires_approval=False))
@@ -373,6 +378,11 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
     async def no_wakeup(**_kwargs):
         return None
     monkeypatch.setattr("app.services.runtime_task_worker.notify_runtime_task_worker", no_wakeup)
+    if ledger_unknown_case:
+        from app.services.agent_work_ledger import append_agent_work_ledger_finding
+
+        append_agent_work_ledger_finding(agent_id=seed["agent_id"], session_id=str(seed["session_id"]),
+            finding_type="finding", summary="LEGACY_PRIVATE_LEDGER_WITHOUT_NATIVE_RECEIPT")
     if native_creation:
         from app.models.chat_transcript_event import ChatTranscriptEvent
         from app.models.session_v2 import SessionToolInvocation
@@ -385,13 +395,21 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
             {"content": "The research employee and explicit first task are queued.", "finish_reason": "stop"}])
         if discovery_case:
             creator_client.script.insert(0, {"tool_calls": [
-                {"id": f"creator-discovery-{name}-{args.get('ref', '')}", "type": "function", "function": {
+                {"id": f"creator-discovery-{index}-{name}-{args.get('ref', '')}", "type": "function", "function": {
                     "name": name, "arguments": json.dumps(args)}}
-                for name, args in ([("search_memory", {"query": "Create a research employee", "scope": "sessions"})]
+                for index, (name, args) in enumerate(([
+                    ("track_todo", {"action": "add", "title": "Create the research employee"}),
+                    ("track_todo", {"action": "add", "title": "Start the explicit first task once"}),
+                    ("track_todo", {"action": "add", "title": "Consume the returned report"}),
+                    ("track_todo", {"action": "update", "title": "Create the research employee", "status": "in_progress"}),
+                    ("record_finding", {"type": "finding", "summary": "The request provides synthetic report facts."}),
+                    ("read_ledger", {}),
+                    ("report_progress", {"message": "Preparing the authorized research employee."})]
+                    if ledger_case else [("search_memory", {"query": "Create a research employee", "scope": "sessions"})]
                     if recall_case else [("read_context_resource", {"ref": "a2a-collaborators"}),
                     ("read_context_resource", {"ref": "organization"})] if context_case else [
                     ("read_ledger", {}), ("list_files", {"path": "workspace"}),
-                    ("tool_search", {"query": "list_employees"})])
+                    ("tool_search", {"query": "list_employees"})]))
             ], "finish_reason": "tool_calls"})
         if input_case == "first_task_explicit_unverified_memory":
             creator_client.script.insert(0, {"tool_calls": [{"id": "read-old-memory", "type": "function",
@@ -420,6 +438,8 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
             assert "OLD_UNVERIFIED_CREATION_MEMORY" not in visible
         if discovery_case:
             assert len(creator_client.requests) == 3
+        if ledger_unknown_case:
+            assert "LEGACY_PRIVATE_LEDGER_WITHOUT_NATIVE_RECEIPT" in json.dumps(creator_client.requests[1]["messages"])
         if input_case != "first_task_explicit_unverified_memory" and not discovery_case:
             assert len(creator_client.requests) == 2 and "NATIVE_PARENT_CONTEXT" in json.dumps(creator_client.requests[0]["messages"])
         async with app_user_sessionmaker() as db:
@@ -432,7 +452,7 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
                 from app.services.employee_creation_sources import creation_tool_result_bound
 
                 assert (await db.get(RuntimeTask, seed["run_id"])).status == "completed"
-                if input_case == "first_task_explicit_unverified_memory":
+                if input_case == "first_task_explicit_unverified_memory" or ledger_unknown_case:
                     assert not await creation_tool_result_bound(db, tenant_id=seed["tenant_id"], agent_id=seed["agent_id"],
                         invocation=invocation, content=result)
                 else:
@@ -441,7 +461,7 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
                 assert not await creation_tool_result_bound(db, tenant_id=seed["tenant_id"], agent_id=seed["agent_id"],
                     invocation=invocation, content=json.dumps({**json.loads(result), "provisioning_task_id": str(uuid4())}))
             creating_rounds = list(await db.scalars(select(SessionModelResult).where(SessionModelResult.run_id == seed["run_id"])))
-            if input_case == "first_task_explicit_unverified_memory":
+            if input_case == "first_task_explicit_unverified_memory" or ledger_unknown_case:
                 ordered = sorted(creating_rounds, key=lambda row: session_model_round._root_round_index_from_id(row.round_id))
                 assert len(ordered) == 3
                 assert ordered[0].model_request_snapshot_json["input_bindings"]["dependency_coverage"]["complete"]

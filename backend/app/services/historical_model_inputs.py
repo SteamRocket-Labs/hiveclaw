@@ -106,14 +106,48 @@ async def recover_context_dependencies(db, *, tenant_id, agent_id, origin, depen
     return dependencies, False
 
 
+async def _reconciled_commit_ref(db, *, tenant_id, agent_id, result):
+    """Recognize only the canonical old committed-then-ambiguous-prepare shape."""
+    from app.models.chat_transcript_event import ChatTranscriptEvent
+    from app.services.session_semantic_history import _event_payload
+
+    if (result.state != "needs_reconciliation"
+        or result.reconciliation_owner != "session_model_round:ambiguous_prepare"
+        or not isinstance(result.seal_json, dict) or not result.seal_json
+        or result.round_committed_event_id is None or result.tenant_id != tenant_id):
+        return None
+    event = await db.scalar(select(ChatTranscriptEvent).where(
+        ChatTranscriptEvent.id == result.round_committed_event_id, ChatTranscriptEvent.tenant_id == tenant_id,
+        ChatTranscriptEvent.agent_id == agent_id, ChatTranscriptEvent.session_id == result.session_id,
+        ChatTranscriptEvent.run_id == result.run_id, ChatTranscriptEvent.result_id == result.id,
+        ChatTranscriptEvent.item_id == result.id, ChatTranscriptEvent.schema_version == 2,
+        ChatTranscriptEvent.item_kind == "result_commit", ChatTranscriptEvent.lifecycle == "round_committed"))
+    if event is None or (event.scope_json or {}).get("round_id") != result.round_id:
+        return None
+    payload = _event_payload(event)
+    response_ref = result.seal_json.get("provider_response_ref")
+    if (payload.get("provider_request_id") != result.provider_request_id
+        or not isinstance(response_ref, str) or not response_ref or payload.get("provider_response_ref") != response_ref):
+        return None
+    return f"session-event:{event.id}"
+
+
 async def recover_model_dependencies(db, *, tenant_id, agent_id, result):
     from app.services.session_model_inputs import (
-        _hash, _model_dependencies, _stored_dependencies, _unique_dependencies, build_model_input_bindings, message_snapshot,
+        _hash, _model_dependencies, _model_snapshot_dependencies, _stored_dependencies, _unique_dependencies,
+        build_model_input_bindings, message_snapshot,
     )
     from app.services.prompt_cache import match_cache_hint_presentation
 
     original, complete = _model_dependencies(result)
-    if complete or result is None or result.state not in {"sealed", "round_committed"}:
+    commit_ref = await _reconciled_commit_ref(db, tenant_id=tenant_id, agent_id=agent_id,
+        result=result) if result is not None and result.state == "needs_reconciliation" else None
+    if commit_ref is not None:
+        original, complete = _model_snapshot_dependencies(result)
+        if complete and _RESOLUTION.get() is not None:
+            _RESOLUTION.get()["recovered"][str(result.id)] = {"model_result_id": str(result.id),
+                "model_request_hash": result.model_request_hash, "canonical_commit_ref": commit_ref}
+    if complete or result is None or (result.state not in {"sealed", "round_committed"} and commit_ref is None):
         return original, complete
     snapshot = result.model_request_snapshot_json
     if not isinstance(snapshot, dict) or _hash(snapshot) != result.model_request_hash:
@@ -186,6 +220,8 @@ async def recover_model_dependencies(db, *, tenant_id, agent_id, result):
             state["recovered"][str(result.id)] = {"model_result_id": str(result.id),
                 "model_request_hash": result.model_request_hash,
                 "messages": reconstructed["messages"], "dependencies": dependencies}
+            if commit_ref is not None:
+                state["recovered"][str(result.id)]["canonical_commit_ref"] = commit_ref
         return dependencies, complete
     finally:
         state["active"].remove(key)

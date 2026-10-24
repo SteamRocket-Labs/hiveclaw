@@ -141,3 +141,73 @@ async def test_historical_assistant_cache_presentation_rechecks_canonical_bytes(
         assert complete is (not changed_text)
         assert any(item["source_kind"] == "session_command" for item in deps)
         assert old.model_request_snapshot_json == snapshot and old.model_request_hash == digest == _hash(snapshot)
+
+
+@pytest.mark.parametrize("complete_inputs", [False, True])
+@pytest.mark.parametrize("alteration", [None, "missing_commit", "wrong_commit", "wrong_owner", "missing_seal"])
+async def test_canonical_committed_inputs_survive_legacy_prepare_reconciliation(
+    owner_sessionmaker, app_user_sessionmaker, complete_inputs, alteration,
+):
+    import uuid
+    from app.models.chat_transcript_event import ChatTranscriptEvent
+    from app.services.session_model_inputs import capture_context_message_origins
+
+    tenant, agent, session, run, bound = await _bound_input(owner_sessionmaker)
+    prefix = _context_message(role="system", kind="frozen_prompt", content="Original compiler prefix", unbound=())
+    selected = prefix if complete_inputs else apply_cache_hints(
+        [LLMMessage(role="system", content="Original compiler prefix")], "minimax",
+    )[0]
+    async with app_user_sessionmaker() as db:
+        await pin_rls_tenant_context(db, tenant)
+        request = await prepare_model_request(db, tenant_id=tenant, agent_id=agent, session_id=session,
+            run_id=run, turn_id=f"turn-{run.hex}", round_index=1,
+            messages=[selected, *_mid_run_items_to_user_messages(bound)], tools=[],
+            provider="minimax", model="synthetic-no-provider")
+        await _seal_round(db, tenant_id=tenant, agent_id=agent, session_id=session, run_id=run,
+            turn_id=f"turn-{run.hex}", round_index=1, provider_request_id=request, content="Committed answer")
+        old = await db.scalar(select(SessionModelResult).where(SessionModelResult.provider_request_id == request))
+        assert old.model_request_snapshot_json["input_bindings"]["dependency_coverage"]["complete"] is complete_inputs
+        await capture_context_message_origins(db, tenant_id=tenant, agent_id=agent, session_id=session,
+            run_id=run, result_id=uuid.uuid4(), messages=[prefix])
+        # Historical stale prepares changed the aggregate, not its immutable commit.
+        old.state = "needs_reconciliation"
+        old.reconciliation_owner = "session_model_round:ambiguous_prepare"
+        if alteration == "missing_commit":
+            old.round_committed_event_id = None
+        elif alteration == "wrong_commit":
+            old.round_committed_event_id = await db.scalar(select(ChatTranscriptEvent.id).where(
+                ChatTranscriptEvent.tenant_id == tenant, ChatTranscriptEvent.result_id == old.id,
+                ChatTranscriptEvent.item_kind == "result_commit", ChatTranscriptEvent.lifecycle == "prepared",
+            ))
+        elif alteration == "wrong_owner":
+            old.reconciliation_owner = "session_model_round:ambiguous_failure"
+        elif alteration == "missing_seal":
+            old.seal_json = None
+        frozen = (deepcopy(old.model_request_snapshot_json), old.model_request_hash,
+            old.state, deepcopy(old.seal_json), old.round_committed_event_id)
+        await db.commit()
+
+    async with app_user_sessionmaker() as db:
+        await pin_rls_tenant_context(db, tenant)
+        dependencies, complete = await _origin_dependencies(db, tenant_id=tenant, agent_id=agent,
+            ref=f"session-model-result:{old.id}")
+        assert complete is (alteration is None), (dependencies, complete, alteration)
+        if alteration is None:
+            assert any(item["source_kind"] == "session_command" for item in dependencies)
+            history = await load_session_semantic_history(db, tenant_id=tenant, agent_id=agent, session_id=session)
+            assistant = _dicts_to_llm_messages(conversation_from_history_messages(
+                [item for item in history.messages if item.role == "assistant"]))
+            current_request = await prepare_model_request(db, tenant_id=tenant, agent_id=agent, session_id=session,
+                run_id=run, turn_id=f"turn-{run.hex}", round_index=2,
+                messages=[prefix, *_mid_run_items_to_user_messages(bound), *assistant], tools=[],
+                provider="minimax", model="synthetic-no-provider")
+            current = await db.scalar(select(SessionModelResult).where(
+                SessionModelResult.provider_request_id == current_request))
+            bindings = current.model_request_snapshot_json["input_bindings"]
+            assert bindings["dependency_coverage"]["complete"] is True
+            recovery = next(item for item in bindings["historical_source_recovery"]["models"]
+                if item["model_result_id"] == str(old.id))
+            assert recovery["canonical_commit_ref"] == f"session-event:{frozen[4]}"
+        retained = await db.get(SessionModelResult, old.id, populate_existing=True)
+        assert (retained.model_request_snapshot_json, retained.model_request_hash, retained.state,
+            retained.seal_json, retained.round_committed_event_id) == frozen

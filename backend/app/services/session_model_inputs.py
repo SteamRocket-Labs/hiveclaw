@@ -332,6 +332,10 @@ def _stored_dependencies(value: Any) -> list[dict[str, str]] | None:
 def _model_dependencies(result) -> tuple[list[dict[str, str]], bool]:
     if result is None or result.state not in {"sealed", "round_committed"}:
         return [], False
+    return _model_snapshot_dependencies(result)
+
+
+def _model_snapshot_dependencies(result) -> tuple[list[dict[str, str]], bool]:
     snapshot = result.model_request_snapshot_json
     if not isinstance(snapshot, dict) or _hash(snapshot) != result.model_request_hash:
         return [], False

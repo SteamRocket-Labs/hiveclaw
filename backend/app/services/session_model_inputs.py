@@ -735,6 +735,19 @@ async def _resolve_origin_dependencies(db, *, tenant_id, agent_id, ref):
     metadata = payload.get("metadata")
     if not isinstance(metadata, dict):
         return _unique_dependencies(dependencies), False
+    if invocation.tool_name in {"read_ledger", "list_files"}:
+        from app.services.content_input_receipts import load_native_empty_read_evidence
+
+        pointer = metadata.get("native_empty_read_receipt")
+        if not isinstance(pointer, dict) or pointer.get("status") != "verified":
+            return _unique_dependencies(dependencies), False
+        try:
+            bound = await load_native_empty_read_evidence(db, agent_id=agent_id, invocation=invocation,
+                model_result=model, arguments=arguments, content_hash=payload["content_hash"],
+                capture={"status": "captured", "receipt_ref": pointer.get("evidence_ref")})
+            return _unique_dependencies(dependencies), inherited_complete and bound == pointer
+        except (ContentInputReceiptError, ValueError, TypeError):
+            return _unique_dependencies(dependencies), False
     if invocation.tool_name in {"read_file", "read_document", "fs_read"}:
         from app.services.content_input_receipts import load_skill_input_evidence
 

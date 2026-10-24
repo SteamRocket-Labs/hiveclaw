@@ -300,6 +300,50 @@ async def _owned_context_source(db, *, dependency, agent_id, tenant_id, session_
             return False
         return bool(row is not None and row.tenant_id == tenant_id and row.agent_id == agent_id
             and row.user_id == user_id and row.session_id == str(session_id))
+    if kind == 'session_tool_invocation':
+        from app.models.chat_transcript_event import ChatTranscriptEvent
+        from app.models.session_v2 import SessionModelResult, SessionToolInvocation
+        from app.services.content_input_receipts import (
+            ContentInputReceiptError, load_native_empty_read_evidence, load_skill_input_evidence,
+        )
+        from app.services.session_model_inputs import _model_dependencies, tool_result_source_hash
+        from app.services.session_semantic_history import _event_payload
+
+        try:
+            call = await db.get(SessionToolInvocation, uuid.UUID(source_id), populate_existing=True)
+        except ValueError:
+            return False
+        if (call is None or call.tenant_id != tenant_id or call.session_id != session_id
+            or call.effect_state != 'effect_committed' or call.tool_name not in {'read_ledger', 'list_files', 'tool_search'}):
+            return False
+        event = await db.scalar(select(ChatTranscriptEvent).where(
+            ChatTranscriptEvent.id == call.result_event_id, ChatTranscriptEvent.tenant_id == tenant_id,
+            ChatTranscriptEvent.agent_id == agent_id, ChatTranscriptEvent.session_id == session_id,
+            ChatTranscriptEvent.run_id == call.run_id, ChatTranscriptEvent.invocation_id == call.id,
+        ).execution_options(populate_existing=True))
+        payload = _event_payload(event) if event else {}
+        model = await db.scalar(select(SessionModelResult).where(
+            SessionModelResult.id == event.result_id, SessionModelResult.tenant_id == tenant_id,
+            SessionModelResult.session_id == session_id, SessionModelResult.run_id == call.run_id,
+            SessionModelResult.provider_request_id == call.provider_request_id)) if event else None
+        if (model is None or not _model_dependencies(model)[1]
+            or tool_result_source_hash(payload) != dependency['source_version']):
+            return False
+        metadata = payload.get('metadata') or {}
+        key = 'skill_input_receipt' if call.tool_name == 'tool_search' else 'native_empty_read_receipt'
+        pointer = metadata.get(key)
+        if not isinstance(pointer, dict) or pointer.get('status') != 'verified':
+            return False
+        loader = load_skill_input_evidence if call.tool_name == 'tool_search' else load_native_empty_read_evidence
+        try:
+            bound = await loader(db, agent_id=agent_id, invocation=call, model_result=model,
+                arguments=call.effective_arguments_json or call.provider_arguments_json,
+                content_hash=payload.get('content_hash'),
+                capture={'status': 'captured', 'receipt_ref': pointer.get('evidence_ref')})
+        except (ContentInputReceiptError, ValueError, TypeError):
+            return False
+        # Publish mechanical control observations, never private ledger/file/Skill bodies.
+        return bound == pointer and not bound.get('sources') and not bound.get('unbound')
     return False
 
 

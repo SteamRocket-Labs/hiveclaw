@@ -297,12 +297,17 @@ def _list_files(
             items.append(f"  📄 {p.name} ({size_str})")
 
     if not items:
-        return _append_workspace_provenance_hint(
+        result = _append_workspace_provenance_hint(
             f"📂 {rel_path or 'root'}: Empty directory (0 files, 0 folders)",
             ws,
             rel_path,
             directory=True,
         )
+        if authority_scope is not None and not enterprise_context and "\n" not in result:
+            return ToolContentEnvelope(text=result, metadata={"native_empty_read": {
+                "kind": "authorized_directory_empty", "path": rel_path,
+            }})
+        return result
 
     header = f"📂 {rel_path or 'root'}: {dir_count} folder(s), {file_count} file(s)\n"
     return _append_workspace_provenance_hint(header + "\n".join(items), ws, rel_path, directory=True)

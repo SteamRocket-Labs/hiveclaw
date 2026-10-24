@@ -1,6 +1,7 @@
 """Trusted content receipts for the two file-backed carriers in the M1 contract."""
 
 import hashlib
+import json
 import uuid
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -1160,7 +1161,7 @@ def record_workspace_receipt(db, tenant_id: uuid.UUID, agent_id: uuid.UUID, path
 
 
 async def persist_workspace_execution_evidence(*, context, tool_name, tool_call_id, arguments, result, states, lineage, errors,
-    input_read=None, descriptor_writes=None, skill_read=None):
+    input_read=None, descriptor_writes=None, skill_read=None, native_empty_read=None):
     """Persist mechanical executor facts; this is not an input-authority receipt."""
     from datetime import datetime, timezone
     from app.database import tenant_scoped_session
@@ -1244,6 +1245,17 @@ async def persist_workspace_execution_evidence(*, context, tool_name, tool_call_
                 proof["source_hash"] = _sha256(proof)
                 channel, metadata_key = "skill-input", "skill_input_evidence"
                 evidence_id = uuid.uuid5(invocation.id, f"skill-input:{proof['source_hash']}")
+            if native_empty_read is not None:
+                if input_read is not None or skill_read is not None or not _native_empty_read_matches(
+                    tool_name, arguments, native_empty_read, session_id=str(session_id), content=str(result),
+                ):
+                    raise ContentInputReceiptError("native_empty_read_unverified", "The empty read scope does not match.")
+                proof = {key: value for key, value in proof.items() if key not in {
+                    "states", "lineage", "errors", "descriptor_writes", "execution_inputs"}}
+                proof.update(schema="hive.native_empty_read_evidence.v1", observation=native_empty_read)
+                proof["source_hash"] = _sha256(proof)
+                channel, metadata_key = "native-empty-read", "native_empty_read_evidence"
+                evidence_id = uuid.uuid5(invocation.id, f"native-empty-read:{proof['source_hash']}")
             existing = await db.get(InvocationSpan, evidence_id)
             if existing is not None:
                 if existing.metadata_json.get(metadata_key) != proof:
@@ -1273,6 +1285,65 @@ async def persist_workspace_execution_evidence(*, context, tool_name, tool_call_
         logging.getLogger(__name__).warning("Workspace execution evidence unavailable (%s)", type(exc).__name__)
         # A failed evidence write cannot undo a file effect or authorize its replay.
         return {"status": "unavailable", "reason_code": "workspace_execution_evidence_unavailable"}
+
+
+def _native_empty_read_matches(tool_name, arguments, observation, *, session_id, content=None):
+    if not isinstance(arguments, dict) or not isinstance(observation, dict):
+        return False
+    if tool_name == "read_ledger":
+        if (set(observation) != {"kind", "session_id"} or observation.get("kind") != "session_ledger_absent"
+            or observation.get("session_id") != session_id or arguments.get("plan_id") or arguments.get("runtime_task_id")):
+            return False
+        if content is not None:
+            try:
+                return json.loads(content) == {"ok": True, "ledger": None}
+            except (ValueError, TypeError):
+                return False
+        return True
+    if tool_name == "list_files":
+        from app.services.workspace_resource_authority import normalize_workspace_resource_path
+
+        try:
+            path = normalize_workspace_resource_path(arguments.get("path") or "")
+        except (TypeError, ValueError):
+            return False
+        return (set(observation) == {"kind", "path"} and observation.get("kind") == "authorized_directory_empty"
+            and observation.get("path") == path and not path.startswith("enterprise_info"))
+    return False
+
+
+async def load_native_empty_read_evidence(db, *, agent_id, invocation, model_result, arguments, content_hash, capture):
+    from app.models.invocation_span import InvocationSpan
+    from app.services.session_tool_runtime import _sha256
+
+    if not isinstance(capture, dict) or capture.get("status") != "captured":
+        return {"status": "unavailable", "reason_code": "native_empty_read_capture_unavailable"}
+    try:
+        channel, raw_id = capture["receipt_ref"].split(":", 1)
+        evidence_id = uuid.UUID(raw_id)
+        if channel != "native-empty-read":
+            raise ValueError("invalid_native_empty_read_channel")
+    except (ValueError, KeyError, TypeError) as exc:
+        raise ContentInputReceiptError("native_empty_read_unverified", "The empty read capture is invalid.") from exc
+    row = await db.get(InvocationSpan, evidence_id, populate_existing=True)
+    proof = (row.metadata_json or {}).get("native_empty_read_evidence") if (
+        row is not None and isinstance(row.metadata_json, dict)) else None
+    if (not isinstance(proof, dict) or row.tenant_id != invocation.tenant_id or row.agent_id != agent_id
+        or row.session_id != str(invocation.session_id) or row.runtime_task_id != invocation.run_id
+        or row.span_type != "native_empty_read" or row.status != "captured" or row.name != invocation.tool_name
+        or proof.get("schema") != "hive.native_empty_read_evidence.v1" or model_result is None
+        or proof.get("invocation_id") != str(invocation.id) or proof.get("model_result_id") != str(model_result.id)
+        or proof.get("model_request_hash") != model_result.model_request_hash
+        or _sha256(model_result.model_request_snapshot_json) != model_result.model_request_hash
+        or proof.get("authority_snapshot_hash") != invocation.authority_snapshot_hash
+        or proof.get("effective_args_hash") != _sha256({"tool_name": invocation.tool_name, "arguments": arguments})
+        or proof.get("tool_result_hash") != content_hash
+        or not _native_empty_read_matches(invocation.tool_name, arguments, proof.get("observation"),
+            session_id=str(invocation.session_id))
+        or proof.get("source_hash") != _sha256({key: value for key, value in proof.items() if key != "source_hash"})
+        or evidence_id != uuid.uuid5(invocation.id, f"native-empty-read:{proof.get('source_hash')}")):
+        raise ContentInputReceiptError("native_empty_read_unverified", "The empty observation cannot be bound to this call.")
+    return {"status": "verified", "evidence_ref": f"native-empty-read:{evidence_id}"}
 
 
 async def record_native_workspace_receipts(db, *, context, invocation, model, arguments, content_hash):

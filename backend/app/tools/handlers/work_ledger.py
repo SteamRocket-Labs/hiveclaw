@@ -35,6 +35,7 @@ from app.services.agent_work_ledger import (
     upsert_agent_work_ledger_todo,
 )
 from app.tools.decorator import ToolMeta, tool
+from app.tools.result_envelope import ToolContentEnvelope
 from app.tools.runtime import ToolExecutionRequest
 
 
@@ -361,7 +362,7 @@ async def record_finding(request: ToolExecutionRequest) -> str:
         adapter="request",
     )
 )
-async def read_ledger(request: ToolExecutionRequest) -> str:
+async def read_ledger(request: ToolExecutionRequest) -> str | ToolContentEnvelope:
     plan_id, runtime_task_id, session_id = _scope(request)
     view = read_agent_work_ledger_view(
         agent_id=request.context.agent_id,
@@ -369,4 +370,14 @@ async def read_ledger(request: ToolExecutionRequest) -> str:
         runtime_task_id=runtime_task_id,
         session_id=session_id,
     )
-    return _json({"ok": True, "ledger": view})
+    result = _json({"ok": True, "ledger": view})
+    if view is None and plan_id is None and runtime_task_id is None and session_id:
+        from app.services.agent_work_ledger import _ledger_path
+
+        path = _ledger_path(agent_id=request.context.agent_id, session_id=session_id)
+        # An invalid or legacy file is not evidence that the work has no ledger.
+        if not path.exists() and not path.is_symlink():
+            return ToolContentEnvelope(text=result, metadata={"native_empty_read": {
+                "kind": "session_ledger_absent", "session_id": session_id,
+            }})
+    return result

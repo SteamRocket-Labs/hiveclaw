@@ -811,7 +811,7 @@ def fingerprint_rls_bypass_scopes(app_root: Path) -> str:
 # Existing audited call signatures and grants remain unchanged.
 # Context recovery releases bootstrap writes before history; its final scoped
 # merge rechecks the current worker claim.
-RLS_BYPASS_SCOPES_SHA256 = "2c645df9ff54f9bfcc25a434c33c760f13b9084f3c43316305c8fe3504bf69c8"
+RLS_BYPASS_SCOPES_SHA256 = "121866a1071c25d4801bdbf9ed142105416a6949a07f0139db1f8ce7cf18802c"
 
 
 def scan_rls_bypass_callsites(app_root: Path) -> list[RLSBypassCallsite]:

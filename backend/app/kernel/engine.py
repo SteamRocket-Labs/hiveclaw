@@ -1830,6 +1830,8 @@ def _tool_execution_evidence(
         if isinstance(trace.get("workspace_input_evidence"), dict) else None,
         "skill_input_evidence": dict(trace["skill_input_evidence"])
         if isinstance(trace.get("skill_input_evidence"), dict) else None,
+        "native_empty_read_evidence": dict(trace["native_empty_read_evidence"])
+        if isinstance(trace.get("native_empty_read_evidence"), dict) else None,
     }
 
 

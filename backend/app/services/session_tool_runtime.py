@@ -939,6 +939,15 @@ async def complete_tool_invocation(
                 content_hash=content_hash, capture=execution_evidence["native_empty_read_evidence"])
         except ContentInputReceiptError as exc:
             knowledge_metadata["native_empty_read_receipt"] = {"status": "unavailable", "reason_code": exc.code}
+    if invocation.tool_name in {"list_files", "fs_list"} and (execution_evidence or {}).get("native_directory_read_evidence"):
+        from app.services.content_input_receipts import ContentInputReceiptError, load_native_directory_read_evidence
+
+        try:
+            knowledge_metadata["native_directory_read_receipt"] = await load_native_directory_read_evidence(
+                db, agent_id=agent_id, invocation=invocation, model_result=result, arguments=effective_payload,
+                content_hash=content_hash, capture=execution_evidence["native_directory_read_evidence"])
+        except ContentInputReceiptError as exc:
+            knowledge_metadata["native_directory_read_receipt"] = {"status": "unavailable", "reason_code": exc.code}
     if invocation.tool_name in {"read_file", "read_document", "fs_read", "exit_plan_mode"}:
         from app.services.content_input_receipts import ContentInputReceiptError, load_workspace_input_evidence
 

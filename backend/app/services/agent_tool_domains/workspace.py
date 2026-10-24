@@ -310,7 +310,15 @@ def _list_files(
         return result
 
     header = f"📂 {rel_path or 'root'}: {dir_count} folder(s), {file_count} file(s)\n"
-    return _append_workspace_provenance_hint(header + "\n".join(items), ws, rel_path, directory=True)
+    listing = header + "\n".join(items)
+    result = _append_workspace_provenance_hint(listing, ws, rel_path, directory=True)
+    if (authority_scope is not None and (rel_path == "workspace" or rel_path.startswith("workspace/"))
+        and result == listing):
+        # Names, sizes and counts are a native observation, never a receipt for file bodies.
+        return ToolContentEnvelope(text=result, metadata={"native_directory_read": {
+            "kind": "authorized_workspace_directory_listing", "path": rel_path,
+        }})
+    return result
 
 
 def _read_receipted_workspace_bytes(read_root: Path, read_path: str, authority_scope, authority_path: str) -> bytes:

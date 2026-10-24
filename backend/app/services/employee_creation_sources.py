@@ -309,7 +309,7 @@ async def _owned_context_source(db, *, dependency, agent_id, tenant_id, session_
         from app.models.chat_transcript_event import ChatTranscriptEvent
         from app.models.session_v2 import SessionModelResult, SessionToolInvocation
         from app.services.content_input_receipts import (
-            ContentInputReceiptError, load_native_empty_read_evidence, load_skill_input_evidence,
+            ContentInputReceiptError, load_native_directory_read_evidence, load_native_empty_read_evidence, load_skill_input_evidence,
         )
         from app.services.session_model_inputs import _context_resource_dependency, _model_dependencies, tool_result_source_hash
         from app.services.session_semantic_history import _event_payload
@@ -322,7 +322,7 @@ async def _owned_context_source(db, *, dependency, agent_id, tenant_id, session_
         if (call is None or call.tenant_id != tenant_id or call.session_id != session_id
             or (call.effect_state != 'effect_committed' and not (
                 call.tool_name == 'task_get' and call.effect_state == 'failed')) or call.tool_name not in (
-                LEDGER_RESULT_TOOLS | {'list_files', 'tool_search', 'read_context_resource', 'search_memory'})):
+                LEDGER_RESULT_TOOLS | {'list_files', 'fs_list', 'tool_search', 'read_context_resource', 'search_memory'})):
             return False
         event = await db.scalar(select(ChatTranscriptEvent).where(
             ChatTranscriptEvent.id == call.result_event_id, ChatTranscriptEvent.tenant_id == tenant_id,
@@ -362,11 +362,12 @@ async def _owned_context_source(db, *, dependency, agent_id, tenant_id, session_
         if call.tool_name == 'read_context_resource' and not metadata.get('native_empty_read_receipt'):
             return _context_resource_dependency(agent_id, payload.get('content'),
                 call.effective_arguments_json or call.provider_arguments_json) is not None
-        key = 'skill_input_receipt' if call.tool_name == 'tool_search' else 'native_empty_read_receipt'
+        directory = call.tool_name in {'list_files', 'fs_list'} and 'native_directory_read_receipt' in metadata
+        key = 'native_directory_read_receipt' if directory else 'skill_input_receipt' if call.tool_name == 'tool_search' else 'native_empty_read_receipt'
         pointer = metadata.get(key)
         if not isinstance(pointer, dict) or pointer.get('status') != 'verified':
             return False
-        loader = load_skill_input_evidence if call.tool_name == 'tool_search' else load_native_empty_read_evidence
+        loader = load_native_directory_read_evidence if directory else load_skill_input_evidence if call.tool_name == 'tool_search' else load_native_empty_read_evidence
         try:
             bound = await loader(db, agent_id=agent_id, invocation=call, model_result=model,
                 arguments=call.effective_arguments_json or call.provider_arguments_json,

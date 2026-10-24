@@ -49,7 +49,8 @@ async def _published_owned_delegation_input(db, dependency, task, *, receipt_ids
         from app.services.work_ledger_tool_sources import LEDGER_RESULT_TOOLS, ledger_result_sources
 
         ledger_read = row.tool_name in LEDGER_RESULT_TOOLS
-        if not ledger_read and (row.tool_name not in {"read_file", "read_document", "fs_read"} or not receipt_ids):
+        directory_read = row.tool_name in {"list_files", "fs_list"}
+        if not ledger_read and not directory_read and (row.tool_name not in {"read_file", "read_document", "fs_read"} or not receipt_ids):
             return False
         from app.models.chat_transcript_event import ChatTranscriptEvent
         from app.services.content_input_receipts import load_workspace_input_evidence
@@ -69,6 +70,21 @@ async def _published_owned_delegation_input(db, dependency, task, *, receipt_ids
             _sources, complete = await ledger_result_sources(db, tenant_id=task.tenant_id, agent_id=task.child_agent_id,
                 invocation=row, model=model, content_hash=payload.get("content_hash"))
             return complete
+        if directory_read:
+            from app.services.content_input_receipts import load_native_directory_read_evidence, load_native_empty_read_evidence
+
+            metadata = payload.get("metadata") or {}
+            directory = "native_directory_read_receipt" in metadata
+            pointer = metadata.get("native_directory_read_receipt" if directory else "native_empty_read_receipt")
+            if not isinstance(pointer, dict) or pointer.get("status") != "verified":
+                return False
+            try:
+                loader = load_native_directory_read_evidence if directory else load_native_empty_read_evidence
+                return pointer == await loader(db, agent_id=task.child_agent_id, invocation=row, model_result=model,
+                    arguments=row.effective_arguments_json or row.provider_arguments_json,
+                    content_hash=payload.get("content_hash"), capture={"status": "captured", "receipt_ref": pointer.get("evidence_ref")})
+            except (ContentInputReceiptError, KeyError, TypeError, ValueError):
+                return False
         pointer = (payload.get("metadata") or {}).get("workspace_input_receipt")
         if not isinstance(pointer, dict):
             return False

@@ -244,6 +244,7 @@ async def bind_native_recovery_context(db, *, task, session):
                 return
             rows = list(await db.scalars(select(RuntimeNotificationOutbox).where(
                 RuntimeNotificationOutbox.integration_page_id == uuid.UUID(task.metadata_json["integration_page_id"]))))
+            native_originals = {}
             if group.audience_kind == "group":
                 actor = await group_approval_return_actor(db, session=group, rows=rows)
                 if actor.id != task.root_user_id:
@@ -257,15 +258,28 @@ async def bind_native_recovery_context(db, *, task, session):
                 for row in rows:
                     result = await db.get(RuntimeResultObject, row.result_object_id)
                     canonical = await load_canonical_result_sources(db, result) if result is not None else False
-                    if (not canonical or row.tenant_id != task.tenant_id or row.source_kind != "approval"
+                    if (not canonical or row.tenant_id != task.tenant_id
+                        or row.source_kind not in {"approval", "employee_creation", "a2a_delegation"}
+                        or result.source_kind != row.source_kind
                         or row.parent_agent_id != agent_id or row.parent_session_id != session_id
                         or row.parent_user_id != task.root_user_id or canonical[0].root_user_id != task.root_user_id
                         or canonical[0].parent_session_id != str(session_id) or canonical[0].parent_agent_id != agent_id):
                         return
+                    if row.source_kind != "approval":
+                        original = await db.get(RuntimeTask, canonical[0].root_runtime_task_id)
+                        if (original is None or original.id == task.id or original.tenant_id != task.tenant_id
+                            or original.task_type != "web_chat_turn" or original.root_user_id != task.root_user_id
+                            or original.parent_agent_id != agent_id or original.parent_session_id != str(session_id)):
+                            return
+                        native_originals[row.id] = original
             originals = {}
             for row in rows:
-                approval = await db.get(ApprovalRequest, uuid.UUID(row.metadata_json["approval_id"]))
-                original, _invocation, _event = await group_approval_origin(db, session=group, approval=approval)
+                if row.id in native_originals:
+                    # Reuse the original native checkpoint; a result never attests old recovery bytes.
+                    original = native_originals[row.id]
+                else:
+                    approval = await db.get(ApprovalRequest, uuid.UUID(row.metadata_json["approval_id"]))
+                    original, _invocation, _event = await group_approval_origin(db, session=group, approval=approval)
                 originals[original.id] = original
             if len(originals) == 1:
                 original = next(iter(originals.values()))

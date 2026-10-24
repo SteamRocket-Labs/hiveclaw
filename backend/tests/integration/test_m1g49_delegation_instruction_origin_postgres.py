@@ -109,7 +109,7 @@ async def _start_feishu_creation_work(seed, app_user_sessionmaker, monkeypatch):
         return command.id
 
 
-@pytest.mark.parametrize("input_case", ["complete", "unbound", "revoked", "first_task", "first_task_unbound", "first_task_revoked", "first_task_refined", "first_task_delivery", "first_task_parent_model", "first_task_refined_native", "first_task_native_creation", "first_task_fresh_employee", "first_task_slow_provider", "first_task_saved_reopen", "first_task_question", "first_task_question_after_write", "first_task_feishu_question", "first_task_feishu_quoted_question", "first_task_feishu_question_source_changed", "first_task_feishu_question_body_changed", "first_task_feishu_question_already_answered", "first_task_feishu_question_projection_missing", "first_task_feishu_question_recipient_changed", "first_task_feishu_question_legacy_status", "first_task_feishu_permission_allow", "first_task_feishu_permission_deny", "first_task_feishu_permission_cancel", "first_task_feishu_permission_unknown", "first_task_feishu_permission_expired", "first_task_feishu_permission_source_changed", "delegation_permission_allow", "first_task_recall", "first_task_ledger", "first_task_ledger_unknown", "first_task_parent_status", "first_task_parent_status_unknown", "first_task_child_command", "first_task_child_code", "first_task_parent_creation_result", "first_task_parent_historical_creation_result", "first_task_parent_historical_creation_unknown", "first_task_parent_result_denial", "first_task_parent_public_directory", "first_task_child_readback", "first_task_parity_list", "first_task_parity_ledger", "first_task_parity_ledger_unknown", "first_task_context", "first_task_discovery", "first_task_unverified_memory", "first_task_explicit_unverified_memory", "first_task_feishu_permission_channel_allow", "first_task_feishu_permission_channel_deny", "first_task_feishu_permission_channel_unknown", "first_task_feishu_permission_channel_legacy", "first_task_feishu_permission_channel_scope", "first_task_feishu_permission_channel_feedback_retry", "first_task_feishu_progress"])
+@pytest.mark.parametrize("input_case", ["complete", "unbound", "revoked", "first_task", "first_task_unbound", "first_task_revoked", "first_task_refined", "first_task_delivery", "first_task_parent_model", "first_task_refined_native", "first_task_native_creation", "first_task_fresh_employee", "first_task_slow_provider", "first_task_saved_reopen", "first_task_question", "first_task_question_after_write", "first_task_feishu_question", "first_task_feishu_quoted_question", "first_task_feishu_question_source_changed", "first_task_feishu_question_body_changed", "first_task_feishu_question_already_answered", "first_task_feishu_question_projection_missing", "first_task_feishu_question_recipient_changed", "first_task_feishu_question_legacy_status", "first_task_feishu_permission_allow", "first_task_feishu_permission_deny", "first_task_feishu_permission_cancel", "first_task_feishu_permission_unknown", "first_task_feishu_permission_expired", "first_task_feishu_permission_source_changed", "delegation_permission_allow", "first_task_recall", "first_task_ledger", "first_task_ledger_unknown", "first_task_parent_status", "first_task_parent_status_unknown", "first_task_child_command", "first_task_child_code", "first_task_parent_creation_result", "first_task_parent_historical_creation_result", "first_task_parent_historical_creation_unknown", "first_task_parent_result_denial", "first_task_parent_public_directory", "first_task_child_readback", "first_task_workspace_listing", "first_task_workspace_listing_alias", "first_task_parity_list", "first_task_parity_ledger", "first_task_parity_ledger_unknown", "first_task_context", "first_task_discovery", "first_task_unverified_memory", "first_task_explicit_unverified_memory", "first_task_feishu_permission_channel_allow", "first_task_feishu_permission_channel_deny", "first_task_feishu_permission_channel_unknown", "first_task_feishu_permission_channel_legacy", "first_task_feishu_permission_channel_scope", "first_task_feishu_permission_channel_feedback_retry", "first_task_feishu_progress"])
 async def test_governed_delegation_preserves_its_parent_instruction_origin(
     owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, input_case, migrated_pg_url,
 ):
@@ -127,10 +127,12 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
     from app.services.secrets_provider import get_secrets_provider
     from app.services.web_chat_runtime import _persist_tool_call
 
+    workspace_listing_case = input_case in {"first_task_workspace_listing", "first_task_workspace_listing_alias"}
+    listing_tool = "fs_list" if input_case == "first_task_workspace_listing_alias" else "list_files"
     parity_list_case = input_case == "first_task_parity_list"
     parity_sequence_case = input_case in {"first_task_parity_ledger", "first_task_parity_ledger_unknown"}
     parity_unknown = input_case == "first_task_parity_ledger_unknown"
-    child_readback_case = input_case in {"first_task_child_readback", "first_task_parity_list", "first_task_parity_ledger"}
+    child_readback_case = workspace_listing_case or input_case in {"first_task_child_readback", "first_task_parity_list", "first_task_parity_ledger"}
     if child_readback_case:
         input_case = "first_task_parent_status"
     if parity_unknown:
@@ -435,6 +437,21 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
 
         append_agent_work_ledger_finding(agent_id=seed["agent_id"], session_id=str(seed["session_id"]),
             finding_type="finding", summary="LEGACY_PRIVATE_LEDGER_WITHOUT_NATIVE_RECEIPT")
+    if workspace_listing_case:
+        from app.models.chat_session import ChatSession
+        from app.services.workspace_resource_authority import register_workspace_path
+
+        prior_work = uuid4()
+        prior_path = "workspace/prior-unverified-report.md"
+        prior_body = "UNVERIFIED_PRIOR_REPORT_BODY"
+        (seed["agent_root"] / prior_path).write_text(prior_body)
+        async with owner_sessionmaker() as db:
+            db.add(ChatSession(id=prior_work, agent_id=seed["agent_id"], tenant_id=seed["tenant_id"],
+                user_id=seed["user_id"], audience_kind="private"))
+            await db.flush()
+            await register_workspace_path(db, tenant_id=seed["tenant_id"], agent_id=seed["agent_id"], path=prior_path,
+                owner_user_id=seed["user_id"], root_session_id=prior_work, source="synthetic_previous_work")
+            await db.commit()
     if native_creation:
         from app.models.chat_transcript_event import ChatTranscriptEvent
         from app.models.session_v2 import SessionToolInvocation
@@ -449,7 +466,7 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
             creator_client.script.insert(0, {"tool_calls": [
                 {"id": f"creator-discovery-{index}-{name}-{args.get('ref', '')}", "type": "function", "function": {
                     "name": name, "arguments": json.dumps(args)}}
-                for index, (name, args) in enumerate(([("task_list", {})] if parity_list_case else [
+                for index, (name, args) in enumerate(([(listing_tool, {"path": "workspace"})] if workspace_listing_case else [("task_list", {})] if parity_list_case else [
                     ("track_todo", {"action": "add", "title": "Create the research employee"}),
                     ("track_todo", {"action": "add", "title": "Start the explicit first task once"}),
                     ("track_todo", {"action": "add", "title": "Consume the returned report"}),
@@ -517,6 +534,10 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
             visible = json.dumps(creator_client.requests[0]["messages"])
             assert old_memory_path in visible and "source_unverified" in visible
             assert "OLD_UNVERIFIED_CREATION_MEMORY" not in visible
+        if workspace_listing_case:
+            listed = json.dumps(creator_client.requests[1]["messages"])
+            assert "prior-unverified-report.md" in listed and prior_body not in listed
+            assert (seed["agent_root"] / prior_path).read_text() == prior_body
         if discovery_case:
             if parity_sequence_case:
                 assert len(creator_client.requests) == 4
@@ -560,6 +581,35 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
                     assert len(creating_rounds) == 3 and all(row.model_request_snapshot_json["input_bindings"]["dependency_coverage"]["complete"] for row in creating_rounds)
             else:
                 assert len(creating_rounds) == 2 and all(row.model_request_snapshot_json["input_bindings"]["dependency_coverage"]["complete"] for row in creating_rounds)
+            if workspace_listing_case:
+                from copy import deepcopy
+                from app.models.invocation_span import InvocationSpan
+                from app.models.organization_identity import ContentInputReceipt
+                from app.services.content_input_receipts import workspace_artifact_ref
+                from app.services.session_model_inputs import _origin_dependencies
+
+                listing = await db.scalar(select(SessionToolInvocation).where(
+                    SessionToolInvocation.run_id == seed["run_id"], SessionToolInvocation.tool_name == listing_tool))
+                listed_event = await db.get(ChatTranscriptEvent, listing.result_event_id)
+                pointer = _event_payload(listed_event)["metadata"]["native_directory_read_receipt"]
+                assert pointer["status"] == "verified"
+                evidence_id = UUID(pointer["evidence_ref"].split(":", 1)[1])
+                captured = await db.get(InvocationSpan, evidence_id)
+                original_proof = deepcopy(captured.metadata_json)
+                ref = f"session-tool-result:{listing.id}"
+                assert (await _origin_dependencies(db, tenant_id=seed["tenant_id"], agent_id=seed["agent_id"], ref=ref))[1]
+                async with owner_sessionmaker() as writer:
+                    evidence = await writer.get(InvocationSpan, evidence_id)
+                    evidence.metadata_json = {"native_directory_read_evidence": {
+                        **original_proof["native_directory_read_evidence"], "tool_result_hash": "0" * 64}}
+                    await writer.commit()
+                assert not (await _origin_dependencies(db, tenant_id=seed["tenant_id"], agent_id=seed["agent_id"], ref=ref))[1]
+                async with owner_sessionmaker() as writer:
+                    (await writer.get(InvocationSpan, evidence_id)).metadata_json = original_proof
+                    await writer.commit()
+                assert (await _origin_dependencies(db, tenant_id=seed["tenant_id"], agent_id=seed["agent_id"], ref=ref))[1]
+                assert await db.scalar(select(ContentInputReceipt.id).where(ContentInputReceipt.tenant_id == seed["tenant_id"],
+                    ContentInputReceipt.carrier_ref == workspace_artifact_ref(seed["agent_id"], prior_path))) is None
     else:
         execution_trace = {}
         from app.core.execution_context import clear_execution_identity, get_execution_identity, set_delegated_user_identity, set_execution_identity
@@ -689,6 +739,9 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
     if child_readback_case:
         client.script.insert(1, {"tool_calls": [{"id": "child-report-read", "type": "function", "function": {
             "name": "read_file", "arguments": json.dumps({"path": report_path})}}], "finish_reason": "tool_calls"})
+    if workspace_listing_case:
+        client.script[0]["tool_calls"].insert(0, {"id": "child-empty-directory", "type": "function", "function": {
+            "name": "list_files", "arguments": json.dumps({"path": "workspace"})}})
     if parity_list_case or parity_sequence_case:
         client.script[0]["tool_calls"].insert(0, {"id": "child-parity-list", "type": "function", "function": {
             "name": "task_list", "arguments": "{}"}})

@@ -77,6 +77,31 @@ async def ledger_result_sources(db, *, tenant_id, agent_id, invocation, model, c
             valid = False
     if not valid or proof["unbound"] or not isinstance(proof.get("result_inputs"), list):
         return [], False
+    if invocation.tool_name == "read_ledger" and invocation.result_event_id is not None:
+        from app.models.chat_transcript_event import ChatTranscriptEvent
+        from app.services.content_input_receipts import load_native_empty_read_evidence
+        from app.services.session_semantic_history import _event_payload
+
+        event = await db.get(ChatTranscriptEvent, invocation.result_event_id, populate_existing=True)
+        payload = _event_payload(event) if event else {}
+        if (event is None or event.tenant_id != tenant_id or event.agent_id != agent_id
+            or event.session_id != invocation.session_id or event.run_id != invocation.run_id
+            or event.invocation_id != invocation.id or payload.get("content_hash") != content_hash):
+            return [], False
+        metadata = payload.get("metadata") or {}
+        if "native_empty_read_receipt" in metadata:
+            # Both receipts describe the same native result; one cannot conceal a conflicting witness.
+            pointer = metadata["native_empty_read_receipt"]
+            if not isinstance(pointer, dict) or pointer.get("status") != "verified":
+                return [], False
+            try:
+                bound = await load_native_empty_read_evidence(db, agent_id=agent_id, invocation=invocation,
+                    model_result=model, arguments=invocation.effective_arguments_json or invocation.provider_arguments_json,
+                    content_hash=content_hash, capture={"status": "captured", "receipt_ref": pointer.get("evidence_ref")})
+                if bound != pointer:
+                    return [], False
+            except (ContentInputReceiptError, KeyError, TypeError, ValueError):
+                return [], False
     if not _settled:
         return [], True
     sources = []

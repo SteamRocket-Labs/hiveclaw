@@ -1353,6 +1353,7 @@ class ToolRuntimeService:
                     trace_metadata_sink.pop("workspace_input_evidence", None)
                     trace_metadata_sink.pop("skill_input_evidence", None)
                     trace_metadata_sink.pop("native_empty_read_evidence", None)
+                    trace_metadata_sink.pop("native_directory_read_evidence", None)
                     trace_metadata_sink.pop("agent_directory_sources", None)
                     if workspace_mutating:
                         for key in ("workspace_mutation_evidence_captured", "workspace_mutation_states",
@@ -1451,6 +1452,13 @@ class ToolRuntimeService:
                     trace_metadata_sink["native_empty_read_evidence"] = await persist_workspace_execution_evidence(
                         context=context, tool_name=tool_name, tool_call_id=tool_call_id, arguments=arguments,
                         result=value, states={}, lineage=[], errors={}, native_empty_read=value.metadata["native_empty_read"])
+                if (trace_metadata_sink is not None and isinstance(value, ToolContentEnvelope)
+                    and isinstance(value.metadata.get("native_directory_read"), dict)):
+                    from app.services.content_input_receipts import persist_workspace_execution_evidence
+
+                    trace_metadata_sink["native_directory_read_evidence"] = await persist_workspace_execution_evidence(
+                        context=context, tool_name=tool_name, tool_call_id=tool_call_id, arguments=arguments,
+                        result=value, states={}, lineage=[], errors={}, native_directory_read=value.metadata["native_directory_read"])
                 if skill_read is not None and trace_metadata_sink is not None:
                     from app.services.content_input_receipts import persist_workspace_execution_evidence
 

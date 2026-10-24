@@ -341,10 +341,12 @@ async def _owned_context_source(db, *, dependency, agent_id, tenant_id, session_
             or tool_result_source_hash(payload) != dependency['source_version']):
             return False
         if call.tool_name == 'delegate_to_agent':
-            from app.services.employee_first_task import first_task_preflight_result_bound
+            from app.services.employee_first_task import first_task_dispatch_result_bound, first_task_preflight_result_bound
 
-            return first_task_preflight_result_bound(agent_id=agent_id, invocation=call,
+            return (first_task_preflight_result_bound(agent_id=agent_id, invocation=call,
                 payload=payload, content=payload.get('content'))
+                or await first_task_dispatch_result_bound(db, tenant_id=tenant_id, agent_id=agent_id,
+                    invocation=call, payload=payload, content=payload.get('content')))
         if call.tool_name in TASK_READ_TOOLS:
             _sources, complete = await task_read_sources(db, tenant_id=tenant_id, agent_id=agent_id,
                 invocation=call, model=model, content_hash=payload.get('content_hash'))

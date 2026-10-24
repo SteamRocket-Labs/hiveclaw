@@ -109,7 +109,7 @@ async def _start_feishu_creation_work(seed, app_user_sessionmaker, monkeypatch):
         return command.id
 
 
-@pytest.mark.parametrize("input_case", ["complete", "unbound", "revoked", "first_task", "first_task_unbound", "first_task_revoked", "first_task_refined", "first_task_delivery", "first_task_parent_model", "first_task_refined_native", "first_task_native_creation", "first_task_fresh_employee", "first_task_slow_provider", "first_task_saved_reopen", "first_task_question", "first_task_question_after_write", "first_task_feishu_question", "first_task_feishu_quoted_question", "first_task_feishu_question_source_changed", "first_task_feishu_question_body_changed", "first_task_feishu_question_already_answered", "first_task_feishu_question_projection_missing", "first_task_feishu_question_recipient_changed", "first_task_feishu_question_legacy_status", "first_task_feishu_permission_allow", "first_task_feishu_permission_deny", "first_task_feishu_permission_cancel", "first_task_feishu_permission_unknown", "first_task_feishu_permission_expired", "first_task_feishu_permission_source_changed", "delegation_permission_allow", "first_task_recall", "first_task_ledger", "first_task_ledger_unknown", "first_task_parent_status", "first_task_parent_status_unknown", "first_task_child_command", "first_task_child_code", "first_task_child_command_then_write", "first_task_child_code_then_write", "first_task_creator_task_inventory", "first_task_creator_readiness_feedback", "first_task_parent_creation_result", "first_task_parent_historical_creation_result", "first_task_parent_historical_creation_unknown", "first_task_parent_result_denial", "first_task_parent_public_directory", "first_task_child_readback", "first_task_workspace_listing", "first_task_workspace_listing_alias", "first_task_completion_sweep", "first_task_parent_wait_legacy", "first_task_parent_code_legacy", "first_task_parity_list", "first_task_parity_ledger", "first_task_parity_ledger_unknown", "first_task_context", "first_task_discovery", "first_task_unverified_memory", "first_task_explicit_unverified_memory", "first_task_feishu_permission_channel_allow", "first_task_feishu_permission_channel_deny", "first_task_feishu_permission_channel_unknown", "first_task_feishu_permission_channel_legacy", "first_task_feishu_permission_channel_scope", "first_task_feishu_permission_channel_feedback_retry", "first_task_feishu_progress"])
+@pytest.mark.parametrize("input_case", ["complete", "unbound", "revoked", "first_task", "first_task_unbound", "first_task_revoked", "first_task_refined", "first_task_delivery", "first_task_parent_model", "first_task_refined_native", "first_task_native_creation", "first_task_fresh_employee", "first_task_slow_provider", "first_task_saved_reopen", "first_task_question", "first_task_question_after_write", "first_task_feishu_question", "first_task_feishu_quoted_question", "first_task_feishu_question_source_changed", "first_task_feishu_question_body_changed", "first_task_feishu_question_already_answered", "first_task_feishu_question_projection_missing", "first_task_feishu_question_recipient_changed", "first_task_feishu_question_legacy_status", "first_task_feishu_permission_allow", "first_task_feishu_permission_deny", "first_task_feishu_permission_cancel", "first_task_feishu_permission_unknown", "first_task_feishu_permission_expired", "first_task_feishu_permission_source_changed", "delegation_permission_allow", "first_task_recall", "first_task_ledger", "first_task_ledger_unknown", "first_task_parent_status", "first_task_parent_status_unknown", "first_task_child_command", "first_task_child_code", "first_task_child_command_then_write", "first_task_child_code_then_write", "first_task_creator_task_inventory", "first_task_creator_readiness_feedback", "first_task_creator_readiness_resume", "first_task_parent_creation_result", "first_task_parent_historical_creation_result", "first_task_parent_historical_creation_unknown", "first_task_parent_result_denial", "first_task_parent_public_directory", "first_task_child_readback", "first_task_workspace_listing", "first_task_workspace_listing_alias", "first_task_completion_sweep", "first_task_parent_wait_legacy", "first_task_parent_code_legacy", "first_task_parity_list", "first_task_parity_ledger", "first_task_parity_ledger_unknown", "first_task_context", "first_task_discovery", "first_task_unverified_memory", "first_task_explicit_unverified_memory", "first_task_feishu_permission_channel_allow", "first_task_feishu_permission_channel_deny", "first_task_feishu_permission_channel_unknown", "first_task_feishu_permission_channel_legacy", "first_task_feishu_permission_channel_scope", "first_task_feishu_permission_channel_feedback_retry", "first_task_feishu_progress"])
 async def test_governed_delegation_preserves_its_parent_instruction_origin(
     owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, input_case, migrated_pg_url,
 ):
@@ -127,7 +127,8 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
     from app.services.secrets_provider import get_secrets_provider
     from app.services.web_chat_runtime import _persist_tool_call
 
-    creator_readiness_case = input_case == "first_task_creator_readiness_feedback"
+    creator_resume_case = input_case == "first_task_creator_readiness_resume"
+    creator_readiness_case = creator_resume_case or input_case == "first_task_creator_readiness_feedback"
     creator_task_inventory_case = creator_readiness_case or input_case == "first_task_creator_task_inventory"
     sequential_child_case = creator_task_inventory_case or input_case in {"first_task_child_command_then_write", "first_task_child_code_then_write"}
     sequential_code_case = creator_task_inventory_case or input_case == "first_task_child_code_then_write"
@@ -2222,6 +2223,10 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
         if creation_result_case:
             parent_reads.append({"id": "parent-read-creation", "type": "function", "function": {
                 "name": "read_runtime_result", "arguments": json.dumps({"result_ref": creation_result_ref})}})
+        if creator_resume_case:
+            parent_reads.append({"id": "parent-resume-first-task", "type": "function", "function": {
+                "name": "delegate_to_agent", "arguments": json.dumps({"first_task_draft_id": creation["blueprint_id"],
+                    "agent_name": arguments["name"], "target_agent_id": str(receiver), "message": instruction})}})
         parent_client = ScriptedLLMClient([
             {"tool_calls": [*parent_reads, {"id": "parent-read-return", "type": "function", "function": {
                 "name": "read_runtime_result", "arguments": json.dumps({"result_ref": result_ref})}}],
@@ -2279,6 +2284,50 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
             parent_artifact_id = artifact.id
             models = list(await db.scalars(select(SessionModelResult).where(SessionModelResult.run_id == return_id)))
             assert len(models) == 3 and all(model.model_request_snapshot_json["input_bindings"]["dependency_coverage"]["complete"] for model in models)
+            if creator_resume_case:
+                from types import SimpleNamespace
+                from app.services.employee_creation_sources import _owned_context_source
+                from app.services.employee_first_task import first_task_dispatch_result_bound
+                from app.services.session_model_inputs import _hash, tool_result_source_hash
+
+                resumed = await db.scalar(select(SessionToolInvocation).where(
+                    SessionToolInvocation.run_id == return_id,
+                    SessionToolInvocation.provider_tool_use_id == "parent-resume-first-task"))
+                payload = _event_payload(await db.get(ChatTranscriptEvent, resumed.result_event_id))
+                content = payload["content"]
+                body = json.loads(content)
+                assert body["ok"] is True and body["runtime_task_id"] == str(task_id) and body["status"] == "completed"
+                assert len(dispatches) == 1
+                assert list(await db.scalars(select(RuntimeTask.id).where(RuntimeTask.tenant_id == seed["tenant_id"],
+                    RuntimeTask.parent_agent_id == seed["agent_id"], RuntimeTask.task_type == "delegation"))) == [task_id]
+                scope = {"tenant_id": seed["tenant_id"], "agent_id": seed["agent_id"]}
+                assert await first_task_dispatch_result_bound(db, **scope, invocation=resumed, payload=payload, content=content)
+                source = {"source_kind": "session_tool_invocation", "source_id": str(resumed.id),
+                    "source_version": tool_result_source_hash(payload)}
+                owned = {**scope, "session_id": seed["session_id"], "user_id": seed["user_id"]}
+                assert await _owned_context_source(db, dependency=source, **owned)
+                assert not await _owned_context_source(db, dependency={**source, "source_version": "0" * 64}, **owned)
+                fields = {key: getattr(resumed, key) for key in ("tenant_id", "session_id", "run_id", "tool_name",
+                    "effect_state", "provider_tool_use_id", "provider_arguments_json", "effective_arguments_json",
+                    "args_hash", "effective_args_hash", "receipt_ref")}
+                for key, value in {"effect_state": "needs_reconciliation", "session_id": uuid4(), "run_id": uuid4(),
+                    "tenant_id": uuid4(), "provider_tool_use_id": "another-call", "effective_args_hash": "0" * 64}.items():
+                    assert not await first_task_dispatch_result_bound(db, **scope,
+                        invocation=SimpleNamespace(**{**fields, key: value}), payload=payload, content=content)
+                legacy = json.dumps({key: value for key, value in body.items() if key != "native_first_task_dispatch"}, ensure_ascii=False)
+                legacy_ref = f"tool-frame:{_hash(legacy)}"
+                assert not await first_task_dispatch_result_bound(db, **scope,
+                    invocation=SimpleNamespace(**{**fields, "receipt_ref": legacy_ref}),
+                    payload={**payload, "content_or_error_ref": legacy_ref}, content=legacy)
+                assert not await first_task_dispatch_result_bound(db, **scope,
+                    invocation=resumed, payload={**payload, "outcome": "unknown"}, content=content)
+                control = await db.begin_nested()
+                changed = await db.get(RuntimeTask, task_id)
+                changed.prompt = "A different first task"
+                await db.flush()
+                assert not await first_task_dispatch_result_bound(db, **scope, invocation=resumed, payload=payload, content=content)
+                await control.rollback()
+                assert await first_task_dispatch_result_bound(db, **scope, invocation=resumed, payload=payload, content=content)
             if child_readback_case:
                 from app.models.invocation_span import InvocationSpan
                 from app.models.runtime_result import RuntimeResultObject

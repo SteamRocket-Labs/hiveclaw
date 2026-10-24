@@ -253,13 +253,17 @@ async def resume_first_task_from_tool(context, arguments) -> str:
                                          retryable=receipt.get("status") == "unknown",
                                          message="The first task was not confirmed dispatched; recover its existing intent.",
                                          extra={"first_task_draft_id": str(draft.id), **receipt})
-            return A2AOutcome.success(operation="delegate", payload={
+            result = {
                 "task_id": uuid.UUID(receipt["runtime_task_id"]).hex, "runtime_task_id": receipt["runtime_task_id"],
                 "session_id": receipt["session_id"], "child_session_id": receipt["session_id"],
                 "status": receipt.get("runtime_status") or "queued", "target_agent": target.name,
                 "target_agent_id": str(target.id), "first_task_draft_id": str(draft.id),
                 "continuation_tool": "send_agent_session_message",
-            }).to_tool_result()
+            }
+            if preflight_proof:
+                result["native_first_task_dispatch"] = {**preflight_proof,
+                    "schema": "hive.first_task_dispatch.v1", "effect": "canonical_task_present"}
+            return A2AOutcome.success(operation="delegate", payload=result).to_tool_result()
     except (HrCreationConflict, HTTPException, ValueError, TypeError) as exc:
         code = getattr(exc, "code", "first_task_authority_required")
         proof = None if dispatch_started else preflight_proof
@@ -306,6 +310,60 @@ def first_task_preflight_result_bound(*, agent_id, invocation, payload, content)
             and isinstance(body.get("error_class"), str) and isinstance(body.get("message"), str)
             and content == render_tool_error(tool_name="delegate_to_agent", error_class=body["error_class"],
                 message=body["message"], retryable=False, extra={"native_first_task_preflight": proof}))
+    except (AttributeError, KeyError, ValueError, TypeError):
+        return False
+
+
+async def first_task_dispatch_result_bound(db, *, tenant_id, agent_id, invocation, payload, content):
+    """Bind a native first-task admission observation, never its business outcome."""
+    from types import SimpleNamespace
+    from app.models.hr_creation import HrCreationDraft
+    from app.services.delegation_input_origin import load_employee_creation_dependencies
+    from app.services.session_model_inputs import _hash
+
+    try:
+        arguments = invocation.effective_arguments_json or invocation.provider_arguments_json
+        binding = _first_task_preflight_binding(SimpleNamespace(tenant_id=tenant_id, agent_id=agent_id,
+            session_id=invocation.session_id, runtime_task_id=invocation.run_id,
+            tool_call_id=invocation.provider_tool_use_id), arguments)
+        if (binding is None or invocation.tenant_id != tenant_id or invocation.tool_name != "delegate_to_agent"
+            or invocation.effect_state != "effect_committed" or payload.get("outcome") != "success"
+            or invocation.effective_args_hash != binding["arguments_hash"]
+            or invocation.args_hash != _hash({"tool_name": invocation.tool_name, "arguments": invocation.provider_arguments_json})
+            or payload.get("content_or_error_ref") != invocation.receipt_ref
+            or invocation.receipt_ref != f"tool-frame:{_hash(content)}"):
+            return False
+        body = json.loads(content)
+        proof = {**binding, "schema": "hive.first_task_dispatch.v1", "effect": "canonical_task_present"}
+        if (not isinstance(body, dict) or body.get("ok") is not True or body.get("native_first_task_dispatch") != proof
+            or not isinstance(body.get("status"), str) or not body["status"]):
+            return False
+        draft = await db.get(HrCreationDraft, uuid.UUID(arguments["first_task_draft_id"]), populate_existing=True)
+        if (draft is None or draft.tenant_id != tenant_id or draft.hr_agent_id != agent_id
+            or draft.session_id != invocation.session_id or draft.created_agent_id is None):
+            return False
+        evidence = direct_creation_authorization(draft)
+        task_id = uuid.uuid5(draft.id, "explicit-first-task.v1")
+        child_session_id = str(uuid.uuid5(task_id, "session"))
+        task = await db.get(RuntimeTask, task_id, populate_existing=True)
+        if (not evidence or not evidence.get("first_task") or task is None or task.tenant_id != tenant_id
+            or task.task_type != "delegation" or task.parent_agent_id != agent_id
+            or task.parent_session_id != str(invocation.session_id) or task.child_agent_id != draft.created_agent_id
+            or task.root_user_id != draft.requested_by_user_id or task.child_session_id != child_session_id
+            or task.prompt != evidence["first_task"] or arguments.get("message") != task.prompt
+            or str(arguments.get("target_agent_id") or task.child_agent_id) != str(task.child_agent_id)):
+            return False
+        origin = await load_employee_creation_dependencies(db, draft=draft)
+        if origin is None or origin[1] is not True:
+            return False
+        # Status and name are the frame's historical observations. Later task
+        # progress or a rename does not rewrite that observation into a new one.
+        return body == {"task_id": task.id.hex, "runtime_task_id": str(task.id),
+            "session_id": child_session_id, "child_session_id": child_session_id,
+            "status": body["status"], "target_agent": arguments.get("agent_name"),
+            "target_agent_id": str(task.child_agent_id), "first_task_draft_id": str(draft.id),
+            "continuation_tool": "send_agent_session_message", "ok": True, "operation": "delegate",
+            "native_first_task_dispatch": proof}
     except (AttributeError, KeyError, ValueError, TypeError):
         return False
 

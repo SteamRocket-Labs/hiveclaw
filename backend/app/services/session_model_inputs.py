@@ -690,9 +690,12 @@ async def _resolve_origin_dependencies(db, *, tenant_id, agent_id, ref):
     if invocation.tool_name == 'delegate_to_agent':
         from app.services.delegation_input_origin import delegation_tool_result_bound
 
-        from app.services.employee_first_task import first_task_preflight_result_bound
+        from app.services.employee_first_task import first_task_dispatch_result_bound, first_task_preflight_result_bound
 
         complete = first_task_preflight_result_bound(agent_id=agent_id, invocation=invocation, payload=payload, content=content)
+        if not complete:
+            complete = await first_task_dispatch_result_bound(db, tenant_id=tenant_id, agent_id=agent_id,
+                invocation=invocation, payload=payload, content=content)
         if not complete:
             complete = await delegation_tool_result_bound(db, tenant_id=tenant_id, agent_id=agent_id,
                 invocation=invocation, content=content)

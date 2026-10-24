@@ -453,3 +453,60 @@ async def test_non_provider_failure_finalize_persists_no_runtime_failure_event(
         rows = list((await db.execute(_runtime_failure_events_query(session_id))).scalars())
         assert rows == []
     assert all(event.get("kind") != "runtime_failure.recorded" for event in broadcasts)
+
+
+@pytest.mark.asyncio
+async def test_killed_finalize_commits_cancelled_run_for_live_and_reload(
+    owner_sessionmaker, app_user_sessionmaker, monkeypatch,
+) -> None:
+    from app import database
+    from app.models.audit import ChatMessage
+    from app.models.chat_transcript_event import ChatTranscriptEvent
+    from app.models.runtime_task import RuntimeTask
+    from app.models.runtime_terminal_boundary_outbox import RuntimeTerminalBoundaryOutbox
+    from app.models.session_v2 import SessionEventOutbox
+    from app.services import web_chat_runtime
+    from app.services.session_event_contract import serialize_session_event
+    from app.services.session_v2_persistence import SessionEventDraft, append_session_events
+
+    tenant_id, user_id, agent_id, session_id = await _seed_session(owner_sessionmaker)
+    run_id, turn_id = await _seed_running_task(owner_sessionmaker, tenant_id=tenant_id,
+        user_id=user_id, agent_id=agent_id, session_id=session_id)
+    scope = {"level": "run", "session_id": str(session_id), "thread_id": str(session_id),
+        "turn_id": turn_id, "run_id": str(run_id)}
+    async with owner_sessionmaker() as db:
+        await append_session_events(db, tenant_id=tenant_id, agent_id=agent_id, session_id=session_id,
+            drafts=[SessionEventDraft(item_id=run_id, item_kind="run", lifecycle="queued",
+                scope=scope, actor={"type": "runtime"}, payload={"reason_code": "input_accepted"})])
+        await db.commit()
+    enqueue = web_chat_runtime._enqueue_web_terminal_boundary
+    broadcasts = _install_finalizer_fakes(owner_sessionmaker, monkeypatch, tenant_id=tenant_id)
+    monkeypatch.setattr(web_chat_runtime, "_enqueue_web_terminal_boundary", enqueue)
+    monkeypatch.setattr(web_chat_runtime, "tenant_scoped_session", lambda tenant:
+        database.tenant_scoped_session(tenant, session_factory=app_user_sessionmaker, require_tenant=True))
+    kwargs = dict(run_uuid=run_id, agent_id=agent_id, session_id=str(session_id), status="killed",
+        result_summary="runtime cancelled", metadata_json={"external_effect_outcome": "unknown"})
+    assert await web_chat_runtime._finalize_web_chat_run_without_assistant(**kwargs)
+    async with owner_sessionmaker() as db:
+        task = await db.get(RuntimeTask, run_id)
+        assert task.status == "killed" and task.metadata_json["external_effect_outcome"] == "unknown"
+        rows = (await db.execute(select(ChatTranscriptEvent).where(ChatTranscriptEvent.session_id == session_id,
+            ChatTranscriptEvent.item_kind == "run", ChatTranscriptEvent.lifecycle == "cancelled"))).scalars().all()
+        assert len(rows) == 1
+        event = rows[0]
+        assert event.run_id == run_id and event.scope_json == scope
+        replay = serialize_session_event(event, audience="direct_user")
+        assert replay["payload"]["reason_code"] == "runtime_cancelled"
+        assert replay["kind"] == "run.cancelled"
+        assert await db.scalar(select(func.count()).select_from(SessionEventOutbox).where(
+            SessionEventOutbox.event_id == event.id)) == 1
+        boundary = await db.scalar(select(RuntimeTerminalBoundaryOutbox).where(
+            RuntimeTerminalBoundaryOutbox.runtime_task_id == run_id))
+        assert boundary.event_kind == "turn_abort" and boundary.terminal_status == "killed"
+        assert boundary.binding_json["terminal_event_id"] == str(event.id)
+        assert boundary.binding_json["terminal_sequence"] == event.sequence
+        assert await db.scalar(select(func.count()).select_from(ChatMessage).where(
+            ChatMessage.conversation_id == str(session_id))) == 0
+    assert broadcasts == [replay]
+    assert not await web_chat_runtime._finalize_web_chat_run_without_assistant(**kwargs)
+    assert broadcasts == [replay]

@@ -4529,17 +4529,19 @@ async def _finalize_web_chat_run_without_assistant(
                 status=status,
                 failure=failure or _runtime_failure_payload_from_terminal_metadata(metadata_json),
             )
-        elif status == "completed" and result_summary == "awaiting_company_approval":
+        elif status == "killed" or (status == "completed" and result_summary == "awaiting_company_approval"):
             from app.services.session_event_contract import serialize_session_event
             from app.services.session_v2_persistence import SessionEventDraft, append_session_events
 
-            # The claimed run ended; its work is still waiting for the company ticket.
+            # Persist the run's mechanical terminal even without an assistant answer.
+            lifecycle = "cancelled" if status == "killed" else "completed"
+            reason = "runtime_cancelled" if status == "killed" else "company_approval_required"
             rows = await append_session_events(db, tenant_id=tenant_id, agent_id=agent_id,
                 session_id=session_id, drafts=[SessionEventDraft(item_id=run_uuid, item_kind="run",
-                    lifecycle="completed", scope={"level": "run", "session_id": session_id,
+                    lifecycle=lifecycle, scope={"level": "run", "session_id": session_id,
                         "thread_id": session_id, "turn_id": str(merged_metadata.get("turn_id") or f"turn-{run_uuid.hex}"),
                         "run_id": str(run_uuid)}, actor={"type": "runtime"},
-                    payload={"reason_code": "company_approval_required"})])
+                    payload={"reason_code": reason})])
             terminal_envelope = serialize_session_event(rows[0], audience="direct_user")
         await _project_agent_team_terminal_state(
             db=db,

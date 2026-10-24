@@ -1437,3 +1437,119 @@ async def test_terminal_boundary_outbox_delivers_after_draining_backlog_beyond_s
     # The drain projects the backlog in transcript order, then the delivered
     # boundary seals the turn's segment behind it.
     assert [event.content for event in events] == [*fx.contents, "canonical_terminal_boundary"]
+
+
+@pytest.mark.parametrize("child_status,valid_child_scope", [("completed", True), ("failed", True), ("completed", False)])
+async def test_child_return_keeps_parent_segment_owner_and_child_provenance(
+    owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, child_status, valid_child_scope,
+) -> None:
+    """A child result in its parent transcript cannot acquire the parent's segment."""
+    from sqlalchemy import select
+    from app.memory.t0.ledger import append_t0_session_event, replay_t0_session_events
+    from app.models.agent import Agent
+    from app.models.chat_session import ChatSession
+    from app.models.chat_transcript_event import ChatTranscriptEvent
+    from app.models.runtime_task import RuntimeTask
+    from app.services import runtime_control_bus, tenant_resolver
+
+    fx = await _prepare_boundary_mismatch_session(
+        owner_sessionmaker, tmp_path, incoming_task_row=True,
+        incoming_task_type="delegation", incoming_status=child_status,
+        incoming_completed_at=datetime.now(timezone.utc),
+    )
+    child_agent_id, child_session_id = uuid.uuid4(), uuid.uuid4()
+    async with owner_sessionmaker() as db:
+        db.add(Agent(id=child_agent_id, tenant_id=fx.tenant_id, name="Return Child", creator_id=fx.user_id))
+        await db.flush()
+        db.add(ChatSession(id=child_session_id, agent_id=child_agent_id if valid_child_scope else fx.agent_id, tenant_id=fx.tenant_id, user_id=fx.user_id))
+        await db.flush()
+        child = await db.get(RuntimeTask, fx.incoming_run_id)
+        child.child_agent_id, child.child_session_id = child_agent_id, str(child_session_id)
+        child.root_runtime_task_id = fx.owner_run_id
+        # Match the two canonical parent-return frames emitted by the orchestrator.
+        for event, kind in zip(fx.incoming_events, (f"runtime_action_{child_status}", "child_session")):
+            row = await db.get(ChatTranscriptEvent, event.event_id)
+            row.actor_type, row.event_type = "system", kind
+            row.metadata_json = {**row.metadata_json, "source": "agent", "role": "system",
+                "task_id": str(child.id), "runtime_task_id": str(child.id),
+                "child_session_id": str(child_session_id), "parent_session_id": str(fx.session_id)}
+        await db.commit()
+    _patch_owner_recovery_lane(monkeypatch, app_user_sessionmaker, tmp_path)
+
+    async def resolve(event_id, **_kwargs):
+        assert event_id in {e.event_id for e in fx.incoming_events}
+        return fx.tenant_id
+
+    monkeypatch.setattr(tenant_resolver, "resolve_tenant_for_transcript_event", resolve)
+    if not valid_child_scope:
+        assert not await runtime_control_bus.bridge_transcript_event_to_t0(
+            transcript_event_id=fx.incoming_events[0].event_id, attempts=1)
+        events = replay_t0_session_events(agent_id=fx.agent_id, session_id=fx.session_id, data_root=tmp_path)
+        assert len(events) == 1 and events[0].runtime_task_id == fx.owner_run_id.hex
+        return
+    for event in fx.incoming_events:
+        assert await runtime_control_bus.bridge_transcript_event_to_t0(transcript_event_id=event.event_id, attempts=1)
+    events = replay_t0_session_events(agent_id=fx.agent_id, session_id=fx.session_id, data_root=tmp_path)
+    assert len(events) == 3 and {e.segment_id for e in events} == {fx.owner_segment_id}
+    assert events[0].runtime_task_id == fx.owner_run_id.hex
+    for event in events[1:]:
+        assert event.runtime_task_id is None and event.turn_id is None
+        assert event.metadata["t0_bridge_joined_segment_run_id"] == str(fx.incoming_run_id)
+    # The same task owns its execution transcript, independently of the parent.
+    own = append_t0_session_event(agent_id=child_agent_id, session_id=child_session_id,
+        tenant_id=fx.tenant_id, runtime_task_id=fx.incoming_run_id, event_type="run_boundary",
+        content="Child execution boundary", data_root=tmp_path)
+    assert replay_t0_session_events(agent_id=child_agent_id, session_id=child_session_id,
+        data_root=tmp_path)[0].runtime_task_id == fx.incoming_run_id.hex
+    assert own.segment_id != fx.owner_segment_id
+    async with owner_sessionmaker() as db:
+        child = await db.get(RuntimeTask, fx.incoming_run_id)
+        assert child.status == child_status and child.terminal_boundary_generation == 1
+        assert (await db.get(RuntimeTask, fx.owner_run_id)).status == "running"
+        rows = (await db.execute(select(ChatTranscriptEvent).where(
+            ChatTranscriptEvent.id.in_([e.event_id for e in fx.incoming_events])))).scalars().all()
+        assert all(r.projection_status == "projected" and r.run_id == child.id for r in rows)
+    before = [e.event_id for e in events]
+    assert await runtime_control_bus.bridge_transcript_event_to_t0(
+        transcript_event_id=fx.incoming_events[0].event_id, attempts=1)
+    assert [e.event_id for e in replay_t0_session_events(agent_id=fx.agent_id,
+        session_id=fx.session_id, data_root=tmp_path)] == before
+    # The real parent cancellation can now drain this prefix and seal its own turn.
+    from app.models.runtime_terminal_boundary_outbox import RuntimeTerminalBoundaryOutbox
+    from app.services import web_chat_runtime
+    from app.services.runtime_terminal_boundary_outbox import ClaimedTerminalBoundary
+    from app.services.web_terminal_boundary_processor import WebTerminalBoundaryProcessor
+    from tests.services.test_web_chat_runtime_failure_event import _install_finalizer_fakes
+
+    enqueue = web_chat_runtime._enqueue_web_terminal_boundary
+    broadcasts = _install_finalizer_fakes(owner_sessionmaker, monkeypatch, tenant_id=fx.tenant_id)
+    monkeypatch.setattr(web_chat_runtime, "_enqueue_web_terminal_boundary", enqueue)
+    from app import database
+    monkeypatch.setattr(web_chat_runtime, "tenant_scoped_session", lambda tenant:
+        database.tenant_scoped_session(tenant, session_factory=app_user_sessionmaker, require_tenant=True))
+    assert await web_chat_runtime._finalize_web_chat_run_without_assistant(run_uuid=fx.owner_run_id,
+        agent_id=fx.agent_id, session_id=str(fx.session_id), status="killed", result_summary="runtime cancelled")
+    async with owner_sessionmaker() as db:
+        boundary = await db.scalar(select(RuntimeTerminalBoundaryOutbox).where(
+            RuntimeTerminalBoundaryOutbox.runtime_task_id == fx.owner_run_id))
+        fields = {key: getattr(boundary, key) for key in ["id", "tenant_id", "runtime_task_id", "agent_id",
+            "session_id", "event_kind", "terminal_status", "authority_ref", "authority_id", "binding_sha256", "idempotency_key"]}
+        item = ClaimedTerminalBoundary(**fields, binding=boundary.binding_json, claim_token=uuid.uuid4(), attempt=1)
+    terminal_id = uuid.UUID(item.binding["terminal_event_id"])
+
+    async def resolve_terminal(event_id, **_kwargs):
+        assert event_id in {terminal_id, *(e.event_id for e in fx.incoming_events)}
+        return fx.tenant_id
+
+    async def no_advisory(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(tenant_resolver, "resolve_tenant_for_transcript_event", resolve_terminal)
+    processor = WebTerminalBoundaryProcessor(session_factory=app_user_sessionmaker, data_root=tmp_path,
+        bridge_attempts=1, emit_advisory_hook=no_advisory)
+    receipt = await processor(item)
+    assert receipt["terminal_event_id"] == str(terminal_id)
+    assert receipt["t0_boundary_id"] == str(boundary.id)
+    assert broadcasts[0]["kind"] == "run.cancelled"
+    assert replay_t0_session_events(agent_id=fx.agent_id, session_id=fx.session_id,
+        data_root=tmp_path)[-1].metadata["terminal_boundary_id"] == str(boundary.id)

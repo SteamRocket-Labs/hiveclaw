@@ -371,6 +371,30 @@ async def _incoming_transcript_run_is_terminal_nonboundary(
     )
 
 
+async def _is_child_task_parent_projection(db: AsyncSession, *, transcript_event: Any) -> bool:
+    """A scoped child return joins its parent turn without becoming its owner."""
+    from app.models.chat_session import ChatSession
+    from app.models.runtime_task import RuntimeTask
+
+    if (getattr(transcript_event, "actor_type", None) != "system"
+        or transcript_event.event_type not in {"runtime_action_completed", "runtime_action_failed",
+            "runtime_action_blocked", "child_session"}
+        or (transcript_event.metadata_json or {}).get("source") != "agent"):
+        return False
+    run_id = _uuid_or_none(transcript_event.run_id)
+    if run_id is None:
+        return False
+    task = await db.scalar(select(RuntimeTask).where(RuntimeTask.id == run_id,
+        RuntimeTask.tenant_id == transcript_event.tenant_id,
+        RuntimeTask.parent_agent_id == transcript_event.agent_id,
+        RuntimeTask.parent_session_id == str(transcript_event.session_id)))
+    child_session_id = _uuid_or_none(task.child_session_id) if task is not None else None
+    if child_session_id is None or child_session_id == transcript_event.session_id or task.child_agent_id is None:
+        return False
+    return await db.scalar(select(ChatSession.id).where(ChatSession.id == child_session_id,
+        ChatSession.tenant_id == transcript_event.tenant_id, ChatSession.agent_id == task.child_agent_id)) is not None
+
+
 async def _is_settled_question_followup(db: AsyncSession, *, transcript_event: Any) -> bool:
     """A user review after a delivered turn cannot reopen that turn's segment."""
     from app.models.runtime_task import RuntimeTask
@@ -536,7 +560,8 @@ async def bridge_transcript_event_to_t0(
                                         and source == "remote_a2a_return"
                                     )
                                     t0_result = _append_t0_event(join_active_segment=session_delivery
-                                        or await _is_settled_question_followup(db, transcript_event=transcript_event))
+                                        or await _is_settled_question_followup(db, transcript_event=transcript_event)
+                                        or await _is_child_task_parent_projection(db, transcript_event=transcript_event))
                                 except T0SegmentBoundaryPending as boundary_error:
                                     # Three disjoint recovery cases; every
                                     # unproven fact still re-raises and fails

@@ -1001,14 +1001,13 @@ async def authorize_workspace_execution_inputs(request) -> list[dict]:
 
 
 async def authorize_workspace_receipt_read(request):
-    """Recheck known receipt dependencies under the actual native Agent principal."""
+    """Refuse unverified workspace bodies; recheck receipts as the actual Agent."""
     from dataclasses import replace
     from sqlalchemy.exc import SQLAlchemyError
     from app.core.resource_authority import normalize_workspace_resource_path
     from app.database import tenant_scoped_session
     from app.services.workspace_resource_authority import WorkspaceAuthorityScope, WorkspaceInputRead
     from app.services.session_tool_runtime import _sha256
-    from app.tools.result_envelope import render_tool_error
 
     if request.tool_name not in {"read_file", "read_document", "exit_plan_mode"} and not (
         request.tool_name == "fs_read" and str(request.arguments.get("mode") or "text").strip().lower() in {"text", "document"}
@@ -1019,6 +1018,7 @@ async def authorize_workspace_receipt_read(request):
         # invocation-bound receipt. A mutable work-copy receipt is unrelated.
         return None
     context = request.context
+    path = None
     try:
         raw_path = request.arguments.get("path")
         if request.tool_name == "exit_plan_mode":
@@ -1041,7 +1041,8 @@ async def authorize_workspace_receipt_read(request):
         async with tenant_scoped_session(tenant_id) as db:
             receipt = await latest_workspace_receipt(db, tenant_id, context.agent_id, path)
             if receipt is None:
-                return None  # Legacy carrier migration remains separate; no receipt is invented.
+                raise ContentInputReceiptError("workspace_content_unverified",
+                    "The workspace file has no independently bound content receipt.", 403)
             if not isinstance(scope, WorkspaceAuthorityScope) or scope.agent_id != context.agent_id or scope.user_id != context.user_id:
                 raise ContentInputReceiptError("content_source_access_denied", "The runtime file scope does not match.", 403)
             await _validate_workspace_receipt_inputs(db, receipt, runtime_request=request,
@@ -1056,12 +1057,24 @@ async def authorize_workspace_receipt_read(request):
     except (ContentInputReceiptError, OSError, ValueError, SQLAlchemyError) as exc:
         status = exc.status_code if isinstance(exc, ContentInputReceiptError) else 503
         code = exc.code if isinstance(exc, ContentInputReceiptError) else "content_source_unavailable"
-        return render_tool_error(tool_name=request.tool_name,
-            error_class="auth_or_permission" if status == 403 else "provider_unavailable",
-            message="This file's source receipt cannot authorize model consumption.", provider="content_input_receipt",
-            http_status=status, retryable=status == 503,
-            actionable_hint="Restore the scoped source grant or regenerate from current authorized inputs.",
-            extra={"reason_code": code, "outcome": "denied" if status == 403 else "unavailable"})
+        result = _workspace_read_denial(request.tool_name, status, code)
+        if path is not None and path.startswith("workspace/"):
+            from app.tools.result_envelope import ToolContentEnvelope
+
+            return ToolContentEnvelope(text=result, metadata={"native_read_denial": {
+                "kind": "workspace_source_read_denied", "path": path, "http_status": status, "reason_code": code}})
+        return result
+
+
+def _workspace_read_denial(tool_name, status, code):
+    from app.tools.result_envelope import render_tool_error
+
+    return render_tool_error(tool_name=tool_name,
+        error_class="auth_or_permission" if status == 403 else "provider_unavailable",
+        message="This file's source receipt cannot authorize model consumption.", provider="content_input_receipt",
+        http_status=status, retryable=status == 503,
+        actionable_hint="Restore the scoped source grant or regenerate from current authorized inputs.",
+        extra={"reason_code": code, "outcome": "denied" if status == 403 else "unavailable"})
 
 
 async def validate_team_memory_receipt(db, tenant_id: uuid.UUID, user, workspace_key: str, entry, receipts: dict):
@@ -1168,7 +1181,8 @@ def record_workspace_receipt(db, tenant_id: uuid.UUID, agent_id: uuid.UUID, path
 
 
 async def persist_workspace_execution_evidence(*, context, tool_name, tool_call_id, arguments, result, states, lineage, errors,
-    input_read=None, descriptor_writes=None, skill_read=None, native_empty_read=None, native_directory_read=None):
+    input_read=None, descriptor_writes=None, skill_read=None, native_empty_read=None, native_directory_read=None,
+    native_read_denial=None):
     """Persist mechanical executor facts; this is not an input-authority receipt."""
     from datetime import datetime, timezone
     from app.database import tenant_scoped_session
@@ -1273,6 +1287,17 @@ async def persist_workspace_execution_evidence(*, context, tool_name, tool_call_
                 proof["source_hash"] = _sha256(proof)
                 channel, metadata_key = "native-directory-read", "native_directory_read_evidence"
                 evidence_id = uuid.uuid5(invocation.id, f"native-directory-read:{proof['source_hash']}")
+            if native_read_denial is not None:
+                if (any(value is not None for value in (input_read, skill_read, native_empty_read, native_directory_read))
+                    or not _native_read_denial_matches(tool_name, arguments, native_read_denial,
+                        content_hash=proof["tool_result_hash"])):
+                    raise ContentInputReceiptError("native_read_denial_unverified", "The no-body refusal does not match.")
+                proof = {key: value for key, value in proof.items() if key not in {
+                    "states", "lineage", "errors", "descriptor_writes", "execution_inputs"}}
+                proof.update(schema="hive.native_read_denial_evidence.v1", observation=native_read_denial)
+                proof["source_hash"] = _sha256(proof)
+                channel, metadata_key = "native-read-denial", "native_read_denial_evidence"
+                evidence_id = uuid.uuid5(invocation.id, f"native-read-denial:{proof['source_hash']}")
             existing = await db.get(InvocationSpan, evidence_id)
             if existing is not None:
                 if existing.metadata_json.get(metadata_key) != proof:
@@ -1373,13 +1398,42 @@ async def load_native_directory_read_evidence(db, **kwargs):
     return await _load_native_read_evidence(db, directory=True, **kwargs)
 
 
-async def _load_native_read_evidence(db, *, directory, agent_id, invocation, model_result, arguments, content_hash, capture):
+def _native_read_denial_matches(tool_name, arguments, observation, *, content_hash):
+    from app.core.resource_authority import normalize_workspace_resource_path
+    from app.services.session_tool_runtime import _sha256
+
+    if (tool_name not in {"read_file", "read_document", "fs_read", "exit_plan_mode"}
+        or not isinstance(arguments, dict) or "original_attachment_id" in arguments
+        or not isinstance(observation, dict) or set(observation) != {"kind", "path", "http_status", "reason_code"}
+        or observation.get("kind") != "workspace_source_read_denied"
+        or type(observation.get("http_status")) is not int or observation["http_status"] not in {403, 409, 503}
+        or not isinstance(observation.get("reason_code"), str) or not observation["reason_code"]):
+        return False
+    try:
+        path = normalize_workspace_resource_path(observation["path"])
+        if not path.startswith("workspace/") or path != observation["path"]:
+            return False
+        if tool_name != "exit_plan_mode" and path != normalize_workspace_resource_path(arguments.get("path", "")):
+            return False
+        if tool_name == "fs_read" and str(arguments.get("mode") or "text").strip().lower() not in {"text", "document"}:
+            return False
+    except (ValueError, TypeError):
+        return False
+    return content_hash == _sha256(_workspace_read_denial(tool_name, observation["http_status"], observation["reason_code"]))
+
+
+async def load_native_read_denial_evidence(db, **kwargs):
+    return await _load_native_read_evidence(db, directory=False, denial=True, **kwargs)
+
+
+async def _load_native_read_evidence(db, *, directory, agent_id, invocation, model_result, arguments, content_hash, capture,
+    denial=False):
     from app.models.invocation_span import InvocationSpan
     from app.services.session_tool_runtime import _sha256
 
-    channel_name = "native-directory-read" if directory else "native-empty-read"
+    channel_name = "native-read-denial" if denial else "native-directory-read" if directory else "native-empty-read"
     kind = channel_name.replace("-", "_")
-    label = "directory" if directory else "empty"
+    label = "denied" if denial else "directory" if directory else "empty"
     if not isinstance(capture, dict) or capture.get("status") != "captured":
         return {"status": "unavailable", "reason_code": f"{kind}_capture_unavailable"}
     try:
@@ -1402,7 +1456,8 @@ async def _load_native_read_evidence(db, *, directory, agent_id, invocation, mod
         or proof.get("authority_snapshot_hash") != invocation.authority_snapshot_hash
         or proof.get("effective_args_hash") != _sha256({"tool_name": invocation.tool_name, "arguments": arguments})
         or proof.get("tool_result_hash") != content_hash
-        or not (_native_directory_read_matches(invocation.tool_name, arguments, proof.get("observation")) if directory
+        or not (_native_read_denial_matches(invocation.tool_name, arguments, proof.get("observation"), content_hash=content_hash) if denial
+            else _native_directory_read_matches(invocation.tool_name, arguments, proof.get("observation")) if directory
             else _native_empty_read_matches(invocation.tool_name, arguments, proof.get("observation"),
                 session_id=str(invocation.session_id)))
         or proof.get("source_hash") != _sha256({key: value for key, value in proof.items() if key != "source_hash"})

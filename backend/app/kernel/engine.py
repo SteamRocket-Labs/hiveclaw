@@ -1834,6 +1834,8 @@ def _tool_execution_evidence(
         if isinstance(trace.get("native_empty_read_evidence"), dict) else None,
         "native_directory_read_evidence": dict(trace["native_directory_read_evidence"])
         if isinstance(trace.get("native_directory_read_evidence"), dict) else None,
+        "native_read_denial_evidence": dict(trace["native_read_denial_evidence"])
+        if isinstance(trace.get("native_read_denial_evidence"), dict) else None,
         "agent_directory_sources": list(trace["agent_directory_sources"])
         if isinstance(trace.get("agent_directory_sources"), list) else None,
     }

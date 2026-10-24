@@ -109,7 +109,7 @@ async def _start_feishu_creation_work(seed, app_user_sessionmaker, monkeypatch):
         return command.id
 
 
-@pytest.mark.parametrize("input_case", ["complete", "unbound", "revoked", "first_task", "first_task_unbound", "first_task_revoked", "first_task_refined", "first_task_delivery", "first_task_parent_model", "first_task_refined_native", "first_task_native_creation", "first_task_fresh_employee", "first_task_slow_provider", "first_task_saved_reopen", "first_task_question", "first_task_question_after_write", "first_task_feishu_question", "first_task_feishu_quoted_question", "first_task_feishu_question_source_changed", "first_task_feishu_question_body_changed", "first_task_feishu_question_already_answered", "first_task_feishu_question_projection_missing", "first_task_feishu_question_recipient_changed", "first_task_feishu_question_legacy_status", "first_task_feishu_permission_allow", "first_task_feishu_permission_deny", "first_task_feishu_permission_cancel", "first_task_feishu_permission_unknown", "first_task_feishu_permission_expired", "first_task_feishu_permission_source_changed", "delegation_permission_allow", "first_task_recall", "first_task_ledger", "first_task_ledger_unknown", "first_task_parent_status", "first_task_parent_status_unknown", "first_task_child_command", "first_task_child_code", "first_task_child_command_then_write", "first_task_child_code_then_write", "first_task_creator_task_inventory", "first_task_creator_readiness_feedback", "first_task_creator_readiness_resume", "first_task_parent_creation_result", "first_task_parent_historical_creation_result", "first_task_parent_historical_creation_unknown", "first_task_parent_result_denial", "first_task_parent_public_directory", "first_task_child_readback", "first_task_child_glob", "first_task_workspace_listing", "first_task_workspace_listing_alias", "first_task_completion_sweep", "first_task_parent_wait_legacy", "first_task_parent_code_legacy", "first_task_parity_list", "first_task_parity_ledger", "first_task_parity_ledger_unknown", "first_task_context", "first_task_discovery", "first_task_unverified_memory", "first_task_explicit_unverified_memory", "first_task_feishu_permission_channel_allow", "first_task_feishu_permission_channel_deny", "first_task_feishu_permission_channel_unknown", "first_task_feishu_permission_channel_legacy", "first_task_feishu_permission_channel_scope", "first_task_feishu_permission_channel_feedback_retry", "first_task_feishu_progress"])
+@pytest.mark.parametrize("input_case", ["first_task_parent_legacy_workspace_read", "complete", "unbound", "revoked", "first_task", "first_task_unbound", "first_task_revoked", "first_task_refined", "first_task_delivery", "first_task_parent_model", "first_task_refined_native", "first_task_native_creation", "first_task_fresh_employee", "first_task_slow_provider", "first_task_saved_reopen", "first_task_question", "first_task_question_after_write", "first_task_feishu_question", "first_task_feishu_quoted_question", "first_task_feishu_question_source_changed", "first_task_feishu_question_body_changed", "first_task_feishu_question_already_answered", "first_task_feishu_question_projection_missing", "first_task_feishu_question_recipient_changed", "first_task_feishu_question_legacy_status", "first_task_feishu_permission_allow", "first_task_feishu_permission_deny", "first_task_feishu_permission_cancel", "first_task_feishu_permission_unknown", "first_task_feishu_permission_expired", "first_task_feishu_permission_source_changed", "delegation_permission_allow", "first_task_recall", "first_task_ledger", "first_task_ledger_unknown", "first_task_parent_status", "first_task_parent_status_unknown", "first_task_child_command", "first_task_child_code", "first_task_child_command_then_write", "first_task_child_code_then_write", "first_task_creator_task_inventory", "first_task_creator_readiness_feedback", "first_task_creator_readiness_resume", "first_task_parent_creation_result", "first_task_parent_historical_creation_result", "first_task_parent_historical_creation_unknown", "first_task_parent_result_denial", "first_task_parent_public_directory", "first_task_child_readback", "first_task_child_glob", "first_task_workspace_listing", "first_task_workspace_listing_alias", "first_task_completion_sweep", "first_task_parent_wait_legacy", "first_task_parent_code_legacy", "first_task_parity_list", "first_task_parity_ledger", "first_task_parity_ledger_unknown", "first_task_context", "first_task_discovery", "first_task_unverified_memory", "first_task_explicit_unverified_memory", "first_task_feishu_permission_channel_allow", "first_task_feishu_permission_channel_deny", "first_task_feishu_permission_channel_unknown", "first_task_feishu_permission_channel_legacy", "first_task_feishu_permission_channel_scope", "first_task_feishu_permission_channel_feedback_retry", "first_task_feishu_progress"])
 async def test_governed_delegation_preserves_its_parent_instruction_origin(
     owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, input_case, migrated_pg_url,
 ):
@@ -127,6 +127,7 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
     from app.services.secrets_provider import get_secrets_provider
     from app.services.web_chat_runtime import _persist_tool_call
 
+    legacy_workspace_read_case = input_case == "first_task_parent_legacy_workspace_read"
     glob_case = input_case == "first_task_child_glob"
     creator_resume_case = input_case == "first_task_creator_readiness_resume"
     creator_readiness_case = creator_resume_case or input_case == "first_task_creator_readiness_feedback"
@@ -136,7 +137,7 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
     completion_sweep_case = input_case == "first_task_completion_sweep"
     legacy_code_case = input_case == "first_task_parent_code_legacy"
     legacy_wait_case = legacy_code_case or input_case == "first_task_parent_wait_legacy"
-    workspace_listing_case = legacy_wait_case or input_case in {"first_task_workspace_listing", "first_task_workspace_listing_alias"}
+    workspace_listing_case = legacy_workspace_read_case or legacy_wait_case or input_case in {"first_task_workspace_listing", "first_task_workspace_listing_alias"}
     listing_tool = "fs_list" if input_case == "first_task_workspace_listing_alias" else "list_files"
     parity_list_case = input_case == "first_task_parity_list"
     parity_sequence_case = input_case in {"first_task_parity_ledger", "first_task_parity_ledger_unknown"}
@@ -256,7 +257,7 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
         if ledger_case:
             db.add(CapabilityPolicy(tenant_id=seed["tenant_id"], capability="agent.task.track", allowed=True,
                 requires_approval=False))
-        if glob_case:
+        if glob_case or legacy_workspace_read_case:
             db.add(CapabilityPolicy(tenant_id=seed["tenant_id"], capability="workspace.file.read", allowed=True,
                 requires_approval=False))
         if not permission_case:
@@ -504,6 +505,15 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
         if creator_task_inventory_case:
             creator_client.script[0]["tool_calls"].append({"id": "creator-task-inventory", "type": "function",
                 "function": {"name": "list_async_tasks", "arguments": "{}"}})
+        if legacy_workspace_read_case:
+            creator_client.script[1:1] = [
+                {"tool_calls": [{"id": "creator-old-workspace-read", "type": "function", "function": {
+                    "name": "read_file", "arguments": json.dumps({"path": prior_path})}}], "finish_reason": "tool_calls"},
+                {"tool_calls": [{"id": f"creator-after-denial-todo-{index}", "type": "function", "function": {
+                    "name": "track_todo", "arguments": json.dumps({"action": "add", "title": title})}}
+                    for index, title in enumerate(("Create the employee", "Start the explicit first task once",
+                        "Consume the returned report"))], "finish_reason": "tool_calls"},
+            ]
         if creator_readiness_case:
             creator_client.script.insert(2, {"tool_calls": [{"id": "creator-early-first-task", "type": "function",
                 "function": {"name": "delegate_to_agent", "arguments": "{}"}}], "finish_reason": "tool_calls"})
@@ -583,11 +593,17 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
             listed = json.dumps(creator_client.requests[1]["messages"])
             assert "prior-unverified-report.md" in listed and prior_body not in listed
             assert (seed["agent_root"] / prior_path).read_text() == prior_body
+        if legacy_workspace_read_case:
+            after_read = json.dumps(creator_client.requests[2]["messages"])
+            assert prior_body not in after_read and "workspace_content_unverified" in after_read
+            assert "regenerate" in after_read
         if discovery_case:
             if creator_readiness_case:
                 assert len(creator_client.requests) == 4
             elif parity_sequence_case:
                 assert len(creator_client.requests) == 4
+            elif legacy_workspace_read_case:
+                assert len(creator_client.requests) == 5
             else:
                 assert len(creator_client.requests) == 3
         if ledger_unknown_case:
@@ -655,6 +671,8 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
                     assert len(creating_rounds) == 4 and all(row.model_request_snapshot_json["input_bindings"]["dependency_coverage"]["complete"] for row in creating_rounds)
                 elif parity_sequence_case:
                     assert len(creating_rounds) == 4 and all(row.model_request_snapshot_json["input_bindings"]["dependency_coverage"]["complete"] for row in creating_rounds)
+                elif legacy_workspace_read_case:
+                    assert len(creating_rounds) == 5 and all(row.model_request_snapshot_json["input_bindings"]["dependency_coverage"]["complete"] for row in creating_rounds)
                 else:
                     assert len(creating_rounds) == 3 and all(row.model_request_snapshot_json["input_bindings"]["dependency_coverage"]["complete"] for row in creating_rounds)
             else:
@@ -728,6 +746,57 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
                 assert (await _origin_dependencies(db, tenant_id=seed["tenant_id"], agent_id=seed["agent_id"], ref=ref))[1]
                 assert await db.scalar(select(ContentInputReceipt.id).where(ContentInputReceipt.tenant_id == seed["tenant_id"],
                     ContentInputReceipt.carrier_ref == workspace_artifact_ref(seed["agent_id"], prior_path))) is None
+            if legacy_workspace_read_case:
+                from app.services.content_input_receipts import ContentInputReceiptError, load_native_read_denial_evidence
+                from app.services.employee_creation_sources import _owned_context_source
+                from app.services.session_model_inputs import tool_result_source_hash
+
+                read = await db.scalar(select(SessionToolInvocation).where(SessionToolInvocation.run_id == seed["run_id"],
+                    SessionToolInvocation.provider_tool_use_id == "creator-old-workspace-read"))
+                read_event = await db.get(ChatTranscriptEvent, read.result_event_id)
+                read_payload = _event_payload(read_event)
+                denial = read_payload["metadata"]["native_read_denial_receipt"]
+                assert denial["status"] == "verified"
+                assert prior_body not in json.dumps(creator_client.requests)
+                read_model = await db.scalar(select(SessionModelResult).where(
+                    SessionModelResult.run_id == seed["run_id"], SessionModelResult.provider_request_id == read.provider_request_id))
+                kwargs = {"agent_id": seed["agent_id"], "invocation": read, "model_result": read_model,
+                    "arguments": read.effective_arguments_json or read.provider_arguments_json,
+                    "content_hash": read_payload["content_hash"],
+                    "capture": {"status": "captured", "receipt_ref": denial["evidence_ref"]}}
+                assert await load_native_read_denial_evidence(db, **kwargs) == denial
+                for changed in ({"agent_id": uuid4()}, {"content_hash": "0" * 64},
+                    {"arguments": {"path": "workspace/another.md"}}):
+                    with pytest.raises(ContentInputReceiptError):
+                        await load_native_read_denial_evidence(db, **{**kwargs, **changed})
+                fields = {key: getattr(read, key) for key in ("id", "tenant_id", "session_id", "run_id", "tool_name",
+                    "authority_snapshot_hash")}
+                with pytest.raises(ContentInputReceiptError):
+                    await load_native_read_denial_evidence(db, **{**kwargs,
+                        "invocation": SimpleNamespace(**{**fields, "session_id": uuid4()})})
+                assert (await load_native_read_denial_evidence(db, **{**kwargs, "capture": None}))["status"] == "unavailable"
+                ref = f"session-tool-result:{read.id}"
+                assert (await _origin_dependencies(db, tenant_id=seed["tenant_id"], agent_id=seed["agent_id"], ref=ref))[1]
+                dependency = {"source_kind": "session_tool_invocation", "source_id": str(read.id),
+                    "source_version": tool_result_source_hash(read_payload)}
+                scope = {"tenant_id": seed["tenant_id"], "agent_id": seed["agent_id"],
+                    "session_id": seed["session_id"], "user_id": seed["user_id"]}
+                assert await _owned_context_source(db, dependency=dependency, **scope)
+                assert not await _owned_context_source(db, dependency={**dependency, "source_version": "0" * 64}, **scope)
+                assert not await _owned_context_source(db, dependency=dependency, **{**scope, "session_id": uuid4()})
+                before = deepcopy(read_event.metadata_json)
+                payload = deepcopy(before)
+                payload["v2_payload"]["metadata"].pop("native_read_denial_receipt")
+                async with owner_sessionmaker() as writer:
+                    (await writer.get(ChatTranscriptEvent, read_event.id)).metadata_json = payload
+                    await writer.commit()
+                await db.refresh(read_event)
+                assert not (await _origin_dependencies(db, tenant_id=seed["tenant_id"], agent_id=seed["agent_id"], ref=ref))[1]
+                async with owner_sessionmaker() as writer:
+                    (await writer.get(ChatTranscriptEvent, read_event.id)).metadata_json = before
+                    await writer.commit()
+                await db.refresh(read_event)
+                assert (await _origin_dependencies(db, tenant_id=seed["tenant_id"], agent_id=seed["agent_id"], ref=ref))[1]
     else:
         execution_trace = {}
         from app.core.execution_context import clear_execution_identity, get_execution_identity, set_delegated_user_identity, set_execution_identity

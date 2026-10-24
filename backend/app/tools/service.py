@@ -1354,15 +1354,22 @@ class ToolRuntimeService:
                     trace_metadata_sink.pop("skill_input_evidence", None)
                     trace_metadata_sink.pop("native_empty_read_evidence", None)
                     trace_metadata_sink.pop("native_directory_read_evidence", None)
+                    trace_metadata_sink.pop("native_read_denial_evidence", None)
                     trace_metadata_sink.pop("agent_directory_sources", None)
                     if workspace_mutating:
                         for key in ("workspace_mutation_evidence_captured", "workspace_mutation_states",
                             "workspace_mutation_state_errors", "workspace_mutation_lineage", "workspace_execution_evidence"):
                             trace_metadata_sink.pop(key, None)
                 input_read = await authorize_workspace_receipt_read(request)
-                if isinstance(input_read, str):
+                if isinstance(input_read, (str, ToolContentEnvelope)):
                     if trace_metadata_sink is not None:
                         trace_metadata_sink["workspace_input_evidence"] = {"status": "unavailable"}
+                        if isinstance(input_read, ToolContentEnvelope) and isinstance(input_read.metadata.get("native_read_denial"), dict):
+                            from app.services.content_input_receipts import persist_workspace_execution_evidence
+
+                            trace_metadata_sink["native_read_denial_evidence"] = await persist_workspace_execution_evidence(
+                                context=context, tool_name=tool_name, tool_call_id=tool_call_id, arguments=arguments,
+                                result=input_read, states={}, lineage=[], errors={}, native_read_denial=input_read.metadata["native_read_denial"])
                     return input_read
                 input_denials = await authorize_workspace_execution_inputs(request)
                 from app.services.workspace_resource_authority import (

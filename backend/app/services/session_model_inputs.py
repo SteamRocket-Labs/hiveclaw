@@ -729,6 +729,20 @@ async def _resolve_origin_dependencies(db, *, tenant_id, agent_id, ref):
             invocation.effective_arguments_json or invocation.provider_arguments_json)
         return _unique_dependencies([*dependencies, *([dependency] if dependency else [])]), bool(dependency) and inherited_complete
     arguments = invocation.effective_arguments_json or invocation.provider_arguments_json
+    if invocation.tool_name in {"read_file", "read_document", "fs_read", "exit_plan_mode"} and (
+        "native_read_denial_receipt" in (payload.get("metadata") or {})):
+        from app.services.content_input_receipts import load_native_read_denial_evidence
+
+        pointer = payload["metadata"]["native_read_denial_receipt"]
+        if not isinstance(pointer, dict) or pointer.get("status") != "verified":
+            return _unique_dependencies(dependencies), False
+        try:
+            bound = await load_native_read_denial_evidence(db, agent_id=agent_id, invocation=invocation,
+                model_result=model, arguments=arguments, content_hash=payload["content_hash"],
+                capture={"status": "captured", "receipt_ref": pointer.get("evidence_ref")})
+            return _unique_dependencies(dependencies), inherited_complete and bound == pointer
+        except (ContentInputReceiptError, ValueError, TypeError):
+            return _unique_dependencies(dependencies), False
     if invocation.tool_name in {"read_file", "read_document", "fs_read"} and "original_attachment_id" in arguments:
         from app.services.original_tool_sources import original_tool_result_sources
 

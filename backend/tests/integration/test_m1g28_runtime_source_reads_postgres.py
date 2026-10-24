@@ -23,8 +23,43 @@ async def _create(n, path, content):
 
 async def _read(n, tool, path):
     args = {"path": path, **({"mode": "document"} if tool == "fs_read_document" else {})}
-    return str(await n.service.execute("fs_read" if tool == "fs_read_document" else tool, args, agent_id=n.agent, user_id=n.user,
+    result = str(await n.service.execute("fs_read" if tool == "fs_read_document" else tool, args, agent_id=n.agent, user_id=n.user,
         session_id=str(n.session), runtime_task_id=str(n.run), emit_runtime_hooks=False))
+    try:
+        wire = json.loads(result)
+    except ValueError:
+        return result
+    # Successful working-copy reads carry source bytes inside the data field.
+    assert wire["ok"] is True and isinstance(wire["content"], str)
+    return wire["content"]
+
+
+@pytest.mark.parametrize("tool", ["read_file", "fs_read", "read_document", "fs_read_document"])
+async def test_native_reader_refuses_unreceipted_legacy_body_without_resigning_it(
+    native_workspace, app_user_sessionmaker, tool,  # noqa: F811
+):
+    from app.database import pin_rls_tenant_context
+    from app.services.workspace_resource_authority import register_workspace_path
+
+    n = native_workspace
+    path = "workspace/legacy-owned-report.md"
+    target = n.root / path
+    target.write_text("UNVERIFIED_OWNED_REPORT_BODY")
+    before = target.read_bytes()
+    async with app_user_sessionmaker() as db:
+        await pin_rls_tenant_context(db, n.tenant)
+        await register_workspace_path(db, tenant_id=n.tenant, agent_id=n.agent, path=path,
+            owner_user_id=n.user, root_session_id=n.session, source="synthetic_legacy_work",
+            content_hash=hashlib.sha256(before).hexdigest())
+        await db.commit()
+    result = await _read(n, tool, path)
+    assert before.decode() not in result and "workspace_content_unverified" in result
+    assert '"retryable": false' in result
+    assert target.read_bytes() == before
+    async with app_user_sessionmaker() as db:
+        await pin_rls_tenant_context(db, n.tenant)
+        assert not await db.scalar(select(ContentInputReceipt.id).where(
+            ContentInputReceipt.carrier_ref == f"{n.agent}\n{path}"))
 
 
 @pytest.mark.parametrize("tool", ["read_file", "fs_read", "read_document", "fs_read_document"])

@@ -8,6 +8,14 @@
   overflow: hidden;
 }
 
+.admin-reconcile-source-data {
+  max-height: 480px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: var(--text-row);
+}
+
 .admin-reconcile-header {
   padding: var(--space-5);
   border-bottom: 1px solid var(--border-subtle);

@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../core', () => ({
   get: vi.fn(async (url: string) => ({ url })),
@@ -7,6 +7,14 @@ vi.mock('../core', () => ({
 }));
 
 describe('adminApi runtime reconciliation adapter', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('opts in to input sources only on the selected task detail', async () => {
+    const { get } = await import('../core');
+    const { adminApi } = await import('./admin');
+    await adminApi.getRuntimeReconciliation('selected-task', { tenantId: 'tenant/1', includeInputSources: true });
+    expect(get).toHaveBeenLastCalledWith('/admin/runtime-reconciliation/selected-task?tenant_id=tenant%2F1&include_input_sources=true');
+  });
   it('assigns a tenantless user by email through the platform tenant API', async () => {
     const { put } = await import('../core');
     const { adminApi } = await import('./admin');

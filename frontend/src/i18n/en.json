@@ -4815,6 +4815,7 @@
       "openEvidence": "Open",
       "openUnavailable": "Open unavailable",
       "evidenceUnavailable": "Unavailable",
+      "inputSources": "Input sources",
       "copyFailed": "Could not copy evidence.",
       "acknowledgeToolEffect": "Acknowledge effect and stop",
       "confirmTriggerSuccess": "Confirm success",

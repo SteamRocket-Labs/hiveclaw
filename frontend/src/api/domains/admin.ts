@@ -66,6 +66,18 @@ export interface RuntimeReconciliationTask {
   created_at?: string | null;
   started_at?: string | null;
   completed_at?: string | null;
+  input_sources?: RuntimeInputSources;
+}
+
+export interface RuntimeInputSources {
+  schema: 'hive.runtime_input_sources.v1';
+  status: 'available' | 'empty' | 'unavailable';
+  source_authority: 'not_evaluated';
+  models: Record<string, unknown>[];
+  first_dependency_chain: Record<string, unknown>[];
+  compiler_witnesses?: Record<string, unknown>;
+  reason_code?: string;
+  chain_blocker?: string;
 }
 
 export type RuntimeReconciliationAction = 'mark_resolved' | 'archive' | 'retry' | 'acknowledge_tool_effect';
@@ -185,8 +197,8 @@ export const adminApi = {
     if (params.agentId) query.set('agent_id', params.agentId);
     return get<RuntimeReconciliationTask[]>(`/admin/runtime-reconciliation?${query.toString()}`);
   },
-  getRuntimeReconciliation: (taskId: string, params: { tenantId: string }) =>
-    get<RuntimeReconciliationTask>(`/admin/runtime-reconciliation/${taskId}?tenant_id=${encodeURIComponent(params.tenantId)}`),
+  getRuntimeReconciliation: (taskId: string, params: { tenantId: string; includeInputSources?: boolean }) =>
+    get<RuntimeReconciliationTask>(`/admin/runtime-reconciliation/${taskId}?tenant_id=${encodeURIComponent(params.tenantId)}${params.includeInputSources ? '&include_input_sources=true' : ''}`),
   applyRuntimeReconciliationAction: (
     taskId: string,
     params: {

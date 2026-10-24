@@ -320,6 +320,7 @@ async def get_runtime_reconciliation_task(
     *,
     task_id: str | uuid.UUID,
     tenant_id: uuid.UUID,
+    include_input_sources: bool = False,
 ) -> dict[str, Any] | None:
     try:
         runtime_task_id = _coerce_uuid(task_id)
@@ -339,11 +340,16 @@ async def get_runtime_reconciliation_task(
         limit=None,
     )
     projections_by_task = await _load_trigger_terminal_projections(db, tenant_id=tenant_id, tasks=(task,))
-    return runtime_reconciliation_view(
+    view = runtime_reconciliation_view(
         task,
         tool_effects=effects,
         terminal_projections=projections_by_task.get(task.id, []),
     )
+    if include_input_sources:
+        from app.services.runtime_input_diagnostics import runtime_input_diagnostics
+
+        view["input_sources"] = await runtime_input_diagnostics(db, task=task)
+    return view
 
 
 def _append_history(

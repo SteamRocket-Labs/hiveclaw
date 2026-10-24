@@ -4815,6 +4815,7 @@
       "openEvidence": "打开",
       "openUnavailable": "无法打开",
       "evidenceUnavailable": "不可用",
+      "inputSources": "输入来源",
       "copyFailed": "无法复制证据。",
       "acknowledgeToolEffect": "确认效果并停止旧任务",
       "confirmTriggerSuccess": "确认成功",

@@ -557,6 +557,46 @@ describe('AdminRuntimeReconciliationSection — projection repair (mounted)', ()
   });
 });
 
+describe('AdminRuntimeReconciliationSection — input source inspection', () => {
+  it('loads only the selected task on demand without invoking a recovery action', async () => {
+    const task = { ...makeTask('task-source-1', 'source-worker'), task_type: 'web_chat_turn' };
+    const inputSources = {
+      schema: 'hive.runtime_input_sources.v1' as const,
+      status: 'available' as const,
+      source_authority: 'not_evaluated' as const,
+      models: [{ model_result_id: 'selected-model', captured_dependency_coverage: { complete: false } }],
+      first_dependency_chain: [],
+    };
+    api.getRuntimeReconciliation.mockResolvedValue({ ...task, input_sources: inputSources });
+    render(<AdminRuntimeReconciliationSection initialTenantId="tenant-1" initialTasks={[task]} />);
+    expect(api.getRuntimeReconciliation).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Input sources — source-worker (task-sou)' }));
+    const region = await screen.findByRole('region', { name: 'Input sources — source-worker (task-sou)' });
+    await waitFor(() => expect(region.textContent).toContain('selected-model'));
+    expect(api.getRuntimeReconciliation).toHaveBeenCalledExactlyOnceWith('task-source-1', {
+      tenantId: 'tenant-1', includeInputSources: true,
+    });
+    expect(api.applyRuntimeReconciliationAction).not.toHaveBeenCalled();
+    expect(api.repairRuntimeReconciliationProjections).not.toHaveBeenCalled();
+  });
+
+  it('discards a late source detail after the selected tenant changes', async () => {
+    const task = { ...makeTask('task-source-2', 'old-source-worker'), task_type: 'web_chat_turn' };
+    const pending = deferred<RuntimeReconciliationTask>();
+    api.getRuntimeReconciliation.mockReturnValue(pending.promise);
+    render(<AdminRuntimeReconciliationSection initialTenantId="tenant-1" initialTasks={[task]} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Input sources — old-source-worker (task-sou)' }));
+    fireEvent.change(screen.getByLabelText('Tenant ID'), { target: { value: 'tenant-2' } });
+    pending.resolve({ ...task, input_sources: {
+      schema: 'hive.runtime_input_sources.v1', status: 'available', source_authority: 'not_evaluated',
+      models: [{ model_result_id: 'old-tenant-private-reference' }], first_dependency_chain: [],
+    } });
+    await waitFor(() => expect(screen.getByLabelText('Tenant ID').getAttribute('value')).toBe('tenant-2'));
+    expect(screen.queryByText(/old-tenant-private-reference/)).toBeNull();
+    expect(api.applyRuntimeReconciliationAction).not.toHaveBeenCalled();
+  });
+});
+
 describe('AdminRuntimeReconciliationSection — truthful queue loading (RC-10B production finding)', () => {
   // Production reproduction (deployed HEAD ec509c86, /admin/platform-settings):
   // PlatformDashboard mounts <AdminRuntimeReconciliationSection /> with no

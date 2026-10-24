@@ -385,13 +385,15 @@ async def list_runtime_reconciliation(
 async def get_runtime_reconciliation(
     task_id: uuid.UUID,
     tenant_id: uuid.UUID = Query(...),
+    include_input_sources: bool = Query(False),
     current_user: User = Depends(require_role("platform_admin")),
     db: AsyncSession = Depends(get_db),
 ):
     """Inspect one RuntimeTask reconciliation record."""
     del current_user
     await _pin_admin_tenant_scope(db, tenant_id)
-    payload = await get_runtime_reconciliation_task(db, task_id=task_id, tenant_id=tenant_id)
+    options = {"include_input_sources": True} if include_input_sources else {}
+    payload = await get_runtime_reconciliation_task(db, task_id=task_id, tenant_id=tenant_id, **options)
     if payload is None:
         raise HTTPException(status_code=404, detail="Runtime reconciliation task not found")
     return payload

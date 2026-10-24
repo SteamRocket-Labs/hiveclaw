@@ -9,6 +9,7 @@ import {
   type RuntimeTriggerDisposition,
 } from '../../api/domains/admin';
 import './AdminRuntimeReconciliationSection.css';
+import AdminRuntimeInputSources from './AdminRuntimeInputSources';
 
 const TRIGGER_DISPOSITION_CONTROLS: Array<{
   disposition: RuntimeTriggerDisposition;
@@ -445,6 +446,10 @@ export default function AdminRuntimeReconciliationSection({
                 <div className="admin-reconcile-sub">
                   {task.side_effect_risk || '-'} · {formatDate(task.created_at)}
                 </div>
+                {task.task_type === 'web_chat_turn' && (
+                  <AdminRuntimeInputSources key={`${loadedTenant}:${task.task_id}`} tenantId={tenantId.trim()}
+                    taskId={task.task_id} label={label} disabled={busy || !bound} />
+                )}
                 {workflowResults.map((result, index) => (
                   <div className="admin-reconcile-evidence" key={String(result.run_id || result.trigger_id || index)}>
                     {t('admin.reconciliation.workflowEvidence', 'Workflow child')}{' '}

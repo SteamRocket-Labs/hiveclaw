@@ -84,6 +84,7 @@ def _context_view(ref, origin, origins, agent_id, packaged_paths):
         "missing_skill_file_count": len(paths),
         "missing_packaged_path_count": len(paths & packaged_paths),
         "other_missing_count": sum(not value.startswith("skill_file_unbound:") for value in missing),
+        "unbound_reason_hashes": sorted(hashlib.sha256(value.encode()).hexdigest() for value in missing),
         "known_unbound_codes": sorted({value.partition(":")[0] for value in missing
             if value.partition(":")[0] in {"skill_file_unbound", "skill_installation_snapshot_unavailable",
                 "skill_installation_in_progress", "skill_source_not_observed", "skill_catalog_authority_unavailable",

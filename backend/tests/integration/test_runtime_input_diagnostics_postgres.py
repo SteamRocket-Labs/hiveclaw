@@ -1,5 +1,6 @@
 """Inspect source failures through the real admin read path, without disclosure or effects."""
 
+import hashlib
 import json
 import uuid
 from copy import deepcopy
@@ -131,6 +132,10 @@ async def test_admin_input_source_detail_is_opt_in_scoped_and_read_only(
         assert context["witnesses"][0]["missing_skill_paths_covered"] == 1
         assert contexts[1]["known_unbound_codes"] == ["skill_installation_snapshot_unavailable"]
         assert contexts[1]["other_missing_count"] == 2
+        assert set(contexts[1]["unbound_reason_hashes"]) == {
+            hashlib.sha256(value.encode()).hexdigest()
+            for value in ("skill_installation_snapshot_unavailable", private)
+        }
         assert private not in json.dumps(diagnostics)
         foreign = await client.get(f"/admin/runtime-reconciliation/{run}", params={
             "tenant_id": str(uuid.uuid4()), "include_input_sources": "true",

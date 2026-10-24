@@ -14,6 +14,33 @@ from app.services.team_memory import _safe_component, _slugify
 
 _ACTIVE_GROUP_TOOL_SOURCES = ContextVar("active_group_tool_sources", default=frozenset())
 _DISCLOSURE_SOURCE_VALIDATIONS = ContextVar("disclosure_source_validations", default=None)
+_NATIVE_CLOCK_READ = ContextVar("native_clock_read", default=None)
+
+
+class NativeClockRead:
+    """An observation made by the native clock producer in one execution scope."""
+
+    def __init__(self, agent_id):
+        self.agent_id = agent_id
+        self.content = None
+        self.observations = 0
+
+
+@contextmanager
+def native_clock_read_scope(request):
+    capture = NativeClockRead(request.context.agent_id) if request.tool_name == "get_current_time" else None
+    token = _NATIVE_CLOCK_READ.set(capture)
+    try:
+        yield capture
+    finally:
+        _NATIVE_CLOCK_READ.reset(token)
+
+
+def observe_native_clock_read(agent_id, content):
+    capture = _NATIVE_CLOCK_READ.get()
+    if isinstance(capture, NativeClockRead) and capture.agent_id == agent_id and isinstance(content, str):
+        capture.observations += 1
+        capture.content = content
 
 
 @contextmanager
@@ -640,7 +667,7 @@ async def _validate_session_dependency(db, tenant_id, dependency, *, user, runti
             if proof is None or reader is None or proof["reader_id"] != str(reader.id):
                 raise ContentInputReceiptError("content_source_access_denied",
                     "The original Feishu result or its connection is no longer authorized for this reader.", 403)
-    if model is SessionToolInvocation and (session.audience_kind == "group" or source.tool_name == "list_triggers"):
+    if model is SessionToolInvocation and (session.audience_kind == "group" or source.tool_name in {"list_triggers", "get_current_time"}):
         from app.services.session_model_inputs import _origin_dependencies
 
         key = (dependency["source_id"], dependency["source_version"])
@@ -1182,7 +1209,7 @@ def record_workspace_receipt(db, tenant_id: uuid.UUID, agent_id: uuid.UUID, path
 
 async def persist_workspace_execution_evidence(*, context, tool_name, tool_call_id, arguments, result, states, lineage, errors,
     input_read=None, descriptor_writes=None, skill_read=None, native_empty_read=None, native_directory_read=None,
-    native_read_denial=None):
+    native_read_denial=None, native_clock_read=None):
     """Persist mechanical executor facts; this is not an input-authority receipt."""
     from datetime import datetime, timezone
     from app.database import tenant_scoped_session
@@ -1298,6 +1325,20 @@ async def persist_workspace_execution_evidence(*, context, tool_name, tool_call_
                 proof["source_hash"] = _sha256(proof)
                 channel, metadata_key = "native-read-denial", "native_read_denial_evidence"
                 evidence_id = uuid.uuid5(invocation.id, f"native-read-denial:{proof['source_hash']}")
+            if native_clock_read is not None:
+                if (any(value is not None for value in (input_read, skill_read, native_empty_read,
+                        native_directory_read, native_read_denial)) or tool_name != "get_current_time"
+                    or not isinstance(native_clock_read, NativeClockRead) or native_clock_read.agent_id != context.agent_id
+                    or native_clock_read.observations != 1 or not isinstance(native_clock_read.content, str)
+                    or _sha256(native_clock_read.content) != proof["tool_result_hash"]):
+                    raise ContentInputReceiptError("native_clock_read_unverified", "The native clock observation does not match.")
+                proof = {key: value for key, value in proof.items() if key not in {
+                    "states", "lineage", "errors", "descriptor_writes", "execution_inputs"}}
+                proof.update(schema="hive.native_clock_read_evidence.v1", observation={
+                    "kind": "native_clock_read", "content_hash": proof["tool_result_hash"]})
+                proof["source_hash"] = _sha256(proof)
+                channel, metadata_key = "native-clock-read", "native_clock_read_evidence"
+                evidence_id = uuid.uuid5(invocation.id, f"native-clock-read:{proof['source_hash']}")
             existing = await db.get(InvocationSpan, evidence_id)
             if existing is not None:
                 if existing.metadata_json.get(metadata_key) != proof:
@@ -1455,14 +1496,18 @@ async def load_native_read_denial_evidence(db, **kwargs):
     return await _load_native_read_evidence(db, directory=False, denial=True, **kwargs)
 
 
+async def load_native_clock_read_evidence(db, **kwargs):
+    return await _load_native_read_evidence(db, directory=False, clock=True, **kwargs)
+
+
 async def _load_native_read_evidence(db, *, directory, agent_id, invocation, model_result, arguments, content_hash, capture,
-    denial=False):
+    denial=False, clock=False):
     from app.models.invocation_span import InvocationSpan
     from app.services.session_tool_runtime import _sha256
 
-    channel_name = "native-read-denial" if denial else "native-directory-read" if directory else "native-empty-read"
+    channel_name = "native-clock-read" if clock else "native-read-denial" if denial else "native-directory-read" if directory else "native-empty-read"
     kind = channel_name.replace("-", "_")
-    label = "denied" if denial else "directory" if directory else "empty"
+    label = "clock" if clock else "denied" if denial else "directory" if directory else "empty"
     if not isinstance(capture, dict) or capture.get("status") != "captured":
         return {"status": "unavailable", "reason_code": f"{kind}_capture_unavailable"}
     try:
@@ -1485,7 +1530,9 @@ async def _load_native_read_evidence(db, *, directory, agent_id, invocation, mod
         or proof.get("authority_snapshot_hash") != invocation.authority_snapshot_hash
         or proof.get("effective_args_hash") != _sha256({"tool_name": invocation.tool_name, "arguments": arguments})
         or proof.get("tool_result_hash") != content_hash
-        or not (_native_read_denial_matches(invocation.tool_name, arguments, proof.get("observation"), content_hash=content_hash) if denial
+        or not ((invocation.tool_name == "get_current_time" and proof.get("observation") == {
+                "kind": "native_clock_read", "content_hash": content_hash}) if clock
+            else _native_read_denial_matches(invocation.tool_name, arguments, proof.get("observation"), content_hash=content_hash) if denial
             else _native_directory_read_matches(invocation.tool_name, arguments, proof.get("observation")) if directory
             else _native_empty_read_matches(invocation.tool_name, arguments, proof.get("observation"),
                 session_id=str(invocation.session_id)))

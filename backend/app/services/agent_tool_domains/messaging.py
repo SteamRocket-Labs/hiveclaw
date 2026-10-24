@@ -2004,7 +2004,7 @@ async def _get_current_time(agent_id: uuid.UUID, args: dict | None = None) -> st
         requested_tz = (args or {}).get("timezone")
         timezone_name = requested_tz or await get_agent_timezone(agent_id)
         now = now_in_timezone(timezone_name)
-        return json.dumps(
+        content = json.dumps(
             {
                 "timezone": timezone_name,
                 "local_time": now.isoformat(),
@@ -2013,6 +2013,10 @@ async def _get_current_time(agent_id: uuid.UUID, args: dict | None = None) -> st
             },
             ensure_ascii=False,
         )
+        from app.services.content_input_receipts import observe_native_clock_read
+
+        observe_native_clock_read(agent_id, content)
+        return content
     except Exception as e:
         logger.error("get_current_time failed: %s", e, exc_info=True)
         return f"❌ Error getting current time: {e}"

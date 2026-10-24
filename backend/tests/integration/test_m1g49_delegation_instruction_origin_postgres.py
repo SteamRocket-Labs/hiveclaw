@@ -109,7 +109,7 @@ async def _start_feishu_creation_work(seed, app_user_sessionmaker, monkeypatch):
         return command.id
 
 
-@pytest.mark.parametrize("input_case", ["first_task_child_grep_empty", "first_task_child_grep_legacy", "first_task_child_grep", "first_task_parent_loop_warning", "first_task_refinement_fallback", "first_task_child_missing_file", "first_task_parent_missing_file", "first_task_parent_legacy_workspace_read", "complete", "unbound", "revoked", "first_task", "first_task_unbound", "first_task_revoked", "first_task_refined", "first_task_delivery", "first_task_parent_model", "first_task_refined_native", "first_task_native_creation", "first_task_fresh_employee", "first_task_slow_provider", "first_task_saved_reopen", "first_task_question", "first_task_question_after_write", "first_task_feishu_question", "first_task_feishu_quoted_question", "first_task_feishu_question_source_changed", "first_task_feishu_question_body_changed", "first_task_feishu_question_already_answered", "first_task_feishu_question_projection_missing", "first_task_feishu_question_recipient_changed", "first_task_feishu_question_legacy_status", "first_task_feishu_permission_allow", "first_task_feishu_permission_deny", "first_task_feishu_permission_cancel", "first_task_feishu_permission_unknown", "first_task_feishu_permission_expired", "first_task_feishu_permission_source_changed", "delegation_permission_allow", "first_task_recall", "first_task_ledger", "first_task_ledger_unknown", "first_task_parent_status", "first_task_parent_status_unknown", "first_task_child_command", "first_task_child_code", "first_task_child_command_then_write", "first_task_child_code_then_write", "first_task_creator_task_inventory", "first_task_creator_readiness_feedback", "first_task_creator_readiness_resume", "first_task_parent_creation_result", "first_task_parent_historical_creation_result", "first_task_parent_historical_creation_unknown", "first_task_parent_result_denial", "first_task_parent_public_directory", "first_task_child_readback", "first_task_child_glob", "first_task_workspace_listing", "first_task_workspace_listing_alias", "first_task_completion_sweep", "first_task_parent_wait_legacy", "first_task_parent_code_legacy", "first_task_parity_list", "first_task_parity_ledger", "first_task_parity_ledger_unknown", "first_task_context", "first_task_discovery", "first_task_unverified_memory", "first_task_explicit_unverified_memory", "first_task_feishu_permission_channel_allow", "first_task_feishu_permission_channel_deny", "first_task_feishu_permission_channel_unknown", "first_task_feishu_permission_channel_legacy", "first_task_feishu_permission_channel_scope", "first_task_feishu_permission_channel_feedback_retry", "first_task_feishu_progress"])
+@pytest.mark.parametrize("input_case", ["first_task_parent_clock", "first_task_child_clock", "first_task_child_grep_empty", "first_task_child_grep_legacy", "first_task_child_grep", "first_task_parent_loop_warning", "first_task_refinement_fallback", "first_task_child_missing_file", "first_task_parent_missing_file", "first_task_parent_legacy_workspace_read", "complete", "unbound", "revoked", "first_task", "first_task_unbound", "first_task_revoked", "first_task_refined", "first_task_delivery", "first_task_parent_model", "first_task_refined_native", "first_task_native_creation", "first_task_fresh_employee", "first_task_slow_provider", "first_task_saved_reopen", "first_task_question", "first_task_question_after_write", "first_task_feishu_question", "first_task_feishu_quoted_question", "first_task_feishu_question_source_changed", "first_task_feishu_question_body_changed", "first_task_feishu_question_already_answered", "first_task_feishu_question_projection_missing", "first_task_feishu_question_recipient_changed", "first_task_feishu_question_legacy_status", "first_task_feishu_permission_allow", "first_task_feishu_permission_deny", "first_task_feishu_permission_cancel", "first_task_feishu_permission_unknown", "first_task_feishu_permission_expired", "first_task_feishu_permission_source_changed", "delegation_permission_allow", "first_task_recall", "first_task_ledger", "first_task_ledger_unknown", "first_task_parent_status", "first_task_parent_status_unknown", "first_task_child_command", "first_task_child_code", "first_task_child_command_then_write", "first_task_child_code_then_write", "first_task_creator_task_inventory", "first_task_creator_readiness_feedback", "first_task_creator_readiness_resume", "first_task_parent_creation_result", "first_task_parent_historical_creation_result", "first_task_parent_historical_creation_unknown", "first_task_parent_result_denial", "first_task_parent_public_directory", "first_task_child_readback", "first_task_child_glob", "first_task_workspace_listing", "first_task_workspace_listing_alias", "first_task_completion_sweep", "first_task_parent_wait_legacy", "first_task_parent_code_legacy", "first_task_parity_list", "first_task_parity_ledger", "first_task_parity_ledger_unknown", "first_task_context", "first_task_discovery", "first_task_unverified_memory", "first_task_explicit_unverified_memory", "first_task_feishu_permission_channel_allow", "first_task_feishu_permission_channel_deny", "first_task_feishu_permission_channel_unknown", "first_task_feishu_permission_channel_legacy", "first_task_feishu_permission_channel_scope", "first_task_feishu_permission_channel_feedback_retry", "first_task_feishu_progress"])
 async def test_governed_delegation_preserves_its_parent_instruction_origin(
     owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, input_case, migrated_pg_url,
 ):
@@ -127,6 +127,10 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
     from app.services.secrets_provider import get_secrets_provider
     from app.services.web_chat_runtime import _persist_tool_call
 
+    parent_clock_case = input_case == "first_task_parent_clock"
+    child_clock_case = input_case == "first_task_child_clock"
+    if parent_clock_case or child_clock_case:
+        input_case = "first_task_creator_task_inventory"
     grep_empty_case = input_case == "first_task_child_grep_empty"
     grep_legacy_case = input_case == "first_task_child_grep_legacy"
     grep_case = grep_empty_case or grep_legacy_case or input_case == "first_task_child_grep"
@@ -514,6 +518,9 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
         if creator_task_inventory_case:
             creator_client.script[0]["tool_calls"].append({"id": "creator-task-inventory", "type": "function",
                 "function": {"name": "list_async_tasks", "arguments": "{}"}})
+        if parent_clock_case:
+            creator_client.script[0]["tool_calls"].append({"id": "creator-current-time", "type": "function",
+                "function": {"name": "get_current_time", "arguments": "{}"}})
         if parent_loop_warning_case:
             creator_client.script[0]["tool_calls"].extend({"id": f"creator-repeat-task-inventory-{index}",
                 "type": "function", "function": {"name": "list_async_tasks", "arguments": "{}"}} for index in range(4))
@@ -959,6 +966,9 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
     if sequential_child_case:
         # The next model round consumes the calculation before authoring its file.
         client.script[1]["tool_calls"].insert(0, client.script[0]["tool_calls"].pop())
+    if child_clock_case:
+        client.script[0]["tool_calls"].append({"id": "child-current-time", "type": "function", "function": {
+            "name": "get_current_time", "arguments": json.dumps({"timezone": "Asia/Kolkata"})}})
     if glob_case:
         client.script[0]["tool_calls"].append({"id": "child-absent-glob", "type": "function", "function": {
             "name": "glob_search", "arguments": json.dumps({"pattern": report_path})}})
@@ -2338,6 +2348,80 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
     (tmp_path / "native-parent-result-read.json").write_text(json.dumps(delivered, indent=2))
     assert delivered["status"] == "ok" and "DELEGATED_REPORT" in delivered["content"], delivered
     assert "A later local edit" not in delivered["content"] and delivered["dependency_coverage"]["complete"] is True
+    if parent_clock_case or child_clock_case:
+        from copy import deepcopy
+        from types import SimpleNamespace
+        from app.services.content_input_receipts import load_native_clock_read_evidence, validate_browser_input_dependencies
+        from app.services.runtime_result_sources import _published_owned_delegation_input
+        from app.services.session_model_inputs import _origin_dependencies, tool_result_source_hash
+        from app.models.user import User
+
+        clock_run = seed["run_id"] if parent_clock_case else task_id
+        clock_agent = seed["agent_id"] if parent_clock_case else receiver
+        clock_call_id = "creator-current-time" if parent_clock_case else "child-current-time"
+        async with app_user_sessionmaker() as db:
+            await pin_rls_tenant_context(db, seed["tenant_id"])
+            clock = await db.scalar(select(SessionToolInvocation).where(SessionToolInvocation.run_id == clock_run,
+                SessionToolInvocation.provider_tool_use_id == clock_call_id))
+            clock_payload = _event_payload(await db.get(ChatTranscriptEvent, clock.result_event_id))
+            pointer = clock_payload["metadata"]["native_clock_read_receipt"]
+            assert pointer["status"] == "verified"
+            body = json.loads(clock_payload["content"])
+            assert body["timezone"] == ("Asia/Shanghai" if parent_clock_case else "Asia/Kolkata")
+            clock_model = await db.scalar(select(SessionModelResult).where(SessionModelResult.run_id == clock_run,
+                SessionModelResult.provider_request_id == clock.provider_request_id))
+            args = clock.effective_arguments_json or clock.provider_arguments_json
+            load_args = {"agent_id": clock_agent, "invocation": clock, "model_result": clock_model,
+                "arguments": args, "content_hash": clock_payload["content_hash"],
+                "capture": {"status": "captured", "receipt_ref": pointer["evidence_ref"]}}
+            assert await load_native_clock_read_evidence(db, **load_args) == pointer
+            for field, value in {"agent_id": uuid4(), "content_hash": "0" * 64,
+                "arguments": {"timezone": "Europe/Paris"}, "model_result": None}.items():
+                with pytest.raises(ContentInputReceiptError):
+                    await load_native_clock_read_evidence(db, **{**load_args, field: value})
+            scope = {key: getattr(clock, key) for key in ("id", "tenant_id", "session_id", "run_id", "tool_name", "authority_snapshot_hash")}
+            for field in ("tenant_id", "session_id", "run_id"):
+                with pytest.raises(ContentInputReceiptError):
+                    await load_native_clock_read_evidence(db, **{**load_args,
+                        "invocation": SimpleNamespace(**{**scope, field: uuid4()})})
+            clock_ref = f"session-tool-result:{clock.id}"
+            assert (await _origin_dependencies(db, tenant_id=seed["tenant_id"], agent_id=clock_agent, ref=clock_ref))[1]
+            source = {"source_kind": "session_tool_invocation", "source_id": str(clock.id),
+                "source_version": tool_result_source_hash(clock_payload)}
+            child_task = await db.get(RuntimeTask, task_id)
+            if child_clock_case:
+                assert await _published_owned_delegation_input(db, source, child_task)
+            else:
+                user = await db.get(User, seed["user_id"])
+                await validate_browser_input_dependencies(db, seed["tenant_id"], user, [source])
+            span = await db.get(InvocationSpan, UUID(pointer["evidence_ref"].split(":", 1)[1]))
+            span_id, original = span.id, deepcopy(span.metadata_json)
+        for missing in (False, True):
+            async with owner_sessionmaker() as writer:
+                span = await writer.get(InvocationSpan, span_id)
+                changed = deepcopy(original)
+                if missing:
+                    changed.pop("native_clock_read_evidence")
+                else:
+                    changed["native_clock_read_evidence"]["tool_result_hash"] = "0" * 64
+                span.metadata_json = changed
+                await writer.commit()
+            async with app_user_sessionmaker() as db:
+                await pin_rls_tenant_context(db, seed["tenant_id"])
+                assert not (await _origin_dependencies(db, tenant_id=seed["tenant_id"], agent_id=clock_agent, ref=clock_ref))[1]
+                if child_clock_case:
+                    assert not await _published_owned_delegation_input(db, source, child_task)
+                else:
+                    with pytest.raises(ContentInputReceiptError) as denied:
+                        await validate_browser_input_dependencies(db, seed["tenant_id"], user, [source])
+                    assert denied.value.status_code == 503
+            rejected = await read_return()
+            assert rejected["status"] == ("source_unavailable" if parent_clock_case else "source_access_denied"), rejected
+            async with owner_sessionmaker() as writer:
+                span = await writer.get(InvocationSpan, span_id)
+                span.metadata_json = deepcopy(original)
+                await writer.commit()
+            assert (await read_return())["status"] == "ok"
     if grep_case:
         from app.services.content_input_receipts import load_workspace_execution_input_evidence
         from app.services.runtime_result_sources import _published_owned_delegation_input

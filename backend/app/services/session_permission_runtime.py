@@ -98,6 +98,8 @@ def _execution_evidence(trace: dict[str, Any]) -> dict[str, Any]:
         if isinstance(trace.get("skill_input_evidence"), dict) else None,
         "native_read_denial_evidence": dict(trace["native_read_denial_evidence"])
         if isinstance(trace.get("native_read_denial_evidence"), dict) else None,
+        "native_clock_read_evidence": dict(trace["native_clock_read_evidence"])
+        if isinstance(trace.get("native_clock_read_evidence"), dict) else None,
     }
 
 

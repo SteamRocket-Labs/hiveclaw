@@ -1346,7 +1346,8 @@ class ToolRuntimeService:
 
             async def _execute_backend() -> str | ToolContentEnvelope:
                 from app.services.content_input_receipts import (
-                    authorize_workspace_execution_inputs, authorize_workspace_receipt_read, settle_workspace_receipt_read,
+                    authorize_workspace_execution_inputs, authorize_workspace_receipt_read, native_clock_read_scope,
+                    settle_workspace_receipt_read,
                 )
 
                 if trace_metadata_sink is not None:
@@ -1355,6 +1356,7 @@ class ToolRuntimeService:
                     trace_metadata_sink.pop("native_empty_read_evidence", None)
                     trace_metadata_sink.pop("native_directory_read_evidence", None)
                     trace_metadata_sink.pop("native_read_denial_evidence", None)
+                    trace_metadata_sink.pop("native_clock_read_evidence", None)
                     trace_metadata_sink.pop("agent_directory_sources", None)
                     if workspace_mutating or tool_name == "grep_search":
                         for key in ("workspace_mutation_evidence_captured", "workspace_mutation_states",
@@ -1413,7 +1415,8 @@ class ToolRuntimeService:
                         arguments=arguments,
                         workspace=context.workspace,
                     )
-                value = await self.backend.execute(request, _execute_request)
+                with native_clock_read_scope(request) as clock_read:
+                    value = await self.backend.execute(request, _execute_request)
                 if tool_name in {"execute_code", "run_command", "run_skill_tool"}:
                     for read in getattr(context.workspace_authority_scope, "input_reads", ()):
                         if read.observed_sha256 is not None and read.observed_sha256 != read.content_sha256:
@@ -1435,6 +1438,12 @@ class ToolRuntimeService:
                     surface="tool_result",
                     trace_metadata_sink=trace_metadata_sink,
                 )
+                if clock_read is not None and trace_metadata_sink is not None:
+                    from app.services.content_input_receipts import persist_workspace_execution_evidence
+
+                    trace_metadata_sink["native_clock_read_evidence"] = await persist_workspace_execution_evidence(
+                        context=context, tool_name=tool_name, tool_call_id=tool_call_id, arguments=arguments,
+                        result=value, states={}, lineage=[], errors={}, native_clock_read=clock_read)
                 if trace_metadata_sink is not None and isinstance(value, ToolContentEnvelope):
                     if isinstance(value.metadata.get("agent_directory_sources"), list):
                         trace_metadata_sink["agent_directory_sources"] = list(value.metadata["agent_directory_sources"])

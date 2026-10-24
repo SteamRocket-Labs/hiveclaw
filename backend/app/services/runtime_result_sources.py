@@ -51,7 +51,8 @@ async def _published_owned_delegation_input(db, dependency, task, *, receipt_ids
         ledger_read = row.tool_name in LEDGER_RESULT_TOOLS
         directory_read = row.tool_name in {"list_files", "fs_list", "glob_search"}
         search_read = row.tool_name == "grep_search"
-        if not ledger_read and not directory_read and not search_read and row.tool_name not in {"read_file", "read_document", "fs_read"}:
+        clock_read = row.tool_name == "get_current_time"
+        if not ledger_read and not directory_read and not search_read and not clock_read and row.tool_name not in {"read_file", "read_document", "fs_read"}:
             return False
         from app.models.chat_transcript_event import ChatTranscriptEvent
         from app.services.content_input_receipts import load_native_read_denial_evidence, load_workspace_input_evidence
@@ -67,6 +68,18 @@ async def _published_owned_delegation_input(db, dependency, task, *, receipt_ids
             SessionModelResult.provider_request_id == row.provider_request_id))
         if model is None:
             return False
+        if clock_read:
+            from app.services.content_input_receipts import load_native_clock_read_evidence
+
+            pointer = (payload.get("metadata") or {}).get("native_clock_read_receipt")
+            if not isinstance(pointer, dict) or pointer.get("status") != "verified":
+                return False
+            try:
+                return pointer == await load_native_clock_read_evidence(db, agent_id=task.child_agent_id,
+                    invocation=row, model_result=model, arguments=row.effective_arguments_json or row.provider_arguments_json,
+                    content_hash=payload.get("content_hash"), capture={"status": "captured", "receipt_ref": pointer.get("evidence_ref")})
+            except (ContentInputReceiptError, KeyError, TypeError, ValueError):
+                return False
         if search_read:
             from app.services.content_input_receipts import load_workspace_execution_input_evidence
 

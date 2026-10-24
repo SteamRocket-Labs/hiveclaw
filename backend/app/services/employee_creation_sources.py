@@ -317,7 +317,8 @@ async def _owned_context_source(db, *, dependency, agent_id, tenant_id, session_
         from app.models.chat_transcript_event import ChatTranscriptEvent
         from app.models.session_v2 import SessionModelResult, SessionToolInvocation
         from app.services.content_input_receipts import (
-            ContentInputReceiptError, load_native_directory_read_evidence, load_native_empty_read_evidence, load_native_read_denial_evidence, load_skill_input_evidence,
+            ContentInputReceiptError, load_native_clock_read_evidence, load_native_directory_read_evidence,
+            load_native_empty_read_evidence, load_native_read_denial_evidence, load_skill_input_evidence,
             load_workspace_execution_input_evidence,
         )
         from app.services.session_model_inputs import _context_resource_dependency, _model_dependencies, tool_result_source_hash
@@ -333,7 +334,7 @@ async def _owned_context_source(db, *, dependency, agent_id, tenant_id, session_
             or (call.effect_state != 'effect_committed' and not (
                 call.tool_name in {'task_get', 'delegate_to_agent', 'read_file', 'read_document', 'fs_read', 'exit_plan_mode'} and call.effect_state == 'failed')) or call.tool_name not in (
                 LEDGER_RESULT_TOOLS | TASK_READ_TOOLS | {'list_files', 'fs_list', 'glob_search', 'tool_search', 'read_context_resource', 'search_memory',
-                    'run_command', 'execute_code', 'delegate_to_agent', 'read_file', 'read_document', 'fs_read', 'exit_plan_mode'})):
+                    'run_command', 'execute_code', 'delegate_to_agent', 'read_file', 'read_document', 'fs_read', 'exit_plan_mode', 'get_current_time'})):
             return False
         event = await db.scalar(select(ChatTranscriptEvent).where(
             ChatTranscriptEvent.id == call.result_event_id, ChatTranscriptEvent.tenant_id == tenant_id,
@@ -380,6 +381,17 @@ async def _owned_context_source(db, *, dependency, agent_id, tenant_id, session_
             # A verified query miss is control metadata; memory bodies retain their own grants.
             return complete and not sources
         metadata = payload.get('metadata') or {}
+        if call.tool_name == 'get_current_time':
+            pointer = metadata.get('native_clock_read_receipt')
+            if not isinstance(pointer, dict) or pointer.get('status') != 'verified':
+                return False
+            try:
+                return pointer == await load_native_clock_read_evidence(db, agent_id=agent_id, invocation=call,
+                    model_result=model, arguments=call.effective_arguments_json or call.provider_arguments_json,
+                    content_hash=payload.get('content_hash'),
+                    capture={'status': 'captured', 'receipt_ref': pointer.get('evidence_ref')})
+            except (ContentInputReceiptError, ValueError, TypeError):
+                return False
         if call.tool_name == 'read_context_resource' and metadata.get('agent_directory_sources'):
             from app.services.agent_directory_sources import directory_page_sources
 

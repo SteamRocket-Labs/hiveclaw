@@ -473,3 +473,38 @@ def test_side_effect_channel_has_no_production_producer() -> None:
         "ToolContentEnvelope side-effect channel gained a production producer "
         f"({producers}); revisit the DEFERRED CONTRACT note in result_envelope.py."
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["counter", "tool_body"])
+async def test_native_loop_warning_keeps_control_and_tool_body_sources_distinct(monkeypatch, kind):
+    from app.kernel import engine
+    from app.kernel.loop_guard import LoopGuard
+    from app.kernel.reminder_scheduler import ReminderScheduler
+
+    queued = []
+    class ObservedScheduler(ReminderScheduler):
+        def enqueue(self, *args, **kwargs):
+            queued.append(kwargs)
+            return super().enqueue(*args, **kwargs)
+    monkeypatch.setattr(engine, "ReminderScheduler", ObservedScheduler)
+    monkeypatch.setattr(engine, "LoopGuard", lambda: LoopGuard(
+        identical_tool_threshold=2 if kind == "counter" else 100, repeated_failure_threshold=2))
+    client = _FakeClient([
+        _tool_call_response("read_file", "read-1", '{"path":"same.txt"}'),
+        _tool_call_response("read_file", "read-2", '{"path":"same.txt"}'),
+        _final_response("Preserved the source boundary."),
+    ])
+    def execute_tool(_tool_name, _args, _request, _emit_event, *, trace_metadata_sink=None):
+        trace_metadata_sink["tool_decision"] = {"outcome": "allow"}
+        trace_metadata_sink["tool_execution_frame"] = {"status": "failed" if kind == "tool_body" else "succeeded"}
+        return "UNTRUSTED_TOOL_BODY" if kind == "tool_body" else "Native read observation"
+    result = await AgentKernel(_base_deps(fake_client=client, execute_tool=execute_tool)).handle(InvocationRequest(
+        model=SimpleNamespace(provider="openai", model="synthetic", api_key="synthetic", base_url=None),
+        messages=[{"role": "user", "content": "Read the same source twice."}], agent_name="Reader",
+        role_description="Reads authorized inputs", agent_id=uuid4(), user_id=uuid4()))
+    assert result.content == "Preserved the source boundary." and len(client.calls) == 3
+    warning = next(item for item in queued if item.get("source") == "loop_guard")
+    assert warning["unbound"] == (() if kind == "counter" else ("context_sources_unbound",))
+    assert any("Loop Guard Warning" in str(message.content) for message in client.calls[2]["messages"])
+    assert [tool["function"]["name"] for tool in client.calls[2]["tools"]] == ["read_file", "list_files"]

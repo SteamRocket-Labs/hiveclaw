@@ -1588,9 +1588,13 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
             # self-correction chance (CC §12.2 soft-constraints-first).
             # T-G1: queued on the scheduler — injected transiently into the
             # next round's request, never persisted into api_messages.
-            # Cost pressure uses fixed policy text and counters, never tool output.
+            # Fixed policy text and native counters carry no external source bytes.
+            # A repeated-failure diagnostic can quote tool output and stays unbound.
+            control_only = decision.reason in {"provider_call_cost_pressure", "total_tool_calls", "failed_tool_calls"}
+            if decision.reason == "identical_tool_args":
+                control_only = decision.trace_event.get("tool") in {tool["function"]["name"] for tool in tools_for_llm}
             reminder_scheduler.enqueue(decision.message, source="loop_guard", ttl="next_collect", priority=95,
-                unbound=() if decision.reason == "provider_call_cost_pressure" else ("context_sources_unbound",))
+                unbound=() if control_only else ("context_sources_unbound",))
             await _emit_event(
                 {
                     "type": "loop_guard",

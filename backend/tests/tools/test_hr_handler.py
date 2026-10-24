@@ -1133,3 +1133,40 @@ def test_append_hr_creation_t0_event_records_first_task_autostart(tmp_path) -> N
     events = replay_t0_session_events(agent_id=hr_agent_id, session_id=session_id, data_root=tmp_path)
     assert len(events) == 1
     assert events[0].metadata["first_task_autostart"] is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure, reason_code", [
+    ("timeout", "refinement_call_failed"),
+    ("empty", "refinement_response_empty"),
+    ("fenced_empty", "refinement_response_empty"),
+    ("invalid_json", "refinement_response_invalid"),
+    ("non_object", "refinement_response_invalid"),
+])
+async def test_soul_refinement_fallback_witnesses_only_confirmed_inputs(monkeypatch, failure, reason_code):
+    import json
+    from app.services.config_versioning import canonical_content_hash
+    from app.tools.handlers.hr import _refine_soul_inputs
+
+    calls = []
+    async def transport(**kwargs):
+        calls.append(kwargs)
+        if failure == "timeout":
+            raise TimeoutError("Synthetic unavailable provider")
+        content = {"empty": "", "fenced_empty": "```json\n```", "invalid_json": "unapplied provider prose",
+            "non_object": "[]"}[failure]
+        return {"choices": [{"message": {"content": content}}]}
+    monkeypatch.setattr("app.services.llm_client.chat_complete", transport)
+    inputs = dict(name="Report employee", role_description="Prepare authorized reports", personality="Careful",
+        boundaries="Use authorized facts", primary_users=["Team"], core_outputs=["Reports"])
+    capture = {}
+    result = await _refine_soul_inputs(**inputs, model_config={"provider": "openai", "model": "synthetic-model",
+        "api_key": "synthetic-secret", "max_output_tokens": 17001}, source_capture=capture)
+    expected = {key: value for key, value in inputs.items() if key != "name"}
+    expected.update(quality_standards=[], first_tasks=[])
+    assert result == expected and capture["output"] == expected
+    assert capture["status"] == "not_applied" and capture["reason_code"] == reason_code
+    assert capture["inputs"] == inputs and capture["request"]["max_tokens"] == 17001
+    assert len(calls) == 1 and calls[0]["model"] == "synthetic-model"
+    assert capture["sha256"] == canonical_content_hash({key: value for key, value in capture.items() if key != "sha256"})
+    assert "synthetic-secret" not in json.dumps(capture) and "api_key" not in json.dumps(capture)

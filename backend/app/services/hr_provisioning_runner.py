@@ -385,7 +385,7 @@ async def run_hr_provisioning(request: ToolExecutionRequest, *, support: Any) ->
                     receipt={
                         "primary_model_id": str(primary_model_id),
                         "refinement_model_source": _refine_model_source,
-                        "model_used": _llm_obj is not None,
+                        "model_used": _llm_obj is not None and refinement_call.get("status") != "not_applied",
                         "refinement": {"draft_id": str(draft.id), "blueprint_hash": draft.blueprint_hash,
                             "call": refinement_call} if refinement_call else None,
                     },
@@ -395,6 +395,12 @@ async def run_hr_provisioning(request: ToolExecutionRequest, *, support: Any) ->
                     "refined_inputs": _refined,
                 }
                 await db.commit()
+
+            refinement = (model_step.receipt_json or {}).get("refinement") or {}
+            refinement_call = refinement.get("call") or {}
+            if refinement_call.get("status") == "not_applied":
+                warnings.append("Identity refinement was not applied; the confirmed blueprint inputs were retained ("
+                    + refinement_call["reason_code"] + ").")
 
             role_description = str(_refined.get("role_description") or role_description)
             personality = str(_refined.get("personality") or personality)

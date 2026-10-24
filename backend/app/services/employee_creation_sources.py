@@ -179,7 +179,7 @@ async def _refinement_is_bound(db, *, draft, refinement):
         "role_description": _trim_role_description_for_prompt_guard(args.get("role_description", "")),
         "personality": args.get("personality", ""), "boundaries": args.get("boundaries", ""),
         "primary_users": _parse_list(args.get("primary_users")), "core_outputs": _parse_list(args.get("core_outputs"))}
-    if (not isinstance(call, dict) or call.get("schema") != "hive.hr_refinement_call.v1" or call.get("status") != "completed"
+    if (not isinstance(call, dict) or call.get("schema") != "hive.hr_refinement_call.v1" or call.get("status") not in {"completed", "not_applied"}
         or call.get("inputs") != inputs or call.get("sha256") != canonical_content_hash({k: v for k, v in call.items() if k != "sha256"})
         or call.get("output") != (draft.provisioning_json or {}).get("refined_inputs")):
         return False
@@ -189,13 +189,21 @@ async def _refinement_is_bound(db, *, draft, refinement):
     if (not isinstance(request, dict) or set(request) != {"provider", "model", "messages", "temperature", "max_tokens"}
         or not all(isinstance(request.get(k), str) and request[k] for k in ("provider", "model"))
         or request["messages"] != [{"role": "user", "content": prompt}]
-        or not isinstance(call.get("response_content"), str) or not call["response_content"].strip()):
+        or (call["status"] == "completed" and (not isinstance(call.get("response_content"), str)
+            or not call["response_content"].strip()))):
         return False
+    if call["status"] == "not_applied":
+        raw = {key: inputs[key] for key in ("role_description", "personality", "boundaries", "primary_users", "core_outputs")}
+        raw.update(quality_standards=[], first_tasks=[])
+        if (call.get("reason_code") not in {"refinement_call_failed", "refinement_response_invalid", "refinement_response_empty"}
+            or call.get("output") != raw):
+            return False
     step = await db.scalar(select(HrProvisioningStep).where(HrProvisioningStep.tenant_id == draft.tenant_id,
         HrProvisioningStep.draft_id == draft.id, HrProvisioningStep.step_key == "model",
         HrProvisioningStep.step_kind == "model", HrProvisioningStep.status == "completed").execution_options(populate_existing=True))
     return (step is not None and step.input_hash == _step_input_hash(draft.blueprint_hash, "model")
-        and (step.receipt_json or {}).get("model_used") is True and (step.receipt_json or {}).get("refinement") == refinement)
+        and (step.receipt_json or {}).get("model_used") is (call["status"] == "completed")
+        and (step.receipt_json or {}).get("refinement") == refinement)
 
 
 async def published_creation_seed_sources(db, *, tenant_id, request):

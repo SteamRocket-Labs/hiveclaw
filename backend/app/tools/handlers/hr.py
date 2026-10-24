@@ -745,6 +745,23 @@ async def _refine_soul_inputs(
         core_outputs=", ".join(core_outputs) if core_outputs else "(not specified)",
     )
 
+    model_request = None
+    response_content = None
+    failure_reason = "refinement_call_failed"
+
+    def raw_fallback(reason_code):
+        if source_capture is not None:
+            from app.services.config_versioning import canonical_content_hash
+
+            source_capture.update({"schema": "hive.hr_refinement_call.v1", "status": "not_applied",
+                "reason_code": reason_code,
+                "inputs": {"name": name, "role_description": role_description, "personality": personality,
+                    "boundaries": boundaries, "primary_users": primary_users, "core_outputs": core_outputs},
+                "request": model_request, "response_content": response_content, "output": dict(raw)})
+            source_capture["sha256"] = canonical_content_hash({key: value for key, value in source_capture.items()
+                if key != "sha256"})
+        return raw
+
     try:
         from app.services.llm_client import chat_complete, get_max_tokens
 
@@ -755,8 +772,9 @@ async def _refine_soul_inputs(
         response = await chat_complete(**model_request, api_key=model_config["api_key"],
             base_url=model_config.get("base_url"), timeout=45.0, usage_source="hr_soul_refine",
             usage_agent_id=usage_agent_id, usage_tenant_id=usage_tenant_id)
+        failure_reason = "refinement_response_invalid"
         content = response.get("choices", [{}])[0].get("message", {}).get("content", "")
-        response_content = content
+        response_content = content if isinstance(content, str) else None
         if not content or not content.strip():
             logger.warning(
                 "[HR] Soul refinement LLM returned empty content. Provider=%s model=%s response_keys=%s",
@@ -764,14 +782,14 @@ async def _refine_soul_inputs(
                 model_config.get("model"),
                 list(response.keys()) if isinstance(response, dict) else type(response),
             )
-            return raw
+            return raw_fallback("refinement_response_empty")
         content = content.strip()
         # Strip markdown fences (```json ... ```)
         if content.startswith("```"):
             content = content.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
         if not content:
             logger.warning("[HR] Soul refinement content empty after fence stripping")
-            return raw
+            return raw_fallback("refinement_response_empty")
         refined = json.loads(content)
 
         # Validate each field — only use refined versions that are substantive
@@ -814,7 +832,7 @@ async def _refine_soul_inputs(
         return result
     except Exception as exc:
         logger.warning("[HR] Soul refinement failed (using raw inputs): %s", exc)
-        return raw
+        return raw_fallback(failure_reason)
 
 
 def _collect_trigger_reasons(triggers: list[dict]) -> str:

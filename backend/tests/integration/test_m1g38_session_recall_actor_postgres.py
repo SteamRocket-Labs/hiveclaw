@@ -110,3 +110,43 @@ async def test_raw_service_cannot_use_files_as_authority_when_the_reader_is_miss
     await _sources(n, owner_sessionmaker, source="ledger")
     with pytest.raises(ValueError, match="authority"):
         await search_session_history(n.agent, "meeting", tenant_id=n.tenant)
+
+
+@pytest.mark.parametrize("source", ["ledger", "legacy", "db"])
+async def test_past_session_recall_never_reingests_the_current_work(
+    native_workspace, owner_sessionmaker, monkeypatch, source,  # noqa: F811
+):
+    from app.services import session_recall
+
+    n = native_workspace
+    await _sources(n, owner_sessionmaker, source=source)
+    marker = "CURRENT_WORK_RECURSIVE_RECALL"
+    body = f"meeting {marker}: this tool result must not become a new past-session hit."
+    if source == "ledger":
+        append_t0_session_event(agent_id=n.agent, session_id=str(n.session), event_type="tool_result.completed",
+            role="tool", content=body, source="web", data_root=n.root.parent)
+    elif source == "legacy":
+        path = n.root / "logs" / f"chat-{n.session}.md"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(f"---\ntype: chat\nsession_id: {n.session}\nsource: web\n"
+            f"started: 2026-10-24T00:00:00Z\n---\n**Tools**: {body}\n")
+    else:
+        async with owner_sessionmaker() as db:
+            db.add(ChatMessage(tenant_id=n.tenant, agent_id=n.agent, user_id=n.user, role="assistant",
+                conversation_id=str(n.session), content=body))
+            await db.commit()
+    observed = []
+    original = session_recall._search_t0_session_ledger
+    def record_candidates(*args, **kwargs):
+        observed.append(set(kwargs["authorized_session_ids"]))
+        return original(*args, **kwargs)
+    monkeypatch.setattr(session_recall, "_search_t0_session_ledger", record_candidates)
+    result = str(await n.service.execute("search_memory", {"query": marker, "scope": "sessions"},
+        agent_id=n.agent, user_id=n.user, session_id=str(n.session), runtime_task_id=str(n.run), emit_runtime_hooks=False))
+    assert body not in result, result
+    assert "Complete transcript:" not in result and "session_recall_error" not in result, result
+    assert observed and all(str(n.session) not in candidates for candidates in observed)
+    # Authorized past evidence remains complete, including its original continuation tail.
+    past = await _search(n)
+    assert "OWN_PRIVATE_EVIDENCE" in past and "OWN_PRIVATE_EVIDENCE_TAIL" in past, past
+    assert "OTHER_REQUESTER_PRIVATE_EVIDENCE" not in past and "UNKNOWN_PRIVATE_EVIDENCE" not in past

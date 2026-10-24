@@ -642,6 +642,11 @@ async def search_session_history(
 
     try:
         allowed = await _authorized_recall_session_ids(agent_id, tenant_id, runtime_request)
+        current_session_id = (str(uuid.UUID(str(runtime_request.context.session_id)))
+            if runtime_request is not None else None)
+        # This search is cross-session recall. The current work is already available
+        # through its native history; rereading its recall results creates feedback.
+        allowed = allowed - {current_session_id}
         if not allowed:
             return []
         hits = _search_t0_session_ledger(agent_id, needle, limit=limit, snippet_limit=snippet_limit,
@@ -653,6 +658,7 @@ async def search_session_history(
             hits = await _search_session_history_db(agent_id, needle, limit=limit,
                 snippet_limit=snippet_limit, tenant_id=tenant_id, authorized_session_ids=allowed)
         current = await _authorized_recall_session_ids(agent_id, tenant_id, runtime_request)
+        current = current - {current_session_id}
         return hits if all(hit.get("session_id") in current for hit in hits) else [
             hit for hit in hits if hit.get("session_id") in current]
     except SessionRecallError:

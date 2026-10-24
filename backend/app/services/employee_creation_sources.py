@@ -319,7 +319,7 @@ async def _owned_context_source(db, *, dependency, agent_id, tenant_id, session_
         except ValueError:
             return False
         if (call is None or call.tenant_id != tenant_id or call.session_id != session_id
-            or call.effect_state != 'effect_committed' or call.tool_name not in {'read_ledger', 'list_files', 'tool_search', 'read_context_resource'}):
+            or call.effect_state != 'effect_committed' or call.tool_name not in {'read_ledger', 'list_files', 'tool_search', 'read_context_resource', 'search_memory'}):
             return False
         event = await db.scalar(select(ChatTranscriptEvent).where(
             ChatTranscriptEvent.id == call.result_event_id, ChatTranscriptEvent.tenant_id == tenant_id,
@@ -334,6 +334,13 @@ async def _owned_context_source(db, *, dependency, agent_id, tenant_id, session_
         if (model is None or not _model_dependencies(model)[1]
             or tool_result_source_hash(payload) != dependency['source_version']):
             return False
+        if call.tool_name == 'search_memory':
+            from app.services.explicit_memory_tool_sources import memory_result_sources
+
+            sources, complete = await memory_result_sources(db, tenant_id=tenant_id, agent_id=agent_id,
+                invocation=call, model=model, content_hash=payload.get('content_hash'))
+            # A verified query miss is control metadata; memory bodies retain their own grants.
+            return complete and not sources
         metadata = payload.get('metadata') or {}
         if call.tool_name == 'read_context_resource' and metadata.get('agent_directory_sources'):
             from app.services.agent_directory_sources import directory_page_sources

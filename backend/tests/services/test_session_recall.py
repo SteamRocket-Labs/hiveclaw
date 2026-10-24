@@ -459,3 +459,31 @@ tools: []
     assert hits[0]["summary_model_status"] == "not_requested"
     assert "User: 需要落到哪里？" in hits[0]["transcript"]
     assert "Assistant: 我会把最终版本写到 docs/release-checklist.md，并在 PR 模板里链接它。" in hits[0]["transcript"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("source", ["t0", "legacy", "db"])
+@pytest.mark.parametrize("current_alias", ["canonical", "hex"])
+async def test_cross_session_candidates_exclude_current_identity_before_io(
+    monkeypatch, source, current_alias, allow_recall_sessions,
+):
+    from app.services import session_recall
+
+    current, past = uuid.uuid4(), uuid.uuid4()
+    allow_recall_sessions(current, past)
+    request = SimpleNamespace(context=SimpleNamespace(session_id=current.hex if current_alias == "hex" else str(current)))
+    hit = {"session_id": str(past), "transcript": "Past complete evidence\n" + "FULL_TOOL_TAIL" * 1000}
+    calls = []
+    def check_candidates(kind, kwargs):
+        candidates = kwargs["authorized_session_ids"]
+        assert str(current) not in candidates and str(past) in candidates
+        calls.append(kind)
+        return [hit] if kind == source else []
+    monkeypatch.setattr(session_recall, "_search_t0_session_ledger", lambda *a, **k: check_candidates("t0", k))
+    monkeypatch.setattr(session_recall, "_search_t0_chat_logs", lambda *a, **k: check_candidates("legacy", k))
+    async def database(*_args, **kwargs):
+        return check_candidates("db", kwargs)
+    monkeypatch.setattr(session_recall, "_search_session_history_db", database)
+    result = await session_recall.search_session_history(uuid.uuid4(), "evidence", tenant_id=uuid.uuid4(), runtime_request=request)
+    assert result == [hit] and result[0]["transcript"].endswith("FULL_TOOL_TAIL" * 1000)
+    assert calls[-1] == source

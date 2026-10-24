@@ -230,7 +230,43 @@ async def test_terminal_route_backfill_keeps_reads_available_and_recovers_commit
         await db.execute(text('DROP TRIGGER test_route_backfill_barrier ON runtime_terminal_boundary_outbox'))
         await db.execute(text('DROP FUNCTION public.test_route_backfill_barrier()'))
         await db.commit()
-    migrate(migrated_pg_url, 'upgrade', 'terminal_lane_route_1024', tmp_path, 'online-recovered')
+    process = None
+    with (tmp_path / 'online-recovered-upgrade.log').open('w') as output:
+        try:
+            async with app_user_sessionmaker() as reader:
+                await pin_rls_tenant_context(reader, seed.tenant_id)
+                # Resume the data phase under a real old-runtime reader. Concurrent
+                # index completion may legitimately wait for this transaction to end.
+                assert await reader.scalar(text('SELECT id FROM runtime_terminal_boundary_outbox WHERE id=:id'),
+                    {'id': UUID(int=1)}) == UUID(int=1)
+                process = subprocess.Popen([sys.executable, '-B', '-m', 'alembic', 'upgrade', 'terminal_lane_route_1024'],
+                    cwd=Path(__file__).resolve().parents[2], env={**os.environ, 'DATABASE_URL': migrated_pg_url},
+                    stdout=output, stderr=subprocess.STDOUT)
+                async with asyncio.timeout(30):
+                    while True:
+                        async with owner_sessionmaker() as observer:
+                            recovered = await observer.scalar(text('SELECT count(*) FROM runtime_terminal_boundary_outbox '
+                                'WHERE task_type IS NOT NULL'))
+                        if recovered == original[0]:
+                            break
+                        assert process.poll() is None, 'Migration exited before resuming its data backfill'
+                        await asyncio.sleep(0.05)
+                assert await reader.scalar(text('SELECT id FROM runtime_terminal_boundary_outbox WHERE id=:id'),
+                    {'id': UUID(int=1)}) == UUID(int=1)
+            assert await asyncio.to_thread(process.wait, 20) == 0
+        finally:
+            if process is not None and process.poll() is None:
+                process.terminate()
+                # Only this test owns migration statements in its isolated database.
+                async with owner_sessionmaker() as observer:
+                    await observer.execute(text("SELECT pg_cancel_backend(pid) FROM pg_stat_activity "
+                        "WHERE datname=current_database() AND pid<>pg_backend_pid() AND ("
+                        "query LIKE 'DROP INDEX CONCURRENTLY IF EXISTS ix_terminal_route_backfill_pending%' OR "
+                        "query LIKE 'CREATE INDEX CONCURRENTLY IF NOT EXISTS ix_runtime_terminal_boundary_active_lane%' OR "
+                        "query LIKE 'CREATE INDEX CONCURRENTLY IF NOT EXISTS ix_runtime_tasks_terminal_discovery%' OR "
+                        "query LIKE '%WITH page AS MATERIALIZED (%UPDATE runtime_terminal_boundary_outbox q SET task_type=t.task_type%')"))
+                    await observer.commit()
+                await asyncio.to_thread(process.wait, 10)
     async with owner_sessionmaker() as db:
         assert (await db.execute(snapshot_sql)).one() == original
         assert await db.scalar(text("SELECT count(*) FROM runtime_terminal_boundary_outbox "
@@ -241,4 +277,5 @@ async def test_terminal_route_backfill_keeps_reads_available_and_recovers_commit
         'ordinary_rls_reads_available_during_backfill': True, 'committed_before_host_loss': committed,
         'rows_after_recovery': original[0], 'non_routing_row_hash': original[1],
         'already_committed_batches_survived': True, 'all_routes_recovered': True,
-        'test_owned_waiter_cancelled': True, 'temporary_backfill_index_removed': True}, indent=2))
+        'test_owned_waiter_cancelled': True, 'temporary_backfill_index_removed': True,
+        'resume_preserves_concurrent_original_reader': True}, indent=2))

@@ -446,6 +446,7 @@ async def test_tool_runtime_service_executes_through_registry_and_logs(monkeypat
     from contextlib import asynccontextmanager
 
     source_checks, source_db = [], object()
+
     @asynccontextmanager
     async def source_scope(tenant_id, *, require_tenant):
         assert tenant_id == context.tenant_id and require_tenant
@@ -3253,7 +3254,12 @@ async def test_tool_runtime_service_timeout_returns_structured_error():
     payload = _extract_tool_error_payload(result)
     assert payload["tool_name"] == "web_search"
     assert payload["error_class"] == "timeout"
-    assert payload["retryable"] is True
+    assert payload["retryable"] is False
+    assert payload["provider"] == "runtime"
+    assert payload["actionable_hint"] == (
+        "The execution outcome is unknown. Inspect the original tool's state or read back its output "
+        "before requesting another effect."
+    )
 
 
 @pytest.mark.asyncio

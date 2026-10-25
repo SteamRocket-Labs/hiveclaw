@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -11,6 +12,168 @@ if TYPE_CHECKING:
         Path,
         SessionWorkflowEvidence,
         uuid,
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class _DistillationEvidencePorts:
+    _build_workflow_signature: Any
+    _collect_direct_skill_candidates: Any
+    _infer_skill_name: Any
+    _load_internal_session_evidence: Any
+    advance_distiller_cursor: Any
+    datetime: Any
+    load_distiller_state: Any
+    load_flywheel_skill_candidate_drafts: Any
+    load_memory_skill_candidates: Any
+    load_skill_candidates: Any
+    logger: Any
+    rank_skill_candidates: Any
+    record_skill_execution: Any
+    record_workflow_candidates_from_memory: Any
+    save_distiller_state: Any
+
+
+async def _prepare_distillation_evidence(
+    *,
+    agent_id: Any,
+    workspace: Any,
+    data_root: Any,
+    current_session_id: Any,
+    model: Any,
+    current_review: Any,
+    review_candidate: Any,
+    load_review_memory_candidates: Any,
+    ContentInputReceiptError: Any,
+    ports: Any,
+    support: Any,
+) -> dict[str, Any] | tuple[Any, ...]:
+    source_frame = current_review()
+    workflow_candidates_recorded = 0
+    memory_skill_candidates: list[dict[str, str]] = []
+    flywheel_skill_candidate_drafts = ports.load_flywheel_skill_candidate_drafts(workspace)
+    if source_frame is not None:
+        scoped_drafts = []
+        for item in flywheel_skill_candidate_drafts:
+            if item["candidate_id"] not in source_frame.candidates:
+                continue
+            try:
+                _row, source = await review_candidate(item["candidate_id"], workspace=workspace)
+                import hashlib
+
+                if hashlib.sha256(item["content"].encode()).hexdigest() != source["draft_sha256"]:
+                    raise ContentInputReceiptError(
+                        "learned_skill_draft_changed", "The reviewed candidate bytes changed.", 403
+                    )
+                scoped_drafts.append(item)
+                source_frame.dependencies.append(
+                    {
+                        "source_kind": "learned_skill_candidate",
+                        "source_id": str(_row.id),
+                        "source_version": _row.content_hash,
+                    }
+                )
+            except ContentInputReceiptError:
+                source_frame.unavailable = True
+        flywheel_skill_candidate_drafts = scoped_drafts
+    try:
+        if source_frame is None:
+            workflow_candidates_recorded = ports.record_workflow_candidates_from_memory(
+                data_root, agent_id, workspace=workspace
+            )
+            memory_skill_candidates = ports.load_memory_skill_candidates(data_root, agent_id)
+        else:
+            workflow_candidates = await load_review_memory_candidates(
+                data_root=data_root, agent_id=agent_id, container="workflow_candidate"
+            )
+            workflow_candidates_recorded = ports.record_workflow_candidates_from_memory(
+                data_root, agent_id, workspace=workspace, candidates=workflow_candidates
+            )
+            memory_skill_candidates = await load_review_memory_candidates(
+                data_root=data_root, agent_id=agent_id, container="skill_candidate"
+            )
+    except Exception as exc:  # noqa: BLE001 — candidate-lane IO must not break distillation
+        ports.logger.warning("[skill_distiller] memory candidate lane failed for %s: %s", agent_id, exc)
+
+    state = ports.load_distiller_state(workspace)
+    evidence = await ports._load_internal_session_evidence(
+        agent_id=agent_id,
+        since_days=None,
+        state=state,
+        current_session_id=current_session_id,
+    )
+    direct_candidates: list[DirectSkillCandidate] = ports._collect_direct_skill_candidates(
+        skill_candidate_drafts=flywheel_skill_candidate_drafts,
+        memory_skill_candidates=memory_skill_candidates,
+        workspace=workspace,
+    )
+    if not evidence and not direct_candidates:
+        return {
+            "status": "held" if source_frame is not None else "idle",
+            **({"reason": "skill_review_sources_unavailable", "retryable": True} if source_frame is not None else {}),
+            "processed_sessions": 0,
+            "workflow_candidates_recorded": workflow_candidates_recorded,
+            "memory_skill_candidates": len(memory_skill_candidates),
+        }
+
+    processed = 0
+    last_cursor = ports.advance_distiller_cursor(
+        (state.last_processed_at or "", state.last_processed_session_id or ""),
+        evidence,
+    )
+    grouped: dict[str, list[SessionWorkflowEvidence]] = {}
+
+    for item in evidence:
+        fingerprint = ports._build_workflow_signature(item.tool_names)
+        if fingerprint.workflow_signature is None:
+            continue
+        if item.status == "noop":
+            continue
+        grouped.setdefault(fingerprint.workflow_signature, []).append(item)
+        if source_frame is not None and not support._session_is_after_cursor(
+            occurred_at=ports.datetime.fromisoformat(item.occurred_at), session_id=item.session_id, state=state
+        ):
+            continue
+        processed += 1
+
+        skill_record_name = (
+            item.loaded_skill_names[0]
+            if item.used_skill and item.loaded_skill_names
+            else ports._infer_skill_name(fingerprint.workflow_signature)
+        )
+        ports.record_skill_execution(
+            workspace,
+            skill_name=skill_record_name,
+            workflow_signature=fingerprint.workflow_signature,
+            status=item.status,
+            used_skill=item.used_skill,
+            note=item.summary,
+            blocker="",
+            occurred_at=item.occurred_at,
+        )
+
+    state.last_processed_at = last_cursor[0] or state.last_processed_at
+    state.last_processed_session_id = last_cursor[1] or state.last_processed_session_id
+    ports.save_distiller_state(workspace, state)
+
+    candidates = ports.load_skill_candidates(workspace)
+    ranked_candidates = ports.rank_skill_candidates(candidates.values())
+    reviewable = ranked_candidates.reviewable
+    if model is None:
+        return {"status": "candidate", "processed_sessions": processed}
+    if not direct_candidates and not reviewable:
+        return {"status": "candidate", "processed_sessions": processed}
+    return (
+        source_frame,
+        state,
+        workflow_candidates_recorded,
+        memory_skill_candidates,
+        flywheel_skill_candidate_drafts,
+        evidence,
+        direct_candidates,
+        processed,
+        grouped,
+        reviewable,
     )
 
 
@@ -27,13 +190,26 @@ async def run_skill_distillation(
 ) -> dict[str, Any]:
     # Bind an explicit per-call dependency snapshot so tests, DI, and runtime
     # overrides observe the same facade values without copying a module namespace.
-    _build_workflow_signature = support._build_workflow_signature
+    ports = _DistillationEvidencePorts(
+        _build_workflow_signature=support._build_workflow_signature,
+        _collect_direct_skill_candidates=support._collect_direct_skill_candidates,
+        _infer_skill_name=support._infer_skill_name,
+        _load_internal_session_evidence=support._load_internal_session_evidence,
+        advance_distiller_cursor=support.advance_distiller_cursor,
+        datetime=support.datetime,
+        load_distiller_state=support.load_distiller_state,
+        load_flywheel_skill_candidate_drafts=support.load_flywheel_skill_candidate_drafts,
+        load_memory_skill_candidates=support.load_memory_skill_candidates,
+        load_skill_candidates=support.load_skill_candidates,
+        logger=support.logger,
+        rank_skill_candidates=support.rank_skill_candidates,
+        record_skill_execution=support.record_skill_execution,
+        record_workflow_candidates_from_memory=support.record_workflow_candidates_from_memory,
+        save_distiller_state=support.save_distiller_state,
+    )
     _capture_skill_candidate_package_factor = support._capture_skill_candidate_package_factor
-    _collect_direct_skill_candidates = support._collect_direct_skill_candidates
     _commit_skill_with_asset_revision = support._commit_skill_with_asset_revision
     _draft_skill_with_llm = support._draft_skill_with_llm
-    _infer_skill_name = support._infer_skill_name
-    _load_internal_session_evidence = support._load_internal_session_evidence
     _normalize_skill_folder_name = support._normalize_skill_folder_name
     _promotion_gate_metadata = support._promotion_gate_metadata
     _referee_review_payload = support._referee_review_payload
@@ -42,22 +218,11 @@ async def run_skill_distillation(
     _run_skill_referee_gate = support._run_skill_referee_gate
     _select_skill_candidate_with_llm = support._select_skill_candidate_with_llm
     SkillCandidateSelectionOption = support.SkillCandidateSelectionOption
-    advance_distiller_cursor = support.advance_distiller_cursor
-    datetime = support.datetime
     infer_static_runtime_tool_group_names = support.infer_static_runtime_tool_group_names
-    load_distiller_state = support.load_distiller_state
-    load_flywheel_skill_candidate_drafts = support.load_flywheel_skill_candidate_drafts
-    load_memory_skill_candidates = support.load_memory_skill_candidates
-    load_skill_candidates = support.load_skill_candidates
-    logger = support.logger
-    rank_skill_candidates = support.rank_skill_candidates
-    record_skill_execution = support.record_skill_execution
     record_skill_lifecycle_event = support.record_skill_lifecycle_event
-    record_workflow_candidates_from_memory = support.record_workflow_candidates_from_memory
     render_skill_evidence_contrast = support.render_skill_evidence_contrast
     replace = support.replace
     resolve_existing_skill_conflict = support.resolve_existing_skill_conflict
-    save_distiller_state = support.save_distiller_state
     timezone = support.timezone
     update_skill_candidate_package_status = support.update_skill_candidate_package_status
     update_skill_candidate_record = support.update_skill_candidate_record
@@ -73,110 +238,43 @@ async def run_skill_distillation(
     from app.config import get_settings
 
     data_root = Path(get_settings().AGENT_DATA_DIR)
-    from app.services.learned_skill_sources import (current_review, review_candidate, recheck_review_inputs,
-        load_review_memory_candidates, bind_reviewed_draft, review_draft_target)
+    from app.services.learned_skill_sources import (
+        current_review,
+        review_candidate,
+        recheck_review_inputs,
+        load_review_memory_candidates,
+        bind_reviewed_draft,
+        review_draft_target,
+    )
     from app.services.content_input_receipts import ContentInputReceiptError
 
-    source_frame = current_review()
-    workflow_candidates_recorded = 0
-    memory_skill_candidates: list[dict[str, str]] = []
-    flywheel_skill_candidate_drafts = load_flywheel_skill_candidate_drafts(workspace)
-    if source_frame is not None:
-        scoped_drafts = []
-        for item in flywheel_skill_candidate_drafts:
-            if item["candidate_id"] not in source_frame.candidates:
-                continue
-            try:
-                _row, source = await review_candidate(item["candidate_id"], workspace=workspace)
-                import hashlib
-
-                if hashlib.sha256(item["content"].encode()).hexdigest() != source["draft_sha256"]:
-                    raise ContentInputReceiptError("learned_skill_draft_changed", "The reviewed candidate bytes changed.", 403)
-                scoped_drafts.append(item)
-                source_frame.dependencies.append({"source_kind": "learned_skill_candidate",
-                    "source_id": str(_row.id), "source_version": _row.content_hash})
-            except ContentInputReceiptError:
-                source_frame.unavailable = True
-        flywheel_skill_candidate_drafts = scoped_drafts
-    try:
-        if source_frame is None:
-            workflow_candidates_recorded = record_workflow_candidates_from_memory(data_root, agent_id, workspace=workspace)
-            memory_skill_candidates = load_memory_skill_candidates(data_root, agent_id)
-        else:
-            workflow_candidates = await load_review_memory_candidates(data_root=data_root, agent_id=agent_id, container="workflow_candidate")
-            workflow_candidates_recorded = record_workflow_candidates_from_memory(data_root, agent_id,
-                workspace=workspace, candidates=workflow_candidates)
-            memory_skill_candidates = await load_review_memory_candidates(data_root=data_root, agent_id=agent_id, container="skill_candidate")
-    except Exception as exc:  # noqa: BLE001 — candidate-lane IO must not break distillation
-        logger.warning("[skill_distiller] memory candidate lane failed for %s: %s", agent_id, exc)
-
-    state = load_distiller_state(workspace)
-    evidence = await _load_internal_session_evidence(
+    prepared_evidence = await _prepare_distillation_evidence(
         agent_id=agent_id,
-        since_days=None,
-        state=state,
-        current_session_id=current_session_id,
-    )
-    direct_candidates: list[DirectSkillCandidate] = _collect_direct_skill_candidates(
-        skill_candidate_drafts=flywheel_skill_candidate_drafts,
-        memory_skill_candidates=memory_skill_candidates,
         workspace=workspace,
+        data_root=data_root,
+        current_session_id=current_session_id,
+        model=model,
+        current_review=current_review,
+        review_candidate=review_candidate,
+        load_review_memory_candidates=load_review_memory_candidates,
+        ContentInputReceiptError=ContentInputReceiptError,
+        ports=ports,
+        support=support,
     )
-    if not evidence and not direct_candidates:
-        return {
-            "status": "held" if source_frame is not None else "idle",
-            **({"reason": "skill_review_sources_unavailable", "retryable": True} if source_frame is not None else {}),
-            "processed_sessions": 0,
-            "workflow_candidates_recorded": workflow_candidates_recorded,
-            "memory_skill_candidates": len(memory_skill_candidates),
-        }
-
-    processed = 0
-    last_cursor = advance_distiller_cursor(
-        (state.last_processed_at or "", state.last_processed_session_id or ""),
+    if isinstance(prepared_evidence, dict):
+        return prepared_evidence
+    (
+        source_frame,
+        state,
+        workflow_candidates_recorded,
+        memory_skill_candidates,
+        flywheel_skill_candidate_drafts,
         evidence,
-    )
-    grouped: dict[str, list[SessionWorkflowEvidence]] = {}
-
-    for item in evidence:
-        fingerprint = _build_workflow_signature(item.tool_names)
-        if fingerprint.workflow_signature is None:
-            continue
-        if item.status == "noop":
-            continue
-        grouped.setdefault(fingerprint.workflow_signature, []).append(item)
-        if source_frame is not None and not support._session_is_after_cursor(
-            occurred_at=datetime.fromisoformat(item.occurred_at), session_id=item.session_id, state=state):
-            continue
-        processed += 1
-
-        skill_record_name = (
-            item.loaded_skill_names[0]
-            if item.used_skill and item.loaded_skill_names
-            else _infer_skill_name(fingerprint.workflow_signature)
-        )
-        record_skill_execution(
-            workspace,
-            skill_name=skill_record_name,
-            workflow_signature=fingerprint.workflow_signature,
-            status=item.status,
-            used_skill=item.used_skill,
-            note=item.summary,
-            blocker="",
-            occurred_at=item.occurred_at,
-        )
-
-    state.last_processed_at = last_cursor[0] or state.last_processed_at
-    state.last_processed_session_id = last_cursor[1] or state.last_processed_session_id
-    save_distiller_state(workspace, state)
-
-    candidates = load_skill_candidates(workspace)
-    ranked_candidates = rank_skill_candidates(candidates.values())
-    reviewable = ranked_candidates.reviewable
-    if model is None:
-        return {"status": "candidate", "processed_sessions": processed}
-    if not direct_candidates and not reviewable:
-        return {"status": "candidate", "processed_sessions": processed}
+        direct_candidates,
+        processed,
+        grouped,
+        reviewable,
+    ) = prepared_evidence
 
     selection_options: list[SkillCandidateSelectionOption] = []
     for direct in direct_candidates:
@@ -200,7 +298,8 @@ async def run_skill_distillation(
             candidate_evidence = [
                 item
                 for item in evidence
-                if _build_workflow_signature(item.tool_names).workflow_signature == candidate_record.workflow_signature
+                if ports._build_workflow_signature(item.tool_names).workflow_signature
+                == candidate_record.workflow_signature
             ]
         if source_frame is not None and not candidate_evidence:
             continue
@@ -224,7 +323,7 @@ async def run_skill_distillation(
             tenant_id=tenant_id,
         )
     except Exception as exc:  # noqa: BLE001 - selector failure must hold, never choose mechanically
-        logger.warning("[skill_distiller] candidate selector failed for %s: %s", agent_id, exc)
+        ports.logger.warning("[skill_distiller] candidate selector failed for %s: %s", agent_id, exc)
         return {
             "status": "held",
             "processed_sessions": processed,
@@ -249,7 +348,7 @@ async def run_skill_distillation(
             evidence_for_candidate = [
                 item
                 for item in evidence
-                if _build_workflow_signature(item.tool_names).workflow_signature == record.workflow_signature
+                if ports._build_workflow_signature(item.tool_names).workflow_signature == record.workflow_signature
             ]
 
     await recheck_review_inputs()
@@ -258,7 +357,7 @@ async def run_skill_distillation(
         workflow_signature=record.workflow_signature,
         evidence=evidence_for_candidate,
         declared_packs=infer_static_runtime_tool_group_names(
-            list(_build_workflow_signature(evidence_for_candidate[0].tool_names).normalized_tools)
+            list(ports._build_workflow_signature(evidence_for_candidate[0].tool_names).normalized_tools)
         )
         if evidence_for_candidate
         else (),
@@ -282,7 +381,7 @@ async def run_skill_distillation(
             blocker="llm_deferred",
             last_status="defer",
             last_note=note,
-            last_updated_at=datetime.now(timezone.utc).isoformat(),
+            last_updated_at=ports.datetime.now(timezone.utc).isoformat(),
         )
         record_skill_lifecycle_event(
             workspace,
@@ -301,7 +400,7 @@ async def run_skill_distillation(
             blocker="semantic_conflict_deferred",
             last_status="defer",
             last_note=note,
-            last_updated_at=datetime.now(timezone.utc).isoformat(),
+            last_updated_at=ports.datetime.now(timezone.utc).isoformat(),
         )
         record_skill_lifecycle_event(
             workspace,
@@ -329,7 +428,7 @@ async def run_skill_distillation(
             blocker="validation_failed",
             last_status="defer",
             last_note=note,
-            last_updated_at=datetime.now(timezone.utc).isoformat(),
+            last_updated_at=ports.datetime.now(timezone.utc).isoformat(),
         )
         record_skill_lifecycle_event(
             workspace,
@@ -350,7 +449,7 @@ async def run_skill_distillation(
                 blocker="patch_target_missing",
                 last_status="defer",
                 last_note=note,
-                last_updated_at=datetime.now(timezone.utc).isoformat(),
+                last_updated_at=ports.datetime.now(timezone.utc).isoformat(),
             )
             record_skill_lifecycle_event(
                 workspace,
@@ -375,7 +474,7 @@ async def run_skill_distillation(
                 blocker="non_evolvable_skill",
                 last_status="defer",
                 last_note=note,
-                last_updated_at=datetime.now(timezone.utc).isoformat(),
+                last_updated_at=ports.datetime.now(timezone.utc).isoformat(),
             )
             record_skill_lifecycle_event(
                 workspace,
@@ -421,9 +520,12 @@ async def run_skill_distillation(
             },
         )
         if source_frame is not None:
-            _identity, folder, _authority, _slug = await review_draft_target(workspace=workspace,
-                gate_candidate_id=candidate["candidate_id"], draft=effective_draft,
-                source_candidate_id=direct_candidate.candidate_id if direct_candidate else None)
+            _identity, folder, _authority, _slug = await review_draft_target(
+                workspace=workspace,
+                gate_candidate_id=candidate["candidate_id"],
+                draft=effective_draft,
+                source_candidate_id=direct_candidate.candidate_id if direct_candidate else None,
+            )
             patch_relative_path = f"skills/{folder}/SKILL.md"
         candidate_manifest = write_skill_candidate_package(
             workspace=workspace,
@@ -500,7 +602,7 @@ async def run_skill_distillation(
                 blocker="verification_failed",
                 last_status="defer",
                 last_note=promotion_decision["reason"],
-                last_updated_at=datetime.now(timezone.utc).isoformat(),
+                last_updated_at=ports.datetime.now(timezone.utc).isoformat(),
             )
             record_skill_lifecycle_event(
                 workspace,
@@ -555,7 +657,7 @@ async def run_skill_distillation(
                 blocker="referee_failed",
                 last_status="defer",
                 last_note=referee_hold_reason,
-                last_updated_at=datetime.now(timezone.utc).isoformat(),
+                last_updated_at=ports.datetime.now(timezone.utc).isoformat(),
             )
             record_skill_lifecycle_event(
                 workspace,
@@ -579,10 +681,18 @@ async def run_skill_distillation(
                 **({"direct_candidate_id": direct_candidate.candidate_id} if direct_candidate else {}),
             }
 
-        reviewed = await bind_reviewed_draft(workspace=workspace, gate_candidate_id=candidate["candidate_id"],
-            draft=effective_draft, source_candidate_id=direct_candidate.candidate_id if direct_candidate else None,
-            skill_origin=patch_skill_origin, gate_metadata=_promotion_gate_metadata(verification_report=verification_report,
-                artifact_gate_report=artifact_gate_report, referee_review=referee_review))
+        reviewed = await bind_reviewed_draft(
+            workspace=workspace,
+            gate_candidate_id=candidate["candidate_id"],
+            draft=effective_draft,
+            source_candidate_id=direct_candidate.candidate_id if direct_candidate else None,
+            skill_origin=patch_skill_origin,
+            gate_metadata=_promotion_gate_metadata(
+                verification_report=verification_report,
+                artifact_gate_report=artifact_gate_report,
+                referee_review=referee_review,
+            ),
+        )
         save_result = await _commit_skill_with_asset_revision(
             workspace=workspace,
             target_relative_path=patch_relative_path,
@@ -617,7 +727,7 @@ async def run_skill_distillation(
                 blocker="save_failed",
                 last_status="defer",
                 last_note=save_result,
-                last_updated_at=datetime.now(timezone.utc).isoformat(),
+                last_updated_at=ports.datetime.now(timezone.utc).isoformat(),
             )
             update_skill_candidate_package_status(
                 workspace=workspace,
@@ -656,7 +766,7 @@ async def run_skill_distillation(
         from app.services.evolution_validation import validate_evolution_ledger
 
         evolution_validation = validate_evolution_ledger(workspace, write_report=True)
-        patched_at = datetime.now(timezone.utc).isoformat()
+        patched_at = ports.datetime.now(timezone.utc).isoformat()
         update_skill_candidate_record(
             workspace,
             workflow_signature=record.workflow_signature,
@@ -673,7 +783,7 @@ async def run_skill_distillation(
             note=effective_draft.reason or "Patched existing skill for provisional trial.",
         )
         state.last_promotion_at = patched_at
-        save_distiller_state(workspace, state)
+        ports.save_distiller_state(workspace, state)
         return {
             "status": "provisional",
             "processed_sessions": processed,
@@ -717,9 +827,12 @@ async def run_skill_distillation(
     )
     rollback_ref = f"skills/{_normalize_skill_folder_name(draft.name)}/SKILL.md"
     if source_frame is not None:
-        _identity, folder, _authority, _slug = await review_draft_target(workspace=workspace,
-            gate_candidate_id=candidate["candidate_id"], draft=draft,
-            source_candidate_id=direct_candidate.candidate_id if direct_candidate else None)
+        _identity, folder, _authority, _slug = await review_draft_target(
+            workspace=workspace,
+            gate_candidate_id=candidate["candidate_id"],
+            draft=draft,
+            source_candidate_id=direct_candidate.candidate_id if direct_candidate else None,
+        )
         rollback_ref = f"skills/{folder}/SKILL.md"
     from app.services.skill_evolution_registry import ORIGIN_T3_AUTO_CREATED
 
@@ -796,7 +909,7 @@ async def run_skill_distillation(
             blocker="verification_failed",
             last_status="defer",
             last_note=promotion_decision["reason"],
-            last_updated_at=datetime.now(timezone.utc).isoformat(),
+            last_updated_at=ports.datetime.now(timezone.utc).isoformat(),
         )
         record_skill_lifecycle_event(
             workspace,
@@ -850,7 +963,7 @@ async def run_skill_distillation(
             blocker="referee_failed",
             last_status="defer",
             last_note=referee_hold_reason,
-            last_updated_at=datetime.now(timezone.utc).isoformat(),
+            last_updated_at=ports.datetime.now(timezone.utc).isoformat(),
         )
         record_skill_lifecycle_event(
             workspace,
@@ -874,10 +987,18 @@ async def run_skill_distillation(
             **({"direct_candidate_id": direct_candidate.candidate_id} if direct_candidate else {}),
         }
 
-    reviewed = await bind_reviewed_draft(workspace=workspace, gate_candidate_id=candidate["candidate_id"],
-        draft=draft, source_candidate_id=direct_candidate.candidate_id if direct_candidate else None,
-        skill_origin=ORIGIN_T3_AUTO_CREATED, gate_metadata=_promotion_gate_metadata(verification_report=verification_report,
-            artifact_gate_report=artifact_gate_report, referee_review=referee_review))
+    reviewed = await bind_reviewed_draft(
+        workspace=workspace,
+        gate_candidate_id=candidate["candidate_id"],
+        draft=draft,
+        source_candidate_id=direct_candidate.candidate_id if direct_candidate else None,
+        skill_origin=ORIGIN_T3_AUTO_CREATED,
+        gate_metadata=_promotion_gate_metadata(
+            verification_report=verification_report,
+            artifact_gate_report=artifact_gate_report,
+            referee_review=referee_review,
+        ),
+    )
     save_result = await _commit_skill_with_asset_revision(
         workspace=workspace,
         target_relative_path=rollback_ref,
@@ -911,7 +1032,7 @@ async def run_skill_distillation(
             blocker="save_failed",
             last_status="defer",
             last_note=save_result,
-            last_updated_at=datetime.now(timezone.utc).isoformat(),
+            last_updated_at=ports.datetime.now(timezone.utc).isoformat(),
         )
         update_skill_candidate_package_status(
             workspace=workspace,
@@ -969,9 +1090,11 @@ async def run_skill_distillation(
                 ):
                     promoted_memory_ids.append(candidate_id)
             except Exception as exc:  # noqa: BLE001 — marker failure is auditable, not fatal
-                logger.warning("[skill_distiller] failed to mark memory candidate %s promoted: %s", candidate_id, exc)
+                ports.logger.warning(
+                    "[skill_distiller] failed to mark memory candidate %s promoted: %s", candidate_id, exc
+                )
 
-    promoted_at = datetime.now(timezone.utc).isoformat()
+    promoted_at = ports.datetime.now(timezone.utc).isoformat()
     update_skill_candidate_record(
         workspace,
         workflow_signature=record.workflow_signature,
@@ -988,7 +1111,7 @@ async def run_skill_distillation(
         note=draft.reason or "Entered provisional trial as a new skill.",
     )
     state.last_promotion_at = promoted_at
-    save_distiller_state(workspace, state)
+    ports.save_distiller_state(workspace, state)
     return {
         "status": "provisional",
         "skill_path": rollback_ref,

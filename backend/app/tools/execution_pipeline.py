@@ -86,6 +86,17 @@ class _Stop:
     value: Any
 
 
+def _governed_execution_stages() -> tuple[Any, ...]:
+    return (
+        _apply_exact_secret_preflight,
+        _apply_exact_session_scope,
+        _apply_plan_mode_and_runtime_arguments,
+        _apply_hooks_and_assets,
+        _apply_workspace_mutation_path_authority,
+        _apply_governance,
+    )
+
+
 async def run_tool_execution(
     service: Any,
     request: ToolExecutionRequest,
@@ -105,14 +116,7 @@ async def run_tool_execution(
     from app.services.execution_environments import command_environment_context
 
     with command_environment_context(state.runtime_context):
-        for stage in (
-            _apply_exact_secret_preflight,
-            _apply_exact_session_scope,
-            _apply_plan_mode_and_runtime_arguments,
-            _apply_hooks_and_assets,
-            _apply_workspace_mutation_path_authority,
-            _apply_governance,
-        ):
+        for stage in _governed_execution_stages():
             stopped = await stage(state)
             if stopped is not None:
                 return stopped.value

@@ -38,18 +38,30 @@ class _ScalarAll:
 class _FakeDB:
     def __init__(self, rows=()):
         self.rows = list(rows)
-        self.added = []
+        self.added_objects = []
         self.flushes = 0
+
+    @property
+    def added(self):
+        from app.models.trigger import AgentTrigger
+
+        return [obj for obj in self.added_objects if isinstance(obj, AgentTrigger)]
+
+    async def get(self, model, identity, **_kwargs):
+        return next(
+            (obj for obj in self.added_objects if isinstance(obj, model) and obj.id == identity),
+            None,
+        )
 
     async def execute(self, _stmt):
         return _ScalarAll(self.rows)
 
     def add(self, obj):
-        self.added.append(obj)
+        self.added_objects.append(obj)
 
     async def flush(self):
         self.flushes += 1
-        for obj in self.added:
+        for obj in self.added_objects:
             if getattr(obj, "id", None) is None:
                 obj.id = uuid.uuid4()
 

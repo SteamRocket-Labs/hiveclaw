@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+from functools import partial
 from typing import TYPE_CHECKING, Any
 
 from app.kernel.contracts import (
-    ContextDependencyUnavailable, ExecutionAuthorityUnavailable, ProviderRequestNeedsReconciliation,
-    SessionRestartRecoveryRequired, ToolLifecyclePersistenceError,
+    ContextDependencyUnavailable,
+    ExecutionAuthorityUnavailable,
+    ProviderRequestNeedsReconciliation,
+    SessionRestartRecoveryRequired,
+    ToolLifecyclePersistenceError,
 )
 
 if TYPE_CHECKING:
@@ -221,10 +225,16 @@ def _bind_system_prompt_suffix_sections(
             offset = int(bool((request.system_prompt_suffix or "").strip()))
             for index, section in enumerate(sections):
                 key = f"dynamic:suffix:system_prompt_suffix:{offset + index}"
-                sources[key] = () if index < len(protected_sections) else state.context_sources_for(
-                    agent_id=request.agent_id, content=section)
-                unbound[key] = () if index < len(protected_sections) else state.context_unbound_for(
-                    agent_id=request.agent_id, content=section)
+                sources[key] = (
+                    ()
+                    if index < len(protected_sections)
+                    else state.context_sources_for(agent_id=request.agent_id, content=section)
+                )
+                unbound[key] = (
+                    ()
+                    if index < len(protected_sections)
+                    else state.context_unbound_for(agent_id=request.agent_id, content=section)
+                )
         return sections
 
     return build
@@ -912,6 +922,175 @@ def _raise_terminal_tool_callback_failure(results: list[Any], is_terminal: Any) 
             raise result
 
 
+async def _project_generated_source_permissions(
+    final_content: str,
+    *,
+    request: Any,
+    runtime_config: Any,
+    _registered_connector_source_items: Any,
+    _record_span: Any,
+    monotonic_ms: Any,
+    _emit_event: Any,
+) -> tuple[str, bool]:
+    source_items = _registered_connector_source_items(request)
+    if not source_items:
+        return final_content, True
+    from app.services.connector_acl import (
+        redact_forbidden_generated_source_fragments,
+        record_generated_source_permission_check,
+    )
+
+    redacted_content, check = redact_forbidden_generated_source_fragments(
+        final_content,
+        source_items=source_items,
+        tenant_id=runtime_config.tenant_id,
+        current_user_id=request.user_id,
+        agent_id=request.agent_id,
+        external_principal_id=request.external_principal_id,
+    )
+    record_generated_source_permission_check(request.session_context, check)
+    status = "allowed" if check.allowed else "blocked"
+    await _record_span(
+        span_type="permission",
+        name="generated_source_permission_check",
+        started_at_ms=monotonic_ms(),
+        metadata={
+            "status": status,
+            "source_count": len(source_items),
+            "allowed_source_count": len(check.allowed_sources),
+            "forbidden_source_count": len(check.forbidden_sources),
+            "forbidden_sources": list(check.forbidden_sources),
+            "authorization_decision_entry": check.authorization_decision_entry,
+        },
+    )
+    if check.allowed:
+        return final_content, True
+    await _emit_event(
+        {
+            "type": "generated_source_permission_block",
+            "part": {
+                "type": "event",
+                "event_type": "generated_source_permission_block",
+                "title": "Source Permission Check",
+                "text": "Precisely redacted inaccessible connector fragments from the generated response.",
+                "status": "warning",
+                "forbidden_source_count": len(check.forbidden_sources),
+            },
+        }
+    )
+    return redacted_content, False
+
+
+async def _persist_compaction_event(
+    data: dict[str, Any], *, request: Any, _emit_event: Any, _persist_recovery_manifest_checkpoint: Any, logger: Any
+) -> None:
+    await _emit_event({"type": "session_compact", **data})
+    # System-level WAL: save compaction summary without touching user-authored workspace notes.
+    if request.agent_id and data.get("summary"):
+        try:
+            from app.config import get_settings as _gs
+            from pathlib import Path as _P
+
+            _header = "# Session Compaction Summary (auto-saved)\n\n"
+            _content = _header + data["summary"] + "\n"
+            # Write to both workspace roots so heartbeat can find it
+            for _root in [
+                _P(_gs().AGENT_DATA_DIR) / str(request.agent_id),
+                _P("/tmp/hive_workspaces") / str(request.agent_id),
+            ]:
+                if _root.exists():
+                    _cfile = _root / "runtime_artifacts" / "compaction_summary.md"
+                    _cfile.parent.mkdir(parents=True, exist_ok=True)
+                    _cfile.write_text(_content, encoding="utf-8")
+                    _legacy_cfile = _root / "workspace" / "compaction_summary.md"
+                    _legacy_cfile.unlink(missing_ok=True)
+        except Exception as _exc:
+            logger.warning("[Kernel] Auto-save compaction summary failed: %s", _exc)
+
+    # P1-W3-9 — RecoveryManifest persistence.
+    # Structured state is committed through the authority-bound
+    # store. The next invocation consumes only its verified load
+    # result; omitted bytes are exposed through an immutable governed
+    # context-resource ref, never a raw workspace path.
+    if request.agent_id and getattr(request, "session_context", None) is not None:
+        try:
+            _persist_recovery_manifest_checkpoint(request, delete_if_empty=True)
+        except Exception as _rec_exc:
+            logger.warning(
+                "[Kernel] Recovery manifest persistence failed (non-fatal): %s",
+                _rec_exc,
+            )
+
+
+async def _project_context_decision_event(data: dict[str, Any], *, request: Any, _emit_event: Any) -> None:
+    event_type = str(data.get("event_type") or "context_window_status")
+    runtime_decision_entry = data.get("runtime_decision_entry")
+    if request.session_context is not None and isinstance(runtime_decision_entry, dict):
+        from app.runtime.decision_ledger import append_runtime_decision_entry
+
+        append_runtime_decision_entry(request.session_context, runtime_decision_entry)
+    if (
+        event_type == "compaction_lifecycle"
+        and request.session_context is not None
+        and isinstance(getattr(request.session_context, "metadata", None), dict)
+        and isinstance(data.get("compaction_lifecycle"), dict)
+    ):
+        request.session_context.metadata.setdefault("compaction_lifecycle_records", []).append(
+            dict(data["compaction_lifecycle"])
+        )
+    title_by_type = {
+        "context_window_status": "Context Window",
+        "tool_result_budget_pass": "Tool Result Budget",
+        "compaction_skipped": "Compaction Skipped",
+        "compaction_started": "Compaction Started",
+        "compaction_completed": "Compaction Completed",
+        "compaction_lifecycle": "Compaction Lifecycle",
+    }
+    await _emit_event(
+        {
+            "type": "session_context",
+            "visibility": "debug",
+            **data,
+            "part": {
+                "type": "event",
+                "event_type": event_type,
+                "title": title_by_type.get(event_type, "Session Context"),
+                "status": "info",
+                "visibility": "debug",
+                **data,
+            },
+        }
+    )
+
+
+async def _project_loop_guard_warning(
+    decision: LoopGuardDecision, *, reminder_scheduler: Any, _emit_event: Any, current_tools: Any
+) -> None:
+    control_only = decision.reason in {"provider_call_cost_pressure", "total_tool_calls", "failed_tool_calls"}
+    if decision.reason == "identical_tool_args":
+        control_only = decision.trace_event.get("tool") in {tool["function"]["name"] for tool in current_tools()}
+    reminder_scheduler.enqueue(
+        decision.message,
+        source="loop_guard",
+        ttl="next_collect",
+        priority=95,
+        unbound=() if control_only else ("context_sources_unbound",),
+    )
+    await _emit_event(
+        {
+            "type": "loop_guard",
+            "part": {
+                "type": "event",
+                "event_type": "loop_guard_warning",
+                "title": "Loop Guard Warning",
+                "text": decision.message,
+                "status": "warning",
+                **decision.trace_event,
+            },
+        }
+    )
+
+
 async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> InvocationResult:
     # Bind an explicit per-call dependency snapshot so tests, DI, and runtime
     # overrides observe the same facade values without copying a module namespace.
@@ -934,7 +1113,6 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
     _PARALLEL_SEMAPHORE_LIMIT = support._PARALLEL_SEMAPHORE_LIMIT
     _PTL_MAX_RETRIES = support._PTL_MAX_RETRIES
     _TOOL_RESULTS_AGGREGATE_BUDGET = support._TOOL_RESULTS_AGGREGATE_BUDGET
-    _TOOL_RESULT_PREVIEW_LENGTH = support._TOOL_RESULT_PREVIEW_LENGTH
     _WORK_LEDGER_ENABLED_METADATA_KEY = support._WORK_LEDGER_ENABLED_METADATA_KEY
     _apply_mechanical_compaction_with_lifecycle_hooks = support._apply_mechanical_compaction_with_lifecycle_hooks
     _build_cancelled_result = support._build_cancelled_result
@@ -948,7 +1126,6 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
     _compress_messages_with_lifecycle_hooks = support._compress_messages_with_lifecycle_hooks
     _compute_microcompact_gap = support._compute_microcompact_gap
     _content_replacement_record = support._content_replacement_record
-    _continue_after_output_cap = support._continue_after_output_cap
     _dicts_to_llm_messages = support._dicts_to_llm_messages
     _dynamic_suffix_notice = support._dynamic_suffix_notice
     _context_message = support._context_message
@@ -973,21 +1150,17 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
     _prepare_ptl_round_group_fallback = support._prepare_ptl_round_group_fallback
     _record_runtime_span = support._record_runtime_span
     _registered_connector_source_items = support._registered_connector_source_items
-    _resolve_eviction_threshold = support._resolve_eviction_threshold
     _restore_recovered_deferred_tool_schemas = support._restore_recovered_deferred_tool_schemas
     _sanitize_tool_calls_for_history = support._sanitize_tool_calls_for_history
-    _schedule_runtime_hook = support._schedule_runtime_hook
     _should_buffer_stream_for_source_acl = support._should_buffer_stream_for_source_acl
     _should_expand_tools = support._should_expand_tools
     _split_system_prompt_for_api = support._split_system_prompt_for_api
     _store_prompt_prefix_cache = support._store_prompt_prefix_cache
-    _stream_with_cancel = support._stream_with_cancel
     _tool_message_content = support._tool_message_content
     _tool_execution_evidence = support._tool_execution_evidence
     _tool_result_requests_user_clarification = support._tool_result_requests_user_clarification
     _tool_round_limit_message = support._tool_round_limit_message
     _turn_token_budget_message = support._turn_token_budget_message
-    _usage_int = support._usage_int
     asyncio = support.asyncio
     build_context_policy = support.build_context_policy
     build_default_reminder_specs = support.build_default_reminder_specs
@@ -1055,8 +1228,9 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                 terminal_reason=TerminalReason.TENANT_RESOLUTION_ERROR,
             )
         if getattr(runtime_config, "executor_unavailable", None):
-            return _build_error_result(runtime_config.executor_unavailable,
-                terminal_reason=TerminalReason.EXECUTOR_UNAVAILABLE)
+            return _build_error_result(
+                runtime_config.executor_unavailable, terminal_reason=TerminalReason.EXECUTOR_UNAVAILABLE
+            )
         if runtime_config.quota_message:
             # Note: final_tools not included — not yet resolved at this point
             return _build_error_result(runtime_config.quota_message, terminal_reason=TerminalReason.QUOTA_DENIED)
@@ -1137,7 +1311,9 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                 if "source_unbound" in inspect.signature(available_deferred_tool_candidates_for_agent).parameters:
                     deferred_source_unbound = []
                     deferred_kwargs["source_unbound"] = deferred_source_unbound
-                available_deferred_tools = await available_deferred_tool_candidates_for_agent(request.agent_id, **deferred_kwargs)
+                available_deferred_tools = await available_deferred_tool_candidates_for_agent(
+                    request.agent_id, **deferred_kwargs
+                )
                 if session_ctx is not None:
                     ensure_runtime_assembly_state(session_ctx).record_deferred_tools(available_deferred_tools)
             except Exception as exc:
@@ -1169,23 +1345,36 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
         from app.runtime.context import ensure_runtime_assembly_state
 
         _frozen_source_refs = ensure_runtime_assembly_state(session_ctx).context_sources_for(
-            agent_id=request.agent_id, content=_fresh_prompt_prefix)
+            agent_id=request.agent_id, content=_fresh_prompt_prefix
+        )
         _frozen_source_unbound = ensure_runtime_assembly_state(session_ctx).context_unbound_for(
-            agent_id=request.agent_id, content=_fresh_prompt_prefix)
+            agent_id=request.agent_id, content=_fresh_prompt_prefix
+        )
         from app.runtime.prompt_sections.environment import build_environment_section
 
-        source_inputs = {"memory_snapshot": resolved_memory_context, "skill_catalog": request.skill_catalog,
+        source_inputs = {
+            "memory_snapshot": resolved_memory_context,
+            "skill_catalog": request.skill_catalog,
             "permissions_context": resolved_permissions_context,
             "runtime_metadata_context": resolved_runtime_metadata_context,
-            "environment": build_environment_section(user_name=current_user_name or "",
-                channel=session_ctx.channel if session_ctx else "", agent_name=request.agent_name, include_time=False)}
+            "environment": build_environment_section(
+                user_name=current_user_name or "",
+                channel=session_ctx.channel if session_ctx else "",
+                agent_name=request.agent_name,
+                include_time=False,
+            ),
+        }
         if request.system_prompt_suffix:
             source_inputs["dynamic:suffix:system_prompt_suffix:0"] = request.system_prompt_suffix
         state = ensure_runtime_assembly_state(session_ctx)
-        dynamic_sources = {name: state.context_sources_for(agent_id=request.agent_id, content=content)
-            for name, content in source_inputs.items()}
-        dynamic_unbound = {name: state.context_unbound_for(agent_id=request.agent_id, content=content)
-            for name, content in source_inputs.items()}
+        dynamic_sources = {
+            name: state.context_sources_for(agent_id=request.agent_id, content=content)
+            for name, content in source_inputs.items()
+        }
+        dynamic_unbound = {
+            name: state.context_unbound_for(agent_id=request.agent_id, content=content)
+            for name, content in source_inputs.items()
+        }
         dynamic_sources["available_deferred_tools"] = ()
         dynamic_unbound["available_deferred_tools"] = tuple(deferred_source_unbound)
 
@@ -1205,8 +1394,15 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
             selected = [section for section in dynamic_context_section_ledger if section.get("selected")]
             if not selected:
                 return ("dynamic_section_inventory_missing",)
-            return tuple(reason for section in selected if section.get("platform_constant") is not True
-                for reason in dynamic_unbound.get(_dynamic_source_key(section), (f"dynamic_section_sources_unbound:{section['name']}",)))
+            return tuple(
+                reason
+                for section in selected
+                if section.get("platform_constant") is not True
+                for reason in dynamic_unbound.get(
+                    _dynamic_source_key(section), (f"dynamic_section_sources_unbound:{section['name']}",)
+                )
+            )
+
         if session_ctx is not None:
             session_ctx.metadata["frozen_context_dependency_manifest"] = _frozen_context_manifest
         _prompt_cache_key = _build_frozen_prompt_cache_key(
@@ -1357,8 +1553,9 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
             from app.runtime.context import ensure_runtime_assembly_state
             from app.runtime.context_engine import record_prompt_manifest_context_artifacts
 
-            dynamic_notice = _dynamic_suffix_notice(dynamic_prompt_suffix, sources=_dynamic_source_refs(),
-                unbound=_dynamic_source_unbound())
+            dynamic_notice = _dynamic_suffix_notice(
+                dynamic_prompt_suffix, sources=_dynamic_source_refs(), unbound=_dynamic_source_unbound()
+            )
             hook_added_context = []
             if "## Hook Additional Context" in _system_prompt_suffix:
                 hook_added_context.append("user_prompt_submit")
@@ -1483,54 +1680,15 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
             if part:
                 collected_parts.append(part)
 
-        async def _enforce_generated_source_permissions(final_content: str) -> tuple[str, bool]:
-            source_items = _registered_connector_source_items(request)
-            if not source_items:
-                return final_content, True
-            from app.services.connector_acl import (
-                redact_forbidden_generated_source_fragments,
-                record_generated_source_permission_check,
-            )
-
-            redacted_content, check = redact_forbidden_generated_source_fragments(
-                final_content,
-                source_items=source_items,
-                tenant_id=runtime_config.tenant_id,
-                current_user_id=request.user_id,
-                agent_id=request.agent_id,
-                external_principal_id=request.external_principal_id,
-            )
-            record_generated_source_permission_check(request.session_context, check)
-            status = "allowed" if check.allowed else "blocked"
-            await _record_span(
-                span_type="permission",
-                name="generated_source_permission_check",
-                started_at_ms=monotonic_ms(),
-                metadata={
-                    "status": status,
-                    "source_count": len(source_items),
-                    "allowed_source_count": len(check.allowed_sources),
-                    "forbidden_source_count": len(check.forbidden_sources),
-                    "forbidden_sources": list(check.forbidden_sources),
-                    "authorization_decision_entry": check.authorization_decision_entry,
-                },
-            )
-            if check.allowed:
-                return final_content, True
-            await _emit_event(
-                {
-                    "type": "generated_source_permission_block",
-                    "part": {
-                        "type": "event",
-                        "event_type": "generated_source_permission_block",
-                        "title": "Source Permission Check",
-                        "text": "Precisely redacted inaccessible connector fragments from the generated response.",
-                        "status": "warning",
-                        "forbidden_source_count": len(check.forbidden_sources),
-                    },
-                }
-            )
-            return redacted_content, False
+        _enforce_generated_source_permissions = partial(
+            _project_generated_source_permissions,
+            request=request,
+            runtime_config=runtime_config,
+            _registered_connector_source_items=_registered_connector_source_items,
+            _record_span=_record_span,
+            monotonic_ms=monotonic_ms,
+            _emit_event=_emit_event,
+        )
 
         async def _flush_buffered_chunks() -> None:
             nonlocal delivered_chunk_count
@@ -1583,109 +1741,26 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                 tool_terminal_signal=reason,
             )
 
-        async def _inject_loop_guard_warning(decision: LoopGuardDecision) -> None:
-            # A4 warn-before-abort: give the model the diagnostic + one
-            # self-correction chance (CC §12.2 soft-constraints-first).
-            # T-G1: queued on the scheduler — injected transiently into the
-            # next round's request, never persisted into api_messages.
-            # Fixed policy text and native counters carry no external source bytes.
-            # A repeated-failure diagnostic can quote tool output and stays unbound.
-            control_only = decision.reason in {"provider_call_cost_pressure", "total_tool_calls", "failed_tool_calls"}
-            if decision.reason == "identical_tool_args":
-                control_only = decision.trace_event.get("tool") in {tool["function"]["name"] for tool in tools_for_llm}
-            reminder_scheduler.enqueue(decision.message, source="loop_guard", ttl="next_collect", priority=95,
-                unbound=() if control_only else ("context_sources_unbound",))
-            await _emit_event(
-                {
-                    "type": "loop_guard",
-                    "part": {
-                        "type": "event",
-                        "event_type": "loop_guard_warning",
-                        "title": "Loop Guard Warning",
-                        "text": decision.message,
-                        "status": "warning",
-                        **decision.trace_event,
-                    },
-                }
-            )
+        _inject_loop_guard_warning = partial(
+            _project_loop_guard_warning,
+            reminder_scheduler=reminder_scheduler,
+            _emit_event=_emit_event,
+            current_tools=lambda: tools_for_llm,
+        )
 
-        async def _emit_compaction_event(data: dict[str, Any]) -> None:
-            await _emit_event({"type": "session_compact", **data})
-            # System-level WAL: save compaction summary without touching user-authored workspace notes.
-            if request.agent_id and data.get("summary"):
-                try:
-                    from app.config import get_settings as _gs
-                    from pathlib import Path as _P
+        _emit_compaction_event = partial(
+            _persist_compaction_event,
+            request=request,
+            _emit_event=_emit_event,
+            _persist_recovery_manifest_checkpoint=_persist_recovery_manifest_checkpoint,
+            logger=logger,
+        )
 
-                    _header = "# Session Compaction Summary (auto-saved)\n\n"
-                    _content = _header + data["summary"] + "\n"
-                    # Write to both workspace roots so heartbeat can find it
-                    for _root in [
-                        _P(_gs().AGENT_DATA_DIR) / str(request.agent_id),
-                        _P("/tmp/hive_workspaces") / str(request.agent_id),
-                    ]:
-                        if _root.exists():
-                            _cfile = _root / "runtime_artifacts" / "compaction_summary.md"
-                            _cfile.parent.mkdir(parents=True, exist_ok=True)
-                            _cfile.write_text(_content, encoding="utf-8")
-                            _legacy_cfile = _root / "workspace" / "compaction_summary.md"
-                            _legacy_cfile.unlink(missing_ok=True)
-                except Exception as _exc:
-                    logger.warning("[Kernel] Auto-save compaction summary failed: %s", _exc)
-
-            # P1-W3-9 — RecoveryManifest persistence.
-            # Structured state is committed through the authority-bound
-            # store. The next invocation consumes only its verified load
-            # result; omitted bytes are exposed through an immutable governed
-            # context-resource ref, never a raw workspace path.
-            if request.agent_id and getattr(request, "session_context", None) is not None:
-                try:
-                    _persist_recovery_manifest_checkpoint(request, delete_if_empty=True)
-                except Exception as _rec_exc:
-                    logger.warning(
-                        "[Kernel] Recovery manifest persistence failed (non-fatal): %s",
-                        _rec_exc,
-                    )
-
-        async def _emit_context_decision_event(data: dict[str, Any]) -> None:
-            event_type = str(data.get("event_type") or "context_window_status")
-            runtime_decision_entry = data.get("runtime_decision_entry")
-            if request.session_context is not None and isinstance(runtime_decision_entry, dict):
-                from app.runtime.decision_ledger import append_runtime_decision_entry
-
-                append_runtime_decision_entry(request.session_context, runtime_decision_entry)
-            if (
-                event_type == "compaction_lifecycle"
-                and request.session_context is not None
-                and isinstance(getattr(request.session_context, "metadata", None), dict)
-                and isinstance(data.get("compaction_lifecycle"), dict)
-            ):
-                request.session_context.metadata.setdefault("compaction_lifecycle_records", []).append(
-                    dict(data["compaction_lifecycle"])
-                )
-            title_by_type = {
-                "context_window_status": "Context Window",
-                "tool_result_budget_pass": "Tool Result Budget",
-                "compaction_skipped": "Compaction Skipped",
-                "compaction_started": "Compaction Started",
-                "compaction_completed": "Compaction Completed",
-                "compaction_lifecycle": "Compaction Lifecycle",
-            }
-            await _emit_event(
-                {
-                    "type": "session_context",
-                    "visibility": "debug",
-                    **data,
-                    "part": {
-                        "type": "event",
-                        "event_type": event_type,
-                        "title": title_by_type.get(event_type, "Session Context"),
-                        "status": "info",
-                        "visibility": "debug",
-                        **data,
-                    },
-                }
-            )
+        _emit_context_decision_event = partial(
+            _project_context_decision_event,
+            request=request,
+            _emit_event=_emit_event,
+        )
 
         def _context_policy_for_active_model() -> ContextPolicyV1:
             raw_policy = {}
@@ -1837,8 +1912,16 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
             user_id=request.user_id,
         )
 
-        api_messages = [_context_message(role="system", content=system_prompt, kind="frozen_prompt",
-            sections=_frozen_context_manifest.get("sections", ()), sources=_frozen_source_refs, unbound=_frozen_source_unbound)]
+        api_messages = [
+            _context_message(
+                role="system",
+                content=system_prompt,
+                kind="frozen_prompt",
+                sections=_frozen_context_manifest.get("sections", ()),
+                sources=_frozen_source_refs,
+                unbound=_frozen_source_unbound,
+            )
+        ]
         api_messages.extend(_dicts_to_llm_messages(messages))
         recovered_tool_results = await _execute_recovered_pending_tool_frames(
             execute_tool=self._deps.execute_tool,
@@ -2012,11 +2095,14 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                     stream_messages = _clone_api_messages(api_messages)
                     if _transient_reminders:
                         stream_messages = stream_messages + [
-                            support._runtime_reminder_message(request, item)
-                            for item in _transient_reminder_injections
+                            support._runtime_reminder_message(request, item) for item in _transient_reminder_injections
                         ]
-                    dynamic_notice = _dynamic_suffix_notice(dynamic_prompt_suffix, sections=dynamic_context_section_ledger,
-                        sources=_dynamic_source_refs(), unbound=_dynamic_source_unbound())
+                    dynamic_notice = _dynamic_suffix_notice(
+                        dynamic_prompt_suffix,
+                        sections=dynamic_context_section_ledger,
+                        sources=_dynamic_source_refs(),
+                        unbound=_dynamic_source_unbound(),
+                    )
                     if dynamic_notice is not None:
                         stream_messages = stream_messages + [dynamic_notice]
                     if self._deps.apply_vision_transform:
@@ -2088,12 +2174,20 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                         if cost_loop_decision:
                             await _inject_loop_guard_warning(cost_loop_decision)
                         break
-                    except (SessionRestartRecoveryRequired, ToolLifecyclePersistenceError, ExecutionAuthorityUnavailable):
+                    except (
+                        SessionRestartRecoveryRequired,
+                        ToolLifecyclePersistenceError,
+                        ExecutionAuthorityUnavailable,
+                    ):
                         raise
                     except ContextDependencyUnavailable as exc:
                         await _record_new_token_usage()
-                        return _build_error_result(exc.user_message, tokens_used=accumulated_tokens,
-                            terminal_reason=TerminalReason.MEMORY_UNAVAILABLE, failure_code=exc.code)
+                        return _build_error_result(
+                            exc.user_message,
+                            tokens_used=accumulated_tokens,
+                            terminal_reason=TerminalReason.MEMORY_UNAVAILABLE,
+                            failure_code=exc.code,
+                        )
                     except _KernelCancelledError:
                         provider_request_id = provider_attempt_state.get("provider_request_id")
                         llm_started_ms = int(provider_attempt_state["llm_started_ms"])
@@ -2248,9 +2342,14 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                                         budget_profile=budget_profile,
                                     )
                                     _ptl_system, dynamic_prompt_suffix = _split_system_prompt_for_api(_ptl_combined)
-                                    api_messages = [_context_message(role="system", content=_ptl_system, kind="context_recovery", sources=_frozen_source_refs)] + (
-                                        _dicts_to_llm_messages(compressed)
-                                    )
+                                    api_messages = [
+                                        _context_message(
+                                            role="system",
+                                            content=_ptl_system,
+                                            kind="context_recovery",
+                                            sources=_frozen_source_refs,
+                                        )
+                                    ] + (_dicts_to_llm_messages(compressed))
                                     await _emit_event(
                                         {
                                             "type": "session_compact",
@@ -2313,7 +2412,9 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                                     _truncated = _dicts_to_llm_messages(
                                         await _apply_mechanical_compaction_with_lifecycle_hooks(
                                             _llm_messages_to_dicts(api_messages[1:], include_source_refs=True),
-                                            compact=lambda _items: _llm_messages_to_dicts(_ptl_kept, include_source_refs=True),
+                                            compact=lambda _items: _llm_messages_to_dicts(
+                                                _ptl_kept, include_source_refs=True
+                                            ),
                                             agent_id=request.agent_id,
                                             session_id=request.memory_session_id,
                                             trigger="prompt_too_long",
@@ -2352,7 +2453,14 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                                         budget_profile=budget_profile,
                                     )
                                     _ptl_system, dynamic_prompt_suffix = _split_system_prompt_for_api(_ptl_combined)
-                                    api_messages = [_context_message(role="system", content=_ptl_system, kind="context_recovery", sources=_frozen_source_refs)] + _truncated
+                                    api_messages = [
+                                        _context_message(
+                                            role="system",
+                                            content=_ptl_system,
+                                            kind="context_recovery",
+                                            sources=_frozen_source_refs,
+                                        )
+                                    ] + _truncated
                                     await _emit_event(
                                         {
                                             "type": "session_compact",
@@ -2441,7 +2549,12 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                                         )
                                         _ptl_system, dynamic_prompt_suffix = _split_system_prompt_for_api(_ptl_combined)
                                         api_messages = [
-                                            _context_message(role="system", content=_ptl_system, kind="context_recovery", sources=_frozen_source_refs)
+                                            _context_message(
+                                                role="system",
+                                                content=_ptl_system,
+                                                kind="context_recovery",
+                                                sources=_frozen_source_refs,
+                                            )
                                         ] + _dicts_to_llm_messages(compressed)
                                         logger.info(
                                             "[Kernel] PTL full compress: %d→%d chars, %d→%d msgs (attempt %d/%d)",
@@ -2745,7 +2858,8 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                             if full_toolset is not None:
                                 tools_for_llm = (
                                     filter_tools_for_coordinator(full_toolset, dispatcher_only=_is_strict_dispatcher)
-                                    if _is_coordinator else full_toolset
+                                    if _is_coordinator
+                                    else full_toolset
                                 )
                             if isinstance(expansion_payload, ToolExpansionResult):
                                 session_context = request.session_context
@@ -2799,9 +2913,11 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
 
                                         assembly_state = ensure_runtime_assembly_state(session_context)
                                         _frozen_source_refs = assembly_state.context_sources_for(
-                                            agent_id=request.agent_id, content=prompt_prefix)
+                                            agent_id=request.agent_id, content=prompt_prefix
+                                        )
                                         _frozen_source_unbound = assembly_state.context_unbound_for(
-                                            agent_id=request.agent_id, content=prompt_prefix)
+                                            agent_id=request.agent_id, content=prompt_prefix
+                                        )
                                         refreshed_prompt_manifest = dict(assembly_state.prompt_assembly_manifest)
                                         refreshed_prompt_manifest["frozen_context_dependency_manifest"] = (
                                             current_manifest
@@ -2851,8 +2967,13 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                                         budget_profile=budget_profile,
                                     )
                                     system_prompt, dynamic_prompt_suffix = _split_system_prompt_for_api(combined_prompt)
-                                    api_messages[0] = _context_message(role="system", content=system_prompt, kind="frozen_prompt",
-                                        sources=_frozen_source_refs, unbound=_frozen_source_unbound)
+                                    api_messages[0] = _context_message(
+                                        role="system",
+                                        content=system_prompt,
+                                        kind="frozen_prompt",
+                                        sources=_frozen_source_refs,
+                                        unbound=_frozen_source_unbound,
+                                    )
 
                 _round_side_effect_messages: list[dict[str, Any]] = []
                 _session_permission_pause_pending = False
@@ -3085,7 +3206,9 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                         if _side_effects and _side_effects.get("artifacts"):
                             done_payload["artifacts"] = list(_side_effects["artifacts"])
                         if _side_effects and _side_effects.get("tool_result_media"):
-                            done_payload["model_seen_content"] = _tool_message_content(_content, _side_effects["tool_result_media"])
+                            done_payload["model_seen_content"] = _tool_message_content(
+                                _content, _side_effects["tool_result_media"]
+                            )
                         if _side_effects and _side_effects.get("tool_execution_evidence"):
                             done_payload["tool_execution_evidence"] = dict(_side_effects["tool_execution_evidence"])
                         if request.on_tool_call:
@@ -3106,8 +3229,12 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                             LLMMessage(
                                 role="tool",
                                 tool_call_id=tc["id"],
-                                content=_tool_message_content(_content, (_side_effects or {}).get("tool_result_media", result)),
-                                source_ref=f"session-provider-tool-result:{provider_request_id}" if provider_request_id else None,
+                                content=_tool_message_content(
+                                    _content, (_side_effects or {}).get("tool_result_media", result)
+                                ),
+                                source_ref=f"session-provider-tool-result:{provider_request_id}"
+                                if provider_request_id
+                                else None,
                             )
                         )
                         # D-08: capture the tool's side-effect channel on the REAL
@@ -3286,7 +3413,9 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                         if _side_effects and _side_effects.get("artifacts"):
                             done_payload["artifacts"] = list(_side_effects["artifacts"])
                         if _side_effects and _side_effects.get("tool_result_media"):
-                            done_payload["model_seen_content"] = _tool_message_content(_content, _side_effects["tool_result_media"])
+                            done_payload["model_seen_content"] = _tool_message_content(
+                                _content, _side_effects["tool_result_media"]
+                            )
                         if _side_effects and _side_effects.get("tool_execution_evidence"):
                             done_payload["tool_execution_evidence"] = dict(_side_effects["tool_execution_evidence"])
                         if request.on_tool_call:
@@ -3307,8 +3436,12 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                             LLMMessage(
                                 role="tool",
                                 tool_call_id=tc["id"],
-                                content=_tool_message_content(_content, (_side_effects or {}).get("tool_result_media", result)),
-                                source_ref=f"session-provider-tool-result:{provider_request_id}" if provider_request_id else None,
+                                content=_tool_message_content(
+                                    _content, (_side_effects or {}).get("tool_result_media", result)
+                                ),
+                                source_ref=f"session-provider-tool-result:{provider_request_id}"
+                                if provider_request_id
+                                else None,
                             )
                         )
                         # D-08: capture the tool's side-effect channel on the REAL
@@ -3497,7 +3630,8 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                         if _restored:
                             # Insert restoration context right after the summary, before recent messages
                             restored_msgs.insert(
-                                1 if len(restored_msgs) > 1 else 0, _context_message(role="system", content=_restored, kind="context_recovery")
+                                1 if len(restored_msgs) > 1 else 0,
+                                _context_message(role="system", content=_restored, kind="context_recovery"),
                             )
                         api_messages = [api_messages[0]] + restored_msgs
                         # Compaction re-arm (T-G1, M8): fire-once reminders

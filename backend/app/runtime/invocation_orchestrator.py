@@ -63,22 +63,30 @@ class _InvocationState:
         )
 
 
+def _invocation_command_context(request: AgentInvocationRequest) -> Any:
+    from app.services.execution_environments import EnvironmentCommandFrame, command_environment_context
+    from app.services.runtime_task_fence import current_runtime_task_fence
+
+    fence = current_runtime_task_fence()
+    frame = EnvironmentCommandFrame(
+        request.tenant_id,
+        request.agent_id,
+        request.user_id,
+        fence.task_id if fence else None,
+        session_id=getattr(request.session_context, "session_id", None) or request.memory_session_id,
+        machine_credential_id=request.machine_credential_id,
+        external_principal_id=request.external_principal_id,
+    )
+    return command_environment_context(frame)
+
+
 async def run_agent_invocation(
     request: AgentInvocationRequest,
     *,
     ports: InvocationPorts,
 ) -> AgentInvocationResult:
     """Run the single public invocation owner through explicit lifecycle stages."""
-    from app.services.execution_environments import EnvironmentCommandFrame, command_environment_context
-    from app.services.runtime_task_fence import current_runtime_task_fence
-
-    fence = current_runtime_task_fence()
-    frame = EnvironmentCommandFrame(
-        request.tenant_id, request.agent_id, request.user_id, fence.task_id if fence else None,
-        session_id=getattr(request.session_context, "session_id", None) or request.memory_session_id,
-        machine_credential_id=request.machine_credential_id, external_principal_id=request.external_principal_id,
-    )
-    with command_environment_context(frame):
+    with _invocation_command_context(request):
         ports.normalize_session_context(request)
         quota_result = await ports.enforce_quota(request)
         if quota_result is not None:
@@ -245,22 +253,7 @@ async def _assemble_invocation_state(
         on_event=on_event if request.on_event is not None else None,
         model_response_commit=(model_response_commit if request.model_response_commit is not None else None),
     )
-    for surface, field_name in (
-        ("model_input_messages", "messages"),
-        ("model_input_memory_messages", "memory_messages"),
-        ("model_input_memory_context", "memory_context"),
-        ("model_input_agent_name", "agent_name"),
-        ("model_input_role_description", "role_description"),
-        ("model_input_system_prompt", "system_prompt_suffix"),
-        ("model_input_standalone_prompt", "standalone_system_prompt"),
-        ("model_input_skill_catalog", "skill_catalog"),
-        ("model_input_initial_tools", "initial_tools"),
-    ):
-        setattr(
-            kernel_request,
-            field_name,
-            redact_payload(surface, getattr(kernel_request, field_name)),
-        )
+    _redact_initial_kernel_inputs(kernel_request, redact_payload)
     if request.mid_run_message_drain is not None:
         kernel_request.mid_run_message_drain = mid_run_message_drain
     if request.round_input_bind is not None:
@@ -279,6 +272,25 @@ async def _assemble_invocation_state(
         secret_aux_counts=secret_aux_counts,
         secret_aux_refs=secret_aux_refs,
     )
+
+
+def _redact_initial_kernel_inputs(kernel_request: Any, redact_payload: Any) -> None:
+    for surface, field_name in (
+        ("model_input_messages", "messages"),
+        ("model_input_memory_messages", "memory_messages"),
+        ("model_input_memory_context", "memory_context"),
+        ("model_input_agent_name", "agent_name"),
+        ("model_input_role_description", "role_description"),
+        ("model_input_system_prompt", "system_prompt_suffix"),
+        ("model_input_standalone_prompt", "standalone_system_prompt"),
+        ("model_input_skill_catalog", "skill_catalog"),
+        ("model_input_initial_tools", "initial_tools"),
+    ):
+        setattr(
+            kernel_request,
+            field_name,
+            redact_payload(surface, getattr(kernel_request, field_name)),
+        )
 
 
 def _model_secret_boundary(route: dict[str, Any]):
@@ -323,19 +335,21 @@ async def _build_skill_catalog(request: AgentInvocationRequest, ports: Invocatio
         return ""
     ranking_inputs = ports.skill_ranking_inputs(request)
     ranking: list[dict[str, Any]] = []
-    catalog = await ports.maybe_await(ports.build_skill_catalog(
-        request.agent_id,
-        budget_profile=ports.resolve_context_budget(request),
-        scenario_text=ranking_inputs["scenario_text"],
-        session_id=(
-            getattr(request.session_context, "session_id", None)
-            if request.session_context is not None
-            else request.memory_session_id
-        ),
-        active_skill_names=ranking_inputs["active_skill_names"],
-        path_triggered_skill_names=ranking_inputs["path_triggered_skill_names"],
-        ranking_manifest=ranking,
-    ))
+    catalog = await ports.maybe_await(
+        ports.build_skill_catalog(
+            request.agent_id,
+            budget_profile=ports.resolve_context_budget(request),
+            scenario_text=ranking_inputs["scenario_text"],
+            session_id=(
+                getattr(request.session_context, "session_id", None)
+                if request.session_context is not None
+                else request.memory_session_id
+            ),
+            active_skill_names=ranking_inputs["active_skill_names"],
+            path_triggered_skill_names=ranking_inputs["path_triggered_skill_names"],
+            ranking_manifest=ranking,
+        )
+    )
     if request.session_context is not None:
         from app.runtime.context import ensure_runtime_assembly_state
 

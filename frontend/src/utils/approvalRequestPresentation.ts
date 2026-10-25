@@ -63,7 +63,8 @@ export function approvalRequestPresentation(
   approval: ApprovalRequestLike,
 ): ApprovalRequestPresentation {
   const actionType = typeof approval.action_type === 'string' ? approval.action_type.trim() : '';
-  const writeFile = approval.tool_name === 'write_file' || approval.tool_name === 'fs_write';
+  const writeFile = !ACTION_PRESENTATIONS[actionType]
+    && (approval.tool_name === 'write_file' || approval.tool_name === 'fs_write');
   const action: Pick<ApprovalRequestPresentation, 'actionKey' | 'actionFallback'> = writeFile
     ? { actionKey: 'writeFile', actionFallback: 'Write a workspace file' }
     : ACTION_PRESENTATIONS[actionType] || FALLBACK_ACTION;

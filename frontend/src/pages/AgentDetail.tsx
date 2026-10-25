@@ -99,8 +99,6 @@ import {
 } from './agent-detail/newSessionNavigation';
 import {
     AGENT_DETAIL_TABS,
-    AGENT_TAB_LABELS,
-    AGENT_WORKBENCH_AREAS,
     DEFAULT_SESSION_PERMISSION_MODE,
     applySessionActiveProjection,
     branchDraftContent,
@@ -131,7 +129,7 @@ import {
     useOperatorInspectionData,
 } from './agent-detail/useOperatorAuthorityLifecycle';
 import AgentOperatorReason from './agent-detail/AgentOperatorReason';
-import AgentDetailHeader, { AgentDetailSectionFallback, agentStatusKey } from './agent-detail/AgentDetailHeader';
+import AgentDetailHeader, { AgentDetailSectionFallback, AgentDetailNavigation, AgentCreatedNotice, agentStatusKey } from './agent-detail/AgentDetailHeader';
 import './AgentDetail.css';
 
 const AgentApprovalsSection = lazy(() => import('./agent-detail/AgentApprovalsSection'));
@@ -165,7 +163,7 @@ export {
 } from './agent-detail/agentDetailPolicy';
 
 function AgentDetailInner() {
-    const { t, i18n } = useTranslation();
+    const { t } = useTranslation();
     const { id, sessionId: routeSessionId } = useParams<{ id: string; sessionId?: string }>();
     const navigate = useNavigate();
     const queryClient = useQueryClient();
@@ -210,7 +208,9 @@ function AgentDetailInner() {
     }, [location.hash, routeSessionId]);
     const token = useAuthStore((s) => s.token);
     const currentUser = useAuthStore((s) => s.user);
-    const [readinessTenant, setReadinessTenant] = useState(() => localStorage.getItem('current_tenant_id') || '');
+    const [readinessTenant, setReadinessTenant] = useState(() =>
+        typeof localStorage === 'undefined' ? '' : localStorage.getItem('current_tenant_id') || '',
+    );
     useEffect(() => {
         const changed = (event: StorageEvent) => { if (event.key === 'current_tenant_id') setReadinessTenant(event.newValue || ''); };
         window.addEventListener('storage', changed);
@@ -1298,34 +1298,6 @@ function AgentDetailInner() {
         }
     };
 
-    // Expiry editor modal state
-    const [showExpiryModal, setShowExpiryModal] = useState(false);
-    const [expiryValue, setExpiryValue] = useState('');       // datetime-local string or ''
-    const [expirySaving, setExpirySaving] = useState(false);
-
-    const openExpiryModal = () => {
-        const cur = (agent as any)?.expires_at;
-        // Convert ISO to datetime-local format (YYYY-MM-DDTHH:MM)
-        setExpiryValue(cur ? new Date(cur).toISOString().slice(0, 16) : '');
-        setShowExpiryModal(true);
-    };
-
-    const addHours = (h: number) => {
-        const base = (agent as any)?.expires_at ? new Date((agent as any).expires_at) : new Date();
-        const next = new Date(base.getTime() + h * 3600_000);
-        setExpiryValue(next.toISOString().slice(0, 16));
-    };
-
-    const saveExpiry = async (permanent = false) => {
-        setExpirySaving(true);
-        try {
-            const body = permanent ? { expires_at: null } : { expires_at: expiryValue ? new Date(expiryValue).toISOString() : null };
-            await agentApi.update(id!, body as any);
-            queryClient.invalidateQueries({ queryKey: ['agent', id] });
-            setShowExpiryModal(false);
-        } catch (e) { showToast(`Failed: ${e}`, 'error'); }
-        setExpirySaving(false);
-    };
     const [chatMessagesSessionId, setChatMessagesSessionId] = useState<string | null>(null);
     const sessionMessageStoreRef = useRef<ReturnType<typeof createSessionMessageStore> | null>(null);
     if (!sessionMessageStoreRef.current) {
@@ -2577,15 +2549,6 @@ function AgentDetailInner() {
         setActiveTab(visibleAgentTabs[0]);
     }
 
-    const visibleWorkbenchAreas = AGENT_WORKBENCH_AREAS
-        .map((area) => ({
-            ...area,
-            tabs: area.tabs.filter((tab) => visibleAgentTabs.includes(tab)),
-        }))
-        .filter((area) => area.tabs.length > 0);
-    const activeWorkbenchArea =
-        visibleWorkbenchAreas.find((area) => area.tabs.includes(activeTab as AgentDetailTab)) ||
-        visibleWorkbenchAreas[0];
 
     return (
         <>
@@ -2601,7 +2564,7 @@ function AgentDetailInner() {
                         canManage={canManage}
                         isOperatorOnly={isOperatorOnly}
                         isSystemHr={isSystemHr}
-                        onOpenExpiry={openExpiryModal}
+                        onError={(message) => showToast(message, 'error')}
                         onSelectChat={() => selectDetailTab('chat')}
                         statusKey={statusKey}
                     />
@@ -2609,34 +2572,11 @@ function AgentDetailInner() {
 
                 {/* Workbench navigation — hidden for HR system agent */}
                 {!isSystemHr && !sessionWorkbenchMode && (
-                    <div className="agent-workbench-nav" data-testid="agent-workbench-nav">
-                        <div className="agent-workbench-areas" role="tablist" aria-label={t('agent.workbench.title', 'Agent workbench')}>
-                            {visibleWorkbenchAreas.map((area) => (
-                                <button
-                                    key={area.id}
-                                    type="button"
-                                    className={`agent-workbench-area ${activeWorkbenchArea?.id === area.id ? 'active' : ''}`}
-                                    onClick={() => selectDetailTab(area.tabs.includes(area.primaryTab) ? area.primaryTab : area.tabs[0])}
-                                >
-                                    {t(area.labelKey, area.fallback)}
-                                </button>
-                            ))}
-                        </div>
-                        {activeWorkbenchArea && (
-                            <div className="agent-workbench-subnav" aria-label={t('agent.workbench.sectionTabs', 'Section tabs')}>
-                                {activeWorkbenchArea.tabs.map((tab) => (
-                                    <button
-                                        key={tab}
-                                        type="button"
-                                        className={`agent-workbench-subtab ${activeTab === tab ? 'active' : ''}`}
-                                        onClick={() => selectDetailTab(tab)}
-                                    >
-                                        {t(`agent.tabs.${tab}`, AGENT_TAB_LABELS[tab])}
-                                    </button>
-                                ))}
-                            </div>
-                        )}
-                    </div>
+                    <AgentDetailNavigation
+                        visibleTabs={visibleAgentTabs}
+                        activeTab={activeTab}
+                        onSelectTab={selectDetailTab}
+                    />
                 )}
 
                 {canOperatorInspect && <AgentOperatorReason value={operatorReason} onChange={setOperatorReason} />}
@@ -2838,17 +2778,7 @@ function AgentDetailInner() {
 
                 {/* Agent creation success banner (HR Agent flow) */}
                 {createdAgentId && activeTab === 'chat' && (
-                    <div className="agent-detail-created-banner">
-                        <span className="agent-detail-created-icon">&#x2705;</span>
-                        <div>
-                            <div className="agent-detail-created-title">{t('hrChat.created', 'Digital employee created successfully!')}</div>
-                            <div className="agent-detail-created-desc">{t('hrChat.createdDesc', 'You can now visit the detail page to further customize or start chatting.')}</div>
-                        </div>
-                        <button className="btn btn-primary agent-detail-created-action" onClick={() => navigate(`/agents/${createdAgentId}`)}>
-                            {t('hrChat.goToAgent', 'Go to Detail Page')}
-                        </button>
-                        <button className="agent-detail-created-close" onClick={() => setCreatedAgentId(null)}>&#x2715;</button>
-                    </div>
+                    <AgentCreatedNotice agentId={createdAgentId} onDismiss={() => setCreatedAgentId(null)} />
                 )}
 
                 {
@@ -2951,67 +2881,7 @@ function AgentDetailInner() {
                 )
             }
 
-            {/* ── Expiry Editor Modal (admin only) ── */}
-            {
-                showExpiryModal && (
-                    <div className="ui-modal-overlay"
-                        onClick={() => setShowExpiryModal(false)}>
-                        <div className="agent-detail-modal"
-                            onClick={e => e.stopPropagation()}>
-                            <div className="agent-detail-modal-header">
-                                <h3 className="agent-detail-modal-title">⏰ {t('agent.settings.expiry.title')}</h3>
-                                <button onClick={() => setShowExpiryModal(false)} className="agent-detail-modal-close">×</button>
-                            </div>
-                            <div className="agent-detail-expiry-status">
-                                {(agent as any).is_expired
-                                    ? <span className="agent-detail-expiry-status-expired">⏰ {t('agent.settings.expiry.expired')}</span>
-                                    : (agent as any).expires_at
-                                        ? <>{t('agent.settings.expiry.currentExpiry')} <strong>{new Date((agent as any).expires_at).toLocaleString(i18n.language === 'zh' ? 'zh-CN' : 'en-US')}</strong></>
-                                        : <span className="agent-detail-expiry-status-never">{t('agent.settings.expiry.neverExpires')}</span>
-                                }
-                            </div>
-                            <div className="agent-detail-expiry-field">
-                                <div className="agent-detail-expiry-hint">{t('agent.settings.expiry.quickRenew')}</div>
-                                <div className="agent-detail-expiry-quick">
-                                    {([
-                                        ['+ 24h', 24],
-                                        [`+ ${t('agent.settings.expiry.days', { count: 7 })}`, 168],
-                                        [`+ ${t('agent.settings.expiry.days', { count: 30 })}`, 720],
-                                        [`+ ${t('agent.settings.expiry.days', { count: 90 })}`, 2160],
-                                    ] as [string, number][]).map(([label, h]) => (
-                                        <button key={h} onClick={() => addHours(h)}
-                                            className="agent-detail-expiry-quick-btn">
-                                            {label}
-                                        </button>
-                                    ))}
-                                </div>
-                            </div>
-                            <div className="agent-detail-expiry-field-lg">
-                                <div className="agent-detail-expiry-hint">{t('agent.settings.expiry.customDeadline')}</div>
-                                <input type="datetime-local" value={expiryValue} onChange={e => setExpiryValue(e.target.value)}
-                                    className="agent-detail-expiry-input" />
-                            </div>
-                            <div className="agent-detail-expiry-footer">
-                                <button onClick={() => saveExpiry(true)} disabled={expirySaving}
-                                    className="agent-detail-expiry-btn agent-detail-expiry-btn-reset">
-                                    🔓 {t('agent.settings.expiry.neverExpires')}
-                                </button>
-                                <div className="agent-detail-expiry-actions">
-                                    <button onClick={() => setShowExpiryModal(false)} disabled={expirySaving}
-                                        className="agent-detail-expiry-btn agent-detail-expiry-btn-cancel">
-                                        {t('common.cancel')}
-                                    </button>
-                                    <button onClick={() => saveExpiry(false)} disabled={expirySaving || !expiryValue}
-                                        className="btn btn-primary"
-                                        style={{ opacity: !expiryValue ? 0.5 : 1 }}>
-                                        {expirySaving ? t('agent.settings.expiry.saving') : t('common.save')}
-                                    </button>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                )
-            }
+
 
         </>
     );

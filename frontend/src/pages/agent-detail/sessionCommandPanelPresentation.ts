@@ -1,7 +1,9 @@
 import type { TFunction } from 'i18next';
 import type { AgentPermissions } from '../../api/domains/agents';
 import type { SessionContextUsage } from '../../api/domains/ccParity';
-import type { SessionCommandControlState, SessionPermissionMode } from './AgentChatSection';
+import type {
+  SessionCommandCheckpoint, SessionCommandControlState, SessionCommandControlType, SessionPermissionMode,
+} from './AgentChatSection';
 
 export interface ReadOnlySessionCommandPanelProps {
   contextUsage?: SessionContextUsage | null;
@@ -177,4 +179,47 @@ export function buildSessionCommandStatusControl(
     payload: input.payload,
     level: action === 'confirm_workspace_restore' ? 'info' : input.level,
   };
+}
+
+export function commandPanelTypeLabel(type: SessionCommandControlType, t: TFunction): string {
+  switch (type) {
+    case 'checkpoint_selector':
+      return t('sessionWorkbench.commandPanel.rewind', 'Rewind');
+    case 'projection_status':
+      return t('sessionWorkbench.commandPanel.sessionContext', 'Session context');
+    case 'context_panel':
+      return 'Context';
+    case 'usage_panel':
+      return 'Usage';
+    case 'export_panel':
+      return 'Export';
+    case 'side_question':
+      return 'Side question';
+    case 'permissions_panel':
+      return 'Permissions';
+    case 'workspace_restore_confirmation':
+      return t('sessionWorkbench.commandPanel.workspaceRestore', 'Workspace restore');
+    case 'resume_picker':
+      return t('sessionWorkbench.commandPanel.resume', 'Resume');
+    default:
+      return 'Session';
+  }
+}
+
+export function checkpointId(checkpoint: SessionCommandCheckpoint): string {
+  return String(checkpoint.checkpoint_event_id || checkpoint.event_id || '');
+}
+
+export function checkpointLabel(checkpoint: SessionCommandCheckpoint, index: number): string {
+  const sequence = checkpoint.sequence ?? checkpoint.turn_index ?? index + 1;
+  const content = String(checkpoint.content || '').trim();
+  return `${sequence}. ${content || checkpointId(checkpoint) || 'checkpoint'}`;
+}
+
+export function payloadSummary(payload?: Record<string, unknown> | null): Array<[string, string]> {
+  if (!payload) return [];
+  return Object.entries(payload)
+    .filter(([key, value]) => key !== 'ui_action' && value != null && typeof value !== 'object')
+    .slice(0, 4)
+    .map(([key, value]) => [key, String(value)]);
 }

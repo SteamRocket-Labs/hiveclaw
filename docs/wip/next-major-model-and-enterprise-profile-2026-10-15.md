@@ -131,7 +131,7 @@ M1 只要求安装骨架能跑到 GT-01；完整升级、备份和恢复在 M4�
 | 飞书测试企业应用 | 未提供，本批未检查 | GT-01、GT-02 不能记通过 |
 | 钉钉、企微 | 未提供，本批未检查 | GT-06 |
 | Linux / ENV-A02 | owner 延期，未验证 | GT-04；GT-07 的干净安装实跑 |
-| 本机 Codex、Claude CLI | 可执行文件已由 Codex 审查时的只读 `command -v` 解析到 `/Users/rocky243/.local/bin/codex` 与 `/Users/rocky243/.local/bin/claude`。本修正没有重跑，也没有做登录或余额探测 | 只说明文件在 |
+| 本机 Codex、Claude CLI | 可执行文件已由 Codex 审查时的只读 `command -v` 解析到 `$HOME/.local/bin/codex` 与 `$HOME/.local/bin/claude`。本修正没有重跑，也没有做登录或余额探测 | 只说明文件在 |
 | Claude Code / Codex 的 Hive 集成与测试设备 | 未检查 | GT-05。不要求再提供已经装上的客户端 |
 | 远程 A2A、机器身份 | 未检查 | GT-05 |
 | OpenConnector 原生缓存授权 | M0-F 保持 FAIL | 不在本批重开 |

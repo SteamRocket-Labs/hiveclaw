@@ -48,7 +48,7 @@ export const DYNAMIC_KEY_RULES = [
     reason: 'The finite Feishu platform option registry owns this label key and fallback.',
   },
   {
-    source: 'src/pages/AgentDetail.tsx',
+    source: 'src/pages/agent-detail/AgentDetailHeader.tsx',
     expression: 'area.labelKey',
     reason: 'The finite Agent detail area registry owns its label keys and fallbacks.',
   },

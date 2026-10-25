@@ -133,7 +133,10 @@ import {
 } from './CanonicalCardAssistantSupplement';
 import { SessionToolEffectRecoveryBanner, sessionToolEffectRecoveryModel } from './SessionToolEffectRecovery';
 import { buildMessageFeedbackInput } from './messageFeedback';
-import { buildReadOnlySessionCommandDetails, type ReadOnlySessionCommandPanelProps } from './sessionCommandPanelPresentation';
+import {
+  buildReadOnlySessionCommandDetails, checkpointId, checkpointLabel, commandPanelTypeLabel,
+  payloadSummary, type ReadOnlySessionCommandPanelProps,
+} from './sessionCommandPanelPresentation';
 
 type AttachedFile = {
   name: string;
@@ -388,49 +391,6 @@ export function findRetryAnchorMessage(
   }
   return null;
 }
-function commandPanelTypeLabel(type: SessionCommandControlType, t: Translate): string {
-  switch (type) {
-    case 'checkpoint_selector':
-      return t('sessionWorkbench.commandPanel.rewind', 'Rewind');
-    case 'projection_status':
-      return t('sessionWorkbench.commandPanel.sessionContext', 'Session context');
-    case 'context_panel':
-      return 'Context';
-    case 'usage_panel':
-      return 'Usage';
-    case 'export_panel':
-      return 'Export';
-    case 'side_question':
-      return 'Side question';
-    case 'permissions_panel':
-      return 'Permissions';
-    case 'workspace_restore_confirmation':
-      return t('sessionWorkbench.commandPanel.workspaceRestore', 'Workspace restore');
-    case 'resume_picker':
-      return t('sessionWorkbench.commandPanel.resume', 'Resume');
-    default:
-      return 'Session';
-  }
-}
-
-function checkpointId(checkpoint: SessionCommandCheckpoint): string {
-  return String(checkpoint.checkpoint_event_id || checkpoint.event_id || '');
-}
-
-function checkpointLabel(checkpoint: SessionCommandCheckpoint, index: number): string {
-  const sequence = checkpoint.sequence ?? checkpoint.turn_index ?? index + 1;
-  const content = String(checkpoint.content || '').trim();
-  return `${sequence}. ${content || checkpointId(checkpoint) || 'checkpoint'}`;
-}
-
-function payloadSummary(payload?: Record<string, unknown> | null): Array<[string, string]> {
-  if (!payload) return [];
-  return Object.entries(payload)
-    .filter(([key, value]) => key !== 'ui_action' && value != null && typeof value !== 'object')
-    .slice(0, 4)
-    .map(([key, value]) => [key, String(value)]);
-}
-
 function recordValue(value: unknown): Record<string, unknown> {
   return value != null && typeof value === 'object' && !Array.isArray(value)
     ? value as Record<string, unknown>

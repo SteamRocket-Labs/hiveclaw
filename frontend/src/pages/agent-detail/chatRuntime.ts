@@ -4,7 +4,7 @@ import {
   normalizeThreadItemPayload,
   threadItemToAgentChatMessage,
 } from '../session-workbench/threadItemReducer';
-import type { SessionItemV2 } from '../session-workbench/sessionEventStore';
+import { sourceAccessHold, type SessionItemV2 } from '../session-workbench/sessionEventStore';
 import { normalizeToolCallResult, type ToolCallMeta } from './toolResultEnvelope';
 import type { RuntimeBudgetState } from './runtimeBudgetState';
 
@@ -1847,11 +1847,16 @@ export function getRuntimeEventMessage(payload: any): AgentChatMessage | null {
   const eventType = payload?.eventType || payload?.event_type || payload?.type;
   const item = normalizeThreadItemPayload(payload);
   if (!item) return null;
+  let message: AgentChatMessage | null;
   if (payload?.schema === 'hive.thread_item.v1') {
     const specialized = new Set(['user_message', 'agent_message', 'reasoning', 'tool_call', 'tool_result']);
-    return specialized.has(item.item_type) ? null : threadItemToAgentChatMessage(item);
+    message = specialized.has(item.item_type) ? null : threadItemToAgentChatMessage(item);
+  } else {
+    message = isRuntimeEventType(eventType) ? threadItemToAgentChatMessage(item) : null;
   }
-  return isRuntimeEventType(eventType) ? threadItemToAgentChatMessage(item) : null;
+  if (!message || sourceAccessHold(payload) || sourceAccessHold(payload?.metadata || {})) return message;
+  const artifacts = extractArtifactParts(payload);
+  return artifacts.length ? { ...message, artifacts } : message;
 }
 
 export function normalizeRuntimeEventMessage(payload: any): AgentChatMessage | null {

@@ -151,15 +151,22 @@ async def test_legacy_workflow_inline_inputs_stop_before_session_or_model_dispat
     message = {"role": "user", "content": "LEGACY_INLINE_ARTIFACT"}
     if reference_shape != "absent":
         message["a2a_artifact_inputs"] = None if reference_shape == "null" else "forged schema marker"
-    request = orchestrator.AgentDelegationRequest(target=target, target_model=None, owner_id=owner,
-        session_id=session, conversation_messages=[message],
-        tenant_id=target.tenant_id, **authority)
+    request = orchestrator.AgentDelegationRequest(
+        target=target,
+        target_model=None,
+        owner_id=owner,
+        session_id=session,
+        conversation_messages=[message],
+        tenant_id=target.tenant_id,
+        **authority,
+    )
     invoke, ensure, emit = AsyncMock(), AsyncMock(), AsyncMock()
     monkeypatch.setattr(orchestrator, "invoke_agent", invoke)
     monkeypatch.setattr(orchestrator, "_ensure_peer_delegation_session", ensure)
     monkeypatch.setattr(hooks, "emit_hook", emit)
-    result = await orchestrator._delegate_after_cycle_check(request, trace_id=str(uuid4()),
-        child_session_id=session, tool_profile=None, is_delegation=True)
+    result = await orchestrator._delegate_after_cycle_check(
+        request, trace_id=str(uuid4()), child_session_id=session, tool_profile=None, is_delegation=True
+    )
     assert result.failed and result.terminal_reason == "a2a_artifact_input_reconciliation_required"
     assert result.parts[0]["recovery_action"] == "retry_workflow_step"
     invoke.assert_not_awaited()
@@ -189,8 +196,13 @@ async def test_delegate_to_agent_builds_runtime_request(monkeypatch, with_artifa
     owner_id = uuid4()
     parent_agent_id = uuid4()
     captured = {}
-    messages = [{"role": "user", "content": "hello", **(
-        {"a2a_artifact_inputs": [{"fixture": "callback wiring only"}]} if with_artifact_inputs else {})}]
+    messages = [
+        {
+            "role": "user",
+            "content": "hello",
+            **({"a2a_artifact_inputs": [{"fixture": "callback wiring only"}]} if with_artifact_inputs else {}),
+        }
+    ]
     from app.services import a2a_workflow_artifacts
 
     artifact_reader = a2a_workflow_artifacts.load_delegated_artifact_context
@@ -1461,6 +1473,9 @@ async def test_sync_delegation_end_follows_committed_transcript_once(monkeypatch
             if commit_error is not None:
                 raise commit_error
 
+    async def empty_artifacts(**_kwargs):
+        return []
+
     async def fake_invoke_agent(_request):
         return SimpleNamespace(content="done")
 
@@ -1479,6 +1494,7 @@ async def test_sync_delegation_end_follows_committed_transcript_once(monkeypatch
         order.append(f"hook:{getattr(event, 'value', event)}")
 
     monkeypatch.setattr("app.agents.orchestrator.invoke_agent", fake_invoke_agent)
+    monkeypatch.setattr("app.agents.orchestrator._collect_delegation_child_artifact_parts", empty_artifacts)
     monkeypatch.setattr("app.agents.orchestrator._ensure_peer_delegation_session", fake_ensure_session)
     monkeypatch.setattr("app.database.tenant_scoped_session", lambda *_args, **_kwargs: _TranscriptSession())
     monkeypatch.setattr("app.services.chat_transcript.append_session_event", fake_append_session_event)
@@ -1554,6 +1570,7 @@ async def test_async_delegation_terminal_learning_waits_for_committed_outbox(mon
     order: list[str] = []
     emitted: list[object] = []
     terminal_updates: list[dict] = []
+    model_result_id = str(uuid4())
 
     class _TranscriptSession:
         async def __aenter__(self):
@@ -1565,12 +1582,15 @@ async def test_async_delegation_terminal_learning_waits_for_committed_outbox(mon
         async def commit(self):
             order.append("transcript_commit")
 
-        async def scalar(self, _statement):
+        async def scalar(self, statement):
+            if "chat_transcript_events" in str(statement):
+                return None
             return SimpleNamespace(status="running")
 
     async def fake_invoke_agent(_request):
         return SimpleNamespace(
             content="done",
+            model_result_receipt={"result_id": model_result_id, "round_id": "terminal-round"},
             terminal_reason="turn_stop",
             response_complete_payload={
                 "agent_id": target.id,
@@ -1609,6 +1629,9 @@ async def test_async_delegation_terminal_learning_waits_for_committed_outbox(mon
     async def fake_terminal_evidence(**_kwargs):
         return {"status": "completed"}
 
+    async def empty_artifacts(**_kwargs):
+        return []
+
     async def noop_async(*_args, **_kwargs):
         return None
 
@@ -1625,8 +1648,11 @@ async def test_async_delegation_terminal_learning_waits_for_committed_outbox(mon
     )
 
     monkeypatch.setattr("app.agents.orchestrator.invoke_agent", fake_invoke_agent)
+    monkeypatch.setattr("app.agents.orchestrator._collect_delegation_child_artifact_parts", empty_artifacts)
+
     async def attach_session_ports(_invocation, _request):
-        return SimpleNamespace(final_content=None)
+        return SimpleNamespace(final_content="done", scope={"turn_id": "terminal-turn"})
+
     monkeypatch.setattr("app.services.delegation_session_runtime.DelegationSessionRuntime.attach", attach_session_ports)
     monkeypatch.setattr("app.agents.orchestrator._ensure_peer_delegation_session", fake_ensure_session)
     monkeypatch.setattr("app.database.tenant_scoped_session", lambda *_args, **_kwargs: _TranscriptSession())
@@ -1752,6 +1778,8 @@ async def test_async_delegation_final_transcript_binds_current_worker_claim(monk
     target = SimpleNamespace(id=uuid4(), name="Claimed Worker", role_description="", tenant_id=uuid4())
     statements: list[str] = []
     appended: list[dict] = []
+    final_queries: list[str] = []
+    model_result_id = str(uuid4())
 
     class _ClaimedTranscriptSession:
         async def __aenter__(self):
@@ -1762,6 +1790,12 @@ async def test_async_delegation_final_transcript_binds_current_worker_claim(monk
 
         async def scalar(self, statement):
             rendered = str(statement)
+            if "chat_transcript_events" in rendered:
+                final_queries.append(rendered)
+                assert "chat_transcript_events.message_id =" in rendered
+                assert "chat_transcript_events.run_id =" in rendered
+                assert "chat_transcript_events.tenant_id =" in rendered
+                return None
             statements.append(rendered)
             assert "runtime_tasks.claim_version =" in rendered
             assert "runtime_tasks.claimed_by =" in rendered
@@ -1774,6 +1808,7 @@ async def test_async_delegation_final_transcript_binds_current_worker_claim(monk
     async def fake_invoke_agent(_request):
         return SimpleNamespace(
             content="claimed output",
+            model_result_receipt={"result_id": model_result_id, "round_id": "claimed-round"},
             terminal_reason="turn_stop",
             response_complete_payload={"metadata": {"final_response": "claimed output"}},
         )
@@ -1788,10 +1823,18 @@ async def test_async_delegation_final_transcript_binds_current_worker_claim(monk
     async def fake_ensure_session(*_args, **_kwargs):
         return True
 
+    async def empty_artifacts(**_kwargs):
+        return []
+
+    async def attach_session_ports(_invocation, _request):
+        return SimpleNamespace(final_content="claimed output", scope={"turn_id": "claimed-turn"})
+
     async def noop_hook(*_args, **_kwargs):
         return None
 
     monkeypatch.setattr("app.agents.orchestrator.invoke_agent", fake_invoke_agent)
+    monkeypatch.setattr("app.agents.orchestrator._collect_delegation_child_artifact_parts", empty_artifacts)
+    monkeypatch.setattr("app.services.delegation_session_runtime.DelegationSessionRuntime.attach", attach_session_ports)
     monkeypatch.setattr("app.agents.orchestrator._ensure_peer_delegation_session", fake_ensure_session)
     monkeypatch.setattr("app.database.tenant_scoped_session", lambda *_args, **_kwargs: _ClaimedTranscriptSession())
     monkeypatch.setattr("app.services.chat_transcript.append_session_event", fake_append_session_event)
@@ -1818,6 +1861,10 @@ async def test_async_delegation_final_transcript_binds_current_worker_claim(monk
     assert result.transcript_committed is True
     assert len(statements) == 1
     assert len(appended) == 1
+    assert result.failed is False
+    assert len(final_queries) == 1
+    assert appended[0]["message_id"] is not None
+    assert appended[0]["metadata"]["native_final_model_result_id"] == model_result_id
 
 
 @pytest.mark.asyncio
@@ -3714,8 +3761,10 @@ async def test_delegate_async_persists_runtime_task_lifecycle(monkeypatch):
 
     async def fake_delegate(request):
         from app.agents.orchestrator import AgentDelegationResult
-        return AgentDelegationResult(content="async result", child_session_id=request.session_id,
-            trace_id=request.trace_id, depth=request.depth)
+
+        return AgentDelegationResult(
+            content="async result", child_session_id=request.session_id, trace_id=request.trace_id, depth=request.depth
+        )
 
     async def fake_update_task(task_id_arg, **kwargs):
         updates.append((task_id_arg, kwargs))

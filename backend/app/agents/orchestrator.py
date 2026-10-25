@@ -20,8 +20,12 @@ from app.agents.delegation_token import DEFAULT_DELEGATION_TTL_SECONDS, issue_de
 from app.agents.tool_policies import DELEGATED_WORKER_BASE_EXCLUDED_TOOLS
 from app.core.execution_context import A2A_TOOL_AUTHORITY_FRAME_SCHEMA, ExecutionPrincipal
 from app.kernel.contracts import (
-    ContextDependencyUnavailable, ExecutionIdentityRef, ProviderRequestNeedsReconciliation, SessionRestartRecoveryRequired,
-    TerminalReason, ToolLifecyclePersistenceError,
+    ContextDependencyUnavailable,
+    ExecutionIdentityRef,
+    ProviderRequestNeedsReconciliation,
+    SessionRestartRecoveryRequired,
+    TerminalReason,
+    ToolLifecyclePersistenceError,
 )
 from app.runtime.ccplus_contracts import permission_profile_snapshot, permission_profile_snapshot_hash
 from app.runtime.invoker import AgentInvocationRequest, invoke_agent
@@ -110,7 +114,9 @@ _DELEGATION_TOOL_PROFILES: dict[str, DelegationToolProfile] = {
         name="memory_readonly",
         core_tools_only=True,
         allowed_tools=(),
-        excluded_tools=_DELEGATION_BASE_EXCLUDED_TOOLS + ("save_skill", "reconcile_skill_candidate") + _DELEGATION_MEMORY_WRITE_TOOLS,
+        excluded_tools=_DELEGATION_BASE_EXCLUDED_TOOLS
+        + ("save_skill", "reconcile_skill_candidate")
+        + _DELEGATION_MEMORY_WRITE_TOOLS,
         tool_policy="worker_memory_readonly",
         tool_rule=(
             "Your tool surface is worker-safe, and you may use read-only recall tools when they materially help the delegated task."
@@ -1827,15 +1833,28 @@ async def _delegate_after_cycle_check(
         request,
         child_principal=child_execution_principal,
     )
-    reference_only_input = (len(request.conversation_messages) == 1
+    reference_only_input = (
+        len(request.conversation_messages) == 1
         and isinstance(request.conversation_messages[0], dict)
-        and isinstance(request.conversation_messages[0].get("a2a_artifact_inputs"), list))
+        and isinstance(request.conversation_messages[0].get("a2a_artifact_inputs"), list)
+    )
     if (request.execution_principal or {}).get("origin") == "a2a_workflow" and not reference_only_input:
-        return AgentDelegationResult(content="This legacy workflow input needs reconciliation before dispatch. Retry the workflow step to rebuild scoped artifact references.",
-            child_session_id=child_session_id, trace_id=trace_id, depth=request.depth, failed=True,
-            terminal_reason="a2a_artifact_input_reconciliation_required", parts=({"type": "runtime_status",
-                "status": "unavailable", "error_code": "a2a_artifact_input_reconciliation_required",
-                "recovery_action": "retry_workflow_step"},))
+        return AgentDelegationResult(
+            content="This legacy workflow input needs reconciliation before dispatch. Retry the workflow step to rebuild scoped artifact references.",
+            child_session_id=child_session_id,
+            trace_id=trace_id,
+            depth=request.depth,
+            failed=True,
+            terminal_reason="a2a_artifact_input_reconciliation_required",
+            parts=(
+                {
+                    "type": "runtime_status",
+                    "status": "unavailable",
+                    "error_code": "a2a_artifact_input_reconciliation_required",
+                    "recovery_action": "retry_workflow_step",
+                },
+            ),
+        )
     if is_delegation:
         try:
             from app.runtime.hooks import HookEvent, emit_hook
@@ -1976,9 +1995,10 @@ async def _delegate_after_cycle_check(
         from app.database import tenant_scoped_session
         from app.config import get_settings
         from app.services.chat_artifact_delivery import create_chat_artifacts_for_message
-        from app.services.chat_transcript import append_session_event
+        from app.services.chat_transcript import append_session_event, lock_transcript_session
 
         async with tenant_scoped_session(transcript_tenant_id) as db:
+            terminal_message_id = None
             if actor_type == "assistant" and transcript_runtime_task_id is not None:
                 from sqlalchemy import select
 
@@ -1989,6 +2009,7 @@ async def _delegate_after_cycle_check(
                 if fence is None or fence.task_id != transcript_runtime_task_id:
                     return False
 
+                await lock_transcript_session(db, session_id=transcript_session_id)
                 # Linearize the final transcript write against cross-process
                 # cancellation. A cancelled/terminal RuntimeTask must never
                 # receive late model bytes after its abort boundary was sealed.
@@ -2008,12 +2029,37 @@ async def _delegate_after_cycle_check(
                 )
                 if active_task is None:
                     return False
+                if event_type == "assistant_message":
+                    from app.models.chat_transcript_event import ChatTranscriptEvent
+
+                    terminal_message_id = uuid.uuid5(transcript_runtime_task_id, "delegation-final-message")
+                    existing = await db.scalar(
+                        select(ChatTranscriptEvent).where(
+                            ChatTranscriptEvent.tenant_id == transcript_tenant_id,
+                            ChatTranscriptEvent.agent_id == request.target.id,
+                            ChatTranscriptEvent.session_id == transcript_session_id,
+                            ChatTranscriptEvent.run_id == transcript_runtime_task_id,
+                            ChatTranscriptEvent.message_id == terminal_message_id,
+                        )
+                    )
+                    if existing is not None:
+                        prior = existing.metadata_json or {}
+                        return (
+                            existing.event_type == event_type
+                            and existing.actor_type == actor_type
+                            and existing.content == content
+                            and (existing.parts_json or []) == (parts or [])
+                            and prior.get("phase") == (metadata or {}).get("phase")
+                            and prior.get("native_final_model_result_id")
+                            == (metadata or {}).get("native_final_model_result_id")
+                        )
             append_result = await append_session_event(
                 db=db,
                 agent_id=request.target.id,
                 tenant_id=transcript_tenant_id,
                 session_id=transcript_session_id,
                 run_id=transcript_runtime_task_id,
+                message_id=terminal_message_id,
                 actor_type=actor_type,
                 event_type=event_type,
                 role=role,
@@ -2084,6 +2130,7 @@ async def _delegate_after_cycle_check(
         )
 
     canonical_runtime = None
+    terminal_model_receipt = None
 
     async def _on_delegation_tool_call(data: dict[str, Any]) -> None:
         if canonical_runtime is not None:
@@ -2177,36 +2224,44 @@ async def _delegate_after_cycle_check(
             if any("a2a_instruction_origin" in message for message in request.conversation_messages):
                 await _ensure_peer_delegation_session(request, state="running", instruction_authorized=True)
             prepare_session_request = invocation.model_request_prepare
+
             async def prepare_delegated_request(**payload):
                 await authorize_delegation_instruction(invocation, request)
                 return await prepare_session_request(**payload)
+
             invocation.model_request_prepare = prepare_delegated_request
         artifact_inputs = await load_delegated_artifact_context(invocation, request.conversation_messages)
         if artifact_inputs:
             invocation.system_prompt_suffix = "\n\n".join([invocation.system_prompt_suffix or "", artifact_inputs])
             canonical_prepare = invocation.model_request_prepare
+
             async def revalidate_artifact_inputs(**_payload):
                 from app.kernel.contracts import ContextDependencyUnavailable
 
                 current = await load_delegated_artifact_context(invocation, request.conversation_messages)
                 if current != artifact_inputs:
-                    raise ContextDependencyUnavailable(dependency="a2a_artifact_inputs",
+                    raise ContextDependencyUnavailable(
+                        dependency="a2a_artifact_inputs",
                         code="a2a_artifact_input_authority_changed",
-                        user_message="Referenced artifact access changed. Retry this workflow step to reload authorized inputs.")
+                        user_message="Referenced artifact access changed. Retry this workflow step to reload authorized inputs.",
+                    )
                 if canonical_prepare is not None:
                     return await canonical_prepare(**_payload)
+
             invocation.model_request_prepare = revalidate_artifact_inputs
         result = await asyncio.wait_for(
             invoke_agent(invocation),
             timeout=max(request.policy.timeout_seconds, 0.01),
         )
+        terminal_model_receipt = getattr(result, "model_result_receipt", None)
         result_parts = getattr(result, "parts", None) or []
         terminal_reason = getattr(result, "terminal_reason", None)
         terminal_reason_value = (
             terminal_reason.value if getattr(terminal_reason, "value", None) else str(terminal_reason or "") or None
         )
         terminal_failed = terminal_reason_value not in {None, TerminalReason.TURN_STOP.value} and not (
-            canonical_runtime is not None and terminal_reason_value == TerminalReason.CLARIFICATION_REQUIRED.value)
+            canonical_runtime is not None and terminal_reason_value == TerminalReason.CLARIFICATION_REQUIRED.value
+        )
         if terminal_failed:
             _delegation_status = "error"
         delegation_result = AgentDelegationResult(
@@ -2228,9 +2283,12 @@ async def _delegate_after_cycle_check(
             ),
             failed=terminal_failed,
             terminal_reason=terminal_reason_value,
-            question_provider_request_id=(canonical_runtime.active_provider_request_id
-                if canonical_runtime is not None and terminal_reason_value == TerminalReason.CLARIFICATION_REQUIRED.value
-                else None),
+            question_provider_request_id=(
+                canonical_runtime.active_provider_request_id
+                if canonical_runtime is not None
+                and terminal_reason_value == TerminalReason.CLARIFICATION_REQUIRED.value
+                else None
+            ),
             response_complete_payload=(
                 _runtime_json_safe(getattr(result, "response_complete_payload", None))
                 if isinstance(getattr(result, "response_complete_payload", None), dict)
@@ -2239,10 +2297,23 @@ async def _delegate_after_cycle_check(
         )
     except ContextDependencyUnavailable as exc:
         _delegation_status = "error"
-        delegation_result = AgentDelegationResult(content=exc.user_message, child_session_id=child_session_id,
-            trace_id=trace_id, depth=request.depth, failed=True, terminal_reason=exc.code,
-            parts=({"type": "runtime_status", "status": "denied" if exc.code == "delegation_instruction_source_access_denied" else "unavailable", "error_code": exc.code,
-                "retryable": False, "recovery_action": "revise_delegation_input"},))
+        delegation_result = AgentDelegationResult(
+            content=exc.user_message,
+            child_session_id=child_session_id,
+            trace_id=trace_id,
+            depth=request.depth,
+            failed=True,
+            terminal_reason=exc.code,
+            parts=(
+                {
+                    "type": "runtime_status",
+                    "status": "denied" if exc.code == "delegation_instruction_source_access_denied" else "unavailable",
+                    "error_code": exc.code,
+                    "retryable": False,
+                    "recovery_action": "revise_delegation_input",
+                },
+            ),
+        )
     except asyncio.TimeoutError:
         _delegation_status = "timeout"
         delegation_result = AgentDelegationResult(
@@ -2255,8 +2326,9 @@ async def _delegate_after_cycle_check(
         )
     except Exception as exc:
         _delegation_status = "error"
-        reconciliation_required = isinstance(exc, (
-            ProviderRequestNeedsReconciliation, SessionRestartRecoveryRequired, ToolLifecyclePersistenceError))
+        reconciliation_required = isinstance(
+            exc, (ProviderRequestNeedsReconciliation, SessionRestartRecoveryRequired, ToolLifecyclePersistenceError)
+        )
         # Keep the full exception message available to the parent model; the stack remains server-side.
         logger.error(
             "[Orchestrator] Child agent %s failed (depth=%d, trace=%s): %s",
@@ -2276,28 +2348,73 @@ async def _delegate_after_cycle_check(
             depth=request.depth,
             failed=True,
             terminal_reason="delegation_session_reconciliation_required" if reconciliation_required else None,
-            parts=({"type": "runtime_status", "status": "unknown", "retryable": False,
-                "recovery_action": "reconcile", "error_code": "delegation_session_reconciliation_required"},)
-                if reconciliation_required else (),
+            parts=(
+                {
+                    "type": "runtime_status",
+                    "status": "unknown",
+                    "retryable": False,
+                    "recovery_action": "reconcile",
+                    "error_code": "delegation_session_reconciliation_required",
+                },
+            )
+            if reconciliation_required
+            else (),
         )
 
-    canonical_final = (canonical_runtime is not None and not delegation_result.failed
-        and canonical_runtime.final_content == delegation_result.content)
-    delegation_result.transcript_committed = canonical_final or (
-        (delegation_result.failed or delegation_result.terminal_reason != TerminalReason.CLARIFICATION_REQUIRED.value)
-        and await _append_child_transcript_event(
+    publish_final = (
+        delegation_result.failed or delegation_result.terminal_reason != TerminalReason.CLARIFICATION_REQUIRED.value
+    )
+    final_metadata = {
+        "status": _delegation_status,
+        "failed": delegation_result.failed,
+        "timed_out": delegation_result.timed_out,
+        "depth_limited": delegation_result.depth_limited,
+        "terminal_reason": delegation_result.terminal_reason,
+    }
+    final_parts = []
+    if publish_final and not delegation_result.failed:
+        final_metadata["phase"] = "final"
+        if canonical_runtime is not None:
+            terminal_result_id = (
+                _maybe_uuid(terminal_model_receipt.get("result_id"))
+                if isinstance(terminal_model_receipt, dict)
+                else None
+            )
+            round_id = (
+                str(terminal_model_receipt.get("round_id") or "") if isinstance(terminal_model_receipt, dict) else ""
+            )
+            publish_final = (
+                canonical_runtime.final_content == delegation_result.content
+                and terminal_result_id is not None
+                and bool(round_id)
+            )
+            if terminal_result_id is not None:
+                final_metadata["native_final_model_result_id"] = str(terminal_result_id)
+                final_metadata["turn_id"] = canonical_runtime.scope["turn_id"]
+                final_metadata["round_id"] = round_id
+        if (
+            publish_final
+            and transcript_enabled
+            and transcript_tenant_id is not None
+            and transcript_session_id is not None
+        ):
+            final_parts.extend(
+                await _collect_delegation_child_artifact_parts(
+                    tenant_id=transcript_tenant_id,
+                    child_session_id=transcript_session_id,
+                    runtime_task_id=transcript_runtime_task_id,
+                )
+            )
+    # A committed round is durable model evidence, not the final delivery.
+    # Use the same replayable publication path for native and legacy turns.
+    delegation_result.transcript_committed = publish_final and await _append_child_transcript_event(
         actor_type="assistant",
         event_type="assistant_message",
         role="assistant",
         content=delegation_result.content or "",
-        metadata={
-            "status": _delegation_status,
-            "failed": delegation_result.failed,
-            "timed_out": delegation_result.timed_out,
-            "depth_limited": delegation_result.depth_limited,
-            "terminal_reason": delegation_result.terminal_reason,
-        },
-    ))
+        parts=final_parts,
+        metadata=final_metadata,
+    )
 
     # Synchronous delegation has no outer RuntimeTask terminal transition. Its
     # authoritative terminal fact is the committed assistant transcript above.
@@ -2426,8 +2543,10 @@ async def _ensure_peer_delegation_session(
             )
             instruction_persisted = prior.scalar_one_or_none() is not None
 
-        source_pending = (any("a2a_instruction_origin" in message for message in request.conversation_messages)
-            and not instruction_authorized)
+        source_pending = (
+            any("a2a_instruction_origin" in message for message in request.conversation_messages)
+            and not instruction_authorized
+        )
         if not instruction_persisted and not source_pending:
             await append_session_event(
                 db=db,
@@ -2471,6 +2590,7 @@ async def _collect_delegation_child_artifact_parts(
     *,
     tenant_id: uuid.UUID,
     child_session_id: uuid.UUID,
+    runtime_task_id: uuid.UUID | str | None = None,
     delivery_agent_id: uuid.UUID | None = None,
     session_factory: Any | None = None,
 ) -> list[dict[str, Any]]:
@@ -2480,11 +2600,12 @@ async def _collect_delegation_child_artifact_parts(
     from app.services.chat_artifact_delivery import artifact_part_from_model
 
     async with _delegation_tenant_session(tenant_id, session_factory) as db:
-        result = await db.execute(
-            select(ChatArtifact)
-            .where(ChatArtifact.session_id == child_session_id)
-            .order_by(ChatArtifact.created_at.asc(), ChatArtifact.id.asc())
+        statement = select(ChatArtifact).where(
+            ChatArtifact.tenant_id == tenant_id, ChatArtifact.session_id == child_session_id
         )
+        if runtime_task_id is not None:
+            statement = statement.where(ChatArtifact.runtime_task_id == uuid.UUID(str(runtime_task_id)))
+        result = await db.execute(statement.order_by(ChatArtifact.created_at.asc(), ChatArtifact.id.asc()))
         parts: list[dict[str, Any]] = []
         seen: set[tuple[str | None, str | None]] = set()
         for artifact in result.scalars().all():
@@ -2606,6 +2727,7 @@ async def _project_delegation_completion_to_parent(
         artifact_parts = await _collect_delegation_child_artifact_parts(
             tenant_id=tenant_uuid,
             child_session_id=child_session_uuid,
+            runtime_task_id=task_id,
             delivery_agent_id=parent_agent_uuid,
             session_factory=session_factory,
         )
@@ -2959,12 +3081,18 @@ def _spawn_async_delegation_task(
             if delegation_result.terminal_reason == TerminalReason.CLARIFICATION_REQUIRED.value:
                 from app.services.delegation_session_runtime import suspend_delegation_for_question
 
-                await _release_delegation_coordination_lease(task_id=task_id, tenant_id=request.tenant_id,
-                    task_key=request.coordination_task_key, lease_id=request.coordination_lease_id,
-                    reason="delegation_question", coordination_gateway=request.coordination_gateway)
+                await _release_delegation_coordination_lease(
+                    task_id=task_id,
+                    tenant_id=request.tenant_id,
+                    task_key=request.coordination_task_key,
+                    lease_id=request.coordination_lease_id,
+                    reason="delegation_question",
+                    coordination_gateway=request.coordination_gateway,
+                )
                 question_coordination_released = True
-                await suspend_delegation_for_question(request,
-                    provider_request_id=delegation_result.question_provider_request_id)
+                await suspend_delegation_for_question(
+                    request, provider_request_id=delegation_result.question_provider_request_id
+                )
                 return delegation_result
             transcript_commit_missing = bool(
                 not delegation_result.failed
@@ -2987,8 +3115,11 @@ def _spawn_async_delegation_task(
                 delegation_result.failed = True
             terminal_status = (
                 "needs_reconciliation"
-                if (response_receipt_missing or transcript_commit_missing
-                    or delegation_result.terminal_reason == "delegation_session_reconciliation_required")
+                if (
+                    response_receipt_missing
+                    or transcript_commit_missing
+                    or delegation_result.terminal_reason == "delegation_session_reconciliation_required"
+                )
                 else "failed"
                 if delegation_result.failed
                 else "completed"
@@ -4427,7 +4558,10 @@ async def check_async_delegation(
             ):
                 return {"task_id": task_id, "status": "forbidden", "result": None}
             return {"task_id": task_id, "status": "not_found", "result": None}
-        if request_parent_agent_id is not None and _maybe_uuid(persisted.get("parent_agent_id")) != request_parent_agent_id:
+        if (
+            request_parent_agent_id is not None
+            and _maybe_uuid(persisted.get("parent_agent_id")) != request_parent_agent_id
+        ):
             return {"task_id": task_id, "status": "forbidden", "result": None}
         return {
             "task_id": task_id,
@@ -4690,8 +4824,9 @@ async def cancel_async_delegation(
     if state.task.done():
         observed = await check_async_delegation(task_id, parent_agent_id=request_parent_agent_id)
         if observed.get("status") in {"suspended", "resumable"}:
-            return await cancel_async_delegation(task_id, parent_agent_id=request_parent_agent_id,
-                force=force, min_runtime_seconds=min_runtime_seconds)
+            return await cancel_async_delegation(
+                task_id, parent_agent_id=request_parent_agent_id, force=force, min_runtime_seconds=min_runtime_seconds
+            )
         return observed
 
     if not force and min_runtime_seconds > 0:

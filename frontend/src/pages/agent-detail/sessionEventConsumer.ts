@@ -501,6 +501,7 @@ function projectCanonicalItem(
     eventStatus: item.lifecycle,
     eventReason: typeof item.payload.reason === 'string' ? item.payload.reason : undefined,
     eventRetryable: typeof item.payload.retryable === 'boolean' ? item.payload.retryable : undefined,
+    artifacts: extractArtifactParts(item.payload),
     sessionItem: item,
   };
 }

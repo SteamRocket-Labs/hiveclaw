@@ -295,33 +295,81 @@ async def _validate_response_payload(
         raise TerminalBoundaryCanonicalMismatch("direct response tenant authority mismatch")
     if not isinstance(payload.get("messages"), list):
         raise TerminalBoundaryCanonicalMismatch("direct response messages are missing")
-    if task.task_type in {"delegation", "business_task"} and terminal_event.event_type == "result_commit.round_committed":
+    event_metadata = dict(terminal_event.metadata_json or {})
+    native_final_id = event_metadata.get("native_final_model_result_id")
+    if task.task_type in {"delegation", "business_task"} and (
+        terminal_event.event_type == "result_commit.round_committed" or native_final_id is not None
+    ):
         from app.models.session_v2 import SessionModelResult
         from app.services.session_model_round import _sha256 as model_hash
 
-        result = await db.scalar(select(SessionModelResult).where(SessionModelResult.tenant_id == task.tenant_id,
-            SessionModelResult.session_id == terminal_event.session_id, SessionModelResult.run_id == task.id,
-            SessionModelResult.round_committed_event_id == terminal_event.id, SessionModelResult.state == "round_committed"))
+        statement = select(SessionModelResult).where(
+            SessionModelResult.tenant_id == task.tenant_id,
+            SessionModelResult.session_id == terminal_event.session_id,
+            SessionModelResult.run_id == task.id,
+            SessionModelResult.state == "round_committed",
+        )
+        if native_final_id is None:
+            statement = statement.where(SessionModelResult.round_committed_event_id == terminal_event.id)
+        else:
+            try:
+                statement = statement.where(SessionModelResult.id == uuid.UUID(str(native_final_id)))
+            except (TypeError, ValueError, AttributeError) as exc:
+                raise TerminalBoundaryCanonicalMismatch(
+                    "direct delegated final has an invalid model reference"
+                ) from exc
+        result = await db.scalar(statement)
+        commit_event = (
+            await db.get(ChatTranscriptEvent, result.round_committed_event_id)
+            if native_final_id is not None and result is not None
+            else terminal_event
+        )
         seal = result.seal_json if result and isinstance(result.seal_json, dict) else {}
         response = seal.get("response") or {}
         continuation = seal.get("continuation") or {}
-        committed = (terminal_event.metadata_json or {}).get("v2_payload") or {}
+        committed = ((commit_event.metadata_json or {}).get("v2_payload") or {}) if commit_event is not None else {}
         if not all(isinstance(value, dict) for value in (response, continuation, committed)):
             raise TerminalBoundaryCanonicalMismatch("direct delegated final seal is invalid")
-        if (result is None or terminal_event.actor_type != "runtime"
+        if (
+            result is None
+            or commit_event is None
+            or commit_event.actor_type != "runtime"
+            or commit_event.event_type != "result_commit.round_committed"
+            or commit_event.tenant_id != task.tenant_id
+            or commit_event.agent_id != agent_id
+            or commit_event.session_id != terminal_event.session_id
+            or commit_event.run_id != task.id
             or result.model_request_hash != model_hash(result.model_request_snapshot_json)
-            or seal.get("result_id") != str(result.id) or seal.get("run_id") != str(task.id)
-            or seal.get("round_id") != result.round_id or seal.get("provider_request_id") != result.provider_request_id
-            or seal.get("provider_response_ref") != f"provider-response:{result.provider_request_id}:{model_hash(response)}"
-            or seal.get("logical_round_complete") is not True or response.get("tool_calls")
-            or continuation.get("verdict") != "terminal_candidate" or continuation.get("pending_obligations") != []
+            or seal.get("result_id") != str(result.id)
+            or seal.get("run_id") != str(task.id)
+            or seal.get("round_id") != result.round_id
+            or seal.get("provider_request_id") != result.provider_request_id
+            or seal.get("provider_response_ref")
+            != f"provider-response:{result.provider_request_id}:{model_hash(response)}"
+            or seal.get("logical_round_complete") is not True
+            or response.get("tool_calls")
+            or continuation.get("verdict") != "terminal_candidate"
+            or continuation.get("pending_obligations") != []
             or committed.get("provider_request_id") != result.provider_request_id
             or committed.get("provider_response_ref") != seal.get("provider_response_ref")
             or committed.get("continuation_verdict") != "terminal_candidate"
             or seal.get("semantic_content") != response.get("content")
             or seal.get("content_hash") != model_hash(str(response.get("content") or ""))
-            or str(metadata.get("final_response") or "") != str(response.get("content") or "")):
+            or str(metadata.get("final_response") or "") != str(response.get("content") or "")
+        ):
             raise TerminalBoundaryCanonicalMismatch("direct response does not match its canonical delegated final")
+        if native_final_id is not None and (
+            terminal_event.event_type != "assistant_message"
+            or terminal_event.actor_type != "assistant"
+            or event_metadata.get("role") != "assistant"
+            or event_metadata.get("phase") != "final"
+            or event_metadata.get("turn_id") != result.turn_id
+            or event_metadata.get("round_id") != result.round_id
+            or terminal_event.content != response.get("content")
+        ):
+            raise TerminalBoundaryCanonicalMismatch(
+                "direct final publication does not match its canonical model result"
+            )
         return
     if str(metadata.get("final_response") or "") != str(terminal_event.content or ""):
         raise TerminalBoundaryCanonicalMismatch("direct response does not match assistant transcript")

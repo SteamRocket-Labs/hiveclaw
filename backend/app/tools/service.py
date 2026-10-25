@@ -1225,6 +1225,12 @@ class ToolRuntimeService:
         )
         return result
 
+    async def capture_native_tool_timeout(self, tool_name, arguments, context, *, content, timeout_seconds):
+        from app.services.runtime_tool_timeout_sources import capture_native_tool_timeout
+
+        return await capture_native_tool_timeout(ToolExecutionRequest(tool_name, arguments, context),
+            content=content, timeout_seconds=timeout_seconds)
+
     async def execute_with_context(
         self,
         tool_name: str,
@@ -1357,6 +1363,7 @@ class ToolRuntimeService:
                     trace_metadata_sink.pop("native_directory_read_evidence", None)
                     trace_metadata_sink.pop("native_read_denial_evidence", None)
                     trace_metadata_sink.pop("native_clock_read_evidence", None)
+                    trace_metadata_sink.pop("native_tool_timeout_evidence", None)
                     trace_metadata_sink.pop("agent_directory_sources", None)
                     if workspace_mutating or tool_name == "grep_search":
                         for key in ("workspace_mutation_evidence_captured", "workspace_mutation_states",

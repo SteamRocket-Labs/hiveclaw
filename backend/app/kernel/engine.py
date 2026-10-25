@@ -1834,6 +1834,8 @@ def _tool_execution_evidence(
         if isinstance(trace.get("native_empty_read_evidence"), dict) else None,
         "native_clock_read_evidence": dict(trace["native_clock_read_evidence"])
         if isinstance(trace.get("native_clock_read_evidence"), dict) else None,
+        "native_tool_timeout_evidence": dict(trace["native_tool_timeout_evidence"])
+        if isinstance(trace.get("native_tool_timeout_evidence"), dict) else None,
         "native_directory_read_evidence": dict(trace["native_directory_read_evidence"])
         if isinstance(trace.get("native_directory_read_evidence"), dict) else None,
         "native_read_denial_evidence": dict(trace["native_read_denial_evidence"])

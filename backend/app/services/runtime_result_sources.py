@@ -42,6 +42,10 @@ async def _published_owned_delegation_input(db, dependency, task, *, receipt_ids
         if (row is None or row.tenant_id != task.tenant_id or row.run_id != task.id
             or row.session_id != uuid.UUID(task.child_session_id)):
             return False
+        from app.services.runtime_tool_timeout_sources import native_tool_timeout_bound
+
+        if await native_tool_timeout_bound(db, agent_id=task.child_agent_id, invocation=row):
+            return True
         if row.tool_name in {
                 "write_file", "fs_write", "run_command", "execute_code", "ask_user_question",
                 "browser_manage", "browser_observe", "browser_action"}:

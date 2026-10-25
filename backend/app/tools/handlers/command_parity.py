@@ -217,26 +217,29 @@ async def task_output(request: ToolExecutionRequest) -> str:
     plan = adapt_task_command("TaskOutput", request.arguments, current_session_id=_session_id(request))
     if plan.kind == TaskCommandKind.INVALID:
         return _json({"ok": False, "error": plan.error})
-    record = await get_runtime_task_record(plan.runtime_task_id or "")
-    if record is None:
-        return _json({"ok": False, "runtime_task_id": plan.runtime_task_id, "error": "RuntimeTask not found."})
-    authority = authorize_runtime_task_record(
-        record,
-        principal=execution_principal_from_tool_context(request.context),
-        action="read_output",
-    )
-    if not authority.allowed:
-        return _json(
-            {
-                "ok": False,
-                "runtime_task_id": plan.runtime_task_id,
-                "error": "forbidden",
-                "reason": authority.reason,
-            }
-        )
-    from app.services.runtime_task_read_sources import record_task_read
+    from app.services.runtime_task_read_observation import capture_native_task_reads
 
-    return await record_task_read(request, _json({"ok": True, "runtime_task_id": plan.runtime_task_id, "task": record}))
+    with capture_native_task_reads() as capture:
+        record = await get_runtime_task_record(plan.runtime_task_id or "")
+        if record is None:
+            return _json({"ok": False, "runtime_task_id": plan.runtime_task_id, "error": "RuntimeTask not found."})
+        authority = authorize_runtime_task_record(
+            record,
+            principal=execution_principal_from_tool_context(request.context),
+            action="read_output",
+        )
+        if not authority.allowed:
+            return _json(
+                {
+                    "ok": False,
+                    "runtime_task_id": plan.runtime_task_id,
+                    "error": "forbidden",
+                    "reason": authority.reason,
+                }
+            )
+        from app.services.runtime_task_read_sources import record_task_read
+
+        return await record_task_read(request, _json({"ok": True, "runtime_task_id": plan.runtime_task_id, "task": record}), capture=capture)
 
 
 @tool(

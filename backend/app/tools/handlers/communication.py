@@ -478,15 +478,17 @@ async def check_async_task(request: ToolExecutionRequest) -> str:
     from app.services.agent_tools import _check_async_task
     from app.services.runtime_task_authority import execution_principal_from_tool_context
     from app.services.runtime_task_read_sources import record_task_read
+    from app.services.runtime_task_read_observation import capture_native_task_reads
 
-    return await record_task_read(request, _normalize_messaging_result(
-        "check_async_task",
-        await _check_async_task(
-            request.context.agent_id,
-            request.arguments,
-            principal=execution_principal_from_tool_context(request.context),
-        ),
-    ))
+    with capture_native_task_reads() as capture:
+        return await record_task_read(request, _normalize_messaging_result(
+            "check_async_task",
+            await _check_async_task(
+                request.context.agent_id,
+                request.arguments,
+                principal=execution_principal_from_tool_context(request.context),
+            ),
+        ), capture=capture)
 
 
 # -- cancel_async_task -------------------------------------------------------
@@ -567,14 +569,16 @@ async def list_async_tasks(request: ToolExecutionRequest) -> str:
     from app.services.agent_tools import _list_async_tasks
     from app.services.runtime_task_authority import execution_principal_from_tool_context
     from app.services.runtime_task_read_sources import record_task_read
+    from app.services.runtime_task_read_observation import capture_native_task_reads
 
-    return await record_task_read(request, _normalize_messaging_result(
-        "list_async_tasks",
-        await _list_async_tasks(
-            request.context.agent_id,
-            principal=execution_principal_from_tool_context(request.context),
-        ),
-    ))
+    with capture_native_task_reads() as capture:
+        return await record_task_read(request, _normalize_messaging_result(
+            "list_async_tasks",
+            await _list_async_tasks(
+                request.context.agent_id,
+                principal=execution_principal_from_tool_context(request.context),
+            ),
+        ), capture=capture)
 
 
 # -- get_current_time --------------------------------------------------------

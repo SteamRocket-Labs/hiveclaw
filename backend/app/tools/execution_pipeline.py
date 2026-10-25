@@ -1231,6 +1231,17 @@ async def _handle_execution_failure(
             source="tool_runtime_service",
         )
     await _log_failure_activity(state, error_class=error_class, retryable=is_timeout, exception=exception)
+    if is_timeout and request.trace_metadata_sink is not None:
+        from app.services.content_input_receipts import ContentInputReceiptError
+
+        context = state.runtime_context
+        if all(getattr(context, key, None) for key in ("tenant_id", "runtime_task_id", "tool_call_id", "turn_id")):
+            try:
+                request.trace_metadata_sink["native_tool_timeout_evidence"] = await service.capture_native_tool_timeout(
+                    request.tool_name, state.arguments, context,
+                    content=rendered, timeout_seconds=timeout_seconds)
+            except ContentInputReceiptError as exc:
+                request.trace_metadata_sink["native_tool_timeout_evidence"] = {"status": "unavailable", "reason_code": exc.code}
     return rendered
 
 

@@ -1110,7 +1110,11 @@ async def get_runtime_task_record(task_id: str) -> dict[str, Any] | None:
             task = result.scalar_one_or_none()
             if task is None:
                 return None
-            return _task_to_dict(task)
+            from app.services.runtime_task_read_observation import observe_native_task_read
+
+            record = _task_to_dict(task)
+            observe_native_task_read(task, record)
+            return record
         except Exception:
             await db.rollback()
             raise
@@ -1139,10 +1143,17 @@ async def list_runtime_task_records(
                 stmt = stmt.where(RuntimeTask.root_session_id == str(root_session_id))
             result = await db.execute(stmt)
             tasks = result.scalars().all()
+            from app.services.runtime_task_read_observation import observe_native_task_read
+
+            records = []
+            for task in tasks:
+                record = _task_to_dict(task)
+                observe_native_task_read(task, record)
+                records.append(record)
         except Exception:
             await db.rollback()
             raise
-    return [_task_to_dict(task) for task in tasks]
+    return records
 
 
 async def list_active_runtime_task_records(

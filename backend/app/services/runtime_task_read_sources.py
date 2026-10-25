@@ -61,7 +61,8 @@ async def _task_sources(db, task, session_id):
                 # A native completion can precede its durable result publication.
                 # Its status is observable; the unreceipted body is not an input.
                 return sources, False
-            if (result is None or not await load_canonical_result_sources(db, result)
+            canonical = await load_canonical_result_sources(db, result)
+            if (canonical is None or canonical[0].result_summary != task.result_summary
                 or not await runtime_result_publication_bound(db, result=result, agent_id=task.parent_agent_id,
                     session_id=session_id, user_id=task.root_user_id)):
                 return None
@@ -93,11 +94,26 @@ def _pending_result_record(record):
             "retryable": True, "next_action": "Wait for the same task's pinned result; reconcile delivery if publication fails. Do not dispatch another task."}}
 
 
-async def record_task_read(request, content):
+def _matches_status_body(body, task_id, record):
+    expected = {"task_id": task_id, "status": record["status"], "result": record["result"],
+        "timed_out": bool(record["metadata"].get("timed_out", False)),
+        "receipt": record["metadata"].get("execution_receipt"),
+        "session_id": record["child_session_id"], "child_session_id": record["child_session_id"],
+        "parent_session_id": record["parent_session_id"]}
+    running = {k: v for k, v in expected.items() if k != "timed_out"}
+    running.update(status="running", result=None, parent_session_id=None)
+    return body == expected or record["status"] in {"pending", "running"} and body == running
+
+
+async def record_task_read(request, content, *, capture=None):
     """Capture only the exact authorized records emitted by a native read, at read time."""
     from app.services.explicit_memory_authority import _writer_input, audience_for_session
     from app.services.runtime_task_authority import authorize_runtime_task_record, execution_principal_from_tool_context
     from app.services.runtime_task_service import _task_to_dict
+    from app.services.runtime_task_read_observation import NativeTaskReadCapture
+
+    if not isinstance(capture, NativeTaskReadCapture):
+        capture = None
 
     context = request.context
     if not all(getattr(context, key, None) for key in ("tenant_id", "runtime_task_id", "tool_call_id", "turn_id")):
@@ -120,35 +136,33 @@ async def record_task_read(request, content):
                 task = await db.get(RuntimeTask, uuid.UUID(task_id), populate_existing=True)
                 if task is None:
                     return content
-                record = _task_to_dict(task)
-                expected = {"task_id": task_id, "status": record["status"], "result": record["result"],
-                    "timed_out": bool(record["metadata"].get("timed_out", False)),
-                    "receipt": record["metadata"].get("execution_receipt"),
-                    "session_id": record["child_session_id"], "child_session_id": record["child_session_id"],
-                    "parent_session_id": record["parent_session_id"]}
-                # An in-process running handle has no terminal output or parent-session projection yet.
-                running = {k: v for k, v in expected.items() if k != "timed_out"}
-                running.update(status="running", result=None, parent_session_id=None)
-                if body != expected and not (record["status"] in {"pending", "running"} and body == running):
+                candidates = [*(capture.records_for(task_id) if capture else []), _task_to_dict(task)]
+                record = next((row for row in candidates if _matches_status_body(body, task_id, row)), None)
+                if record is None:
                     return content
                 records = [record]
             else:
                 records = body if isinstance(body, list) else None
             if records is None:
                 return content
-            sources, unbound, identities, pending = [], [], [], []
+            sources, unbound, identities, pending, observations = [], [], [], [], []
             principal = execution_principal_from_tool_context(context)
             for index, record in enumerate(records):
                 task = await db.get(RuntimeTask, uuid.UUID(record["task_id"]), populate_existing=True)
+                observed = capture.matching(record) if capture else None
                 if (task is None or task.tenant_id != tenant_id or task.parent_agent_id != context.agent_id
                     or task.root_user_id != actor.id or task.parent_session_id != str(session.id)
-                    or _task_to_dict(task) != record
+                    or observed is None and _task_to_dict(task) != record
+                    or not authorize_runtime_task_record(_task_to_dict(task), principal=principal,
+                        action="read_output" if call.tool_name == "task_output" else "list").allowed
                     or not authorize_runtime_task_record(record, principal=principal,
                         action="read_output" if call.tool_name == "task_output" else "list").allowed):
                     unbound.append("task_read_scope_or_snapshot_unbound")
                     continue
                 identities.append(str(task.id))
-                current = await _task_sources(db, task, session.id)
+                if observed is not None:
+                    observations.append({"task_id": str(task.id), "record_hash": _hash(record), "observed_at": observed[1]})
+                current = await _task_sources(db, observed[0] if observed else task, session.id)
                 if current is None:
                     unbound.append("task_read_sources_unbound")
                 elif current[1]:
@@ -177,6 +191,8 @@ async def record_task_read(request, content):
             "task_ids": identities, "sources": _unique_dependencies(sources), "unbound": unbound}
         if pending:
             proof["pending_publication_task_ids"] = pending
+        if observations:
+            proof["native_sql_observations"] = observations
         identity = uuid.uuid5(call.id, "runtime-task-read")
         row = await db.get(InvocationSpan, identity)
         if row is None:

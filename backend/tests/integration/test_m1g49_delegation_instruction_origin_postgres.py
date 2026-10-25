@@ -109,7 +109,7 @@ async def _start_feishu_creation_work(seed, app_user_sessionmaker, monkeypatch):
         return command.id
 
 
-@pytest.mark.parametrize("input_case", ["first_task_parent_pending_output", "first_task_parent_pending_status", "first_task_parent_pending_list", "first_task_parent_ledger_reminder", "first_task_child_listing_after_write", "first_task_child_listing_after_write_alias", "first_task_parent_return_control", "first_task_parent_return_namespace", "first_task_parent_return_glob_default", "first_task_parent_glob_default", "first_task_parent_glob_dot", "first_task_parent_clock", "first_task_child_clock", "first_task_child_grep_empty", "first_task_child_grep_legacy", "first_task_child_grep", "first_task_parent_loop_warning", "first_task_refinement_fallback", "first_task_child_missing_file", "first_task_parent_missing_file", "first_task_parent_legacy_workspace_read", "complete", "unbound", "revoked", "first_task", "first_task_unbound", "first_task_revoked", "first_task_refined", "first_task_delivery", "first_task_parent_model", "first_task_refined_native", "first_task_native_creation", "first_task_fresh_employee", "first_task_slow_provider", "first_task_saved_reopen", "first_task_question", "first_task_question_after_write", "first_task_feishu_question", "first_task_feishu_quoted_question", "first_task_feishu_question_source_changed", "first_task_feishu_question_body_changed", "first_task_feishu_question_already_answered", "first_task_feishu_question_projection_missing", "first_task_feishu_question_recipient_changed", "first_task_feishu_question_legacy_status", "first_task_feishu_permission_allow", "first_task_feishu_permission_deny", "first_task_feishu_permission_cancel", "first_task_feishu_permission_unknown", "first_task_feishu_permission_expired", "first_task_feishu_permission_source_changed", "delegation_permission_allow", "first_task_recall", "first_task_ledger", "first_task_ledger_unknown", "first_task_parent_status", "first_task_parent_status_unknown", "first_task_child_command", "first_task_child_code", "first_task_child_command_then_write", "first_task_child_code_then_write", "first_task_creator_task_inventory", "first_task_creator_readiness_feedback", "first_task_creator_readiness_resume", "first_task_parent_creation_result", "first_task_parent_historical_creation_result", "first_task_parent_historical_creation_unknown", "first_task_parent_result_denial", "first_task_parent_public_directory", "first_task_child_readback", "first_task_child_glob", "first_task_workspace_listing", "first_task_workspace_listing_alias", "first_task_completion_sweep", "first_task_parent_wait_legacy", "first_task_parent_code_legacy", "first_task_parity_list", "first_task_parity_ledger", "first_task_parity_ledger_unknown", "first_task_context", "first_task_discovery", "first_task_unverified_memory", "first_task_explicit_unverified_memory", "first_task_feishu_permission_channel_allow", "first_task_feishu_permission_channel_deny", "first_task_feishu_permission_channel_unknown", "first_task_feishu_permission_channel_legacy", "first_task_feishu_permission_channel_scope", "first_task_feishu_permission_channel_feedback_retry", "first_task_feishu_progress"])
+@pytest.mark.parametrize("input_case", ["first_task_forged_timeout_observation", "first_task_creator_task_output_lease_drift", "first_task_creator_task_status_lease_drift", "first_task_native_timeout_observation", "first_task_creator_task_inventory_lease_drift", "first_task_parent_pending_output", "first_task_parent_pending_status", "first_task_parent_pending_list", "first_task_parent_ledger_reminder", "first_task_child_listing_after_write", "first_task_child_listing_after_write_alias", "first_task_parent_return_control", "first_task_parent_return_namespace", "first_task_parent_return_glob_default", "first_task_parent_glob_default", "first_task_parent_glob_dot", "first_task_parent_clock", "first_task_child_clock", "first_task_child_grep_empty", "first_task_child_grep_legacy", "first_task_child_grep", "first_task_parent_loop_warning", "first_task_refinement_fallback", "first_task_child_missing_file", "first_task_parent_missing_file", "first_task_parent_legacy_workspace_read", "complete", "unbound", "revoked", "first_task", "first_task_unbound", "first_task_revoked", "first_task_refined", "first_task_delivery", "first_task_parent_model", "first_task_refined_native", "first_task_native_creation", "first_task_fresh_employee", "first_task_slow_provider", "first_task_saved_reopen", "first_task_question", "first_task_question_after_write", "first_task_feishu_question", "first_task_feishu_quoted_question", "first_task_feishu_question_source_changed", "first_task_feishu_question_body_changed", "first_task_feishu_question_already_answered", "first_task_feishu_question_projection_missing", "first_task_feishu_question_recipient_changed", "first_task_feishu_question_legacy_status", "first_task_feishu_permission_allow", "first_task_feishu_permission_deny", "first_task_feishu_permission_cancel", "first_task_feishu_permission_unknown", "first_task_feishu_permission_expired", "first_task_feishu_permission_source_changed", "delegation_permission_allow", "first_task_recall", "first_task_ledger", "first_task_ledger_unknown", "first_task_parent_status", "first_task_parent_status_unknown", "first_task_child_command", "first_task_child_code", "first_task_child_command_then_write", "first_task_child_code_then_write", "first_task_creator_task_inventory", "first_task_creator_readiness_feedback", "first_task_creator_readiness_resume", "first_task_parent_creation_result", "first_task_parent_historical_creation_result", "first_task_parent_historical_creation_unknown", "first_task_parent_result_denial", "first_task_parent_public_directory", "first_task_child_readback", "first_task_child_glob", "first_task_workspace_listing", "first_task_workspace_listing_alias", "first_task_completion_sweep", "first_task_parent_wait_legacy", "first_task_parent_code_legacy", "first_task_parity_list", "first_task_parity_ledger", "first_task_parity_ledger_unknown", "first_task_context", "first_task_discovery", "first_task_unverified_memory", "first_task_explicit_unverified_memory", "first_task_feishu_permission_channel_allow", "first_task_feishu_permission_channel_deny", "first_task_feishu_permission_channel_unknown", "first_task_feishu_permission_channel_legacy", "first_task_feishu_permission_channel_scope", "first_task_feishu_permission_channel_feedback_retry", "first_task_feishu_progress"])
 async def test_governed_delegation_preserves_its_parent_instruction_origin(
     owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, input_case, migrated_pg_url,
 ):
@@ -127,6 +127,18 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
     from app.services.secrets_provider import get_secrets_provider
     from app.services.web_chat_runtime import _persist_tool_call
 
+    forged_timeout_case = input_case == "first_task_forged_timeout_observation"
+    if forged_timeout_case:
+        input_case = "first_task_creator_task_inventory"
+    native_timeout_case = input_case == "first_task_native_timeout_observation"
+    if native_timeout_case:
+        input_case = "first_task_creator_task_inventory"
+    inventory_lease_drift_tool = {"first_task_creator_task_inventory_lease_drift": "list_async_tasks",
+        "first_task_creator_task_output_lease_drift": "task_output",
+        "first_task_creator_task_status_lease_drift": "check_async_task"}.get(input_case)
+    inventory_lease_drift_case = inventory_lease_drift_tool is not None
+    if inventory_lease_drift_case:
+        input_case = "first_task_creator_task_inventory"
     pending_result_case = input_case.startswith("first_task_parent_pending_")
     pending_result_tool = {"first_task_parent_pending_output": "task_output",
         "first_task_parent_pending_status": "check_async_task", "first_task_parent_pending_list": "list_async_tasks"}.get(input_case)
@@ -253,7 +265,7 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
     delivery_case = delivery_case or memory_case or discovery_case
     native_refined = native_refined or memory_case or discovery_case
     refined_input = input_case == "first_task_refined"
-    unbound_input = input_case in {"unbound", "first_task_unbound", "first_task_explicit_unverified_memory"} or ledger_unknown_case
+    unbound_input = input_case in {"unbound", "first_task_unbound", "first_task_explicit_unverified_memory"} or ledger_unknown_case or forged_timeout_case
     revoked_input = input_case in {"revoked", "first_task_revoked"}
     parent_complete = not unbound_input
     seed = await _seed_run(owner_sessionmaker, tmp_path, prompt=(
@@ -518,6 +530,55 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
             await register_workspace_path(db, tenant_id=seed["tenant_id"], agent_id=seed["agent_id"], path=prior_path,
                 owner_user_id=seed["user_id"], root_session_id=prior_work, source="synthetic_previous_work")
             await db.commit()
+    lease_observations = []
+    if inventory_lease_drift_case:
+        from app.services import runtime_task_service, runtime_task_read_observation
+        from app.services.runtime_task_fence import renew_current_runtime_task_lease
+
+        async def renew_after_read(record):
+            before = record["claim_expires_at"]
+            after = await renew_current_runtime_task_lease(lease_seconds=600)
+            lease_observations.append({"before": before, "after": after.isoformat()})
+            (tmp_path / "native-inventory-lease-renewal.json").write_text(json.dumps(lease_observations, indent=2))
+        if inventory_lease_drift_tool == "list_async_tasks":
+            native_inventory = runtime_task_service.list_runtime_task_records
+            async def inventory_before_heartbeat(**kwargs):
+                records = await native_inventory(**kwargs)
+                if kwargs.get("parent_agent_id") == seed["agent_id"] and kwargs.get("root_session_id") == str(seed["session_id"]):
+                    await renew_after_read(next(row for row in records if row["task_id"] == seed["run_id"].hex))
+                return records
+            monkeypatch.setattr(runtime_task_service, "list_runtime_task_records", inventory_before_heartbeat)
+        else:
+            import app.tools.handlers.command_parity as task_commands
+
+            native_record = runtime_task_service.get_runtime_task_record
+            async def record_before_heartbeat(task_id):
+                record = await native_record(task_id)
+                if record and UUID(task_id) == seed["run_id"] and runtime_task_read_observation._active_capture.get() is not None:
+                    await renew_after_read(record)
+                return record
+            monkeypatch.setattr(runtime_task_service, "get_runtime_task_record", record_before_heartbeat)
+            monkeypatch.setattr(task_commands, "get_runtime_task_record", record_before_heartbeat)
+    timeout_cancellations = []
+    if native_timeout_case or forged_timeout_case:
+        import asyncio
+        from app.tools import registry as tool_registry
+
+        async def pending_native_search(_request):
+            if forged_timeout_case:
+                from app.services.runtime_tool_timeout_sources import _timeout_text
+
+                return _timeout_text("search_memory", 30)
+            try:
+                await asyncio.Future()
+            finally:
+                timeout_cancellations.append("native_wait_for_cancelled")
+        agent_tools._ensure_tool_execution_registry()
+        monkeypatch.setitem(agent_tools._TOOL_EXECUTION_REGISTRY._executors, "search_memory", pending_native_search)
+        if native_timeout_case:
+            native_policy = tool_registry.tool_execution_policy
+            monkeypatch.setattr(tool_registry, "tool_execution_policy", lambda name:
+                replace(native_policy(name), timeout_seconds=0.01) if name == "search_memory" else native_policy(name))
     if native_creation:
         from app.models.chat_transcript_event import ChatTranscriptEvent
         from app.models.session_v2 import SessionToolInvocation
@@ -548,7 +609,12 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
             ], "finish_reason": "tool_calls"})
         if creator_task_inventory_case:
             creator_client.script[0]["tool_calls"].append({"id": "creator-task-inventory", "type": "function",
-                "function": {"name": "list_async_tasks", "arguments": "{}"}})
+                "function": {"name": inventory_lease_drift_tool or "list_async_tasks", "arguments": json.dumps(
+                    {"runtime_task_id": str(seed["run_id"])} if inventory_lease_drift_tool == "task_output"
+                    else {"task_id": str(seed["run_id"])} if inventory_lease_drift_tool == "check_async_task" else {})}})
+        if native_timeout_case or forged_timeout_case:
+            creator_client.script[0]["tool_calls"].append({"id": "creator-native-timeout", "type": "function",
+                "function": {"name": "search_memory", "arguments": json.dumps({"query": "Synthetic creation receipt", "scope": "sessions"})}})
         if parent_clock_case:
             creator_client.script[0]["tool_calls"].append({"id": "creator-current-time", "type": "function",
                 "function": {"name": "get_current_time", "arguments": "{}"}})
@@ -631,6 +697,18 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
         finally:
             reset_runtime_task_fence(creator_fence)
         (tmp_path / "native-creator-model-requests.json").write_text(json.dumps(creator_client.requests, default=str, indent=2))
+        if forged_timeout_case:
+            from app.models.invocation_span import InvocationSpan
+
+            assert timeout_cancellations == []
+            async with app_user_sessionmaker() as db:
+                await pin_rls_tenant_context(db, seed["tenant_id"])
+                forged_call = await db.scalar(select(SessionToolInvocation).where(SessionToolInvocation.run_id == seed["run_id"],
+                    SessionToolInvocation.provider_tool_use_id == "creator-native-timeout"))
+                assert forged_call is not None and not await db.get(InvocationSpan, uuid5(forged_call.id, "native_tool_timeout"))
+                forged_event = await db.get(ChatTranscriptEvent, forged_call.result_event_id)
+                assert not (_event_payload(forged_event).get("metadata") or {}).get("native_tool_timeout_receipt")
+
         if ledger_reminder_case:
             from app.runtime.prompts.runtime_reminders import WORK_LEDGER_REMINDER
 
@@ -704,7 +782,7 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
                 from app.services.employee_creation_sources import creation_tool_result_bound
 
                 assert (await db.get(RuntimeTask, seed["run_id"])).status == "completed"
-                if input_case == "first_task_explicit_unverified_memory" or ledger_unknown_case:
+                if input_case == "first_task_explicit_unverified_memory" or ledger_unknown_case or forged_timeout_case:
                     assert not await creation_tool_result_bound(db, tenant_id=seed["tenant_id"], agent_id=seed["agent_id"],
                         invocation=invocation, content=result)
                 else:
@@ -713,6 +791,18 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
                 assert not await creation_tool_result_bound(db, tenant_id=seed["tenant_id"], agent_id=seed["agent_id"],
                     invocation=invocation, content=json.dumps({**json.loads(result), "provisioning_task_id": str(uuid4())}))
             creating_rounds = list(await db.scalars(select(SessionModelResult).where(SessionModelResult.run_id == seed["run_id"])))
+            if forged_timeout_case:
+                from app.services.session_model_round import _root_round_index_from_id
+                from app.services.session_model_inputs import _origin_dependencies
+
+                ordered = sorted(creating_rounds, key=lambda row: _root_round_index_from_id(row.round_id))
+                assert len(ordered) == 3
+                assert ordered[0].model_request_snapshot_json["input_bindings"]["dependency_coverage"]["complete"]
+                assert all(not row.model_request_snapshot_json["input_bindings"]["dependency_coverage"]["complete"]
+                    for row in ordered[1:])
+                assert not (await _origin_dependencies(db, tenant_id=seed["tenant_id"], agent_id=seed["agent_id"],
+                    ref=f"session-tool-result:{forged_call.id}"))[1]
+                return
             if input_case == "first_task_explicit_unverified_memory" or ledger_unknown_case:
                 ordered = sorted(creating_rounds, key=lambda row: session_model_round._root_round_index_from_id(row.round_id))
                 if parity_sequence_case:
@@ -2188,6 +2278,37 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
             assert not (await _origin_dependencies(db, **check))[1]
             await control.rollback()
             assert (await _origin_dependencies(db, **check))[1]
+        if native_timeout_case:
+            assert timeout_cancellations == ["native_wait_for_cancelled"]
+            timeout_content = next(m["content"] for m in creator_client.requests[1]["messages"]
+                if m.get("tool_call_id") == "creator-native-timeout")
+            assert '"error_class": "timeout"' in timeout_content
+            from app.models.invocation_span import InvocationSpan
+            from app.services.session_model_inputs import _origin_dependencies
+            from app.services.employee_creation_sources import _owned_context_source
+
+            timeout_call = await db.scalar(select(SessionToolInvocation).where(
+                SessionToolInvocation.session_id == seed["session_id"],
+                SessionToolInvocation.provider_tool_use_id == "creator-native-timeout"))
+            timeout_source = next(item for item in origin.sources if item["source_kind"] == "session_tool_invocation"
+                and item["source_id"] == str(timeout_call.id))
+            timeout_scope = {"agent_id": seed["agent_id"], "tenant_id": seed["tenant_id"],
+                "session_id": seed["session_id"], "user_id": seed["user_id"]}
+            assert await _owned_context_source(db, dependency=timeout_source, **timeout_scope)
+            assert not await _owned_context_source(db, dependency=timeout_source, **{**timeout_scope, "session_id": uuid4()})
+            proof = await db.get(InvocationSpan, uuid5(timeout_call.id, "native_tool_timeout"))
+            original = dict(proof.metadata_json)
+            assert original["native_tool_timeout"]["effect_outcome"] == "unknown"
+            control = await db.begin_nested()
+            proof.metadata_json = {"native_tool_timeout": {**original["native_tool_timeout"], "content_hash": "0" * 64}}
+            await db.flush()
+            assert not (await _origin_dependencies(db, tenant_id=seed["tenant_id"], agent_id=seed["agent_id"],
+                ref=f"session-tool-result:{timeout_call.id}"))[1]
+            assert not await _owned_context_source(db, dependency=timeout_source, **timeout_scope)
+            await control.rollback()
+            assert await _owned_context_source(db, dependency=timeout_source, **timeout_scope)
+        if inventory_lease_drift_case:
+            assert lease_observations and all(row["before"] != row["after"] for row in lease_observations)
         if creator_task_inventory_case:
             from app.models.invocation_span import InvocationSpan
             from app.services.employee_creation_sources import _owned_context_source

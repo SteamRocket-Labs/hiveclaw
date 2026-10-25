@@ -699,6 +699,12 @@ async def _validate_session_dependency(db, tenant_id, dependency, *, user, runti
         await _validate_input_dependencies(db, tenant_id, references, user=user, runtime_request=runtime_request,
             active_workspace_receipts=active_workspace_receipts or frozenset())
     if model is SessionToolInvocation:
+        if (payload.get("metadata") or {}).get("native_tool_timeout_receipt") is not None:
+            from app.services.runtime_tool_timeout_sources import native_tool_timeout_bound
+
+            if not await native_tool_timeout_bound(db, agent_id=session.agent_id, invocation=source, payload=payload):
+                raise ContentInputReceiptError("content_source_unavailable", "The native timeout observation is unverified.", 503)
+            return
         from app.services.feishu_read_receipts import FEISHU_RESULT_TOOLS, load_feishu_result
 
         if source.tool_name in FEISHU_RESULT_TOOLS and source.effect_state in {"effect_committed", "failed"}:

@@ -920,6 +920,16 @@ async def complete_tool_invocation(
     knowledge_metadata = enrich_knowledge_event_metadata(
         event_type="tool_result", content={"name": invocation.tool_name, "result": content}, metadata={},
     )
+    if (execution_evidence or {}).get("native_tool_timeout_evidence"):
+        from app.services.content_input_receipts import ContentInputReceiptError
+        from app.services.runtime_tool_timeout_sources import load_native_tool_timeout_evidence
+
+        try:
+            knowledge_metadata["native_tool_timeout_receipt"] = await load_native_tool_timeout_evidence(db,
+                agent_id=agent_id, invocation=invocation, model_result=result, content_hash=content_hash,
+                capture=execution_evidence["native_tool_timeout_evidence"])
+        except ContentInputReceiptError as exc:
+            knowledge_metadata["native_tool_timeout_receipt"] = {"status": "unavailable", "reason_code": exc.code}
     if invocation.tool_name == "read_context_resource" and (execution_evidence or {}).get("agent_directory_sources"):
         from app.services.agent_directory_sources import directory_page_sources
         from app.services.content_input_receipts import ContentInputReceiptError

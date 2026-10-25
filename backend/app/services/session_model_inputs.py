@@ -567,6 +567,12 @@ async def _resolve_origin_dependencies(db, *, tenant_id, agent_id, ref):
     # The call's own audience remains a source, including empty searches and private query arguments.
     dependencies = [*dependencies, {"source_kind": "session_tool_invocation", "source_id": str(invocation.id),
         "source_version": tool_result_source_hash(payload)}]
+    if (payload.get("metadata") or {}).get("native_tool_timeout_receipt") is not None:
+        from app.services.runtime_tool_timeout_sources import native_tool_timeout_bound
+
+        complete = await native_tool_timeout_bound(db, agent_id=agent_id, invocation=invocation,
+            model_result=model, payload=payload)
+        return _unique_dependencies(dependencies), inherited_complete and complete
     from app.services.runtime_task_read_sources import TASK_READ_TOOLS, task_read_sources
 
     if invocation.tool_name in TASK_READ_TOOLS:

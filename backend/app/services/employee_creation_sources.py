@@ -330,11 +330,7 @@ async def _owned_context_source(db, *, dependency, agent_id, tenant_id, session_
             call = await db.get(SessionToolInvocation, uuid.UUID(source_id), populate_existing=True)
         except ValueError:
             return False
-        if (call is None or call.tenant_id != tenant_id or call.session_id != session_id
-            or (call.effect_state != 'effect_committed' and not (
-                call.tool_name in {'task_get', 'delegate_to_agent', 'read_file', 'read_document', 'fs_read', 'exit_plan_mode', 'list_files', 'fs_list', 'glob_search'} and call.effect_state == 'failed')) or call.tool_name not in (
-                LEDGER_RESULT_TOOLS | TASK_READ_TOOLS | {'list_files', 'fs_list', 'glob_search', 'tool_search', 'read_context_resource', 'search_memory',
-                    'run_command', 'execute_code', 'delegate_to_agent', 'read_file', 'read_document', 'fs_read', 'exit_plan_mode', 'get_current_time'})):
+        if call is None or call.tenant_id != tenant_id or call.session_id != session_id:
             return False
         event = await db.scalar(select(ChatTranscriptEvent).where(
             ChatTranscriptEvent.id == call.result_event_id, ChatTranscriptEvent.tenant_id == tenant_id,
@@ -348,6 +344,15 @@ async def _owned_context_source(db, *, dependency, agent_id, tenant_id, session_
             SessionModelResult.provider_request_id == call.provider_request_id)) if event else None
         if (model is None or not _model_dependencies(model)[1]
             or tool_result_source_hash(payload) != dependency['source_version']):
+            return False
+        from app.services.runtime_tool_timeout_sources import native_tool_timeout_bound
+
+        if await native_tool_timeout_bound(db, agent_id=agent_id, invocation=call, model_result=model, payload=payload):
+            return True
+        if ((call.effect_state != 'effect_committed' and not (
+                call.tool_name in {'task_get', 'delegate_to_agent', 'read_file', 'read_document', 'fs_read', 'exit_plan_mode', 'list_files', 'fs_list', 'glob_search'} and call.effect_state == 'failed')) or call.tool_name not in (
+                LEDGER_RESULT_TOOLS | TASK_READ_TOOLS | {'list_files', 'fs_list', 'glob_search', 'tool_search', 'read_context_resource', 'search_memory',
+                    'run_command', 'execute_code', 'delegate_to_agent', 'read_file', 'read_document', 'fs_read', 'exit_plan_mode', 'get_current_time'})):
             return False
         if call.tool_name == 'delegate_to_agent':
             from app.services.employee_first_task import first_task_dispatch_result_bound, first_task_preflight_result_bound

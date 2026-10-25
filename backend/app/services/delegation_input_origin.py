@@ -19,20 +19,38 @@ from app.tools.runtime import ToolExecutionContext
 
 
 async def _parent_call(db, *, tenant_id, agent_id, session_id, run_id, call_id, tool_name="delegate_to_agent"):
-    invocation = (await db.scalars(select(SessionToolInvocation).join(ChatSession,
-        ChatSession.id == SessionToolInvocation.session_id).where(SessionToolInvocation.tenant_id == tenant_id,
-        SessionToolInvocation.session_id == session_id, SessionToolInvocation.run_id == run_id,
-        SessionToolInvocation.provider_tool_use_id == call_id, SessionToolInvocation.tool_name == tool_name,
-        ChatSession.tenant_id == tenant_id, ChatSession.agent_id == agent_id))).one_or_none()
+    invocation = (
+        await db.scalars(
+            select(SessionToolInvocation)
+            .join(ChatSession, ChatSession.id == SessionToolInvocation.session_id)
+            .where(
+                SessionToolInvocation.tenant_id == tenant_id,
+                SessionToolInvocation.session_id == session_id,
+                SessionToolInvocation.run_id == run_id,
+                SessionToolInvocation.provider_tool_use_id == call_id,
+                SessionToolInvocation.tool_name == tool_name,
+                ChatSession.tenant_id == tenant_id,
+                ChatSession.agent_id == agent_id,
+            )
+        )
+    ).one_or_none()
     if invocation is None:
         return None
-    model = await db.scalar(select(SessionModelResult).where(SessionModelResult.tenant_id == tenant_id,
-        SessionModelResult.session_id == session_id, SessionModelResult.run_id == run_id,
-        SessionModelResult.provider_request_id == invocation.provider_request_id))
+    model = await db.scalar(
+        select(SessionModelResult).where(
+            SessionModelResult.tenant_id == tenant_id,
+            SessionModelResult.session_id == session_id,
+            SessionModelResult.run_id == run_id,
+            SessionModelResult.provider_request_id == invocation.provider_request_id,
+        )
+    )
     if model is None or model.state not in {"sealed", "round_committed"} or not isinstance(model.seal_json, dict):
         return None
     response = model.seal_json.get("response") or {}
-    if model.seal_json.get("provider_response_ref") != f"provider-response:{model.provider_request_id}:{_hash(response)}":
+    if (
+        model.seal_json.get("provider_response_ref")
+        != f"provider-response:{model.provider_request_id}:{_hash(response)}"
+    ):
         return None
     selected = [call for call in response.get("tool_calls") or [] if call.get("id") == call_id]
     if len(selected) != 1 or (selected[0].get("function") or {}).get("name") != invocation.tool_name:
@@ -42,8 +60,11 @@ async def _parent_call(db, *, tenant_id, agent_id, session_id, run_id, call_id, 
         arguments = json.loads(arguments) if isinstance(arguments, str) else arguments
     except ValueError:
         return None
-    if not isinstance(arguments, dict) or arguments != invocation.provider_arguments_json or invocation.args_hash != _hash({
-        "tool_name": invocation.tool_name, "arguments": arguments}):
+    if (
+        not isinstance(arguments, dict)
+        or arguments != invocation.provider_arguments_json
+        or invocation.args_hash != _hash({"tool_name": invocation.tool_name, "arguments": arguments})
+    ):
         return None
     return invocation, model, arguments
 
@@ -53,11 +74,24 @@ async def _store_instruction_origin(db, *, context, invocation, proof):
     source_id = uuid.uuid5(invocation.id, f"delegation-instruction:{digest}")
     row = await db.get(InvocationSpan, source_id)
     if row is None:
-        db.add(InvocationSpan(id=source_id, tenant_id=invocation.tenant_id, agent_id=context.agent_id,
-            user_id=context.user_id, session_id=str(invocation.session_id), runtime_task_id=invocation.run_id,
-            trace_id=f"session-tool:{invocation.id}", span_id=f"delegation-instruction:{source_id}",
-            span_type="delegation_input", name="model_authored_instruction", status="captured",
-            duration_ms=0, started_at=datetime.now(timezone.utc), metadata_json={"instruction_origin": proof}))
+        db.add(
+            InvocationSpan(
+                id=source_id,
+                tenant_id=invocation.tenant_id,
+                agent_id=context.agent_id,
+                user_id=context.user_id,
+                session_id=str(invocation.session_id),
+                runtime_task_id=invocation.run_id,
+                trace_id=f"session-tool:{invocation.id}",
+                span_id=f"delegation-instruction:{source_id}",
+                span_type="delegation_input",
+                name="model_authored_instruction",
+                status="captured",
+                duration_ms=0,
+                started_at=datetime.now(timezone.utc),
+                metadata_json={"instruction_origin": proof},
+            )
+        )
     elif row.metadata_json != {"instruction_origin": proof}:
         return None
     await db.flush()
@@ -66,20 +100,92 @@ async def _store_instruction_origin(db, *, context, invocation, proof):
 
 async def capture_employee_creation_origin(db, *, request, draft):
     context = request.context
-    parent = await _parent_call(db, tenant_id=draft.tenant_id, agent_id=draft.hr_agent_id,
-        session_id=draft.session_id, run_id=uuid.UUID(str(context.runtime_task_id)), call_id=context.tool_call_id,
-        tool_name="create_employee_from_request")
+    parent = await _parent_call(
+        db,
+        tenant_id=draft.tenant_id,
+        agent_id=draft.hr_agent_id,
+        session_id=draft.session_id,
+        run_id=uuid.UUID(str(context.runtime_task_id)),
+        call_id=context.tool_call_id,
+        tool_name="create_employee_from_request",
+    )
     if parent is None:
         return None
     invocation, model, original = parent
-    if (invocation.effect_state != "effect_started" or invocation.result_event_id is not None
-        or original != request.arguments):
+    if (
+        invocation.effect_state != "effect_started"
+        or invocation.result_event_id is not None
+        or original != request.arguments
+    ):
         return None
-    proof = {"schema": "hive.employee_creation_origin.v1", "draft_id": str(draft.id),
-        "parent_invocation_id": str(invocation.id), "parent_model_result_id": str(model.id),
-        "parent_model_request_hash": model.model_request_hash, "content": str(original.get("first_task") or "").strip(),
-        "requester_user_id": str(context.user_id), "call_id": context.tool_call_id}
+    proof = {
+        "schema": "hive.employee_creation_origin.v1",
+        "draft_id": str(draft.id),
+        "parent_invocation_id": str(invocation.id),
+        "parent_model_result_id": str(model.id),
+        "parent_model_request_hash": model.model_request_hash,
+        "content": str(original.get("first_task") or "").strip(),
+        "requester_user_id": str(context.user_id),
+        "call_id": context.tool_call_id,
+    }
     return await _store_instruction_origin(db, context=context, invocation=invocation, proof=proof)
+
+
+async def capture_employee_blueprint_origin(db, *, request, draft):
+    """Capture a fresh model-authored preview; this is never confirmation evidence."""
+    context = request.context
+    if (
+        draft.status != "awaiting_confirmation"
+        or draft.confirmed_at is not None
+        or draft.provisioning_task_id is not None
+        or "creation_origin" in (draft.preview_json or {})
+    ):
+        return None
+    try:
+        run_id = uuid.UUID(str(context.runtime_task_id))
+    except (ValueError, TypeError):
+        return None
+    parent = await _parent_call(
+        db,
+        tenant_id=draft.tenant_id,
+        agent_id=draft.hr_agent_id,
+        session_id=draft.session_id,
+        run_id=run_id,
+        call_id=context.tool_call_id,
+        tool_name="preview_agent_blueprint",
+    )
+    if parent is None:
+        return None
+    invocation, model, original = parent
+    if (
+        invocation.effect_state != "effect_started"
+        or invocation.result_event_id is not None
+        or original != request.arguments
+        or context.user_id != draft.requested_by_user_id
+    ):
+        return None
+    proof = {
+        "schema": "hive.employee_blueprint_origin.v1",
+        "draft_id": str(draft.id),
+        "blueprint_version": draft.blueprint_version,
+        "blueprint_hash": draft.blueprint_hash,
+        "parent_invocation_id": str(invocation.id),
+        "parent_model_result_id": str(model.id),
+        "parent_model_request_hash": model.model_request_hash,
+        "tool_arguments_hash": _hash(original),
+        "requester_user_id": str(context.user_id),
+        "call_id": context.tool_call_id,
+    }
+    return await _store_instruction_origin(db, context=context, invocation=invocation, proof=proof)
+
+
+def employee_creation_source_pointer(draft):
+    from app.services.hr_creation_service import direct_creation_authorization
+
+    preview = draft.preview_json or {}
+    if "creation_authorization" in preview:
+        return (direct_creation_authorization(draft) or {}).get("creation_origin")
+    return preview.get("creation_origin")
 
 
 async def load_employee_creation_dependencies(db, *, draft):
@@ -88,7 +194,7 @@ async def load_employee_creation_dependencies(db, *, draft):
     from app.services.hr_provisioning_runtime import _runtime_authority_issues
 
     evidence = direct_creation_authorization(draft)
-    pointer = evidence.get("creation_origin") if evidence else None
+    pointer = employee_creation_source_pointer(draft)
     if not isinstance(pointer, dict) or set(pointer) != {"source_id", "source_hash"}:
         return None
     try:
@@ -97,24 +203,59 @@ async def load_employee_creation_dependencies(db, *, draft):
         return None
     row = await db.get(InvocationSpan, source_id, populate_existing=True)
     proof = (row.metadata_json or {}).get("instruction_origin") if row else None
-    job = await db.get(RuntimeTask, draft.provisioning_task_id, populate_existing=True) if draft.provisioning_task_id else None
-    if (row is None or row.tenant_id != draft.tenant_id or row.agent_id != draft.hr_agent_id
-        or row.session_id != str(draft.session_id) or row.runtime_task_id != uuid.UUID(evidence["source_run_id"])
-        or row.user_id != draft.requested_by_user_id or row.span_type != "delegation_input" or row.status != "captured"
-        or not isinstance(proof, dict) or _hash(proof) != pointer["source_hash"]
-        or proof.get("schema") != "hive.employee_creation_origin.v1" or proof.get("draft_id") != str(draft.id)
+    job = (
+        await db.get(RuntimeTask, draft.provisioning_task_id, populate_existing=True)
+        if draft.provisioning_task_id
+        else None
+    )
+    if (
+        row is None
+        or row.tenant_id != draft.tenant_id
+        or row.agent_id != draft.hr_agent_id
+        or row.session_id != str(draft.session_id)
+        or row.user_id != draft.requested_by_user_id
+        or row.span_type != "delegation_input"
+        or row.status != "captured"
+        or not isinstance(proof, dict)
+        or _hash(proof) != pointer["source_hash"]
+        or proof.get("draft_id") != str(draft.id)
         or proof.get("requester_user_id") != str(draft.requested_by_user_id)
-        or proof.get("content") != evidence.get("first_task") or job is None
-        or _runtime_authority_issues(job, draft, allow_completed=True)):
+        or job is None
+        or _runtime_authority_issues(job, draft, allow_completed=True)
+    ):
         return None
-    parent = await _parent_call(db, tenant_id=draft.tenant_id, agent_id=draft.hr_agent_id, session_id=draft.session_id,
-        run_id=row.runtime_task_id, call_id=proof.get("call_id"), tool_name="create_employee_from_request")
+    if evidence:
+        if (
+            str(row.runtime_task_id) != evidence["source_run_id"]
+            or proof.get("schema") != "hive.employee_creation_origin.v1"
+            or proof.get("content") != evidence.get("first_task")
+        ):
+            return None
+    elif (
+        proof.get("schema") != "hive.employee_blueprint_origin.v1"
+        or proof.get("blueprint_version") != draft.blueprint_version
+        or proof.get("blueprint_hash") != draft.blueprint_hash
+    ):
+        return None
+    parent = await _parent_call(
+        db,
+        tenant_id=draft.tenant_id,
+        agent_id=draft.hr_agent_id,
+        session_id=draft.session_id,
+        run_id=row.runtime_task_id,
+        call_id=proof.get("call_id"),
+        tool_name="create_employee_from_request" if evidence else "preview_agent_blueprint",
+    )
     if parent is None:
         return None
     invocation, model, original = parent
-    if (original != evidence["tool_arguments"] or proof.get("parent_invocation_id") != str(invocation.id)
-        or proof.get("parent_model_result_id") != str(model.id) or proof.get("parent_model_request_hash") != model.model_request_hash
-        or source_id != uuid.uuid5(invocation.id, f"delegation-instruction:{pointer['source_hash']}")):
+    if (
+        (original != evidence["tool_arguments"] if evidence else proof.get("tool_arguments_hash") != _hash(original))
+        or proof.get("parent_invocation_id") != str(invocation.id)
+        or proof.get("parent_model_result_id") != str(model.id)
+        or proof.get("parent_model_request_hash") != model.model_request_hash
+        or source_id != uuid.uuid5(invocation.id, f"delegation-instruction:{pointer['source_hash']}")
+    ):
         return None
     return _model_dependencies(model)
 
@@ -122,29 +263,46 @@ async def load_employee_creation_dependencies(db, *, draft):
 async def capture_delegation_instruction_origin(context, arguments, *, recipient_agent_id):
     from app.database import tenant_scoped_session
 
-    if not isinstance(context, ToolExecutionContext) or not all((context.tenant_id, context.session_id,
-        context.runtime_task_id, context.tool_call_id)):
+    if not isinstance(context, ToolExecutionContext) or not all(
+        (context.tenant_id, context.session_id, context.runtime_task_id, context.tool_call_id)
+    ):
         return None
     try:
-        tenant_id, session_id, run_id = (uuid.UUID(str(value)) for value in (
-            context.tenant_id, context.session_id, context.runtime_task_id))
+        tenant_id, session_id, run_id = (
+            uuid.UUID(str(value)) for value in (context.tenant_id, context.session_id, context.runtime_task_id)
+        )
         async with tenant_scoped_session(tenant_id, require_tenant=True) as db:
-            parent = await _parent_call(db, tenant_id=tenant_id, agent_id=context.agent_id, session_id=session_id,
-                run_id=run_id, call_id=context.tool_call_id)
+            parent = await _parent_call(
+                db,
+                tenant_id=tenant_id,
+                agent_id=context.agent_id,
+                session_id=session_id,
+                run_id=run_id,
+                call_id=context.tool_call_id,
+            )
             if parent is None:
                 return None
             invocation, model, original = parent
             if invocation.effect_state != "effect_started" or invocation.result_event_id is not None:
                 return None
-            if not isinstance(original.get("message"), str) or original["message"].strip() != arguments.get("message", "").strip():
+            if (
+                not isinstance(original.get("message"), str)
+                or original["message"].strip() != arguments.get("message", "").strip()
+            ):
                 return None
             for key in ("agent_name", "target_agent_id"):
                 if original.get(key) != arguments.get(key):
                     return None
-            proof = {"schema": "hive.delegation_instruction_origin.v1", "parent_invocation_id": str(invocation.id),
-                "parent_model_result_id": str(model.id), "parent_model_request_hash": model.model_request_hash,
-                "recipient_agent_id": str(recipient_agent_id), "content": original["message"].strip(),
-                "requester_user_id": str(context.user_id), "call_id": context.tool_call_id}
+            proof = {
+                "schema": "hive.delegation_instruction_origin.v1",
+                "parent_invocation_id": str(invocation.id),
+                "parent_model_result_id": str(model.id),
+                "parent_model_request_hash": model.model_request_hash,
+                "recipient_agent_id": str(recipient_agent_id),
+                "content": original["message"].strip(),
+                "requester_user_id": str(context.user_id),
+                "call_id": context.tool_call_id,
+            }
             reference = await _store_instruction_origin(db, context=context, invocation=invocation, proof=proof)
             await db.commit()
             return reference
@@ -164,11 +322,21 @@ async def load_delegation_instruction_origin(db, *, request, tenant_id, content)
         return None
     row = await db.get(InvocationSpan, source_id, populate_existing=True)
     proof = (row.metadata_json or {}).get("instruction_origin") if row else None
-    if (row is None or row.tenant_id != tenant_id or row.agent_id != uuid.UUID(str(request.parent_agent_id))
-        or row.session_id != str(uuid.UUID(str(request.parent_session_id))) or row.span_type != "delegation_input"
-        or row.status != "captured" or row.user_id != request.owner_id or row.name != "model_authored_instruction"
-        or row.span_id != f"delegation-instruction:{source_id}" or not isinstance(proof, dict) or _hash(proof) != pointer["source_hash"]
-        or proof.get("content") != content or proof.get("requester_user_id") != str(request.owner_id)):
+    if (
+        row is None
+        or row.tenant_id != tenant_id
+        or row.agent_id != uuid.UUID(str(request.parent_agent_id))
+        or row.session_id != str(uuid.UUID(str(request.parent_session_id)))
+        or row.span_type != "delegation_input"
+        or row.status != "captured"
+        or row.user_id != request.owner_id
+        or row.name != "model_authored_instruction"
+        or row.span_id != f"delegation-instruction:{source_id}"
+        or not isinstance(proof, dict)
+        or _hash(proof) != pointer["source_hash"]
+        or proof.get("content") != content
+        or proof.get("requester_user_id") != str(request.owner_id)
+    ):
         return None
     first_task = proof.get("schema") == "hive.employee_creation_origin.v1"
     if first_task:
@@ -182,32 +350,60 @@ async def load_delegation_instruction_origin(db, *, request, tenant_id, content)
         except (ValueError, TypeError, KeyError):
             return None
         evidence = direct_creation_authorization(draft) if draft else None
-        job = await db.get(RuntimeTask, draft.provisioning_task_id, populate_existing=True) if draft and draft.provisioning_task_id else None
-        if (draft is None or draft.tenant_id != tenant_id or draft.status != "completed"
-            or draft.hr_agent_id != row.agent_id or str(draft.session_id) != row.session_id
-            or draft.requested_by_user_id != request.owner_id or draft.created_agent_id != request.target.id
-            or not evidence or evidence.get("creation_origin") != pointer or evidence.get("first_task") != content
-            or evidence.get("source_run_id") != str(row.runtime_task_id) or job is None
-            or _runtime_authority_issues(job, draft, allow_completed=True)):
+        job = (
+            await db.get(RuntimeTask, draft.provisioning_task_id, populate_existing=True)
+            if draft and draft.provisioning_task_id
+            else None
+        )
+        if (
+            draft is None
+            or draft.tenant_id != tenant_id
+            or draft.status != "completed"
+            or draft.hr_agent_id != row.agent_id
+            or str(draft.session_id) != row.session_id
+            or draft.requested_by_user_id != request.owner_id
+            or draft.created_agent_id != request.target.id
+            or not evidence
+            or evidence.get("creation_origin") != pointer
+            or evidence.get("first_task") != content
+            or evidence.get("source_run_id") != str(row.runtime_task_id)
+            or job is None
+            or _runtime_authority_issues(job, draft, allow_completed=True)
+        ):
             return None
-    elif (proof.get("schema") != "hive.delegation_instruction_origin.v1"
-        or proof.get("recipient_agent_id") != str(request.target.id)):
+    elif proof.get("schema") != "hive.delegation_instruction_origin.v1" or proof.get("recipient_agent_id") != str(
+        request.target.id
+    ):
         return None
-    parent = await _parent_call(db, tenant_id=tenant_id, agent_id=row.agent_id,
-        session_id=uuid.UUID(row.session_id), run_id=row.runtime_task_id, call_id=proof.get("call_id"),
-        tool_name="create_employee_from_request" if first_task else "delegate_to_agent")
+    parent = await _parent_call(
+        db,
+        tenant_id=tenant_id,
+        agent_id=row.agent_id,
+        session_id=uuid.UUID(row.session_id),
+        run_id=row.runtime_task_id,
+        call_id=proof.get("call_id"),
+        tool_name="create_employee_from_request" if first_task else "delegate_to_agent",
+    )
     if parent is None:
         return None
     invocation, model, original = parent
-    if (proof.get("parent_invocation_id") != str(invocation.id) or proof.get("parent_model_result_id") != str(model.id)
+    if (
+        proof.get("parent_invocation_id") != str(invocation.id)
+        or proof.get("parent_model_result_id") != str(model.id)
         or proof.get("parent_model_request_hash") != model.model_request_hash
         or original.get("first_task" if first_task else "message", "").strip() != content
-        or source_id != uuid.uuid5(invocation.id, f"delegation-instruction:{pointer['source_hash']}")):
+        or source_id != uuid.uuid5(invocation.id, f"delegation-instruction:{pointer['source_hash']}")
+    ):
         return None
     dependencies, complete = _model_dependencies(model)
-    return ContextMessageOrigin.capture(kind="delegated_instruction", role="user", content=content,
-        sources=dependencies, sections=[{"kind": "parent_tool_call", "source_id": str(source_id),
-            "source_hash": pointer["source_hash"]}], unbound=() if complete else ("delegation_parent_inputs_unbound",))
+    return ContextMessageOrigin.capture(
+        kind="delegated_instruction",
+        role="user",
+        content=content,
+        sources=dependencies,
+        sections=[{"kind": "parent_tool_call", "source_id": str(source_id), "source_hash": pointer["source_hash"]}],
+        unbound=() if complete else ("delegation_parent_inputs_unbound",),
+    )
 
 
 async def authorize_delegation_instruction(invocation, request):
@@ -217,28 +413,42 @@ async def authorize_delegation_instruction(invocation, request):
     from app.database import tenant_scoped_session
     from app.kernel.contracts import ContextDependencyUnavailable
     from app.services.content_input_receipts import (
-        ContentInputReceiptError, _runtime_input_actor, _validate_input_dependencies, validate_runtime_input_dependencies,
+        ContentInputReceiptError,
+        _runtime_input_actor,
+        _validate_input_dependencies,
+        validate_runtime_input_dependencies,
     )
     from app.tools.runtime import ToolExecutionRequest
 
     if not any("a2a_instruction_origin" in message for message in request.conversation_messages):
         return  # Legacy inputs retain incomplete coverage; no origin is invented.
     async with tenant_scoped_session(invocation.tenant_id, require_tenant=True) as db:
-        origin = await load_delegation_instruction_origin(db, request=request, tenant_id=invocation.tenant_id,
-            content=invocation.messages[0]["content"])
+        origin = await load_delegation_instruction_origin(
+            db, request=request, tenant_id=invocation.tenant_id, content=invocation.messages[0]["content"]
+        )
         if origin is None or origin.unbound:
-            raise ContextDependencyUnavailable(dependency="a2a_instruction_origin",
-                code="delegation_instruction_sources_unbound", user_message=
-                "The delegated instruction has unbound upstream sources. Reconcile or provide authorized inputs before retrying.")
+            raise ContextDependencyUnavailable(
+                dependency="a2a_instruction_origin",
+                code="delegation_instruction_sources_unbound",
+                user_message="The delegated instruction has unbound upstream sources. Reconcile or provide authorized inputs before retrying.",
+            )
         metadata = invocation.session_context.metadata
-        context = ToolExecutionContext(agent_id=invocation.agent_id, user_id=invocation.user_id,
-            tenant_id=str(invocation.tenant_id), workspace=Path(get_settings().AGENT_DATA_DIR) / str(invocation.agent_id),
-            session_id=invocation.session_context.session_id, runtime_task_id=request.runtime_task_id,
+        context = ToolExecutionContext(
+            agent_id=invocation.agent_id,
+            user_id=invocation.user_id,
+            tenant_id=str(invocation.tenant_id),
+            workspace=Path(get_settings().AGENT_DATA_DIR) / str(invocation.agent_id),
+            session_id=invocation.session_context.session_id,
+            runtime_task_id=request.runtime_task_id,
             execution_principal=ExecutionPrincipal.from_evidence(metadata.get("execution_principal")),
-            execution_identity=invocation.execution_identity, authority_frame_required=True,
-            delegation_token=invocation.delegation_token)
+            execution_identity=invocation.execution_identity,
+            authority_frame_required=True,
+            delegation_token=invocation.delegation_token,
+        )
         try:
-            runtime_request = ToolExecutionRequest(tool_name="delegation_instruction_input", arguments={}, context=context)
+            runtime_request = ToolExecutionRequest(
+                tool_name="delegation_instruction_input", arguments={}, context=context
+            )
             _, requester = await _runtime_input_actor(db, invocation.tenant_id, runtime_request)
             from app.services.machine_runtime_authority import is_machine_runtime_actor
 
@@ -254,55 +464,103 @@ async def authorize_delegation_instruction(invocation, request):
                 await _validate_input_dependencies(db, invocation.tenant_id, list(origin.sources), user=requester)
         except (ContentInputReceiptError, HTTPException) as exc:
             denied = exc.status_code == 403 or isinstance(exc, HTTPException) and exc.status_code < 500
-            raise ContextDependencyUnavailable(dependency="a2a_instruction_origin",
-                code="delegation_instruction_source_access_denied" if denied else "delegation_instruction_source_unavailable",
-                user_message="The delegated instruction's upstream sources are not currently authorized or available. Revise or reconcile this input.") from exc
+            raise ContextDependencyUnavailable(
+                dependency="a2a_instruction_origin",
+                code="delegation_instruction_source_access_denied"
+                if denied
+                else "delegation_instruction_source_unavailable",
+                user_message="The delegated instruction's upstream sources are not currently authorized or available. Revise or reconcile this input.",
+            ) from exc
 
 
 async def delegation_tool_result_bound(db, *, tenant_id, agent_id, invocation, content):
     """Prove the historical queue admission without claiming child work completed."""
-    from app.agents.orchestrator import (AsyncDelegationHandle, _build_delegation_execution_receipt,
-        _delegation_projection_request_from_record, _delegation_request_hash)
+    from app.agents.orchestrator import (
+        AsyncDelegationHandle,
+        _build_delegation_execution_receipt,
+        _delegation_projection_request_from_record,
+        _delegation_request_hash,
+    )
     from app.models.runtime_task import RuntimeTask
     from app.services.a2a_outcome import queued_delegation_outcome
 
     try:
         payload = json.loads(content)
-        task = await db.get(RuntimeTask, uuid.UUID(payload['task_id']), populate_existing=True)
-        if (task is None or task.tenant_id != tenant_id or task.task_type != 'delegation'
-            or task.parent_agent_id != agent_id or uuid.UUID(task.parent_session_id) != invocation.session_id
-            or invocation.effect_state != 'effect_committed'):
+        task = await db.get(RuntimeTask, uuid.UUID(payload["task_id"]), populate_existing=True)
+        if (
+            task is None
+            or task.tenant_id != tenant_id
+            or task.task_type != "delegation"
+            or task.parent_agent_id != agent_id
+            or uuid.UUID(task.parent_session_id) != invocation.session_id
+            or invocation.effect_state != "effect_committed"
+        ):
             return False
         metadata = task.metadata_json or {}
-        authority = metadata.get('authority_snapshot') or {}
-        original = _delegation_projection_request_from_record({'id': task.id.hex, 'tenant_id': task.tenant_id,
-            'parent_agent_id': task.parent_agent_id, 'child_agent_id': task.child_agent_id,
-            'parent_session_id': task.parent_session_id, 'child_session_id': task.child_session_id,
-            'root_user_id': task.root_user_id, 'trace_id': task.trace_id, 'metadata_json': metadata})
+        authority = metadata.get("authority_snapshot") or {}
+        original = _delegation_projection_request_from_record(
+            {
+                "id": task.id.hex,
+                "tenant_id": task.tenant_id,
+                "parent_agent_id": task.parent_agent_id,
+                "child_agent_id": task.child_agent_id,
+                "parent_session_id": task.parent_session_id,
+                "child_session_id": task.child_session_id,
+                "root_user_id": task.root_user_id,
+                "trace_id": task.trace_id,
+                "metadata_json": metadata,
+            }
+        )
         if original is None:
             return False
         original.session_id = task.child_session_id
-        original.interaction_type = metadata.get('interaction_type') or 'delegation'
-        origin = await load_delegation_instruction_origin(db, request=original, tenant_id=tenant_id, content=task.prompt)
-        pointer = original.conversation_messages[0]['a2a_instruction_origin']
-        row = await db.get(InvocationSpan, uuid.UUID(pointer['source_id']))
-        proof = (row.metadata_json or {}).get('instruction_origin') if row else {}
-        if (origin is None or origin.unbound or proof.get('parent_invocation_id') != str(invocation.id)
-            or proof.get('parent_model_result_id') != str(await db.scalar(select(SessionModelResult.id).where(
-                SessionModelResult.tenant_id == tenant_id, SessionModelResult.run_id == invocation.run_id,
-                SessionModelResult.provider_request_id == invocation.provider_request_id)))
-            or _hash(authority) != metadata.get('authority_snapshot_hash')
-            or _delegation_request_hash(original) != (metadata.get('execution_receipt') or {}).get('request_hash')):
+        original.interaction_type = metadata.get("interaction_type") or "delegation"
+        origin = await load_delegation_instruction_origin(
+            db, request=original, tenant_id=tenant_id, content=task.prompt
+        )
+        pointer = original.conversation_messages[0]["a2a_instruction_origin"]
+        row = await db.get(InvocationSpan, uuid.UUID(pointer["source_id"]))
+        proof = (row.metadata_json or {}).get("instruction_origin") if row else {}
+        if (
+            origin is None
+            or origin.unbound
+            or proof.get("parent_invocation_id") != str(invocation.id)
+            or proof.get("parent_model_result_id")
+            != str(
+                await db.scalar(
+                    select(SessionModelResult.id).where(
+                        SessionModelResult.tenant_id == tenant_id,
+                        SessionModelResult.run_id == invocation.run_id,
+                        SessionModelResult.provider_request_id == invocation.provider_request_id,
+                    )
+                )
+            )
+            or _hash(authority) != metadata.get("authority_snapshot_hash")
+            or _delegation_request_hash(original) != (metadata.get("execution_receipt") or {}).get("request_hash")
+        ):
             return False
-        receipt = _build_delegation_execution_receipt(original, task_id=task.id.hex, trace_id=task.trace_id, status='pending')
-        if (receipt['capability_snapshot_hash'] != metadata.get('authority_snapshot_hash')
-            or receipt['policy_snapshot_hash'] != metadata.get('authority_policy_hash')
-            or receipt.get('execution_principal') != authority.get('execution_principal')):
+        receipt = _build_delegation_execution_receipt(
+            original, task_id=task.id.hex, trace_id=task.trace_id, status="pending"
+        )
+        if (
+            receipt["capability_snapshot_hash"] != metadata.get("authority_snapshot_hash")
+            or receipt["policy_snapshot_hash"] != metadata.get("authority_policy_hash")
+            or receipt.get("execution_principal") != authority.get("execution_principal")
+        ):
             return False
-        handle = AsyncDelegationHandle(task_id=task.id.hex, trace_id=task.trace_id, target_name=task.child_agent_name,
-            status='queued', receipt=receipt)
-        expected = queued_delegation_outcome(handle=handle, target_agent_id=task.child_agent_id,
-            child_session_id=task.child_session_id, arguments=invocation.effective_arguments_json or invocation.provider_arguments_json)
+        handle = AsyncDelegationHandle(
+            task_id=task.id.hex,
+            trace_id=task.trace_id,
+            target_name=task.child_agent_name,
+            status="queued",
+            receipt=receipt,
+        )
+        expected = queued_delegation_outcome(
+            handle=handle,
+            target_agent_id=task.child_agent_id,
+            child_session_id=task.child_session_id,
+            arguments=invocation.effective_arguments_json or invocation.provider_arguments_json,
+        )
         return payload == expected.to_payload()
     except (AttributeError, KeyError, TypeError, ValueError):
         return False

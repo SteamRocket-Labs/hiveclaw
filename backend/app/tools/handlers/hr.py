@@ -753,25 +753,52 @@ async def _refine_soul_inputs(
         if source_capture is not None:
             from app.services.config_versioning import canonical_content_hash
 
-            source_capture.update({"schema": "hive.hr_refinement_call.v1", "status": "not_applied",
-                "reason_code": reason_code,
-                "inputs": {"name": name, "role_description": role_description, "personality": personality,
-                    "boundaries": boundaries, "primary_users": primary_users, "core_outputs": core_outputs},
-                "request": model_request, "response_content": response_content, "output": dict(raw)})
-            source_capture["sha256"] = canonical_content_hash({key: value for key, value in source_capture.items()
-                if key != "sha256"})
+            source_capture.update(
+                {
+                    "schema": "hive.hr_refinement_call.v1",
+                    "status": "not_applied",
+                    "reason_code": reason_code,
+                    "inputs": {
+                        "name": name,
+                        "role_description": role_description,
+                        "personality": personality,
+                        "boundaries": boundaries,
+                        "primary_users": primary_users,
+                        "core_outputs": core_outputs,
+                    },
+                    "request": model_request,
+                    "response_content": response_content,
+                    "output": dict(raw),
+                }
+            )
+            source_capture["sha256"] = canonical_content_hash(
+                {key: value for key, value in source_capture.items() if key != "sha256"}
+            )
         return raw
 
     try:
         from app.services.llm_client import chat_complete, get_max_tokens
 
-        model_request = {"provider": model_config["provider"], "model": model_config["model"],
-            "messages": [{"role": "user", "content": prompt}], "temperature": 0.4,
-            "max_tokens": get_max_tokens(str(model_config.get("provider") or ""),
-                str(model_config.get("model") or ""), model_config.get("max_output_tokens"))}
-        response = await chat_complete(**model_request, api_key=model_config["api_key"],
-            base_url=model_config.get("base_url"), timeout=45.0, usage_source="hr_soul_refine",
-            usage_agent_id=usage_agent_id, usage_tenant_id=usage_tenant_id)
+        model_request = {
+            "provider": model_config["provider"],
+            "model": model_config["model"],
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": 0.4,
+            "max_tokens": get_max_tokens(
+                str(model_config.get("provider") or ""),
+                str(model_config.get("model") or ""),
+                model_config.get("max_output_tokens"),
+            ),
+        }
+        response = await chat_complete(
+            **model_request,
+            api_key=model_config["api_key"],
+            base_url=model_config.get("base_url"),
+            timeout=45.0,
+            usage_source="hr_soul_refine",
+            usage_agent_id=usage_agent_id,
+            usage_tenant_id=usage_tenant_id,
+        )
         failure_reason = "refinement_response_invalid"
         content = response.get("choices", [{}])[0].get("message", {}).get("content", "")
         response_content = content if isinstance(content, str) else None
@@ -824,10 +851,23 @@ async def _refine_soul_inputs(
         if source_capture is not None:
             from app.services.config_versioning import canonical_content_hash
 
-            source_capture.update({"schema": "hive.hr_refinement_call.v1", "status": "completed",
-                "inputs": {"name": name, "role_description": role_description, "personality": personality,
-                    "boundaries": boundaries, "primary_users": primary_users, "core_outputs": core_outputs},
-                "request": model_request, "response_content": response_content, "output": result})
+            source_capture.update(
+                {
+                    "schema": "hive.hr_refinement_call.v1",
+                    "status": "completed",
+                    "inputs": {
+                        "name": name,
+                        "role_description": role_description,
+                        "personality": personality,
+                        "boundaries": boundaries,
+                        "primary_users": primary_users,
+                        "core_outputs": core_outputs,
+                    },
+                    "request": model_request,
+                    "response_content": response_content,
+                    "output": result,
+                }
+            )
             source_capture["sha256"] = canonical_content_hash(source_capture)
         return result
     except Exception as exc:
@@ -1528,7 +1568,9 @@ async def _claim_canonical_hr_blueprint(
         try:
             await load_creation_source_agent(db, requester, hr_agent_id, require_execute=True)
         except HTTPException as exc:
-            raise HrCreationConflict("source_execute_denied", "The creation source no longer permits execution.") from exc
+            raise HrCreationConflict(
+                "source_execute_denied", "The creation source no longer permits execution."
+            ) from exc
         from app.services.hr_creation_service import direct_creation_authorization, has_creation_authorization
 
         if not has_creation_authorization(draft):
@@ -1587,25 +1629,37 @@ async def _claim_canonical_hr_blueprint(
     return draft_id, tenant_id, user_id, session_id, canonical_blueprint, claim
 
 
-@tool(ToolMeta(
-    name="create_employee_from_request", category="hr", display_name="Create Requested Employee",
-    adapter="request", governance="sensitive", risk_class="enterprise_asset_mutation",
-    work_amplifying=True, idempotency_scope="tool_call",
-    description=(
-        "Create a persistent digital employee directly when the current authenticated human explicitly requests one. "
-        "Use approved company model and private native defaults; no extra installs, sharing, credentials or routines. "
-        "Model owns interpretation: ordinary task requests use existing employees or temporary helpers instead. "
-        "Only include first_task when the user explicitly requested that work; it is dispatched once after readiness. "
-        "Missing authority/defaults returns a recoverable blocker. Use preview_agent_blueprint for custom scope."
-    ),
-    parameters={"type": "object", "properties": {
-        "name": {"type": "string", "minLength": 2, "maxLength": 100},
-        "role_description": {"type": "string", "minLength": 1, "maxLength": 4000},
-        "core_outputs": {"type": "array", "items": {"type": "string"}, "minItems": 1},
-        "boundaries": {"type": "string", "minLength": 1, "maxLength": 4000},
-        "first_task": {"type": "string", "maxLength": 20000},
-    }, "required": ["name", "role_description", "core_outputs", "boundaries"], "additionalProperties": False},
-))
+@tool(
+    ToolMeta(
+        name="create_employee_from_request",
+        category="hr",
+        display_name="Create Requested Employee",
+        adapter="request",
+        governance="sensitive",
+        risk_class="enterprise_asset_mutation",
+        work_amplifying=True,
+        idempotency_scope="tool_call",
+        description=(
+            "Create a persistent digital employee directly when the current authenticated human explicitly requests one. "
+            "Use approved company model and private native defaults; no extra installs, sharing, credentials or routines. "
+            "Model owns interpretation: ordinary task requests use existing employees or temporary helpers instead. "
+            "Only include first_task when the user explicitly requested that work; it is dispatched once after readiness. "
+            "Missing authority/defaults returns a recoverable blocker. Use preview_agent_blueprint for custom scope."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "minLength": 2, "maxLength": 100},
+                "role_description": {"type": "string", "minLength": 1, "maxLength": 4000},
+                "core_outputs": {"type": "array", "items": {"type": "string"}, "minItems": 1},
+                "boundaries": {"type": "string", "minLength": 1, "maxLength": 4000},
+                "first_task": {"type": "string", "maxLength": 20000},
+            },
+            "required": ["name", "role_description", "core_outputs", "boundaries"],
+            "additionalProperties": False,
+        },
+    )
+)
 async def create_employee_from_request(request: ToolExecutionRequest) -> str:
     from fastapi import HTTPException
     from sqlalchemy.exc import SQLAlchemyError
@@ -1619,18 +1673,31 @@ async def create_employee_from_request(request: ToolExecutionRequest) -> str:
             payload, queued = await create_from_request(db, request)
             await db.commit()
         if queued:
-            await notify_runtime_task_worker(reason="employee_creation_policy_direct", runtime_task_id=payload["provisioning_task_id"])
+            await notify_runtime_task_worker(
+                reason="employee_creation_policy_direct", runtime_task_id=payload["provisioning_task_id"]
+            )
         return json.dumps(payload, ensure_ascii=False, default=str)
     except HrCreationConflict as exc:
         return json.dumps({"status": "error", "error": exc.code, "message": exc.message})
     except (ValueError, TypeError, KeyError):
-        return json.dumps({"status": "error", "error": "direct_human_input_required",
-                           "message": "Creation requires valid fields and the current authenticated human turn."})
+        return json.dumps(
+            {
+                "status": "error",
+                "error": "direct_human_input_required",
+                "message": "Creation requires valid fields and the current authenticated human turn.",
+            }
+        )
     except HTTPException as exc:
         return json.dumps({"status": "error", "error": "source_execute_denied", "message": str(exc.detail)})
     except SQLAlchemyError:
         logger.exception("Direct employee creation policy/storage unavailable")
-        return json.dumps({"status": "error", "error": "capability_unavailable", "message": "Creation is temporarily unavailable; retry the same request."})
+        return json.dumps(
+            {
+                "status": "error",
+                "error": "capability_unavailable",
+                "message": "Creation is temporarily unavailable; retry the same request.",
+            }
+        )
 
 
 @tool(
@@ -1869,16 +1936,27 @@ async def preview_agent_blueprint(request: ToolExecutionRequest) -> str:
                 source_task = await db.get(RuntimeTask, source_run_id)
                 requester = await load_creation_requester(db, user_id)
                 _verify_source_authority(
-                    tenant_id=tenant_id, requester_user_id=user_id, source_agent_id=hr_agent_id,
-                    source_session_id=session_id, source_runtime_task_id=source_run_id,
-                    user=requester, source_agent=hr_agent, source_session=source_session, source_task=source_task,
+                    tenant_id=tenant_id,
+                    requester_user_id=user_id,
+                    source_agent_id=hr_agent_id,
+                    source_session_id=session_id,
+                    source_runtime_task_id=source_run_id,
+                    user=requester,
+                    source_agent=hr_agent,
+                    source_session=source_session,
+                    source_task=source_task,
                 )
                 await load_creation_source_agent(db, requester, hr_agent_id, require_execute=True)
                 if source_task.status not in SESSION_TARGETABLE_RUN_STATUSES:
                     raise HrCreationHandoffError("source_run_not_active", "The originating turn has ended.")
             except (ValueError, HrCreationHandoffError, HTTPException) as exc:
-                return json.dumps({"status": "error", "error": getattr(exc, "reason_code", "authority_mismatch"),
-                                   "message": "Creation preview requires a current authorized user turn."})
+                return json.dumps(
+                    {
+                        "status": "error",
+                        "error": getattr(exc, "reason_code", "authority_mismatch"),
+                        "message": "Creation preview requires a current authorized user turn.",
+                    }
+                )
         from app.tools.handlers.knowledge import _company_kb_runtime_principal
 
         preview_arguments = dict(request.arguments)
@@ -1931,5 +2009,10 @@ async def preview_agent_blueprint(request: ToolExecutionRequest) -> str:
                 {"status": "error", "error": exc.code, "message": exc.message},
                 ensure_ascii=False,
             )
+        from app.services.delegation_input_origin import capture_employee_blueprint_origin
+
+        origin = await capture_employee_blueprint_origin(db, request=request, draft=draft)
+        if origin is not None:
+            draft.preview_json = {**draft.preview_json, "creation_origin": origin}
         await db.commit()
         return json.dumps(hr_creation_draft_payload(draft), ensure_ascii=False)

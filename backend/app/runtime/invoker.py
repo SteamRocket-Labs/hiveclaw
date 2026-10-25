@@ -598,8 +598,11 @@ async def _resolve_runtime_config(agent_id: uuid.UUID | None) -> RuntimeConfig:
                     tenant_resolution_error=f"Agent {agent_id} is not active: {lifecycle_reason}",
                 )
             if getattr(agent, "agent_type", None) == "remote_a2a":
-                return RuntimeConfig(tenant_id=agent.tenant_id, max_tool_rounds=agent.max_tool_rounds or 200,
-                    executor_unavailable="remote_a2a_runtime_selected: use remote employee delegation or restore the previous executor")
+                return RuntimeConfig(
+                    tenant_id=agent.tenant_id,
+                    max_tool_rounds=agent.max_tool_rounds or 200,
+                    executor_unavailable="remote_a2a_runtime_selected: use remote employee delegation or restore the previous executor",
+                )
 
             # Token quota enforcement is now at User level (quota_guard.check_user_llm_quota)
             quota_message = None
@@ -676,7 +679,8 @@ async def _build_system_prompt(
     tenant_id: uuid.UUID | None,
     resolved_memory_context: str,
     current_user_name: str | None = None,
-    *, source_refs: list[dict[str, str]] | None = None,
+    *,
+    source_refs: list[dict[str, str]] | None = None,
     source_unbound: list[str] | None = None,
 ) -> str:
     # CC subagent semantics: a standalone prompt IS the whole frozen prefix —
@@ -704,11 +708,16 @@ async def _build_system_prompt(
 
         metadata = _session_metadata(request.session_context)
         delegation_id = getattr(request.delegation_token, "delegation_id", None)
-        directory_request = AgentRuntimePrincipal(agent_id=request.agent_id, requester_user_id=request.user_id,
+        directory_request = AgentRuntimePrincipal(
+            agent_id=request.agent_id,
+            requester_user_id=request.user_id,
             session_id=request.session_context.session_id,
             runtime_task_id=str(metadata.get("runtime_task_id") or metadata.get("task_id") or ""),
             delegation_id=str(delegation_id) if delegation_id else None,
-            purpose="a2a_delegation" if delegation_id else "interactive_session")
+            purpose="a2a_delegation" if delegation_id else "interactive_session",
+        )
+        if request.user_id is None:
+            directory_request = request
     agent_context = await build_agent_context(
         agent_id=request.agent_id,
         agent_name=request.agent_name,
@@ -917,7 +926,8 @@ async def _resolve_memory_context(
     from app.runtime.context import ensure_runtime_assembly_state
 
     ensure_runtime_assembly_state(request.session_context).record_context_sources(
-        agent_id=request.agent_id, content=content, sources=source_refs, unbound=source_unbound)
+        agent_id=request.agent_id, content=content, sources=source_refs, unbound=source_unbound
+    )
     return content
 
 
@@ -1039,10 +1049,14 @@ async def _resolve_runtime_metadata_context(
         from app.services.personal_knowledge_access import AgentRuntimePrincipal
 
         autonomous = getattr(request.execution_identity, "identity_type", None) == "agent_bot"
-        _runtime_kwargs["runtime_principal"] = AgentRuntimePrincipal(agent_id=request.agent_id,
-            requester_user_id=request.user_id, session_id=request.session_context.session_id if request.session_context else None,
+        _runtime_kwargs["runtime_principal"] = AgentRuntimePrincipal(
+            agent_id=request.agent_id,
+            requester_user_id=request.user_id,
+            session_id=request.session_context.session_id if request.session_context else None,
             runtime_task_id=str(metadata.get("runtime_task_id") or metadata.get("task_id") or ""),
-            purpose="autonomous_agent" if autonomous else "interactive_session", autonomous=autonomous)
+            purpose="autonomous_agent" if autonomous else "interactive_session",
+            autonomous=autonomous,
+        )
     runtime_context = await build_agent_runtime_context(request.agent_id, **_runtime_kwargs)
     if not runtime_context:
         return ""
@@ -1052,10 +1066,16 @@ async def _resolve_runtime_metadata_context(
         from app.services.content_input_receipts import record_session_actor_identity
 
         async with tenant_scoped_session(tenant_id, require_tenant=True) as db:
-            actor_ref, actor = await record_session_actor_identity(db, tenant_id=tenant_id, agent_id=request.agent_id,
+            actor_ref, actor = await record_session_actor_identity(
+                db,
+                tenant_id=tenant_id,
+                agent_id=request.agent_id,
                 session_id=request.session_context.session_id if request.session_context is not None else None,
-                user_id=request.user_id, display_name=current_user_name, timezone_name=runtime_facts.get("timezone"),
-                runtime_task_id=metadata.get("runtime_task_id") or metadata.get("task_id"))
+                user_id=request.user_id,
+                display_name=current_user_name,
+                timezone_name=runtime_facts.get("timezone"),
+                runtime_task_id=metadata.get("runtime_task_id") or metadata.get("task_id"),
+            )
         source_refs.append(actor_ref)
         channel = request.session_context.channel if request.session_context is not None else ""
         if channel and channel != actor["channel"]:
@@ -1067,9 +1087,17 @@ async def _resolve_runtime_metadata_context(
     from app.runtime.prompt_sections.environment import build_environment_section
 
     state = ensure_runtime_assembly_state(request.session_context)
-    state.record_context_sources(agent_id=request.agent_id, content=build_environment_section(
-        user_name=current_user_name or "", channel=request.session_context.channel if request.session_context else "",
-        agent_name=request.agent_name, include_time=False), sources=source_refs, unbound=(*actor_unbound, *channel_unbound))
+    state.record_context_sources(
+        agent_id=request.agent_id,
+        content=build_environment_section(
+            user_name=current_user_name or "",
+            channel=request.session_context.channel if request.session_context else "",
+            agent_name=request.agent_name,
+            include_time=False,
+        ),
+        sources=source_refs,
+        unbound=(*actor_unbound, *channel_unbound),
+    )
     source_unbound.extend(actor_unbound)
     content = _context_engine().inject(
         request.session_context,
@@ -1077,7 +1105,9 @@ async def _resolve_runtime_metadata_context(
         source="runtime_context:agent",
         content=runtime_context,
     )
-    state.record_context_sources(agent_id=request.agent_id, content=content, sources=source_refs, unbound=source_unbound)
+    state.record_context_sources(
+        agent_id=request.agent_id, content=content, sources=source_refs, unbound=source_unbound
+    )
     return content
 
 
@@ -1375,7 +1405,9 @@ async def _execute_tool_with_request(
 
     execute_kwargs: dict[str, Any] = {
         "agent_id": request.agent_id,
-        "user_id": request.user_id if request.machine_credential_id is not None else request.user_id or request.agent_id,
+        "user_id": request.user_id
+        if request.machine_credential_id is not None
+        else request.user_id or request.agent_id,
     }
     if "execution_identity" in inspect.signature(execute_tool).parameters:
         execute_kwargs["execution_identity"] = request.execution_identity
@@ -1502,7 +1534,8 @@ def get_agent_kernel(request: AgentInvocationRequest | None = None) -> AgentKern
         from app.runtime.context import ensure_runtime_assembly_state
 
         ensure_runtime_assembly_state(request.session_context).record_context_sources(
-            agent_id=request.agent_id, content=prompt, sources=source_refs, unbound=source_unbound)
+            agent_id=request.agent_id, content=prompt, sources=source_refs, unbound=source_unbound
+        )
         return prompt
 
     async def _kernel_resolve_memory_context(
@@ -1821,14 +1854,29 @@ async def _build_native_skill_catalog(request: AgentInvocationRequest, agent_id,
                     identity = request.execution_identity or get_execution_identity()
                     autonomous = getattr(identity, "identity_type", None) == "agent_bot"
                     delegation_id = getattr(request.delegation_token, "delegation_id", None)
-                    principal = AgentRuntimePrincipal(agent_id=agent_id, requester_user_id=user.id,
+                    principal = AgentRuntimePrincipal(
+                        agent_id=agent_id,
+                        requester_user_id=user.id,
                         session_id=str(kwargs.get("session_id")) if kwargs.get("session_id") else None,
-                        runtime_task_id=((getattr(request.session_context, "metadata", None) or {}).get("runtime_task_id")
-                            or (getattr(request.session_context, "metadata", None) or {}).get("task_id")),
-                        purpose="autonomous_agent" if autonomous else "a2a_delegation" if delegation_id else "interactive_session",
-                        autonomous=autonomous, delegation_id=str(delegation_id) if delegation_id else None)
-                    scope = await load_workspace_authority_scope(db, user, agent_id=agent_id,
-                        session_id=uuid.UUID(principal.session_id) if principal.session_id else None, runtime_principal=principal)
+                        runtime_task_id=(
+                            (getattr(request.session_context, "metadata", None) or {}).get("runtime_task_id")
+                            or (getattr(request.session_context, "metadata", None) or {}).get("task_id")
+                        ),
+                        purpose="autonomous_agent"
+                        if autonomous
+                        else "a2a_delegation"
+                        if delegation_id
+                        else "interactive_session",
+                        autonomous=autonomous,
+                        delegation_id=str(delegation_id) if delegation_id else None,
+                    )
+                    scope = await load_workspace_authority_scope(
+                        db,
+                        user,
+                        agent_id=agent_id,
+                        session_id=uuid.UUID(principal.session_id) if principal.session_id else None,
+                        runtime_principal=principal,
+                    )
         except Exception:
             capture.unbound.append("skill_catalog_authority_unavailable")
 
@@ -1855,10 +1903,15 @@ async def _build_native_skill_catalog(request: AgentInvocationRequest, agent_id,
         capture.observe_file(relative, skill.source_sha256)
 
     async with async_agent_workspace_lock(agent_id, data_root=root.parent):
-        await load_skill_input_snapshot(capture, request.tenant_id, runtime_request=principal if scope is not None else None)
-        catalog = build_skill_catalog_section_for_agent(agent_id, **kwargs, source_observer=observed, source_authorizer=allowed)
+        await load_skill_input_snapshot(
+            capture, request.tenant_id, runtime_request=principal if scope is not None else None
+        )
+        catalog = build_skill_catalog_section_for_agent(
+            agent_id, **kwargs, source_observer=observed, source_authorizer=allowed
+        )
     ensure_runtime_assembly_state(request.session_context).record_context_sources(
-        agent_id=agent_id, content=catalog, sources=capture.snapshot()["sources"], unbound=capture.snapshot()["unbound"])
+        agent_id=agent_id, content=catalog, sources=capture.snapshot()["sources"], unbound=capture.snapshot()["unbound"]
+    )
     return catalog
 
 

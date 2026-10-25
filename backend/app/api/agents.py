@@ -375,15 +375,32 @@ async def list_pending_agent_retirements(
     scope = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
     if await db.scalar(select(Tenant.id).where(Tenant.id == scope, Tenant.is_active.is_(True))) is None:
         raise HTTPException(404, detail="Company not found")
-    agents = list(await db.scalars(select(Agent).where(Agent.tenant_id == scope,
-        Agent.deleted_at.is_(None), Agent.deactivated_at.is_not(None), Agent.deactivation_reason == PENDING_REASON,
-        Agent.agent_class != "internal_system").order_by(Agent.deactivated_at, Agent.id)))
+    agents = list(
+        await db.scalars(
+            select(Agent)
+            .where(
+                Agent.tenant_id == scope,
+                Agent.deleted_at.is_(None),
+                Agent.deactivated_at.is_not(None),
+                Agent.deactivation_reason == PENDING_REASON,
+                Agent.agent_class != "internal_system",
+            )
+            .order_by(Agent.deactivated_at, Agent.id)
+        )
+    )
     rows = []
     for agent in agents:
         remote, local = await external_work(db, agent)
-        rows.append({"id": str(agent.id), "name": agent.name, "remote_work_count": len(remote),
-            "local_work_count": len(local), "external_execution": "unknown" if remote or local else "tracking_settled",
-            **(await tracking_recovery(db, agent))[0]})
+        rows.append(
+            {
+                "id": str(agent.id),
+                "name": agent.name,
+                "remote_work_count": len(remote),
+                "local_work_count": len(local),
+                "external_execution": "unknown" if remote or local else "tracking_settled",
+                **(await tracking_recovery(db, agent))[0],
+            }
+        )
     return rows
 
 
@@ -412,8 +429,13 @@ async def end_retirement_tracking(
     agent, _access = await check_agent_history_access(db, current_user, agent_id)
     if agent.tenant_id != body.expected_tenant_id:
         raise HTTPException(404, detail="Agent not found")
-    return await end_inactive_requester_tracking(db, agent=agent, actor=current_user,
-        request_id=body.request_id, expected_tracking_version=body.expected_tracking_version)
+    return await end_inactive_requester_tracking(
+        db,
+        agent=agent,
+        actor=current_user,
+        request_id=body.request_id,
+        expected_tracking_version=body.expected_tracking_version,
+    )
 
 
 @router.get("/", response_model=list[AgentOut | AgentOperatorListShellOut])
@@ -538,17 +560,21 @@ async def list_agents(
     missing = [agent_id for agent_id in discovered if agent_id not in {row["id"] for row in rows}]
     if missing:
         extra_rows = (
-            await db.execute(
-                _agent_list_summary_stmt()
-                .where(
-                    Agent.id.in_(missing),
-                    Agent.tenant_id == user_tenant,
-                    Agent.agent_class != "internal_system",
-                    agent_lifecycle_active_clause(),
+            (
+                await db.execute(
+                    _agent_list_summary_stmt()
+                    .where(
+                        Agent.id.in_(missing),
+                        Agent.tenant_id == user_tenant,
+                        Agent.agent_class != "internal_system",
+                        agent_lifecycle_active_clause(),
+                    )
+                    .order_by(Agent.created_at.desc())
                 )
-                .order_by(Agent.created_at.desc())
             )
-        ).mappings().all()
+            .mappings()
+            .all()
+        )
         for row in extra_rows:
             try:
                 _agent, access_level = await check_agent_access(db, current_user, row["id"])
@@ -789,6 +815,10 @@ async def get_or_create_hr_agent(
     # Overlay HR-specific files (soul.md, HEARTBEAT.md, skills/)
     agent_dir = agent_manager._agent_dir(hr_agent.id)
     _sync_hr_agent_workspace(agent_dir, force_identity_files=True)
+
+    from app.services.skill_source_receipts import record_original_platform_skill_sources
+
+    await record_original_platform_skill_sources(db, agent=hr_agent, workspace=agent_dir)
 
     # Start container
     await agent_manager.start_container(db, hr_agent)
@@ -1128,8 +1158,8 @@ async def get_agent(
     out["action_capabilities"] = _agent_action_capabilities(
         access_level,
         is_owner=is_owner,
-        can_manage_permissions=access_level == "manage" and (is_owner
-        or is_scoped_business_admin(current_user, resource_tenant_id=getattr(agent, "tenant_id", None))),
+        can_manage_permissions=access_level == "manage"
+        and (is_owner or is_scoped_business_admin(current_user, resource_tenant_id=getattr(agent, "tenant_id", None))),
         can_operator_inspect=await has_agent_operator_inspect(
             db,
             user=current_user,
@@ -1372,9 +1402,9 @@ async def get_agent_permissions(
 
     agent, access_level = await check_agent_history_access(db, current_user, agent_id)
     is_owner = effective_agent_owner_id(agent) == current_user.id
-    can_manage_permissions = access_level == "manage" and (is_owner or is_scoped_business_admin(
-        current_user, resource_tenant_id=getattr(agent, "tenant_id", None)
-    ))
+    can_manage_permissions = access_level == "manage" and (
+        is_owner or is_scoped_business_admin(current_user, resource_tenant_id=getattr(agent, "tenant_id", None))
+    )
     if not can_manage_permissions:
         return {
             "scope_type": "effective",
@@ -1807,8 +1837,12 @@ async def update_agent(
         if set(update_data) != {"role_description"} or update_data["role_description"] is None:
             raise HTTPException(status_code=422, detail="A role revision guards only a responsibilities update")
         # Role writes do not change keys; existing hook/audit FK readers may continue.
-        agent = await db.scalar(select(Agent).where(Agent.id == agent_id, Agent.tenant_id == agent.tenant_id)
-            .with_for_update(key_share=True).execution_options(populate_existing=True))
+        agent = await db.scalar(
+            select(Agent)
+            .where(Agent.id == agent_id, Agent.tenant_id == agent.tenant_id)
+            .with_for_update(key_share=True)
+            .execution_options(populate_existing=True)
+        )
         if agent is None:
             raise HTTPException(status_code=404, detail="Employee not found")
         agent, access = await check_agent_access(db, current_user, agent_id)
@@ -1817,8 +1851,13 @@ async def update_agent(
         if agent.role_description == update_data["role_description"]:
             return _agent_out_dict(agent)
         if role_revision(agent.role_description) != expected_role_revision:
-            raise HTTPException(status_code=409, detail={"code": "role_configuration_changed",
-                "message": "Responsibilities changed. Read the current settings before saving your draft."})
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "role_configuration_changed",
+                    "message": "Responsibilities changed. Read the current settings before saving your draft.",
+                },
+            )
 
     clamped_fields = []  # track fields adjusted by tenant floor
 

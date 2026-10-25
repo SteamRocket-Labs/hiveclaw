@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { expect, test, type APIRequestContext, type APIResponse, type Page, type PlaywrightWorkerArgs } from '@playwright/test';
+import type { SessionHumanInputReceipt } from '../src/api/domains/chat';
 
 
 type Journey = {
@@ -19,7 +20,7 @@ type AuthState = {
 
 type SessionRun = {
   session: { id: string; [key: string]: unknown };
-  run: { run_id: string; status: string; [key: string]: unknown };
+  run: { run_id: string; [key: string]: unknown };
 };
 
 type JourneyContext = {
@@ -297,6 +298,40 @@ function isRunIdToken(value: string): boolean {
   return /^[0-9a-f]{32}$/.test(normalizeRunId(value));
 }
 
+function canonicalSubmittedRunId(
+  canonical: Array<Record<string, unknown>>,
+  sessionId: string,
+  inputId: string,
+  commandId: string,
+): string | null {
+  const payloadOf = (item: Record<string, unknown>) =>
+    (item.payload as Record<string, unknown> | undefined) || {};
+  const inSession = (item: Record<string, unknown>) => item.schema === 'hive.session_event'
+    && item.schema_version === 2
+    && (item.scope as Record<string, unknown> | undefined)?.session_id === sessionId;
+  const exactInput = (item: Record<string, unknown>) => inSession(item)
+    && item.item_kind === 'human_input' && item.item_id === inputId
+    && item.command_id === commandId && payloadOf(item).input_id === inputId;
+  if (!canonical.some((item) => exactInput(item) && item.lifecycle === 'accepted')) return null;
+  const runs = new Map<string, string>();
+  for (const item of canonical.filter((entry) => exactInput(entry) && entry.lifecycle === 'bound')) {
+    const bound = payloadOf(item);
+    const target = String(bound.target_run_id || '');
+    if (!isRunIdToken(target)) continue;
+    const prepared = canonical.some((entry) => {
+      const payload = payloadOf(entry);
+      const scope = (entry.scope as Record<string, unknown> | undefined) || {};
+      return inSession(entry) && entry.item_kind === 'result_commit' && entry.lifecycle === 'prepared'
+        && normalizeRunId(canonicalRunId(entry)) === normalizeRunId(target)
+        && Array.isArray(payload.bound_input_ids) && payload.bound_input_ids.includes(inputId)
+        && bound.model_request_snapshot_ref === `session-model-result:${entry.item_id}`
+        && bound.bound_round_id === scope.round_id && bound.target_turn_id === scope.turn_id;
+    });
+    if (prepared) runs.set(normalizeRunId(target), target);
+  }
+  return runs.size === 1 ? [...runs.values()][0] : null;
+}
+
 function sortKeysStable(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(sortKeysStable);
   if (value && typeof value === 'object') {
@@ -453,31 +488,47 @@ async function startAndAwaitChat(
   options: { receiptOnly?: boolean; title?: string; content?: string } = {},
 ): Promise<{ run: SessionRun; transcript: Array<Record<string, unknown>> }> {
   const content = options.content || `${journeyId} exercise the production journey contract${options.receiptOnly ? ' receipt-only' : ''}.`;
-  const run = await responseJson<SessionRun>(
+  const started = await responseJson<{ session: SessionRun['session']; run: SessionRun['run'] | SessionHumanInputReceipt }>(
     await api.post(`/api/agents/${currentAgentId}/sessions/runs`, {
       data: { content, display_content: content, title: options.title || `${journeyId} atomic journey` },
     }),
     `${journeyId} start session run`,
   );
+  const receipt = started.run.schema === 'hive.human_input_receipt'
+    ? started.run as SessionHumanInputReceipt : null;
+  if (receipt) {
+    expect(receipt.schema_version).toBe(2);
+    expect(UUID_PATTERN.test(receipt.input_id) && UUID_PATTERN.test(receipt.command_id)).toBe(true);
+  }
+  const nativeRun = receipt ? receipt.run : started.run as SessionRun['run'];
+  let awaitedRunId = String(nativeRun?.run_id || '');
+  if (!receipt) expect(isRunIdToken(awaitedRunId)).toBe(true);
   const resolved = new Set<string>();
   let latest: Array<Record<string, unknown>> = [];
   await expect.poll(async () => {
     // Poll the canonical schema_version=2 truth for the mechanical terminal
     // proof; legacy compatibility rows are not depended on and may not exist.
     latest = await responseJson<Array<Record<string, unknown>>>(
-      await api.get(`/api/agents/${currentAgentId}/sessions/${run.session.id}/transcript?schema_version=2`),
+      await api.get(`/api/agents/${currentAgentId}/sessions/${started.session.id}/transcript?schema_version=2`),
       `${journeyId} canonical transcript`,
     );
     for (const item of latest) {
       const permissionItemId = canonicalWaitingPermissionItemId(item);
       if (!permissionItemId || resolved.has(permissionItemId)) continue;
       const resolution = await api.post(
-        `/api/agents/${currentAgentId}/sessions/${run.session.id}/permissions/${permissionItemId}/resolve`,
+        `/api/agents/${currentAgentId}/sessions/${started.session.id}/permissions/${permissionItemId}/resolve`,
         { data: { action: 'allow_once', feedback: 'Atomic journey controlled approval' } },
       );
       if (resolution.ok() || resolution.status() === 409) resolved.add(permissionItemId);
     }
-    return hasCanonicalTerminalProof(latest, journeyId, String(run.run.run_id));
+    if (receipt) {
+      // An accepted input can precede dispatch. Bind that exact command/input
+      // to its prepared model round; never pick the session's latest run.
+      const boundRun = canonicalSubmittedRunId(latest, started.session.id, receipt.input_id, receipt.command_id);
+      if (!boundRun || (nativeRun && normalizeRunId(nativeRun.run_id) !== normalizeRunId(boundRun))) return false;
+      awaitedRunId = boundRun;
+    }
+    return hasCanonicalTerminalProof(latest, journeyId, awaitedRunId);
   }, { timeout: 90_000, intervals: [250, 500, 1000] }).toBe(true);
   // A streamed assistant chunk is user-visible before the durable RuntimeTask
   // has necessarily finished post-run hooks, evidence projection, and lease
@@ -486,7 +537,7 @@ async function startAndAwaitChat(
   // still-running base turn) and is exactly the recovery gap this suite guards.
   await expect.poll(async () => {
     const activeResponse = await api.get(
-      `/api/agents/${currentAgentId}/sessions/${run.session.id}/runs/active`,
+      `/api/agents/${currentAgentId}/sessions/${started.session.id}/runs/active`,
     );
     if (activeResponse.status() === 404) return true;
     const active = await responseJson<Record<string, unknown> | null>(
@@ -496,10 +547,10 @@ async function startAndAwaitChat(
     return active === null || !['pending', 'running'].includes(String(active.status || ''));
   }, { timeout: 90_000, intervals: [250, 500, 1000] }).toBe(true);
   latest = await responseJson<Array<Record<string, unknown>>>(
-    await api.get(`/api/agents/${currentAgentId}/sessions/${run.session.id}/transcript`),
+    await api.get(`/api/agents/${currentAgentId}/sessions/${started.session.id}/transcript`),
     `${journeyId} terminal ThreadItem transcript replay`,
   );
-  return { run, transcript: latest };
+  return { run: { session: started.session, run: { ...nativeRun, run_id: awaitedRunId } }, transcript: latest };
 }
 
 

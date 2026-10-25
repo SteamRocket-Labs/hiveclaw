@@ -46,6 +46,21 @@ async def _task_sources(db, task, session_id):
         if task.status == "completed":
             result = await db.scalar(select(RuntimeResultObject).where(RuntimeResultObject.tenant_id == task.tenant_id,
                 RuntimeResultObject.source_kind == "a2a_delegation", RuntimeResultObject.source_run_id == str(task.id)))
+            if result is None:
+                from app.services.direct_invocation_terminal_boundary_processor import _build_direct_terminal_spec
+                from app.services.runtime_terminal_boundary_outbox import TerminalBoundaryCanonicalMismatch
+
+                try:
+                    spec = await _build_direct_terminal_spec(db, task)
+                except (TerminalBoundaryCanonicalMismatch, RuntimeError):
+                    return None
+                model = await db.scalar(select(SessionModelResult).where(SessionModelResult.tenant_id == task.tenant_id,
+                    SessionModelResult.run_id == task.id, SessionModelResult.round_committed_event_id == spec.terminal_event.id))
+                if model is None or not _model_dependencies(model)[1]:
+                    return None
+                # A native completion can precede its durable result publication.
+                # Its status is observable; the unreceipted body is not an input.
+                return sources, False
             if (result is None or not await load_canonical_result_sources(db, result)
                 or not await runtime_result_publication_bound(db, result=result, agent_id=task.parent_agent_id,
                     session_id=session_id, user_id=task.root_user_id)):
@@ -67,6 +82,15 @@ async def _task_sources(db, task, session_id):
             sources.extend(dependencies)
         return (_unique_dependencies(sources), True) if models else None
     return None
+
+
+def _pending_result_record(record):
+    fields = ("task_id", "task_type", "status", "tenant_id", "parent_agent_id", "child_agent_id", "child_agent_name",
+        "parent_session_id", "child_session_id", "root_user_id", "root_session_id", "trace_id",
+        "created_at", "started_at", "completed_at")
+    return {**{key: record[key] for key in fields}, "result": None,
+        "result_publication": {"status": "pending", "reason_code": "runtime_result_publication_pending",
+            "retryable": True, "next_action": "Wait for the same task's pinned result; reconcile delivery if publication fails. Do not dispatch another task."}}
 
 
 async def record_task_read(request, content):
@@ -112,9 +136,9 @@ async def record_task_read(request, content):
                 records = body if isinstance(body, list) else None
             if records is None:
                 return content
-            sources, unbound, identities = [], [], []
+            sources, unbound, identities, pending = [], [], [], []
             principal = execution_principal_from_tool_context(context)
-            for record in records:
+            for index, record in enumerate(records):
                 task = await db.get(RuntimeTask, uuid.UUID(record["task_id"]), populate_existing=True)
                 if (task is None or task.tenant_id != tenant_id or task.parent_agent_id != context.agent_id
                     or task.root_user_id != actor.id or task.parent_session_id != str(session.id)
@@ -125,17 +149,34 @@ async def record_task_read(request, content):
                     continue
                 identities.append(str(task.id))
                 current = await _task_sources(db, task, session.id)
-                if current is None or not current[1]:
+                if current is None:
                     unbound.append("task_read_sources_unbound")
-                else:
+                elif current[1]:
                     sources.extend(current[0])
+                elif task.task_type == "delegation" and task.status == "completed":
+                    sources.extend(current[0])
+                    pending.append(str(task.id))
+                    projection = _pending_result_record(record)
+                    if call.tool_name == "task_output":
+                        body["task"] = projection
+                    elif call.tool_name == "check_async_task":
+                        body = {key: value for key, value in body.items() if key not in {"result", "receipt"}}
+                        body.update(result=None, receipt=None, result_publication=projection["result_publication"])
+                    else:
+                        body[index] = projection
+                else:
+                    unbound.append("task_read_sources_unbound")
         except (ValueError, TypeError, KeyError, AttributeError, ContentInputReceiptError):
             return content
+        if pending:
+            content = json.dumps(body, ensure_ascii=False, default=str)
         proof = {"schema": "hive.runtime_task_read.v1", "invocation_id": str(call.id),
             "model_result_id": str(model.id), "model_request_hash": model.model_request_hash,
             "actor_id": str(actor.id), "audience": audience_for_session(session), "content_hash": _hash(content),
             "args_hash": call.effective_args_hash or call.args_hash, "authority_hash": call.authority_snapshot_hash,
             "task_ids": identities, "sources": _unique_dependencies(sources), "unbound": unbound}
+        if pending:
+            proof["pending_publication_task_ids"] = pending
         identity = uuid.uuid5(call.id, "runtime-task-read")
         row = await db.get(InvocationSpan, identity)
         if row is None:

@@ -642,6 +642,28 @@ async def validate_runtime_return_dependency(db, tenant_id, dependency, *, user,
             await _validate_shared_company_page(db, page=page, session=session, user=user, runtime_request=runtime_request)
         return
     if kind == "runtime_team_context":
+        if len(parts) == 3:
+            from app.services.content_input_receipts import _validate_input_dependencies
+
+            try:
+                row = await db.get(InvocationSpan, uuid.UUID(parts[2]), populate_existing=True)
+                proof = (row.metadata_json or {}).get("observation") if row else None
+                if (not isinstance(proof, dict) or proof.get("schema") != "hive.runtime_team_publication_observation.v1"
+                    or _hash(proof) != dependency["source_version"] or row.tenant_id != tenant_id
+                    or row.agent_id != agent_id or row.session_id != str(session_id) or row.user_id != requester.id
+                    or row.span_type != kind or row.name != "team_publication_observed" or row.status != "captured"
+                    or proof.get("run_id") != str(row.runtime_task_id) or proof.get("user_id") != str(requester.id)
+                    or proof.get("agent_id") != str(agent_id) or proof.get("session_id") != str(session_id)
+                    or row.id != uuid.uuid5(row.runtime_task_id, f"runtime-team-publication:{dependency['source_version']}")
+                    or not proof.get("pending_task_ids") or not isinstance(proof.get("content"), str)):
+                    raise ValueError("team_observation_mismatch")
+                sources = _stored_dependencies(proof.get("sources"))
+                if sources is None:
+                    raise ValueError("team_observation_sources_missing")
+                await _validate_input_dependencies(db, tenant_id, sources, user=user, runtime_request=runtime_request)
+            except (ValueError, TypeError, AttributeError) as exc:
+                raise ContentInputReceiptError("content_source_changed", "The original teammate observation is invalid.", 403) from exc
+            return
         from app.services.agent_team_context import build_prompt_facing_team_context
 
         unbound = []

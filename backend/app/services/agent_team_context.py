@@ -54,7 +54,9 @@ def _task_line(task: dict[str, Any]) -> str:
     task_type = _clean(task.get("task_type")) or "task"
     status = _clean(task.get("status")) or "unknown"
     teammate = _clean(task.get("child_agent_name") or task.get("child_agent_id") or task.get("name")) or "teammate"
-    summary = _render_text(task.get("result_summary") or task.get("prompt") or task.get("summary"))
+    publication = task.get("result_publication")
+    summary = (_render_text(f"{publication['reason_code']}: {publication['next_action']}")
+        if publication else _render_text(task.get("result_summary") or task.get("prompt") or task.get("summary")))
     suffix = f" — {summary}" if summary else ""
     return f"- {task_type} {task_id} [{status}] {teammate}{suffix}"
 
@@ -220,6 +222,7 @@ async def build_prompt_facing_team_context(
     signal_limit: int = 8,
     source_refs: list[dict[str, str]] | None = None,
     source_unbound: list[str] | None = None,
+    runtime_principal=None,
 ) -> str:
     """Build the CC-style team context/mailbox block for the current agent turn."""
 
@@ -323,6 +326,40 @@ async def build_prompt_facing_team_context(
                     continue
                 shared_tasks.append(item)
 
+    refs, pending = [], []
+    complete = bool(session_uuid) and not (signals or teams or shared_tasks)
+    if session_uuid and tasks:
+        from app.models.chat_session import ChatSession
+        from app.services.runtime_result_sources import result_source_reference
+        from app.services.runtime_task_read_sources import _pending_result_record, _task_sources
+        from app.services.runtime_task_service import _task_to_dict
+
+        async with tenant_scoped_session(tenant_id) as db:
+            session = await db.get(ChatSession, session_uuid)
+            for index, task in enumerate(tasks):
+                if task["task_type"] != "delegation" or task["status"] != "completed":
+                    complete = False
+                    continue
+                ref = await result_source_reference(db, tenant_id=tenant_id, agent_id=agent_id,
+                    session_id=session_uuid, task_id=task["id"])
+                if ref is not None:
+                    refs.append(ref)
+                    continue
+                row = await db.get(RuntimeTask, task["id"])
+                private_owner = (session is not None and row is not None and session.tenant_id == row.tenant_id
+                    and session.agent_id == agent_id and session.audience_kind in {None, "private"}
+                    and session.user_id == row.root_user_id and row.parent_session_id == str(session_uuid))
+                sources = (await _task_sources(db, row, session_uuid)
+                    if private_owner and row.task_type == "delegation" and row.status == "completed" and ref is None else None)
+                if sources is not None and sources[1] is False:
+                    projection = _pending_result_record(_task_to_dict(row))
+                    tasks[index] = {**task, "prompt": None, "result_summary": None,
+                        "result_publication": projection["result_publication"]}
+                    refs.extend(sources[0])
+                    pending.append(str(row.id))
+                else:
+                    complete = False
+
     rendered = render_team_context_block(
         tasks=tasks,
         signals=signals,
@@ -331,22 +368,42 @@ async def build_prompt_facing_team_context(
     )
 
     if rendered and source_refs is not None:
-        from app.services.runtime_result_sources import result_source_reference
         from app.services.session_model_inputs import _hash
 
-        refs = []
-        complete = bool(session_uuid) and not (signals or teams or shared_tasks)
-        async with tenant_scoped_session(tenant_id) as db:
-            for task in tasks:
-                ref = await result_source_reference(db, tenant_id=tenant_id, agent_id=agent_id,
-                    session_id=session_uuid, task_id=task["id"]) if session_uuid else None
-                if task["task_type"] != "delegation" or task["status"] != "completed" or ref is None:
-                    complete = False
-                else:
-                    refs.append(ref)
         if complete:
-            source_refs.extend([*refs, {"source_kind": "runtime_team_context",
-                "source_id": f"{agent_id}\n{session_uuid}", "source_version": _hash(rendered)}])
+            if pending:
+                from datetime import datetime, timezone
+                from app.models.invocation_span import InvocationSpan
+                from app.services.content_input_receipts import _runtime_input_actor, _validate_input_dependencies
+
+                async with tenant_scoped_session(tenant_id) as db:
+                    principal, user = await _runtime_input_actor(db, tenant_id, runtime_principal)
+                    if (principal.agent_id != agent_id or str(principal.session_id) != str(session_uuid)
+                        or user.id != session.user_id):
+                        raise ValueError("pending_team_observation_scope_mismatch")
+                    await _validate_input_dependencies(db, tenant_id, refs, runtime_request=runtime_principal)
+                    run_id = uuid.UUID(str(principal.runtime_task_id))
+                    proof = {"schema": "hive.runtime_team_publication_observation.v1", "content": rendered,
+                        "sources": refs, "pending_task_ids": pending, "run_id": str(run_id),
+                        "agent_id": str(agent_id), "session_id": str(session_uuid), "user_id": str(user.id)}
+                    version = _hash(proof)
+                    identity = uuid.uuid5(run_id, f"runtime-team-publication:{version}")
+                    row = await db.get(InvocationSpan, identity)
+                    if row is None:
+                        db.add(InvocationSpan(id=identity, tenant_id=tenant_id, agent_id=agent_id, user_id=user.id,
+                            session_id=str(session_uuid), runtime_task_id=run_id, trace_id=f"runtime-team:{run_id}",
+                            span_id=f"runtime-team:{identity}", span_type="runtime_team_context",
+                            name="team_publication_observed", status="captured", duration_ms=0,
+                            started_at=datetime.now(timezone.utc), metadata_json={"observation": proof}))
+                        await db.commit()
+                    elif row.metadata_json != {"observation": proof}:
+                        raise ValueError("pending_team_observation_conflict")
+                    ref = {"source_kind": "runtime_team_context",
+                        "source_id": f"{agent_id}\n{session_uuid}\n{identity}", "source_version": version}
+            else:
+                ref = {"source_kind": "runtime_team_context",
+                    "source_id": f"{agent_id}\n{session_uuid}", "source_version": _hash(rendered)}
+            source_refs.extend([*refs, ref])
         elif source_unbound is not None:
             source_unbound.append("runtime_team_sources_unbound")
     return rendered

@@ -109,7 +109,7 @@ async def _start_feishu_creation_work(seed, app_user_sessionmaker, monkeypatch):
         return command.id
 
 
-@pytest.mark.parametrize("input_case", ["first_task_parent_ledger_reminder", "first_task_child_listing_after_write", "first_task_child_listing_after_write_alias", "first_task_parent_return_control", "first_task_parent_return_namespace", "first_task_parent_return_glob_default", "first_task_parent_glob_default", "first_task_parent_glob_dot", "first_task_parent_clock", "first_task_child_clock", "first_task_child_grep_empty", "first_task_child_grep_legacy", "first_task_child_grep", "first_task_parent_loop_warning", "first_task_refinement_fallback", "first_task_child_missing_file", "first_task_parent_missing_file", "first_task_parent_legacy_workspace_read", "complete", "unbound", "revoked", "first_task", "first_task_unbound", "first_task_revoked", "first_task_refined", "first_task_delivery", "first_task_parent_model", "first_task_refined_native", "first_task_native_creation", "first_task_fresh_employee", "first_task_slow_provider", "first_task_saved_reopen", "first_task_question", "first_task_question_after_write", "first_task_feishu_question", "first_task_feishu_quoted_question", "first_task_feishu_question_source_changed", "first_task_feishu_question_body_changed", "first_task_feishu_question_already_answered", "first_task_feishu_question_projection_missing", "first_task_feishu_question_recipient_changed", "first_task_feishu_question_legacy_status", "first_task_feishu_permission_allow", "first_task_feishu_permission_deny", "first_task_feishu_permission_cancel", "first_task_feishu_permission_unknown", "first_task_feishu_permission_expired", "first_task_feishu_permission_source_changed", "delegation_permission_allow", "first_task_recall", "first_task_ledger", "first_task_ledger_unknown", "first_task_parent_status", "first_task_parent_status_unknown", "first_task_child_command", "first_task_child_code", "first_task_child_command_then_write", "first_task_child_code_then_write", "first_task_creator_task_inventory", "first_task_creator_readiness_feedback", "first_task_creator_readiness_resume", "first_task_parent_creation_result", "first_task_parent_historical_creation_result", "first_task_parent_historical_creation_unknown", "first_task_parent_result_denial", "first_task_parent_public_directory", "first_task_child_readback", "first_task_child_glob", "first_task_workspace_listing", "first_task_workspace_listing_alias", "first_task_completion_sweep", "first_task_parent_wait_legacy", "first_task_parent_code_legacy", "first_task_parity_list", "first_task_parity_ledger", "first_task_parity_ledger_unknown", "first_task_context", "first_task_discovery", "first_task_unverified_memory", "first_task_explicit_unverified_memory", "first_task_feishu_permission_channel_allow", "first_task_feishu_permission_channel_deny", "first_task_feishu_permission_channel_unknown", "first_task_feishu_permission_channel_legacy", "first_task_feishu_permission_channel_scope", "first_task_feishu_permission_channel_feedback_retry", "first_task_feishu_progress"])
+@pytest.mark.parametrize("input_case", ["first_task_parent_pending_output", "first_task_parent_pending_status", "first_task_parent_pending_list", "first_task_parent_ledger_reminder", "first_task_child_listing_after_write", "first_task_child_listing_after_write_alias", "first_task_parent_return_control", "first_task_parent_return_namespace", "first_task_parent_return_glob_default", "first_task_parent_glob_default", "first_task_parent_glob_dot", "first_task_parent_clock", "first_task_child_clock", "first_task_child_grep_empty", "first_task_child_grep_legacy", "first_task_child_grep", "first_task_parent_loop_warning", "first_task_refinement_fallback", "first_task_child_missing_file", "first_task_parent_missing_file", "first_task_parent_legacy_workspace_read", "complete", "unbound", "revoked", "first_task", "first_task_unbound", "first_task_revoked", "first_task_refined", "first_task_delivery", "first_task_parent_model", "first_task_refined_native", "first_task_native_creation", "first_task_fresh_employee", "first_task_slow_provider", "first_task_saved_reopen", "first_task_question", "first_task_question_after_write", "first_task_feishu_question", "first_task_feishu_quoted_question", "first_task_feishu_question_source_changed", "first_task_feishu_question_body_changed", "first_task_feishu_question_already_answered", "first_task_feishu_question_projection_missing", "first_task_feishu_question_recipient_changed", "first_task_feishu_question_legacy_status", "first_task_feishu_permission_allow", "first_task_feishu_permission_deny", "first_task_feishu_permission_cancel", "first_task_feishu_permission_unknown", "first_task_feishu_permission_expired", "first_task_feishu_permission_source_changed", "delegation_permission_allow", "first_task_recall", "first_task_ledger", "first_task_ledger_unknown", "first_task_parent_status", "first_task_parent_status_unknown", "first_task_child_command", "first_task_child_code", "first_task_child_command_then_write", "first_task_child_code_then_write", "first_task_creator_task_inventory", "first_task_creator_readiness_feedback", "first_task_creator_readiness_resume", "first_task_parent_creation_result", "first_task_parent_historical_creation_result", "first_task_parent_historical_creation_unknown", "first_task_parent_result_denial", "first_task_parent_public_directory", "first_task_child_readback", "first_task_child_glob", "first_task_workspace_listing", "first_task_workspace_listing_alias", "first_task_completion_sweep", "first_task_parent_wait_legacy", "first_task_parent_code_legacy", "first_task_parity_list", "first_task_parity_ledger", "first_task_parity_ledger_unknown", "first_task_context", "first_task_discovery", "first_task_unverified_memory", "first_task_explicit_unverified_memory", "first_task_feishu_permission_channel_allow", "first_task_feishu_permission_channel_deny", "first_task_feishu_permission_channel_unknown", "first_task_feishu_permission_channel_legacy", "first_task_feishu_permission_channel_scope", "first_task_feishu_permission_channel_feedback_retry", "first_task_feishu_progress"])
 async def test_governed_delegation_preserves_its_parent_instruction_origin(
     owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, input_case, migrated_pg_url,
 ):
@@ -127,6 +127,11 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
     from app.services.secrets_provider import get_secrets_provider
     from app.services.web_chat_runtime import _persist_tool_call
 
+    pending_result_case = input_case.startswith("first_task_parent_pending_")
+    pending_result_tool = {"first_task_parent_pending_output": "task_output",
+        "first_task_parent_pending_status": "check_async_task", "first_task_parent_pending_list": "list_async_tasks"}.get(input_case)
+    if pending_result_case:
+        input_case = "first_task_workspace_listing"
     ledger_reminder_case = input_case == "first_task_parent_ledger_reminder"
     if ledger_reminder_case:
         from app.kernel.reminder_scheduler import ReminderScheduler, _LEDGER_IDLE_ROUNDS
@@ -2362,6 +2367,108 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
                 RuntimeNotificationOutbox.source_run_id == str(task_id)))
             assert not await db.scalar(select(RuntimeResultObject.id).where(
                 RuntimeResultObject.tenant_id == seed["tenant_id"], RuntimeResultObject.source_run_id == str(task_id)))
+    if pending_result_case:
+        from app.models.invocation_span import InvocationSpan
+        from app.models.runtime_result import RuntimeResultObject
+        from app.services.runtime_root_ledger import register_runtime_root_item
+        from app.services.session_human_input import queue_admitted_human_input
+        from app.services.session_input_admission import run_user_prompt_admission
+        from app.services.session_model_inputs import _origin_dependencies
+        from app.services.session_v2_persistence import accept_human_input, resolve_session_mutation_authority
+        from app.services.web_chat_runtime import execute_web_chat_run
+
+        pending_run, pending_input = uuid4(), uuid4()
+        pending_turn = f"turn-{pending_run.hex}"
+        pending_prompt = "Check the first task's publication state without dispatching it again."
+        pending_args = ({"runtime_task_id": str(task_id)} if pending_result_tool == "task_output"
+            else {"task_id": str(task_id)} if pending_result_tool == "check_async_task" else {})
+        async with owner_sessionmaker() as db:
+            child = await db.get(RuntimeTask, task_id)
+            assert child.status == "completed" and child.result_summary
+            pending_summary = child.result_summary
+            assert not await db.scalar(select(RuntimeResultObject.id).where(
+                RuntimeResultObject.tenant_id == seed["tenant_id"], RuntimeResultObject.source_run_id == str(task_id)))
+            db.add(RuntimeTask(id=pending_run, task_type="web_chat_turn", status="running", tenant_id=seed["tenant_id"],
+                parent_agent_id=seed["agent_id"], child_agent_id=seed["agent_id"],
+                parent_session_id=str(seed["session_id"]), child_session_id=str(seed["session_id"]),
+                root_user_id=seed["user_id"], root_session_id=str(seed["session_id"]), root_runtime_task_id=pending_run,
+                prompt=pending_prompt, claimed_by="pending-result-worker", claim_version=1, attempt_count=1,
+                claim_expires_at=datetime.now(timezone.utc) + timedelta(minutes=10), metadata_json={"turn_id": pending_turn,
+                    "user_id": str(seed["user_id"]), "runtime_budget": {
+                        "schema": "hive.runtime_budget_binding.v1", "status": "active", "interactive": True}}))
+            await db.flush()
+            await register_runtime_root_item(db, tenant_id=seed["tenant_id"], root_runtime_task_id=pending_run,
+                source_agent_id=seed["agent_id"], intent_key=f"web-chat-turn:{pending_run.hex}", work_type="web_chat_turn",
+                target_ref=str(seed["session_id"]), runtime_task_id=pending_run, root_user_id=seed["user_id"],
+                root_session_id=str(seed["session_id"]), state="running")
+            await db.commit()
+            authority = await resolve_session_mutation_authority(db, user=await db.get(User, seed["user_id"]),
+                agent_id=seed["agent_id"], session_id=seed["session_id"], action="mutate_session_input")
+            await accept_human_input(db, authority=authority, intent={"kind": "steer_current_turn",
+                "input_id": str(pending_input), "idempotency_key": f"input:{pending_input}",
+                "session_id": str(seed["session_id"]), "content_parts": [{"type": "text", "text": pending_prompt}],
+                "expected_turn_id": pending_turn, "expected_run_id": str(pending_run), "terminal_fallback": "queue_next_turn"})
+            await run_user_prompt_admission(db, authority=authority, input_id=pending_input, worker_id="pending-result-worker")
+            await queue_admitted_human_input(db, authority=authority, input_id=pending_input)
+            await db.commit()
+        pending_client = ScriptedLLMClient([
+            {"tool_calls": [{"id": "parent-before-publication", "type": "function", "function": {
+                "name": pending_result_tool, "arguments": json.dumps(pending_args)}}], "finish_reason": "tool_calls"},
+            {"content": "Result publication is pending; keep following the same first task.", "finish_reason": "stop"}])
+        prior_factory = invoker.create_llm_client
+        monkeypatch.setattr(invoker, "create_llm_client", lambda **_kwargs: pending_client)
+        token = set_runtime_task_fence(task_id=pending_run, worker_id="pending-result-worker", claim_version=1)
+        try:
+            await execute_web_chat_run(pending_run)
+        finally:
+            reset_runtime_task_fence(token)
+            monkeypatch.setattr(invoker, "create_llm_client", prior_factory)
+        (tmp_path / "pending-result-parent-requests.json").write_text(json.dumps(pending_client.requests, default=str, indent=2))
+        pending_content = next(m["content"] for m in pending_client.requests[1]["messages"]
+            if m.get("tool_call_id") == "parent-before-publication")
+        pending_start = json.dumps(pending_client.requests[0]["messages"])
+        assert pending_summary not in pending_start and "DELEGATED_REPORT" not in pending_start
+        assert "runtime_result_publication_pending" in pending_start
+        assert pending_summary not in pending_content and "DELEGATED_REPORT" not in pending_content
+        assert "runtime_result_publication_pending" in pending_content
+        async with app_user_sessionmaker() as db:
+            await pin_rls_tenant_context(db, seed["tenant_id"])
+            models = list(await db.scalars(select(SessionModelResult).where(SessionModelResult.run_id == pending_run)))
+            assert len(models) == 2 and all(m.model_request_snapshot_json["input_bindings"][
+                "dependency_coverage"]["complete"] for m in models)
+            call = await db.scalar(select(SessionToolInvocation).where(SessionToolInvocation.run_id == pending_run,
+                SessionToolInvocation.provider_tool_use_id == "parent-before-publication"))
+            check = {"tenant_id": seed["tenant_id"], "agent_id": seed["agent_id"], "ref": f"session-tool-result:{call.id}"}
+            assert (await _origin_dependencies(db, **check))[1]
+            evidence = await db.get(InvocationSpan, uuid5(call.id, "runtime-task-read"))
+            original = dict(evidence.metadata_json)
+            control = await db.begin_nested()
+            evidence.metadata_json = {**original, "runtime_task_read": {
+                **original["runtime_task_read"], "content_hash": "0" * 64}}
+            await db.flush()
+            assert not (await _origin_dependencies(db, **check))[1]
+            await control.rollback()
+            assert (await _origin_dependencies(db, **check))[1]
+            observations = list(await db.scalars(select(InvocationSpan).where(
+                InvocationSpan.runtime_task_id == pending_run, InvocationSpan.span_type == "runtime_team_context")))
+            assert observations
+            from app.services.content_input_receipts import ContentInputReceiptError, _validate_input_dependencies
+            from app.services.session_model_inputs import _hash
+
+            observation = observations[0]
+            snapshot = dict(observation.metadata_json)
+            observation_ref = {"source_kind": "runtime_team_context",
+                "source_id": f"{seed['agent_id']}\n{seed['session_id']}\n{observation.id}",
+                "source_version": _hash(snapshot["observation"])}
+            reader = await db.get(User, seed["user_id"])
+            await _validate_input_dependencies(db, seed["tenant_id"], [observation_ref], user=reader)
+            control = await db.begin_nested()
+            observation.metadata_json = {"observation": {**snapshot["observation"], "content": "Forged pending state"}}
+            await db.flush()
+            with pytest.raises(ContentInputReceiptError):
+                await _validate_input_dependencies(db, seed["tenant_id"], [observation_ref], user=reader)
+            await control.rollback()
+            await _validate_input_dependencies(db, seed["tenant_id"], [observation_ref], user=reader)
     processor = DirectInvocationTerminalBoundaryProcessor(session_factory=app_user_sessionmaker, data_root=seed["data_root"])
     boundaries = await RuntimeTerminalBoundaryOutboxService(session_factory=app_user_sessionmaker).drain_once(
         tenant_id=seed["tenant_id"], worker_id="native-first-task-terminal", canonical_validator=processor.validate,

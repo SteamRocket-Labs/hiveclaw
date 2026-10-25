@@ -609,6 +609,7 @@ async def build_agent_runtime_context(
             session_id=session_id,
             source_refs=source_refs,
             source_unbound=source_unbound,
+            runtime_principal=runtime_principal,
         )
         if team_context:
             if source_unbound is not None and source_refs is None:

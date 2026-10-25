@@ -42,7 +42,7 @@ def ledger_root(tmp_path, monkeypatch):
 
 
 def _stub_target() -> SimpleNamespace:
-    return SimpleNamespace(id=uuid.uuid4(), name="child-agent", role_description="stub")
+    return SimpleNamespace(id=uuid.uuid4(), name="child-agent", role_description="stub", agent_type="native")
 
 
 def _request(parent_id: uuid.UUID, target: SimpleNamespace, ledger_todo_id: str | None) -> AgentDelegationRequest:

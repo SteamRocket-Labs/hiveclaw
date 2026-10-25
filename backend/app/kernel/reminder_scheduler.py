@@ -56,7 +56,7 @@ _PLAN_SPARSE_COOLDOWN_ROUNDS = 5
 # Per-round runtime data handed to content callables: round_i / max_rounds /
 # total_tool_calls / failed_tool_calls / context_tokens.
 RoundState = dict[str, Any]
-ContentFn = Callable[[Any, RoundState], "str | None"]
+ContentFn = Callable[[Any, RoundState], "str | RuntimeReminderInjection | None"]
 EligibleFn = Callable[[Any], bool]
 
 
@@ -153,7 +153,8 @@ class ReminderScheduler:
             since = self._since_group_injection[spec.group]
             if spec.cooldown_rounds and since is not None and since < spec.cooldown_rounds:
                 continue
-            text = spec.content(session_context, round_state)
+            content = spec.content(session_context, round_state)
+            text = content.text if isinstance(content, RuntimeReminderInjection) else content
             if not text:
                 continue
             if text in seen_texts:
@@ -164,6 +165,7 @@ class ReminderScheduler:
                     source=spec.name,
                     ttl=spec.ttl,
                     priority=spec.priority,
+                    unbound=content.unbound if isinstance(content, RuntimeReminderInjection) else ("context_sources_unbound",),
                 )
             )
             seen_texts.add(text)
@@ -226,7 +228,7 @@ def _ledger_eligible(session_context: Any) -> bool:
     return isinstance(metadata, dict) and bool(metadata.get(_WORK_LEDGER_ENABLED_METADATA_KEY))
 
 
-def _ledger_content(_session_context: Any, round_state: RoundState) -> str | None:
+def _ledger_content(_session_context: Any, round_state: RoundState) -> str | RuntimeReminderInjection:
     text = _WORK_LEDGER_REMINDER
     snapshot = ""
     provider = round_state.get("work_ledger_snapshot_provider")
@@ -238,8 +240,9 @@ def _ledger_content(_session_context: Any, round_state: RoundState) -> str | Non
     except Exception:
         snapshot = ""
     if snapshot:
-        text = f"{text}\n\n{snapshot}"
-    return text
+        return f"{text}\n\n{snapshot}"
+    # This producer owns the static guidance, not any dynamic ledger body.
+    return RuntimeReminderInjection(text=text, source="work_ledger", unbound=())
 
 
 def _progress_replan_content(_session_context: Any, round_state: RoundState) -> str | None:

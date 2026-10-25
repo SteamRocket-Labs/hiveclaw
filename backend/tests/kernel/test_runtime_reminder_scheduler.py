@@ -99,6 +99,41 @@ def test_scheduler_collects_runtime_reminder_metadata():
     assert injections[0].priority == 95
 
 
+@pytest.mark.parametrize("snapshot", ["", "UNVERIFIED_PRIVATE_LEDGER_SNAPSHOT"])
+def test_ledger_reminder_distinguishes_native_guidance_from_dynamic_body(snapshot):
+    from app.kernel.engine import _runtime_reminder_message
+    from app.kernel.reminder_scheduler import _LEDGER_IDLE_ROUNDS
+    from app.runtime.prompts.runtime_reminders import WORK_LEDGER_REMINDER
+
+    scheduler = _scheduler()
+    for _ in range(_LEDGER_IDLE_ROUNDS):
+        scheduler.observe(())
+    item, = scheduler.collect_with_metadata(_ledger_ctx(), _round_state(work_ledger_snapshot_provider=lambda: snapshot))
+    message = _runtime_reminder_message(SimpleNamespace(), item)
+    assert item.text == WORK_LEDGER_REMINDER + ("\n\n" + snapshot if snapshot else "")
+    assert item.source == "work_ledger" and item.priority == 70
+    assert message.content == item.text and message.role == "system"
+    assert message.context_origin.unbound == (("context_sources_unbound",) if snapshot else ())
+    assert message.context_origin.sources == ()
+
+
+@pytest.mark.parametrize("queued", [False, True])
+def test_matching_reminder_name_and_text_cannot_claim_native_guidance(queued):
+    from app.kernel.engine import _runtime_reminder_message
+    from app.kernel.reminder_scheduler import ReminderScheduler, ReminderSpec
+    from app.runtime.prompts.runtime_reminders import WORK_LEDGER_REMINDER
+
+    scheduler = ReminderScheduler(()) if queued else ReminderScheduler((
+        ReminderSpec(name="work_ledger", content=lambda _ctx, _state: WORK_LEDGER_REMINDER),))
+    if queued:
+        scheduler.enqueue(WORK_LEDGER_REMINDER, source="work_ledger")
+    item, = scheduler.collect_with_metadata(_ledger_ctx(), _round_state())
+    message = _runtime_reminder_message(SimpleNamespace(), item)
+    assert message.content == WORK_LEDGER_REMINDER
+    assert item.unbound == ("context_sources_unbound",)
+    assert message.context_origin.unbound == ("context_sources_unbound",)
+
+
 def test_tool_use_resets_ledger_idle_counter():
     """Using a ledger tool at round 5 restarts the idle window — no reminder
     before round 15."""

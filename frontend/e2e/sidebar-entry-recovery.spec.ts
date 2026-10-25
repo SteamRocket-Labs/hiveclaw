@@ -1,4 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
+import type { StorageRetention } from '../src/api/domains/enterprise';
 
 /**
  * Entry-recovery acceptance: the collapsed sidebar Settings menu and the
@@ -7,6 +8,13 @@ import { expect, test, type Page } from '@playwright/test';
  */
 
 type Role = 'member' | 'org_admin' | 'platform_admin';
+
+const storageRetention: StorageRetention = {
+  policy: { enabled: true, retention_days: 30, version: 0, source: 'installation_default' },
+  capacity: { status: 'operator_only', scope: 'shared_agent_volume' },
+  applies_to: 'unreferenced_chat_artifact_snapshots_and_orphan_office_previews',
+  effective_on: 'next_maintenance_pass',
+};
 
 async function bootstrapApp(page: Page, options: {
   role: Role;
@@ -39,6 +47,9 @@ async function bootstrapApp(page: Page, options: {
     if (!path.startsWith('/api/')) return route.fallback();
     if (path.endsWith('/auth/me')) {
       return route.fulfill({ json: { id: 'u-1', username: 'e2e', display_name: 'E2E Admin', role, tenant_id: 't-1' } });
+    }
+    if (path === '/api/enterprise/storage-retention' && route.request().method() === 'GET') {
+      return route.fulfill({ json: storageRetention });
     }
     if (route.request().method() === 'GET') return route.fulfill({ json: [] });
     return route.fulfill({ json: {} });

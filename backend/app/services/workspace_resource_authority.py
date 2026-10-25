@@ -48,7 +48,7 @@ def _is_workspace_path(path: str) -> bool:
     return path == "workspace" or path.startswith("workspace/")
 
 
-def workspace_glob_read_observation(root: str, pattern: str) -> dict[str, str] | None:
+def workspace_glob_read_observation(root: str, pattern: str, *, matched_paths: list[str] | None = None) -> dict | None:
     """Describe a workspace-confined glob query, without attesting file bodies."""
     if not isinstance(root, str) or not isinstance(pattern, str) or not pattern:
         return None
@@ -59,7 +59,17 @@ def workspace_glob_read_observation(root: str, pattern: str) -> dict[str, str] |
     normalized_root = normalize_workspace_resource_path(root)
     query = PurePosixPath(normalized_root, pattern)
     if not query.parts or query.parts[0] != "workspace":
-        return None
+        # A broad query can still observe only authorized workspace names.
+        # Require the actual native inventory; the query alone is not proof.
+        if normalized_root or not isinstance(matched_paths, list):
+            return None
+        for path in matched_paths:
+            if (not isinstance(path, str) or not (path == "workspace" or path.startswith("workspace/"))
+                or ".." in PurePosixPath(path).parts or "\\" in path
+                or normalize_workspace_resource_path(path) != path):
+                return None
+        return {"kind": "authorized_workspace_glob_listing", "root": normalized_root, "pattern": pattern,
+            "matched_paths": list(matched_paths)}
     return {"kind": "authorized_workspace_glob_listing", "root": normalized_root, "pattern": pattern}
 
 

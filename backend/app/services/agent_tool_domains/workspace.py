@@ -1484,7 +1484,7 @@ def _glob_search(
         lines = [f"🔎 Glob results for '{pattern}' ({len(matches)} match(es)):"]
         lines.extend(f"- {match}" for match in matches)
         result = "\n".join(lines)
-    observation = workspace_glob_read_observation(root, pattern)
+    observation = workspace_glob_read_observation(root, pattern, matched_paths=matches)
     resolved_root = search_root.relative_to(ws.resolve()).as_posix()
     if (authority_scope is not None and observation is not None
         and (resolved_root == "." or resolved_root == "workspace" or resolved_root.startswith("workspace/"))

@@ -58,6 +58,33 @@ def test_workspace_glob_does_not_attest_queries_outside_owned_workspace(root, pa
     assert workspace_glob_read_observation(root, pattern) is None
 
 
+@pytest.mark.parametrize("root", ["", "."])
+def test_broad_glob_binds_actual_workspace_names_without_exposing_bodies(tmp_path, root):
+    from app.services.agent_tool_domains.workspace import _glob_search
+    from app.services.content_input_receipts import _native_directory_read_matches
+    from app.services.workspace_resource_authority import workspace_glob_read_observation
+    from app.tools.result_envelope import ToolContentEnvelope
+
+    target = tmp_path / "workspace/mine/report.md"
+    target.parent.mkdir(parents=True)
+    args = {"root": root, "pattern": "**/*report*"}
+    assert workspace_glob_read_observation(**args) is None
+    for exists in (False, True):
+        if exists:
+            target.write_text("UNVERIFIED_PRIVATE_BODY")
+        result = _glob_search(tmp_path, **args, authority_scope=_scope())
+        assert isinstance(result, ToolContentEnvelope)
+        observation = result.metadata["native_directory_read"]
+        assert observation["matched_paths"] == (["workspace/mine/report.md"] if exists else [])
+        assert _native_directory_read_matches("glob_search", args, observation)
+        assert not _native_directory_read_matches("glob_search", args,
+            {key: value for key, value in observation.items() if key != "matched_paths"})
+        assert "UNVERIFIED_PRIVATE_BODY" not in result
+    for paths in (["skills/private.md"], ["workspace/../skills/private.md"], [None]):
+        assert workspace_glob_read_observation(**args, matched_paths=paths) is None
+    assert workspace_glob_read_observation("skills", "*.md", matched_paths=[]) is None
+
+
 def test_workspace_glob_does_not_attest_resolved_alias_outside_workspace(tmp_path):
     from app.services.agent_tool_domains.workspace import _glob_search
     from app.tools.result_envelope import ToolContentEnvelope

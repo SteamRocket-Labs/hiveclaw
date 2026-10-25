@@ -813,7 +813,7 @@ def fingerprint_rls_bypass_scopes(app_root: Path) -> str:
 # merge rechecks the current worker claim.
 # Workspace glob observations reuse native directory evidence and its exact
 # invocation binding. Existing tenant, owner and bypass query scopes are unchanged.
-RLS_BYPASS_SCOPES_SHA256 = "bf5569c8d674f44d1f326c3af66b5cf3288f38f1e182520650d466319482c59e"
+RLS_BYPASS_SCOPES_SHA256 = "329966b8b9b178d1ee26d4ab0f72cbf2ea228589176ad929232133d1b228fc69"
 
 
 def scan_rls_bypass_callsites(app_root: Path) -> list[RLSBypassCallsite]:

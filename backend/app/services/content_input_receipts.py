@@ -1419,7 +1419,8 @@ def _native_directory_read_matches(tool_name, arguments, observation):
     if not isinstance(arguments, dict) or not isinstance(observation, dict):
         return False
     if tool_name == "glob_search":
-        expected = workspace_glob_read_observation(arguments.get("root") or "", arguments.get("pattern"))
+        expected = workspace_glob_read_observation(arguments.get("root") or "", arguments.get("pattern"),
+            matched_paths=observation.get("matched_paths"))
         return expected is not None and observation == expected
     if tool_name not in {"list_files", "fs_list"}:
         return False

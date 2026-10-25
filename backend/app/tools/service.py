@@ -1424,125 +1424,149 @@ class ToolRuntimeService:
                     )
                 with native_clock_read_scope(request) as clock_read, native_directory_read_scope(request) as directory_read:
                     value = await self.backend.execute(request, _execute_request)
-                if tool_name in {"execute_code", "run_command", "run_skill_tool"}:
-                    for read in getattr(context.workspace_authority_scope, "input_reads", ()):
-                        if read.observed_sha256 is not None and read.observed_sha256 != read.content_sha256:
-                            _block, evidence = await settle_workspace_receipt_read(
-                                request=request, read=read, tool_call_id=tool_call_id, result=value)
-                            input_denials.append({"path": read.path, "reason_code": "workspace_content_unverified",
-                                "status": "denied", "retryable": False, "quarantine": evidence.get("quarantine", "unknown")})
-                if input_denials:
-                    for denial in input_denials:
-                        denial["actionable_hint"] = "Restore the scoped source grant or regenerate this file from current authorized inputs."
-                    notice = "\n\n<workspace_input_denials>" + _json.dumps(input_denials) + "</workspace_input_denials>"
-                    value = replace(value, text=value.text + notice,
-                        model_visible_text=value.model_visible_text + notice if value.model_visible_text is not None else None,
-                        metadata={**value.metadata, "workspace_input_denials": input_denials}) if isinstance(value, ToolContentEnvelope) else (
-                        ToolContentEnvelope(text=str(value) + notice, metadata={"workspace_input_denials": input_denials}))
-                value, _redaction = self._redact_runtime_egress(
-                    value,
-                    context=context,
-                    surface="tool_result",
-                    trace_metadata_sink=trace_metadata_sink,
-                )
-                if clock_read is not None and trace_metadata_sink is not None:
-                    from app.services.content_input_receipts import persist_workspace_execution_evidence
-
-                    trace_metadata_sink["native_clock_read_evidence"] = await persist_workspace_execution_evidence(
-                        context=context, tool_name=tool_name, tool_call_id=tool_call_id, arguments=arguments,
-                        result=value, states={}, lineage=[], errors={}, native_clock_read=clock_read)
-                if trace_metadata_sink is not None and isinstance(value, ToolContentEnvelope):
-                    if isinstance(value.metadata.get("agent_directory_sources"), list):
-                        trace_metadata_sink["agent_directory_sources"] = list(value.metadata["agent_directory_sources"])
-                    proof = value.metadata.get("feishu_approved_result")
-                    if isinstance(proof, dict):
-                        trace_metadata_sink["feishu_approved_result"] = dict(proof)
-                    failure = value.metadata.get("feishu_failure")
-                    if isinstance(failure, dict) and failure.get("tool_name") == tool_name:
-                        trace_metadata_sink["feishu_failure"] = dict(failure)
-                if (tool_name in {"read_file", "read_document", "fs_read"} and isinstance(value, ToolContentEnvelope)
-                    and isinstance(value.metadata.get("native_read_denial"), dict)):
-                    # The native reader returned no source bytes. Do not require
-                    # a content receipt for the refused body's mechanical status.
-                    if trace_metadata_sink is not None:
+                async def _settle_backend_result():
+                    nonlocal value
+                    if tool_name in {"execute_code", "run_command", "run_skill_tool"}:
+                        for read in getattr(context.workspace_authority_scope, "input_reads", ()):
+                            if read.observed_sha256 is not None and read.observed_sha256 != read.content_sha256:
+                                _block, evidence = await settle_workspace_receipt_read(
+                                    request=request, read=read, tool_call_id=tool_call_id, result=value)
+                                input_denials.append({"path": read.path, "reason_code": "workspace_content_unverified",
+                                    "status": "denied", "retryable": False, "quarantine": evidence.get("quarantine", "unknown")})
+                    if input_denials:
+                        for denial in input_denials:
+                            denial["actionable_hint"] = "Restore the scoped source grant or regenerate this file from current authorized inputs."
+                        notice = "\n\n<workspace_input_denials>" + _json.dumps(input_denials) + "</workspace_input_denials>"
+                        value = replace(value, text=value.text + notice,
+                            model_visible_text=value.model_visible_text + notice if value.model_visible_text is not None else None,
+                            metadata={**value.metadata, "workspace_input_denials": input_denials}) if isinstance(value, ToolContentEnvelope) else (
+                            ToolContentEnvelope(text=str(value) + notice, metadata={"workspace_input_denials": input_denials}))
+                    value, _redaction = self._redact_runtime_egress(
+                        value,
+                        context=context,
+                        surface="tool_result",
+                        trace_metadata_sink=trace_metadata_sink,
+                    )
+                    if clock_read is not None and trace_metadata_sink is not None:
                         from app.services.content_input_receipts import persist_workspace_execution_evidence
 
-                        trace_metadata_sink["native_read_denial_evidence"] = await persist_workspace_execution_evidence(
+                        trace_metadata_sink["native_clock_read_evidence"] = await persist_workspace_execution_evidence(
                             context=context, tool_name=tool_name, tool_call_id=tool_call_id, arguments=arguments,
-                            result=value, states={}, lineage=[], errors={}, native_read_denial=value.metadata["native_read_denial"])
+                            result=value, states={}, lineage=[], errors={}, native_clock_read=clock_read)
+                    if trace_metadata_sink is not None and isinstance(value, ToolContentEnvelope):
+                        if isinstance(value.metadata.get("agent_directory_sources"), list):
+                            trace_metadata_sink["agent_directory_sources"] = list(value.metadata["agent_directory_sources"])
+                        proof = value.metadata.get("feishu_approved_result")
+                        if isinstance(proof, dict):
+                            trace_metadata_sink["feishu_approved_result"] = dict(proof)
+                        failure = value.metadata.get("feishu_failure")
+                        if isinstance(failure, dict) and failure.get("tool_name") == tool_name:
+                            trace_metadata_sink["feishu_failure"] = dict(failure)
+                    if (tool_name in {"read_file", "read_document", "fs_read"} and isinstance(value, ToolContentEnvelope)
+                        and isinstance(value.metadata.get("native_read_denial"), dict)):
+                        # The native reader returned no source bytes. Do not require
+                        # a content receipt for the refused body's mechanical status.
+                        if trace_metadata_sink is not None:
+                            from app.services.content_input_receipts import persist_workspace_execution_evidence
+
+                            trace_metadata_sink["native_read_denial_evidence"] = await persist_workspace_execution_evidence(
+                                context=context, tool_name=tool_name, tool_call_id=tool_call_id, arguments=arguments,
+                                result=value, states={}, lineage=[], errors={}, native_read_denial=value.metadata["native_read_denial"])
+                        return value
+                    if input_read is not None:
+                        receipt_block, input_evidence = await settle_workspace_receipt_read(
+                            request=request, read=input_read, tool_call_id=tool_call_id, result=value)
+                        if trace_metadata_sink is not None:
+                            trace_metadata_sink["workspace_input_evidence"] = input_evidence
+                        if receipt_block is not None:
+                            return receipt_block
+                    skill_read = getattr(context.workspace_authority_scope, "skill_inputs", None)
+                    if (trace_metadata_sink is not None and isinstance(value, ToolContentEnvelope)
+                        and isinstance(value.metadata.get("native_empty_read"), dict)):
+                        from app.services.content_input_receipts import persist_workspace_execution_evidence
+
+                        trace_metadata_sink["native_empty_read_evidence"] = await persist_workspace_execution_evidence(
+                            context=context, tool_name=tool_name, tool_call_id=tool_call_id, arguments=arguments,
+                            result=value, states={}, lineage=[], errors={}, native_empty_read=value.metadata["native_empty_read"])
+                    if directory_read is not None and directory_read.observations and trace_metadata_sink is not None:
+                        from app.services.content_input_receipts import persist_workspace_execution_evidence
+
+                        trace_metadata_sink["native_directory_read_evidence"] = await persist_workspace_execution_evidence(
+                            context=context, tool_name=tool_name, tool_call_id=tool_call_id, arguments=arguments,
+                            result=value, states={}, lineage=[], errors={}, native_directory_read=directory_read)
+                    elif (trace_metadata_sink is not None and isinstance(value, ToolContentEnvelope)
+                        and isinstance(value.metadata.get("native_directory_read"), dict)):
+                        from app.services.content_input_receipts import persist_workspace_execution_evidence
+
+                        trace_metadata_sink["native_directory_read_evidence"] = await persist_workspace_execution_evidence(
+                            context=context, tool_name=tool_name, tool_call_id=tool_call_id, arguments=arguments,
+                            result=value, states={}, lineage=[], errors={}, native_directory_read=value.metadata["native_directory_read"])
+                    if skill_read is not None and trace_metadata_sink is not None:
+                        from app.services.content_input_receipts import persist_workspace_execution_evidence
+
+                        trace_metadata_sink["skill_input_evidence"] = await persist_workspace_execution_evidence(
+                            context=context, tool_name=tool_name, tool_call_id=tool_call_id, arguments=arguments,
+                            result=value, states={}, lineage=[], errors={}, skill_read=skill_read)
+                    if context.workspace_authority_scope is not None:
+                        from app.services.workspace_resource_authority import record_workspace_tool_mutations
+
+                        await record_workspace_tool_mutations(
+                            context=context,
+                            tool_name=tool_name,
+                            arguments=arguments,
+                            result=value,
+                        )
+                    if tool_name == "grep_search" and trace_metadata_sink is not None:
+                        from app.services.content_input_receipts import persist_workspace_execution_evidence
+
+                        trace_metadata_sink["workspace_execution_evidence"] = await persist_workspace_execution_evidence(
+                            context=context, tool_name=tool_name, tool_call_id=tool_call_id, arguments=arguments,
+                            result=value, states={}, lineage=[], errors={})
+                    if workspace_mutating and trace_metadata_sink is not None:
+                        states, errors, lineage = _capture_workspace_mutation_evidence(
+                            tool_name=tool_name,
+                            arguments=arguments,
+                            result=value,
+                            workspace=context.workspace,
+                            before_states=before_states,
+                            descriptor_writes=[write.as_dict() for write in context.workspace_authority_scope.output_writes]
+                                if isinstance(context.workspace_authority_scope, WorkspaceAuthorityScope) else [],
+                        )
+                        trace_metadata_sink["workspace_mutation_evidence_captured"] = True
+                        trace_metadata_sink["workspace_mutation_states"] = states
+                        trace_metadata_sink["workspace_mutation_state_errors"] = {**before_errors, **errors}
+                        trace_metadata_sink["workspace_mutation_lineage"] = lineage
+                        from app.services.content_input_receipts import persist_workspace_execution_evidence
+
+                        trace_metadata_sink["workspace_execution_evidence"] = await persist_workspace_execution_evidence(
+                            context=context, tool_name=tool_name, tool_call_id=tool_call_id, arguments=arguments,
+                            result=value, states=states, lineage=lineage, errors={**before_errors, **errors},
+                            descriptor_writes=[write.as_dict() for write in context.workspace_authority_scope.output_writes]
+                                if isinstance(context.workspace_authority_scope, WorkspaceAuthorityScope) else [],
+                        )
                     return value
-                if input_read is not None:
-                    receipt_block, input_evidence = await settle_workspace_receipt_read(
-                        request=request, read=input_read, tool_call_id=tool_call_id, result=value)
-                    if trace_metadata_sink is not None:
-                        trace_metadata_sink["workspace_input_evidence"] = input_evidence
-                    if receipt_block is not None:
-                        return receipt_block
-                skill_read = getattr(context.workspace_authority_scope, "skill_inputs", None)
-                if (trace_metadata_sink is not None and isinstance(value, ToolContentEnvelope)
-                    and isinstance(value.metadata.get("native_empty_read"), dict)):
-                    from app.services.content_input_receipts import persist_workspace_execution_evidence
 
-                    trace_metadata_sink["native_empty_read_evidence"] = await persist_workspace_execution_evidence(
-                        context=context, tool_name=tool_name, tool_call_id=tool_call_id, arguments=arguments,
-                        result=value, states={}, lineage=[], errors={}, native_empty_read=value.metadata["native_empty_read"])
-                if directory_read is not None and directory_read.observations and trace_metadata_sink is not None:
-                    from app.services.content_input_receipts import persist_workspace_execution_evidence
-
-                    trace_metadata_sink["native_directory_read_evidence"] = await persist_workspace_execution_evidence(
-                        context=context, tool_name=tool_name, tool_call_id=tool_call_id, arguments=arguments,
-                        result=value, states={}, lineage=[], errors={}, native_directory_read=directory_read)
-                elif (trace_metadata_sink is not None and isinstance(value, ToolContentEnvelope)
-                    and isinstance(value.metadata.get("native_directory_read"), dict)):
-                    from app.services.content_input_receipts import persist_workspace_execution_evidence
-
-                    trace_metadata_sink["native_directory_read_evidence"] = await persist_workspace_execution_evidence(
-                        context=context, tool_name=tool_name, tool_call_id=tool_call_id, arguments=arguments,
-                        result=value, states={}, lineage=[], errors={}, native_directory_read=value.metadata["native_directory_read"])
-                if skill_read is not None and trace_metadata_sink is not None:
-                    from app.services.content_input_receipts import persist_workspace_execution_evidence
-
-                    trace_metadata_sink["skill_input_evidence"] = await persist_workspace_execution_evidence(
-                        context=context, tool_name=tool_name, tool_call_id=tool_call_id, arguments=arguments,
-                        result=value, states={}, lineage=[], errors={}, skill_read=skill_read)
-                if context.workspace_authority_scope is not None:
-                    from app.services.workspace_resource_authority import record_workspace_tool_mutations
-
-                    await record_workspace_tool_mutations(
-                        context=context,
-                        tool_name=tool_name,
-                        arguments=arguments,
-                        result=value,
-                    )
-                if tool_name == "grep_search" and trace_metadata_sink is not None:
-                    from app.services.content_input_receipts import persist_workspace_execution_evidence
-
-                    trace_metadata_sink["workspace_execution_evidence"] = await persist_workspace_execution_evidence(
-                        context=context, tool_name=tool_name, tool_call_id=tool_call_id, arguments=arguments,
-                        result=value, states={}, lineage=[], errors={})
-                if workspace_mutating and trace_metadata_sink is not None:
-                    states, errors, lineage = _capture_workspace_mutation_evidence(
-                        tool_name=tool_name,
-                        arguments=arguments,
-                        result=value,
-                        workspace=context.workspace,
-                        before_states=before_states,
-                        descriptor_writes=[write.as_dict() for write in context.workspace_authority_scope.output_writes]
-                            if isinstance(context.workspace_authority_scope, WorkspaceAuthorityScope) else [],
-                    )
-                    trace_metadata_sink["workspace_mutation_evidence_captured"] = True
-                    trace_metadata_sink["workspace_mutation_states"] = states
-                    trace_metadata_sink["workspace_mutation_state_errors"] = {**before_errors, **errors}
-                    trace_metadata_sink["workspace_mutation_lineage"] = lineage
-                    from app.services.content_input_receipts import persist_workspace_execution_evidence
-
-                    trace_metadata_sink["workspace_execution_evidence"] = await persist_workspace_execution_evidence(
-                        context=context, tool_name=tool_name, tool_call_id=tool_call_id, arguments=arguments,
-                        result=value, states=states, lineage=lineage, errors={**before_errors, **errors},
-                        descriptor_writes=[write.as_dict() for write in context.workspace_authority_scope.output_writes]
-                            if isinstance(context.workspace_authority_scope, WorkspaceAuthorityScope) else [],
-                    )
-                return value
+                if not workspace_mutating:
+                    return await _settle_backend_result()
+                # The executor has already returned. Commit its observed effects
+                # before propagating cancellation; a timeout does not undo bytes.
+                settlement = asyncio.create_task(_settle_backend_result())
+                cancelled = None
+                while True:
+                    try:
+                        settled = await asyncio.shield(settlement)
+                        break
+                    except asyncio.CancelledError as exc:
+                        if settlement.cancelled():
+                            raise
+                        cancelled = exc
+                    except Exception:
+                        if cancelled is not None:
+                            raise cancelled
+                        raise
+                if cancelled is not None:
+                    raise cancelled
+                return settled
 
             async def _execute_in_environment_scope():
                 from app.services.execution_environments import environment_command_scope

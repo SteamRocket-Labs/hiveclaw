@@ -31,7 +31,8 @@ def downgrade(connection):
 
 
 async def test_existing_receipts_upgrade_with_rls_and_populated_downgrade_preserves_all_tenants(
-    pg_container, app_user_engine,
+    pg_container,
+    app_user_engine,
 ):
     tenant, other = uuid4(), uuid4()
     old_id, scoped_id = uuid4(), uuid4()
@@ -42,17 +43,36 @@ async def test_existing_receipts_upgrade_with_rls_and_populated_downgrade_preser
         try:
             async with engine.begin() as db:
                 for identity in (tenant, other):
-                    await db.execute(Tenant.__table__.insert().values(id=identity, name="Memory upgrade",
-                        slug="memory-upgrade-" + identity.hex))
-                await db.execute(text("INSERT INTO content_input_receipts(id,tenant_id,carrier_kind,carrier_ref,revision,content_sha256,dependencies_json) "
-                    "VALUES(:id,:tenant,'team_memory','legacy-source',1,:hash,'[]'::jsonb)"),
-                    {"id": old_id, "tenant": tenant, "hash": "a" * 64})
+                    await db.execute(
+                        Tenant.__table__.insert().values(
+                            id=identity, name="Memory upgrade", slug="memory-upgrade-" + identity.hex
+                        )
+                    )
+                await db.execute(
+                    text(
+                        "INSERT INTO content_input_receipts(id,tenant_id,carrier_kind,carrier_ref,revision,content_sha256,dependencies_json) "
+                        "VALUES(:id,:tenant,'team_memory','legacy-source',1,:hash,'[]'::jsonb)"
+                    ),
+                    {"id": old_id, "tenant": tenant, "hash": "a" * 64},
+                )
             migrate(url)
             async with engine.begin() as db:
-                legacy = (await db.execute(text("SELECT carrier_ref,content_sha256,authority_json FROM content_input_receipts WHERE id=:id"),
-                    {"id": old_id})).one()
+                legacy = (
+                    await db.execute(
+                        text(
+                            "SELECT carrier_ref,content_sha256,authority_json FROM content_input_receipts WHERE id=:id"
+                        ),
+                        {"id": old_id},
+                    )
+                ).one()
                 assert legacy == ("legacy-source", "a" * 64, {})
-                flags = (await db.execute(text("SELECT relrowsecurity,relforcerowsecurity FROM pg_class WHERE relname='content_input_receipts'"))).one()
+                flags = (
+                    await db.execute(
+                        text(
+                            "SELECT relrowsecurity,relforcerowsecurity FROM pg_class WHERE relname='content_input_receipts'"
+                        )
+                    )
+                ).one()
                 assert flags == (True, True)
                 await db.execute(text(f'GRANT ALL ON ALL TABLES IN SCHEMA public TO "{persistence.APP_USER}"'))
                 await db.execute(text(f'GRANT ALL ON ALL SEQUENCES IN SCHEMA public TO "{persistence.APP_USER}"'))
@@ -61,16 +81,29 @@ async def test_existing_receipts_upgrade_with_rls_and_populated_downgrade_preser
             try:
                 async with tenant_scoped_session(other, session_factory=factory) as db:
                     assert not await db.scalar(text("SELECT rolbypassrls FROM pg_roles WHERE rolname=current_user"))
-                    db.add(ContentInputReceipt(id=scoped_id, tenant_id=other, carrier_kind="explicit_memory",
-                        carrier_ref="synthetic-agent\nexplicit-upgrade", revision=1, content_sha256="b" * 64,
-                        dependencies_json=[], authority_json={"schema": "migration_fixture", "state": "prepared"}))
+                    db.add(
+                        ContentInputReceipt(
+                            id=scoped_id,
+                            tenant_id=other,
+                            carrier_kind="explicit_memory",
+                            carrier_ref="synthetic-agent\nexplicit-upgrade",
+                            revision=1,
+                            content_sha256="b" * 64,
+                            dependencies_json=[],
+                            authority_json={"schema": "migration_fixture", "state": "prepared"},
+                        )
+                    )
                     await db.commit()
                 for scope, expected in ((str(tenant), [old_id]), (str(other), [scoped_id]), ("", [])):
                     async with factory() as db:
-                        await db.execute(text("SELECT set_config('app.current_tenant_id',:scope,true)"), {"scope": scope})
+                        await db.execute(
+                            text("SELECT set_config('app.current_tenant_id',:scope,true)"), {"scope": scope}
+                        )
                         assert list((await db.scalars(text("SELECT id FROM content_input_receipts"))).all()) == expected
                 async with engine.begin() as db:
-                    await db.execute(text("SELECT set_config('app.current_tenant_id',:scope,true)"), {"scope": str(tenant)})
+                    await db.execute(
+                        text("SELECT set_config('app.current_tenant_id',:scope,true)"), {"scope": str(tenant)}
+                    )
                     with pytest.raises(RuntimeError, match="require_recovery_before_downgrade"):
                         await db.run_sync(downgrade)
                     assert await db.scalar(text("SELECT current_setting('app.current_tenant_id')")) == str(tenant)
@@ -82,8 +115,12 @@ async def test_existing_receipts_upgrade_with_rls_and_populated_downgrade_preser
                 migrate(url, command="downgrade", target=revision().down_revision)
                 migrate(url)
                 async with engine.begin() as db:
-                    assert await db.scalar(text("SELECT content_sha256 FROM content_input_receipts WHERE id=:id"),
-                        {"id": old_id}) == "a" * 64
+                    assert (
+                        await db.scalar(
+                            text("SELECT content_sha256 FROM content_input_receipts WHERE id=:id"), {"id": old_id}
+                        )
+                        == "a" * 64
+                    )
             finally:
                 await app_engine.dispose()
         finally:

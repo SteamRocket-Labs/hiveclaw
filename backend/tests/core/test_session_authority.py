@@ -98,7 +98,7 @@ async def test_authorize_session_action_operator_inspection_requires_grant_and_r
             raise HTTPException(status_code=403, detail="Operator View requires an audit reason")
         return "operator_inspect_grant"
 
-    monkeypatch.setattr(permissions_module, "check_agent_access", fake_agent_access)
+    monkeypatch.setattr(permissions_module, "check_agent_operator_reachability", fake_agent_access)
     monkeypatch.setattr(permissions_module, "authorize_agent_operator_inspection", fake_operator_inspection)
 
     with pytest.raises(HTTPException) as exc:

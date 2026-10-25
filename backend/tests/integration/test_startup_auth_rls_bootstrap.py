@@ -80,6 +80,96 @@ async def test_public_registration_creates_tenantless_user_and_participant_under
     assert participant.display_name == username
 
 
+async def test_registration_response_authenticates_before_request_dependency_teardown(
+    owner_sessionmaker,
+    app_user_sessionmaker,
+    monkeypatch,
+):
+    import json
+
+    from fastapi import FastAPI
+
+    import app.database as database
+    from app.core.security import get_current_user
+
+    suffix = uuid.uuid4().hex[:10]
+    async with owner_sessionmaker() as db:
+        db.add(
+            User(
+                username=f"prior-{suffix}",
+                email=f"prior-{suffix}@example.com",
+                password_hash="hash",
+                display_name="Prior",
+            )
+        )
+        await db.commit()
+
+    monkeypatch.setattr(auth_api, "hash_password", lambda _password: "hash")
+    monkeypatch.setattr(database, "async_session", app_user_sessionmaker)
+    app = FastAPI()
+    app.include_router(auth_api.router, prefix="/api")
+    payload = json.dumps(
+        {
+            "username": f"immediate-{suffix}",
+            "email": f"immediate-{suffix}@example.com",
+            "password": "AtomicPass123!",
+        }
+    ).encode()
+    observed = {}
+
+    async def receive():
+        return {"type": "http.request", "body": payload, "more_body": False}
+
+    async def send(message):
+        if message["type"] == "http.response.start":
+            observed["status"] = message["status"]
+        elif message["type"] == "http.response.body":
+            body = json.loads(message["body"])
+            observed["response"] = body
+            # Observe from the consuming connection at the first public body,
+            # before request-scoped yield dependencies can finish their commit.
+            async with app_user_sessionmaker() as consumer:
+                try:
+                    current = await get_current_user(
+                        request=Request({"type": "http", "method": "GET", "path": "/api/auth/me", "headers": []}),
+                        credentials=HTTPAuthorizationCredentials(scheme="Bearer", credentials=body["access_token"]),
+                        db=consumer,
+                    )
+                    observed["authenticated_user_id"] = str(current.id)
+                except HTTPException as exc:
+                    observed["authentication_error"] = exc.status_code
+
+    await app(
+        {
+            "type": "http",
+            "asgi": {"version": "3.0"},
+            "http_version": "1.1",
+            "method": "POST",
+            "scheme": "http",
+            "path": "/api/auth/register",
+            "raw_path": b"/api/auth/register",
+            "query_string": b"",
+            "headers": [(b"content-type", b"application/json")],
+            "server": ("test", 80),
+            "client": ("test", 1234),
+        },
+        receive,
+        send,
+    )
+    assert observed["status"] == 201
+    assert observed.get("authenticated_user_id") == observed["response"]["user"]["id"], observed.get(
+        "authentication_error"
+    )
+    async with owner_sessionmaker() as db:
+        participant = await db.scalar(
+            select(Participant).where(
+                Participant.type == "user",
+                Participant.ref_id == uuid.UUID(observed["authenticated_user_id"]),
+            )
+        )
+    assert participant is not None
+
+
 async def test_platform_admin_assigns_tenantless_org_admin_under_app_rls(
     owner_sessionmaker,
     app_user_sessionmaker,
@@ -1013,7 +1103,7 @@ async def test_builtin_skill_seed_writes_global_skill_under_app_rls(
             }
         ],
     )
-    monkeypatch.setattr(skill_seeder, "_load_pack_skill_dicts", lambda: [])
+    monkeypatch.setattr(skill_seeder, "_load_pack_skill_dicts", lambda *, pack_dirs=None: [])
 
     await skill_seeder.seed_skills()
 

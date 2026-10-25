@@ -183,9 +183,12 @@ async def register(data: UserRegister, db: AsyncSession = Depends(get_db)):
         )
         await db.flush()
 
+    # A published token must resolve from the next request's connection, even
+    # before request-scoped dependency teardown finishes.
+    await db.commit()
+
     # Seed default agents after first user (platform admin) registration
     if is_first_user:
-        await db.commit()  # commit user first so seeder can find the admin
         try:
             from app.services.agent_seeder import seed_default_agents
 

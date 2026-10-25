@@ -262,11 +262,15 @@ async def enqueue_terminal_delivery_for_task(
             .all()
         )
     task_metadata = dict(getattr(task, "metadata_json", None) or {})
-    resolved_external_principal_id = None if getattr(session, "audience_kind", None) == "group" else (
-        external_principal_id
-        or task_metadata.get("external_principal_id")
-        or getattr(session, "external_principal_id", None)
-        or normalized_target.get("external_principal_id")
+    resolved_external_principal_id = (
+        None
+        if getattr(session, "audience_kind", None) == "group"
+        else (
+            external_principal_id
+            or task_metadata.get("external_principal_id")
+            or getattr(session, "external_principal_id", None)
+            or normalized_target.get("external_principal_id")
+        )
     )
     resolved_user_id = user_id or getattr(task, "root_user_id", None) or getattr(session, "user_id", None)
     delivery_metadata = dict(metadata or {})
@@ -450,8 +454,13 @@ class ChannelDeliveryOutboxService:
             if tenant_installation:
                 from app.services.channel_installation import load_tenant_channel_for_target
 
-                config = await load_tenant_channel_for_target(db, agent_id=item.agent_id, channel=item.channel,
-                    target=item.delivery_target, expected_config_id=item.channel_config_id)
+                config = await load_tenant_channel_for_target(
+                    db,
+                    agent_id=item.agent_id,
+                    channel=item.channel,
+                    target=item.delivery_target,
+                    expected_config_id=item.channel_config_id,
+                )
                 if config is None:
                     raise ChannelDeliveryPermanentError("enterprise channel installation or identity changed")
             elif item.channel_config_id is not None:
@@ -486,14 +495,26 @@ class ChannelDeliveryOutboxService:
                 config_id = principal.tenant_channel_config_id if tenant_installation else principal.channel_config_id
                 if item.channel_config_id is not None and config_id != item.channel_config_id:
                     raise ChannelDeliveryPermanentError("external channel target installation changed")
-                if (item.metadata.get("source") == "employee_first_task_question"
-                    and principal.linked_user_id != item.user_id):
+                if (
+                    item.metadata.get("source") == "employee_first_task_question"
+                    and principal.linked_user_id != item.user_id
+                ):
                     raise ChannelDeliveryPermanentError("first-task requester channel binding changed")
 
-            session = await db.scalar(select(ChatSession).where(ChatSession.id == item.session_id,
-                ChatSession.tenant_id == item.tenant_id, ChatSession.agent_id == item.agent_id))
-            if (session is not None and session.audience_kind != "group" and item.external_principal_id is not None
-                and item.user_id is not None and (session.user_id != item.user_id or principal.linked_user_id != item.user_id)):
+            session = await db.scalar(
+                select(ChatSession).where(
+                    ChatSession.id == item.session_id,
+                    ChatSession.tenant_id == item.tenant_id,
+                    ChatSession.agent_id == item.agent_id,
+                )
+            )
+            if (
+                session is not None
+                and session.audience_kind != "group"
+                and item.external_principal_id is not None
+                and item.user_id is not None
+                and (session.user_id != item.user_id or principal.linked_user_id != item.user_id)
+            ):
                 raise ChannelDeliveryPermanentError("private channel requester binding changed")
             from app.services.remote_a2a_channel import validate_delivery
 
@@ -505,7 +526,7 @@ class ChannelDeliveryOutboxService:
             if not item.artifact_ids:
                 return []
             artifact_session_id = item.session_id
-            if item.metadata.get('source') == 'business_task_runtime':
+            if item.metadata.get("source") == "business_task_runtime":
                 from app.services.business_task_artifacts import business_delivery_artifact_session
 
                 execution_session, _root = await business_delivery_artifact_session(db, item)
@@ -554,19 +575,20 @@ class ChannelDeliveryOutboxService:
         from app.services.runtime_user_identity import load_scoped_runtime_user
 
         user = await load_scoped_runtime_user(db, item.user_id, tenant_id=item.tenant_id) if item.user_id else None
-        if session.audience_kind == 'group':
+        if session.audience_kind == "group":
             from app.core.permissions import check_agent_access
             from app.services.shared_group_authority import require_current_group_member
 
             if user is None or item.external_principal_id is not None:
-                raise HTTPException(403, detail={'code': 'group_delivery_requester_unavailable'})
+                raise HTTPException(403, detail={"code": "group_delivery_requester_unavailable"})
             await require_current_group_member(db, session=session, user=user)
             await check_agent_access(db, user, item.agent_id)
         elif item.user_id is not None and (user is None or session.user_id != item.user_id):
             raise HTTPException(403, detail={"code": "artifact_delivery_reader_unavailable"})
         if item.external_principal_id is not None:
-            actor = await load_external_runtime_actor(db, tenant_id=item.tenant_id,
-                principal_id=item.external_principal_id, expected_user_id=item.user_id)
+            actor = await load_external_runtime_actor(
+                db, tenant_id=item.tenant_id, principal_id=item.external_principal_id, expected_user_id=item.user_id
+            )
             if item.user_id is not None and (not actor.authority_bound or actor.id != item.user_id):
                 raise HTTPException(403, detail={"code": "artifact_delivery_binding_changed"})
         return user
@@ -577,43 +599,46 @@ class ChannelDeliveryOutboxService:
         from app.services.content_input_receipts import ContentInputReceiptError, _validate_input_dependencies
         from app.services.session_model_inputs import _model_dependencies
 
-        if item.terminal_status == 'in_progress' or item.metadata.get('source') == 'original_work_progress':
+        if item.terminal_status == "in_progress" or item.metadata.get("source") == "original_work_progress":
             from app.services.original_work_progress import authorize_original_work_progress
 
             session = await db.get(ChatSession, item.session_id, populate_existing=True)
             user = await self._private_delivery_reader(db, item, session) if session is not None else None
             await authorize_original_work_progress(db, item=item, session=session, user=user)
             return
-        if item.terminal_status == 'permission_response' or item.metadata.get('source') == 'original_work_permission_response':
+        if (
+            item.terminal_status == "permission_response"
+            or item.metadata.get("source") == "original_work_permission_response"
+        ):
             from app.services.original_work_permission_responses import authorize_original_work_permission_response
 
             session = await db.get(ChatSession, item.session_id, populate_existing=True)
             user = await self._private_delivery_reader(db, item, session) if session is not None else None
             await authorize_original_work_permission_response(db, item=item, session=session, user=user)
-            if session.audience_kind == 'group':
+            if session.audience_kind == "group":
                 from app.services.shared_group_authority import validate_shared_group_delivery
 
                 await validate_shared_group_delivery(db, item=item, session=session)
             return
-        if item.terminal_status == 'awaiting_permission' or item.metadata.get('source') == 'original_work_permission':
+        if item.terminal_status == "awaiting_permission" or item.metadata.get("source") == "original_work_permission":
             from app.services.original_work_permission_notices import authorize_original_work_permission_notice
 
             session = await db.get(ChatSession, item.session_id, populate_existing=True)
             user = await self._private_delivery_reader(db, item, session) if session is not None else None
             await authorize_original_work_permission_notice(db, item=item, session=session, user=user)
-            if session.audience_kind == 'group':
+            if session.audience_kind == "group":
                 from app.services.shared_group_authority import validate_shared_group_delivery
 
                 await validate_shared_group_delivery(db, item=item, session=session)
             return
-        if item.metadata.get('source') == 'employee_first_task_question':
+        if item.metadata.get("source") == "employee_first_task_question":
             from app.services.employee_first_task import authorize_first_task_question_notice
 
             session = await db.get(ChatSession, item.session_id, populate_existing=True)
             user = await self._private_delivery_reader(db, item, session) if session is not None else None
             await authorize_first_task_question_notice(db, item=item, session=session, user=user)
             return
-        if item.metadata.get('source') == 'business_task_runtime':
+        if item.metadata.get("source") == "business_task_runtime":
             await self._authorize_business_result_text(db, item)
             return
         if item.metadata.get("source") not in {"session_terminal_outcome", "session_terminal_outcome_recovery"}:
@@ -626,31 +651,55 @@ class ChannelDeliveryOutboxService:
         try:
             outcome_id = uuid.UUID(str(item.metadata.get("outcome_id")))
         except (ValueError, TypeError, AttributeError) as exc:
-            raise ContentInputReceiptError("native_result_source_unavailable", "The result reference is unavailable.", 503) from exc
-        row = (await db.execute(select(SessionRunOutcome, SessionModelResult).join(SessionModelResult,
-            SessionModelResult.id == SessionRunOutcome.terminal_result_id).where(
-                SessionRunOutcome.id == outcome_id, SessionRunOutcome.tenant_id == item.tenant_id,
-                SessionRunOutcome.session_id == item.session_id, SessionRunOutcome.run_id == item.runtime_task_id,
-                SessionRunOutcome.state == "terminal_committed", SessionModelResult.tenant_id == item.tenant_id,
-                SessionModelResult.session_id == item.session_id, SessionModelResult.run_id == item.runtime_task_id,
-                SessionModelResult.state == "round_committed").execution_options(populate_existing=True))).first()
+            raise ContentInputReceiptError(
+                "native_result_source_unavailable", "The result reference is unavailable.", 503
+            ) from exc
+        row = (
+            await db.execute(
+                select(SessionRunOutcome, SessionModelResult)
+                .join(SessionModelResult, SessionModelResult.id == SessionRunOutcome.terminal_result_id)
+                .where(
+                    SessionRunOutcome.id == outcome_id,
+                    SessionRunOutcome.tenant_id == item.tenant_id,
+                    SessionRunOutcome.session_id == item.session_id,
+                    SessionRunOutcome.run_id == item.runtime_task_id,
+                    SessionRunOutcome.state == "terminal_committed",
+                    SessionModelResult.tenant_id == item.tenant_id,
+                    SessionModelResult.session_id == item.session_id,
+                    SessionModelResult.run_id == item.runtime_task_id,
+                    SessionModelResult.state == "round_committed",
+                )
+                .execution_options(populate_existing=True)
+            )
+        ).first()
         if row is None:
-            raise ContentInputReceiptError("native_result_source_unavailable", "The committed result is unavailable.", 503)
+            raise ContentInputReceiptError(
+                "native_result_source_unavailable", "The committed result is unavailable.", 503
+            )
         _outcome, result = row
-        if (item.text != str((result.seal_json or {}).get("semantic_content") or "").strip()
-            or (item.metadata.get("terminal_result_id") is not None
-                and str(result.id) != str(item.metadata["terminal_result_id"]))):
-            raise ContentInputReceiptError("native_result_source_changed", "The result no longer matches its delivery.", 403)
+        if item.text != str((result.seal_json or {}).get("semantic_content") or "").strip() or (
+            item.metadata.get("terminal_result_id") is not None
+            and str(result.id) != str(item.metadata["terminal_result_id"])
+        ):
+            raise ContentInputReceiptError(
+                "native_result_source_changed", "The result no longer matches its delivery.", 403
+            )
         dependencies, complete = _model_dependencies(result)
         if not complete:
-            raise ContentInputReceiptError("native_result_sources_unavailable", "The result lacks its complete source receipt.", 503)
+            raise ContentInputReceiptError(
+                "native_result_sources_unavailable", "The result lacks its complete source receipt.", 503
+            )
         user = await self._private_delivery_reader(db, item, session)
         if user is None:
             if item.external_principal_id is not None:
                 from app.services.external_principal_service import ExternalChannelSourceReader
 
-                reader = ExternalChannelSourceReader(agent_id=item.agent_id, session_id=item.session_id,
-                    runtime_task_id=item.runtime_task_id, external_principal_id=item.external_principal_id)
+                reader = ExternalChannelSourceReader(
+                    agent_id=item.agent_id,
+                    session_id=item.session_id,
+                    runtime_task_id=item.runtime_task_id,
+                    external_principal_id=item.external_principal_id,
+                )
                 await _validate_input_dependencies(db, item.tenant_id, dependencies, runtime_request=reader)
             else:
                 await _validate_input_dependencies(db, item.tenant_id, dependencies, user=None)
@@ -664,105 +713,180 @@ class ChannelDeliveryOutboxService:
         from app.models.session_v2 import SessionModelResult
         from app.services.content_input_receipts import ContentInputReceiptError, _validate_input_dependencies
         from app.services.direct_invocation_terminal_boundary_processor import (
-            _latest_run_event, _validate_response_payload,
+            _latest_run_event,
+            _validate_response_payload,
         )
         from app.services.runtime_terminal_boundary_outbox import TerminalBoundaryCanonicalMismatch
         from app.services.session_model_inputs import _model_dependencies
 
         task = await db.get(RuntimeTask, item.runtime_task_id, populate_existing=True)
         session = await db.get(ChatSession, item.session_id, populate_existing=True)
-        if (task is None or task.task_type != 'business_task' or task.tenant_id != item.tenant_id
-            or task.parent_agent_id != item.agent_id or task.parent_session_id != str(item.session_id)
-            or task.root_user_id != item.user_id or task.status != item.terminal_status
-            or session is None or session.tenant_id != item.tenant_id or session.agent_id != item.agent_id):
-            raise ContentInputReceiptError('business_result_binding_changed', 'The original task delivery changed.', 403)
-        outcome = (task.metadata_json or {}).get('outcome') or {}
-        if item.metadata.get('projection_kind') == 'question_notice':
+        if (
+            task is None
+            or task.task_type != "business_task"
+            or task.tenant_id != item.tenant_id
+            or task.parent_agent_id != item.agent_id
+            or task.parent_session_id != str(item.session_id)
+            or task.root_user_id != item.user_id
+            or task.status != item.terminal_status
+            or session is None
+            or session.tenant_id != item.tenant_id
+            or session.agent_id != item.agent_id
+        ):
+            raise ContentInputReceiptError(
+                "business_result_binding_changed", "The original task delivery changed.", 403
+            )
+        outcome = (task.metadata_json or {}).get("outcome") or {}
+        if item.metadata.get("projection_kind") == "question_notice":
             from app.services.business_task_question_delivery import authorize_business_question_notice
 
             user = await self._private_delivery_reader(db, item, session)
             await authorize_business_question_notice(db, item=item, run=task, session=session, user=user)
             return
-        if item.metadata.get('projection_kind') == 'status_notice':
+        if item.metadata.get("projection_kind") == "status_notice":
             from app.core.resource_authority import authorize_resource_action
             from app.models.task import Task
             from app.services.business_task_runtime import _runtime_binding_matches, business_task_status_notice
 
             metadata = task.metadata_json or {}
             try:
-                business = await db.get(Task, uuid.UUID(metadata['business_task_id']), populate_existing=True)
+                business = await db.get(Task, uuid.UUID(metadata["business_task_id"]), populate_existing=True)
             except (KeyError, ValueError, TypeError) as exc:
-                raise ContentInputReceiptError('business_status_binding_changed', 'The saved task is unavailable.', 403) from exc
+                raise ContentInputReceiptError(
+                    "business_status_binding_changed", "The saved task is unavailable.", 403
+                ) from exc
             notice = business_task_status_notice(task.status)
-            if (business is None or not _runtime_binding_matches(business, task) or metadata.get('phase') != 'terminal'
-                or item.metadata.get('business_task_id') != str(business.id)
-                or business.status != outcome.get('task_status') or business.last_execution_status != outcome.get('status')
-                or task.status != outcome.get('runtime_status') or notice is None or item.text != notice or item.artifact_ids):
-                raise ContentInputReceiptError('business_status_changed', 'The saved task status no longer matches.', 403)
+            if (
+                business is None
+                or not _runtime_binding_matches(business, task)
+                or metadata.get("phase") != "terminal"
+                or item.metadata.get("business_task_id") != str(business.id)
+                or business.status != outcome.get("task_status")
+                or business.last_execution_status != outcome.get("status")
+                or task.status != outcome.get("runtime_status")
+                or notice is None
+                or item.text != notice
+                or item.artifact_ids
+            ):
+                raise ContentInputReceiptError(
+                    "business_status_changed", "The saved task status no longer matches.", 403
+                )
             user = await self._private_delivery_reader(db, item, session)
             if user is None:
-                raise ContentInputReceiptError('business_result_reader_unavailable', 'Restore the original requester authority.', 403)
+                raise ContentInputReceiptError(
+                    "business_result_reader_unavailable", "Restore the original requester authority.", 403
+                )
             with source_recipient_read(session_id=session.id, user_id=user.id):
-                await authorize_resource_action(db, user, agent_id=business.agent_id, resource_kind='task', resource_id=business.id,
-                    action='read', owner_user_id=business.created_by, root_session_id=business.root_session_id,
-                    authority_state=business.authority_state)
+                await authorize_resource_action(
+                    db,
+                    user,
+                    agent_id=business.agent_id,
+                    resource_kind="task",
+                    resource_id=business.id,
+                    action="read",
+                    owner_user_id=business.created_by,
+                    root_session_id=business.root_session_id,
+                    authority_state=business.authority_state,
+                )
             return
-        result, summary = outcome.get('result'), outcome.get('summary')
+        result, summary = outcome.get("result"), outcome.get("summary")
         if not isinstance(result, str) or not isinstance(summary, str) or not task.child_session_id:
-            raise ContentInputReceiptError('business_result_sources_unavailable', 'Reconcile the saved task result before delivery.', 503)
-        text = summary if result.strip() == summary.strip() else f'{summary}\n\n{result}'
+            raise ContentInputReceiptError(
+                "business_result_sources_unavailable", "Reconcile the saved task result before delivery.", 503
+            )
+        text = summary if result.strip() == summary.strip() else f"{summary}\n\n{result}"
         if item.text != text.strip():
-            raise ContentInputReceiptError('business_result_changed', 'The saved result no longer matches its delivery.', 403)
-        payload = outcome.get('response_complete_payload')
-        event = await _latest_run_event(db, task=task, agent_id=item.agent_id,
-            session_id=task.child_session_id, lock_rows=False)
-        if not isinstance(payload, dict) or event is None or event.event_type != 'result_commit.round_committed':
-            raise ContentInputReceiptError('business_result_sources_unavailable', 'The saved task lacks its native result receipt.', 503)
+            raise ContentInputReceiptError(
+                "business_result_changed", "The saved result no longer matches its delivery.", 403
+            )
+        payload = outcome.get("response_complete_payload")
+        event = await _latest_run_event(
+            db, task=task, agent_id=item.agent_id, session_id=task.child_session_id, lock_rows=False
+        )
+        if not isinstance(payload, dict) or event is None or event.event_type != "result_commit.round_committed":
+            raise ContentInputReceiptError(
+                "business_result_sources_unavailable", "The saved task lacks its native result receipt.", 503
+            )
         try:
-            await _validate_response_payload(db=db, task=task, agent_id=item.agent_id,
-                session_id=task.child_session_id, source='task', terminal_event=event, payload=payload)
+            await _validate_response_payload(
+                db=db,
+                task=task,
+                agent_id=item.agent_id,
+                session_id=task.child_session_id,
+                source="task",
+                terminal_event=event,
+                payload=payload,
+            )
         except TerminalBoundaryCanonicalMismatch as exc:
-            raise ContentInputReceiptError('business_result_changed', 'The native task result no longer matches.', 403) from exc
-        model = await db.scalar(select(SessionModelResult).where(SessionModelResult.tenant_id == item.tenant_id,
-            SessionModelResult.session_id == uuid.UUID(task.child_session_id), SessionModelResult.run_id == task.id,
-            SessionModelResult.round_committed_event_id == event.id, SessionModelResult.state == 'round_committed')
-            .execution_options(populate_existing=True))
-        if model is None or (model.seal_json or {}).get('semantic_content') != result:
-            raise ContentInputReceiptError('business_result_changed', 'The task output differs from its sealed result.', 403)
+            raise ContentInputReceiptError(
+                "business_result_changed", "The native task result no longer matches.", 403
+            ) from exc
+        model = await db.scalar(
+            select(SessionModelResult)
+            .where(
+                SessionModelResult.tenant_id == item.tenant_id,
+                SessionModelResult.session_id == uuid.UUID(task.child_session_id),
+                SessionModelResult.run_id == task.id,
+                SessionModelResult.round_committed_event_id == event.id,
+                SessionModelResult.state == "round_committed",
+            )
+            .execution_options(populate_existing=True)
+        )
+        if model is None or (model.seal_json or {}).get("semantic_content") != result:
+            raise ContentInputReceiptError(
+                "business_result_changed", "The task output differs from its sealed result.", 403
+            )
         dependencies, complete = _model_dependencies(model)
         if not complete:
-            raise ContentInputReceiptError('business_result_sources_unavailable', 'The task input source receipt is incomplete.', 503)
+            raise ContentInputReceiptError(
+                "business_result_sources_unavailable", "The task input source receipt is incomplete.", 503
+            )
         user = await self._private_delivery_reader(db, item, session)
         if user is None:
-            raise ContentInputReceiptError('business_result_reader_unavailable', 'Restore the original requester authority.', 403)
+            raise ContentInputReceiptError(
+                "business_result_reader_unavailable", "Restore the original requester authority.", 403
+            )
         with source_recipient_read(session_id=session.id, user_id=user.id):
             await _validate_input_dependencies(db, item.tenant_id, dependencies, user=user)
-        if session.audience_kind == 'group':
+        if session.audience_kind == "group":
             from app.services.shared_group_authority import validate_shared_group_delivery
 
             await validate_shared_group_delivery(db, item=item, session=session)
 
-    async def _authorize_artifact_part(self, db: AsyncSession, item: ClaimedChannelDelivery,
-        artifact_id: uuid.UUID) -> ChatArtifact:
+    async def _authorize_artifact_part(
+        self, db: AsyncSession, item: ClaimedChannelDelivery, artifact_id: uuid.UUID
+    ) -> ChatArtifact:
         from fastapi import HTTPException
         from app.core.resource_authority import authorize_resource_action
         from app.core.source_read_purpose import source_recipient_read
         from app.services.content_input_receipts import validate_artifact_content_receipt
 
         artifact_session_id, artifact_root = item.session_id, None
-        if item.metadata.get('source') == 'business_task_runtime':
+        if item.metadata.get("source") == "business_task_runtime":
             from app.services.business_task_artifacts import business_delivery_artifact_session
 
             execution_session, artifact_root = await business_delivery_artifact_session(db, item)
             artifact_session_id = execution_session.id
-        artifact = await db.scalar(select(ChatArtifact).where(ChatArtifact.id == artifact_id,
-            ChatArtifact.tenant_id == item.tenant_id, ChatArtifact.agent_id == item.agent_id,
-            ChatArtifact.session_id == artifact_session_id, ChatArtifact.runtime_task_id == item.runtime_task_id)
-            .execution_options(populate_existing=True))
+        artifact = await db.scalar(
+            select(ChatArtifact)
+            .where(
+                ChatArtifact.id == artifact_id,
+                ChatArtifact.tenant_id == item.tenant_id,
+                ChatArtifact.agent_id == item.agent_id,
+                ChatArtifact.session_id == artifact_session_id,
+                ChatArtifact.runtime_task_id == item.runtime_task_id,
+            )
+            .execution_options(populate_existing=True)
+        )
         session = await db.get(ChatSession, item.session_id, populate_existing=True)
-        if (artifact is None or session is None or session.tenant_id != item.tenant_id
-            or session.agent_id != item.agent_id or artifact_id not in item.artifact_ids
-            or (artifact_root is not None and artifact.root_session_id != artifact_root)):
+        if (
+            artifact is None
+            or session is None
+            or session.tenant_id != item.tenant_id
+            or session.agent_id != item.agent_id
+            or artifact_id not in item.artifact_ids
+            or (artifact_root is not None and artifact.root_session_id != artifact_root)
+        ):
             raise HTTPException(404, detail={"code": "artifact_delivery_authority_unavailable"})
         if session.audience_kind == "group":
             from app.services.shared_group_authority import load_current_group_recipient_users
@@ -775,10 +899,17 @@ class ChannelDeliveryOutboxService:
             user = await self._private_delivery_reader(db, item, session)
             if user is not None:
                 with source_recipient_read(session_id=session.id, user_id=user.id):
-                    await authorize_resource_action(db, user, agent_id=item.agent_id, resource_kind="chat_artifact",
-                        resource_id=artifact.id, action="deliver", owner_user_id=artifact.owner_user_id,
+                    await authorize_resource_action(
+                        db,
+                        user,
+                        agent_id=item.agent_id,
+                        resource_kind="chat_artifact",
+                        resource_id=artifact.id,
+                        action="deliver",
+                        owner_user_id=artifact.owner_user_id,
                         root_session_id=artifact.root_session_id or artifact.session_id,
-                        authority_state=artifact.authority_state)
+                        authority_state=artifact.authority_state,
+                    )
             else:
                 # An unbound recipient cannot borrow a later linked User's grants.
                 # Only a verified source closure with no private reader requirement can pass.
@@ -812,12 +943,16 @@ class ChannelDeliveryOutboxService:
                 except (HTTPException, ContentInputReceiptError) as exc:
                     detail = getattr(exc, "detail", None)
                     code = getattr(exc, "code", None) or (detail.get("code") if isinstance(detail, dict) else None)
-                    error_type = (ChannelDeliveryRetryableError if exc.status_code >= 500 else ChannelDeliveryPermanentError)
+                    error_type = (
+                        ChannelDeliveryRetryableError if exc.status_code >= 500 else ChannelDeliveryPermanentError
+                    )
                     raise error_type(f"native_result_source_unavailable:{code or 'source_access_denied'}") from exc
                 except (ChannelDeliveryPermanentError, ChannelDeliveryRetryableError):
                     raise
                 except Exception as exc:
-                    raise ChannelDeliveryRetryableError(f"native_result_authority_unavailable:{type(exc).__name__}") from exc
+                    raise ChannelDeliveryRetryableError(
+                        f"native_result_authority_unavailable:{type(exc).__name__}"
+                    ) from exc
                 from app.services.remote_a2a_channel import validate_delivery
 
                 await validate_delivery(sender_kwargs["db"], item=item)
@@ -834,12 +969,21 @@ class ChannelDeliveryOutboxService:
                     if captured is None:
                         raise ChannelDeliveryPermanentError("artifact_snapshot_unavailable")
                     sender_kwargs = {**sender_kwargs, "file_path": captured}
-                except (HTTPException, ContentInputReceiptError, WorkspaceAuthorityError, PermissionError, LookupError) as exc:
+                except (
+                    HTTPException,
+                    ContentInputReceiptError,
+                    WorkspaceAuthorityError,
+                    PermissionError,
+                    LookupError,
+                ) as exc:
                     detail = getattr(exc, "detail", None)
                     code = getattr(exc, "code", None) or (detail.get("code") if isinstance(detail, dict) else None)
                     message = f"artifact_source_unavailable:{code or 'artifact_access_denied'}"
-                    error_type = (ChannelDeliveryRetryableError if getattr(exc, "status_code", 403) >= 500
-                        else ChannelDeliveryPermanentError)
+                    error_type = (
+                        ChannelDeliveryRetryableError
+                        if getattr(exc, "status_code", 403) >= 500
+                        else ChannelDeliveryPermanentError
+                    )
                     raise error_type(message) from exc
                 except (ChannelDeliveryPermanentError, ChannelDeliveryRetryableError):
                     raise
@@ -887,15 +1031,22 @@ class ChannelDeliveryOutboxService:
             raise ChannelDeliveryAmbiguousError("a provider call has no committed receipt; automatic replay is unsafe")
         artifact_paths = await self._load_delivery_authority_and_artifacts(item)
         text = item.text
-        smartbot = item.channel == 'wecom' and item.delivery_target.get('wecom_transport') == 'smart_bot'
+        smartbot = item.channel == "wecom" and item.delivery_target.get("wecom_transport") == "smart_bot"
         if smartbot:
             from urllib.parse import urlsplit
 
-            base = (get_settings().PUBLIC_BASE_URL or get_settings().BASE_URL).rstrip('/')
+            base = (get_settings().PUBLIC_BASE_URL or get_settings().BASE_URL).rstrip("/")
             parsed = urlsplit(base)
-            if parsed.scheme != 'https' or not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment:
-                raise ChannelDeliveryPermanentError('Smart Bot requires a configured HTTPS Web work URL')
-            text += f'\n\n[在原工作中查看、答复或编辑成果]({base}/agents/{item.agent_id}/sessions/{item.session_id})'
+            if (
+                parsed.scheme != "https"
+                or not parsed.hostname
+                or parsed.username
+                or parsed.password
+                or parsed.query
+                or parsed.fragment
+            ):
+                raise ChannelDeliveryPermanentError("Smart Bot requires a configured HTTPS Web work URL")
+            text += f"\n\n[在原工作中查看、答复或编辑成果]({base}/agents/{item.agent_id}/sessions/{item.session_id})"
         common = {
             "agent_id": item.agent_id,
             "reply_target": item.delivery_target,
@@ -926,8 +1077,12 @@ class ChannelDeliveryOutboxService:
                 },
             )
             if smartbot:
-                return {'status': 'delivered', 'channel': item.channel, 'artifact_delivery': 'authenticated_work_link',
-                    'artifact_ids': [str(value) for value in item.artifact_ids]}
+                return {
+                    "status": "delivered",
+                    "channel": item.channel,
+                    "artifact_delivery": "authenticated_work_link",
+                    "artifact_ids": [str(value) for value in item.artifact_ids],
+                }
             for artifact_id, file_path, file_name in artifact_paths:
                 await self._send_part(
                     item=item,

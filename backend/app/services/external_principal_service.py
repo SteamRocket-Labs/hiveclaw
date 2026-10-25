@@ -71,16 +71,26 @@ class ExternalChannelSourceReader:
 async def load_external_context_actor(db, *, tenant_id, agent_id, session, task):
     from app.services.session_v2_persistence import require_external_session_source_access
 
-    if (session is None or task is None or session.tenant_id != tenant_id or session.agent_id != agent_id
-        or task.tenant_id != tenant_id or task.parent_agent_id != agent_id
-        or task.parent_session_id != str(session.id) or session.audience_kind not in {None, "private"}
-        or session.user_id is not None or task.root_user_id is not None or task.machine_credential_id is not None
+    if (
+        session is None
+        or task is None
+        or session.tenant_id != tenant_id
+        or session.agent_id != agent_id
+        or task.tenant_id != tenant_id
+        or task.parent_agent_id != agent_id
+        or task.parent_session_id != str(session.id)
+        or session.audience_kind not in {None, "private"}
+        or session.user_id is not None
+        or task.root_user_id is not None
+        or task.machine_credential_id is not None
         or session.external_principal_id is None
-        or task.root_external_principal_id != session.external_principal_id):
+        or task.root_external_principal_id != session.external_principal_id
+    ):
         return None
     try:
-        actor = await load_external_runtime_actor(db, tenant_id=tenant_id,
-            principal_id=session.external_principal_id, expected_user_id=None)
+        actor = await load_external_runtime_actor(
+            db, tenant_id=tenant_id, principal_id=session.external_principal_id, expected_user_id=None
+        )
         if actor.id is not None or actor.authority_bound:
             return None
         await require_external_session_source_access(db, actor=actor, agent_id=agent_id, session_id=session.id)
@@ -102,13 +112,18 @@ async def external_request_source_actor(db, *, tenant_id, request):
     try:
         agent_id = uuid.UUID(str(context.agent_id))
         session_id = uuid.UUID(str(getattr(context, "session_id", None) or getattr(nested, "session_id", None)))
-        run_id = uuid.UUID(str(getattr(context, "runtime_task_id", None) or metadata.get("runtime_task_id") or metadata.get("task_id")))
+        run_id = uuid.UUID(
+            str(getattr(context, "runtime_task_id", None) or metadata.get("runtime_task_id") or metadata.get("task_id"))
+        )
     except (AttributeError, ValueError, TypeError):
         return None
     session = await db.get(ChatSession, session_id, populate_existing=True)
     task = await db.get(RuntimeTask, run_id, populate_existing=True)
     actor = await load_external_context_actor(db, tenant_id=tenant_id, agent_id=agent_id, session=session, task=task)
-    if actor is not None and getattr(context, "external_principal_id", actor.external_principal_id) != actor.external_principal_id:
+    if (
+        actor is not None
+        and getattr(context, "external_principal_id", actor.external_principal_id) != actor.external_principal_id
+    ):
         return None
     return (session, task, actor) if actor is not None else None
 
@@ -177,18 +192,21 @@ async def _runtime_actor(
     if linked_user_id is not None:
         user = (
             await db.execute(
-                select(User).where(
+                select(User)
+                .where(
                     User.id == linked_user_id,
                     User.tenant_id == principal.tenant_id,
                     User.is_active.is_(True),
-                ).execution_options(populate_existing=True)
+                )
+                .execution_options(populate_existing=True)
             )
         ).scalar_one_or_none()
 
     bound = bool(
         user is not None
         and principal.status == "active"
-        and principal.binding_method in {"wechat_qr", "feishu_qr", "feishu_tenant_identity", "company_channel_challenge"}
+        and principal.binding_method
+        in {"wechat_qr", "feishu_qr", "feishu_tenant_identity", "company_channel_challenge"}
         and principal.binding_verified_at is not None
     )
     if bound and principal.binding_method == "feishu_tenant_identity":
@@ -196,13 +214,21 @@ async def _runtime_actor(
         from app.services.channel_ingress_inbox import channel_installation_ref
         from app.services.tenant_feishu import resolve_tenant_feishu_identity
 
-        config = await db.get(TenantChannelConfig, principal.tenant_channel_config_id,
-            populate_existing=True) if principal.tenant_channel_config_id else None
+        config = (
+            await db.get(TenantChannelConfig, principal.tenant_channel_config_id, populate_existing=True)
+            if principal.tenant_channel_config_id
+            else None
+        )
         proof = await resolve_tenant_feishu_identity(db, config=config, sender={"open_id": principal.subject_id})
-        bound = bool(config is not None and principal.installation_ref == channel_installation_ref(config, fallback="")
-            and proof is not None and proof[0].id == user.id)
+        bound = bool(
+            config is not None
+            and principal.installation_ref == channel_installation_ref(config, fallback="")
+            and proof is not None
+            and proof[0].id == user.id
+        )
     if bound and principal.binding_method == "company_channel_challenge":
         from app.services.company_channel_identity import company_binding_proof
+
         bound = await company_binding_proof(db, principal=principal, user_id=user.id) is not None
     return ChannelRuntimeActor(
         id=user.id if bound else None,
@@ -239,7 +265,9 @@ async def resolve_or_create_external_principal(
         subject_id=subject_id,
     )
     config_uuid = _uuid(channel_config_id, field="channel_config_id") if channel_config_id else None
-    tenant_config_uuid = _uuid(tenant_channel_config_id, field="tenant_channel_config_id") if tenant_channel_config_id else None
+    tenant_config_uuid = (
+        _uuid(tenant_channel_config_id, field="tenant_channel_config_id") if tenant_channel_config_id else None
+    )
     if config_uuid and tenant_config_uuid:
         raise ExternalPrincipalAuthorityError("external principal has two installation kinds")
     await db.execute(
@@ -277,8 +305,14 @@ async def resolve_or_create_external_principal(
     if config_uuid and principal.channel_config_id not in (None, config_uuid):
         raise ExternalPrincipalAuthorityError("external principal channel configuration drifted")
     principal.channel_config_id = principal.channel_config_id or config_uuid
-    if (tenant_config_uuid and principal.tenant_channel_config_id not in (None, tenant_config_uuid)
-        or config_uuid and principal.tenant_channel_config_id or tenant_config_uuid and principal.channel_config_id):
+    if (
+        tenant_config_uuid
+        and principal.tenant_channel_config_id not in (None, tenant_config_uuid)
+        or config_uuid
+        and principal.tenant_channel_config_id
+        or tenant_config_uuid
+        and principal.channel_config_id
+    ):
         raise ExternalPrincipalAuthorityError("external principal installation kind drifted")
     principal.tenant_channel_config_id = principal.tenant_channel_config_id or tenant_config_uuid
     principal.display_name = str(display_name or principal.display_name or "External user")[:200]
@@ -303,10 +337,12 @@ async def load_external_runtime_actor(
     principal_uuid = _uuid(principal_id, field="principal_id")
     principal = (
         await db.execute(
-            select(ExternalPrincipal).where(
+            select(ExternalPrincipal)
+            .where(
                 ExternalPrincipal.id == principal_uuid,
                 ExternalPrincipal.tenant_id == tenant_uuid,
-            ).execution_options(populate_existing=True)
+            )
+            .execution_options(populate_existing=True)
         )
     ).scalar_one_or_none()
     if principal is None:
@@ -413,6 +449,7 @@ async def _link_verified_external_principal(
     expected_method = {"wechat_personal": "wechat_qr", "feishu": "feishu_qr"}.get(principal.provider)
     if principal.provider in {"dingtalk", "wecom"} and principal.tenant_channel_config_id is not None:
         from app.services.company_channel_identity import company_binding_proof
+
         if await company_binding_proof(db, principal=principal, user_id=user_uuid) is None:
             raise ExternalPrincipalAuthorityError("company binding lacks a current self-issued transport proof")
         expected_method = "company_channel_challenge"
@@ -423,8 +460,11 @@ async def _link_verified_external_principal(
 
         config = await db.get(TenantChannelConfig, principal.tenant_channel_config_id)
         proof = await resolve_tenant_feishu_identity(db, config=config, sender={"open_id": principal.subject_id})
-        if (proof is None or proof[0].id != user_uuid
-            or principal.installation_ref != channel_installation_ref(config, fallback="")):
+        if (
+            proof is None
+            or proof[0].id != user_uuid
+            or principal.installation_ref != channel_installation_ref(config, fallback="")
+        ):
             raise ExternalPrincipalAuthorityError("enterprise binding lacks current app-scoped identity proof")
         expected_method = "feishu_tenant_identity"
     if expected_method is None or binding_method != expected_method:

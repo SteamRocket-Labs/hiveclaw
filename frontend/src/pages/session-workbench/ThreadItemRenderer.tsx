@@ -141,6 +141,8 @@ function shouldCollapse(item: ThreadItem): boolean {
 
 function translateRuntimeFailure(t: TFunction, presentation: RuntimeFailurePresentation): string {
   switch (presentation.kind) {
+    case 'delivery_unknown':
+      return t('sessionWorkbench.threadItem.failure.deliveryUnknown', presentation.fallback);
     case 'auth_or_permission':
       return t('sessionWorkbench.threadItem.failure.authOrPermission', presentation.fallback);
     case 'model_missing':
@@ -193,7 +195,7 @@ export function ThreadItemRenderer({
   const status = sourceNotice ? t('agent.chat.sourceUnavailable', 'Unavailable')
     : t(`sessionWorkbench.threadItem.status.${item.item_status}`, item.item_status);
   const runtimeFailure = item.item_type === 'error' && item.event_type === 'runtime_failure'
-    ? runtimeFailurePresentation(item.item_data.code, item.item_data.retryable === true)
+    ? runtimeFailurePresentation(item.item_data.code, item.item_data.retryable === true, item.metadata?.delivery_state)
     : null;
   const visibleContent = sourceNotice
     ? t('agent.chat.groupSourcesUnavailable', 'Some source content is unavailable to you. Request access or refresh this conversation.')

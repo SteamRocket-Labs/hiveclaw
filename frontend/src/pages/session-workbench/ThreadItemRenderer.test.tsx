@@ -13,6 +13,9 @@ vi.mock('react-i18next', () => ({
       if (_key === 'sessionWorkbench.threadItem.failure.authOrPermission') {
         return '模型服务的身份验证或权限检查失败。请联系管理员检查 API Key 和模型访问权限，修复后再重试。';
       }
+      if (_key === 'sessionWorkbench.threadItem.failure.deliveryUnknown') {
+        return '模型请求的结果尚不明确。请联系平台管理员核对该任务，再决定如何继续。';
+      }
       const value = typeof fallback === 'string' ? fallback : String(options?.defaultValue || _key);
       return value.replace('{{status}}', String(options?.status || '')).replace('{{count}}', String(options?.count || ''));
     },
@@ -89,6 +92,18 @@ function item(itemType: ThreadItemType): ThreadItem {
 }
 
 describe('ThreadItemRenderer', () => {
+  it.each([false, true])('shows reconciliation for typed unknown delivery independently of retry hints: %s', (retryable) => {
+    const failure = { ...item('error'), event_type: 'runtime_failure', item_status: 'failed', audience: 'user',
+      metadata: { delivery_state: 'unknown' },
+      content: 'PRIVATE_PROVIDER_ERROR', user_summary: 'Check the configuration before retrying.',
+      item_data: { code: 'auth_or_permission', retryable, reason: 'provider_error', retry_reason: null },
+    } as ThreadItem;
+    const markup = renderToStaticMarkup(<ThreadItemRenderer item={failure} />);
+    expect(markup).toContain('模型请求的结果尚不明确');
+    expect(markup).toContain('请联系平台管理员核对该任务');
+    expect(markup).not.toMatch(/API Key|修复后再重试|安全重试|Check the configuration|PRIVATE_PROVIDER_ERROR/);
+  });
+
   it.each([true, false])('explains authentication recovery independently of replay safety: %s', (retryable) => {
     const failure = { ...item('error'), event_type: 'runtime_failure', item_status: 'failed',
       audience: 'user', content: 'PRIVATE_PROVIDER_ERROR', user_summary: 'Stale temporary failure summary',

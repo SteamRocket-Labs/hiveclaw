@@ -141,6 +141,7 @@
       "approvalActions": "Approval actions",
       "retryTurn": "Retry turn",
       "failure": {
+        "deliveryUnknown": "The model request outcome is unknown. Ask a platform administrator to reconcile this task before continuing.",
         "authOrPermission": "Model authentication or permission checks failed. Ask an administrator to check the API key and model access, then retry after fixing the configuration.",
         "modelMissing": "No model is configured for this Agent. Choose one in Permissions & Settings, or ask an administrator to configure it before retrying.",
         "quotaExhausted": "Model quota or balance is insufficient. Ask an administrator to check quota, or switch models and retry.",

@@ -585,6 +585,24 @@ describe('canonical runtime_failure consumption (DAY1-PROVIDER-402-TERMINAL-CONS
     });
   });
 
+  it('preserves unknown delivery evidence for the rendered failure card live and after reload', () => {
+    const failure = runtimeFailureEvent(runScope);
+    failure.payload = { ...failure.payload, failure_code: 'unknown', delivery_state: 'unknown', retryable: false,
+      message: 'PRIVATE_PROVIDER_ERROR', content: 'PRIVATE_PROVIDER_ERROR' };
+    const store = replay([failure]);
+    const live = projectSessionEventStoreToMessages(store).find((message) => message.eventType === 'runtime_failure');
+    const reloaded = hydrateSessionTranscriptEvents([failure as unknown as ChatTranscriptEventPayload]).messages
+      .find((message) => message.eventType === 'runtime_failure');
+    for (const message of [live, reloaded]) {
+      expect(message?.threadItem?.metadata?.delivery_state).toBe('unknown');
+      expect(message?.threadItem?.item_data).toMatchObject({ code: 'unknown', retryable: false });
+      expect(message?.threadItem?.user_summary).toBe(
+        'The model request outcome is unknown. Ask a platform administrator to reconcile this task before continuing.',
+      );
+      expect(message?.content).not.toMatch(/retry|PRIVATE_PROVIDER_ERROR/);
+    }
+  });
+
   it('never clears or terminal-merges an active run-2 when a stale run-1 runtime_failure replays through the real snapshot seam (Codex path proof)', () => {
     const failureEvent = runtimeFailureEvent(runScope);
     const store = replay([failureEvent]);

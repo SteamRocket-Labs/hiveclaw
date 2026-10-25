@@ -1,12 +1,19 @@
 export type RuntimeFailurePresentation = {
-  kind: 'model_missing' | 'quota_exhausted' | 'rate_limited' | 'auth_or_permission' | 'retryable' | 'unavailable';
+  kind: 'model_missing' | 'quota_exhausted' | 'rate_limited' | 'auth_or_permission' | 'retryable' | 'unavailable' | 'delivery_unknown';
   fallback: string;
 };
 
 export function runtimeFailurePresentation(
   failureCode: unknown,
   retryable: boolean,
+  deliveryState?: unknown,
 ): RuntimeFailurePresentation {
+  if (deliveryState === 'unknown') {
+    return {
+      kind: 'delivery_unknown',
+      fallback: 'The model request outcome is unknown. Ask a platform administrator to reconcile this task before continuing.',
+    };
+  }
   if (failureCode === 'auth_or_permission') {
     return {
       kind: 'auth_or_permission',

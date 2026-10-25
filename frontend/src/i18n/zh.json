@@ -141,6 +141,7 @@
       "approvalActions": "审批操作",
       "retryTurn": "重试本轮",
       "failure": {
+        "deliveryUnknown": "模型请求的结果尚不明确。请联系平台管理员核对该任务，再决定如何继续。",
         "authOrPermission": "模型服务的身份验证或权限检查失败。请联系管理员检查 API Key 和模型访问权限，修复后再重试。",
         "modelMissing": "当前 Agent 尚未配置模型。请在“权限与设置”中选择模型，或联系管理员配置后再重试。",
         "quotaExhausted": "模型额度或余额不足，请联系管理员检查额度，或切换模型后重试。",

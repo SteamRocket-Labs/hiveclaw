@@ -444,7 +444,8 @@ function projectCanonicalItem(
     const failureCode = typeof item.payload.failure_code === 'string' ? item.payload.failure_code : null;
     const failureReason = typeof item.payload.terminal_reason === 'string' ? item.payload.terminal_reason : null;
     const failureRetryable = item.payload.retryable === true;
-    const failureMessage = runtimeFailurePresentation(failureCode, failureRetryable).fallback;
+    const deliveryState = typeof item.payload.delivery_state === 'string' ? item.payload.delivery_state : null;
+    const failureMessage = runtimeFailurePresentation(failureCode, failureRetryable, deliveryState).fallback;
     const scope = item.scope;
     const threadItem: ThreadItem = {
       schema: 'hive.thread_item.v1',
@@ -465,6 +466,7 @@ function projectCanonicalItem(
       content: failureMessage,
       audience: 'user',
       user_summary: failureMessage,
+      metadata: { delivery_state: deliveryState },
       item_type: 'error',
       item_data: {
         code: failureCode,

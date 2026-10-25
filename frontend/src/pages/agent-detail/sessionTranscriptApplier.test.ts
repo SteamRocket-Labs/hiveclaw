@@ -484,6 +484,36 @@ describe('session transcript applier real consumption path (Codex REQUEST_CHANGE
     expect(reloadedTimeline.cells.filter((cell) => (
       cell.kind === 'active_run' && cell.timeline.status === 'failed'
     ))).toHaveLength(1);
+
+    for (const hasProgress of [false, true]) {
+      const disconnected = projectCanonicalTranscriptSnapshot({
+        existing: [],
+        snapshot: [
+          canonicalInputEvent(1, 'RETURN THE MARKER'),
+          ...(hasProgress ? [canonicalTextEvent(2, 'Checking the task')] : []),
+          canonicalRunLifecycleEvent(hasProgress ? 3 : 2, 'needs_reconciliation'),
+        ],
+        session: { id: 'session-1' } as unknown as ChatSession,
+        parseMessage: (message) => message,
+      });
+      const disconnectedTimeline = buildThreadTimeline({
+        messages: disconnected.messages,
+        activeSession: { id: 'session-1', title: 'Review required' },
+        isWaiting: false,
+        isStreaming: false,
+        activeRunStatus: null,
+        activeRunId: null,
+        runtimePhase: 'idle',
+      });
+      expect(disconnectedTimeline.header.status).toBe('failed');
+      expect(disconnectedTimeline.cells.filter((cell) => (
+        cell.kind === 'active_run' && cell.timeline.status === 'failed'
+      ))).toHaveLength(hasProgress ? 1 : 0);
+      expect(disconnectedTimeline.cells.some((cell) => (
+        cell.kind === 'assistant_final'
+        || (cell.kind === 'active_run' && cell.timeline.status === 'running')
+      ))).toBe(false);
+    }
   });
 
   it('keeps a newer active UI phase byte-identical when canonical terminal identity is rejected', () => {

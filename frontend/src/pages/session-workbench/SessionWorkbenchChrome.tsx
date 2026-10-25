@@ -16,7 +16,7 @@ export function SessionWorkbenchHeader({ model }: { model: SessionWorkbenchHeade
   const guidance = model.status === 'waiting'
     ? t('sessionWorkbench.waitingGuidance', 'Review the request below and choose the next action.')
     : model.status === 'failed'
-      ? t('sessionWorkbench.failedGuidance', 'Review the failed step below to retry or inspect details.')
+      ? t('sessionWorkbench.failedGuidance', 'Review the failed step below and its recovery instructions.')
       : null;
   return (
     <div data-testid="session-workbench-header" className="swb-header">

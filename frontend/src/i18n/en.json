@@ -451,7 +451,7 @@
     "permission": "permission",
     "governance": "governance",
     "activeProjection": "projection",
-    "failedGuidance": "Review the failed step below to retry or inspect details.",
+    "failedGuidance": "Review the failed step below and its recovery instructions.",
     "rewind": {
       "activeRunBlocked": "Stop the current turn before rewinding. Creating a new branch session remains available.",
       "sameSessionHere": "Rewind this session here",

@@ -451,7 +451,7 @@
     "permission": "权限",
     "governance": "治理",
     "activeProjection": "上下文投影",
-    "failedGuidance": "请查看下方失败步骤并重试或检查详情。",
+    "failedGuidance": "请查看下方失败步骤及处理说明。",
     "rewind": {
       "activeRunBlocked": "回退前请先停止当前轮次；仍可新建一个分支会话。",
       "sameSessionHere": "在当前会话回退到这里",

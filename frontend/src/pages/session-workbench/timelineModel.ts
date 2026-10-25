@@ -1697,8 +1697,11 @@ function getHeaderStatus(
     if (cell.kind === 'assistant_final') return 'complete';
     if (
       cell.kind === 'boundary'
-      && cell.message.sessionItem?.kind === 'runtime_failure'
-      && cell.message.sessionItem.scope?.level === 'run'
+      && cell.message.sessionItem?.scope?.level === 'run'
+      && (cell.message.sessionItem.kind === 'runtime_failure'
+        || (cell.message.sessionItem.kind === 'run'
+          && (cell.message.sessionItem.lifecycle === 'failed'
+            || cell.message.sessionItem.lifecycle === 'needs_reconciliation')))
     ) return 'failed';
   }
   const lastRun = [...cells].reverse().find((cell): cell is Extract<ThreadTimelineCell, { kind: 'active_run' }> => cell.kind === 'active_run');
@@ -2175,7 +2178,7 @@ function coalesceProcessCellsByUserTurn(
   return coalesced;
 }
 
-const CANONICAL_RUN_TERMINAL_LIFECYCLES = new Set(['completed', 'failed', 'cancelled']);
+const CANONICAL_RUN_TERMINAL_LIFECYCLES = new Set(['completed', 'failed', 'cancelled', 'needs_reconciliation']);
 
 function applyCanonicalRunTerminalEvidence(
   cells: ThreadTimelineCell[],
@@ -2188,7 +2191,7 @@ function applyCanonicalRunTerminalEvidence(
     const runId = messageRunId(message);
     const completedAtMs = Date.parse(message.timestamp || item.occurredAt || '');
     if (!runId || !Number.isFinite(completedAtMs)) return;
-    const status: RunTimelineSnapshot['status'] = item.lifecycle === 'failed'
+    const status: RunTimelineSnapshot['status'] = item.lifecycle === 'failed' || item.lifecycle === 'needs_reconciliation'
       ? 'failed'
       : item.lifecycle === 'cancelled'
         ? 'cancelled'

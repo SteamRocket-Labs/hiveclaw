@@ -23,6 +23,7 @@ import {
   createCompatibilityMessageTimeline,
   mergeCanonicalTerminalMessages,
   recordCompatibilityTimelineMessages,
+  reconcileCanonicalPermissionReplay,
   type CompatibilityMessageTimeline,
   type SessionTranscriptApplication,
   type SessionVisibilityBoundary,
@@ -306,6 +307,9 @@ export function applyTranscriptToSessionRuntime(
   if (!consumed.canonical) syncCanonicalRuntimePhase();
 
   if (legacyResults.some((result) => result.applied)) commitRequested = true;
+  if (refs.replayStates[key]) {
+    refs.replayStates[key] = reconcileCanonicalPermissionReplay(refs.replayStates[key], refs.eventStores[key]);
+  }
   if (!terminalCommit) {
     const acceptedLegacyTerminal = [...legacyResults].reverse()
       .find((result) => 'terminalRunId' in result);

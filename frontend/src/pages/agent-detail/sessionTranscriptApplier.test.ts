@@ -347,6 +347,65 @@ describe('session transcript applier real consumption path (Codex REQUEST_CHANGE
       .some((message) => message.eventStatus === 'session_permission_required')).toBe(false);
   });
 
+  it.each(['completed', 'denied', 'cancelled'] as const)(
+    'lets the canonical permission own its legacy gate through %s live and after reload',
+    (lifecycle) => {
+      const harness = makeApplierHarness();
+      const request = { permission_request_id: 'permission-1', tool_name: 'create_employee_from_request',
+        arguments: { name: 'Report employee' }, allow_session_allowed: false };
+      const legacy = (sequence: number, permissionRequest = request) => compatibilityCarrier(sequence, 'permission', {
+        role: 'system', content: 'Permission required', metadata: {
+          status: 'session_permission_required', permission_request_id: permissionRequest.permission_request_id,
+          permission_request: permissionRequest,
+        },
+      });
+      const unrelated = { ...request, permission_request_id: 'permission-2' };
+      const waiting = { ...canonicalTextEvent(3, ''), item_id: request.permission_request_id,
+        item_kind: 'tool_permission', kind: 'tool_permission.waiting', lifecycle: 'waiting',
+        payload_schema: 'hive.session.payload.tool_permission.waiting.v2',
+        payload: { permission_request: request } } as unknown as ChatTranscriptEventPayload;
+      const events = [legacy(1), legacy(2, unrelated), waiting];
+      const pendingIds = (messages: AgentChatMessage[]) => messages
+        .filter((message) => message.eventStatus === 'session_permission_required')
+        .map((message) => message.sessionPermissionRequest?.permission_request_id).sort();
+      for (const event of events) harness.applyEvent(event);
+      expect(pendingIds(harness.messages())).toEqual(['permission-1', 'permission-2']);
+      expect(harness.messages().filter((message) => message.sessionPermissionRequest?.permission_request_id === 'permission-1'))
+        .toHaveLength(1);
+      expect(hydrateSessionTranscriptEvents(events).messages.filter(
+        (message) => message.sessionPermissionRequest?.permission_request_id === 'permission-1')).toHaveLength(1);
+
+      const resolved = { ...waiting, event_id: `permission-${lifecycle}`, sequence: 4, ordinal: 3, lifecycle,
+        kind: `tool_permission.${lifecycle}`, payload_schema: `hive.session.payload.tool_permission.${lifecycle}.v2`,
+        payload: lifecycle === 'completed' ? { decision: 'allow_once' }
+          : lifecycle === 'denied' ? { decision: 'deny' } : { reason_code: 'request_cancelled' },
+      } as unknown as ChatTranscriptEventPayload;
+      harness.applyEvent(resolved);
+      const allEvents = [...events, resolved];
+      expect(pendingIds(harness.messages())).toEqual(['permission-2']);
+      expect(harness.messages().find((message) => message.sessionItem?.id === 'permission-1')?.sessionItem?.lifecycle)
+        .toBe(lifecycle);
+      expect(harness.refs.replayStates[KEY]?.pendingSessionPermissions.map(
+        (message) => message.sessionPermissionRequest?.permission_request_id)).toEqual(['permission-2']);
+      expect(pendingIds(hydrateSessionTranscriptEvents(allEvents).messages)).toEqual(['permission-2']);
+      const selected = projectCanonicalTranscriptSnapshot({ existing: [], snapshot: allEvents,
+        session: { id: 'session-1', agent_id: 'agent-1', title: 'Work', created_at: '', updated_at: '' },
+        parseMessage: (message) => normalizeRuntimeEventMessage(message) || message });
+      expect(pendingIds(selected.messages)).toEqual(['permission-2']);
+      const commitsBeforeDuplicate = harness.commits.length;
+      harness.applyEvent(resolved);
+      expect(harness.commits).toHaveLength(commitsBeforeDuplicate);
+
+      const next = { ...waiting, event_id: 'next-permission', sequence: 5, ordinal: 4,
+        item_id: 'permission-3', payload: { permission_request: { ...request, permission_request_id: 'permission-3' } },
+      } as unknown as ChatTranscriptEventPayload;
+      harness.applyEvent(next);
+      expect(pendingIds(harness.messages())).toEqual(['permission-2', 'permission-3']);
+      expect(pendingIds(hydrateSessionTranscriptEvents([...allEvents, next]).messages))
+        .toEqual(['permission-2', 'permission-3']);
+    },
+  );
+
   it('does not let an older run permission wait replace the active run phase', () => {
     const harness = makeApplierHarness();
     harness.refs.uiStates[KEY] = uiForPhase('responding');

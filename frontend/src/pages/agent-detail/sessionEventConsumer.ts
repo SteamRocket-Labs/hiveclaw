@@ -6,6 +6,7 @@ import {
   type ChatTranscriptEventPayload,
   type SessionUiState,
   type SessionPermissionRequest,
+  type TranscriptReplayState,
 } from './chatRuntime';
 import { normalizeToolCallResult } from './toolResultEnvelope';
 import type { ThreadItem } from '../../api/domains/threadItems.generated';
@@ -540,6 +541,26 @@ export function projectSessionEventStoreToMessages(store: SessionEventStore): Ag
     .filter((message): message is AgentChatMessage => message !== null);
 }
 
+export function reconcileCanonicalPermissionReplay(
+  replay: TranscriptReplayState,
+  store: SessionEventStore | undefined,
+): TranscriptReplayState {
+  // A native permission item owns the same request throughout its lifecycle.
+  // Retire only its legacy queue entry; event IDs differ across the two planes.
+  const canonicalRequestIds = new Set(Object.values(store?.items || {})
+    .filter((item) => item.kind === 'tool_permission').map((item) => item.id));
+  const ownsRequest = (message: AgentChatMessage) => canonicalRequestIds.has(
+    message.sessionPermissionRequest?.permission_request_id || '',
+  );
+  const pendingSessionPermissions = replay.pendingSessionPermissions.filter((message) => !ownsRequest(message));
+  if (pendingSessionPermissions.length === replay.pendingSessionPermissions.length
+    && !replay.messages.some(ownsRequest)) return replay;
+  const messages = replay.messages.filter((message) => !ownsRequest(message));
+  const nextPermission = pendingSessionPermissions[0];
+  if (nextPermission && !messages.includes(nextPermission)) messages.push(nextPermission);
+  return { ...replay, messages, pendingSessionPermissions };
+}
+
 /**
  * The single owner of the final visible mixed-plane composition: the union of
  * the compatibility replay messages and the canonical store projection,
@@ -662,6 +683,7 @@ export function hydrateSessionTranscriptEvents(
     }
   }
 
+  compatibilityReplay = reconcileCanonicalPermissionReplay(compatibilityReplay, store);
   return {
     store,
     messages: composeMixedPlaneSessionMessages({

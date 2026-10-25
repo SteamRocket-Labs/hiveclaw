@@ -98,6 +98,15 @@ def _patch_resolve(monkeypatch, session):
     monkeypatch.setattr(mod, "tenant_scoped_session", lambda *a, **k: session)
     monkeypatch.setattr(mod, "provision_agent_plan_file_slot", lambda *_args, **_kwargs: None)
 
+    async def native_admission(_plan, request):
+        # This unit isolates native IO; PostgreSQL/browser acceptance exercises
+        # the real command admission, worker and Session V2 callbacks.
+        from app.runtime.invoker import invoke_agent
+
+        return await invoke_agent(request)
+
+    monkeypatch.setattr(mod, "invoke_native_system_plan", native_admission)
+
 
 @pytest.mark.asyncio
 async def test_launch_arms_plan_mode_with_draft_id_then_resets(monkeypatch):

@@ -1406,8 +1406,12 @@ def _knowledge_tool_replay_projection(*, tool_name: str, args: dict[str, Any], r
     else:
         result_rows = payload.get("results") if tool_name.startswith("search_") else payload.get("segments")
         rows = result_rows if isinstance(result_rows, list) else []
-        if not rows and tool_name in {"read_personal_kb", "read_company_kb"} and (
-            payload.get("status") == "ok" and payload.get("document_id") and not payload.get("credential_reference")
+        if (
+            not rows
+            and tool_name in {"read_personal_kb", "read_company_kb"}
+            and (
+                payload.get("status") == "ok" and payload.get("document_id") and not payload.get("credential_reference")
+            )
         ):
             metadata_only = True
             rows = [{}]
@@ -1495,7 +1499,10 @@ def conversation_from_history_messages(history_messages) -> list[dict]:
             content = msg.get("content")
             has_tool_calls = role == "assistant" and isinstance(msg.get("tool_calls"), list)
             if role in {"system", "user", "assistant", "tool"} and (content is not None or has_tool_calls):
-                entry = {"role": role, "content": content if isinstance(content, list) else None if content is None else str(content)}
+                entry = {
+                    "role": role,
+                    "content": content if isinstance(content, list) else None if content is None else str(content),
+                }
                 if role == "tool" and msg.get("tool_call_id"):
                     entry["tool_call_id"] = str(msg["tool_call_id"])
                 if has_tool_calls:
@@ -1916,7 +1923,9 @@ async def _session_restart_resume_history(
         await commit_sealed_model_round(
             db,
             tenant_id=row.tenant_id,
-            agent_id=(runtime_task.child_agent_id if runtime_task.task_type == "delegation" else runtime_task.parent_agent_id),
+            agent_id=(
+                runtime_task.child_agent_id if runtime_task.task_type == "delegation" else runtime_task.parent_agent_id
+            ),
             session_id=row.session_id,
             run_id=row.run_id,
             turn_id=row.turn_id,
@@ -2080,7 +2089,9 @@ async def _session_restart_resume_history(
         )
         from app.services.session_user_question import answer_projections
 
-        messages.extend(input_parts_to_runtime_messages(bound_inputs, answer_projections=await answer_projections(db, bound_inputs)))
+        messages.extend(
+            input_parts_to_runtime_messages(bound_inputs, answer_projections=await answer_projections(db, bound_inputs))
+        )
         assistant_message, tool_messages = await _sealed_round_runtime_messages(db, row)
         messages.append(assistant_message)
         messages.extend(tool_messages)
@@ -2852,6 +2863,7 @@ async def start_web_chat_run(
     )
     supplied_metadata["external_authority_bound"] = actor_authority_bound if actor_external_principal_id else None
     from app.services.machine_runtime_authority import is_machine_runtime_actor
+
     if actor_external_principal_id is not None and not actor_authority_bound and not is_machine_runtime_actor(user):
         supplied_metadata["disable_tools"] = True
         supplied_metadata["tool_policy"] = "disabled_for_unbound_external_principal"
@@ -2958,11 +2970,18 @@ async def start_web_chat_run(
         from app.services.remote_a2a_chat import capture_executor
         from app.services.remote_a2a_tasks import SCHEMA as REMOTE_TASK_SCHEMA
 
-        remote = await capture_executor(db, agent=agent, user=user, session=session, metadata=supplied_metadata,
-            run_id=run_uuid, interactive=budget_interactive and runtime_task_type == WEB_CHAT_TURN_TASK_TYPE
-                and root_item_intent is None)
-        runtime_task.metadata_json = {**runtime_task.metadata_json, "schema": REMOTE_TASK_SCHEMA,
-            "remote_a2a": remote}
+        remote = await capture_executor(
+            db,
+            agent=agent,
+            user=user,
+            session=session,
+            metadata=supplied_metadata,
+            run_id=run_uuid,
+            interactive=budget_interactive
+            and runtime_task_type == WEB_CHAT_TURN_TASK_TYPE
+            and root_item_intent is None,
+        )
+        runtime_task.metadata_json = {**runtime_task.metadata_json, "schema": REMOTE_TASK_SCHEMA, "remote_a2a": remote}
     if budget_run_id:
         runtime_task.metadata_json["budget_run_id"] = str(budget_run_id)
     if append_user_message:
@@ -3704,8 +3723,13 @@ def _with_reclaimed_web_chat_resume_context(task: RuntimeTask) -> dict[str, Any]
                 agent_id=task.parent_agent_id,
                 runtime_task_id=task.id,
             )
-            if (context.get("plan") or context.get("progress_count") or context.get("workspace_manifest")
-                or context.get("artifact_refs") or (context.get("work_ledger") or {}).get("present")):
+            if (
+                context.get("plan")
+                or context.get("progress_count")
+                or context.get("workspace_manifest")
+                or context.get("artifact_refs")
+                or (context.get("work_ledger") or {}).get("present")
+            ):
                 metadata["restart_resume_context"] = context
         except Exception as exc:
             metadata["restart_resume_context_error"] = f"{type(exc).__name__}: {exc}"
@@ -4536,12 +4560,28 @@ async def _finalize_web_chat_run_without_assistant(
             # Persist the run's mechanical terminal even without an assistant answer.
             lifecycle = "cancelled" if status == "killed" else "completed"
             reason = "runtime_cancelled" if status == "killed" else "company_approval_required"
-            rows = await append_session_events(db, tenant_id=tenant_id, agent_id=agent_id,
-                session_id=session_id, drafts=[SessionEventDraft(item_id=run_uuid, item_kind="run",
-                    lifecycle=lifecycle, scope={"level": "run", "session_id": session_id,
-                        "thread_id": session_id, "turn_id": str(merged_metadata.get("turn_id") or f"turn-{run_uuid.hex}"),
-                        "run_id": str(run_uuid)}, actor={"type": "runtime"},
-                    payload={"reason_code": reason})])
+            rows = await append_session_events(
+                db,
+                tenant_id=tenant_id,
+                agent_id=agent_id,
+                session_id=session_id,
+                drafts=[
+                    SessionEventDraft(
+                        item_id=run_uuid,
+                        item_kind="run",
+                        lifecycle=lifecycle,
+                        scope={
+                            "level": "run",
+                            "session_id": session_id,
+                            "thread_id": session_id,
+                            "turn_id": str(merged_metadata.get("turn_id") or f"turn-{run_uuid.hex}"),
+                            "run_id": str(run_uuid),
+                        },
+                        actor={"type": "runtime"},
+                        payload={"reason_code": reason},
+                    )
+                ],
+            )
             terminal_envelope = serialize_session_event(rows[0], audience="direct_user")
         await _project_agent_team_terminal_state(
             db=db,
@@ -4789,8 +4829,11 @@ async def _persist_tool_call(
                         # model-replay view of that same event.
                         provider_result_content=str(raw_result),
                         model_visible_content=(
-                            provider_content if isinstance(provider_content, list)
-                            else str(provider_content) if str(provider_content) != str(raw_result) else None
+                            provider_content
+                            if isinstance(provider_content, list)
+                            else str(provider_content)
+                            if str(provider_content) != str(raw_result)
+                            else None
                         ),
                         execution_evidence=(
                             payload.get("tool_execution_evidence")
@@ -4798,7 +4841,9 @@ async def _persist_tool_call(
                             else None
                         ),
                         effective_arguments=_tool_settlement_arguments(payload),
-                        execution_artifacts=payload.get("artifacts") if isinstance(payload.get("artifacts"), list) else None,
+                        execution_artifacts=payload.get("artifacts")
+                        if isinstance(payload.get("artifacts"), list)
+                        else None,
                     )
                 else:
                     raise RuntimeError("unsupported canonical tool lifecycle")
@@ -4818,10 +4863,19 @@ async def _persist_tool_call(
                 else []
             )
             await db.commit()
-            if (settlement_invocation_id is not None and invocation.effect_state == "needs_reconciliation"
-                and invocation.result_event_id is None):
-                raise SessionRestartRecoveryRequired(reason_code="tool_effect_outcome_unknown", detail={
-                    "invocation_id": str(invocation.id), "tool_name": invocation.tool_name, "run_id": str(run_id)})
+            if (
+                settlement_invocation_id is not None
+                and invocation.effect_state == "needs_reconciliation"
+                and invocation.result_event_id is None
+            ):
+                raise SessionRestartRecoveryRequired(
+                    reason_code="tool_effect_outcome_unknown",
+                    detail={
+                        "invocation_id": str(invocation.id),
+                        "tool_name": invocation.tool_name,
+                        "run_id": str(run_id),
+                    },
+                )
             return [dict(envelope or {}) for envelope in envelopes]
     except SessionRestartRecoveryRequired:
         raise
@@ -5114,26 +5168,32 @@ def _tool_result_payload_from_runtime_event(data: dict[str, Any]) -> dict[str, A
 
 def _channel_session_permission_prompt_for_tool_call(data: dict[str, Any]) -> str | None:
     payload = _tool_result_payload_from_runtime_event(data)
-    if payload.get('status') == 'approval_required':
+    if payload.get("status") == "approval_required":
         from urllib.parse import urlsplit
         from app.config import get_settings
 
         try:
-            approval_id = uuid.UUID(str(payload.get('approval_id')))
-            work = data.get('session_work') or {}
-            agent_id, session_id = uuid.UUID(str(work['agent_id'])), uuid.UUID(str(work['session_id']))
+            approval_id = uuid.UUID(str(payload.get("approval_id")))
+            work = data.get("session_work") or {}
+            agent_id, session_id = uuid.UUID(str(work["agent_id"])), uuid.UUID(str(work["session_id"]))
         except (ValueError, TypeError, KeyError):
             return None
-        lines = ['此操作正在等待公司审批。请由当前有效审批人在原工作中批准或拒绝；普通权限回复不能代替公司审批。',
-            f'approval_id={approval_id}']
+        lines = [
+            "此操作正在等待公司审批。请由当前有效审批人在原工作中批准或拒绝；普通权限回复不能代替公司审批。",
+            f"approval_id={approval_id}",
+        ]
         settings = get_settings()
-        base = (settings.PUBLIC_BASE_URL or settings.BASE_URL).rstrip('/')
+        base = (settings.PUBLIC_BASE_URL or settings.BASE_URL).rstrip("/")
         parsed = urlsplit(base)
-        if parsed.scheme in {'http', 'https'} and parsed.hostname and not (parsed.username or parsed.password or parsed.query or parsed.fragment):
-            lines.append(f'{base}/agents/{agent_id}/sessions/{session_id}')
+        if (
+            parsed.scheme in {"http", "https"}
+            and parsed.hostname
+            and not (parsed.username or parsed.password or parsed.query or parsed.fragment)
+        ):
+            lines.append(f"{base}/agents/{agent_id}/sessions/{session_id}")
         else:
-            lines.append('请在 HiveClaw 中打开此项原工作查看审批。')
-        return '\n'.join(lines)
+            lines.append("请在 HiveClaw 中打开此项原工作查看审批。")
+        return "\n".join(lines)
     if payload.get("status") != "session_permission_required":
         return None
     request = payload.get("permission_request")
@@ -5661,8 +5721,9 @@ async def _load_runtime_context(
         if agent is None:
             raise RuntimeError(f"Agent {runtime_task.parent_agent_id} not found")
         if is_agent_expired(agent):
-            raise ExecutionAuthorityUnavailable(code="runtime_agent_unavailable", task=runtime_task,
-                next_action="restore_authority_or_start_new_work")
+            raise ExecutionAuthorityUnavailable(
+                code="runtime_agent_unavailable", task=runtime_task, next_action="restore_authority_or_start_new_work"
+            )
 
         metadata = _with_reclaimed_web_chat_resume_context(runtime_task)
         if getattr(runtime_task, "budget_run_id", None) is None and not isinstance(
@@ -5678,7 +5739,10 @@ async def _load_runtime_context(
         external_principal_id = _uuid_or_none(metadata.get("external_principal_id"))
         if session is not None and session.audience_kind == "group":
             from app.models.session_v2 import SessionCommand
-            from app.services.shared_group_authority import load_shared_group_runtime_actor, shared_group_command_channel
+            from app.services.shared_group_authority import (
+                load_shared_group_runtime_actor,
+                shared_group_command_channel,
+            )
 
             user = await load_shared_group_runtime_actor(db, task=runtime_task, session=session)
             command = await db.get(SessionCommand, uuid.UUID(metadata["session_v2_command_id"]))
@@ -5708,8 +5772,11 @@ async def _load_runtime_context(
 
             user = await load_scoped_runtime_user(db, user_id, tenant_id=tenant_id)
             if user is None:
-                raise ExecutionAuthorityUnavailable(code="runtime_actor_unavailable", task=runtime_task,
-                    next_action="restore_authority_or_start_new_work")
+                raise ExecutionAuthorityUnavailable(
+                    code="runtime_actor_unavailable",
+                    task=runtime_task,
+                    next_action="restore_authority_or_start_new_work",
+                )
 
         boundary_updates = _enforce_runtime_context_tenant_boundary(
             runtime_task=runtime_task,
@@ -5742,6 +5809,9 @@ async def _load_runtime_context(
 
         native_frame = await load_native_trigger_frame(db, task=runtime_task, session=session)
         runtime_task._native_trigger_frame = native_frame
+        from app.services.plan_mode_native_run import load_system_plan_mode
+
+        runtime_task._system_plan_mode = await load_system_plan_mode(db, task=runtime_task, session=session)
         if native_frame is not None and native_frame.model_id is not None:
             metadata = {**metadata, "runtime_model_id": str(native_frame.model_id)}
         try:
@@ -5823,16 +5893,23 @@ async def _load_runtime_context(
         # Recheck the current claim and merge only this loader's changes under
         # a short lock. A superseded worker cannot publish recovery state, and
         # concurrent control metadata must survive the unlocked history read.
-        runtime_task = await db.scalar(select(RuntimeTask).where(
-            RuntimeTask.id == run_uuid, RuntimeTask.tenant_id == tenant_id,
-        ).with_for_update().execution_options(populate_existing=True))
+        runtime_task = await db.scalar(
+            select(RuntimeTask)
+            .where(
+                RuntimeTask.id == run_uuid,
+                RuntimeTask.tenant_id == tenant_id,
+            )
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
         if runtime_task is None:
             raise RuntimeError(f"RuntimeTask {run_uuid.hex} disappeared during context recovery")
         from app.services.runtime_task_fence import assert_runtime_task_fence
 
         assert_runtime_task_fence(runtime_task)
-        updates = {key: value for key, value in metadata.items()
-            if key not in stored_metadata or value != stored_metadata[key]}
+        updates = {
+            key: value for key, value in metadata.items() if key not in stored_metadata or value != stored_metadata[key]
+        }
         runtime_task.metadata_json = {**dict(runtime_task.metadata_json or {}), **updates}
         return runtime_task, agent, user, primary_model, fallback_model, history_messages, session
 

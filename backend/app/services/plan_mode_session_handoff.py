@@ -24,6 +24,7 @@ old silent ``skipped``.
 from __future__ import annotations
 
 import logging
+import uuid
 from typing import Any
 
 from sqlalchemy import select
@@ -98,6 +99,105 @@ def _plan_execution_prompt(plan: Any) -> str:
     )
 
 
+async def _start_confirmed_plan_turn(*, db, agent, user, session, content, display_content, extra_metadata):
+    """The approved continuation is a separate canonical input, including when queued."""
+    from app.runtime.ccplus_contracts import DEFAULT_CCPLUS_PERMISSION_MODE
+    from app.services.session_live_input import submit_live_human_input
+    from app.services.web_chat_runtime import _merge_runtime_permission_metadata
+
+    plan_id = uuid.UUID(extra_metadata["approved_plan_id"])
+    input_id = uuid.uuid5(
+        plan_id, f"plan-handoff:{extra_metadata['approved_plan_version']}:{extra_metadata['approved_plan_hash']}"
+    )
+    metadata = _merge_runtime_permission_metadata(
+        runtime_metadata={
+            **extra_metadata,
+            "channel": session.source_channel or "web",
+            "permission_mode": (session.transcript_metadata_json or {}).get("permission_mode")
+            or agent.default_session_permission_mode
+            or DEFAULT_CCPLUS_PERMISSION_MODE.value,
+        },
+        session_metadata=session.transcript_metadata_json,
+    )
+    receipt = await submit_live_human_input(
+        db=db,
+        agent=agent,
+        user=user,
+        session=session,
+        content=content,
+        display_content=display_content,
+        source="plan_mode_handoff",
+        input_id=input_id,
+        idempotency_key=f"plan-handoff:{input_id}",
+        requested_kind="queue_next_turn",
+        runtime_metadata=metadata,
+    )
+    run = receipt.get("run")
+    if isinstance(run, dict) and _runtime_run_id(run):
+        return run
+    return {
+        "handoff_status": "queued",
+        "reason": "native_input_queued",
+        "session_id": str(session.id),
+        "input_id": str(input_id),
+    }
+
+
+async def reconcile_native_handoff(db: Any, plan: Any) -> bool:
+    """Read back an already accepted queued input; never launch or replay it."""
+    from app.models.runtime_task import RuntimeTask
+    from app.models.session_v2 import SessionCommand, SessionTurnInput
+    from app.services.session_model_inputs import _hash
+
+    payload = dict(getattr(plan, "handoff_payload", None) or {})
+    if (
+        getattr(plan, "status", None) != "confirmed"
+        or getattr(plan, "handoff_status", None) != "queued"
+        or payload.get("reason") != "native_input_queued"
+    ):
+        return False
+    try:
+        input_id = uuid.UUID(payload["input_id"])
+    except (KeyError, TypeError, ValueError):
+        return False
+    row = await db.get(SessionTurnInput, input_id)
+    if row is None or row.target_run_id is None or row.status != "applied":
+        return False
+    command = await db.get(SessionCommand, row.command_id)
+    task = await db.get(RuntimeTask, row.target_run_id)
+    if command is None or task is None:
+        return False
+    metadata = (command.target_json or {}).get("runtime_metadata") or {}
+    if (
+        row.tenant_id != plan.tenant_id
+        or str(row.session_id) != str(plan.session_id)
+        or command.tenant_id != plan.tenant_id
+        or command.session_id != row.session_id
+        or command.principal_type != "user"
+        or command.principal_id != plan.requested_by_user_id
+        or command.request_hash != _hash({"command_kind": command.command_kind, "request": command.request_json})
+        or command.target_hash != _hash(command.target_json)
+        or metadata.get("approved_plan_id") != str(plan.id)
+        or metadata.get("approved_plan_version") != plan.plan_version
+        or metadata.get("approved_plan_hash") != plan.plan_hash
+        or task.tenant_id != plan.tenant_id
+        or task.parent_agent_id != plan.agent_id
+        or str(task.parent_session_id) != str(plan.session_id)
+        or task.root_user_id != plan.requested_by_user_id
+        or task.task_type != "web_chat_turn"
+    ):
+        return False
+    plan.handoff_status = "completed"
+    plan.handoff_payload = {
+        **payload,
+        "runtime_task_id": str(task.id),
+        "session_id": str(row.session_id),
+        "execution": "current_session",
+        "runtime_task_status": task.status,
+    }
+    return True
+
+
 async def continue_current_session_handoff(db: Any, plan: Any) -> dict[str, Any]:
     """Start a same-session continuation run for a confirmed plan.
 
@@ -122,7 +222,7 @@ async def continue_current_session_handoff(db: Any, plan: Any) -> dict[str, Any]
         )
 
     from app.core.permissions import is_agent_expired
-    from app.services.web_chat_runtime import ActiveWebChatRunExists, start_web_chat_run
+    from app.services.web_chat_runtime import ActiveWebChatRunExists
 
     agent = await _load_agent(db, plan.agent_id)
     if agent is None:
@@ -151,7 +251,7 @@ async def continue_current_session_handoff(db: Any, plan: Any) -> dict[str, Any]
         extra_metadata["execution_contract"] = dict(execution_contract)
 
     try:
-        run = await start_web_chat_run(
+        run = await _start_confirmed_plan_turn(
             db=db,
             agent=agent,
             user=user,
@@ -174,6 +274,8 @@ async def continue_current_session_handoff(db: Any, plan: Any) -> dict[str, Any]
             "active_run_id": active_id,
         }
 
+    if run.get("handoff_status") == "queued":
+        return run
     run_id = _runtime_run_id(run)
     logger.info(
         "plan_continue_session_started",

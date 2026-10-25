@@ -186,6 +186,10 @@ export default function PlanCard({ agentId, plan, onChanged, dense = false }: Pl
   const isAwaiting = plan.status === 'awaiting_confirmation';
   const isPlanning = plan.status === 'planning';
   const isPlanningFailed = plan.status === 'planning_failed';
+  const nativeAuthoring = plan.metadata?.system_plan_authoring;
+  const hasNativeAuthoring = Boolean(nativeAuthoring && typeof nativeAuthoring === 'object');
+  const authoringNeedsReview = hasNativeAuthoring
+    && (nativeAuthoring as Record<string, unknown>).status === 'needs_reconciliation';
   const isConfirmed = plan.status === 'confirmed';
   const authoredBody = typeof planJson.plan_markdown === 'string' ? planJson.plan_markdown.trim() : '';
   const hasAuthoredBody = authoredBody.length > 0;
@@ -506,10 +510,12 @@ export default function PlanCard({ agentId, plan, onChanged, dense = false }: Pl
       {isPlanning && (
         <div role="status" className="plan-card-notice">
           <div className="plan-card-notice-title">
-            {t('agent.plan.planningTitle', 'Planning in progress')}
+            {authoringNeedsReview
+              ? t('agent.aware.stateNeedsReconciliation', 'Needs admin review')
+              : t('agent.plan.planningTitle', 'Planning in progress')}
           </div>
           <div>
-            {t(
+            {authoringNeedsReview ? planningErrors.join(' ') : t(
               'agent.plan.planningDescription',
               'The agent is drafting a confirmable plan. Actions will appear when the plan is ready.',
             )}
@@ -643,21 +649,22 @@ export default function PlanCard({ agentId, plan, onChanged, dense = false }: Pl
           </button>
         </div>
       ) : isPlanning ? (
-        /* Explicit recovery for an authoring run lost with its process (the
-           server marks planning_failed only when it observes the failure; a
-           hard kill leaves the row planning). Regenerate is the safe retry:
-           the backend holds a cross-process claim on the authoring run, so a
-           live run refuses with a visible conflict instead of double-spending
-           the model call, and an orphaned row starts a fresh run. */
+        /* Native work owns queued execution, questions and reconciliation.
+           Legacy rows without that binding retain explicit lease-based recovery. */
         <div className="plan-card-actions">
-          <button
+          {hasNativeAuthoring && plan.session_id ? (
+            <a className="btn btn-primary plan-card-actions-submit"
+              href={`/agents/${encodeURIComponent(agentId)}/sessions/${encodeURIComponent(plan.session_id)}`}>
+              {t('agent.aware.openWork', 'Open original work')}
+            </a>
+          ) : <button
             type="button"
             className="btn btn-primary plan-card-actions-submit"
             disabled={busy !== null}
             onClick={onRegenerate}
           >
             {busy === 'regenerate' ? t('common.loading', 'Loading...') : t('agent.plan.retryGeneration', 'Retry plan generation')}
-          </button>
+          </button>}
         </div>
       ) : isConfirmed ? null : (
         <div className="plan-card-terminal">

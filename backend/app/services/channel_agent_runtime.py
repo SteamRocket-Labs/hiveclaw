@@ -490,6 +490,13 @@ def _channel_plan_authoring_reply(plan: Any) -> str:
     plan_id = getattr(plan, "id", None)
     if status == "awaiting_confirmation":
         return f"已进入计划模式，并生成一份待确认计划（plan_id={plan_id}）。请确认、修改或拒绝；确认后我再开始执行。"
+    native = (getattr(plan, "metadata_json", None) or {}).get("system_plan_authoring")
+    if status == "planning" and isinstance(native, dict):
+        if native.get("status") == "needs_reconciliation":
+            return "计划编写需要平台运营核对，系统不会重放未知请求。核对后可在原工作继续。"
+        if native.get("status") == "waiting_user":
+            return "计划编写正在等待你的补充说明，请在原工作回答问题后继续。"
+        return "计划编写已进入原工作的独立回合；当前工作完成后会继续，问题和待确认计划会回到这里。"
     errors = (getattr(plan, "metadata_json", None) or {}).get("planning_errors") or []
     detail = str(errors[0]) if errors else "计划编写没有提交可确认的内容。"
     return f"计划尚未生成，不能确认（plan_id={plan_id}，status={status or 'draft'}）。{detail} 可在修复后重试生成。"

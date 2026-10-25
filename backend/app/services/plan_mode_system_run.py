@@ -35,6 +35,7 @@ from app.models.llm import LLMModel
 from app.models.plan_request import AgentPlanRequest
 from app.runtime.session import PlanModeState, SessionContext
 from app.services.plan_mode_file import provision_agent_plan_file_slot
+from app.services.plan_mode_native_run import invoke_native_system_plan
 
 logger = logging.getLogger(__name__)
 
@@ -133,7 +134,7 @@ async def launch_system_plan_run(
     """
     # Lazy import: invoke_agent pulls in a large slice of the runtime; importing
     # it at module load would risk an import cycle through the service layer.
-    from app.runtime.invoker import AgentInvocationRequest, invoke_agent
+    from app.runtime.invoker import AgentInvocationRequest
     from app.services.plan_mode_runtime_context import (
         reset_interactive_plan_mode,
         set_interactive_plan_mode,
@@ -203,7 +204,8 @@ async def launch_system_plan_run(
     session_context.metadata["plan_mode"] = state.to_metadata()
     token = set_interactive_plan_mode(state.to_metadata())
     try:
-        await invoke_agent(
+        await invoke_native_system_plan(
+            plan,
             AgentInvocationRequest(
                 model=model,
                 fallback_model=fallback_model,
@@ -223,9 +225,13 @@ async def launch_system_plan_run(
                 core_tools_only=False,
                 expand_tools=True,
                 max_tool_rounds=SYSTEM_PLAN_RUN_MAX_ROUNDS,
-            )
+            ),
         )
     except Exception as exc:  # noqa: BLE001 — fail-closed: never execute, just leave non-confirmable.
+        from app.services.plan_mode_service import PlanConflictError
+
+        if isinstance(exc, PlanConflictError):
+            _mark_launcher_plan_unauthored(plan, [f"{exc.error_code}: {exc.message}"])
         logger.warning(
             "system_plan_run_failed",
             extra={"plan_id": str(plan.id), "agent_id": str(plan.agent_id), "error": str(exc)},

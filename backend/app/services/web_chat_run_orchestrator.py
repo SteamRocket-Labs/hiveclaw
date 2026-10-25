@@ -177,6 +177,7 @@ class _WebChatRunState:
     terminal_tool_card_finalized: bool = False
     active_provider_request_id: str | None = None
     native_trigger_frame: Any | None = None
+    system_plan_mode: Any | None = None
 
 
 async def run_web_chat_task(
@@ -235,6 +236,7 @@ async def _load_web_chat_context(state: _WebChatRunState) -> None:
         runtime_task, agent, user, model, fallback, history, session = loaded
     state.runtime_task = runtime_task
     state.native_trigger_frame = getattr(runtime_task, "_native_trigger_frame", None)
+    state.system_plan_mode = getattr(runtime_task, "_system_plan_mode", None)
     state.agent = agent
     state.user = user
     state.llm_model = model
@@ -274,11 +276,17 @@ async def _load_web_chat_context(state: _WebChatRunState) -> None:
     if getattr(session, "audience_kind", None) == "group":
         from app.services.shared_group_authority import group_permission_metadata
 
-        state.metadata = group_permission_metadata(runtime_metadata=runtime_task.metadata_json,
-            session_metadata=getattr(session, "transcript_metadata_json", None))
+        state.metadata = group_permission_metadata(
+            runtime_metadata=runtime_task.metadata_json,
+            session_metadata=getattr(session, "transcript_metadata_json", None),
+        )
     from app.services.machine_runtime_authority import is_machine_runtime_actor
-    if (state.actor_external_principal_id is not None and not state.actor_authority_bound
-        and not is_machine_runtime_actor(user)):
+
+    if (
+        state.actor_external_principal_id is not None
+        and not state.actor_authority_bound
+        and not is_machine_runtime_actor(user)
+    ):
         state.metadata["disable_tools"] = True
         state.metadata["tool_policy"] = "disabled_for_unbound_external_principal"
     mailbox_role = str(state.metadata.get("runtime_mailbox_role") or "").strip().lower()
@@ -308,6 +316,10 @@ async def _configure_runtime_session(state: _WebChatRunState) -> None:
     context.channel = str(state.metadata.get("channel") or context.channel or "web")
     context.metadata["tenant_id"] = str(state.agent.tenant_id) if state.agent.tenant_id else None
     context.metadata["runtime_task_id"] = state.run_uuid.hex
+    if state.system_plan_mode is not None:
+        context.plan_mode = state.system_plan_mode
+        context.metadata["plan_mode"] = state.system_plan_mode.to_metadata()
+        context.metadata["plan_id"] = state.system_plan_mode.plan_id
     # This worker's own claim identity: the kernel's Stop-effect fence verifies
     # it against the RuntimeTask's CURRENT claim before arming a governed Stop
     # emission, so a stale worker whose lease was reclaimed cannot execute the
@@ -434,7 +446,7 @@ def _llm_model_missing_failure_payload() -> dict[str, Any]:
 
 async def _handle_pre_invocation_terminal(state: _WebChatRunState) -> bool:
     plan_response = None
-    if not state.internal_runtime_context_turn:
+    if not state.internal_runtime_context_turn and state.system_plan_mode is None:
         plan_response = await state.ports.context.maybe_enter_plan_mode(
             agent_id=state.agent.id,
             user_id=getattr(state.user, "id", None),
@@ -606,16 +618,24 @@ class _WebChatCallbacks:
                 await events.broadcast(state.agent.id, state.session_id, envelope)
         if data.get("status") != "done":
             return
-        if (getattr(state, "session", None) is not None
-            and isinstance(state.runtime_session_context.metadata.get("_native_recovery_checkpoint"), dict)):
+        if getattr(state, "session", None) is not None and isinstance(
+            state.runtime_session_context.metadata.get("_native_recovery_checkpoint"), dict
+        ):
             from app.models.runtime_task import RuntimeTask
-            from app.services.delegation_context_sources import capture_native_recovery_context, NativeRecoveryContextSource
+            from app.services.delegation_context_sources import (
+                capture_native_recovery_context,
+                NativeRecoveryContextSource,
+            )
 
             try:
                 async with state.ports.runtime.tenant_scoped_session(state.agent.tenant_id) as db:
                     task = await db.get(RuntimeTask, state.run_uuid)
-                    await capture_native_recovery_context(db, task=task, session=state.runtime_session_context,
-                        provider_request_id=state.active_provider_request_id)
+                    await capture_native_recovery_context(
+                        db,
+                        task=task,
+                        session=state.runtime_session_context,
+                        provider_request_id=state.active_provider_request_id,
+                    )
                     await db.commit()
             except Exception:
                 metadata = state.runtime_session_context.metadata
@@ -623,7 +643,8 @@ class _WebChatCallbacks:
                 metadata.pop("_native_recovery_context_source", None)
                 if isinstance(checkpoint, dict):
                     metadata["_native_recovery_context_source"] = NativeRecoveryContextSource(
-                        checkpoint, (), ("native_recovery_capture_unavailable",))
+                        checkpoint, (), ("native_recovery_capture_unavailable",)
+                    )
         await self._consume_completed_tool(data)
 
     async def _consume_completed_tool(self, data: dict[str, Any]) -> None:
@@ -652,13 +673,19 @@ class _WebChatCallbacks:
             # The kernel must finish persisting every matching result in the
             # current Provider tool batch before the Run may suspend. Raising
             # here used to strand already-executed parallel siblings.
-            if pause in {"awaiting_session_permission", "awaiting_company_approval"} and not state.ports.context.is_web_origin_turn(
-                getattr(state, 'metadata', {}),
-                getattr(state, 'runtime_session_context', None),
+            if pause in {
+                "awaiting_session_permission",
+                "awaiting_company_approval",
+            } and not state.ports.context.is_web_origin_turn(
+                getattr(state, "metadata", {}),
+                getattr(state, "runtime_session_context", None),
             ):
                 prompt_data = data
-                if pause == 'awaiting_company_approval':
-                    prompt_data = {**data, 'session_work': {'agent_id': str(state.agent.id), 'session_id': state.session_id}}
+                if pause == "awaiting_company_approval":
+                    prompt_data = {
+                        **data,
+                        "session_work": {"agent_id": str(state.agent.id), "session_id": state.session_id},
+                    }
                 state.interactive_pause_channel_text = state.ports.context.channel_permission_prompt(prompt_data)
             return
         await self.finalize_terminal_card(pause)
@@ -794,29 +821,55 @@ async def _consume_resumed_plan_submission(state: _WebChatRunState, callbacks: _
 
     async with state.ports.runtime.tenant_scoped_session(state.agent.tenant_id) as db:
         invocation = await db.get(SessionToolInvocation, uuid.UUID(resume["permission_invocation_id"]))
-        if (invocation is None or invocation.tenant_id != state.agent.tenant_id
-            or invocation.session_id != uuid.UUID(state.session_id) or invocation.run_id != state.run_uuid
-            or invocation.tool_name != "exit_plan_mode" or invocation.permission_state != "approved"
-            or invocation.effect_state != "effect_committed" or invocation.result_event_id is None):
+        if (
+            invocation is None
+            or invocation.tenant_id != state.agent.tenant_id
+            or invocation.session_id != uuid.UUID(state.session_id)
+            or invocation.run_id != state.run_uuid
+            or invocation.tool_name != "exit_plan_mode"
+            or invocation.permission_state != "approved"
+            or invocation.effect_state != "effect_committed"
+            or invocation.result_event_id is None
+        ):
             return False
         result = await db.get(SessionModelResult, uuid.UUID(resume["source_result_id"]))
-        if (result is None or result.state != "round_committed" or result.tenant_id != invocation.tenant_id
-            or result.session_id != invocation.session_id or result.run_id != invocation.run_id
-            or result.provider_request_id != invocation.provider_request_id):
+        if (
+            result is None
+            or result.state != "round_committed"
+            or result.tenant_id != invocation.tenant_id
+            or result.session_id != invocation.session_id
+            or result.run_id != invocation.run_id
+            or result.provider_request_id != invocation.provider_request_id
+        ):
             return False
-        rounds = await db.scalars(select(SessionModelResult.round_id).where(
-            SessionModelResult.tenant_id == result.tenant_id, SessionModelResult.run_id == result.run_id,
-            SessionModelResult.state == "round_committed"))
+        rounds = await db.scalars(
+            select(SessionModelResult.round_id).where(
+                SessionModelResult.tenant_id == result.tenant_id,
+                SessionModelResult.run_id == result.run_id,
+                SessionModelResult.state == "round_committed",
+            )
+        )
         if any(_root_round_index_from_id(value) > _root_round_index_from_id(result.round_id) for value in rounds):
             return False
         event = await db.get(ChatTranscriptEvent, invocation.result_event_id)
-        if (event is None or event.tenant_id != invocation.tenant_id or event.agent_id != state.agent.id
-            or event.session_id != invocation.session_id or event.run_id != invocation.run_id
-            or event.result_id != result.id or event.invocation_id != invocation.id
-            or event.item_kind != "tool_result" or event.lifecycle != "completed"):
+        if (
+            event is None
+            or event.tenant_id != invocation.tenant_id
+            or event.agent_id != state.agent.id
+            or event.session_id != invocation.session_id
+            or event.run_id != invocation.run_id
+            or event.result_id != result.id
+            or event.invocation_id != invocation.id
+            or event.item_kind != "tool_result"
+            or event.lifecycle != "completed"
+        ):
             return False
-        data = {"name": invocation.tool_name, "status": "done", "result": event.content,
-            "tool_call_id": invocation.provider_tool_use_id}
+        data = {
+            "name": invocation.tool_name,
+            "status": "done",
+            "result": event.content,
+            "tool_call_id": invocation.provider_tool_use_id,
+        }
     if not _tool_result_exits_plan_mode(data):
         return False
     try:
@@ -871,8 +924,9 @@ async def _prepare_pending_suffix(state: _WebChatRunState) -> str:
         _terminal_artifact_prompt_suffix_for_turn,
     )
 
-    if (state.channel_delivery_suffix and state.channel_delivery_suffix !=
-        _channel_delivery_prompt_suffix_for_turn(state.metadata, state.runtime_session_context)):
+    if state.channel_delivery_suffix and state.channel_delivery_suffix != _channel_delivery_prompt_suffix_for_turn(
+        state.metadata, state.runtime_session_context
+    ):
         source_unbound.append("channel_delivery_guidance_sources_unbound")
     artifact_suffix = state.ports.artifacts.prompt_suffix()
     if artifact_suffix and artifact_suffix != _terminal_artifact_prompt_suffix_for_turn():
@@ -907,7 +961,8 @@ async def _prepare_pending_suffix(state: _WebChatRunState) -> str:
     from app.runtime.context import ensure_runtime_assembly_state
 
     ensure_runtime_assembly_state(state.runtime_session_context).record_context_sources(
-        agent_id=state.agent.id, content=suffix, sources=source_refs, unbound=source_unbound)
+        agent_id=state.agent.id, content=suffix, sources=source_refs, unbound=source_unbound
+    )
     return suffix
 
 
@@ -1009,21 +1064,26 @@ async def _invoke_model(state: _WebChatRunState, callbacks: _WebChatCallbacks, s
                 from app.services.shared_group_authority import bind_shared_group_permission_source
 
                 async with state.ports.runtime.tenant_scoped_session(state.agent.tenant_id) as db:
-                    await bind_shared_group_permission_source(db, task=state.runtime_task, session=state.session,
-                        invocation=invocation)
+                    await bind_shared_group_permission_source(
+                        db, task=state.runtime_task, session=state.session, invocation=invocation
+                    )
             elif (getattr(state.runtime_task, "metadata_json", None) or {}).get("session_v2_command_id"):
                 from app.services.delegation_context_sources import bind_private_session_permission_source
 
                 async with state.ports.runtime.tenant_scoped_session(state.agent.tenant_id) as db:
-                    await bind_private_session_permission_source(db, task=state.runtime_task, session=state.session,
-                        invocation=invocation)
+                    await bind_private_session_permission_source(
+                        db, task=state.runtime_task, session=state.session, invocation=invocation
+                    )
             from app.services.delegation_context_sources import bind_native_recovery_context
 
             if invocation.session_context is not None:
                 invocation.session_context.metadata.pop("_native_recovery_context_source", None)
             recovery_metadata = getattr(state.runtime_task, "metadata_json", None) or {}
-            if (recovery_metadata.get("native_recovery_context_source") or recovery_metadata.get("integration_page_id")
-                or recovery_metadata.get("native_trigger_answer")):
+            if (
+                recovery_metadata.get("native_recovery_context_source")
+                or recovery_metadata.get("integration_page_id")
+                or recovery_metadata.get("native_trigger_answer")
+            ):
                 async with state.ports.runtime.tenant_scoped_session(state.agent.tenant_id) as db:
                     await bind_native_recovery_context(db, task=state.runtime_task, session=invocation.session_context)
             return await state.ports.runtime.invoke_agent(invocation)
@@ -1050,6 +1110,11 @@ def _agent_invocation_request(
     callbacks: _WebChatCallbacks,
     suffix: str,
 ) -> AgentInvocationRequest:
+    profile = {}
+    if getattr(state, "system_plan_mode", None) is not None:
+        from app.services.plan_mode_system_run import SYSTEM_PLAN_RUN_MAX_ROUNDS
+
+        profile = {"core_tools_only": False, "expand_tools": True, "max_tool_rounds": SYSTEM_PLAN_RUN_MAX_ROUNDS}
     return AgentInvocationRequest(
         model=state.llm_model,
         fallback_model=state.fallback_model,
@@ -1060,13 +1125,16 @@ def _agent_invocation_request(
         agent_id=state.agent.id,
         user_id=state.actor_user_id,
         external_principal_id=state.actor_external_principal_id,
-        machine_credential_id=getattr(state.user, 'machine_credential_id', None),
+        machine_credential_id=getattr(state.user, "machine_credential_id", None),
         execution_identity=ExecutionIdentityRef(
             identity_type=_execution_identity_type(state),
-            identity_id=state.agent.id if getattr(state, "native_trigger_frame", None) is not None else state.actor_external_principal_id or state.actor_user_id,
+            identity_id=state.agent.id
+            if getattr(state, "native_trigger_frame", None) is not None
+            else state.actor_external_principal_id or state.actor_user_id,
             label=(
-                f"Agent: {state.agent.name} (scheduled)" if getattr(state, "native_trigger_frame", None) is not None else
-                f"{state.user.display_name or state.user.username} via {state.runtime_session_context.channel or 'web'}"
+                f"Agent: {state.agent.name} (scheduled)"
+                if getattr(state, "native_trigger_frame", None) is not None
+                else f"{state.user.display_name or state.user.username} via {state.runtime_session_context.channel or 'web'}"
             ),
         ),
         on_chunk=callbacks.stream,
@@ -1087,21 +1155,40 @@ def _agent_invocation_request(
         initial_turn_tokens_used=max(0, int(state.metadata.get("session_resume_tokens_used") or 0)),
         disable_tools=state.disable_tools_for_turn or _native_trigger_tools_empty(state),
         allowed_tool_names=_invocation_allowed_tools(state),
-        excluded_tool_names=tuple(dict.fromkeys((*tuple(state.excluded_tool_names_for_turn or ()),
-            *(getattr(state, "native_trigger_frame", None).excluded_tools if getattr(state, "native_trigger_frame", None) else ())))),
-        model_routing_locked=bool(state.metadata.get("model_routing_locked")) or bool(
-            getattr(state, "native_trigger_frame", None) and getattr(state, "native_trigger_frame", None).model_id),
+        excluded_tool_names=tuple(
+            dict.fromkeys(
+                (
+                    *tuple(state.excluded_tool_names_for_turn or ()),
+                    *(
+                        getattr(state, "native_trigger_frame", None).excluded_tools
+                        if getattr(state, "native_trigger_frame", None)
+                        else ()
+                    ),
+                )
+            )
+        ),
+        model_routing_locked=bool(state.metadata.get("model_routing_locked"))
+        or bool(getattr(state, "native_trigger_frame", None) and getattr(state, "native_trigger_frame", None).model_id),
+        **profile,
     )
 
 
 def _invocation_allowed_tools(state):
     session_tools = _exact_session_allowed_tools(state.runtime_session_context)
-    return getattr(state, "native_trigger_frame", None).allowed_with(session_tools) if getattr(state, "native_trigger_frame", None) else session_tools
+    return (
+        getattr(state, "native_trigger_frame", None).allowed_with(session_tools)
+        if getattr(state, "native_trigger_frame", None)
+        else session_tools
+    )
 
 
 def _native_trigger_tools_empty(state):
-    return bool(getattr(state, "native_trigger_frame", None) and getattr(state, "native_trigger_frame", None).allowed_tools
-        and _exact_session_allowed_tools(state.runtime_session_context) and not _invocation_allowed_tools(state))
+    return bool(
+        getattr(state, "native_trigger_frame", None)
+        and getattr(state, "native_trigger_frame", None).allowed_tools
+        and _exact_session_allowed_tools(state.runtime_session_context)
+        and not _invocation_allowed_tools(state)
+    )
 
 
 def _exact_session_allowed_tools(runtime_session_context: Any) -> tuple[str, ...]:
@@ -1164,16 +1251,24 @@ async def _prepare_session_model_request(state: _WebChatRunState, **payload: Any
             session = await db.get(ChatSession, uuid.UUID(str(state.session_id)), populate_existing=True)
             frame = await load_native_trigger_frame(db, task=task, session=session, effect="model_request")
             if frame != getattr(state, "native_trigger_frame", None):
-                raise ExecutionAuthorityUnavailable(code="native_trigger_frame_changed", task=task, effect="model_request")
+                raise ExecutionAuthorityUnavailable(
+                    code="native_trigger_frame_changed", task=task, effect="model_request"
+                )
             if frame.model_id is not None:
                 model = await load_enabled_tenant_model(db, frame.model_id, state.agent.tenant_id)
-                if (model is None or model.id != state.llm_model.id
-                    or model.provider != payload.get("provider") or model.model != payload.get("model")):
-                    raise ExecutionAuthorityUnavailable(code="native_trigger_model_unavailable", task=task, effect="model_request")
+                if (
+                    model is None
+                    or model.id != state.llm_model.id
+                    or model.provider != payload.get("provider")
+                    or model.model != payload.get("model")
+                ):
+                    raise ExecutionAuthorityUnavailable(
+                        code="native_trigger_model_unavailable", task=task, effect="model_request"
+                    )
             from app.services.native_trigger_context import revalidate_native_trigger_context
 
             await revalidate_native_trigger_context(db, task=task, frame=frame, effect="model_request")
-        if getattr(state.user, 'machine_credential_id', None) is not None:
+        if getattr(state.user, "machine_credential_id", None) is not None:
             from app.models.chat_session import ChatSession
             from app.models.runtime_task import RuntimeTask
             from app.services.machine_runtime_authority import load_machine_runtime_actor
@@ -1355,7 +1450,8 @@ async def _fail_session_model_request(state: _WebChatRunState, **payload: Any) -
     if not bool(payload.get("retry_safe")):
         state.provider_reconciliation = ProviderRequestNeedsReconciliation(
             provider_request_id=str(payload["provider_request_id"]),
-            error_class=str(payload.get("error_class") or "provider_error"))
+            error_class=str(payload.get("error_class") or "provider_error"),
+        )
 
 
 def _execution_identity_type(state: _WebChatRunState) -> str:
@@ -1455,7 +1551,7 @@ async def _finalize_interactive_pause(state: _WebChatRunState, summary: str) -> 
         status="killed" if cancelled else "completed",
         result_summary=summary,
         metadata_json=metadata,
-        channel_delivery_text=getattr(state, 'interactive_pause_channel_text', None) if not cancelled else None,
+        channel_delivery_text=getattr(state, "interactive_pause_channel_text", None) if not cancelled else None,
         **_file_change_kwargs(state),
     )
     if not finalized:
@@ -1476,7 +1572,7 @@ async def _finalize_empty_interactive_response(
         status=status,
         result_summary=summary,
         metadata_json=metadata,
-        channel_delivery_text=getattr(state, 'interactive_pause_channel_text', None) if status != 'killed' else None,
+        channel_delivery_text=getattr(state, "interactive_pause_channel_text", None) if status != "killed" else None,
         **_file_change_kwargs(state),
     )
     if not finalized:
@@ -1667,8 +1763,11 @@ async def _commit_canonical_terminal_outcome(
             result_summary="Canonical terminal outcome requires reconciliation.",
             metadata_json={
                 "session_v2_reconciliation": {
-                    "reason": ("terminal_artifact_selection" if isinstance(exc, TerminalReadArtifactSelectionNeedsReconciliation)
-                        else "terminal_outcome_commit"),
+                    "reason": (
+                        "terminal_artifact_selection"
+                        if isinstance(exc, TerminalReadArtifactSelectionNeedsReconciliation)
+                        else "terminal_outcome_commit"
+                    ),
                     "result_id": str(result_id),
                     "error_class": type(exc).__name__,
                 }
@@ -1680,7 +1779,8 @@ async def _commit_canonical_terminal_outcome(
 async def _record_canonical_terminal_artifact_selection(
     state: _WebChatRunState,
     response: str,
-    *, terminal_result_id: uuid.UUID,
+    *,
+    terminal_result_id: uuid.UUID,
 ) -> None:
     """Bind model-declared, current-turn artifacts before the outcome seal."""
 
@@ -1707,8 +1807,12 @@ async def _record_canonical_terminal_artifact_selection(
         )
         if task is None:
             raise TerminalOutcomeNeedsReconciliation("canonical terminal artifact selection has no RuntimeTask")
-        read_parts = await materialize_declared_read_artifacts(db, task=task, model_result_id=terminal_result_id,
-            paths=[path for path in declared_paths if _is_user_visible_terminal_artifact_path(path)])
+        read_parts = await materialize_declared_read_artifacts(
+            db,
+            task=task,
+            model_result_id=terminal_result_id,
+            paths=[path for path in declared_paths if _is_user_visible_terminal_artifact_path(path)],
+        )
         read_paths = [part["path"] for part in read_parts]
         selected_paths = list(dict.fromkeys([*selected_paths, *read_paths]))
         rejected_paths = [path for path in rejected_paths if path not in read_paths]
@@ -1753,8 +1857,9 @@ async def _record_canonical_terminal_artifact_selection(
                 "artifact_paths": [part["path"] for part in artifact_parts],
                 "artifacts": artifact_parts,
                 "artifact_selection_result_id": str(terminal_result_id),
-                "artifact_attachment_policy": ("model_declared_verified_read_or_write" if read_paths
-                    else "model_declared_current_turn_writes_only"),
+                "artifact_attachment_policy": (
+                    "model_declared_verified_read_or_write" if read_paths else "model_declared_current_turn_writes_only"
+                ),
             }
         )
         task.metadata_json = metadata
@@ -1850,8 +1955,8 @@ async def _handle_web_chat_failure(state: _WebChatRunState, exc: Exception) -> N
         return
     summary = (
         "Execution stopped before the next effect; restore authority or revise the work."
-        if isinstance(exc, ExecutionAuthorityUnavailable) else
-        "Canonical session history is unavailable; model invocation did not start."
+        if isinstance(exc, ExecutionAuthorityUnavailable)
+        else "Canonical session history is unavailable; model invocation did not start."
         if isinstance(exc, SessionSemanticHistoryUnavailable)
         else f"Web chat run failed: {type(exc).__name__}"
     )
@@ -2009,13 +2114,20 @@ async def _handle_restart_recovery_required(
     }
     effect_unknown = exc.reason_code == "tool_effect_outcome_unknown"
     if effect_unknown:
-        metadata.update(error_code="tool_effect_outcome_unknown", effect_outcome_unknown=True,
-            automatic_retry_allowed=False, tool_effect_reconciliation=metadata.pop("session_restart_reconciliation"))
+        metadata.update(
+            error_code="tool_effect_outcome_unknown",
+            effect_outcome_unknown=True,
+            automatic_retry_allowed=False,
+            tool_effect_reconciliation=metadata.pop("session_restart_reconciliation"),
+        )
     await state.ports.terminal.update_runtime_task(
         state.run_uuid,
         status="needs_reconciliation",
-        result_summary=("The tool outcome is unknown; verify it before continuing this work." if effect_unknown
-            else "Worker-restart recovery requires operator reconciliation."),
+        result_summary=(
+            "The tool outcome is unknown; verify it before continuing this work."
+            if effect_unknown
+            else "Worker-restart recovery requires operator reconciliation."
+        ),
         metadata_json=metadata,
     )
     if state.agent is None or not state.session_id:

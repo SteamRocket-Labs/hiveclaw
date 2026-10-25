@@ -206,7 +206,8 @@ def _schedule_authoring_run(
                 # confirmable plan through exit_plan_mode.
                 await service.mark_planning_failed_if_unauthored(
                     target_id,
-                    ["The plan authoring run finished without submitting a confirmable plan."],
+                    list((getattr(plan, "metadata_json", None) or {}).get("planning_errors") or [])
+                    or ["The plan authoring run finished without submitting a confirmable plan."],
                 )
         except Exception:  # noqa: BLE001 — the durable row is the state; never raise into the response.
             logger.exception("plan_authoring_task_failed", extra={"plan_id": str(target_id)})

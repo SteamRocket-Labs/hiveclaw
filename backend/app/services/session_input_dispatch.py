@@ -66,11 +66,13 @@ _TOOL_EFFECT_RECONCILIATION_CODE = "tool_effect_reconciliation_required"
 _TOOL_EFFECT_DISPATCH_RECOVERY_OWNER = "platform_admin:tool_effect_reconciliation"
 _TERMINAL_BOUNDARY_ACK_PENDING_CODE = "terminal_boundary_ack_pending"
 _EXECUTION_DENIED_CODE = "agent_execute_denied"
-_DISPATCH_EXECUTION_EXEMPT_SOURCES = frozenset({
-    "external_principal_session",
-    A2A_DELEGATION_PEER_AUTHORITY_SOURCE,
-    RUNTIME_RESULT_INTEGRATION_AUTHORITY_SOURCE,
-})
+_DISPATCH_EXECUTION_EXEMPT_SOURCES = frozenset(
+    {
+        "external_principal_session",
+        A2A_DELEGATION_PEER_AUTHORITY_SOURCE,
+        RUNTIME_RESULT_INTEGRATION_AUTHORITY_SOURCE,
+    }
+)
 
 
 async def _terminal_boundary_dispatch_hold(
@@ -288,6 +290,10 @@ def _runtime_metadata(command: SessionCommand) -> dict[str, Any]:
     return dict((command.target_json or {}).get("runtime_metadata") or {})
 
 
+def input_runtime_run_id(input_id: uuid.UUID, *, successor: bool) -> uuid.UUID:
+    return uuid.uuid5(input_id, "session-v2-successor-run" if successor else "session-v2-runtime-run")
+
+
 async def _start_input_runtime(
     db: AsyncSession,
     *,
@@ -300,7 +306,7 @@ async def _start_input_runtime(
 ) -> dict[str, Any]:
     from app.services.web_chat_runtime import start_web_chat_run
 
-    run_id = uuid.uuid5(row.id, "session-v2-successor-run" if successor else "session-v2-runtime-run")
+    run_id = input_runtime_run_id(row.id, successor=successor)
     turn_id = row.target_turn_id or f"turn-{uuid.uuid5(row.id, 'session-v2-turn').hex}"
     metadata = _runtime_metadata(command)
     if session.audience_kind == "group":
@@ -323,8 +329,13 @@ async def _start_input_runtime(
 
     metadata.pop("trigger_origin", None)
     metadata.pop("native_trigger_answer", None)
-    origin = await load_trigger_input_origin(db, tenant_id=agent.tenant_id, agent_id=agent.id, session=session,
-        metadata={**metadata, "session_v2_input_id": str(row.id), "session_v2_command_id": str(command.id)})
+    origin = await load_trigger_input_origin(
+        db,
+        tenant_id=agent.tenant_id,
+        agent_id=agent.id,
+        session=session,
+        metadata={**metadata, "session_v2_input_id": str(row.id), "session_v2_command_id": str(command.id)},
+    )
     if origin is None and row.intent == "answer_request":
         from app.services.native_trigger_answers import load_native_trigger_answer
 
@@ -332,8 +343,11 @@ async def _start_input_runtime(
         if inherited is not None:
             origin, metadata["native_trigger_answer"] = inherited
     if origin is not None:
-        metadata.update(trigger_origin=origin, budget_run_id=origin["budget_run_id"],
-            root_runtime_task_id=origin["root_runtime_task_id"])
+        metadata.update(
+            trigger_origin=origin,
+            budget_run_id=origin["budget_run_id"],
+            root_runtime_task_id=origin["root_runtime_task_id"],
+        )
         budget_interactive = False
     content = _runtime_content(row)
     if row.intent == "answer_request":
@@ -341,8 +355,11 @@ async def _start_input_runtime(
 
         projected = await answer_projection(db, row)
         if projected is not None and projected != content:
-            input_metadata.update(elicitation_original_prompt=content, elicitation_effective_prompt=projected,
-                                  latest_user_prompt_overrides_history=True)
+            input_metadata.update(
+                elicitation_original_prompt=content,
+                elicitation_effective_prompt=projected,
+                latest_user_prompt_overrides_history=True,
+            )
             content = projected
         input_metadata["session_v2_question_item_id"] = str(row.request_item_id)
     if runtime_task_type == "web_chat_turn" and not metadata.get("goal_id"):
@@ -763,8 +780,7 @@ def _admitted_input_candidate_statement(
     receipt_boundary_id = SessionInputAdmission.dispatch_receipt_json["terminal_boundary_id"].as_string()
     receipt_boundary_status = SessionInputAdmission.dispatch_receipt_json["terminal_boundary_status"].as_string()
     execution_denied_hold = (
-        func.coalesce(SessionInputAdmission.dispatch_receipt_json["code"].as_string(), "")
-        == _EXECUTION_DENIED_CODE
+        func.coalesce(SessionInputAdmission.dispatch_receipt_json["code"].as_string(), "") == _EXECUTION_DENIED_CODE
     )
     unchanged_terminal_boundary_hold = (
         select(RuntimeTerminalBoundaryOutbox.id)

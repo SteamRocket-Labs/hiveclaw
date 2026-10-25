@@ -73,6 +73,15 @@ def _confirmed_plan(
 
 
 def _stub_entities(monkeypatch, *, expired=False):
+    async def native_admission(**kwargs):
+        # Keep unit tests on the established IO seam; full-stack J-03 uses
+        # actual canonical input admission and the original worker callbacks.
+        from app.services.web_chat_runtime import start_web_chat_run
+
+        return await start_web_chat_run(**kwargs)
+
+    monkeypatch.setattr(mod, "_start_confirmed_plan_turn", native_admission)
+
     async def _agent(db, _id):
         return SimpleNamespace(id=_id, name="A")
 

@@ -43,6 +43,7 @@ from app.services.plan_authorization_lease import (
     issue_plan_authorization_leases,
 )
 from app.services.tenant_resolver import resolve_tenant_for_agent, resolve_tenant_for_plan
+from app.services.plan_mode_native_run import authoring_binding, creation_metadata, reconcile_authoring
 
 logger = logging.getLogger(__name__)
 
@@ -180,7 +181,7 @@ class PlanModeService:
                     status="draft",
                     plan_version=1,
                     plan_json={},
-                    metadata_json=metadata_json or {},
+                    metadata_json=creation_metadata(metadata_json),
                 )
                 db.add(plan)
                 await db.commit()
@@ -401,6 +402,19 @@ class PlanModeService:
                 plan = await self._load(db, plan_id)
                 if plan is None:
                     raise LookupError(f"plan {plan_id} not found")
+                if authoring_binding(plan) is not None:
+                    native_status = await reconcile_authoring(db, plan)
+                    if native_status not in {"completed", "failed", "killed", "cancelled", "skipped"}:
+                        await db.commit()
+                        raise PlanConflictError(
+                            "plan_authoring_needs_reconciliation"
+                            if native_status == "needs_reconciliation"
+                            else "plan_authoring_in_progress",
+                            "The native authoring work must finish or be reconciled before a new generation.",
+                        )
+                    binding = authoring_binding(plan)
+                    binding["launch_requested"] = True
+                    plan.metadata_json = {**dict(plan.metadata_json or {}), "system_plan_authoring": binding}
                 self._move_to_planning_if_needed(plan)
                 await db.commit()
             except Exception:
@@ -424,6 +438,16 @@ class PlanModeService:
             try:
                 plan = await self._load(db, plan_id)
                 if plan is None:
+                    return
+                binding = authoring_binding(plan)
+                if binding is not None and binding.get("launch_requested"):
+                    # No new admission replaced the previous, settled run.
+                    # The launcher has returned while its caller holds the
+                    # authoring lease, so this explicit launch did not start.
+                    binding.pop("launch_requested", None)
+                    plan.metadata_json = {**dict(plan.metadata_json or {}), "system_plan_authoring": binding}
+                if await reconcile_authoring(db, plan) is not None:
+                    await db.commit()
                     return
                 if plan.status in ("draft", "planning"):
                     self._mark_generation_failed(plan, errors)
@@ -919,7 +943,17 @@ class PlanModeService:
         _tenant_id = await resolve_tenant_for_plan(plan_id)
         async with tenant_scoped_session(_tenant_id) as db:
             try:
-                return await self._load(db, plan_id)
+                plan = await self._load(db, plan_id)
+                if plan is not None:
+                    from app.services.plan_mode_session_handoff import reconcile_native_handoff
+
+                    handoff_updated = await reconcile_native_handoff(db, plan)
+                    if authoring_binding(plan) is not None:
+                        await reconcile_authoring(db, plan)
+                    if authoring_binding(plan) is not None or handoff_updated:
+                        await db.commit()
+                        await self._refresh_if_supported(db, plan)
+                return plan
             except Exception:
                 await db.rollback()
                 raise
@@ -939,7 +973,21 @@ class PlanModeService:
                 )
                 stmt._plan_lookup_agent_id = str(agent_id)  # type: ignore[attr-defined]
                 result = await db.execute(stmt)
-                return list(result.scalars().all())
+                plans = list(result.scalars().all())
+                native_plans = []
+                from app.services.plan_mode_session_handoff import reconcile_native_handoff
+
+                for plan in plans:
+                    handoff_updated = await reconcile_native_handoff(db, plan)
+                    if authoring_binding(plan) is not None:
+                        await reconcile_authoring(db, plan)
+                    if authoring_binding(plan) is not None or handoff_updated:
+                        native_plans.append(plan)
+                if native_plans:
+                    await db.commit()
+                    for plan in native_plans:
+                        await self._refresh_if_supported(db, plan)
+                return plans
             except Exception:
                 await db.rollback()
                 raise

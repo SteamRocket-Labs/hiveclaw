@@ -285,6 +285,7 @@ def _card_body(open_id: str, approval_id) -> dict:
     import json
 
     return {
+        "token": "synthetic-m0a-card-token",
         "open_id": open_id,
         "operator": {"open_id": open_id},
         "action": {"value": json.dumps({"approval_id": str(approval_id), "action": "approve"})},
@@ -339,6 +340,7 @@ async def test_transferred_owner_card_and_web_resolve_follow_current_authority(o
             channel_type="feishu",
             app_id="cli_m0a",
             app_secret="test-secret",
+            verification_token="synthetic-m0a-card-token",
             is_configured=True,
             is_connected=True,
             extra_config={},
@@ -366,9 +368,7 @@ async def test_transferred_owner_card_and_web_resolve_follow_current_authority(o
         )
 
     async with tenant_scoped_session(tenant_id, session_factory=owner_sessionmaker) as db:
-        config = (
-            await db.execute(select(ChannelConfig).where(ChannelConfig.agent_id == agent_id))
-        ).scalar_one()
+        config = (await db.execute(select(ChannelConfig).where(ChannelConfig.agent_id == agent_id))).scalar_one()
         await bind_authenticated_self_channel_principal(
             db,
             tenant_id=tenant_id,

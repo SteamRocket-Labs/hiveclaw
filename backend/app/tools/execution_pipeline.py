@@ -174,16 +174,32 @@ async def _prepare_runtime_context(state: _ToolExecutionState) -> _Stop | None:
     try:
         state.runtime_context = await ports.resolve_runtime_context(
             service.runtime_resolver,
-            agent_id=request.agent_id, user_id=request.user_id, session_id=request.session_id,
-            permission_profile=request.permission_profile, turn_id=request.turn_id,
-            runtime_task_id=request.runtime_task_id, budget_run_id=request.budget_run_id,
-            origin_channel=request.origin_channel, round_state=request.round_state, t0_refs=request.t0_refs)
+            agent_id=request.agent_id,
+            user_id=request.user_id,
+            session_id=request.session_id,
+            permission_profile=request.permission_profile,
+            turn_id=request.turn_id,
+            runtime_task_id=request.runtime_task_id,
+            budget_run_id=request.budget_run_id,
+            origin_channel=request.origin_channel,
+            round_state=request.round_state,
+            t0_refs=request.t0_refs,
+        )
     except MachineRuntimeAuthorityDenied:
-        _record_precontext_block(state, outcome=ports.decision_outcome_type.DENY, reason='machine_authority_unavailable')
-        return _Stop(ports.render_tool_error(tool_name=request.tool_name, error_class='auth_or_permission',
-            message='Machine authority no longer permits this action.', provider='machine_authority', retryable=False,
-            actionable_hint='Ask the employee owner or company administrator to restore scoped access.',
-            extra={'outcome': 'denied', 'reason_code': 'machine_authority_unavailable'}))
+        _record_precontext_block(
+            state, outcome=ports.decision_outcome_type.DENY, reason="machine_authority_unavailable"
+        )
+        return _Stop(
+            ports.render_tool_error(
+                tool_name=request.tool_name,
+                error_class="auth_or_permission",
+                message="Machine authority no longer permits this action.",
+                provider="machine_authority",
+                retryable=False,
+                actionable_hint="Ask the employee owner or company administrator to restore scoped access.",
+                extra={"outcome": "denied", "reason_code": "machine_authority_unavailable"},
+            )
+        )
     state.runtime_context.tool_call_id = state.tool_call_id
     _configure_runtime_context(state)
     principal = state.runtime_context.execution_principal
@@ -842,29 +858,50 @@ def _approval_handoff_result(state: _ToolExecutionState, block: Any) -> Any:
     from app.tools.decision import ToolBoundaryBlock, ToolDecisionOutcome
 
     context = state.governance_context
-    if not isinstance(block, ToolBoundaryBlock) or block.outcome != ToolDecisionOutcome.REQUIRE_APPROVAL or not getattr(context, 'approval_id', None):
+    if (
+        not isinstance(block, ToolBoundaryBlock)
+        or block.outcome != ToolDecisionOutcome.REQUIRE_APPROVAL
+        or not getattr(context, "approval_id", None)
+    ):
         return block
     try:
         payload = state.ports.json.loads(str(block))
     except (ValueError, TypeError):
         return block
-    if (not isinstance(payload, dict) or payload.get('status') != 'approval_required'
-        or payload.get('approval_id') != context.approval_id or payload.get('tool_name') != state.request.tool_name):
+    if (
+        not isinstance(payload, dict)
+        or payload.get("status") != "approval_required"
+        or payload.get("approval_id") != context.approval_id
+        or payload.get("tool_name") != state.request.tool_name
+    ):
         return block
-    safe, _receipt = state.service._redact_runtime_egress(block, context=state.runtime_context,
-        surface='approval_handoff', trace_metadata_sink=state.request.trace_metadata_sink)
+    safe, _receipt = state.service._redact_runtime_egress(
+        block,
+        context=state.runtime_context,
+        surface="approval_handoff",
+        trace_metadata_sink=state.request.trace_metadata_sink,
+    )
     principal_id = state.runtime_context.external_principal_id
-    identity = getattr(state.runtime_context, 'execution_identity', None)
-    if getattr(identity, 'identity_type', None) == 'external_principal_bound':
+    identity = getattr(state.runtime_context, "execution_identity", None)
+    if getattr(identity, "identity_type", None) == "external_principal_bound":
         # A bound human's full provenance is carried by the trusted execution
         # identity even when the optional context field is absent.
-        if (state.runtime_context.user_id is None or identity.identity_id is None
-            or principal_id is not None and str(principal_id) != str(identity.identity_id)):
+        if (
+            state.runtime_context.user_id is None
+            or identity.identity_id is None
+            or principal_id is not None
+            and str(principal_id) != str(identity.identity_id)
+        ):
             return block
         principal_id = identity.identity_id
-    return with_connector_approval_handoff(str(safe), approval_id=context.approval_id,
-        tenant_id=state.runtime_context.tenant_id, user_id=state.runtime_context.user_id, agent_id=state.runtime_context.agent_id,
-        external_principal_id=principal_id)
+    return with_connector_approval_handoff(
+        str(safe),
+        approval_id=context.approval_id,
+        tenant_id=state.runtime_context.tenant_id,
+        user_id=state.runtime_context.user_id,
+        agent_id=state.runtime_context.agent_id,
+        external_principal_id=principal_id,
+    )
 
 
 async def _apply_governance(state: _ToolExecutionState) -> _Stop | None:
@@ -971,16 +1008,25 @@ async def _execute_tool(state: _ToolExecutionState) -> Any:
 
         try:
             async with tenant_scoped_session(state.runtime_context.tenant_id, require_tenant=True) as db:
-                await revalidate_tool_sources(db, task_id=uuid.UUID(str(state.runtime_context.runtime_task_id)),
-                    tool_call_id=state.tool_call_id, tool_name=request.tool_name)
+                await revalidate_tool_sources(
+                    db,
+                    task_id=uuid.UUID(str(state.runtime_context.runtime_task_id)),
+                    tool_call_id=state.tool_call_id,
+                    tool_name=request.tool_name,
+                )
         except ExecutionAuthorityUnavailable as exc:
             _record_lifecycle(state, "blocked", exc.code)
             _record_final_decision(state, outcome=ports.decision_outcome_type.DENY, reasons=(exc.code,))
-            return ports.render_tool_error(tool_name=request.tool_name, error_class="auth_or_permission",
-                message="The selected shared goal is no longer authorized.", provider="team_task_source", retryable=False,
+            return ports.render_tool_error(
+                tool_name=request.tool_name,
+                error_class="auth_or_permission",
+                message="The selected shared goal is no longer authorized.",
+                provider="team_task_source",
+                retryable=False,
                 actionable_hint="Restore team access or review a currently shared goal.",
-                extra={"outcome": exc.status, "reason_code": exc.code})
-    if getattr(state.runtime_context, 'machine_credential_id', None) is not None:
+                extra={"outcome": exc.status, "reason_code": exc.code},
+            )
+    if getattr(state.runtime_context, "machine_credential_id", None) is not None:
         from fastapi import HTTPException
         from app.database import tenant_scoped_session
         from app.services.machine_runtime_authority import revalidate_machine_tool_context
@@ -989,14 +1035,23 @@ async def _execute_tool(state: _ToolExecutionState) -> Any:
             async with tenant_scoped_session(state.runtime_context.tenant_id, require_tenant=True) as db:
                 await revalidate_machine_tool_context(db, state.runtime_context)
         except HTTPException:
-            _record_lifecycle(state, 'blocked', 'machine_authority_unavailable')
-            _record_final_decision(state, outcome=ports.decision_outcome_type.DENY, reasons=('machine_authority_unavailable',))
-            return ports.render_tool_error(tool_name=request.tool_name, error_class='auth_or_permission',
-                message='Machine authority no longer permits this action.', provider='machine_authority', retryable=False,
-                actionable_hint='Ask the employee owner or company administrator to restore scoped access.',
-                extra={'outcome': 'denied', 'reason_code': 'machine_authority_unavailable'})
-    if (getattr(getattr(state.runtime_context, "execution_identity", None), "identity_type", None) == "agent_bot"
-        and state.runtime_context.runtime_task_id):
+            _record_lifecycle(state, "blocked", "machine_authority_unavailable")
+            _record_final_decision(
+                state, outcome=ports.decision_outcome_type.DENY, reasons=("machine_authority_unavailable",)
+            )
+            return ports.render_tool_error(
+                tool_name=request.tool_name,
+                error_class="auth_or_permission",
+                message="Machine authority no longer permits this action.",
+                provider="machine_authority",
+                retryable=False,
+                actionable_hint="Ask the employee owner or company administrator to restore scoped access.",
+                extra={"outcome": "denied", "reason_code": "machine_authority_unavailable"},
+            )
+    if (
+        getattr(getattr(state.runtime_context, "execution_identity", None), "identity_type", None) == "agent_bot"
+        and state.runtime_context.runtime_task_id
+    ):
         import uuid
 
         from fastapi import HTTPException
@@ -1008,15 +1063,26 @@ async def _execute_tool(state: _ToolExecutionState) -> Any:
 
         try:
             async with tenant_scoped_session(state.runtime_context.tenant_id, require_tenant=True) as db:
-                task = await db.get(RuntimeTask, uuid.UUID(str(state.runtime_context.runtime_task_id)), populate_existing=True)
+                task = await db.get(
+                    RuntimeTask, uuid.UUID(str(state.runtime_context.runtime_task_id)), populate_existing=True
+                )
                 metadata = getattr(task, "metadata_json", None) or {}
-                scheduled = metadata.get("trigger_origin") is not None or metadata.get("source") in {"loop_same_session", "trigger_reflection"}
-                session = await db.get(ChatSession, uuid.UUID(str(state.runtime_context.session_id)), populate_existing=True) if scheduled else None
+                scheduled = metadata.get("trigger_origin") is not None or metadata.get("source") in {
+                    "loop_same_session",
+                    "trigger_reflection",
+                }
+                session = (
+                    await db.get(ChatSession, uuid.UUID(str(state.runtime_context.session_id)), populate_existing=True)
+                    if scheduled
+                    else None
+                )
                 frame = await load_native_trigger_frame(db, task=task, session=session, effect="tool_execution")
-                if frame is not None and (task.parent_agent_id != state.runtime_context.agent_id
+                if frame is not None and (
+                    task.parent_agent_id != state.runtime_context.agent_id
                     or task.root_user_id != state.runtime_context.user_id
                     or str(task.budget_run_id) != str(state.runtime_context.budget_run_id)
-                    or state.runtime_context.execution_identity.identity_id != task.parent_agent_id):
+                    or state.runtime_context.execution_identity.identity_id != task.parent_agent_id
+                ):
                     raise HTTPException(403, detail={"code": "native_trigger_tool_principal_mismatch"})
                 if frame is not None and not frame.permits(request.tool_name):
                     raise HTTPException(403, detail={"code": "native_trigger_tool_out_of_scope"})
@@ -1026,18 +1092,28 @@ async def _execute_tool(state: _ToolExecutionState) -> Any:
                     await revalidate_native_trigger_context(db, task=task, frame=frame, effect="tool_execution")
                     from app.services.trigger_read_sources import revalidate_native_trigger_tool_sources
 
-                    await revalidate_native_trigger_tool_sources(db, task=task,
-                        tool_call_id=state.tool_call_id, tool_name=request.tool_name)
+                    await revalidate_native_trigger_tool_sources(
+                        db, task=task, tool_call_id=state.tool_call_id, tool_name=request.tool_name
+                    )
         except (HTTPException, ExecutionAuthorityUnavailable) as exc:
-            reason = (exc.code if isinstance(exc, ExecutionAuthorityUnavailable) else
-                exc.detail.get("code", "native_trigger_authority_unavailable") if isinstance(exc.detail, dict) else
-                "native_trigger_authority_unavailable")
+            reason = (
+                exc.code
+                if isinstance(exc, ExecutionAuthorityUnavailable)
+                else exc.detail.get("code", "native_trigger_authority_unavailable")
+                if isinstance(exc.detail, dict)
+                else "native_trigger_authority_unavailable"
+            )
             _record_lifecycle(state, "blocked", reason)
             _record_final_decision(state, outcome=ports.decision_outcome_type.DENY, reasons=(reason,))
-            return ports.render_tool_error(tool_name=request.tool_name, error_class="auth_or_permission",
-                message="The scheduled execution no longer permits this tool effect.", provider="trigger_authority",
-                retryable=False, actionable_hint="Restore the schedule authority or revise its declared tool scope.",
-                extra={"outcome": "denied", "reason_code": reason})
+            return ports.render_tool_error(
+                tool_name=request.tool_name,
+                error_class="auth_or_permission",
+                message="The scheduled execution no longer permits this tool effect.",
+                provider="trigger_authority",
+                retryable=False,
+                actionable_hint="Restore the schedule authority or revise its declared tool scope.",
+                extra={"outcome": "denied", "reason_code": reason},
+            )
     if request.pre_effect_callback is not None:
         # Governance/preflight and the worker lease are already valid. The
         # callback is the durable authority fence; its failure must propagate
@@ -1198,18 +1274,19 @@ async def _handle_execution_failure(
         if is_timeout
         else f"{request.tool_name} failed with {type(exception).__name__}: {str(exception)}"
     )
-    rendered = ports.render_tool_error(
-        tool_name=request.tool_name,
-        error_class=error_class,
-        message=message,
-        provider="runtime",
-        retryable=is_timeout,
-        actionable_hint=(
-            "Try a simpler request, smaller input, or a more targeted operation."
-            if is_timeout
-            else "Check tool arguments and try again with simpler or better-scoped input."
-        ),
-    )
+    if is_timeout:
+        from app.services.runtime_tool_timeout_sources import _timeout_text
+
+        rendered = _timeout_text(request.tool_name, timeout_seconds)
+    else:
+        rendered = ports.render_tool_error(
+            tool_name=request.tool_name,
+            error_class=error_class,
+            message=message,
+            provider="runtime",
+            retryable=False,
+            actionable_hint="Check tool arguments and try again with simpler or better-scoped input.",
+        )
     _record_lifecycle(state, "failed", error_class)
     ports.record_execution_frame(
         state.runtime_context,
@@ -1230,7 +1307,7 @@ async def _handle_execution_failure(
             tool_call_id=state.tool_call_id,
             source="tool_runtime_service",
         )
-    await _log_failure_activity(state, error_class=error_class, retryable=is_timeout, exception=exception)
+    await _log_failure_activity(state, error_class=error_class, retryable=False, exception=exception)
     if is_timeout and request.trace_metadata_sink is not None:
         from app.services.content_input_receipts import ContentInputReceiptError
 
@@ -1238,10 +1315,13 @@ async def _handle_execution_failure(
         if all(getattr(context, key, None) for key in ("tenant_id", "runtime_task_id", "tool_call_id", "turn_id")):
             try:
                 request.trace_metadata_sink["native_tool_timeout_evidence"] = await service.capture_native_tool_timeout(
-                    request.tool_name, state.arguments, context,
-                    content=rendered, timeout_seconds=timeout_seconds)
+                    request.tool_name, state.arguments, context, content=rendered, timeout_seconds=timeout_seconds
+                )
             except ContentInputReceiptError as exc:
-                request.trace_metadata_sink["native_tool_timeout_evidence"] = {"status": "unavailable", "reason_code": exc.code}
+                request.trace_metadata_sink["native_tool_timeout_evidence"] = {
+                    "status": "unavailable",
+                    "reason_code": exc.code,
+                }
     return rendered
 
 
@@ -1267,7 +1347,7 @@ async def _log_failure_activity(
         service.activity_logger(
             request.agent_id,
             "error",
-            f"Tool {request.tool_name} {'timed out' if retryable else f'failed with {type(exception).__name__}'}",
+            f"Tool {request.tool_name} {'timed out' if error_class == 'timeout' else f'failed with {type(exception).__name__}'}",
             tenant_id=state.runtime_context.tenant_id,
             owner_user_id=state.runtime_context.user_id,
             root_session_id=state.runtime_context.session_id,

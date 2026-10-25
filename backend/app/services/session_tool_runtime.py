@@ -29,17 +29,22 @@ TOOL_EFFECT_RECONCILIATION_TASK_STATUSES = frozenset({"failed", "needs_reconcili
 def permission_run_session_clause(session_id):
     """Native controls belong to the task type's pinned execution session."""
     return or_(
-        and_(RuntimeTask.task_type.notin_(['business_task', 'delegation']), RuntimeTask.parent_session_id == str(session_id)),
-        and_(RuntimeTask.task_type.in_(['business_task', 'delegation']),
-            func.replace(func.lower(RuntimeTask.child_session_id), '-', '') == uuid.UUID(str(session_id)).hex),
+        and_(
+            RuntimeTask.task_type.notin_(["business_task", "delegation"]),
+            RuntimeTask.parent_session_id == str(session_id),
+        ),
+        and_(
+            RuntimeTask.task_type.in_(["business_task", "delegation"]),
+            func.replace(func.lower(RuntimeTask.child_session_id), "-", "") == uuid.UUID(str(session_id)).hex,
+        ),
     )
 
 
 def permission_run_agent_clause(agent_id):
     """Delegated tools execute as the child Agent; other lanes retain their actor."""
     return or_(
-        and_(RuntimeTask.task_type != 'delegation', RuntimeTask.parent_agent_id == agent_id),
-        and_(RuntimeTask.task_type == 'delegation', RuntimeTask.child_agent_id == agent_id),
+        and_(RuntimeTask.task_type != "delegation", RuntimeTask.parent_agent_id == agent_id),
+        and_(RuntimeTask.task_type == "delegation", RuntimeTask.child_agent_id == agent_id),
     )
 
 
@@ -431,9 +436,12 @@ async def mark_tool_effect_started(
         raise RuntimeError("tool_effect_start_requires_unsettled_invocation")
     if invocation.effect_state != "prepared_not_started":
         raise RuntimeError("tool_effect_start_requires_prepared_invocation")
-    run_status = await db.scalar(select(RuntimeTask.status).where(
-        RuntimeTask.id == invocation.run_id, RuntimeTask.tenant_id == tenant_id,
-    ))
+    run_status = await db.scalar(
+        select(RuntimeTask.status).where(
+            RuntimeTask.id == invocation.run_id,
+            RuntimeTask.tenant_id == tenant_id,
+        )
+    )
     if run_status is None or run_status in TERMINAL_BOUNDARY_TERMINAL_STATUSES:
         raise RuntimeError("tool_effect_start_requires_active_run")
     effective_payload = _canonical(effective_arguments or invocation.provider_arguments_json or {})
@@ -683,7 +691,11 @@ async def complete_tool_invocation(
         from app.services.session_approval import invocation_enterprise_approval
 
         enterprise_approval = await invocation_enterprise_approval(
-            db, invocation=invocation, agent_id=agent_id, decision=decision, input_hash=effective_hash,
+            db,
+            invocation=invocation,
+            agent_id=agent_id,
+            decision=decision,
+            input_hash=effective_hash,
         )
         if enterprise_approval is not None:
             # The ticket owns execution; the original invocation only reports its pre-effect handoff.
@@ -762,7 +774,9 @@ async def complete_tool_invocation(
                             "permission_request_id": str(permission_item_id),
                             "session_id": str(session_id),
                             "runtime_task_id": str(invocation.run_id),
-                            "requested_by_user_id": str(permission_task.root_user_id) if permission_task and permission_task.root_user_id else None,
+                            "requested_by_user_id": str(permission_task.root_user_id)
+                            if permission_task and permission_task.root_user_id
+                            else None,
                             "turn_id": result.turn_id,
                             "tool_call_id": invocation.provider_tool_use_id,
                             "tool_name": invocation.tool_name,
@@ -853,7 +867,8 @@ async def complete_tool_invocation(
 
         paths = tool_session_write_paths(
             invocation.tool_name if outcome == "success" else "",
-            effective_payload if outcome == "success" else {}, artifacts=execution_artifacts,
+            effective_payload if outcome == "success" else {},
+            artifacts=execution_artifacts,
         )
         if paths:
             from app.core.resource_authority import normalize_workspace_resource_path
@@ -861,7 +876,12 @@ async def complete_tool_invocation(
 
             try:
                 workspace_execution_ref, expected_content_hashes = await load_workspace_execution_evidence(
-                    db, agent_id=agent_id, invocation=invocation, model_result=result, arguments=effective_payload, content_hash=content_hash,
+                    db,
+                    agent_id=agent_id,
+                    invocation=invocation,
+                    model_result=result,
+                    arguments=effective_payload,
+                    content_hash=content_hash,
                 )
             except ContentInputReceiptError:
                 expected_content_hashes = {}
@@ -870,9 +890,15 @@ async def complete_tool_invocation(
                 if normalize_workspace_resource_path(path) in expected_content_hashes:
                     verified_paths.append(path)
                 else:
-                    publication_errors.append({"path": path, "status": "unknown",
-                        "reason_code": "workspace_execution_unverified", "retryable": False,
-                        "recovery_action": "reconcile_artifact_publication"})
+                    publication_errors.append(
+                        {
+                            "path": path,
+                            "status": "unknown",
+                            "reason_code": "workspace_execution_unverified",
+                            "retryable": False,
+                            "recovery_action": "reconcile_artifact_publication",
+                        }
+                    )
             paths = verified_paths
         if paths:
             session = await db.get(ChatSession, session_id)
@@ -918,16 +944,25 @@ async def complete_tool_invocation(
     else:
         receipt_ref = f"tool-decision:{decision_id}"
     knowledge_metadata = enrich_knowledge_event_metadata(
-        event_type="tool_result", content={"name": invocation.tool_name, "result": content}, metadata={},
+        event_type="tool_result",
+        content={"name": invocation.tool_name, "result": content},
+        metadata={},
     )
     if (execution_evidence or {}).get("native_tool_timeout_evidence"):
         from app.services.content_input_receipts import ContentInputReceiptError
         from app.services.runtime_tool_timeout_sources import load_native_tool_timeout_evidence
 
         try:
-            knowledge_metadata["native_tool_timeout_receipt"] = await load_native_tool_timeout_evidence(db,
-                agent_id=agent_id, invocation=invocation, model_result=result, content_hash=content_hash,
-                capture=execution_evidence["native_tool_timeout_evidence"])
+            knowledge_metadata["native_tool_timeout_receipt"] = await load_native_tool_timeout_evidence(
+                db,
+                agent_id=agent_id,
+                invocation=invocation,
+                model_result=result,
+                content_hash=content_hash,
+                capture=execution_evidence["native_tool_timeout_evidence"],
+            )
+            # A failed wait does not prove the underlying effect did not happen.
+            retryable = False
         except ContentInputReceiptError as exc:
             knowledge_metadata["native_tool_timeout_receipt"] = {"status": "unavailable", "reason_code": exc.code}
     if invocation.tool_name == "read_context_resource" and (execution_evidence or {}).get("agent_directory_sources"):
@@ -935,27 +970,48 @@ async def complete_tool_invocation(
         from app.services.content_input_receipts import ContentInputReceiptError
 
         try:
-            sources = await directory_page_sources(db, agent_id=agent_id, invocation=invocation,
-                content=content, sources=execution_evidence["agent_directory_sources"])
+            sources = await directory_page_sources(
+                db,
+                agent_id=agent_id,
+                invocation=invocation,
+                content=content,
+                sources=execution_evidence["agent_directory_sources"],
+            )
             knowledge_metadata["agent_directory_sources"] = {"status": "verified", "sources": sources}
         except ContentInputReceiptError as exc:
             knowledge_metadata["agent_directory_sources"] = {"status": "unavailable", "reason_code": exc.code}
-    if invocation.tool_name in {"read_ledger", "list_files", "read_context_resource"} and (execution_evidence or {}).get("native_empty_read_evidence"):
+    if invocation.tool_name in {"read_ledger", "list_files", "read_context_resource"} and (
+        execution_evidence or {}
+    ).get("native_empty_read_evidence"):
         from app.services.content_input_receipts import ContentInputReceiptError, load_native_empty_read_evidence
 
         try:
             knowledge_metadata["native_empty_read_receipt"] = await load_native_empty_read_evidence(
-                db, agent_id=agent_id, invocation=invocation, model_result=result, arguments=effective_payload,
-                content_hash=content_hash, capture=execution_evidence["native_empty_read_evidence"])
+                db,
+                agent_id=agent_id,
+                invocation=invocation,
+                model_result=result,
+                arguments=effective_payload,
+                content_hash=content_hash,
+                capture=execution_evidence["native_empty_read_evidence"],
+            )
         except ContentInputReceiptError as exc:
             knowledge_metadata["native_empty_read_receipt"] = {"status": "unavailable", "reason_code": exc.code}
-    if invocation.tool_name in {"list_files", "fs_list", "glob_search"} and (execution_evidence or {}).get("native_directory_read_evidence"):
+    if invocation.tool_name in {"list_files", "fs_list", "glob_search"} and (execution_evidence or {}).get(
+        "native_directory_read_evidence"
+    ):
         from app.services.content_input_receipts import ContentInputReceiptError, load_native_directory_read_evidence
 
         try:
             knowledge_metadata["native_directory_read_receipt"] = await load_native_directory_read_evidence(
-                db, agent_id=agent_id, invocation=invocation, model_result=result, arguments=effective_payload,
-                content_hash=content_hash, capture=execution_evidence["native_directory_read_evidence"])
+                db,
+                agent_id=agent_id,
+                invocation=invocation,
+                model_result=result,
+                arguments=effective_payload,
+                content_hash=content_hash,
+                capture=execution_evidence["native_directory_read_evidence"],
+            )
         except ContentInputReceiptError as exc:
             knowledge_metadata["native_directory_read_receipt"] = {"status": "unavailable", "reason_code": exc.code}
     if invocation.tool_name == "get_current_time":
@@ -963,8 +1019,14 @@ async def complete_tool_invocation(
 
         try:
             knowledge_metadata["native_clock_read_receipt"] = await load_native_clock_read_evidence(
-                db, agent_id=agent_id, invocation=invocation, model_result=result, arguments=effective_payload,
-                content_hash=content_hash, capture=(execution_evidence or {}).get("native_clock_read_evidence"))
+                db,
+                agent_id=agent_id,
+                invocation=invocation,
+                model_result=result,
+                arguments=effective_payload,
+                content_hash=content_hash,
+                capture=(execution_evidence or {}).get("native_clock_read_evidence"),
+            )
         except ContentInputReceiptError as exc:
             knowledge_metadata["native_clock_read_receipt"] = {"status": "unavailable", "reason_code": exc.code}
     if invocation.tool_name in {"read_file", "read_document", "fs_read", "exit_plan_mode"}:
@@ -973,45 +1035,84 @@ async def complete_tool_invocation(
         if (execution_evidence or {}).get("native_read_denial_evidence"):
             try:
                 knowledge_metadata["native_read_denial_receipt"] = await load_native_read_denial_evidence(
-                    db, agent_id=agent_id, invocation=invocation, model_result=result, arguments=effective_payload,
-                    content_hash=content_hash, capture=execution_evidence["native_read_denial_evidence"])
+                    db,
+                    agent_id=agent_id,
+                    invocation=invocation,
+                    model_result=result,
+                    arguments=effective_payload,
+                    content_hash=content_hash,
+                    capture=execution_evidence["native_read_denial_evidence"],
+                )
             except ContentInputReceiptError as exc:
                 knowledge_metadata["native_read_denial_receipt"] = {"status": "unavailable", "reason_code": exc.code}
         from app.services.content_input_receipts import ContentInputReceiptError, load_workspace_input_evidence
 
         try:
-            input_evidence = await load_workspace_input_evidence(db, agent_id=agent_id, invocation=invocation,
-                model_result=result, arguments=effective_payload, content_hash=content_hash,
-                capture=(execution_evidence or {}).get("workspace_input_evidence"))
+            input_evidence = await load_workspace_input_evidence(
+                db,
+                agent_id=agent_id,
+                invocation=invocation,
+                model_result=result,
+                arguments=effective_payload,
+                content_hash=content_hash,
+                capture=(execution_evidence or {}).get("workspace_input_evidence"),
+            )
             if input_evidence is not None:
                 knowledge_metadata["workspace_input_receipt"] = input_evidence
         except ContentInputReceiptError as exc:
             knowledge_metadata["workspace_input_receipt"] = {"status": "unavailable", "reason_code": exc.code}
-    if invocation.tool_name in {"load_skill", "run_skill_tool", "tool_search", "read_file", "read_document", "fs_read", "run_command", "execute_code"}:
+    if invocation.tool_name in {
+        "load_skill",
+        "run_skill_tool",
+        "tool_search",
+        "read_file",
+        "read_document",
+        "fs_read",
+        "run_command",
+        "execute_code",
+    }:
         from app.services.content_input_receipts import ContentInputReceiptError, load_skill_input_evidence
 
         try:
-            skill_evidence = await load_skill_input_evidence(db, agent_id=agent_id, invocation=invocation,
-                model_result=result, arguments=effective_payload, content_hash=content_hash,
-                capture=(execution_evidence or {}).get("skill_input_evidence"))
+            skill_evidence = await load_skill_input_evidence(
+                db,
+                agent_id=agent_id,
+                invocation=invocation,
+                model_result=result,
+                arguments=effective_payload,
+                content_hash=content_hash,
+                capture=(execution_evidence or {}).get("skill_input_evidence"),
+            )
             if skill_evidence is not None:
                 knowledge_metadata["skill_input_receipt"] = skill_evidence
         except ContentInputReceiptError as exc:
             knowledge_metadata["skill_input_receipt"] = {"status": "unavailable", "reason_code": exc.code}
     if publication_errors:
         knowledge_metadata["artifact_delivery"] = {
-            "status": "partial" if parts else publication_errors[0]["status"], "files": publication_errors,
+            "status": "partial" if parts else publication_errors[0]["status"],
+            "files": publication_errors,
         }
     drafts: list[SessionEventDraft] = []
     if enterprise_approval is not None and invocation.permission_state == "waiting":
         receipt_ref = f"enterprise-approval:{enterprise_approval.id}:handoff"
-        drafts.append(SessionEventDraft(
-            item_id=invocation.permission_item_id, item_kind="tool_permission", lifecycle="cancelled",
-            scope=_scope(result), actor={"type": "runtime"}, result_id=result.id,
-            invocation_id=invocation.id, provider_tool_use_id=invocation.provider_tool_use_id,
-            payload={"invocation_id": str(invocation.id), "enterprise_approval_id": str(enterprise_approval.id),
-                "reason_code": "enterprise_ticket_owns_execution", "receipt_ref": receipt_ref},
-        ))
+        drafts.append(
+            SessionEventDraft(
+                item_id=invocation.permission_item_id,
+                item_kind="tool_permission",
+                lifecycle="cancelled",
+                scope=_scope(result),
+                actor={"type": "runtime"},
+                result_id=result.id,
+                invocation_id=invocation.id,
+                provider_tool_use_id=invocation.provider_tool_use_id,
+                payload={
+                    "invocation_id": str(invocation.id),
+                    "enterprise_approval_id": str(enterprise_approval.id),
+                    "reason_code": "enterprise_ticket_owns_execution",
+                    "receipt_ref": receipt_ref,
+                },
+            )
+        )
         invocation.permission_state = "cancelled"
         invocation.permission_receipt_ref = receipt_ref
     if invocation.tool_name == "ask_user_question" and outcome == "success":
@@ -1019,15 +1120,27 @@ async def complete_tool_invocation(
             question = json.loads(content)
         except (ValueError, TypeError):
             question = None
-        if isinstance(question, dict) and question.get("status") == "awaiting_user_clarification" and question.get("questions"):
+        if (
+            isinstance(question, dict)
+            and question.get("status") == "awaiting_user_clarification"
+            and question.get("questions")
+        ):
             task = await db.get(RuntimeTask, invocation.run_id)
             from app.services.session_user_question import question_requester_binding
-            drafts.append(SessionEventDraft(
-                item_id=uuid.uuid5(invocation.id, "user-question"), item_kind="user_question", lifecycle="waiting",
-                scope=_scope(result), actor={"type": "assistant"}, result_id=result.id,
-                invocation_id=invocation.id, provider_tool_use_id=invocation.provider_tool_use_id,
-                payload={**question, **question_requester_binding(task)},
-            ))
+
+            drafts.append(
+                SessionEventDraft(
+                    item_id=uuid.uuid5(invocation.id, "user-question"),
+                    item_kind="user_question",
+                    lifecycle="waiting",
+                    scope=_scope(result),
+                    actor={"type": "assistant"},
+                    result_id=result.id,
+                    invocation_id=invocation.id,
+                    provider_tool_use_id=invocation.provider_tool_use_id,
+                    payload={**question, **question_requester_binding(task)},
+                )
+            )
     if permission_resolution is not None:
         permission_decision = str(permission_resolution.get("decision") or "")
         permission_lifecycle = "denied" if permission_decision == "deny" else "completed"
@@ -1316,22 +1429,28 @@ async def acknowledge_unresolved_tool_effects(
 
 
 async def load_permission_plan_mode(
-    db: AsyncSession, *, agent_id: uuid.UUID, invocation: SessionToolInvocation, result: SessionModelResult,
+    db: AsyncSession,
+    *,
+    agent_id: uuid.UUID,
+    invocation: SessionToolInvocation,
+    result: SessionModelResult,
 ) -> dict[str, Any] | None:
     """Recover planning protocol from the canonical waiting event, never tool args."""
 
-    event = await db.scalar(select(ChatTranscriptEvent).where(
-        ChatTranscriptEvent.tenant_id == invocation.tenant_id,
-        ChatTranscriptEvent.agent_id == agent_id,
-        ChatTranscriptEvent.session_id == invocation.session_id,
-        ChatTranscriptEvent.run_id == invocation.run_id,
-        ChatTranscriptEvent.result_id == result.id,
-        ChatTranscriptEvent.invocation_id == invocation.id,
-        ChatTranscriptEvent.item_id == invocation.permission_item_id,
-        ChatTranscriptEvent.item_kind == "tool_permission",
-        ChatTranscriptEvent.lifecycle == "waiting",
-        ChatTranscriptEvent.actor_type == "runtime",
-    ))
+    event = await db.scalar(
+        select(ChatTranscriptEvent).where(
+            ChatTranscriptEvent.tenant_id == invocation.tenant_id,
+            ChatTranscriptEvent.agent_id == agent_id,
+            ChatTranscriptEvent.session_id == invocation.session_id,
+            ChatTranscriptEvent.run_id == invocation.run_id,
+            ChatTranscriptEvent.result_id == result.id,
+            ChatTranscriptEvent.invocation_id == invocation.id,
+            ChatTranscriptEvent.item_id == invocation.permission_item_id,
+            ChatTranscriptEvent.item_kind == "tool_permission",
+            ChatTranscriptEvent.lifecycle == "waiting",
+            ChatTranscriptEvent.actor_type == "runtime",
+        )
+    )
     if event is None:
         raise RuntimeError("tool_permission_waiting_event_missing")
     payload = (event.metadata_json or {}).get("v2_payload") or {}

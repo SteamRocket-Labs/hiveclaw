@@ -57,7 +57,7 @@ def _workspace_error(
     actionable_hint: str | None = None,
     retryable: bool = False,
 ) -> str:
-    return render_tool_error(
+    result = render_tool_error(
         tool_name=tool_name,
         error_class=error_class,
         message=message,
@@ -65,6 +65,11 @@ def _workspace_error(
         retryable=retryable,
         actionable_hint=actionable_hint,
     )
+    if tool_name in {"list_files", "fs_list", "glob_search"}:
+        from app.services.content_input_receipts import observe_native_directory_read
+
+        observe_native_directory_read(tool_name, result, outcome=error_class)
+    return result
 
 
 def _file_read_failure(tool_name, error_class, message, *, path, typed_errors, **options):
@@ -322,6 +327,9 @@ def _list_files(
             directory=True,
         )
         if authority_scope is not None and not enterprise_context and "\n" not in result:
+            from app.services.content_input_receipts import observe_native_directory_read
+
+            observe_native_directory_read(tool_name, result, outcome="listing")
             return ToolContentEnvelope(text=result, metadata={"native_empty_read": {
                 "kind": "authorized_directory_empty", "path": rel_path,
             }})
@@ -330,6 +338,10 @@ def _list_files(
     header = f"📂 {rel_path or 'root'}: {dir_count} folder(s), {file_count} file(s)\n"
     listing = header + "\n".join(items)
     result = _append_workspace_provenance_hint(listing, ws, rel_path, directory=True)
+    if authority_scope is not None and result == listing and not enterprise_context:
+        from app.services.content_input_receipts import observe_native_directory_read
+
+        observe_native_directory_read(tool_name, result, outcome="listing")
     if (authority_scope is not None and (rel_path == "workspace" or rel_path.startswith("workspace/"))
         and result == listing):
         # Names, sizes and counts are a native observation, never a receipt for file bodies.
@@ -1484,6 +1496,10 @@ def _glob_search(
         lines = [f"🔎 Glob results for '{pattern}' ({len(matches)} match(es)):"]
         lines.extend(f"- {match}" for match in matches)
         result = "\n".join(lines)
+    if authority_scope is not None:
+        from app.services.content_input_receipts import observe_native_directory_read
+
+        observe_native_directory_read(tool_name, result, outcome="listing")
     observation = workspace_glob_read_observation(root, pattern, matched_paths=matches)
     resolved_root = search_root.relative_to(ws.resolve()).as_posix()
     if (authority_scope is not None and observation is not None

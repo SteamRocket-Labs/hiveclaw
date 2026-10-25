@@ -332,7 +332,7 @@ async def _owned_context_source(db, *, dependency, agent_id, tenant_id, session_
             return False
         if (call is None or call.tenant_id != tenant_id or call.session_id != session_id
             or (call.effect_state != 'effect_committed' and not (
-                call.tool_name in {'task_get', 'delegate_to_agent', 'read_file', 'read_document', 'fs_read', 'exit_plan_mode'} and call.effect_state == 'failed')) or call.tool_name not in (
+                call.tool_name in {'task_get', 'delegate_to_agent', 'read_file', 'read_document', 'fs_read', 'exit_plan_mode', 'list_files', 'fs_list', 'glob_search'} and call.effect_state == 'failed')) or call.tool_name not in (
                 LEDGER_RESULT_TOOLS | TASK_READ_TOOLS | {'list_files', 'fs_list', 'glob_search', 'tool_search', 'read_context_resource', 'search_memory',
                     'run_command', 'execute_code', 'delegate_to_agent', 'read_file', 'read_document', 'fs_read', 'exit_plan_mode', 'get_current_time'})):
             return False
@@ -415,7 +415,8 @@ async def _owned_context_source(db, *, dependency, agent_id, tenant_id, session_
             bound = await loader(db, agent_id=agent_id, invocation=call, model_result=model,
                 arguments=call.effective_arguments_json or call.provider_arguments_json,
                 content_hash=payload.get('content_hash'),
-                capture={'status': 'captured', 'receipt_ref': pointer.get('evidence_ref')})
+                capture={'status': 'captured', 'receipt_ref': pointer.get('evidence_ref')},
+                **({"expected_user_id": user_id} if directory else {}))
         except (ContentInputReceiptError, ValueError, TypeError):
             return False
         # Publish mechanical control observations, never private ledger/file/Skill bodies.

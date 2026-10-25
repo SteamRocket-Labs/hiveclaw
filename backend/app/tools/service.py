@@ -1346,7 +1346,7 @@ class ToolRuntimeService:
 
             async def _execute_backend() -> str | ToolContentEnvelope:
                 from app.services.content_input_receipts import (
-                    authorize_workspace_execution_inputs, authorize_workspace_receipt_read, native_clock_read_scope,
+                    authorize_workspace_execution_inputs, authorize_workspace_receipt_read, native_clock_read_scope, native_directory_read_scope,
                     settle_workspace_receipt_read,
                 )
 
@@ -1415,7 +1415,7 @@ class ToolRuntimeService:
                         arguments=arguments,
                         workspace=context.workspace,
                     )
-                with native_clock_read_scope(request) as clock_read:
+                with native_clock_read_scope(request) as clock_read, native_directory_read_scope(request) as directory_read:
                     value = await self.backend.execute(request, _execute_request)
                 if tool_name in {"execute_code", "run_command", "run_skill_tool"}:
                     for read in getattr(context.workspace_authority_scope, "input_reads", ()):
@@ -1479,7 +1479,13 @@ class ToolRuntimeService:
                     trace_metadata_sink["native_empty_read_evidence"] = await persist_workspace_execution_evidence(
                         context=context, tool_name=tool_name, tool_call_id=tool_call_id, arguments=arguments,
                         result=value, states={}, lineage=[], errors={}, native_empty_read=value.metadata["native_empty_read"])
-                if (trace_metadata_sink is not None and isinstance(value, ToolContentEnvelope)
+                if directory_read is not None and directory_read.observations and trace_metadata_sink is not None:
+                    from app.services.content_input_receipts import persist_workspace_execution_evidence
+
+                    trace_metadata_sink["native_directory_read_evidence"] = await persist_workspace_execution_evidence(
+                        context=context, tool_name=tool_name, tool_call_id=tool_call_id, arguments=arguments,
+                        result=value, states={}, lineage=[], errors={}, native_directory_read=directory_read)
+                elif (trace_metadata_sink is not None and isinstance(value, ToolContentEnvelope)
                     and isinstance(value.metadata.get("native_directory_read"), dict)):
                     from app.services.content_input_receipts import persist_workspace_execution_evidence
 

@@ -15,6 +15,7 @@ from app.services.team_memory import _safe_component, _slugify
 _ACTIVE_GROUP_TOOL_SOURCES = ContextVar("active_group_tool_sources", default=frozenset())
 _DISCLOSURE_SOURCE_VALIDATIONS = ContextVar("disclosure_source_validations", default=None)
 _NATIVE_CLOCK_READ = ContextVar("native_clock_read", default=None)
+_NATIVE_DIRECTORY_READ = ContextVar("native_directory_read", default=None)
 
 
 class NativeClockRead:
@@ -41,6 +42,46 @@ def observe_native_clock_read(agent_id, content):
     if isinstance(capture, NativeClockRead) and capture.agent_id == agent_id and isinstance(content, str):
         capture.observations += 1
         capture.content = content
+
+
+class NativeDirectoryRead:
+    """Exact native names/status output; never authority for the listed bodies."""
+
+    def __init__(self, request):
+        from app.services.session_tool_runtime import _sha256
+
+        self.agent_id = request.context.agent_id
+        self.tool_name = request.tool_name
+        self.arguments_hash = _sha256({"tool_name": request.tool_name, "arguments": request.arguments})
+        self.content = None
+        self.observation = None
+        self.observations = 0
+
+
+@contextmanager
+def native_directory_read_scope(request):
+    from app.services.workspace_resource_authority import WorkspaceAuthorityScope
+
+    scope = getattr(request.context, "workspace_authority_scope", None)
+    capture = NativeDirectoryRead(request) if (request.tool_name in {"list_files", "fs_list", "glob_search"}
+        and isinstance(scope, WorkspaceAuthorityScope) and scope.agent_id == request.context.agent_id) else None
+    token = _NATIVE_DIRECTORY_READ.set(capture)
+    try:
+        yield capture
+    finally:
+        _NATIVE_DIRECTORY_READ.reset(token)
+
+
+def observe_native_directory_read(tool_name, content, *, outcome):
+    from app.services.session_tool_runtime import _sha256
+
+    capture = _NATIVE_DIRECTORY_READ.get()
+    if (isinstance(capture, NativeDirectoryRead) and {"fs_list": "list_files"}.get(capture.tool_name, capture.tool_name) == tool_name and isinstance(content, str)
+        and outcome in {"listing", "auth_or_permission", "not_found", "operation_failed", "bad_arguments"}):
+        capture.observations += 1
+        capture.content = content
+        capture.observation = {"kind": "native_directory_read", "tool_name": capture.tool_name,
+            "effective_args_hash": capture.arguments_hash, "content_hash": _sha256(content), "outcome": outcome}
 
 
 @contextmanager
@@ -667,6 +708,25 @@ async def _validate_session_dependency(db, tenant_id, dependency, *, user, runti
             if proof is None or reader is None or proof["reader_id"] != str(reader.id):
                 raise ContentInputReceiptError("content_source_access_denied",
                     "The original Feishu result or its connection is no longer authorized for this reader.", 403)
+    if model is SessionToolInvocation and source.tool_name in {"list_files", "fs_list", "glob_search"}:
+        from app.models.session_v2 import SessionModelResult
+
+        pointer = (payload.get("metadata") or {}).get("native_directory_read_receipt")
+        if pointer is not None:
+            # This receipt attests only the exact native names/status, with no
+            # body sources or new grants. Ancestor inputs remain flattened in
+            # the consumer's inventory; do not recursively expand them again.
+            native_model = await db.get(SessionModelResult, event.result_id) if event else None
+            try:
+                bound = await load_native_directory_read_evidence(db, agent_id=session.agent_id,
+                    invocation=source, model_result=native_model,
+                    arguments=source.effective_arguments_json or source.provider_arguments_json,
+                    content_hash=payload.get("content_hash"),
+                    capture={"status": "captured", "receipt_ref": pointer.get("evidence_ref")}) if isinstance(pointer, dict) else None
+            except (ContentInputReceiptError, ValueError, TypeError):
+                bound = None
+            if not isinstance(pointer, dict) or pointer.get("status") != "verified" or bound != pointer:
+                raise ContentInputReceiptError("content_source_unavailable", "The native directory observation is unverified.", 503)
     if model is SessionToolInvocation and (session.audience_kind == "group" or source.tool_name in {"list_triggers", "get_current_time"}):
         from app.services.session_model_inputs import _origin_dependencies
 
@@ -1305,8 +1365,17 @@ async def persist_workspace_execution_evidence(*, context, tool_name, tool_call_
                 channel, metadata_key = "native-empty-read", "native_empty_read_evidence"
                 evidence_id = uuid.uuid5(invocation.id, f"native-empty-read:{proof['source_hash']}")
             if native_directory_read is not None:
+                if isinstance(native_directory_read, NativeDirectoryRead):
+                    capture = native_directory_read
+                    if (capture.agent_id != context.agent_id or capture.tool_name != tool_name
+                        or capture.arguments_hash != args_hash or capture.observations != 1
+                        or not isinstance(capture.content, str) or _sha256(capture.content) != proof["tool_result_hash"]):
+                        raise ContentInputReceiptError("native_directory_read_unverified", "The native directory observation does not match.")
+                    native_directory_read = capture.observation
+                elif isinstance(native_directory_read, dict) and native_directory_read.get("kind") == "native_directory_read":
+                    raise ContentInputReceiptError("native_directory_read_unverified", "A native producer observation is required.")
                 if (input_read is not None or skill_read is not None or native_empty_read is not None
-                    or not _native_directory_read_matches(tool_name, arguments, native_directory_read)):
+                    or not _native_directory_read_matches(tool_name, arguments, native_directory_read, content_hash=proof["tool_result_hash"])):
                     raise ContentInputReceiptError("native_directory_read_unverified", "The directory read scope does not match.")
                 proof = {key: value for key, value in proof.items() if key not in {
                     "states", "lineage", "errors", "descriptor_writes", "execution_inputs"}}
@@ -1413,11 +1482,20 @@ def _native_empty_read_matches(tool_name, arguments, observation, *, session_id,
     return False
 
 
-def _native_directory_read_matches(tool_name, arguments, observation):
+def _native_directory_read_matches(tool_name, arguments, observation, *, content_hash=None):
     from app.services.workspace_resource_authority import normalize_workspace_resource_path, workspace_glob_read_observation
 
     if not isinstance(arguments, dict) or not isinstance(observation, dict):
         return False
+    if observation.get("kind") == "native_directory_read":
+        from app.services.session_tool_runtime import _sha256
+
+        return (tool_name in {"list_files", "fs_list", "glob_search"} and isinstance(content_hash, str)
+            and set(observation) == {"kind", "tool_name", "effective_args_hash", "content_hash", "outcome"}
+            and observation["tool_name"] == tool_name
+            and observation["effective_args_hash"] == _sha256({"tool_name": tool_name, "arguments": arguments})
+            and observation["content_hash"] == content_hash
+            and observation["outcome"] in {"listing", "auth_or_permission", "not_found", "operation_failed", "bad_arguments"})
     if tool_name == "glob_search":
         expected = workspace_glob_read_observation(arguments.get("root") or "", arguments.get("pattern"),
             matched_paths=observation.get("matched_paths"))
@@ -1502,7 +1580,7 @@ async def load_native_clock_read_evidence(db, **kwargs):
 
 
 async def _load_native_read_evidence(db, *, directory, agent_id, invocation, model_result, arguments, content_hash, capture,
-    denial=False, clock=False):
+    denial=False, clock=False, expected_user_id=None):
     from app.models.invocation_span import InvocationSpan
     from app.services.session_tool_runtime import _sha256
 
@@ -1523,6 +1601,7 @@ async def _load_native_read_evidence(db, *, directory, agent_id, invocation, mod
         row is not None and isinstance(row.metadata_json, dict)) else None
     if (not isinstance(proof, dict) or row.tenant_id != invocation.tenant_id or row.agent_id != agent_id
         or row.session_id != str(invocation.session_id) or row.runtime_task_id != invocation.run_id
+        or (expected_user_id is not None and row.user_id != expected_user_id)
         or row.span_type != kind or row.status != "captured" or row.name != invocation.tool_name
         or proof.get("schema") != f"hive.{kind}_evidence.v1" or model_result is None
         or proof.get("invocation_id") != str(invocation.id) or proof.get("model_result_id") != str(model_result.id)
@@ -1534,7 +1613,7 @@ async def _load_native_read_evidence(db, *, directory, agent_id, invocation, mod
         or not ((invocation.tool_name == "get_current_time" and proof.get("observation") == {
                 "kind": "native_clock_read", "content_hash": content_hash}) if clock
             else _native_read_denial_matches(invocation.tool_name, arguments, proof.get("observation"), content_hash=content_hash) if denial
-            else _native_directory_read_matches(invocation.tool_name, arguments, proof.get("observation")) if directory
+            else _native_directory_read_matches(invocation.tool_name, arguments, proof.get("observation"), content_hash=content_hash) if directory
             else _native_empty_read_matches(invocation.tool_name, arguments, proof.get("observation"),
                 session_id=str(invocation.session_id)))
         or proof.get("source_hash") != _sha256({key: value for key, value in proof.items() if key != "source_hash"})

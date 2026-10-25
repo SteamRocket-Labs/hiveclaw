@@ -109,7 +109,7 @@ async def _start_feishu_creation_work(seed, app_user_sessionmaker, monkeypatch):
         return command.id
 
 
-@pytest.mark.parametrize("input_case", ["first_task_parent_return_glob_default", "first_task_parent_glob_default", "first_task_parent_glob_dot", "first_task_parent_clock", "first_task_child_clock", "first_task_child_grep_empty", "first_task_child_grep_legacy", "first_task_child_grep", "first_task_parent_loop_warning", "first_task_refinement_fallback", "first_task_child_missing_file", "first_task_parent_missing_file", "first_task_parent_legacy_workspace_read", "complete", "unbound", "revoked", "first_task", "first_task_unbound", "first_task_revoked", "first_task_refined", "first_task_delivery", "first_task_parent_model", "first_task_refined_native", "first_task_native_creation", "first_task_fresh_employee", "first_task_slow_provider", "first_task_saved_reopen", "first_task_question", "first_task_question_after_write", "first_task_feishu_question", "first_task_feishu_quoted_question", "first_task_feishu_question_source_changed", "first_task_feishu_question_body_changed", "first_task_feishu_question_already_answered", "first_task_feishu_question_projection_missing", "first_task_feishu_question_recipient_changed", "first_task_feishu_question_legacy_status", "first_task_feishu_permission_allow", "first_task_feishu_permission_deny", "first_task_feishu_permission_cancel", "first_task_feishu_permission_unknown", "first_task_feishu_permission_expired", "first_task_feishu_permission_source_changed", "delegation_permission_allow", "first_task_recall", "first_task_ledger", "first_task_ledger_unknown", "first_task_parent_status", "first_task_parent_status_unknown", "first_task_child_command", "first_task_child_code", "first_task_child_command_then_write", "first_task_child_code_then_write", "first_task_creator_task_inventory", "first_task_creator_readiness_feedback", "first_task_creator_readiness_resume", "first_task_parent_creation_result", "first_task_parent_historical_creation_result", "first_task_parent_historical_creation_unknown", "first_task_parent_result_denial", "first_task_parent_public_directory", "first_task_child_readback", "first_task_child_glob", "first_task_workspace_listing", "first_task_workspace_listing_alias", "first_task_completion_sweep", "first_task_parent_wait_legacy", "first_task_parent_code_legacy", "first_task_parity_list", "first_task_parity_ledger", "first_task_parity_ledger_unknown", "first_task_context", "first_task_discovery", "first_task_unverified_memory", "first_task_explicit_unverified_memory", "first_task_feishu_permission_channel_allow", "first_task_feishu_permission_channel_deny", "first_task_feishu_permission_channel_unknown", "first_task_feishu_permission_channel_legacy", "first_task_feishu_permission_channel_scope", "first_task_feishu_permission_channel_feedback_retry", "first_task_feishu_progress"])
+@pytest.mark.parametrize("input_case", ["first_task_parent_return_namespace", "first_task_parent_return_glob_default", "first_task_parent_glob_default", "first_task_parent_glob_dot", "first_task_parent_clock", "first_task_child_clock", "first_task_child_grep_empty", "first_task_child_grep_legacy", "first_task_child_grep", "first_task_parent_loop_warning", "first_task_refinement_fallback", "first_task_child_missing_file", "first_task_parent_missing_file", "first_task_parent_legacy_workspace_read", "complete", "unbound", "revoked", "first_task", "first_task_unbound", "first_task_revoked", "first_task_refined", "first_task_delivery", "first_task_parent_model", "first_task_refined_native", "first_task_native_creation", "first_task_fresh_employee", "first_task_slow_provider", "first_task_saved_reopen", "first_task_question", "first_task_question_after_write", "first_task_feishu_question", "first_task_feishu_quoted_question", "first_task_feishu_question_source_changed", "first_task_feishu_question_body_changed", "first_task_feishu_question_already_answered", "first_task_feishu_question_projection_missing", "first_task_feishu_question_recipient_changed", "first_task_feishu_question_legacy_status", "first_task_feishu_permission_allow", "first_task_feishu_permission_deny", "first_task_feishu_permission_cancel", "first_task_feishu_permission_unknown", "first_task_feishu_permission_expired", "first_task_feishu_permission_source_changed", "delegation_permission_allow", "first_task_recall", "first_task_ledger", "first_task_ledger_unknown", "first_task_parent_status", "first_task_parent_status_unknown", "first_task_child_command", "first_task_child_code", "first_task_child_command_then_write", "first_task_child_code_then_write", "first_task_creator_task_inventory", "first_task_creator_readiness_feedback", "first_task_creator_readiness_resume", "first_task_parent_creation_result", "first_task_parent_historical_creation_result", "first_task_parent_historical_creation_unknown", "first_task_parent_result_denial", "first_task_parent_public_directory", "first_task_child_readback", "first_task_child_glob", "first_task_workspace_listing", "first_task_workspace_listing_alias", "first_task_completion_sweep", "first_task_parent_wait_legacy", "first_task_parent_code_legacy", "first_task_parity_list", "first_task_parity_ledger", "first_task_parity_ledger_unknown", "first_task_context", "first_task_discovery", "first_task_unverified_memory", "first_task_explicit_unverified_memory", "first_task_feishu_permission_channel_allow", "first_task_feishu_permission_channel_deny", "first_task_feishu_permission_channel_unknown", "first_task_feishu_permission_channel_legacy", "first_task_feishu_permission_channel_scope", "first_task_feishu_permission_channel_feedback_retry", "first_task_feishu_progress"])
 async def test_governed_delegation_preserves_its_parent_instruction_origin(
     owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, input_case, migrated_pg_url,
 ):
@@ -127,10 +127,11 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
     from app.services.secrets_provider import get_secrets_provider
     from app.services.web_chat_runtime import _persist_tool_call
 
+    namespace_return_case = input_case == "first_task_parent_return_namespace"
     parent_glob_case = input_case in {"first_task_parent_glob_default", "first_task_parent_glob_dot"}
     parent_glob_dot = input_case == "first_task_parent_glob_dot"
     parent_return_glob_case = input_case == "first_task_parent_return_glob_default"
-    if parent_glob_case or parent_return_glob_case:
+    if namespace_return_case or parent_glob_case or parent_return_glob_case:
         input_case = "first_task_workspace_listing"
     parent_clock_case = input_case == "first_task_parent_clock"
     child_clock_case = input_case == "first_task_child_clock"
@@ -279,7 +280,7 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
         if ledger_case:
             db.add(CapabilityPolicy(tenant_id=seed["tenant_id"], capability="agent.task.track", allowed=True,
                 requires_approval=False))
-        if grep_case or glob_case or parent_glob_case or parent_return_glob_case or legacy_workspace_read_case:
+        if namespace_return_case or grep_case or glob_case or parent_glob_case or parent_return_glob_case or legacy_workspace_read_case:
             db.add(CapabilityPolicy(tenant_id=seed["tenant_id"], capability="workspace.file.read", allowed=True,
                 requires_approval=False))
         if not permission_case:
@@ -2540,6 +2541,27 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
                     "content": "ORIGINAL_WORK_REVIEW: DELEGATED_REPORT"})}}], "finish_reason": "tool_calls"},
             {"content": "Reviewed the returned report.\nDELIVERABLE: workspace/parent-review.md", "finish_reason": "stop"},
         ])
+        if namespace_return_case:
+            namespace_paths = ["memory/control/working_sets/namespace-report.json",
+                f"runtime_artifacts/sessions/{seed['session_id']}/namespace-report.json"]
+            for path in namespace_paths:
+                target = seed["agent_root"] / path
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text("UNVERIFIED_NAMESPACE_BODY")
+            parent_client.script.insert(1, {"tool_calls": [{"id": "parent-namespace-glob", "type": "function",
+                "function": {"name": "glob_search", "arguments": json.dumps({"pattern": "**/*namespace-report*"})}}],
+                "finish_reason": "tool_calls"})
+            parent_client.script.insert(2, {"tool_calls": [
+                {"id": "parent-namespace-list", "type": "function", "function": {"name": "list_files",
+                    "arguments": json.dumps({"path": f"runtime_artifacts/sessions/{seed['session_id']}"})}},
+                {"id": "parent-namespace-alias", "type": "function", "function": {"name": "fs_list",
+                    "arguments": json.dumps({"path": "memory/control/working_sets"})}},
+                {"id": "parent-namespace-denied", "type": "function", "function": {"name": "list_files",
+                    "arguments": json.dumps({"path": "runtime_artifacts/chat_artifact_snapshots/objects"})}},
+            ], "finish_reason": "tool_calls"})
+            parent_client.script.insert(4, {"tool_calls": [{"id": "parent-namespace-readback", "type": "function",
+                "function": {"name": "read_file", "arguments": json.dumps({"path": parent_path})}}],
+                "finish_reason": "tool_calls"})
         if parent_return_glob_case:
             parent_client.script[0]["tool_calls"].append({"id": "parent-return-glob", "type": "function", "function": {
                 "name": "glob_search", "arguments": json.dumps({"pattern": "**/*report*"})}})
@@ -2562,7 +2584,19 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
         finally:
             reset_runtime_task_fence(parent_fence)
         (tmp_path / "native-parent-model-requests.json").write_text(json.dumps(parent_client.requests, default=str, indent=2))
-        if parent_missing_file_case:
+        if namespace_return_case:
+            assert len(parent_client.requests) == 6
+            returned = json.loads(next(m["content"] for m in parent_client.requests[1]["messages"]
+                if m.get("tool_call_id") == "parent-read-return"))
+            assert returned["status"] == "ok" and returned["dependency_coverage"]["complete"]
+            globbed = next(m["content"] for m in parent_client.requests[2]["messages"]
+                if m.get("tool_call_id") == "parent-namespace-glob")
+            assert all(path in globbed for path in namespace_paths)
+            assert "UNVERIFIED_NAMESPACE_BODY" not in json.dumps(parent_client.requests)
+            readback = next(m["content"] for m in parent_client.requests[5]["messages"]
+                if m.get("tool_call_id") == "parent-namespace-readback")
+            assert "ORIGINAL_WORK_REVIEW: DELEGATED_REPORT" in readback and "<tool_error>" not in readback
+        elif parent_missing_file_case:
             assert len(parent_client.requests) == 5
             missing = next(m["content"] for m in parent_client.requests[2]["messages"]
                 if m.get("role") == "tool" and m.get("tool_call_id") == "parent-missing-report-read")
@@ -2606,7 +2640,53 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
             assert artifact is not None and artifact.snapshot_json.get("content_input_receipt_id"), artifact
             parent_artifact_id = artifact.id
             models = list(await db.scalars(select(SessionModelResult).where(SessionModelResult.run_id == return_id)))
-            if parent_missing_file_case:
+            if namespace_return_case:
+                from copy import deepcopy
+                from app.services.session_model_inputs import _origin_dependencies, tool_result_source_hash
+                from app.services.employee_creation_sources import _owned_context_source
+                from app.models.invocation_span import InvocationSpan
+
+                assert len(models) == 6 and all(model.model_request_snapshot_json["input_bindings"][
+                    "dependency_coverage"]["complete"] for model in models)
+                calls = list(await db.scalars(select(SessionToolInvocation).where(
+                    SessionToolInvocation.run_id == return_id, SessionToolInvocation.provider_tool_use_id.in_([
+                        "parent-namespace-glob", "parent-namespace-list", "parent-namespace-alias", "parent-namespace-denied"]))))
+                assert len(calls) == 4
+                for call in calls:
+                    event = await db.get(ChatTranscriptEvent, call.result_event_id)
+                    payload = _event_payload(event)
+                    pointer = payload["metadata"]["native_directory_read_receipt"]
+                    assert pointer["status"] == "verified"
+                    proof = await db.get(InvocationSpan, UUID(pointer["evidence_ref"].split(":", 1)[1]))
+                    original = deepcopy(proof.metadata_json)
+                    check = {"tenant_id": seed["tenant_id"], "agent_id": seed["agent_id"],
+                        "ref": f"session-tool-result:{call.id}"}
+                    assert (await _origin_dependencies(db, **check))[1]
+                    source = {"source_kind": "session_tool_invocation", "source_id": str(call.id),
+                        "source_version": tool_result_source_hash(payload)}
+                    owned = {"tenant_id": seed["tenant_id"], "agent_id": seed["agent_id"],
+                        "session_id": seed["session_id"], "user_id": seed["user_id"]}
+                    assert await _owned_context_source(db, dependency=source, **owned)
+                    assert not await _owned_context_source(db, dependency=source, **{**owned, "user_id": uuid4()})
+                    control = await db.begin_nested()
+                    proof.metadata_json = {"native_directory_read_evidence": {
+                        **original["native_directory_read_evidence"], "tool_result_hash": "0" * 64}}
+                    await db.flush()
+                    assert not (await _origin_dependencies(db, **check))[1]
+                    with pytest.raises(ContentInputReceiptError):
+                        await validate_runtime_input_dependencies(db, ToolExecutionRequest(tool_name="read_file", arguments={},
+                            context=observed["context"]), [source])
+                    await control.rollback()
+                    assert (await _origin_dependencies(db, **check))[1]
+                    control = await db.begin_nested()
+                    event.metadata_json = {**event.metadata_json, "v2_payload": {
+                        **payload, "metadata": {key: value for key, value in payload["metadata"].items()
+                            if key != "native_directory_read_receipt"}}}
+                    await db.flush()
+                    assert not (await _origin_dependencies(db, **check))[1]
+                    await control.rollback()
+                    assert (await _origin_dependencies(db, **check))[1]
+            elif parent_missing_file_case:
                 assert len(models) == 5 and all(model.model_request_snapshot_json["input_bindings"]["dependency_coverage"]["complete"] for model in models)
             else:
                 assert len(models) == 3 and all(model.model_request_snapshot_json["input_bindings"]["dependency_coverage"]["complete"] for model in models)
@@ -2921,7 +3001,9 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://fixture.local") as browser:
             stale_review = await browser.get(f"/agents/{seed['agent_id']}/files/artifacts/{parent_artifact_id}/content")
             assert stale_review.status_code == 403 and "DELEGATED_REPORT" not in stale_review.text
-        if parent_missing_file_case:
+        if namespace_return_case:
+            assert len(parent_client.requests) == 6
+        elif parent_missing_file_case:
             assert len(parent_client.requests) == 5
         else:
             assert len(parent_client.requests) == 3

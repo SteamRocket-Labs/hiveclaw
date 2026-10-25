@@ -1030,6 +1030,7 @@ function workspaceDocumentGroup(
   artifact: ChatArtifactPart,
   sessionRunTaskIds?: Set<string>,
   messageRole?: AgentChatMessage['role'],
+  returnedToSession = false,
 ): WorkspaceDocumentGroupKey {
   const source = String(artifact.source || '').toLowerCase();
   if (source.includes('historical')) return 'historical';
@@ -1044,6 +1045,7 @@ function workspaceDocumentGroup(
     && sessionRunTaskIds
     && sessionRunTaskIds.size > 0
     && !sessionRunTaskIds.has(String(artifact.runtimeTaskId))
+    && !returnedToSession
   ) {
     return 'historical';
   }
@@ -1069,6 +1071,7 @@ function workspaceDocumentStatus(artifact: ChatArtifactPart, group: WorkspaceDoc
 export function buildWorkspaceDocumentsModel(
   messages: AgentChatMessage[],
   sessionRunTaskIds?: Set<string>,
+  sessionId?: string,
 ): WorkspaceDocumentsModel {
   // Path-keyed (Codex Workspace Documents semantics): one file = one row.
   // Repeated deliveries of the same path collapse into the latest artifact
@@ -1077,7 +1080,20 @@ export function buildWorkspaceDocumentsModel(
   messages.forEach((message) => {
     (message.artifacts || []).forEach((artifact) => {
       if (!artifact.path) return;
-      const group = workspaceDocumentGroup(artifact, sessionRunTaskIds, message.role);
+      const delegation = message.sessionItem?.kind === 'a2a_delegation' ? message.sessionItem : null;
+      const parentSessionId = delegation?.scope.session_id ?? message.eventParentSessionId;
+      const taskId = delegation?.payload.runtime_task_id ?? message.eventRuntimeTaskId;
+      const childSessionId = delegation?.payload.child_session_id ?? message.eventChildSessionId;
+      // A returned file keeps its producer's task identity. Its published
+      // parent/child binding places it in this work's deliverables.
+      const returnedToSession = Boolean(
+        sessionId && (delegation || message.eventType === 'child_session')
+        && artifact.source === 'a2a_delivery_ref'
+        && parentSessionId === sessionId && artifact.rootSessionId === sessionId
+        && artifact.runtimeTaskId && artifact.runtimeTaskId === taskId
+        && artifact.sourceSessionId && artifact.sourceSessionId === childSessionId,
+      );
+      const group = workspaceDocumentGroup(artifact, sessionRunTaskIds, message.role, returnedToSession);
       const key = `${group}:${artifact.path}`;
       const existing = docs.get(key);
       if (existing) {
@@ -1506,7 +1522,7 @@ export function buildSessionRightPanelModel({
       .map((item) => String((item.raw as Record<string, unknown> | undefined)?.runtime_task_id ?? item.id ?? ''))
       .filter((value): value is string => Boolean(value)),
   );
-  const workspaceDocuments = buildWorkspaceDocumentsModel(messages, sessionRunTaskIds);
+  const workspaceDocuments = buildWorkspaceDocumentsModel(messages, sessionRunTaskIds, selectedSessionId);
   const runtimeMetrics = aggregateRuntimeMetrics(runtimeSections);
   return {
     workspaceDocuments,

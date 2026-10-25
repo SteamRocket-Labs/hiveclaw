@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest';
 
 import { getRuntimeEventMessage, replayTranscriptEvents, type AgentChatMessage, type ChatTranscriptEventPayload } from './chatRuntime';
-import { compatibilityProjectionEvent, consumeSessionEnvelope, projectSessionEventStoreToMessages } from './sessionEventConsumer';
+import { compatibilityProjectionEvent, consumeSessionEnvelope, hydrateSessionTranscriptEvents, projectSessionEventStoreToMessages } from './sessionEventConsumer';
 import type { SessionCompatibilityEvent, SessionEventV2 } from '../session-workbench/sessionEventStore';
-import { buildWorkspaceDocumentsModel } from '../session-workbench/timelineModel';
+import { buildSessionRightPanelModel, buildWorkspaceDocumentsModel } from '../session-workbench/timelineModel';
 
 const artifact = {
   type: 'artifact', artifact_id: 'child-artifact', path: 'workspace/report.md', name: 'report.md',
@@ -50,7 +50,57 @@ function projectCanonical(event: SessionEventV2) {
   return projectSessionEventStoreToMessages(store!);
 }
 
+function originalWorkPanel(file: Record<string, unknown> = {}, metadata: Record<string, unknown> = {}, canonical = false) {
+  const part = { ...artifact, ...file };
+  const carrier: SessionCompatibilityEvent = {
+    schema: 'hive.session_event_compatibility', schema_version: 1,
+    compatibility_status: 'needs_reconciliation', reason: 'unmapped_legacy_kind',
+    event_id: 'returned-event', sequence: 1, legacy_event_type: 'child_session',
+    payload: {
+      content: returned.message, parts: [part],
+      metadata: { ...returned, role: 'system', artifacts: [part], ...metadata },
+    },
+  };
+  const envelope = canonical
+    ? { ...canonicalReturn(), payload: { ...returned, parts: [part], ...metadata } }
+    : carrier;
+  const messages = hydrateSessionTranscriptEvents([envelope as unknown as ChatTranscriptEventPayload]).messages;
+  return buildSessionRightPanelModel({
+    messages,
+    activeSession: { id: 'parent-session' },
+    activeRunStatus: 'completed',
+    presentationStatus: 'complete',
+    sessionWorkbench: {
+      runtime_sections: {
+        runs: [{ id: 'parent-run', runtime_task_id: 'parent-run', status: 'completed' }],
+      },
+    },
+  });
+}
+
 describe('delegation file delivery in the original work', () => {
+  it.each(['compatibility', 'canonical'])('lists the %s child file in its original work without rebinding its task or producer', (format) => {
+    const model = originalWorkPanel({}, {}, format === 'canonical');
+    expect(model.workspaceDocuments.currentSession.items).toHaveLength(1);
+    expect(model.workspaceDocuments.historical.items).toEqual([]);
+    expect(model.workspaceDocuments.currentSession.items[0].artifact).toMatchObject({
+      id: 'child-artifact', runtimeTaskId: 'child-run', sourceSessionId: 'child-session',
+      rootSessionId: 'parent-session', ownerAgentId: 'employee', downloadAgentId: 'employee',
+      revisionId: 'pinned-revision', contentHash: 'b'.repeat(64),
+    });
+  });
+
+  it.each([
+    { label: 'another original work', file: { root_session_id: 'other-work' }, metadata: {} },
+    { label: 'another task', file: { runtime_task_id: 'other-run' }, metadata: {} },
+    { label: 'another producer session', file: { source_session_id: 'other-child' }, metadata: {} },
+    { label: 'a return addressed to another work', file: {}, metadata: { parent_session_id: 'other-work' } },
+  ])('keeps files from $label outside current work deliveries', ({ file, metadata }) => {
+    const model = originalWorkPanel(file, metadata);
+    expect(model.workspaceDocuments.currentSession.items).toEqual([]);
+    expect(model.workspaceDocuments.historical.items).toHaveLength(1);
+  });
+
   it('keeps actual producer references on a runtime activity message', () => {
     const message = getRuntimeEventMessage(returned);
     expect(message).not.toBeNull();

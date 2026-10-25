@@ -56,6 +56,9 @@ class _ScalarResult:
     def scalar_one_or_none(self):
         return self.value
 
+    def first(self):
+        return self.value
+
 
 class _QueuedDB:
     """Returns queued results in order; records adds/commits/flushes."""
@@ -121,7 +124,7 @@ class _StubGate:
         return self._decision
 
 
-async def _fake_enrich_task_out(task, _db):
+async def _fake_enrich_task_out(task, _db, _user=None):
     """Return a valid ``TaskOut`` for the created task.
 
     ``TaskOut.model_validate`` reads server-default columns (status, assignee,
@@ -175,12 +178,27 @@ def _make_client(router_module, *, db, is_creator: bool = True, user=None):
     app = FastAPI()
     app.include_router(router_module.router)
     user = user or SimpleNamespace(id=uuid4(), role="member", tenant_id=uuid4(), username="member")
+    if not hasattr(user, "is_active"):
+        user.is_active = True
+    if not hasattr(user, "department_id"):
+        user.department_id = None
+    db.records[user.id] = user
+    for result in db.results:
+        row = getattr(result, "value", None)
+        if getattr(row, "agent_id", None) and not hasattr(row, "tenant_id"):
+            row.tenant_id = user.tenant_id
 
     async def override_user():
         return user
 
     async def override_db():
-        yield db
+        from app.database import reset_current_tenant, set_current_tenant
+
+        token = set_current_tenant(str(user.tenant_id))
+        try:
+            yield db
+        finally:
+            reset_current_tenant(token)
 
     async def allow_access(_db, _user, agent_id):
         return SimpleNamespace(id=agent_id, tenant_id=_user.tenant_id, creator_id=_user.id), "manage"
@@ -1258,7 +1276,14 @@ def test_cancel_business_task_updates_both_projections_and_publishes_interrupt(m
         claim_expires_at=None,
         metadata_json={"business_task_id": str(task_id), "phase": "queued"},
     )
-    db = _QueuedDB([_ScalarResult(task)])
+    db = _QueuedDB(
+        [
+            _ScalarResult(task),
+            _ScalarResult(SimpleNamespace(parent_session_id=None, parent_agent_id=agent_id)),
+            _ScalarResult(runtime),
+            _ScalarResult(task),
+        ]
+    )
     db.records[runtime_id] = runtime
     app, user, allow_access = _make_client(mod, db=db)
     task.tenant_id = user.tenant_id
@@ -1273,7 +1298,7 @@ def test_cancel_business_task_updates_both_projections_and_publishes_interrupt(m
     async def fake_publish(**kwargs):
         published.append(kwargs)
 
-    async def fake_detail(_task, _db):
+    async def fake_detail(_task, _db, _user=None):
         return BusinessTaskDetailOut(task=await _fake_enrich_task_out(_task, _db), logs=[])
 
     monkeypatch.setattr("app.services.runtime_control_bus.publish_business_task_cancel", fake_publish)
@@ -1359,7 +1384,7 @@ def test_reconcile_business_task_requires_explicit_retry_safe_decision(monkeypat
     async def fake_audit(*_args, **_kwargs):
         return None
 
-    async def fake_detail(_task, _db):
+    async def fake_detail(_task, _db, _user=None):
         return BusinessTaskDetailOut(task=await _fake_enrich_task_out(_task, _db), logs=[])
 
     monkeypatch.setattr("app.core.policy.write_audit_event", fake_audit)

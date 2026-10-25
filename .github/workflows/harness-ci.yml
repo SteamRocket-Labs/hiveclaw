@@ -133,7 +133,7 @@ jobs:
           python scripts/legacy_brand_release_gate.py git-archive HEAD
 
       - name: Pytest full hermetic suite
-        run: pytest tests -q
+        run: pytest tests -q --maxfail=1
 
       - name: Prompt contract eval
         run: python -m app.runtime.prompt_eval --fail-severity=critical,high

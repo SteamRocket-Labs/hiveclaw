@@ -971,15 +971,10 @@ async function exerciseDomain(
         triggerSessionId = String(diagnostics.session_id || '');
         return isRunIdToken(triggerTaskId) && UUID_PATTERN.test(triggerSessionId);
       }, { timeout: 120_000, intervals: [1000, 2000] }).toBe(true);
-      // The trigger child session's transcript carries the awakening context
-      // and the exact J-05 terminal receipt, BOTH run-bound to the trigger
-      // task id. The wake is projected to the TYPED canonical shape: the V1
-      // user_message normalizes to item_kind=human_input / lifecycle=accepted
-      // / actor.type=user with payload.legacy=true and the run binding in
-      // payload.legacy_run_id (accepted input uses a SESSION scope by
-      // contract; the top-level run_id is reserved for run/round scopes). The
-      // receipt stays a legacy assistant_message envelope with a top-level
-      // run_id.
+      // The trigger task proves dispatch. Its canonical accepted input owns a
+      // separate execution run: bind the exact wake to that run's prepared and
+      // committed result, completed run, and final source block. A completed
+      // dispatch alone cannot satisfy the actual scheduled-work outcome.
       const readTriggerSession = async (): Promise<Array<Record<string, unknown>>> => responseJson(
         await context.ownerApi.get(
           `/api/agents/${context.agentId}/sessions/${triggerSessionId}/transcript?schema_version=2`,
@@ -989,26 +984,51 @@ async function exerciseDomain(
       let triggerSessionCanonical: Array<Record<string, unknown>> = [];
       await expect.poll(async () => {
         triggerSessionCanonical = await readTriggerSession();
-        const boundToTriggerTask = (item: Record<string, unknown>) =>
-          normalizeRunId(canonicalRunId(item)) === normalizeRunId(triggerTaskId);
-        const receiptEnvelope = triggerSessionCanonical.find(
-          (item) => boundToTriggerTask(item)
-            && String(item.legacy_event_type || '') === 'assistant_message'
-            && String((item.payload as Record<string, unknown> | undefined)?.content || '')
-              === 'J-05 terminal receipt from the controlled provider.',
-        );
+        const payloadOf = (item: Record<string, unknown>) =>
+          (item.payload as Record<string, unknown> | undefined) || {};
         const wakeItem = triggerSessionCanonical.find((item) => {
-          if (!boundToTriggerTask(item)) return false;
           if (String(item.item_kind || '') !== 'human_input') return false;
           if (String(item.lifecycle || '') !== 'accepted') return false;
           if (String((item.actor as Record<string, unknown> | undefined)?.type || '') !== 'user') return false;
-          const payload = (item.payload as Record<string, unknown> | undefined) || {};
-          if (payload.legacy !== true) return false;
-          const payloadMetadata = (payload.metadata as Record<string, unknown> | undefined) || {};
-          if (String(payloadMetadata.event_type || '') !== 'user_message') return false;
-          return String(payload.content || '').includes(marker);
+          const payload = payloadOf(item);
+          const metadata = (payload.runtime_metadata as Record<string, unknown> | undefined) || {};
+          if (metadata.source !== 'trigger_reflection') return false;
+          if (normalizeRunId(String(metadata.trigger_runtime_task_id || '')) !== normalizeRunId(triggerTaskId)) return false;
+          if (JSON.stringify(metadata.trigger_ids) !== JSON.stringify([triggerId])) return false;
+          const parts = Array.isArray(payload.content_parts) ? payload.content_parts as Array<Record<string, unknown>> : [];
+          return parts.some((part) => part.type === 'text' && String(part.text || '').includes(marker));
         });
-        return Boolean(receiptEnvelope && wakeItem);
+        if (!wakeItem) return false;
+        const finals = triggerSessionCanonical.filter((item) =>
+          item.item_kind === 'assistant_final' && item.lifecycle === 'completed');
+        if (finals.length !== 1) return false;
+        const final = finals[0];
+        const executionRunId = canonicalRunId(final);
+        if (!isRunIdToken(executionRunId) || normalizeRunId(executionRunId) === normalizeRunId(triggerTaskId)) return false;
+        const boundToExecution = (item: Record<string, unknown>) =>
+          normalizeRunId(canonicalRunId(item)) === normalizeRunId(executionRunId);
+        const finalPayload = payloadOf(final);
+        const resultId = String(finalPayload.terminal_result_id || '');
+        if (!UUID_PATTERN.test(resultId)) return false;
+        const inputId = String(payloadOf(wakeItem).input_id || '');
+        if (!UUID_PATTERN.test(inputId)) return false;
+        const prepared = triggerSessionCanonical.some((item) =>
+          boundToExecution(item) && item.item_kind === 'result_commit' && item.lifecycle === 'prepared'
+          && item.item_id === resultId && JSON.stringify(payloadOf(item).bound_input_ids) === JSON.stringify([inputId]));
+        const committed = triggerSessionCanonical.some((item) =>
+          boundToExecution(item) && item.item_kind === 'result_commit' && item.lifecycle === 'round_committed'
+          && item.item_id === resultId);
+        const completed = triggerSessionCanonical.some((item) =>
+          boundToExecution(item) && item.item_kind === 'run' && item.lifecycle === 'completed'
+          && payloadOf(item).terminal_result_id === resultId);
+        const blocks = Array.isArray(finalPayload.source_blocks)
+          ? finalPayload.source_blocks as Array<Record<string, unknown>> : [];
+        if (blocks.length !== 1) return false;
+        const receipt = triggerSessionCanonical.some((item) =>
+          boundToExecution(item) && item.item_kind === 'assistant_text' && item.lifecycle === 'snapshot'
+          && item.item_id === blocks[0].item_id && payloadOf(item).block_index === blocks[0].block_index
+          && payloadOf(item).content === 'J-05 terminal receipt from the controlled provider.');
+        return prepared && committed && completed && receipt;
       }, { timeout: 30_000, intervals: [500, 1000] }).toBe(true);
       // Exactly ONE integration notification in the child session binds
       // page/outbox/trigger-task/terminal through one manifest item. The

@@ -393,6 +393,11 @@ async def create_schedule(
     )
     db.add(trigger)
     await db.flush()
+    from app.services.trigger_context_sources import record_trigger_configuration
+
+    await record_trigger_configuration(
+        db, trigger=trigger, actor=current_user, changed_fields={"name", "type", "config", "reason"}
+    )
     return _schedule_out(trigger, creator_username=current_user.username)
 
 
@@ -476,6 +481,7 @@ async def update_schedule(
         trigger.reply_context = updates["delivery_target_json"]
 
     config = _trigger_config(trigger)
+    previous_config = dict(config)
     if "cron_expr" in updates and updates["cron_expr"] is not None:
         if not compute_next_run(updates["cron_expr"]):
             raise HTTPException(status_code=400, detail=f"Invalid cron expression: {updates['cron_expr']}")
@@ -501,6 +507,22 @@ async def update_schedule(
     trigger.config = config
 
     await db.flush()
+    from app.services.trigger_context_sources import record_trigger_configuration
+
+    changed_fields = {
+        field
+        for field, key in (("name", "name"), ("reason", "instruction"))
+        if key in updates and updates[key] is not None
+    }
+    if config != previous_config:
+        changed_fields.add("config")
+    await record_trigger_configuration(
+        db,
+        trigger=trigger,
+        actor=current_user,
+        changed_fields=changed_fields,
+        partial_fields=changed_fields & {"config"},
+    )
     return _schedule_out(
         trigger,
         authority_source=decision.authority_source,
@@ -645,6 +667,16 @@ async def trigger_schedule(
     )
     db.add(manual)
     await db.flush()
+    from app.services.trigger_context_sources import record_trigger_configuration
+
+    await record_trigger_configuration(
+        db,
+        trigger=manual,
+        actor=current_user,
+        changed_fields={"name", "type", "config", "reason"},
+        copied_from=trigger,
+        copied_fields={"name", "reason"},
+    )
     return {"status": "queued", "schedule_id": str(schedule_id), "trigger_id": str(manual.id)}
 
 

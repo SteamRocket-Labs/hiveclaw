@@ -202,8 +202,16 @@ async def submit_live_human_input(
     from app.services.content_input_receipts import ContentInputReceiptError
 
     try:
-        await validate_team_task_selection(db, session=session, user=user, parts=content_parts,
-            allowed=allow_project_selection and role == "user" and a2a_peer_agent_id is None and runtime_result_page_id is None)
+        await validate_team_task_selection(
+            db,
+            session=session,
+            user=user,
+            parts=content_parts,
+            allowed=allow_project_selection
+            and role == "user"
+            and a2a_peer_agent_id is None
+            and runtime_result_page_id is None,
+        )
     except ContentInputReceiptError as exc:
         from fastapi import HTTPException
 
@@ -221,8 +229,12 @@ async def submit_live_human_input(
     if selected_projects:
         from fastapi import HTTPException
 
-        if (not allow_project_selection or role != "user" or a2a_peer_agent_id is not None
-            or runtime_result_page_id is not None):
+        if (
+            not allow_project_selection
+            or role != "user"
+            or a2a_peer_agent_id is not None
+            or runtime_result_page_id is not None
+        ):
             raise HTTPException(403, detail={"code": "project_selection_origin_denied"})
         try:
             await validate_selection(db, session=session, user=user, parts=content_parts)
@@ -258,7 +270,9 @@ async def submit_live_human_input(
             require_delivery_state=existing_row is None,
             expected_claim_token=runtime_result_page_claim_token,
         )
-        command_authority_stamp = runtime_result_integration_command_stamp(page_id=page_uuid, authority_source=authority.authority_source)
+        command_authority_stamp = runtime_result_integration_command_stamp(
+            page_id=page_uuid, authority_source=authority.authority_source
+        )
     elif a2a_peer_agent_id is not None:
         # Narrow server-derived A2A delegation peer lane: never the user
         # writable gate, always the full durable binding revalidation.
@@ -293,22 +307,34 @@ async def submit_live_human_input(
         if ingress is None or ingress.event_id != input_uuid:
             raise ValueError("shared_group_input_origin_mismatch")
         command_authority_stamp = {"schema": SHARED_GROUP_INGRESS_STAMP_SCHEMA, "ingress_event_id": str(input_uuid)}
-    elif authority.authority_source == 'machine_credential_session':
-        command_authority_stamp = {'schema': 'hive.session_command_authority.machine.v1',
-            'credential_id': str(authority.machine_credential_id)}
+    elif authority.authority_source == "machine_credential_session":
+        command_authority_stamp = {
+            "schema": "hive.session_command_authority.machine.v1",
+            "credential_id": str(authority.machine_credential_id),
+        }
     if requested_kind == "answer_request":
         from fastapi import HTTPException
         from app.services.business_task_waits import lock_business_question_parent
         from app.services.chat_transcript import lock_transcript_session
         from app.services.session_user_question import load_answer_question
 
-        await lock_business_question_parent(db, tenant_id=authority.tenant_id,
-            agent_id=authority.agent_id, session_id=session.id)
+        await lock_business_question_parent(
+            db, tenant_id=authority.tenant_id, agent_id=authority.agent_id, session_id=session.id
+        )
         await lock_transcript_session(db, session_id=session.id)
-        question = await load_answer_question(db, authority=authority, item_id=_input_id(request_item_id)) if request_item_id else None
+        question = (
+            await load_answer_question(db, authority=authority, item_id=_input_id(request_item_id))
+            if request_item_id
+            else None
+        )
         if question is None:
-            raise HTTPException(status_code=409, detail={"code": "user_question_not_found",
-                "message": "The requested question is unavailable in this work."})
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "user_question_not_found",
+                    "message": "The requested question is unavailable in this work.",
+                },
+            )
         if session.audience_kind == "group":
             scope = dict(question.scope_json or {})
             try:
@@ -316,9 +342,13 @@ async def submit_live_human_input(
                 question_turn_id = scope["turn_id"]
             except (KeyError, TypeError, ValueError) as exc:
                 raise HTTPException(409, detail={"code": "user_question_scope_unavailable"}) from exc
-            if (question_run_id != question.run_id or not isinstance(question_turn_id, str) or not question_turn_id
+            if (
+                question_run_id != question.run_id
+                or not isinstance(question_turn_id, str)
+                or not question_turn_id
                 or (expected_run_id is not None and str(expected_run_id) != str(question_run_id))
-                or (expected_turn_id is not None and expected_turn_id != question_turn_id)):
+                or (expected_turn_id is not None and expected_turn_id != question_turn_id)
+            ):
                 raise HTTPException(409, detail={"code": "user_question_scope_mismatch"})
             expected_run_id, expected_turn_id = question_run_id, question_turn_id
         request_item_id = question.item_id
@@ -348,6 +378,10 @@ async def submit_live_human_input(
         )
         original_fork_after_sequence = original_target.get("fork_after_sequence")
         original_runtime_metadata = dict(original_target.get("runtime_metadata") or {})
+        # A missing optional channel reuses the accepted frame. Adding a new
+        # default must neither rewrite legacy commands nor reject their replay.
+        if "channel" not in runtime_metadata and "channel" in original_runtime_metadata:
+            runtime_metadata["channel"] = original_runtime_metadata["channel"]
         supplied_run_id = (
             expected_run_id
             if isinstance(expected_run_id, uuid.UUID)
@@ -373,6 +407,7 @@ async def submit_live_human_input(
         fork_after_sequence = original_fork_after_sequence
         runtime_metadata = original_runtime_metadata
     else:
+        runtime_metadata.setdefault("channel", session.source_channel or "web")
         kind, target_turn_id, target_run_id = await _resolve_live_intent(
             db,
             agent=agent,
@@ -400,8 +435,12 @@ async def submit_live_human_input(
         "content_parts": content_parts,
         **({"expected_turn_id": target_turn_id} if target_turn_id is not None else {}),
         **({"expected_run_id": str(target_run_id)} if target_run_id is not None else {}),
-        **({"terminal_fallback": terminal_fallback} if kind in {"steer_current_turn", "answer_request"}
-           and not (existing_row is not None and "terminal_fallback" not in (existing_command.target_json or {})) else {}),
+        **(
+            {"terminal_fallback": terminal_fallback}
+            if kind in {"steer_current_turn", "answer_request"}
+            and not (existing_row is not None and "terminal_fallback" not in (existing_command.target_json or {}))
+            else {}
+        ),
         **({"request_item_id": str(request_item_id)} if request_item_id is not None else {}),
         **({"fork_after_sequence": fork_after_sequence} if fork_after_sequence is not None else {}),
         **({"runtime_metadata": dict(runtime_metadata)} if runtime_metadata else {}),
@@ -656,8 +695,7 @@ async def submit_live_cancel_input(
                 await db.commit()
             else:
                 await db.commit()
-                await signal_web_chat_cancel(run_id=run_uuid, agent_id=agent.id,
-                    session_id=session.id, user_id=user.id)
+                await signal_web_chat_cancel(run_id=run_uuid, agent_id=agent.id, session_id=session.id, user_id=user.id)
     return {"schema": "hive.control_input_receipt", "schema_version": 2, **asdict(receipt)}
 
 

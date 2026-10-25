@@ -14,7 +14,7 @@ from app.database import tenant_scoped_session
 from app.models.organization_identity import ContentInputReceipt
 from app.models.tenant import Tenant
 from tests.integration import conftest as persistence
-from tests.integration.test_m4a_knowledge_analysis_upgrade_postgres import migration_database, upgrade
+from tests.integration.test_m4a_knowledge_analysis_upgrade_postgres import migrate, migration_database
 
 
 def revision():
@@ -36,19 +36,18 @@ async def test_existing_receipts_upgrade_with_rls_and_populated_downgrade_preser
     tenant, other = uuid4(), uuid4()
     old_id, scoped_id = uuid4(), uuid4()
     async with migration_database(pg_container) as url:
-        upgrade(url)
+        migrate(url)
+        migrate(url, command="downgrade", target=revision().down_revision)
         engine = create_async_engine(url)
         try:
             async with engine.begin() as db:
-                await db.run_sync(downgrade)
-                await db.execute(text("UPDATE alembic_version SET version_num=:revision"), {"revision": revision().down_revision})
                 for identity in (tenant, other):
                     await db.execute(Tenant.__table__.insert().values(id=identity, name="Memory upgrade",
                         slug="memory-upgrade-" + identity.hex))
                 await db.execute(text("INSERT INTO content_input_receipts(id,tenant_id,carrier_kind,carrier_ref,revision,content_sha256,dependencies_json) "
                     "VALUES(:id,:tenant,'team_memory','legacy-source',1,:hash,'[]'::jsonb)"),
                     {"id": old_id, "tenant": tenant, "hash": "a" * 64})
-            upgrade(url)
+            migrate(url)
             async with engine.begin() as db:
                 legacy = (await db.execute(text("SELECT carrier_ref,content_sha256,authority_json FROM content_input_receipts WHERE id=:id"),
                     {"id": old_id})).one()
@@ -80,9 +79,8 @@ async def test_existing_receipts_upgrade_with_rls_and_populated_downgrade_preser
                 # compatible rollback and upgrade; real source data blocks it.
                 async with engine.begin() as db:
                     await db.execute(text("DELETE FROM content_input_receipts WHERE id=:id"), {"id": scoped_id})
-                    await db.run_sync(downgrade)
-                    await db.execute(text("UPDATE alembic_version SET version_num=:revision"), {"revision": revision().down_revision})
-                upgrade(url)
+                migrate(url, command="downgrade", target=revision().down_revision)
+                migrate(url)
                 async with engine.begin() as db:
                     assert await db.scalar(text("SELECT content_sha256 FROM content_input_receipts WHERE id=:id"),
                         {"id": old_id}) == "a" * 64

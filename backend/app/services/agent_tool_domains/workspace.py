@@ -326,10 +326,11 @@ def _list_files(
             rel_path,
             directory=True,
         )
-        if authority_scope is not None and not enterprise_context and "\n" not in result:
+        if authority_scope is not None and not enterprise_context:
             from app.services.content_input_receipts import observe_native_directory_read
 
             observe_native_directory_read(tool_name, result, outcome="listing")
+        if authority_scope is not None and not enterprise_context and "\n" not in result:
             return ToolContentEnvelope(text=result, metadata={"native_empty_read": {
                 "kind": "authorized_directory_empty", "path": rel_path,
             }})
@@ -338,9 +339,11 @@ def _list_files(
     header = f"📂 {rel_path or 'root'}: {dir_count} folder(s), {file_count} file(s)\n"
     listing = header + "\n".join(items)
     result = _append_workspace_provenance_hint(listing, ws, rel_path, directory=True)
-    if authority_scope is not None and result == listing and not enterprise_context:
+    if authority_scope is not None and not enterprise_context:
         from app.services.content_input_receipts import observe_native_directory_read
 
+        # Preserve advisory provenance in the exact native metadata observation.
+        # It never authorizes a listed body or attests the referenced history.
         observe_native_directory_read(tool_name, result, outcome="listing")
     if (authority_scope is not None and (rel_path == "workspace" or rel_path.startswith("workspace/"))
         and result == listing):

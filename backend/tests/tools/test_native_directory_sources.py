@@ -85,3 +85,33 @@ def test_native_empty_namespace_and_missing_directory_are_exact_statuses(tmp_pat
             result = _list_files(tmp_path, path, authority_scope=scope)
         assert capture.observations == 1 and capture.observation["outcome"] == outcome
         assert _native_directory_read_matches(tool, request.arguments, capture.observation, content_hash=_sha256(str(result)))
+
+
+@pytest.mark.parametrize("tool", ["list_files", "fs_list"])
+def test_annotated_listing_keeps_advisory_bytes_without_authorizing_bodies(tmp_path, tool):
+    from app.services.agent_tool_domains.workspace import _list_files
+    from app.services.chat_artifact_delivery import record_workspace_artifact_provenance, workspace_artifact_provenance_hint
+
+    session, agent = uuid4(), uuid4()
+    path = "workspace/report.md"
+    scope = WorkspaceAuthorityScope(agent_id=agent, user_id=uuid4(), root_session_id=session,
+        allowed_paths=frozenset({path}), operator_view=False, authority_source="resource_owner")
+    (tmp_path / "workspace").mkdir()
+    record_workspace_artifact_provenance(tmp_path, {"path": path, "artifact_id": str(uuid4()),
+        "session_id": str(session), "runtime_task_id": str(uuid4()), "source": "workspace_write", "action": "created"})
+    hint = workspace_artifact_provenance_hint(tmp_path, "workspace", directory=True)
+    assert "Provenance hint:" in hint
+    request = _request(tool, {"path": "workspace"}, scope)
+    for exists in (False, True):
+        if exists:
+            (tmp_path / path).write_text("PRIVATE_BODY_WITHOUT_A_SOURCE_RECEIPT")
+        with native_directory_read_scope(request) as capture:
+            result = _list_files(tmp_path, "workspace", authority_scope=scope)
+        assert hint in result and capture.content == str(result) and capture.observations == 1
+        assert ("Empty directory" in result) is not exists
+        assert _native_directory_read_matches(tool, request.arguments, capture.observation, content_hash=_sha256(str(result)))
+        assert "PRIVATE_BODY_WITHOUT_A_SOURCE_RECEIPT" not in result
+        assert scope.input_reads == () and scope.input_read(path) is None
+    with native_directory_read_scope(request) as no_native_listing:
+        workspace_artifact_provenance_hint(tmp_path, "workspace", directory=True)
+    assert no_native_listing.observations == 0

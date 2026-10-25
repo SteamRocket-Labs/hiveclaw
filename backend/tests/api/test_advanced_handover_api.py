@@ -169,7 +169,7 @@ async def test_handover_changes_current_owner_without_rewriting_creator_provenan
     monkeypatch.setattr(ownership_service, "register_agent_asset", fake_register_agent_asset)
     monkeypatch.setattr(ownership_service, "_rebind_active_collaboration_memberships", fake_rebind)
 
-    db = _FakeDB([_ScalarResult(target_user)])
+    db = _FakeDB([_ScalarResult(target_user), _ListResult([])])
 
     result = await advanced_api.handover_agent(
         agent_id=agent_id,

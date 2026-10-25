@@ -52,6 +52,7 @@ async def capture_context_message_origins(db, *, tenant_id, agent_id, session_id
     owner_id = await db.scalar(select(ChatSession.user_id).where(ChatSession.id == session_id,
         ChatSession.tenant_id == tenant_id, ChatSession.agent_id == agent_id))
     machine_actor = None
+    external_actor = None
     if owner_id is None:
         from app.models.runtime_task import RuntimeTask
         from app.services.shared_group_authority import load_shared_group_runtime_actor
@@ -64,7 +65,12 @@ async def capture_context_message_origins(db, *, tenant_id, agent_id, session_id
             from app.services.machine_runtime_authority import load_machine_runtime_actor
 
             machine_actor = await load_machine_runtime_actor(db, task=task, session=session)
-    if owner_id is None and machine_actor is None:
+        else:
+            from app.services.external_principal_service import load_external_context_actor
+
+            external_actor = await load_external_context_actor(db, tenant_id=tenant_id, agent_id=agent_id,
+                session=session, task=task)
+    if owner_id is None and machine_actor is None and external_actor is None:
         return
     for index, message in enumerate(messages):
         origin = message.context_origin if isinstance(message, LLMMessage) else None
@@ -81,6 +87,8 @@ async def capture_context_message_origins(db, *, tenant_id, agent_id, session_id
         if machine_actor is not None:
             proof.update({'requester_external_principal_id': str(machine_actor.external_principal_id),
                 'machine_credential_id': str(machine_actor.machine_credential_id)})
+        elif external_actor is not None:
+            proof['requester_external_principal_id'] = str(external_actor.external_principal_id)
         proof["source_hash"] = _hash(proof)
         source_id = uuid.uuid5(result_id, f"kernel-context:{index}:{proof['source_hash']}")
         row = await db.get(InvocationSpan, source_id, populate_existing=True)
@@ -128,6 +136,17 @@ async def load_context_message_origin(db, *, tenant_id, agent_id, source_id, ses
             or task.parent_session_id != row.session_id or task.root_user_id is not None or row.user_id is not None
             or str(task.machine_credential_id) != proof['machine_credential_id']
             or str(task.root_external_principal_id) != proof.get('requester_external_principal_id')):
+            return None
+    elif proof.get('requester_external_principal_id') is not None:
+        from app.models.runtime_task import RuntimeTask
+        from app.services.external_principal_service import load_external_context_actor
+
+        session = await db.get(ChatSession, uuid.UUID(row.session_id), populate_existing=True)
+        task = await db.get(RuntimeTask, row.runtime_task_id, populate_existing=True)
+        actor = await load_external_context_actor(db, tenant_id=tenant_id, agent_id=agent_id,
+            session=session, task=task)
+        if (row.user_id is not None or actor is None
+            or str(actor.external_principal_id) != proof['requester_external_principal_id']):
             return None
     message = proof.get("message")
     if not isinstance(message, dict) or set(message) != {"role", "content"} or message["role"] not in {"system", "user"}:

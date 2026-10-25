@@ -646,7 +646,14 @@ class ChannelDeliveryOutboxService:
             raise ContentInputReceiptError("native_result_sources_unavailable", "The result lacks its complete source receipt.", 503)
         user = await self._private_delivery_reader(db, item, session)
         if user is None:
-            await _validate_input_dependencies(db, item.tenant_id, dependencies, user=None)
+            if item.external_principal_id is not None:
+                from app.services.external_principal_service import ExternalChannelSourceReader
+
+                reader = ExternalChannelSourceReader(agent_id=item.agent_id, session_id=item.session_id,
+                    runtime_task_id=item.runtime_task_id, external_principal_id=item.external_principal_id)
+                await _validate_input_dependencies(db, item.tenant_id, dependencies, runtime_request=reader)
+            else:
+                await _validate_input_dependencies(db, item.tenant_id, dependencies, user=None)
         else:
             with source_recipient_read(session_id=session.id, user_id=user.id):
                 await _validate_input_dependencies(db, item.tenant_id, dependencies, user=user)

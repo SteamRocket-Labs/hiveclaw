@@ -158,6 +158,17 @@ async def _resolve_external_session_mutation_authority(
     if action != "mutate_session_input":
         raise PermissionError("external_principal_action_not_allowed")
 
+    return await _resolve_external_session_authority(db, actor=actor, agent_id=agent_id,
+        session_id=session_id, action=action, writable=True)
+
+
+async def require_external_session_source_access(db, *, actor, agent_id, session_id):
+    """Recheck the installed sender's existing private conversation without granting tools."""
+    await _resolve_external_session_authority(db, actor=actor, agent_id=agent_id,
+        session_id=session_id, action="read_content_input_source", writable=False)
+
+
+async def _resolve_external_session_authority(db, *, actor, agent_id, session_id, action, writable):
     from app.core.permissions import check_agent_access, require_writable_session
     from app.models.agent import Agent
     from app.models.channel_config import ChannelConfig
@@ -171,6 +182,8 @@ async def _resolve_external_session_mutation_authority(
     if session is None or principal is None or agent is None:
         raise PermissionError("external_principal_authority_not_found")
     if getattr(session, "audience_kind", None) == "group":
+        if not writable:
+            raise PermissionError("shared_group_source_reader_required")
         from app.services.channel_ingress_context import current_channel_ingress_context
         from app.services.shared_group_authority import resolve_shared_group_input_authority
 
@@ -229,7 +242,8 @@ async def _resolve_external_session_mutation_authority(
         if session.user_id != linked_user.id:
             raise PermissionError("external_principal_session_user_mismatch")
 
-    require_writable_session(session, action=action)
+    if writable:
+        require_writable_session(session, action=action)
     return AuthenticatedSessionAuthority(
         tenant_id=principal.tenant_id,
         agent_id=agent.id,

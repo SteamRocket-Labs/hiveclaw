@@ -504,6 +504,15 @@ async def record_session_actor_identity(db, *, tenant_id, agent_id, session_id, 
 
         actor = await machine_task_actor(db, tenant_id=tenant_id, agent_id=agent_id, runtime_task_id=runtime_task_id,
             session_id=session_id, user_id=None)
+        machine_actor = actor is not None
+        if actor is None:
+            from app.models.runtime_task import RuntimeTask
+            from app.services.external_principal_service import load_external_context_actor
+
+            session = await db.get(ChatSession, session_id, populate_existing=True)
+            task = await db.get(RuntimeTask, uuid.UUID(str(runtime_task_id)), populate_existing=True)
+            actor = await load_external_context_actor(db, tenant_id=tenant_id, agent_id=agent_id,
+                session=session, task=task)
         if actor is not None:
             session = await db.get(ChatSession, session_id, populate_existing=True)
             if display_name is not None and display_name != actor.display_name:
@@ -513,11 +522,14 @@ async def record_session_actor_identity(db, *, tenant_id, agent_id, session_id, 
                     .where(Agent.id == agent_id, Agent.tenant_id == tenant_id))).one()
                 if timezone_name != (zones[0] or zones[1] or 'UTC'):
                     raise ContentInputReceiptError('context_timezone_changed', 'The observed timezone changed before capture.', 409)
-            payload = {'schema': 'hive.session_actor_identity.machine.v1', 'tenant_id': str(tenant_id),
+            kind = 'machine' if machine_actor else 'external'
+            payload = {'schema': f'hive.session_actor_identity.{kind}.v1', 'tenant_id': str(tenant_id),
                 'agent_id': str(agent_id), 'session_id': str(session_id), 'user_id': None,
-                'external_principal_id': str(actor.external_principal_id), 'machine_credential_id': str(actor.machine_credential_id),
+                'external_principal_id': str(actor.external_principal_id),
                 'runtime_task_id': str(uuid.UUID(str(runtime_task_id))), 'display_name': display_name,
                 'channel': str(session.source_channel or ''), 'timezone': timezone_name}
+            if machine_actor:
+                payload['machine_credential_id'] = str(actor.machine_credential_id)
             version = _hash(payload)
             source_id = uuid.uuid5(session.id, f'session-actor:{version}')
             await db.execute(insert(InvocationSpan).values(id=source_id, tenant_id=tenant_id, agent_id=agent_id,
@@ -585,6 +597,29 @@ async def _validate_session_actor_identity(db, tenant_id, dependency, *, user, r
         source_id = uuid.UUID(dependency["source_id"])
         row = await db.get(InvocationSpan, source_id, populate_existing=True)
         payload = (row.metadata_json or {}).get("session_actor_identity") if row is not None else None
+        if isinstance(payload, dict) and payload.get('schema') == 'hive.session_actor_identity.external.v1':
+            from app.models.runtime_task import RuntimeTask
+            from app.services.external_principal_service import load_external_context_actor
+
+            task = await db.get(RuntimeTask, uuid.UUID(payload['runtime_task_id']), populate_existing=True)
+            session = await db.get(ChatSession, uuid.UUID(payload['session_id']), populate_existing=True)
+            actor = await load_external_context_actor(db, tenant_id=tenant_id, agent_id=row.agent_id,
+                session=session, task=task)
+            if actor is None:
+                raise ContentInputReceiptError('content_source_access_denied', 'The channel source reader is no longer authorized.', 403)
+            if (set(payload) != {'schema', 'tenant_id', 'agent_id', 'session_id', 'user_id',
+                'external_principal_id', 'runtime_task_id', 'display_name', 'channel', 'timezone'}
+                or payload['tenant_id'] != str(tenant_id) or payload['agent_id'] != str(session.agent_id)
+                or payload['external_principal_id'] != str(actor.external_principal_id) or payload['user_id'] is not None
+                or payload['channel'] != str(session.source_channel or '')
+                or row.user_id is not None or row.tenant_id != tenant_id or row.agent_id != session.agent_id
+                or row.runtime_task_id != task.id or row.session_id != str(session.id)
+                or row.span_type != 'session_actor_identity' or row.name != 'session.actor.identity' or row.status != 'captured'
+                or _hash(payload) != dependency['source_version']
+                or source_id != uuid.uuid5(session.id, f'session-actor:{_hash(payload)}')):
+                raise ValueError('external_actor_source_binding_invalid')
+            await _authorize_session_input_source(db, tenant_id, session, user=user, runtime_request=runtime_request)
+            return
         if isinstance(payload, dict) and payload.get('schema') == 'hive.session_actor_identity.machine.v1':
             from app.models.runtime_task import RuntimeTask
             from app.services.machine_runtime_authority import MachineArtifactReader, load_machine_runtime_actor
@@ -622,6 +657,8 @@ async def _validate_session_actor_identity(db, tenant_id, dependency, *, user, r
             or _hash(payload) != dependency["source_version"]
             or source_id != uuid.uuid5(scope["session_id"], f"session-actor:{_hash(payload)}")):
             raise ValueError("actor_source_binding_invalid")
+    except ContentInputReceiptError:
+        raise
     except (ValueError, TypeError, KeyError, AttributeError) as exc:
         raise ContentInputReceiptError("content_source_unavailable", "The actor observation is invalid or unavailable.", 503) from exc
     session = await db.scalar(select(ChatSession).where(ChatSession.id == scope["session_id"],
@@ -766,6 +803,14 @@ async def _authorize_session_input_source(db, tenant_id, session, *, user, runti
                 or session.external_principal_id != machine.external_principal_id or session.user_id is not None):
                 raise ContentInputReceiptError('content_source_access_denied', 'The machine cannot read this session source.', 403)
             return
+        from app.services.external_principal_service import external_request_source_actor
+
+        external = await external_request_source_actor(db, tenant_id=tenant_id, request=runtime_request)
+        if external is not None:
+            current_session, _task, _actor = external
+            if session.id != current_session.id or session.tenant_id != tenant_id or session.agent_id != current_session.agent_id:
+                raise ContentInputReceiptError('content_source_access_denied', 'The channel cannot read this session source.', 403)
+            return
 
     if session.audience_kind == "group":
         from app.core.permissions import check_agent_access, is_scoped_business_admin
@@ -792,6 +837,8 @@ async def _authorize_session_input_source(db, tenant_id, session, *, user, runti
         raise ContentInputReceiptError("content_source_unavailable", "This session source requires its live shared-audience reader.", 503)
     try:
         if runtime_request is None:
+            if user is None:
+                raise ContentInputReceiptError("content_source_access_denied", "The session source requires its reader.", 403)
             if not business_inspection_allowed() and session.user_id != getattr(user, "id", None):
                 raise ValueError("private_session_recipient_mismatch")
             await authorize_session_action(db, user, agent_id=session.agent_id, session_id=session.id,
@@ -878,6 +925,16 @@ async def _runtime_input_actor(db, tenant_id, request):
             session_id=str(getattr(context, 'session_id', None) or getattr(session, 'session_id', None)),
             runtime_task_id=str(getattr(context, 'runtime_task_id', None) or metadata.get('runtime_task_id') or metadata.get('task_id')),
             purpose='machine_task'), machine
+
+    from app.services.external_principal_service import ExternalChannelSourceReader, external_request_source_actor
+
+    external = await external_request_source_actor(db, tenant_id=tenant_id, request=request)
+    if external is not None:
+        session, task, actor = external
+        return AgentRuntimePrincipal(agent_id=session.agent_id, requester_user_id=None,
+            session_id=str(session.id), runtime_task_id=str(task.id), purpose='external_channel_source'), actor
+    if isinstance(request, ExternalChannelSourceReader):
+        raise ContentInputReceiptError('content_source_access_denied', 'The channel source reader is no longer authorized.', 403)
 
     try:
         principal = request if isinstance(request, AgentRuntimePrincipal) else _personal_kb_runtime_principal(request)

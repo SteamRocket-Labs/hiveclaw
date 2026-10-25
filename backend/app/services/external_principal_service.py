@@ -58,6 +58,62 @@ class ChannelRuntimeActor:
 
 
 @dataclass(frozen=True, slots=True)
+class ExternalChannelSourceReader:
+    """A platform read of one channel run's sources; carries no tool authority."""
+
+    agent_id: uuid.UUID
+    session_id: uuid.UUID
+    runtime_task_id: uuid.UUID
+    external_principal_id: uuid.UUID
+    requester_user_id: None = None
+
+
+async def load_external_context_actor(db, *, tenant_id, agent_id, session, task):
+    from app.services.session_v2_persistence import require_external_session_source_access
+
+    if (session is None or task is None or session.tenant_id != tenant_id or session.agent_id != agent_id
+        or task.tenant_id != tenant_id or task.parent_agent_id != agent_id
+        or task.parent_session_id != str(session.id) or session.audience_kind not in {None, "private"}
+        or session.user_id is not None or task.root_user_id is not None or task.machine_credential_id is not None
+        or session.external_principal_id is None
+        or task.root_external_principal_id != session.external_principal_id):
+        return None
+    try:
+        actor = await load_external_runtime_actor(db, tenant_id=tenant_id,
+            principal_id=session.external_principal_id, expected_user_id=None)
+        if actor.id is not None or actor.authority_bound:
+            return None
+        await require_external_session_source_access(db, actor=actor, agent_id=agent_id, session_id=session.id)
+    except (LookupError, PermissionError):
+        return None
+    return actor
+
+
+async def external_request_source_actor(db, *, tenant_id, request):
+    from app.models.chat_session import ChatSession
+    from app.models.runtime_task import RuntimeTask
+
+    context = getattr(request, "context", None) or request
+    user_id = getattr(context, "user_id", None) or getattr(context, "requester_user_id", None)
+    if user_id is not None:
+        return None
+    nested = getattr(context, "session_context", None)
+    metadata = getattr(nested, "metadata", None) or {}
+    try:
+        agent_id = uuid.UUID(str(context.agent_id))
+        session_id = uuid.UUID(str(getattr(context, "session_id", None) or getattr(nested, "session_id", None)))
+        run_id = uuid.UUID(str(getattr(context, "runtime_task_id", None) or metadata.get("runtime_task_id") or metadata.get("task_id")))
+    except (AttributeError, ValueError, TypeError):
+        return None
+    session = await db.get(ChatSession, session_id, populate_existing=True)
+    task = await db.get(RuntimeTask, run_id, populate_existing=True)
+    actor = await load_external_context_actor(db, tenant_id=tenant_id, agent_id=agent_id, session=session, task=task)
+    if actor is not None and getattr(context, "external_principal_id", actor.external_principal_id) != actor.external_principal_id:
+        return None
+    return (session, task, actor) if actor is not None else None
+
+
+@dataclass(frozen=True, slots=True)
 class ExternalPrincipalResolution:
     principal: ExternalPrincipal
     actor: ChannelRuntimeActor

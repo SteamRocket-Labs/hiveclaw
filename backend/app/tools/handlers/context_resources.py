@@ -185,8 +185,15 @@ async def read_context_resource(request: ToolExecutionRequest) -> str | ToolCont
         **({"runtime_request": request} if ref == "a2a-collaborators" else {}),
     )
     if resource.status != "ok":
-        return _json({"schema": "hive.agent_context_resource_page.v1", "status": "unavailable",
-            "ref": resource.ref, "source_ref": resource.source_ref, "retryable": True})
+        return _json(
+            {
+                "schema": "hive.agent_context_resource_page.v1",
+                "status": "unavailable",
+                "ref": resource.ref,
+                "source_ref": resource.source_ref,
+                "retryable": True,
+            }
+        )
     actual_sha256 = resource.sha256
     if expected_sha256 is not None and expected_sha256 != actual_sha256:
         return _json(
@@ -222,9 +229,15 @@ async def read_context_resource(request: ToolExecutionRequest) -> str | ToolCont
     if resource.source_refs:
         return ToolContentEnvelope(text=rendered, metadata={"agent_directory_sources": list(resource.source_refs)})
     if ref in {"company", "organization"} and resource.content == "" and offset == 0:
-        return ToolContentEnvelope(text=rendered, metadata={"native_empty_read": {
-            "kind": "context_resource_empty", "ref": ref,
-        }})
+        return ToolContentEnvelope(
+            text=rendered,
+            metadata={
+                "native_empty_read": {
+                    "kind": "context_resource_empty",
+                    "ref": ref,
+                }
+            },
+        )
     return rendered
 
 
@@ -237,7 +250,12 @@ async def read_context_resource(request: ToolExecutionRequest) -> str | ToolCont
             "cannot exhaust the model context. The tenant, parent Agent, requester, and Session are taken only "
             "from the trusted execution context; callers cannot select another principal. Continue with "
             "next_offset and the same expected_sha256 until complete=true. A terminal status or byte count is "
-            "not a summary—read the result before deciding what it means."
+            "not a summary—read the result before deciding what it means. "
+            "An artifact with source=a2a_delivery_ref remains in the producer's workspace: its path is not "
+            "a local copy, and snapshot_storage_path is internal storage, not a read_file path. The result "
+            "contains the pinned artifact references and any captured preview_snapshot_content; check "
+            "preview_snapshot_truncated before treating a preview as the complete file. Reading this result "
+            "does not copy files into your workspace."
         ),
         parameters={
             "type": "object",
@@ -376,12 +394,20 @@ async def read_runtime_result(request: ToolExecutionRequest) -> str:
         from app.services.runtime_result_sources import runtime_result_publication_bound
 
         try:
-            authority_binding = await runtime_result_publication_bound(db, result=result_object,
-                agent_id=context.agent_id, session_id=session_id, user_id=context.user_id)
+            authority_binding = await runtime_result_publication_bound(
+                db, result=result_object, agent_id=context.agent_id, session_id=session_id, user_id=context.user_id
+            )
         except ContentInputReceiptError as exc:
-            return _json({"schema": schema, "status": "source_unavailable", "reason_code": exc.code,
-                "result_ref": result_ref, "retryable": exc.status_code == 503,
-                "recovery_action": "reconcile_result_sources"})
+            return _json(
+                {
+                    "schema": schema,
+                    "status": "source_unavailable",
+                    "reason_code": exc.code,
+                    "result_ref": result_ref,
+                    "retryable": exc.status_code == 503,
+                    "recovery_action": "reconcile_result_sources",
+                }
+            )
         if not authority_binding:
             return _json(
                 {
@@ -392,7 +418,9 @@ async def read_runtime_result(request: ToolExecutionRequest) -> str:
                 }
             )
         payload_bytes = bytes(result_object.payload_bytes)
-        if hashlib.sha256(payload_bytes).hexdigest() == ref_sha256 and len(payload_bytes) == int(result_object.size_bytes):
+        if hashlib.sha256(payload_bytes).hexdigest() == ref_sha256 and len(payload_bytes) == int(
+            result_object.size_bytes
+        ):
             from app.services.content_input_receipts import ContentInputReceiptError
             from app.services.runtime_result_sources import validate_runtime_result_sources
 
@@ -401,12 +429,20 @@ async def read_runtime_result(request: ToolExecutionRequest) -> str:
                 if source_complete:
                     from app.services.runtime_result_sources import approved_workspace_connector_sources
 
-                    verified_sources = await approved_workspace_connector_sources(db, result=result_object,
-                        agent_id=context.agent_id, user_id=context.user_id)
+                    verified_sources = await approved_workspace_connector_sources(
+                        db, result=result_object, agent_id=context.agent_id, user_id=context.user_id
+                    )
             except ContentInputReceiptError as exc:
-                return _json({"schema": schema, "status": "source_access_denied" if exc.status_code == 403 else "source_unavailable",
-                    "reason_code": exc.code, "result_ref": result_ref, "retryable": False,
-                    "recovery_action": "reconcile_result_sources"})
+                return _json(
+                    {
+                        "schema": schema,
+                        "status": "source_access_denied" if exc.status_code == 403 else "source_unavailable",
+                        "reason_code": exc.code,
+                        "result_ref": result_ref,
+                        "retryable": False,
+                        "recovery_action": "reconcile_result_sources",
+                    }
+                )
         else:
             source_complete = False
 
@@ -463,9 +499,15 @@ async def read_runtime_result(request: ToolExecutionRequest) -> str:
             "total_bytes": len(payload_bytes),
             "content": content,
             "dependency_coverage": {"complete": source_complete},
-            **({"evidence_scope": "external_packet_and_known_local_inputs",
-                "remote_internal_source_coverage": "unknown", "remote_business_acceptance": "unverified"}
-                if result_object.source_kind == "remote_a2a" else {}),
+            **(
+                {
+                    "evidence_scope": "external_packet_and_known_local_inputs",
+                    "remote_internal_source_coverage": "unknown",
+                    "remote_business_acceptance": "unverified",
+                }
+                if result_object.source_kind == "remote_a2a"
+                else {}
+            ),
         }
     )
     if verified_sources:

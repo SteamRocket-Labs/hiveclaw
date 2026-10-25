@@ -380,6 +380,10 @@ def build_result_integration_runtime_context(manifest: dict[str, Any]) -> str:
         f"Root coverage: terminal={terminal}/expected={expected}",
         "Complete child result bytes are stored outside the prompt. Use read_runtime_result with a result_ref "
         "when the corresponding evidence is needed; do not infer an unread result from its status or size.",
+        "Artifact entries with source=a2a_delivery_ref are references to producer-owned files, not copies "
+        "in your workspace. Their path belongs to the producer; snapshot_storage_path is internal storage. "
+        "Consume the returned result body and its pinned artifact references. Reading the result does not "
+        "materialize a workspace copy.",
         "Result references in mailbox order:",
     ]
     for item in list(manifest.get("items") or []):
@@ -566,40 +570,79 @@ async def continue_parent_session_with_result_page(
     if is_machine_runtime_actor(user):
         from app.services.session_live_input import submit_live_human_input
 
-        receipt = await submit_live_human_input(db=db, agent=agent, user=user, session=session,
-            content=runtime_context, display_content=display_content, role='system',
-            source='runtime_result_integration', input_id=uuid.uuid5(integration_page_id, 'machine-approval-return'),
-            idempotency_key=f'runtime-result-page:{integration_page_id}', runtime_metadata=metadata,
-            runtime_result_page_id=integration_page_id, runtime_result_page_claim_token=page_claim_token)
+        receipt = await submit_live_human_input(
+            db=db,
+            agent=agent,
+            user=user,
+            session=session,
+            content=runtime_context,
+            display_content=display_content,
+            role="system",
+            source="runtime_result_integration",
+            input_id=uuid.uuid5(integration_page_id, "machine-approval-return"),
+            idempotency_key=f"runtime-result-page:{integration_page_id}",
+            runtime_metadata=metadata,
+            runtime_result_page_id=integration_page_id,
+            runtime_result_page_claim_token=page_claim_token,
+        )
         await db.commit()
-        return {'ok': True, 'status': receipt['status'], 'integration_page_id': str(integration_page_id),
-            'consumer': 'session_v2_round_input', 'input_receipt': receipt}
+        return {
+            "ok": True,
+            "status": receipt["status"],
+            "integration_page_id": str(integration_page_id),
+            "consumer": "session_v2_round_input",
+            "input_receipt": receipt,
+        }
     if getattr(session, "audience_kind", None) == "group":
         from app.models.audit import ApprovalRequest
         from app.models.runtime_notification_outbox import RuntimeNotificationOutbox
         from app.services.session_approval import group_approval_origin
         from app.services.session_live_input import submit_live_human_input
 
-        rows = list(await db.scalars(select(RuntimeNotificationOutbox).where(
-            RuntimeNotificationOutbox.integration_page_id == integration_page_id)))
+        rows = list(
+            await db.scalars(
+                select(RuntimeNotificationOutbox).where(
+                    RuntimeNotificationOutbox.integration_page_id == integration_page_id
+                )
+            )
+        )
         roots = set()
         for row in rows:
             approval = await db.get(ApprovalRequest, uuid.UUID(row.metadata_json["approval_id"]))
             original, _invocation, _event = await group_approval_origin(db, session=session, approval=approval)
-            roots.add(str((original.metadata_json or {}).get("root_runtime_task_id")
-                or (original.metadata_json or {}).get("runtime_task_id") or original.id))
+            roots.add(
+                str(
+                    (original.metadata_json or {}).get("root_runtime_task_id")
+                    or (original.metadata_json or {}).get("runtime_task_id")
+                    or original.id
+                )
+            )
         if len(roots) != 1:
             raise PermissionError("group_approval_return_root_mismatch")
         metadata["root_runtime_task_id"] = roots.pop()
-        receipt = await submit_live_human_input(db=db, agent=agent, user=user, session=session,
-            content=runtime_context, display_content=display_content, role="system",
-            source="runtime_result_integration", input_id=uuid.uuid5(integration_page_id, "group-approval-return"),
+        receipt = await submit_live_human_input(
+            db=db,
+            agent=agent,
+            user=user,
+            session=session,
+            content=runtime_context,
+            display_content=display_content,
+            role="system",
+            source="runtime_result_integration",
+            input_id=uuid.uuid5(integration_page_id, "group-approval-return"),
             idempotency_key=f"runtime-result-page:{integration_page_id}",
-            runtime_metadata=metadata, runtime_result_page_id=integration_page_id,
-            runtime_result_page_claim_token=page_claim_token)
+            runtime_metadata=metadata,
+            runtime_result_page_id=integration_page_id,
+            runtime_result_page_claim_token=page_claim_token,
+        )
         await db.commit()
-        return {"ok": True, "status": receipt["status"], "integration_page_id": str(integration_page_id),
-            "consumer": "session_v2_round_input", "input_receipt": receipt}
+        return {
+            "ok": True,
+            "status": receipt["status"],
+            "integration_page_id": str(integration_page_id),
+            "consumer": "session_v2_round_input",
+            "input_receipt": receipt,
+        }
     return await continue_agent_session_from_mailbox(
         db=db,
         agent=agent,

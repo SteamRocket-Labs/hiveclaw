@@ -39,7 +39,10 @@ def test_direct_fallback_does_not_duplicate_first_class_tool_dispatch() -> None:
     violations = [branch for branch in FIRST_CLASS_TOOL_BRANCHES if branch in source]
 
     assert violations == []
-    assert "return await _execute_mcp_tool(tool_name, arguments, agent_id=context.agent_id)" in source
+    assert (
+        "return await _execute_mcp_tool(tool_name, arguments, "
+        "agent_id=context.agent_id, execution_context=context)"
+    ) in source
 
 
 def test_application_tool_calls_enter_runtime_through_public_boundaries() -> None:
@@ -75,7 +78,21 @@ def test_tool_runtime_service_is_the_only_class_that_executes_registry_requests(
     violations: list[str] = []
     for path in _python_files(APP_ROOT):
         source = path.read_text(encoding="utf-8")
-        if "ToolExecutionRequest(" not in source:
+        dispatches = [
+            node
+            for node in ast.walk(ast.parse(source))
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and (
+                node.func.attr == "try_execute"
+                or (
+                    node.func.attr == "execute"
+                    and isinstance(node.func.value, ast.Attribute)
+                    and node.func.value.attr == "backend"
+                )
+            )
+        ]
+        if not dispatches:
             continue
         rel = str(path.relative_to(APP_ROOT.parent))
         if rel not in {

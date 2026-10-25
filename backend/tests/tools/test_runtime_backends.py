@@ -21,7 +21,7 @@ class _FakeRegistry:
 
 
 @pytest.mark.asyncio
-async def test_tool_runtime_service_routes_execution_through_backend(unreceipted_runtime_db):
+async def test_tool_runtime_service_routes_execution_through_backend(mocked_workspace_read_runtime):
     from app.tools.runtime import ToolExecutionContext
     from app.tools.service import ToolRuntimeService
 
@@ -41,7 +41,7 @@ async def test_tool_runtime_service_routes_execution_through_backend(unreceipted
     context = ToolExecutionContext(
         agent_id=agent_id,
         user_id=user_id,
-        tenant_id=unreceipted_runtime_db,
+        tenant_id=mocked_workspace_read_runtime,
         workspace=Path("/tmp/ws"),
     )
     backend = CapturingBackend()

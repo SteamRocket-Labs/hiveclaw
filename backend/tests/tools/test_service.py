@@ -1576,7 +1576,7 @@ async def test_tool_runtime_service_threads_session_permission_context_into_agen
 
 
 @pytest.mark.asyncio
-async def test_tool_runtime_service_logs_readonly_tool_calls(unreceipted_runtime_db):
+async def test_tool_runtime_service_logs_readonly_tool_calls(mocked_workspace_read_runtime):
     from app.tools.governance import ToolGovernanceContext
     from app.tools.runtime import ToolExecutionContext
     from app.tools.service import ToolRuntimeService
@@ -1584,7 +1584,7 @@ async def test_tool_runtime_service_logs_readonly_tool_calls(unreceipted_runtime
     context = ToolExecutionContext(
         agent_id=uuid4(),
         user_id=uuid4(),
-        tenant_id=unreceipted_runtime_db,
+        tenant_id=mocked_workspace_read_runtime,
         workspace=Path("/tmp/ws"),
     )
     governance_context = ToolGovernanceContext(
@@ -1625,7 +1625,7 @@ async def test_tool_runtime_service_logs_readonly_tool_calls(unreceipted_runtime
 
 
 @pytest.mark.asyncio
-async def test_tool_runtime_service_activity_summary_hides_raw_result_payload(unreceipted_runtime_db):
+async def test_tool_runtime_service_activity_summary_hides_raw_result_payload(mocked_workspace_read_runtime):
     from app.tools.governance import ToolGovernanceContext
     from app.tools.runtime import ToolExecutionContext
     from app.tools.service import ToolRuntimeService
@@ -1634,7 +1634,7 @@ async def test_tool_runtime_service_activity_summary_hides_raw_result_payload(un
     context = ToolExecutionContext(
         agent_id=uuid4(),
         user_id=uuid4(),
-        tenant_id=unreceipted_runtime_db,
+        tenant_id=mocked_workspace_read_runtime,
         workspace=Path("/tmp/ws"),
     )
     governance_context = ToolGovernanceContext(
@@ -1728,7 +1728,7 @@ async def test_tool_runtime_service_returns_governance_block_without_registry_ca
 
 
 @pytest.mark.asyncio
-async def test_pre_effect_fence_runs_only_after_governance_allows_execution(unreceipted_runtime_db):
+async def test_pre_effect_fence_runs_only_after_governance_allows_execution(mocked_workspace_read_runtime):
     from app.tools.governance import ToolGovernanceContext
     from app.tools.runtime import ToolExecutionContext
     from app.tools.service import ToolRuntimeService
@@ -1736,7 +1736,7 @@ async def test_pre_effect_fence_runs_only_after_governance_allows_execution(unre
     context = ToolExecutionContext(
         agent_id=uuid4(),
         user_id=uuid4(),
-        tenant_id=unreceipted_runtime_db,
+        tenant_id=mocked_workspace_read_runtime,
         workspace=Path("/tmp/ws"),
     )
     governance_context = ToolGovernanceContext(
@@ -2521,7 +2521,7 @@ async def test_execute_approved_records_failed_receipt_when_runtime_bootstrap_ra
 
 
 @pytest.mark.asyncio
-async def test_tool_runtime_service_execute_approved_logs_readonly_tools(unreceipted_runtime_db):
+async def test_tool_runtime_service_execute_approved_logs_readonly_tools(mocked_workspace_read_runtime):
     from app.services.approval_ticket import ApprovalExecutionTicket
     from app.tools.runtime import ToolExecutionContext
     from app.tools.service import ToolRuntimeService
@@ -2531,7 +2531,7 @@ async def test_tool_runtime_service_execute_approved_logs_readonly_tools(unrecei
     context = ToolExecutionContext(
         agent_id=agent_id,
         user_id=approved_by,
-        tenant_id=unreceipted_runtime_db,
+        tenant_id=mocked_workspace_read_runtime,
         workspace=Path("/tmp/ws"),
     )
     logged = []

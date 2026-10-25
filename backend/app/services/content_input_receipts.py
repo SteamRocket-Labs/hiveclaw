@@ -1119,6 +1119,14 @@ async def authorize_workspace_receipt_read(request):
             from app.services.explicit_memory_authority import authorize_explicit_memory_file_read
 
             return await authorize_explicit_memory_file_read(request, path)
+        if path.startswith("memory/control/"):
+            # These mutable platform sidecars have no independent body source
+            # receipt. Fail at disclosure rather than poisoning later model
+            # inputs; the native no-body status remains consumable.
+            from app.tools.result_envelope import ToolContentEnvelope
+
+            return ToolContentEnvelope(text=_platform_control_read_unavailable(request.tool_name), metadata={
+                "native_read_denial": {"kind": "platform_control_read_unavailable", "path": path}})
         if not path.startswith("workspace/"):
             return None
         scope = context.workspace_authority_scope
@@ -1151,6 +1159,16 @@ async def authorize_workspace_receipt_read(request):
             return ToolContentEnvelope(text=result, metadata={"native_read_denial": {
                 "kind": "workspace_source_read_denied", "path": path, "http_status": status, "reason_code": code}})
         return result
+
+
+def _platform_control_read_unavailable(tool_name):
+    from app.tools.result_envelope import render_tool_error
+
+    return render_tool_error(tool_name=tool_name, error_class="provider_unavailable",
+        message="This platform control file has no independently bound body source.", provider="content_input_receipt",
+        http_status=409, retryable=False,
+        actionable_hint="Use read_ledger for canonical work state and memory tools for memory evidence. Reconcile the original control source before reading its body; keep using other verified results.",
+        extra={"reason_code": "platform_content_unverified", "outcome": "unavailable"})
 
 
 def _workspace_read_denial(tool_name, status, code):
@@ -1522,6 +1540,18 @@ def _native_read_denial_matches(tool_name, arguments, observation, *, content_ha
     from app.core.resource_authority import normalize_workspace_resource_path
     from app.services.session_tool_runtime import _sha256
 
+    if isinstance(observation, dict) and observation.get("kind") == "platform_control_read_unavailable":
+        if (tool_name not in {"read_file", "read_document", "fs_read"} or not isinstance(arguments, dict)
+            or "original_attachment_id" in arguments or set(observation) != {"kind", "path"}
+            or not isinstance(arguments.get("path"), str)
+            or (tool_name == "fs_read" and str(arguments.get("mode") or "text").strip().lower() not in {"text", "document"})):
+            return False
+        try:
+            path = normalize_workspace_resource_path(arguments["path"])
+        except (ValueError, TypeError):
+            return False
+        return (path.startswith("memory/control/") and observation["path"] == path
+            and content_hash == _sha256(_platform_control_read_unavailable(tool_name)))
     if isinstance(observation, dict) and observation.get("kind") in {"filesystem_read_not_found", "filesystem_read_denied"}:
         from app.tools.result_envelope import render_tool_error
 

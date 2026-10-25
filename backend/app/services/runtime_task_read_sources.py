@@ -23,8 +23,13 @@ async def _task_sources(db, task, session_id):
         from app.models.hr_creation import HrCreationDraft
         from app.services.delegation_input_origin import load_employee_creation_dependencies
 
-        draft = await db.scalar(select(HrCreationDraft).where(HrCreationDraft.tenant_id == task.tenant_id,
-            HrCreationDraft.provisioning_task_id == task.id, HrCreationDraft.session_id == session_id))
+        draft = await db.scalar(
+            select(HrCreationDraft).where(
+                HrCreationDraft.tenant_id == task.tenant_id,
+                HrCreationDraft.provisioning_task_id == task.id,
+                HrCreationDraft.session_id == session_id,
+            )
+        )
         return await load_employee_creation_dependencies(db, draft=draft) if draft else None
     if task.task_type == "delegation":
         from app.agents.orchestrator import _delegation_projection_request_from_record
@@ -32,20 +37,36 @@ async def _task_sources(db, task, session_id):
         from app.services.delegation_input_origin import load_delegation_instruction_origin
         from app.services.runtime_result_sources import load_canonical_result_sources, runtime_result_publication_bound
 
-        request = _delegation_projection_request_from_record({"id": task.id.hex, "tenant_id": task.tenant_id,
-            "parent_agent_id": task.parent_agent_id, "child_agent_id": task.child_agent_id,
-            "parent_session_id": task.parent_session_id, "child_session_id": task.child_session_id,
-            "root_user_id": task.root_user_id, "trace_id": task.trace_id, "metadata_json": task.metadata_json})
+        request = _delegation_projection_request_from_record(
+            {
+                "id": task.id.hex,
+                "tenant_id": task.tenant_id,
+                "parent_agent_id": task.parent_agent_id,
+                "child_agent_id": task.child_agent_id,
+                "parent_session_id": task.parent_session_id,
+                "child_session_id": task.child_session_id,
+                "root_user_id": task.root_user_id,
+                "trace_id": task.trace_id,
+                "metadata_json": task.metadata_json,
+            }
+        )
         if request is None:
             return None
         request.session_id = task.child_session_id
-        origin = await load_delegation_instruction_origin(db, request=request, tenant_id=task.tenant_id, content=task.prompt)
+        origin = await load_delegation_instruction_origin(
+            db, request=request, tenant_id=task.tenant_id, content=task.prompt
+        )
         if origin is None or origin.unbound:
             return None
         sources = list(origin.sources)
         if task.status == "completed":
-            result = await db.scalar(select(RuntimeResultObject).where(RuntimeResultObject.tenant_id == task.tenant_id,
-                RuntimeResultObject.source_kind == "a2a_delegation", RuntimeResultObject.source_run_id == str(task.id)))
+            result = await db.scalar(
+                select(RuntimeResultObject).where(
+                    RuntimeResultObject.tenant_id == task.tenant_id,
+                    RuntimeResultObject.source_kind == "a2a_delegation",
+                    RuntimeResultObject.source_run_id == str(task.id),
+                )
+            )
             if result is None:
                 from app.services.direct_invocation_terminal_boundary_processor import _build_direct_terminal_spec
                 from app.services.runtime_terminal_boundary_outbox import TerminalBoundaryCanonicalMismatch
@@ -54,27 +75,54 @@ async def _task_sources(db, task, session_id):
                     spec = await _build_direct_terminal_spec(db, task)
                 except (TerminalBoundaryCanonicalMismatch, RuntimeError):
                     return None
-                model = await db.scalar(select(SessionModelResult).where(SessionModelResult.tenant_id == task.tenant_id,
-                    SessionModelResult.run_id == task.id, SessionModelResult.round_committed_event_id == spec.terminal_event.id))
+                statement = select(SessionModelResult).where(
+                    SessionModelResult.tenant_id == task.tenant_id,
+                    SessionModelResult.run_id == task.id,
+                    SessionModelResult.session_id == spec.terminal_event.session_id,
+                )
+                # The terminal spec has verified the final publication's model
+                # binding; its message event follows the sealed round event.
+                native_final_id = (spec.terminal_event.metadata_json or {}).get("native_final_model_result_id")
+                if native_final_id is not None:
+                    statement = statement.where(SessionModelResult.id == uuid.UUID(str(native_final_id)))
+                else:
+                    statement = statement.where(SessionModelResult.round_committed_event_id == spec.terminal_event.id)
+                model = await db.scalar(statement)
                 if model is None or not _model_dependencies(model)[1]:
                     return None
                 # A native completion can precede its durable result publication.
                 # Its status is observable; the unreceipted body is not an input.
                 return sources, False
             canonical = await load_canonical_result_sources(db, result)
-            if (canonical is None or canonical[0].result_summary != task.result_summary
-                or not await runtime_result_publication_bound(db, result=result, agent_id=task.parent_agent_id,
-                    session_id=session_id, user_id=task.root_user_id)):
+            if (
+                canonical is None
+                or canonical[0].result_summary != task.result_summary
+                or not await runtime_result_publication_bound(
+                    db, result=result, agent_id=task.parent_agent_id, session_id=session_id, user_id=task.root_user_id
+                )
+            ):
                 return None
-            sources.append({"source_kind": "runtime_result",
-                "source_id": f"{task.parent_agent_id}\n{session_id}\n{result.id}", "source_version": result.sha256})
+            sources.append(
+                {
+                    "source_kind": "runtime_result",
+                    "source_id": f"{task.parent_agent_id}\n{session_id}\n{result.id}",
+                    "source_version": result.sha256,
+                }
+            )
         elif task.result_summary:
             return None  # An error/partial body needs its own canonical producer; status is not business evidence.
         return sources, True
     if task.task_type == "web_chat_turn":
-        models = list(await db.scalars(select(SessionModelResult).where(SessionModelResult.tenant_id == task.tenant_id,
-            SessionModelResult.run_id == task.id, SessionModelResult.session_id == session_id,
-            SessionModelResult.state.in_(["sealed", "round_committed"]))))
+        models = list(
+            await db.scalars(
+                select(SessionModelResult).where(
+                    SessionModelResult.tenant_id == task.tenant_id,
+                    SessionModelResult.run_id == task.id,
+                    SessionModelResult.session_id == session_id,
+                    SessionModelResult.state.in_(["sealed", "round_committed"]),
+                )
+            )
+        )
         sources = []
         for model in models:
             dependencies, complete = _model_dependencies(model)
@@ -86,20 +134,46 @@ async def _task_sources(db, task, session_id):
 
 
 def _pending_result_record(record):
-    fields = ("task_id", "task_type", "status", "tenant_id", "parent_agent_id", "child_agent_id", "child_agent_name",
-        "parent_session_id", "child_session_id", "root_user_id", "root_session_id", "trace_id",
-        "created_at", "started_at", "completed_at")
-    return {**{key: record[key] for key in fields}, "result": None,
-        "result_publication": {"status": "pending", "reason_code": "runtime_result_publication_pending",
-            "retryable": True, "next_action": "Wait for the same task's pinned result; reconcile delivery if publication fails. Do not dispatch another task."}}
+    fields = (
+        "task_id",
+        "task_type",
+        "status",
+        "tenant_id",
+        "parent_agent_id",
+        "child_agent_id",
+        "child_agent_name",
+        "parent_session_id",
+        "child_session_id",
+        "root_user_id",
+        "root_session_id",
+        "trace_id",
+        "created_at",
+        "started_at",
+        "completed_at",
+    )
+    return {
+        **{key: record[key] for key in fields},
+        "result": None,
+        "result_publication": {
+            "status": "pending",
+            "reason_code": "runtime_result_publication_pending",
+            "retryable": True,
+            "next_action": "Wait for the same task's pinned result; reconcile delivery if publication fails. Do not dispatch another task.",
+        },
+    }
 
 
 def _matches_status_body(body, task_id, record):
-    expected = {"task_id": task_id, "status": record["status"], "result": record["result"],
+    expected = {
+        "task_id": task_id,
+        "status": record["status"],
+        "result": record["result"],
         "timed_out": bool(record["metadata"].get("timed_out", False)),
         "receipt": record["metadata"].get("execution_receipt"),
-        "session_id": record["child_session_id"], "child_session_id": record["child_session_id"],
-        "parent_session_id": record["parent_session_id"]}
+        "session_id": record["child_session_id"],
+        "child_session_id": record["child_session_id"],
+        "parent_session_id": record["parent_session_id"],
+    }
     running = {k: v for k, v in expected.items() if k != "timed_out"}
     running.update(status="running", result=None, parent_session_id=None)
     return body == expected or record["status"] in {"pending", "running"} and body == running
@@ -122,7 +196,8 @@ async def record_task_read(request, content, *, capture=None):
     async with tenant_scoped_session(tenant_id) as db:
         try:
             _tenant, _principal, actor, session, call, model, _dependencies, _args_hash = await _writer_input(
-                db, request, require_sources=False)
+                db, request, require_sources=False
+            )
         except ContentInputReceiptError:
             return content
         if session.audience_kind not in {None, "private"} or session.user_id != actor.id:
@@ -150,18 +225,30 @@ async def record_task_read(request, content, *, capture=None):
             for index, record in enumerate(records):
                 task = await db.get(RuntimeTask, uuid.UUID(record["task_id"]), populate_existing=True)
                 observed = capture.matching(record) if capture else None
-                if (task is None or task.tenant_id != tenant_id or task.parent_agent_id != context.agent_id
-                    or task.root_user_id != actor.id or task.parent_session_id != str(session.id)
-                    or observed is None and _task_to_dict(task) != record
-                    or not authorize_runtime_task_record(_task_to_dict(task), principal=principal,
-                        action="read_output" if call.tool_name == "task_output" else "list").allowed
-                    or not authorize_runtime_task_record(record, principal=principal,
-                        action="read_output" if call.tool_name == "task_output" else "list").allowed):
+                if (
+                    task is None
+                    or task.tenant_id != tenant_id
+                    or task.parent_agent_id != context.agent_id
+                    or task.root_user_id != actor.id
+                    or task.parent_session_id != str(session.id)
+                    or observed is None
+                    and _task_to_dict(task) != record
+                    or not authorize_runtime_task_record(
+                        _task_to_dict(task),
+                        principal=principal,
+                        action="read_output" if call.tool_name == "task_output" else "list",
+                    ).allowed
+                    or not authorize_runtime_task_record(
+                        record, principal=principal, action="read_output" if call.tool_name == "task_output" else "list"
+                    ).allowed
+                ):
                     unbound.append("task_read_scope_or_snapshot_unbound")
                     continue
                 identities.append(str(task.id))
                 if observed is not None:
-                    observations.append({"task_id": str(task.id), "record_hash": _hash(record), "observed_at": observed[1]})
+                    observations.append(
+                        {"task_id": str(task.id), "record_hash": _hash(record), "observed_at": observed[1]}
+                    )
                 current = await _task_sources(db, observed[0] if observed else task, session.id)
                 if current is None:
                     unbound.append("task_read_sources_unbound")
@@ -184,11 +271,20 @@ async def record_task_read(request, content, *, capture=None):
             return content
         if pending:
             content = json.dumps(body, ensure_ascii=False, default=str)
-        proof = {"schema": "hive.runtime_task_read.v1", "invocation_id": str(call.id),
-            "model_result_id": str(model.id), "model_request_hash": model.model_request_hash,
-            "actor_id": str(actor.id), "audience": audience_for_session(session), "content_hash": _hash(content),
-            "args_hash": call.effective_args_hash or call.args_hash, "authority_hash": call.authority_snapshot_hash,
-            "task_ids": identities, "sources": _unique_dependencies(sources), "unbound": unbound}
+        proof = {
+            "schema": "hive.runtime_task_read.v1",
+            "invocation_id": str(call.id),
+            "model_result_id": str(model.id),
+            "model_request_hash": model.model_request_hash,
+            "actor_id": str(actor.id),
+            "audience": audience_for_session(session),
+            "content_hash": _hash(content),
+            "args_hash": call.effective_args_hash or call.args_hash,
+            "authority_hash": call.authority_snapshot_hash,
+            "task_ids": identities,
+            "sources": _unique_dependencies(sources),
+            "unbound": unbound,
+        }
         if pending:
             proof["pending_publication_task_ids"] = pending
         if observations:
@@ -196,10 +292,24 @@ async def record_task_read(request, content, *, capture=None):
         identity = uuid.uuid5(call.id, "runtime-task-read")
         row = await db.get(InvocationSpan, identity)
         if row is None:
-            db.add(InvocationSpan(id=identity, tenant_id=tenant_id, agent_id=context.agent_id, user_id=actor.id,
-                session_id=str(session.id), runtime_task_id=call.run_id, trace_id=f"session-tool:{call.id}",
-                span_id=f"runtime-task-read:{identity}", span_type=_KIND, name=call.tool_name, status="captured",
-                duration_ms=0, started_at=datetime.now(timezone.utc), metadata_json={_KIND: proof}))
+            db.add(
+                InvocationSpan(
+                    id=identity,
+                    tenant_id=tenant_id,
+                    agent_id=context.agent_id,
+                    user_id=actor.id,
+                    session_id=str(session.id),
+                    runtime_task_id=call.run_id,
+                    trace_id=f"session-tool:{call.id}",
+                    span_id=f"runtime-task-read:{identity}",
+                    span_type=_KIND,
+                    name=call.tool_name,
+                    status="captured",
+                    duration_ms=0,
+                    started_at=datetime.now(timezone.utc),
+                    metadata_json={_KIND: proof},
+                )
+            )
             await db.commit()
     return content
 
@@ -210,21 +320,41 @@ async def task_read_sources(db, *, tenant_id, agent_id, invocation, model, conte
     row = await db.get(InvocationSpan, uuid.uuid5(invocation.id, "runtime-task-read"), populate_existing=True)
     proof = (row.metadata_json or {}).get(_KIND) if row else None
     session = await db.get(ChatSession, invocation.session_id, populate_existing=True)
-    valid = (row is not None and row.tenant_id == tenant_id and row.agent_id == agent_id
-        and row.session_id == str(invocation.session_id) and row.runtime_task_id == invocation.run_id
-        and row.span_type == _KIND and row.name == invocation.tool_name and row.status == "captured"
-        and invocation.tool_name in TASK_READ_TOOLS and invocation.effect_state == "effect_committed"
-        and isinstance(proof, dict) and proof.get("schema") == "hive.runtime_task_read.v1"
-        and proof.get("invocation_id") == str(invocation.id) and proof.get("actor_id") == str(row.user_id)
-        and proof.get("content_hash") == content_hash and proof.get("args_hash") == (
-            invocation.effective_args_hash or invocation.args_hash) and proof.get("authority_hash") == invocation.authority_snapshot_hash
-        and model is not None and model.tenant_id == tenant_id and model.session_id == invocation.session_id
-        and model.run_id == invocation.run_id and model.provider_request_id == invocation.provider_request_id
-        and proof.get("model_result_id") == str(model.id) and proof.get("model_request_hash") == model.model_request_hash
-        and model.state in {"sealed", "round_committed"} and _hash(model.model_request_snapshot_json) == model.model_request_hash
-        and session is not None and session.tenant_id == tenant_id and session.agent_id == agent_id
-        and session.audience_kind in {None, "private"} and session.user_id == row.user_id
-        and isinstance(proof.get("unbound"), list) and not proof["unbound"])
+    valid = (
+        row is not None
+        and row.tenant_id == tenant_id
+        and row.agent_id == agent_id
+        and row.session_id == str(invocation.session_id)
+        and row.runtime_task_id == invocation.run_id
+        and row.span_type == _KIND
+        and row.name == invocation.tool_name
+        and row.status == "captured"
+        and invocation.tool_name in TASK_READ_TOOLS
+        and invocation.effect_state == "effect_committed"
+        and isinstance(proof, dict)
+        and proof.get("schema") == "hive.runtime_task_read.v1"
+        and proof.get("invocation_id") == str(invocation.id)
+        and proof.get("actor_id") == str(row.user_id)
+        and proof.get("content_hash") == content_hash
+        and proof.get("args_hash") == (invocation.effective_args_hash or invocation.args_hash)
+        and proof.get("authority_hash") == invocation.authority_snapshot_hash
+        and model is not None
+        and model.tenant_id == tenant_id
+        and model.session_id == invocation.session_id
+        and model.run_id == invocation.run_id
+        and model.provider_request_id == invocation.provider_request_id
+        and proof.get("model_result_id") == str(model.id)
+        and proof.get("model_request_hash") == model.model_request_hash
+        and model.state in {"sealed", "round_committed"}
+        and _hash(model.model_request_snapshot_json) == model.model_request_hash
+        and session is not None
+        and session.tenant_id == tenant_id
+        and session.agent_id == agent_id
+        and session.audience_kind in {None, "private"}
+        and session.user_id == row.user_id
+        and isinstance(proof.get("unbound"), list)
+        and not proof["unbound"]
+    )
     if not valid:
         return [], False
     try:

@@ -86,14 +86,15 @@ class _Stop:
     value: Any
 
 
-def _governed_execution_stages() -> tuple[Any, ...]:
-    return (
-        _apply_exact_secret_preflight,
-        _apply_exact_session_scope,
-        _apply_plan_mode_and_runtime_arguments,
-        _apply_hooks_and_assets,
-        _apply_workspace_mutation_path_authority,
-        _apply_governance,
+def _create_execution_state(
+    service: Any, request: ToolExecutionRequest, ports: ToolExecutionPorts
+) -> _ToolExecutionState:
+    return _ToolExecutionState(
+        service=service,
+        request=request,
+        ports=ports,
+        tool_call_id=request.tool_call_id or ports.new_tool_call_id(),
+        arguments=dict(request.arguments or {}),
     )
 
 
@@ -103,20 +104,21 @@ async def run_tool_execution(
     ports: ToolExecutionPorts,
 ) -> str | ToolContentEnvelope:
     """Run one governed tool call through four explicit, testable stages."""
-    state = _ToolExecutionState(
-        service=service,
-        request=request,
-        ports=ports,
-        tool_call_id=request.tool_call_id or ports.new_tool_call_id(),
-        arguments=dict(request.arguments or {}),
-    )
+    state = _create_execution_state(service, request, ports)
     prepared = await _prepare_runtime_context(state)
     if prepared is not None:
         return prepared.value
     from app.services.execution_environments import command_environment_context
 
     with command_environment_context(state.runtime_context):
-        for stage in _governed_execution_stages():
+        for stage in (
+            _apply_exact_secret_preflight,
+            _apply_exact_session_scope,
+            _apply_plan_mode_and_runtime_arguments,
+            _apply_hooks_and_assets,
+            _apply_workspace_mutation_path_authority,
+            _apply_governance,
+        ):
             stopped = await stage(state)
             if stopped is not None:
                 return stopped.value

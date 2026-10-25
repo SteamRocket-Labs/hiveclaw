@@ -455,6 +455,10 @@ class _QueryAwareDB:
     async def execute(self, stmt):
         self.statements.append(stmt)
         sql = str(stmt)
+        if "FROM runtime_tasks" in sql:
+            return _ScalarResult(None)
+        if "FROM session_tool_invocations" in sql or "FROM storage_blob_refs" in sql:
+            return _ListResult([])
         if "count(chat_messages.id)" in sql and "GROUP BY chat_messages.conversation_id" in sql:
             source = self.user_message_counts if "chat_messages.role" in sql else self.message_counts
             return _ListResult([(key, value) for key, value in source.items()])
@@ -485,6 +489,12 @@ class _QueryAwareDB:
             return _ScalarResult(self.agent)
         raise AssertionError(f"Unhandled SQL in fake DB: {sql}")
 
+    async def scalar(self, stmt):
+        return (await self.execute(stmt)).scalar_one_or_none()
+
+    async def scalars(self, stmt):
+        return (await self.execute(stmt)).scalars()
+
     def add(self, value):
         self.added.append(value)
 
@@ -499,20 +509,20 @@ class _QueryAwareDB:
 
 
 @pytest.mark.asyncio
-async def test_list_sessions_uses_check_agent_access_for_mine_scope(monkeypatch):
+async def test_list_sessions_uses_check_agent_history_access_for_mine_scope(monkeypatch):
     import app.api.chat_sessions as chat_sessions_api
 
     agent_id = uuid4()
-    agent = SimpleNamespace(id=agent_id, creator_id=uuid4())
+    agent = SimpleNamespace(id=agent_id, creator_id=uuid4(), tenant_id=uuid4(), deactivated_at=None)
     current_user = SimpleNamespace(id=uuid4(), role="member")
     db = _QueryAwareDB(agent=agent, sessions=[])
     called = {}
 
-    async def fake_check_agent_access(db_arg, user_arg, requested_agent_id):
+    async def fake_check_agent_history_access(db_arg, user_arg, requested_agent_id):
         called["args"] = (db_arg, user_arg, requested_agent_id)
         return agent, "use"
 
-    monkeypatch.setattr(chat_sessions_api, "check_agent_access", fake_check_agent_access, raising=False)
+    monkeypatch.setattr(chat_sessions_api, "check_agent_history_access", fake_check_agent_history_access, raising=False)
 
     result = await chat_sessions_api.list_sessions(
         agent_id=agent_id,
@@ -614,7 +624,7 @@ async def test_list_sessions_mine_keeps_empty_owned_web_sessions_writable(monkey
     agent_id = uuid4()
     owner_id = uuid4()
     session_id = uuid4()
-    agent = SimpleNamespace(id=agent_id, creator_id=owner_id)
+    agent = SimpleNamespace(id=agent_id, creator_id=owner_id, tenant_id=uuid4(), deactivated_at=None)
     session = SimpleNamespace(
         id=session_id,
         agent_id=agent_id,
@@ -642,10 +652,10 @@ async def test_list_sessions_mine_keeps_empty_owned_web_sessions_writable(monkey
         user_message_counts={session_id: 1},
     )
 
-    async def fake_check_agent_access(_db, _user, _agent_id):
+    async def fake_check_agent_history_access(_db, _user, _agent_id):
         return agent, "use"
 
-    monkeypatch.setattr(chat_sessions_api, "check_agent_access", fake_check_agent_access, raising=False)
+    monkeypatch.setattr(chat_sessions_api, "check_agent_history_access", fake_check_agent_history_access, raising=False)
 
     result = await chat_sessions_api.list_sessions(
         agent_id=agent_id,
@@ -669,7 +679,7 @@ async def test_list_sessions_all_scope_requires_explicit_audited_operator_view(m
     owner_id = uuid4()
     viewer_id = uuid4()
     session_id = uuid4()
-    agent = SimpleNamespace(id=agent_id, creator_id=owner_id)
+    agent = SimpleNamespace(id=agent_id, creator_id=owner_id, tenant_id=uuid4(), deactivated_at=None)
     session = SimpleNamespace(
         id=session_id,
         agent_id=agent_id,
@@ -683,14 +693,14 @@ async def test_list_sessions_all_scope_requires_explicit_audited_operator_view(m
     current_user = SimpleNamespace(id=viewer_id, role="member")
     db = _QueryAwareDB(agent=agent, sessions=[session], message_counts={session_id: 2}, users={owner_id: "Owner"})
 
-    async def fake_check_agent_access(_db, _user, _agent_id):
+    async def fake_check_agent_history_access(_db, _user, _agent_id):
         return agent, "manage"
 
-    monkeypatch.setattr(chat_sessions_api, "check_agent_access", fake_check_agent_access, raising=False)
+    monkeypatch.setattr(chat_sessions_api, "check_agent_history_access", fake_check_agent_history_access, raising=False)
     monkeypatch.setattr(
         chat_sessions_api,
         "check_agent_operator_reachability",
-        fake_check_agent_access,
+        fake_check_agent_history_access,
         raising=False,
     )
 
@@ -736,7 +746,7 @@ async def test_list_sessions_projects_session_full_access_without_auxiliary_gran
     agent_id = uuid4()
     owner_id = uuid4()
     session_id = uuid4()
-    agent = SimpleNamespace(id=agent_id, creator_id=owner_id)
+    agent = SimpleNamespace(id=agent_id, creator_id=owner_id, tenant_id=uuid4(), deactivated_at=None)
     session = SimpleNamespace(
         id=session_id,
         agent_id=agent_id,
@@ -759,10 +769,10 @@ async def test_list_sessions_projects_session_full_access_without_auxiliary_gran
         user_message_counts={session_id: 0},
     )
 
-    async def fake_check_agent_access(_db, _user, _agent_id):
+    async def fake_check_agent_history_access(_db, _user, _agent_id):
         return agent, "use"
 
-    monkeypatch.setattr(chat_sessions_api, "check_agent_access", fake_check_agent_access, raising=False)
+    monkeypatch.setattr(chat_sessions_api, "check_agent_history_access", fake_check_agent_history_access, raising=False)
 
     result = await chat_sessions_api.list_sessions(
         agent_id=agent_id,
@@ -788,7 +798,7 @@ async def test_list_sessions_mine_scope_uses_canonical_microsoft_teams_channel(m
     agent_id = uuid4()
     owner_id = uuid4()
     session_id = uuid4()
-    agent = SimpleNamespace(id=agent_id, creator_id=owner_id)
+    agent = SimpleNamespace(id=agent_id, creator_id=owner_id, tenant_id=uuid4(), deactivated_at=None)
     session = SimpleNamespace(
         id=session_id,
         agent_id=agent_id,
@@ -807,10 +817,10 @@ async def test_list_sessions_mine_scope_uses_canonical_microsoft_teams_channel(m
         user_message_counts={session_id: 1},
     )
 
-    async def fake_check_agent_access(_db, _user, _agent_id):
+    async def fake_check_agent_history_access(_db, _user, _agent_id):
         return agent, "use"
 
-    monkeypatch.setattr(chat_sessions_api, "check_agent_access", fake_check_agent_access, raising=False)
+    monkeypatch.setattr(chat_sessions_api, "check_agent_history_access", fake_check_agent_history_access, raising=False)
 
     result = await chat_sessions_api.list_sessions(
         agent_id=agent_id,
@@ -836,7 +846,7 @@ async def test_list_sessions_mine_includes_owned_a2a_peer_sessions(monkeypatch):
     owning_user_id = uuid4()
     target_agent_id = uuid4()
     session_id = uuid4()
-    agent = SimpleNamespace(id=requested_agent_id, creator_id=owning_user_id)
+    agent = SimpleNamespace(id=requested_agent_id, creator_id=owning_user_id, tenant_id=uuid4(), deactivated_at=None)
     a2a_session = SimpleNamespace(
         id=session_id,
         agent_id=target_agent_id,
@@ -865,10 +875,10 @@ async def test_list_sessions_mine_includes_owned_a2a_peer_sessions(monkeypatch):
         users={owning_user_id: "example-owner"},
     )
 
-    async def fake_check_agent_access(_db, _user, _agent_id):
+    async def fake_check_agent_history_access(_db, _user, _agent_id):
         return agent, "use"
 
-    monkeypatch.setattr(chat_sessions_api, "check_agent_access", fake_check_agent_access, raising=False)
+    monkeypatch.setattr(chat_sessions_api, "check_agent_history_access", fake_check_agent_history_access, raising=False)
 
     result = await chat_sessions_api.list_sessions(
         agent_id=requested_agent_id,
@@ -899,7 +909,7 @@ async def test_list_sessions_mine_batches_message_counts_for_multiple_sessions(m
 
     agent_id = uuid4()
     owner_id = uuid4()
-    agent = SimpleNamespace(id=agent_id, creator_id=owner_id)
+    agent = SimpleNamespace(id=agent_id, creator_id=owner_id, tenant_id=uuid4(), deactivated_at=None)
     sessions = []
     message_counts = {}
     user_message_counts = {}
@@ -937,10 +947,10 @@ async def test_list_sessions_mine_batches_message_counts_for_multiple_sessions(m
         user_message_counts=user_message_counts,
     )
 
-    async def fake_check_agent_access(_db, _user, _agent_id):
+    async def fake_check_agent_history_access(_db, _user, _agent_id):
         return agent, "use"
 
-    monkeypatch.setattr(chat_sessions_api, "check_agent_access", fake_check_agent_access, raising=False)
+    monkeypatch.setattr(chat_sessions_api, "check_agent_history_access", fake_check_agent_history_access, raising=False)
 
     result = await chat_sessions_api.list_sessions(
         agent_id=agent_id,
@@ -982,14 +992,14 @@ async def test_get_session_messages_requires_explicit_operator_view_for_non_owne
     current_user = SimpleNamespace(id=viewer_id, role="member")
     db = _QueryAwareDB(agent=agent, sessions=[session], messages=[message])
 
-    async def fake_check_agent_access(_db, _user, _agent_id):
+    async def fake_check_agent_history_access(_db, _user, _agent_id):
         return agent, "manage"
 
-    monkeypatch.setattr(chat_sessions_api, "check_agent_access", fake_check_agent_access, raising=False)
+    monkeypatch.setattr(chat_sessions_api, "check_agent_history_access", fake_check_agent_history_access, raising=False)
     monkeypatch.setattr(
         chat_sessions_api,
         "check_agent_operator_reachability",
-        fake_check_agent_access,
+        fake_check_agent_history_access,
         raising=False,
     )
 
@@ -1047,13 +1057,13 @@ async def test_get_session_index_rejects_non_owner_without_manage_access(monkeyp
     current_user = SimpleNamespace(id=viewer_id, role="member")
     db = _QueryAwareDB(agent=agent, sessions=[session])
 
-    async def fake_check_agent_access(_db, _user, _agent_id):
+    async def fake_check_agent_history_access(_db, _user, _agent_id):
         return agent, "use"
 
     async def fake_read_session_index(*_args, **_kwargs):
         return {"schema": "hive.session_index.v1"}
 
-    monkeypatch.setattr(chat_sessions_api, "check_agent_access", fake_check_agent_access, raising=False)
+    monkeypatch.setattr(chat_sessions_api, "check_agent_history_access", fake_check_agent_history_access, raising=False)
     monkeypatch.setattr(chat_sessions_api, "read_session_index", fake_read_session_index, raising=False)
 
     with pytest.raises(HTTPException) as exc:
@@ -1121,10 +1131,10 @@ async def test_get_session_messages_enriches_artifact_agent_names(monkeypatch):
         agent_names={producer_agent_id: "Reviewer Bot"},
     )
 
-    async def fake_check_agent_access(_db, _user, _agent_id):
+    async def fake_check_agent_history_access(_db, _user, _agent_id):
         return agent, "use"
 
-    monkeypatch.setattr(chat_sessions_api, "check_agent_access", fake_check_agent_access, raising=False)
+    monkeypatch.setattr(chat_sessions_api, "check_agent_history_access", fake_check_agent_history_access, raising=False)
 
     result = await chat_sessions_api.get_session_messages(
         agent_id=agent_id,
@@ -1197,10 +1207,10 @@ async def test_get_session_context_usage_returns_context_diagnostics(monkeypatch
     current_user = SimpleNamespace(id=owner_id, role="member")
     db = _QueryAwareDB(agent=agent, sessions=[session])
 
-    async def fake_check_agent_access(_db, _user, _agent_id):
+    async def fake_check_agent_history_access(_db, _user, _agent_id):
         return agent, "use"
 
-    monkeypatch.setattr(chat_sessions_api, "check_agent_access", fake_check_agent_access, raising=False)
+    monkeypatch.setattr(chat_sessions_api, "check_agent_history_access", fake_check_agent_history_access, raising=False)
 
     result = await chat_sessions_api.get_session_context_usage(
         agent_id=agent_id,
@@ -1248,10 +1258,11 @@ async def test_delete_session_removes_transcript_before_messages(monkeypatch):
     import app.api.chat_sessions as chat_sessions_api
 
     agent_id = uuid4()
+    tenant_id = uuid4()
     owner_id = uuid4()
     session_id = uuid4()
-    agent = SimpleNamespace(id=agent_id, creator_id=owner_id)
-    session = SimpleNamespace(id=session_id, agent_id=agent_id, user_id=owner_id)
+    agent = SimpleNamespace(id=agent_id, creator_id=owner_id, tenant_id=tenant_id)
+    session = SimpleNamespace(id=session_id, agent_id=agent_id, tenant_id=tenant_id, user_id=owner_id)
     current_user = SimpleNamespace(id=owner_id, role="member")
     db = _QueryAwareDB(agent=agent, sessions=[session])
 
@@ -1308,10 +1319,11 @@ async def test_delete_session_maps_restrict_foreign_keys_to_conflict(monkeypatch
     from sqlalchemy.exc import IntegrityError
 
     agent_id = uuid4()
+    tenant_id = uuid4()
     owner_id = uuid4()
     session_id = uuid4()
-    agent = SimpleNamespace(id=agent_id, creator_id=owner_id)
-    session = SimpleNamespace(id=session_id, agent_id=agent_id, user_id=owner_id)
+    agent = SimpleNamespace(id=agent_id, creator_id=owner_id, tenant_id=tenant_id)
+    session = SimpleNamespace(id=session_id, agent_id=agent_id, tenant_id=tenant_id, user_id=owner_id)
     current_user = SimpleNamespace(id=owner_id, role="member")
 
     class _RestrictDB(_QueryAwareDB):
@@ -1417,10 +1429,10 @@ async def test_get_session_transcript_returns_replayable_events(monkeypatch):
     current_user = SimpleNamespace(id=owner_id, role="member")
     db = _QueryAwareDB(agent=agent, sessions=[session], transcript_events=[event])
 
-    async def fake_check_agent_access(_db, _user, _agent_id):
+    async def fake_check_agent_history_access(_db, _user, _agent_id):
         return agent, "use"
 
-    monkeypatch.setattr(chat_sessions_api, "check_agent_access", fake_check_agent_access, raising=False)
+    monkeypatch.setattr(chat_sessions_api, "check_agent_history_access", fake_check_agent_history_access, raising=False)
 
     result = await chat_sessions_api.get_session_transcript(
         agent_id=agent_id,

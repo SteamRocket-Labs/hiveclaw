@@ -145,7 +145,7 @@ async def test_artifact_office_preview_uses_delivery_snapshot_and_resource_autho
         return None
 
     monkeypatch.setattr(office_api, "check_agent_access", fake_access)
-    monkeypatch.setattr(office_api, "authorize_resource_action", fake_authorize_resource)
+    monkeypatch.setattr("app.core.resource_authority.authorize_resource_action", fake_authorize_resource)
     monkeypatch.setattr(office_api, "persist_invocation_span", fake_persist_span)
     monkeypatch.setattr(office_api.OfficeDocumentService, "_render_preview_target", fake_render)
 
@@ -228,7 +228,7 @@ async def test_artifact_office_preview_preserves_foreign_resource_denial(tmp_pat
 
     render_calls = []
     monkeypatch.setattr(office_api, "check_agent_access", fake_access)
-    monkeypatch.setattr(office_api, "authorize_resource_action", deny)
+    monkeypatch.setattr("app.core.resource_authority.authorize_resource_action", deny)
     monkeypatch.setattr(
         office_api.OfficeDocumentService,
         "_render_preview_target",

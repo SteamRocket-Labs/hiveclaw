@@ -51,10 +51,12 @@ async def test_download_copy_is_delivered_and_cleaned_for_every_response_exit(tm
     source = tmp_path / str(agent_id) / "workspace/report.md"
     source.parent.mkdir(parents=True)
     source.write_bytes(b"safe report")
-    token = tokens.make_channel_file_download_token(agent_id=agent_id, path="workspace/report.md",
-        content_sha256=hashlib.sha256(b"safe report").hexdigest())
-    response = await files_api.download_file(agent_id=agent_id, path="workspace/report.md", token=token,
-        credentials=None, db=object())
+    token = tokens.make_channel_file_download_token(
+        agent_id=agent_id, path="workspace/report.md", content_sha256=hashlib.sha256(b"safe report").hexdigest()
+    )
+    response = await files_api.download_file(
+        agent_id=agent_id, path="workspace/report.md", token=token, credentials=None, db=object()
+    )
     copied = Path(response.path)
     assert copied != source and copied.read_bytes() == b"safe report"
     source.write_bytes(b"Changed after response creation")
@@ -85,15 +87,17 @@ async def test_unchanged_download_keeps_source_metadata_for_conditional_range_re
     token = tokens.make_channel_file_download_token(agent_id=agent_id, path="workspace/report.md")
 
     async def download():
-        return await files_api.download_file(agent_id=agent_id, path="workspace/report.md", token=token,
-            credentials=None, db=object())
+        return await files_api.download_file(
+            agent_id=agent_id, path="workspace/report.md", token=token, credentials=None, db=object()
+        )
 
     first = await download()
     assert await _send_download(first) == (200, b"safe report")
     assert first.headers["last-modified"] == formatdate(source.stat().st_mtime, usegmt=True)
     second = await download()
-    assert await _send_download(second, headers=((b"range", b"bytes=0-3"),
-        (b"if-range", first.headers["etag"].encode()))) == (206, b"safe")
+    assert await _send_download(
+        second, headers=((b"range", b"bytes=0-3"), (b"if-range", first.headers["etag"].encode()))
+    ) == (206, b"safe")
 
 
 @pytest.mark.asyncio
@@ -399,6 +403,10 @@ async def test_artifact_download_query_jwt_pins_token_tenant_before_user_lookup(
             agent_id=agent_id,
             path="workspace/artifact.md",
             name="artifact.md",
+            owner_user_id=user.id,
+            root_session_id=None,
+            session_id=uuid4(),
+            authority_state="owned",
             snapshot_json={},
         )
 
@@ -408,7 +416,7 @@ async def test_artifact_download_query_jwt_pins_token_tenant_before_user_lookup(
     async def fake_authorize_resource_action(*_args, **_kwargs):
         return SimpleNamespace(authority_source="resource_owner", operator_view=False)
 
-    monkeypatch.setattr(files_api, "authorize_resource_action", fake_authorize_resource_action)
+    monkeypatch.setattr("app.core.resource_authority.authorize_resource_action", fake_authorize_resource_action)
 
     # Same canonical lane as the workspace download: no X-Tenant-Id on a
     # query-JWT request, so the token's own tenant is pinned first.
@@ -455,6 +463,10 @@ async def test_artifact_download_does_not_fall_back_when_declared_snapshot_is_mi
             agent_id=agent_id,
             path="workspace/artifact.md",
             name="artifact.md",
+            owner_user_id=user.id,
+            root_session_id=None,
+            session_id=uuid4(),
+            authority_state="owned",
             snapshot_json={
                 "snapshot_storage_path": "runtime_artifacts/chat_artifact_snapshots/missing/artifact.md",
             },
@@ -466,7 +478,7 @@ async def test_artifact_download_does_not_fall_back_when_declared_snapshot_is_mi
     monkeypatch.setattr(files_api, "_load_download_user_from_jwt", fake_load_user)
     monkeypatch.setattr(files_api, "check_agent_access", fake_check_agent_access)
     monkeypatch.setattr(files_api, "_load_chat_artifact_or_404", fake_load_artifact_or_404)
-    monkeypatch.setattr(files_api, "authorize_resource_action", fake_authorize_resource_action)
+    monkeypatch.setattr("app.core.resource_authority.authorize_resource_action", fake_authorize_resource_action)
 
     with pytest.raises(HTTPException) as exc:
         await files_api.download_artifact(

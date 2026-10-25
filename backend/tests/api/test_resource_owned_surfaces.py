@@ -32,6 +32,11 @@ class _QueueDB:
             raise AssertionError("Unexpected database query")
         return _ListResult(self.values.pop(0))
 
+    async def scalars(self, statement):
+        if "FROM runtime_tasks" in str(statement):
+            return []
+        raise AssertionError("Unexpected scalar-list query")
+
 
 @pytest.mark.asyncio
 async def test_task_list_consumes_resource_authority_and_marks_operator_view(monkeypatch):

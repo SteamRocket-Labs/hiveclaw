@@ -139,6 +139,7 @@ def _client(monkeypatch, *, db, user, agent, access_level="use", raise_server_ex
     app.dependency_overrides[get_current_user] = override_user
     app.dependency_overrides[get_db] = override_db
     monkeypatch.setattr(chat_sessions_api, "check_agent_access", allow_access)
+    monkeypatch.setattr(chat_sessions_api, "check_agent_history_access", allow_access)
     return TestClient(app, raise_server_exceptions=raise_server_exceptions)
 
 
@@ -755,7 +756,9 @@ def test_unified_session_input_accepts_admits_then_queues_explicit_intent(monkey
     command_id = uuid4()
     agent = SimpleNamespace(id=agent_id, tenant_id=tenant_id, creator_id=user_id)
     user = SimpleNamespace(id=user_id, role="member")
-    session = SimpleNamespace(id=session_id, agent_id=agent_id, user_id=user_id, transcript_metadata_json={})
+    session = SimpleNamespace(
+        id=session_id, agent_id=agent_id, user_id=user_id, source_channel="web", transcript_metadata_json={}
+    )
     row = SimpleNamespace(
         id=input_id,
         command_id=command_id,
@@ -790,8 +793,13 @@ def test_unified_session_input_accepts_admits_then_queues_explicit_intent(monkey
         return session, agent, "session_owner"
 
     async def fake_resolve(*_args, **_kwargs):
-        return SimpleNamespace(tenant_id=tenant_id, agent_id=agent_id, principal_id=user_id, session_id=session_id,
-            authority_source="session_owner")
+        return SimpleNamespace(
+            tenant_id=tenant_id,
+            agent_id=agent_id,
+            principal_id=user_id,
+            session_id=session_id,
+            authority_source="session_owner",
+        )
 
     async def fake_accept(*_args, **_kwargs):
         order.append("accept")
@@ -854,7 +862,9 @@ def test_unified_session_input_blocked_hook_never_dispatches_runtime(monkeypatch
     command_id = uuid4()
     agent = SimpleNamespace(id=agent_id, tenant_id=tenant_id, creator_id=user_id)
     user = SimpleNamespace(id=user_id, role="member")
-    session = SimpleNamespace(id=session_id, agent_id=agent_id, user_id=user_id, transcript_metadata_json={})
+    session = SimpleNamespace(
+        id=session_id, agent_id=agent_id, user_id=user_id, source_channel="web", transcript_metadata_json={}
+    )
     row = SimpleNamespace(
         id=input_id,
         command_id=command_id,
@@ -887,8 +897,13 @@ def test_unified_session_input_blocked_hook_never_dispatches_runtime(monkeypatch
         return session, agent, "session_owner"
 
     async def fake_resolve(*_args, **_kwargs):
-        return SimpleNamespace(tenant_id=tenant_id, agent_id=agent_id, principal_id=user_id, session_id=session_id,
-            authority_source="session_owner")
+        return SimpleNamespace(
+            tenant_id=tenant_id,
+            agent_id=agent_id,
+            principal_id=user_id,
+            session_id=session_id,
+            authority_source="session_owner",
+        )
 
     async def fake_accept(*_args, **_kwargs):
         return HumanInputReceipt(
@@ -945,7 +960,9 @@ def test_unified_replacement_persists_requested_saga_for_durable_worker_progress
     saga_id, saga_command_id = uuid4(), uuid4()
     agent = SimpleNamespace(id=agent_id, tenant_id=tenant_id, creator_id=user_id)
     user = SimpleNamespace(id=user_id, role="member")
-    session = SimpleNamespace(id=session_id, agent_id=agent_id, user_id=user_id, transcript_metadata_json={})
+    session = SimpleNamespace(
+        id=session_id, agent_id=agent_id, user_id=user_id, source_channel="web", transcript_metadata_json={}
+    )
     row = SimpleNamespace(
         id=input_id,
         command_id=command_id,
@@ -983,8 +1000,13 @@ def test_unified_replacement_persists_requested_saga_for_durable_worker_progress
         return session, agent, "session_owner"
 
     async def fake_resolve(*_args, **_kwargs):
-        return SimpleNamespace(tenant_id=tenant_id, agent_id=agent_id, principal_id=user_id, session_id=session_id,
-            authority_source="session_owner")
+        return SimpleNamespace(
+            tenant_id=tenant_id,
+            agent_id=agent_id,
+            principal_id=user_id,
+            session_id=session_id,
+            authority_source="session_owner",
+        )
 
     async def fake_accept(*_args, **_kwargs):
         order.append("accept_input")
@@ -1077,7 +1099,9 @@ def test_unified_fork_dispatches_real_branch_service_receipt_instead_of_pending_
     admission_id = uuid4()
     agent = SimpleNamespace(id=agent_id, tenant_id=tenant_id, creator_id=user_id)
     user = SimpleNamespace(id=user_id, role="member")
-    session = SimpleNamespace(id=session_id, agent_id=agent_id, user_id=user_id, transcript_metadata_json={})
+    session = SimpleNamespace(
+        id=session_id, agent_id=agent_id, user_id=user_id, source_channel="web", transcript_metadata_json={}
+    )
     row = SimpleNamespace(
         id=input_id,
         command_id=command_id,
@@ -1113,8 +1137,13 @@ def test_unified_fork_dispatches_real_branch_service_receipt_instead_of_pending_
         return session, agent, "session_owner"
 
     async def fake_resolve(*_args, **_kwargs):
-        return SimpleNamespace(tenant_id=tenant_id, agent_id=agent_id, principal_id=user_id, session_id=session_id,
-            authority_source="session_owner")
+        return SimpleNamespace(
+            tenant_id=tenant_id,
+            agent_id=agent_id,
+            principal_id=user_id,
+            session_id=session_id,
+            authority_source="session_owner",
+        )
 
     async def fake_accept(*_args, **_kwargs):
         return HumanInputReceipt(
@@ -1191,7 +1220,24 @@ def test_cancel_session_run_returns_durable_applying_receipt_and_ack_replay_does
     agent = SimpleNamespace(id=agent_id, tenant_id=tenant_id, creator_id=user_id)
     user = SimpleNamespace(id=user_id, role="member")
     session = SimpleNamespace(id=session_id, agent_id=agent_id, user_id=user_id)
-    db = _FakeDB(session)
+    task = SimpleNamespace(
+        id=run_id,
+        task_type="web_chat",
+        parent_session_id=str(session_id),
+        parent_agent_id=agent_id,
+        metadata_json={},
+    )
+
+    class _CancelDB(_FakeDB):
+        async def execute(self, stmt):
+            sql = str(stmt)
+            if sql.startswith("SELECT runtime_tasks.parent_session_id, runtime_tasks.parent_agent_id"):
+                return SimpleNamespace(first=lambda: task)
+            if "FROM runtime_tasks" in sql:
+                return _ScalarResult(task)
+            return await super().execute(stmt)
+
+    db = _CancelDB(session)
     begin_calls = 0
     signals = 0
 

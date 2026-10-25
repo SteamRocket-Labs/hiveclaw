@@ -130,10 +130,10 @@ async def test_delegated_manage_permission_does_not_disclose_permission_principa
     agent = SimpleNamespace(id=uuid4(), creator_id=uuid4(), owner_user_id=uuid4(), tenant_id=uuid4())
     current_user = SimpleNamespace(id=uuid4(), role="member", tenant_id=agent.tenant_id)
 
-    async def fake_check_agent_access(_db, _user, _agent_id):
+    async def fake_check_agent_history_access(_db, _user, _agent_id):
         return agent, "manage"
 
-    monkeypatch.setattr(agents_api, "check_agent_access", fake_check_agent_access)
+    monkeypatch.setattr("app.core.permissions.check_agent_history_access", fake_check_agent_history_access)
 
     result = await agents_api.get_agent_permissions(agent.id, current_user=current_user, db=object())
 
@@ -156,10 +156,10 @@ async def test_legacy_company_manage_permission_is_reported_as_use(monkeypatch):
     permission = SimpleNamespace(scope_type="company", scope_id=None, access_level="manage")
     db = _GrantDB([[permission]])
 
-    async def fake_check_agent_access(_db, _user, _agent_id):
+    async def fake_check_agent_history_access(_db, _user, _agent_id):
         return agent, "manage"
 
-    monkeypatch.setattr(agents_api, "check_agent_access", fake_check_agent_access)
+    monkeypatch.setattr("app.core.permissions.check_agent_history_access", fake_check_agent_history_access)
 
     result = await agents_api.get_agent_permissions(agent.id, current_user=current_user, db=db)
 

@@ -58,7 +58,7 @@ async def test_skill_uninstall_requires_manage_access_before_filesystem_effect(t
     import app.api.files as files_api
     from app.services.skill_installation import install_active_skill_package
 
-    agent_id, user_id = uuid4(), uuid4()
+    agent_id, user_id, tenant_id = uuid4(), uuid4(), uuid4()
     workspace = tmp_path / str(agent_id)
     install_active_skill_package(
         workspace=workspace,
@@ -74,11 +74,15 @@ async def test_skill_uninstall_requires_manage_access_before_filesystem_effect(t
         raise HTTPException(status_code=403, detail="Manage access required")
 
     monkeypatch.setattr(files_api, "require_agent_manage_access", deny)
+
+    async def no_active_installation(_statement):
+        return None
+
     args = dict(
         agent_id=agent_id,
         body=files_api.UninstallSkillBody(folder_name="owned"),
         current_user=SimpleNamespace(id=user_id),
-        db=SimpleNamespace(),
+        db=SimpleNamespace(scalar=no_active_installation),
     )
     with pytest.raises(HTTPException) as error:
         await files_api.uninstall_skill_from_agent(**args)
@@ -86,7 +90,9 @@ async def test_skill_uninstall_requires_manage_access_before_filesystem_effect(t
 
     async def allow(db, user, agent):
         assert agent == agent_id and user.id == user_id
+        return SimpleNamespace(id=agent_id, tenant_id=tenant_id)
 
     monkeypatch.setattr(files_api, "require_agent_manage_access", allow)
+    monkeypatch.setattr("app.core.permissions.require_agent_manage_access", allow)
     assert (await files_api.uninstall_skill_from_agent(**args))["status"] == "uninstalled"
     assert not (workspace / "skills/owned/SKILL.md").exists()

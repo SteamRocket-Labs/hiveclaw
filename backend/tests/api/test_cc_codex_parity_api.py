@@ -427,7 +427,7 @@ async def test_chat_sessions_api_exposes_session_index(monkeypatch):
             "dynamic_tools": ["web_search"],
         }
 
-    monkeypatch.setattr(chat_sessions_api, "check_agent_access", fake_access)
+    monkeypatch.setattr(chat_sessions_api, "check_agent_history_access", fake_access)
     monkeypatch.setattr(chat_sessions_api, "read_session_index", fake_read_session_index)
 
     result = await chat_sessions_api.get_session_index(

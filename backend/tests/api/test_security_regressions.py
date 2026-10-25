@@ -468,8 +468,12 @@ async def test_agent_import_skill_cannot_escape_skill_folder(monkeypatch, tmp_pa
     async def fake_check_agent_access(db, current_user, requested_agent_id):
         return SimpleNamespace(id=requested_agent_id, tenant_id=current_user.tenant_id), "manage"
 
+    async def fake_require_manage(db, current_user, requested_agent_id):
+        agent, _access = await fake_check_agent_access(db, current_user, requested_agent_id)
+        return agent
+
     class _FakeDB:
-        async def execute(self, _stmt):
+        async def execute(self, _stmt, _params=None):
             return _ScalarResult(
                 SimpleNamespace(
                     id=uuid.uuid4(),
@@ -482,8 +486,11 @@ async def test_agent_import_skill_cannot_escape_skill_folder(monkeypatch, tmp_pa
                 )
             )
 
+        async def scalar(self, _stmt):
+            return None
+
     monkeypatch.setattr(files_api, "check_agent_access", fake_check_agent_access)
-    monkeypatch.setattr(files_api, "require_agent_manage_access", fake_check_agent_access)
+    monkeypatch.setattr(files_api, "require_agent_manage_access", fake_require_manage)
     current_user = SimpleNamespace(id=uuid.uuid4(), tenant_id=tenant_id, role="member")
 
     with pytest.raises(HTTPException) as exc:
@@ -512,6 +519,12 @@ async def test_agent_files_list_hides_dotfile_sidecars(monkeypatch, tmp_path):
         return SimpleNamespace(id=requested_agent_id, tenant_id=current_user.tenant_id), "manage"
 
     monkeypatch.setattr(files_api, "check_agent_access", fake_check_agent_access)
+    monkeypatch.setattr("app.core.permissions.check_agent_access", fake_check_agent_access)
+
+    class _NoLearningDB:
+        async def scalars(self, _statement):
+            return []
+
     skills_dir = tmp_path / str(agent_id) / "skills"
     skills_dir.mkdir(parents=True)
     (skills_dir / ".usage.json").write_text("{}", encoding="utf-8")
@@ -521,7 +534,7 @@ async def test_agent_files_list_hides_dotfile_sidecars(monkeypatch, tmp_path):
         agent_id=agent_id,
         path="skills",
         current_user=SimpleNamespace(id=uuid.uuid4(), tenant_id=uuid.uuid4(), role="member"),
-        db=object(),
+        db=_NoLearningDB(),
     )
 
     assert [item.name for item in items] == ["mcp-installer"]

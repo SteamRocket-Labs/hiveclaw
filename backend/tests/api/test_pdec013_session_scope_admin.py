@@ -34,7 +34,7 @@ from tests.api.test_chat_sessions_permissions import _QueryAwareDB
 async def test_session_subscription_uses_shared_actor_authority(
     monkeypatch, role, owns_session, source_channel, session_kind, allowed
 ):
-    from fastapi import WebSocketDisconnect
+    from fastapi import WebSocket, WebSocketDisconnect
 
     import app.api.websocket as websocket_api
 
@@ -45,14 +45,16 @@ async def test_session_subscription_uses_shared_actor_authority(
         user_id=user.id if owns_session else uuid4(),
         source_channel=source_channel,
         session_kind=session_kind,
+        audience_kind=None,
         delivery_target_json={"channel": "web", "username": "owner"},
     )
     original_owner = session.user_id
     db = AsyncMock()
-    db.scalar.side_effect = [user, session]
+    db.scalar.return_value = session
     db.__aenter__.return_value = db
     monkeypatch.setattr(websocket_api, "tenant_scoped_session", lambda _: db)
     monkeypatch.setattr(websocket_api, "decode_access_token", lambda _: {"sub": str(user.id)})
+    monkeypatch.setattr("app.core.security.authenticate_request_user", AsyncMock(return_value=user))
     monkeypatch.setattr(websocket_api, "resolve_tenant_for_agent", AsyncMock(return_value=agent.tenant_id))
     monkeypatch.setattr(websocket_api, "check_agent_access", AsyncMock(return_value=(agent, "manage")))
     monkeypatch.setattr(websocket_api, "is_agent_expired", lambda _: False)
@@ -66,7 +68,7 @@ async def test_session_subscription_uses_shared_actor_authority(
         "app.services.session_subscription.load_session_catchup_window",
         AsyncMock(return_value=SimpleNamespace(last_committed_sequence=0, cursor=SimpleNamespace(mode="identity"))),
     )
-    socket = AsyncMock()
+    socket = AsyncMock(spec=WebSocket)
     socket.receive_json.return_value = {
         "type": "session.subscribe",
         "session_id": str(session.id),
@@ -128,7 +130,7 @@ async def test_scoped_admin_lists_all_sessions_without_operator_reason(
     admin_id = uuid4()
     session_id = uuid4()
     empty_session_id = uuid4()
-    agent = SimpleNamespace(id=agent_id, creator_id=owner_id, tenant_id=tenant_id)
+    agent = SimpleNamespace(id=agent_id, creator_id=owner_id, tenant_id=tenant_id, deactivated_at=None)
     session = _session_row(session_id, agent_id, owner_id)
     session.source_channel = source_channel
     session.session_kind = session_kind
@@ -148,6 +150,7 @@ async def test_scoped_admin_lists_all_sessions_without_operator_reason(
         return agent, "manage"
 
     monkeypatch.setattr(chat_sessions_api, "check_agent_access", fake_check_agent_access, raising=False)
+    monkeypatch.setattr(chat_sessions_api, "check_agent_history_access", fake_check_agent_access)
     monkeypatch.setattr(
         chat_sessions_api,
         "check_agent_operator_reachability",

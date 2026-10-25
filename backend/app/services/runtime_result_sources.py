@@ -1084,24 +1084,40 @@ async def validate_runtime_return_dependency(db, tenant_id, dependency, *, user,
             try:
                 row = await db.get(InvocationSpan, uuid.UUID(parts[2]), populate_existing=True)
                 proof = (row.metadata_json or {}).get("observation") if row else None
+                observed_tasks = proof.get("observed_tasks") if isinstance(proof, dict) else None
+                observed_state = isinstance(proof, dict) and proof.get("schema") == "hive.runtime_team_observation.v2"
+                if observed_state:
+                    if not isinstance(observed_tasks, list) or not observed_tasks:
+                        raise ValueError("team_state_observations_missing")
+                    for observed in observed_tasks:
+                        if (
+                            not isinstance(observed, dict)
+                            or set(observed) != {"task_id", "status", "record_hash"}
+                            or observed["status"] not in {"pending", "running"}
+                            or not isinstance(observed["record_hash"], str)
+                            or len(observed["record_hash"]) != 64
+                        ):
+                            raise ValueError("team_state_observation_invalid")
+                        uuid.UUID(observed["task_id"])
+                namespace = "runtime-team-observation" if observed_state else "runtime-team-publication"
                 if (
                     not isinstance(proof, dict)
-                    or proof.get("schema") != "hive.runtime_team_publication_observation.v1"
+                    or proof.get("schema")
+                    not in {"hive.runtime_team_publication_observation.v1", "hive.runtime_team_observation.v2"}
                     or _hash(proof) != dependency["source_version"]
                     or row.tenant_id != tenant_id
                     or row.agent_id != agent_id
                     or row.session_id != str(session_id)
                     or row.user_id != requester.id
                     or row.span_type != kind
-                    or row.name != "team_publication_observed"
+                    or row.name != ("team_state_observed" if observed_state else "team_publication_observed")
                     or row.status != "captured"
                     or proof.get("run_id") != str(row.runtime_task_id)
                     or proof.get("user_id") != str(requester.id)
                     or proof.get("agent_id") != str(agent_id)
                     or proof.get("session_id") != str(session_id)
-                    or row.id
-                    != uuid.uuid5(row.runtime_task_id, f"runtime-team-publication:{dependency['source_version']}")
-                    or not proof.get("pending_task_ids")
+                    or row.id != uuid.uuid5(row.runtime_task_id, f"{namespace}:{dependency['source_version']}")
+                    or not (observed_tasks if observed_state else proof.get("pending_task_ids"))
                     or not isinstance(proof.get("content"), str)
                 ):
                     raise ValueError("team_observation_mismatch")

@@ -924,6 +924,71 @@ async def test_kernel_never_retries_an_ambiguous_provider_send_on_a_fallback_mod
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("http_status", [None, 503])
+async def test_ambiguous_provider_failure_preserves_observation_without_replay(monkeypatch, tmp_path, http_status):
+    from app.kernel import AgentKernel, InvocationRequest, KernelDependencies, RuntimeConfig
+    from app.kernel.contracts import ProviderRequestNeedsReconciliation
+    from app.services import invocation_trace
+    from app.services.llm_client import LLMError
+
+    monkeypatch.setattr(invocation_trace, "get_settings", lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)))
+    secret = "synthetic-observation-secret"
+    detail = f"Opaque provider failure: diagnostic-42 {secret}"
+    model = SimpleNamespace(provider="openai", model="selected", api_key=secret, base_url=None)
+    fallback = SimpleNamespace(provider="openai", model="fallback", api_key="synthetic-fallback", base_url=None)
+    primary_client = _FakeClient([LLMError(detail, delivery_state="unknown", http_status=http_status)])
+    fallback_client = _FakeClient([])
+    failures, spans = [], []
+    agent_id, tenant_id, user_id = uuid4(), uuid4(), uuid4()
+    request_id = "provider-request:opaque-failure"
+    kernel = AgentKernel(KernelDependencies(
+        resolve_runtime_config=lambda *_a: RuntimeConfig(tenant_id=tenant_id, max_tool_rounds=1),
+        resolve_current_user_name=lambda *_a: "Example Owner",
+        build_system_prompt=lambda *_a, **_k: "PROMPT",
+        resolve_memory_context=lambda *_a, **_k: "",
+        get_tools=lambda *_a, **_k: [],
+        maybe_compress_messages=lambda messages, **_k: messages,
+        create_client=lambda selected: primary_client if selected is model else fallback_client,
+        execute_tool=lambda *_a, **_k: "",
+        persist_memory=lambda **_k: None,
+        record_token_usage=lambda *_a, **_k: None,
+        record_invocation_span=lambda **payload: spans.append(payload),
+        get_max_tokens=lambda *_a, **_k: 2048,
+        extract_usage_tokens=lambda usage: usage.get("total_tokens") if usage else None,
+        estimate_tokens_from_chars=lambda chars: chars // 4,
+    ))
+    with pytest.raises(ProviderRequestNeedsReconciliation):
+        await kernel.handle(InvocationRequest(
+            model=model, fallback_model=fallback,
+            messages=[{"role": "user", "content": "Inspect the project"}],
+            agent_name="Engineer", role_description="Investigates repositories",
+            agent_id=agent_id, user_id=user_id,
+            model_request_prepare=lambda **_payload: request_id,
+            model_request_fail=lambda **payload: failures.append(payload),
+        ))
+
+    assert failures == [{"round_index": 1, "provider_request_id": request_id,
+                         "error_class": "unknown", "delivery_state": "unknown", "retry_safe": False}]
+    assert len(primary_client.calls) == 1
+    assert fallback_client.calls == []
+    errors = [span for span in spans if span["span_type"] == "generation" and span["status"] == "error"]
+    assert len(errors) == 1
+    error = errors[0]
+    assert error["tenant_id"] == tenant_id and error["agent_id"] == agent_id and error["user_id"] == user_id
+    assert error["metadata"]["provider_request_id"] == request_id
+    assert error["metadata"]["provider"] == "openai" and error["metadata"]["model"] == "selected"
+    assert error["metadata"]["error_class"] == "LLMError"
+    assert error["metadata"]["provider_error_kind"] == "unknown"
+    assert error["metadata"]["delivery_state"] == "unknown" and error["metadata"]["retry_safe"] is False
+    assert error["metadata"]["http_status"] == http_status
+    assert error["error"] == detail.replace(secret, "[REDACTED]")
+    assert secret not in json.dumps(spans, default=str)
+    trace = tmp_path / str(agent_id) / "runtime_artifacts" / "traces" / "invocation_spans.jsonl"
+    assert secret not in trace.read_text()
+    assert "diagnostic-42" in trace.read_text()
+
+
+@pytest.mark.asyncio
 async def test_kernel_classifies_typed_http_402_as_rejected_quota_without_replay() -> None:
     """DAY1-PROVIDER-402-CLASSIFICATION-001: a typed HTTP 402 rejection is an
     authoritative delivery_state=rejected.  The kernel must NOT raise

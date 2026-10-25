@@ -2149,11 +2149,10 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                                     retry_safe=retry_safe,
                                 )
                             )
-                        if provider_request_id is not None and not retry_safe:
-                            raise ProviderRequestNeedsReconciliation(
-                                provider_request_id=provider_request_id,
-                                error_class=error_classification.kind,
-                            ) from exc
+                        failure_detail = str(exc)
+                        active_api_key = getattr(active_model, "api_key", None)
+                        if isinstance(active_api_key, str) and active_api_key:
+                            failure_detail = failure_detail.replace(active_api_key, "[REDACTED]")
                         await _record_span(
                             span_type="generation",
                             name="llm.stream",
@@ -2165,16 +2164,27 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                                 "round": logical_round_index,
                                 "status": "error",
                                 "error_class": type(exc).__name__,
-                                "error": str(exc),
+                                "error": failure_detail,
+                                "provider_request_id": provider_request_id,
+                                "provider_error_kind": error_classification.kind,
+                                "delivery_state": delivery_state,
+                                "retry_safe": retry_safe,
+                                "http_status": getattr(exc, "http_status", None),
                             },
                         )
                         logger.error(
-                            "[Kernel] LLMError provider=%s model=%s round=%s: %s",
+                            "[Kernel] LLMError provider=%s model=%s round=%s request=%s: %s",
                             getattr(active_model, "provider", "?"),
                             getattr(active_model, "model", "?"),
                             logical_round_index,
-                            exc,
+                            provider_request_id,
+                            failure_detail,
                         )
+                        if provider_request_id is not None and not retry_safe:
+                            raise ProviderRequestNeedsReconciliation(
+                                provider_request_id=provider_request_id,
+                                error_class=error_classification.kind,
+                            ) from exc
                         # ── PTL reactive retry: full compress first → mechanical round-group fallback ──
                         if _is_prompt_too_long(exc) and ptl_retries < _PTL_MAX_RETRIES:
                             if ptl_retries == 0 and len(api_messages) > 4:

@@ -594,6 +594,8 @@ for (const viewport of [
     await expect(page.getByTestId('session-runtime-segment-workers')).toContainText('1');
     await expect(page.getByTestId('session-runtime-segment-workflow')).toContainText('1');
     await expect(page.getByTestId('session-runtime-console-empty')).toHaveCount(0);
+    // The browser control loads lazily; capture the fully rendered panel.
+    await expect(page.getByRole('button', { name: 'Open work browser', exact: true })).toBeVisible();
     await expectVisual(page, `workbench-user-active-expanded-${viewport.name}.png`, {
       capture: viewport.name === 'narrow' ? 'viewport' : 'element',
     });

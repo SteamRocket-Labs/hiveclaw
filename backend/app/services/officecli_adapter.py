@@ -326,7 +326,9 @@ class OfficeCLIAdapter:
             env['DOTNET_BUNDLE_EXTRACT_BASE_DIR'] = str(home / '.net')
             roots = (self._producer_source.parent, Path.cwd(), Path.home(),
                 Path('/Users'), Path(tempfile.gettempdir()), Path('/tmp'), Path('/var/tmp'))
+            # The fresh private HOME holds the CLI's temporary and extracted runtime files.
             spec = SandboxBuildSpec(profile=SandboxProfile.WORKSPACE_WRITE,
+                writable_roots=(str(self._producer_workspace), str(home)),
                 protected_roots=tuple(dict.fromkeys(str(root.resolve()) for root in roots if root.is_dir())))
             sandbox = build_sandboxed_agent_command(args, work_dir=self._producer_workspace, env=env, spec=spec)
             cleanup = sandbox.cleanup_paths

@@ -368,3 +368,45 @@ def _write_commands(root):
     commands = root / "commands.json"
     commands.write_text('[{"command": "validate"}]', encoding="utf-8")
     return commands
+
+
+def test_officecli_producer_keeps_private_cache_writable_in_linux_sandbox(tmp_path, monkeypatch):
+    from app.services import subprocess_sandbox as sandbox
+    from app.services.officecli_adapter import OfficeCLIAdapter
+
+    binary = tmp_path / "officecli"
+    binary.write_bytes(b"verified-officecli-fixture")
+    binary.chmod(0o755)
+    workspace, canonical = tmp_path / "producer", tmp_path / "canonical"
+    workspace.mkdir()
+    canonical.mkdir()
+    commands = workspace / "commands.json"
+    commands.write_text("[]")
+    captured = {}
+
+    def runner(args, **kwargs):
+        captured.update(args=args, env=kwargs["env"])
+        return SimpleNamespace(returncode=0, stdout='{"success": true}', stderr="")
+
+    monkeypatch.setenv("HIVE_CODE_SANDBOX_MODE", "linux")
+    monkeypatch.setenv("DATABASE_URL", "postgresql+asyncpg://synthetic:synthetic@127.0.0.1:1/synthetic")
+    monkeypatch.setenv("SECRET_KEY", "synthetic-private-secret")
+    monkeypatch.setattr(sandbox.shutil, "which", lambda name: "/usr/bin/bwrap" if name == "bwrap" else None)
+    producer = OfficeCLIAdapter(
+        binary=str(binary), binary_sha256=hashlib.sha256(binary.read_bytes()).hexdigest(), runner=runner
+    ).for_workspace_producer(workspace, canonical_workspace=canonical)
+    assert producer.run_batch(workspace / "report.docx", input_file=commands, cwd=workspace) == {"success": True}
+
+    home = workspace / ".office-home"
+    bindings = {}
+    argv = captured["args"]
+    for index in range(len(argv) - 2):
+        if argv[index] in {"--bind", "--ro-bind"}:
+            bindings[argv[index + 2]] = argv[index]
+    assert bindings[str(workspace)] == "--bind"
+    assert bindings[str(home)] == "--bind"
+    assert captured["env"]["TMPDIR"] == str(home / "tmp")
+    assert captured["env"]["DOTNET_BUNDLE_EXTRACT_BASE_DIR"] == str(home / ".net")
+    assert "--share-net" not in argv
+    assert all(key not in captured["env"] for key in ("DATABASE_URL", "SECRET_KEY"))
+    assert any(argv[index : index + 2] == ["--tmpfs", str(canonical.parent)] for index in range(len(argv) - 1))

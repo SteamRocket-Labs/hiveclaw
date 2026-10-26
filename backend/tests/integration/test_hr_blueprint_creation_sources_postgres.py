@@ -22,6 +22,7 @@ from app.services.hr_creation_service import (
 from app.services.hr_provisioning_runtime import build_hr_provisioning_runtime_task
 from app.tools.handlers.hr import preview_agent_blueprint
 from app.tools.runtime import ToolExecutionContext, ToolExecutionRequest
+from tests.integration.test_m1f_assistant_binding_postgres import builtin_defaults  # noqa: F401
 from tests.integration.test_web_chat_worker_restart_kernel_recovery import _seed_run
 
 pytestmark = pytest.mark.usefixtures("migrated_pg_url")
@@ -213,6 +214,7 @@ async def test_preview_without_canonical_model_call_cannot_sign_historical_sourc
         assert await load_employee_creation_dependencies(db, draft=draft) is None
 
 
+@pytest.mark.usefixtures("builtin_defaults")
 @pytest.mark.parametrize("existing", [False, True])
 async def test_system_hr_captures_skill_sources_only_at_original_installation(
     owner_sessionmaker,
@@ -228,15 +230,12 @@ async def test_system_hr_captures_skill_sources_only_at_original_installation(
     from app.config import get_settings
     from app.models.config_revision import ConfigRevision
     from app.models.user import User
-    from app.services import skill_seeder
     from app.services.agent_manager import agent_manager
     from app.services.skill_source_receipts import SkillInputCapture, load_skill_input_snapshot
 
     seed = await _seed_run(owner_sessionmaker, tmp_path)
     monkeypatch.setattr(database, "async_session", app_user_sessionmaker)
-    monkeypatch.setattr(skill_seeder, "async_session", owner_sessionmaker)
     monkeypatch.setattr(get_settings(), "AGENT_DATA_DIR", str(seed["data_root"]))
-    await skill_seeder.seed_skills()
     if existing:
         async with app_user_sessionmaker() as db:
             await pin_rls_tenant_context(db, seed["tenant_id"])

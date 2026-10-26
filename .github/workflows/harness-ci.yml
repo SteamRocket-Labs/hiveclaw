@@ -163,7 +163,7 @@ jobs:
         run: npm ci
 
       - name: Pytest full hermetic suite
-        run: pytest tests -q --maxfail=1
+        run: pytest tests -q --maxfail=0
 
       - name: Prompt contract eval
         run: python -m app.runtime.prompt_eval --fail-severity=critical,high

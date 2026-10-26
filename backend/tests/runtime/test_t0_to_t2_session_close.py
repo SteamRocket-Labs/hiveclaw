@@ -983,3 +983,112 @@ def test_startup_does_not_auto_replay_legacy_extraction_queue() -> None:
 
     assert "replay_pending_extractions" not in source
     assert "record_extract_replay_outcome" not in source
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("interruption", [None, RuntimeError, asyncio.CancelledError])
+async def test_response_projection_releases_asset_lock_during_memory_build(monkeypatch, tmp_path, interruption) -> None:
+    import fcntl
+
+    from app.runtime import hooks_setup
+    from app.services.agent_asset_transaction import read_agent_asset_revision
+    from app.services.session_memory import SessionMemoryPayload
+    from app.services.skill_curator import bump_skill_use, load_skill_usage
+
+    _patch_t0_root(monkeypatch, tmp_path)
+    agent_id = uuid4()
+    outcome_id = uuid4()
+    agent_root = tmp_path / str(agent_id)
+    builds = []
+    ctx = HookContext(
+        event=HookEvent.RESPONSE_COMPLETE,
+        agent_id=str(agent_id),
+        session_id="asset-lock-session",
+        source="web",
+        metadata={
+            "response_commit": {
+                "idempotency_key": f"session-run-outcome:{outcome_id}",
+                "source_refs": [f"session-run-outcome://{outcome_id}"],
+            },
+        },
+    )
+
+    async def build_payload(_messages, **_kwargs):
+        # A synchronous load_skill usage write must be able to run while this
+        # async model/database work yields; probe without deadlocking pytest.
+        lock_path = agent_root / "runtime_artifacts" / "asset_transactions" / ".asset.lock"
+        with lock_path.open("a+b") as probe:
+            fcntl.flock(probe.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            fcntl.flock(probe.fileno(), fcntl.LOCK_UN)
+        builds.append(1)
+        await asyncio.sleep(0)
+        bump_skill_use(agent_root, "advanced-web-research")
+        if interruption is not None and len(builds) == 1:
+            raise interruption()
+        return SessionMemoryPayload(session_id=ctx.session_id, current_state="Committed session memory.")
+
+    monkeypatch.setattr(hooks_setup, "build_session_memory_payload_with_llm", build_payload)
+    if interruption is not None:
+        with pytest.raises(interruption):
+            await hooks_setup._project_committed_response_session_memory(ctx, agent_id, [])
+        assert not list((agent_root / "runtime_artifacts" / "asset_transactions" / "receipts").glob("*.json"))
+    receipt = await hooks_setup._project_committed_response_session_memory(ctx, agent_id, [])
+    projection = agent_root / "memory" / "session_state" / ctx.session_id / "session_memory.md"
+    before = projection.read_bytes()
+    revision = read_agent_asset_revision(agent_root)
+    replay = await hooks_setup._project_committed_response_session_memory(ctx, agent_id, [])
+
+    expected_builds = 1 if interruption is None else 2
+    assert len(builds) == expected_builds
+    assert load_skill_usage(agent_root)["advanced-web-research"]["use_count"] == expected_builds
+    assert revision == expected_builds + 1
+    assert read_agent_asset_revision(agent_root) == revision
+    assert projection.read_bytes() == before
+    assert b"Committed session memory." in before
+    assert receipt["source_ref"] == f"session-run-outcome://{outcome_id}"
+    assert receipt["idempotent_replay"] is False
+    assert replay == {**receipt, "idempotent_replay": True}
+
+
+@pytest.mark.asyncio
+async def test_concurrent_response_projections_commit_one_receipt(monkeypatch, tmp_path) -> None:
+    import fcntl
+
+    from app.runtime import hooks_setup
+    from app.services.agent_asset_transaction import read_agent_asset_revision
+    from app.services.session_memory import SessionMemoryPayload
+
+    _patch_t0_root(monkeypatch, tmp_path)
+    agent_id = uuid4()
+    outcome_id = uuid4()
+    agent_root = tmp_path / str(agent_id)
+    ctx = HookContext(
+        event=HookEvent.RESPONSE_COMPLETE,
+        agent_id=str(agent_id),
+        session_id="concurrent-projection",
+        source="web",
+        metadata={
+            "response_commit": {
+                "idempotency_key": f"session-run-outcome:{outcome_id}",
+                "source_refs": [f"session-run-outcome://{outcome_id}"],
+            },
+        },
+    )
+    builds = []
+
+    async def build_payload(_messages, **_kwargs):
+        with (agent_root / "runtime_artifacts" / "asset_transactions" / ".asset.lock").open("a+b") as probe:
+            fcntl.flock(probe.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            fcntl.flock(probe.fileno(), fcntl.LOCK_UN)
+        builds.append(1)
+        await asyncio.sleep(0)
+        return SessionMemoryPayload(session_id=ctx.session_id, current_state="One persisted projection.")
+
+    monkeypatch.setattr(hooks_setup, "build_session_memory_payload_with_llm", build_payload)
+    receipts = await asyncio.gather(
+        hooks_setup._project_committed_response_session_memory(ctx, agent_id, []),
+        hooks_setup._project_committed_response_session_memory(ctx, agent_id, []),
+    )
+    assert len(builds) == 2
+    assert read_agent_asset_revision(agent_root) == 1
+    assert receipts[1] == {**receipts[0], "idempotent_replay": True}

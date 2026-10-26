@@ -200,51 +200,46 @@ async def _project_committed_response_session_memory(
         raise ValueError("committed session projection requires a canonical source ref")
     data_root = _agent_data_root()
     agent_root = data_root / str(agent_id)
-    with AgentAssetTransaction(
-        agent_root,
-        operation="response_complete_session_projection",
-        idempotency_key=f"session-memory:{response_idempotency_key}",
-        evidence_refs=evidence_refs,
-    ) as transaction:
-        if transaction.is_replay:
-            receipt = transaction.commit()
-            logger.info(
-                "[Hooks] RESPONSE_COMPLETE session projection replay agent=%s session=%s revision=%d",
-                agent_id,
-                ctx.session_id,
-                receipt.revision,
-            )
-            return {
-                "source_ref": response_base_ref,
-                "transaction_id": receipt.transaction_id,
-                "revision": receipt.revision,
-                "idempotent_replay": True,
-            }
+    payload = None
+    while True:
+        with AgentAssetTransaction(
+            agent_root,
+            operation="response_complete_session_projection",
+            idempotency_key=f"session-memory:{response_idempotency_key}",
+            evidence_refs=evidence_refs,
+        ) as transaction:
+            if transaction.is_replay or payload is not None:
+                if not transaction.is_replay:
+                    update_session_memory(
+                        agent_id,
+                        payload,
+                        data_root=data_root,
+                        transaction=transaction,
+                    )
+                receipt = transaction.commit()
+                break
+        # Async model/database work must not hold the synchronous asset lock:
+        # another task may need it for load_skill or terminal projection.
+        # Recheck the durable receipt after building, before writing any bytes.
         payload = await build_session_memory_payload_with_llm(
             messages,
             metadata=_session_memory_metadata(ctx),
             agent_id=agent_id,
             tenant_id=ctx.metadata.get("tenant_id"),
         )
-        update_session_memory(
-            agent_id,
-            payload,
-            data_root=data_root,
-            transaction=transaction,
-        )
-        receipt = transaction.commit()
-        logger.info(
-            "[Hooks] RESPONSE_COMPLETE session projection committed agent=%s session=%s revision=%d",
-            agent_id,
-            ctx.session_id,
-            receipt.revision,
-        )
-        return {
-            "source_ref": response_base_ref,
-            "transaction_id": receipt.transaction_id,
-            "revision": receipt.revision,
-            "idempotent_replay": False,
-        }
+    logger.info(
+        "[Hooks] RESPONSE_COMPLETE session projection %s agent=%s session=%s revision=%d",
+        "replay" if receipt.idempotent_replay else "committed",
+        agent_id,
+        ctx.session_id,
+        receipt.revision,
+    )
+    return {
+        "source_ref": response_base_ref,
+        "transaction_id": receipt.transaction_id,
+        "revision": receipt.revision,
+        "idempotent_replay": receipt.idempotent_replay,
+    }
 
 
 def _t0_safe_metadata(metadata: dict | None) -> dict:

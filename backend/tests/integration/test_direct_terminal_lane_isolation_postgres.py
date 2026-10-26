@@ -12,6 +12,8 @@ from sqlalchemy.dialects.postgresql import dialect as literal_dialect
 from sqlalchemy.dialects.postgresql.asyncpg import dialect
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from tests.integration import conftest as integration
+
 from app.models.runtime_task import RuntimeTask
 from app.models.runtime_terminal_boundary_outbox import RuntimeTerminalBoundaryOutbox
 from tests.services.test_runtime_terminal_boundary_outbox import _binding, _enqueue, _seed_terminal_task
@@ -19,9 +21,23 @@ from tests.services.test_runtime_terminal_boundary_outbox import _binding, _enqu
 pytestmark = pytest.mark.usefixtures("migrated_pg_url")
 
 
+@pytest.fixture()
+def pg_container():
+    # Global queue discovery must see only this case's canonical task bindings.
+    yield from integration.pg_container.__wrapped__()
+
+
+@pytest.fixture()
+def migrated_pg_url(pg_container):
+    return integration.migrated_pg_url.__wrapped__(pg_container)
+
+
 @pytest.mark.parametrize("blocked_at", ["discovery", "consumer"])
 async def test_trigger_lane_cannot_hold_delegation_delivery(
-    monkeypatch, owner_sessionmaker, app_user_sessionmaker, blocked_at,
+    monkeypatch,
+    owner_sessionmaker,
+    app_user_sessionmaker,
+    blocked_at,
 ):
     import app.services.runtime_task_worker as worker
 
@@ -29,19 +45,34 @@ async def test_trigger_lane_cannot_hold_delegation_delivery(
     delegation = SimpleNamespace(**{**vars(trigger), "task_id": uuid4()})
     now = datetime.now(UTC)
     async with owner_sessionmaker() as db:
-        db.add(RuntimeTask(
-            id=delegation.task_id, tenant_id=trigger.tenant_id, task_type="delegation", status="completed",
-            parent_agent_id=trigger.agent_id, child_agent_id=trigger.agent_id,
-            parent_session_id=str(trigger.session_id), child_session_id=str(trigger.session_id),
-            root_session_id=str(trigger.session_id), root_user_id=trigger.user_id,
-            prompt="independent delegated result", terminal_boundary_generation=1, completed_at=now,
-        ))
+        db.add(
+            RuntimeTask(
+                id=delegation.task_id,
+                tenant_id=trigger.tenant_id,
+                task_type="delegation",
+                status="completed",
+                parent_agent_id=trigger.agent_id,
+                child_agent_id=trigger.agent_id,
+                parent_session_id=str(trigger.session_id),
+                child_session_id=str(trigger.session_id),
+                root_session_id=str(trigger.session_id),
+                root_user_id=trigger.user_id,
+                prompt="independent delegated result",
+                terminal_boundary_generation=1,
+                completed_at=now,
+            )
+        )
         await db.commit()
     for seeded in (trigger, delegation):
         await _enqueue(owner_sessionmaker, seeded, event_kind="runtime_terminal", binding=_binding())
     async with owner_sessionmaker() as db:
-        rows = list(await db.scalars(select(RuntimeTerminalBoundaryOutbox).where(
-            RuntimeTerminalBoundaryOutbox.tenant_id == trigger.tenant_id)))
+        rows = list(
+            await db.scalars(
+                select(RuntimeTerminalBoundaryOutbox).where(
+                    RuntimeTerminalBoundaryOutbox.tenant_id == trigger.tenant_id
+                )
+            )
+        )
         for row in rows:
             row.available_at = now - timedelta(hours=2 if row.runtime_task_id == trigger.task_id else 1)
         await db.commit()
@@ -69,8 +100,11 @@ async def test_trigger_lane_cannot_hold_delegation_delivery(
             pass
 
         async def validate(self, db, item):
-            role = (await db.execute(text("SELECT current_user,rolsuper,rolbypassrls "
-                "FROM pg_roles WHERE rolname=current_user"))).one()
+            role = (
+                await db.execute(
+                    text("SELECT current_user,rolsuper,rolbypassrls FROM pg_roles WHERE rolname=current_user")
+                )
+            ).one()
             assert role == ("rls_app_user", False, False)
             task = await db.get(RuntimeTask, item.runtime_task_id)
             assert task is not None and task.tenant_id == item.tenant_id == trigger.tenant_id
@@ -108,8 +142,13 @@ async def test_trigger_lane_cannot_hold_delegation_delivery(
         await asyncio.wait_for(delegated.wait(), 5)
         assert not release.is_set() and not trigger_delivered.is_set()
         async with owner_sessionmaker() as db:
-            rows = list(await db.scalars(select(RuntimeTerminalBoundaryOutbox).where(
-                RuntimeTerminalBoundaryOutbox.tenant_id == trigger.tenant_id)))
+            rows = list(
+                await db.scalars(
+                    select(RuntimeTerminalBoundaryOutbox).where(
+                        RuntimeTerminalBoundaryOutbox.tenant_id == trigger.tenant_id
+                    )
+                )
+            )
             by_task = {row.runtime_task_id: row for row in rows}
             assert by_task[delegation.task_id].status == "delivered"
             assert by_task[delegation.task_id].attempt_count == 1
@@ -125,7 +164,9 @@ async def test_trigger_lane_cannot_hold_delegation_delivery(
 
 
 async def test_delegation_route_remains_visible_to_a_generic_discovery_plan(
-    owner_sessionmaker, app_user_sessionmaker, tmp_path,
+    owner_sessionmaker,
+    app_user_sessionmaker,
+    tmp_path,
 ):
     from app.services.runtime_task_worker import _discover_terminal_boundary_tenants
 
@@ -141,14 +182,22 @@ async def test_delegation_route_remains_visible_to_a_generic_discovery_plan(
                 raw = await connection.get_raw_connection()
                 prepared = await raw.driver_connection.prepare(str(compiled))
                 name = '"' + prepared.get_name().replace('"', '""') + '"'
-                values = ",".join(str(literal(compiled.params[key]).compile(
-                    dialect=literal_dialect(), compile_kwargs={"literal_binds": True},
-                )) for key in compiled.positiontup)
+                values = ",".join(
+                    str(
+                        literal(compiled.params[key]).compile(
+                            dialect=literal_dialect(),
+                            compile_kwargs={"literal_binds": True},
+                        )
+                    )
+                    for key in compiled.positiontup
+                )
                 await super().execute(text("SET LOCAL plan_cache_mode='force_generic_plan'"))
                 # Test index eligibility on a small fixture, not a timing or selectivity threshold.
                 await super().execute(text("SET LOCAL enable_seqscan=off"))
                 try:
-                    plan = await raw.driver_connection.fetchval("EXPLAIN (FORMAT JSON) EXECUTE " + name + "(" + values + ")")
+                    plan = await raw.driver_connection.fetchval(
+                        "EXPLAIN (FORMAT JSON) EXECUTE " + name + "(" + values + ")"
+                    )
                     plans.extend(json.loads(plan) if isinstance(plan, str) else plan)
                 finally:
                     await super().execute(text("SET LOCAL plan_cache_mode=auto"))
@@ -157,7 +206,9 @@ async def test_delegation_route_remains_visible_to_a_generic_discovery_plan(
 
     factory = async_sessionmaker(app_user_sessionmaker.kw["bind"], class_=ObservedSession, expire_on_commit=False)
     tenants = await _discover_terminal_boundary_tenants(
-        worker_id="prepared-delegation", task_types=("delegation",), session_factory=factory,
+        worker_id="prepared-delegation",
+        task_types=("delegation",),
+        session_factory=factory,
     )
     assert tenants == [seeded.tenant_id]
     (tmp_path / "delegation-generic-plan.json").write_text(json.dumps(plans, indent=2))
@@ -167,7 +218,10 @@ async def test_delegation_route_remains_visible_to_a_generic_discovery_plan(
         for child in node.get("Plans", []):
             yield from nodes(child)
 
-    conditions = [node["Index Cond"] for node in nodes(plans[0]["Plan"])
-        if node.get("Index Name") in {"ix_runtime_terminal_boundary_active_lane", "ix_runtime_tasks_terminal_discovery"}]
+    conditions = [
+        node["Index Cond"]
+        for node in nodes(plans[0]["Plan"])
+        if node.get("Index Name") in {"ix_runtime_terminal_boundary_active_lane", "ix_runtime_tasks_terminal_discovery"}
+    ]
     assert len(conditions) >= 2
     assert all("'delegation'" in condition for condition in conditions), conditions

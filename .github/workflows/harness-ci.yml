@@ -173,6 +173,7 @@ jobs:
           path: |
             backend/pytest-failures.jsonl
             backend/pytest-results.xml
+            backend/pytest-failure-files/
           if-no-files-found: ignore
 
       - name: Prompt contract eval

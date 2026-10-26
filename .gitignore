@@ -24,6 +24,9 @@ ss-nodes.json
 .data/
 
 # Generated artifacts
+backend/pytest-failures.jsonl
+backend/pytest-results.xml
+backend/pytest-failure-files/
 outputs/
 output/
 frontend/playwright-journey-report/

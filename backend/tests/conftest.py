@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import gzip
+import hashlib
 import json
 import os
 import shutil
@@ -87,6 +89,40 @@ def pytest_configure(config):
         config_module.get_settings.cache_clear()
 
 
+def _archive_worker_failure_log(item, report, target):
+    tmp_path = item.funcargs.get("tmp_path")
+    factory = getattr(item.config, "_tmp_path_factory", None)
+    basetemp = getattr(factory, "_basetemp", None)
+    if not isinstance(tmp_path, Path) or not isinstance(basetemp, Path):
+        return []
+    worker_log = tmp_path / "worker.log"
+    if (
+        worker_log.is_symlink()
+        or not worker_log.is_file()
+        or not worker_log.resolve().is_relative_to(basetemp.resolve())
+    ):
+        return []
+
+    body = worker_log.read_bytes()
+    digest = hashlib.sha256(body).hexdigest()
+    case_digest = hashlib.sha256(report.nodeid.encode()).hexdigest()
+    directory = target.parent / "pytest-failure-files"
+    directory.mkdir(parents=True, exist_ok=True)
+    archive = directory / f"{case_digest}-{report.when}-{digest}.log.gz"
+    if not archive.exists():
+        archive.write_bytes(gzip.compress(body, mtime=0))
+    if gzip.decompress(archive.read_bytes()) != body:
+        raise OSError("Worker failure log archive failed readback verification")
+    return [
+        {
+            "name": "worker.log",
+            "archive": archive.relative_to(target.parent).as_posix(),
+            "sha256": digest,
+            "bytes": len(body),
+        }
+    ]
+
+
 @pytest.hookimpl(hookwrapper=True)
 def pytest_runtest_makereport(item, call):
     outcome = yield
@@ -103,10 +139,19 @@ def pytest_runtest_makereport(item, call):
 
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
+        receipt = {
+            "nodeid": report.nodeid,
+            "when": report.when,
+            "longrepr": report.longreprtext,
+            "sections": [{"name": name, "content": content} for name, content in report.sections],
+            "files": [],
+        }
+        try:
+            receipt["files"] = _archive_worker_failure_log(item, report, target)
+        except OSError as exc:
+            receipt["file_capture_error"] = f"{type(exc).__name__}: {exc}"
         with target.open("a", encoding="utf-8") as stream:
-            stream.write(
-                json.dumps({"nodeid": report.nodeid, "when": report.when, "longrepr": report.longreprtext}) + "\n"
-            )
+            stream.write(json.dumps(receipt) + "\n")
             stream.flush()
             os.fsync(stream.fileno())
     except OSError as exc:

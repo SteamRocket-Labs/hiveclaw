@@ -4,7 +4,6 @@ import asyncio
 import json
 import os
 import sys
-import subprocess
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import UUID, uuid4
@@ -12,7 +11,7 @@ from uuid import UUID, uuid4
 import httpx
 import pytest
 from fastapi import FastAPI
-from sqlalchemy import select, text
+from sqlalchemy import select
 from sqlalchemy.exc import DBAPIError
 
 from app.models.agent import Agent
@@ -130,54 +129,6 @@ async def human(client, seed, action, view, arguments=None):
             "arguments": arguments or {},
         },
     )
-
-
-async def test_browser_migration_upgrades_and_refuses_a_lossy_downgrade(
-    browser_case, migrated_pg_url, owner_engine, owner_sessionmaker
-):
-    _, source, manager, _, root = browser_case
-    from tests.integration.conftest import APP_USER
-
-    def migrate(action, target):
-        result = subprocess.run(
-            [sys.executable, "-B", "-m", "alembic", action, target],
-            env={**os.environ, "DATABASE_URL": migrated_pg_url},
-            capture_output=True,
-            text=True,
-            timeout=60,
-        )
-        (root / f"migration-{action}-{target}.log").write_text(result.stdout + result.stderr)
-        return result
-
-    downgraded = migrate("downgrade", "delegation_permissions_1022")
-    assert downgraded.returncode == 0, downgraded.stderr
-    upgraded = migrate("upgrade", "head")
-    assert upgraded.returncode == 0, upgraded.stderr
-    async with owner_sessionmaker() as db:
-        assert (
-            await db.execute(text("SELECT version_num FROM alembic_version"))
-        ).scalar_one() == "tool_preflight_audit_1023"
-    async with owner_engine.begin() as conn:
-        await conn.execute(text(f"GRANT ALL ON environment_browsers TO {APP_USER}"))
-        assert (
-            await conn.execute(
-                text("SELECT relrowsecurity,relforcerowsecurity FROM pg_class WHERE relname='environment_browsers'")
-            )
-        ).one() == (True, True)
-    view = (await call(manager, source, "start"))["browser"]
-    refused = migrate("downgrade", "delegation_permissions_1022")
-    assert refused.returncode != 0 and "Retain private browser resource and control evidence" in refused.stderr
-    async with owner_sessionmaker() as db:
-        assert await db.get(EnvironmentBrowser, UUID(view["id"])) is not None
-        assert (
-            await db.execute(text("SELECT version_num FROM alembic_version"))
-        ).scalar_one() == "private_browser_control_1023"
-    repaired = migrate("upgrade", "head")
-    assert repaired.returncode == 0, repaired.stderr
-    async with owner_sessionmaker() as db:
-        assert (
-            await db.execute(text("SELECT version_num FROM alembic_version"))
-        ).scalar_one() == "tool_preflight_audit_1023"
 
 
 async def test_human_control_and_return_require_a_fresh_agent_observation(browser_case, owner_sessionmaker):

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import sys
@@ -20,6 +21,7 @@ if str(BACKEND_ROOT) not in sys.path:
 _HERMETIC_ENV_KEYS = (
     "HOME",
     "AGENT_DATA_DIR",
+    "AGENT_TEMPLATE_DIR",
     "HIVE_TEST_HERMETIC_ROOT",
     "XDG_CACHE_HOME",
     "XDG_CONFIG_HOME",
@@ -29,12 +31,20 @@ _HERMETIC_ENV_KEYS = (
 )
 
 
+def pytest_addoption(parser):
+    parser.addoption("--failure-receipts", type=Path, help="Append failed test reports as JSON lines.")
+
+
 def pytest_configure(config):
     """Pin every test process to a disposable filesystem authority root.
 
     This hook runs before test-module collection, which matters because several
     runtime modules resolve ``get_settings()`` into module-level path constants.
     """
+
+    failure_receipts = config.getoption("failure_receipts")
+    if failure_receipts is not None and not failure_receipts.is_absolute():
+        config.option.failure_receipts = config.invocation_params.dir / failure_receipts
 
     original_env = {key: os.environ.get(key) for key in _HERMETIC_ENV_KEYS}
     original_home = Path.home()
@@ -66,6 +76,7 @@ def pytest_configure(config):
             "SECRETS_MASTER_KEY": "hive-pytest-secrets-master-key-0001",
         }
     )
+    os.environ.setdefault("AGENT_TEMPLATE_DIR", str(BACKEND_ROOT / "agent_template"))
     config._hive_hermetic_root = root
     config._hive_original_env = original_env
 
@@ -74,6 +85,33 @@ def pytest_configure(config):
     config_module = sys.modules.get("app.config")
     if config_module is not None:
         config_module.get_settings.cache_clear()
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_makereport(item, call):
+    outcome = yield
+    report = outcome.get_result()
+    target = item.config.getoption("failure_receipts")
+    if target is None or not report.failed:
+        return
+
+    terminal = item.config.pluginmanager.get_plugin("terminalreporter")
+    if terminal is not None:
+        terminal.write_sep("=", f"Failure: {report.nodeid} ({report.when})")
+        terminal.write_line(report.longreprtext)
+        terminal.flush()
+
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with target.open("a", encoding="utf-8") as stream:
+            stream.write(
+                json.dumps({"nodeid": report.nodeid, "when": report.when, "longrepr": report.longreprtext}) + "\n"
+            )
+            stream.flush()
+            os.fsync(stream.fileno())
+    except OSError as exc:
+        if terminal is not None:
+            terminal.write_line(f"Could not persist failure receipt: {exc}", yellow=True)
 
 
 def pytest_unconfigure(config):

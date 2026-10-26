@@ -30,4 +30,8 @@ def test_ci_uses_the_same_full_backend_suite_command() -> None:
     workflow = Path(__file__).resolve().parents[2] / ".github" / "workflows" / "harness-ci.yml"
     content = workflow.read_text(encoding="utf-8")
 
-    assert re.search(r"(?m)^\s*run:\s*pytest tests -q\s*$", content)
+    assert re.search(
+        r"(?m)^\s*run:\s*pytest tests -vv --tb=short --maxfail=0 "
+        r"--failure-receipts=pytest-failures.jsonl --junitxml=pytest-results.xml\s*$",
+        content,
+    )

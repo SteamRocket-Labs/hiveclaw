@@ -34,7 +34,12 @@ pytestmark = pytest.mark.usefixtures("migrated_pg_url")
 
 @pytest.mark.parametrize("account_scope", ["company", "personal"])
 async def test_original_work_authorization_reaches_the_actual_successor_worker(
-    owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, account_scope
+    owner_sessionmaker,
+    app_user_sessionmaker,
+    monkeypatch,
+    tmp_path,
+    account_scope,
+    drain_terminal_boundary_for_task,
 ):
     from app.services import agent_tools, web_chat_runtime as runtime
     from app.services import tenant_resolver
@@ -138,9 +143,13 @@ async def test_original_work_authorization_reaches_the_actual_successor_worker(
     from app.models.runtime_terminal_boundary_outbox import RuntimeTerminalBoundaryOutbox
 
     monkeypatch.setattr(runtime_task_worker, "tenant_scoped_session", real_tenant_session)
+    monkeypatch.setattr("app.database.tenant_scoped_session", real_tenant_session)
 
-    counts = await runtime_task_worker.drain_web_terminal_boundary_outbox_once(
-        worker_id="oauth-boundary-worker", session_factory=scoped
+    counts = await drain_terminal_boundary_for_task(
+        runtime_task_worker.drain_web_terminal_boundary_outbox_once,
+        task_id=seed["run_id"],
+        worker_id="oauth-boundary-worker",
+        session_factory=app_user_sessionmaker,
     )
     async with owner_sessionmaker() as db:
         statuses = (

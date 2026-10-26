@@ -213,13 +213,13 @@ def drain_terminal_boundary_for_task(owner_sessionmaker):
     from app.models.runtime_terminal_boundary_outbox import RuntimeTerminalBoundaryOutbox
     from app.models.tenant import Tenant
 
-    async def drain(lane, *, task_id, worker_id, limit=20):
+    async def drain(lane, *, task_id, worker_id, limit=20, session_factory=None):
         async with owner_sessionmaker() as db:
             tenant_count = await db.scalar(select(func.count()).select_from(Tenant))
         # Earlier tests may leave more than a page of work. Keep the product's
         # batch size and allow one bounded sweep; require THIS task's receipts.
         for _ in range(max(1, (tenant_count + limit - 1) // limit)):
-            counts = await lane(worker_id=worker_id, limit=limit, session_factory=owner_sessionmaker)
+            counts = await lane(worker_id=worker_id, limit=limit, session_factory=session_factory or owner_sessionmaker)
             async with owner_sessionmaker() as db:
                 states = list(
                     (

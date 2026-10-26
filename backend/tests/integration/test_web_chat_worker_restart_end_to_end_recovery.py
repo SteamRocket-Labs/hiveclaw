@@ -429,7 +429,9 @@ async def test_worker_crash_after_final_commit_settles_sealed_final_end_to_end(
     assert receipt.get("pending_final_round") is None, receipt
 
 
-async def test_deferred_steer_is_consumed_by_real_successor_run(owner_sessionmaker, monkeypatch, tmp_path) -> None:
+async def test_deferred_steer_is_consumed_by_real_successor_run(
+    owner_sessionmaker, monkeypatch, tmp_path, drain_terminal_boundary_for_task
+) -> None:
     """L2: a steer deferred by the committed-final replay is CONSUMED, end to end.
 
     Full production chain: steer admitted+dispatched into the crash window →
@@ -540,13 +542,11 @@ async def test_deferred_steer_is_consumed_by_real_successor_run(owner_sessionmak
 
     from app.services import runtime_task_worker
 
-    for _ in range(5):
-        boundary = await runtime_task_worker.drain_web_terminal_boundary_outbox_once(
-            worker_id="l2-boundary-worker",
-            session_factory=owner_sessionmaker,
-        )
-        if boundary.get("delivered"):
-            break
+    boundary = await drain_terminal_boundary_for_task(
+        runtime_task_worker.drain_web_terminal_boundary_outbox_once,
+        task_id=seed["run_id"],
+        worker_id="l2-boundary-worker",
+    )
     assert boundary.get("delivered") == 1, f"natural terminal-boundary delivery failed: {boundary}"
 
     await runtime_task_worker.recover_session_input_dispatches_once(
@@ -639,14 +639,11 @@ async def test_deferred_steer_is_consumed_by_real_successor_run(owner_sessionmak
         )
     for event_id in successor_events:
         await bridge_transcript_event_to_t0(transcript_event_id=event_id, attempts=1)
-    successor_boundary = None
-    for _ in range(5):
-        successor_boundary = await runtime_task_worker.drain_web_terminal_boundary_outbox_once(
-            worker_id="l2-boundary-worker-2",
-            session_factory=owner_sessionmaker,
-        )
-        if successor_boundary.get("delivered"):
-            break
+    successor_boundary = await drain_terminal_boundary_for_task(
+        runtime_task_worker.drain_web_terminal_boundary_outbox_once,
+        task_id=successor.id,
+        worker_id="l2-boundary-worker-2",
+    )
     assert successor_boundary.get("delivered") == 1, (
         f"the successor's terminal boundary was not delivered: {successor_boundary}"
     )

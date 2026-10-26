@@ -357,6 +357,7 @@ async def test_native_question_and_successor_consume_the_chosen_account_in_origi
     monkeypatch,
     tmp_path,
     connection,
+    drain_terminal_boundary_for_task,
 ):
     import asyncio
     import json
@@ -472,6 +473,7 @@ async def test_native_question_and_successor_consume_the_chosen_account_in_origi
     _patch_runtime_seams(monkeypatch, seed, scoped)
     _patch_runtime_settings(monkeypatch, seed)
     _patch_environment_seams(monkeypatch, scoped)
+    monkeypatch.setattr("app.database.tenant_scoped_session", tenant_scoped_session)
     ask = {
         "id": "choose-mailbox",
         "type": "function",
@@ -547,8 +549,11 @@ async def test_native_question_and_successor_consume_the_chosen_account_in_origi
         ids = [row.id for row in events]
     for event_id in ids:
         await bridge_transcript_event_to_t0(transcript_event_id=event_id, attempts=1)
-    boundary = await runtime_task_worker.drain_web_terminal_boundary_outbox_once(
-        worker_id="g8-initial", session_factory=scoped
+    boundary = await drain_terminal_boundary_for_task(
+        runtime_task_worker.drain_web_terminal_boundary_outbox_once,
+        task_id=seed["run_id"],
+        worker_id="g8-initial",
+        session_factory=app_user_sessionmaker,
     )
     assert boundary["delivered"] == 1, boundary
 
@@ -651,7 +656,12 @@ async def test_native_question_and_successor_consume_the_chosen_account_in_origi
     for event_id in final_ids:
         await bridge_transcript_event_to_t0(transcript_event_id=event_id, attempts=1)
     assert (
-        await runtime_task_worker.drain_web_terminal_boundary_outbox_once(worker_id="g8-final", session_factory=scoped)
+        await drain_terminal_boundary_for_task(
+            runtime_task_worker.drain_web_terminal_boundary_outbox_once,
+            task_id=successor,
+            worker_id="g8-final",
+            session_factory=app_user_sessionmaker,
+        )
     )["delivered"] == 1
     from app.runtime import hooks_setup
 

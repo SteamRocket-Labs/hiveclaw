@@ -7,6 +7,8 @@ from contextlib import asynccontextmanager
 import pytest
 from sqlalchemy import select
 
+from tests.integration import conftest as integration
+
 from app.database import pin_rls_tenant_context
 from app.models.runtime_task import RuntimeTask
 from app.models.session_v2 import SessionToolInvocation
@@ -20,6 +22,17 @@ from tests.integration.test_business_task_text_sources import (
 )
 
 pytestmark = pytest.mark.usefixtures("migrated_pg_url")
+
+
+@pytest.fixture()
+def pg_container():
+    # Permission round trips must not drop unrelated browser grants or receipts.
+    yield from integration.pg_container.__wrapped__()
+
+
+@pytest.fixture()
+def migrated_pg_url(pg_container):
+    return integration.migrated_pg_url.__wrapped__(pg_container)
 
 
 @pytest.mark.parametrize("provider", ["filesystem"], indirect=True)

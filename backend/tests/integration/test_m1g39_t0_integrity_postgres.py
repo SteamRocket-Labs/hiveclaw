@@ -14,7 +14,10 @@ pytestmark = pytest.mark.usefixtures("migrated_pg_url")
 
 @pytest.mark.parametrize("damage", ["body", "truncated"])
 async def test_native_recall_does_not_hide_primary_corruption_with_a_secondary_source(
-    native_workspace, owner_sessionmaker, monkeypatch, damage,  # noqa: F811
+    native_workspace,  # noqa: F811
+    owner_sessionmaker,
+    monkeypatch,
+    damage,  # noqa: F811
 ):
     from app.services import session_recall
 
@@ -28,17 +31,32 @@ async def test_native_recall_does_not_hide_primary_corruption_with_a_secondary_s
     else:
         event.truth_path.write_bytes(event.truth_path.read_bytes()[:-8])
     async with owner_sessionmaker() as db:
-        db.add(ChatMessage(tenant_id=n.tenant, agent_id=n.agent, user_id=n.user, role="user",
-            conversation_id=str(own), content="meeting DB_FALLBACK_MUST_NOT_HIDE_BAD_T0"))
+        db.add(
+            ChatMessage(
+                tenant_id=n.tenant,
+                agent_id=n.agent,
+                user_id=n.user,
+                role="user",
+                conversation_id=str(own),
+                content="meeting DB_FALLBACK_MUST_NOT_HIDE_BAD_T0",
+            )
+        )
         await db.commit()
     calls = []
     original = session_recall._search_session_history_db
+
     async def secondary(*args, **kwargs):
         calls.append(True)
         return await original(*args, **kwargs)
+
     monkeypatch.setattr(session_recall, "_search_session_history_db", secondary)
     result = await _search(n)
     assert "session_recall_evidence_unavailable" in result and "Restore or reconcile" in result, result
     assert ("t0_record_hash_mismatch" if damage == "body" else "t0_record_truncated") in result
     assert "UNVERIFIED_REWRITE" not in result and "DB_FALLBACK_MUST_NOT_HIDE_BAD_T0" not in result
     assert calls == []
+    error = json.loads(result.split("<tool_error>", 1)[1].split("</tool_error>", 1)[0])
+    assert error["ok"] is False and error["http_status"] == 503 and error["retryable"] is True
+    assert error["reason_code"] == "session_recall_evidence_unavailable" and error["outcome"] == "unavailable"
+    assert error["integrity_code"] == ("t0_record_hash_mismatch" if damage == "body" else "t0_record_truncated")
+    assert error["actionable_hint"] == "Restore or reconcile the original ledger before retrying session recall."

@@ -111,7 +111,9 @@ def _coerce_tenant_uuid(value: uuid.UUID | str | None) -> uuid.UUID | None:
         max_result_chars=RESULT_CHARS_UNLIMITED,
     )
 )
-async def save_memory(agent_id: uuid.UUID, arguments: dict, tenant_id: uuid.UUID | str | None = None, *, execution_context=None) -> str:
+async def save_memory(
+    agent_id: uuid.UUID, arguments: dict, tenant_id: uuid.UUID | str | None = None, *, execution_context=None
+) -> str:
     # Closure A3: the third positional parameter makes the agent_args adapter
     # pass request.context.tenant_id so governed memory writes retain tenant
     # context for the optional enhancement adapter boundary.
@@ -141,8 +143,11 @@ async def save_memory(agent_id: uuid.UUID, arguments: dict, tenant_id: uuid.UUID
         # Offline/internal callers retain the content helper. Its output has
         # no runtime source receipt and cannot grant prompt access.
         result = await write_explicit_memory_overlay(
-            agent_id, category=arguments.get("category", "general"), content=content,
-            source_refs=source_refs, tenant_id=_coerce_tenant_uuid(tenant_id),
+            agent_id,
+            category=arguments.get("category", "general"),
+            content=content,
+            source_refs=source_refs,
+            tenant_id=_coerce_tenant_uuid(tenant_id),
             data_root=Path(get_settings().AGENT_DATA_DIR),
         )
 
@@ -152,12 +157,18 @@ async def save_memory(agent_id: uuid.UUID, arguments: dict, tenant_id: uuid.UUID
         return await _record_memory_output("save_memory", agent_id, arguments, execution_context, json.dumps(result))
     if result.status == "rejected":
         content = f"[Rejected] {result.sensitivity}: {result.reason}"
-        return (await _record_memory_output("save_memory", agent_id, arguments, execution_context, content)
-            if execution_context is not None else content)
+        return (
+            await _record_memory_output("save_memory", agent_id, arguments, execution_context, content)
+            if execution_context is not None
+            else content
+        )
     if result.status == "held":
         content = f"[Held] {result.sensitivity}: {result.reason}"
-        return (await _record_memory_output("save_memory", agent_id, arguments, execution_context, content)
-            if execution_context is not None else content)
+        return (
+            await _record_memory_output("save_memory", agent_id, arguments, execution_context, content)
+            if execution_context is not None
+            else content
+        )
     if result.status == "duplicate" and execution_context is None:
         return (
             f"[Skipped] Exact explicit memory already exists ({result.entry_id}) "
@@ -166,12 +177,15 @@ async def save_memory(agent_id: uuid.UUID, arguments: dict, tenant_id: uuid.UUID
 
     content = f"Saved to explicit memory overlay [{result.category}] ({result.target_hint}): {result.content}"
     if execution_context is not None:
-        return await _record_memory_output("save_memory", agent_id, arguments, execution_context, content,
-            entry_id=result.entry_id)
+        return await _record_memory_output(
+            "save_memory", agent_id, arguments, execution_context, content, entry_id=result.entry_id
+        )
     return content
 
 
-async def _record_memory_output(tool_name, agent_id, arguments, context, content, *, entry_id=None, entries=(), team_entries=(), unbound=()):
+async def _record_memory_output(
+    tool_name, agent_id, arguments, context, content, *, entry_id=None, entries=(), team_entries=(), unbound=()
+):
     from app.services.explicit_memory_tool_sources import record_memory_result
     from app.tools.runtime import ToolExecutionRequest
 
@@ -181,9 +195,16 @@ async def _record_memory_output(tool_name, agent_id, arguments, context, content
             if len(entries) != 1:
                 from app.services.content_input_receipts import ContentInputReceiptError
 
-                raise ContentInputReceiptError("explicit_memory_source_changed", "The written source needs reconciliation.")
-        await record_memory_result(ToolExecutionRequest(tool_name, arguments, context),
-            content=content, entries=entries, team_entries=team_entries, unbound=unbound)
+                raise ContentInputReceiptError(
+                    "explicit_memory_source_changed", "The written source needs reconciliation."
+                )
+        await record_memory_result(
+            ToolExecutionRequest(tool_name, arguments, context),
+            content=content,
+            entries=entries,
+            team_entries=team_entries,
+            unbound=unbound,
+        )
         return content
     except Exception as exc:
         return _memory_authority_error(tool_name, exc)
@@ -206,23 +227,55 @@ async def _record_memory_error(tool_name, agent_id, arguments, context, error):
 
 
 def _memory_authority_error(tool_name, error):
+    from app.memory.t0.ledger import T0LedgerIntegrityError
     from app.services.content_input_receipts import ContentInputReceiptError
     from app.tools.result_envelope import render_tool_error
 
-    status = error.status_code if isinstance(error, ContentInputReceiptError) else 503
-    code = error.code if isinstance(error, ContentInputReceiptError) else "explicit_memory_operation_unknown"
-    outcome = ("unknown" if not isinstance(error, ContentInputReceiptError) or code.endswith("unknown")
-        else "approval_required" if code == "explicit_memory_approval_required" else "denied" if status == 403 else "unavailable")
-    hint = ("Return to the group where this memory was recorded to correct or retire it. Private work cannot disclose a correction to that group."
-        if code == "explicit_memory_group_context_mismatch" else
-        "Restore current source authority or reconcile the retained write plan before retrying the same command.")
-    return render_tool_error(tool_name=tool_name, error_class="auth_or_permission" if status == 403 else "provider_unavailable",
-        message="This memory operation could not verify its source or commit state.", provider="explicit_memory",
-        http_status=status, retryable=status == 503,
+    integrity_error = None
+    if isinstance(error, SessionRecallError):
+        status = 403 if error.status == "denied" else 503
+        code, outcome = error.code, error.status
+        if isinstance(error.__cause__, T0LedgerIntegrityError):
+            integrity_error = error.__cause__
+    else:
+        status = error.status_code if isinstance(error, ContentInputReceiptError) else 503
+        code = error.code if isinstance(error, ContentInputReceiptError) else "explicit_memory_operation_unknown"
+        outcome = (
+            "unknown"
+            if not isinstance(error, ContentInputReceiptError) or code.endswith("unknown")
+            else "approval_required"
+            if code == "explicit_memory_approval_required"
+            else "denied"
+            if status == 403
+            else "unavailable"
+        )
+    hint = (
+        "Restore or reconcile the original ledger before retrying session recall."
+        if integrity_error is not None
+        else "Return to the group where this memory was recorded to correct or retire it. Private work cannot disclose a correction to that group."
+        if code == "explicit_memory_group_context_mismatch"
+        else "Restore current source authority or reconcile the retained write plan before retrying the same command."
+    )
+    return render_tool_error(
+        tool_name=tool_name,
+        error_class="auth_or_permission" if status == 403 else "provider_unavailable",
+        message="This memory operation could not verify its source or commit state.",
+        provider="explicit_memory",
+        http_status=status,
+        retryable=status == 503,
         actionable_hint=hint,
-        extra={"reason_code": code, "outcome": outcome, "error_type": type(error).__name__,
-            **({"operation_id": error.operation_id,
-                "recovery_tool": "reconcile_memory_write"} if getattr(error, "operation_id", None) else {})})
+        extra={
+            "reason_code": code,
+            "outcome": outcome,
+            "error_type": type(error).__name__,
+            **({"integrity_code": integrity_error.code} if integrity_error is not None else {}),
+            **(
+                {"operation_id": error.operation_id, "recovery_tool": "reconcile_memory_write"}
+                if getattr(error, "operation_id", None)
+                else {}
+            ),
+        },
+    )
 
 
 # -- update_memory / retire_memory -------------------------------------------
@@ -524,7 +577,9 @@ def _load_visible_t3_entry(data_root: Path, agent_id: uuid.UUID, entry_id: str):
         max_result_chars=RESULT_CHARS_UNLIMITED,
     )
 )
-async def update_memory(agent_id: uuid.UUID, arguments: dict, tenant_id: uuid.UUID | str | None = None, *, execution_context=None) -> str:
+async def update_memory(
+    agent_id: uuid.UUID, arguments: dict, tenant_id: uuid.UUID | str | None = None, *, execution_context=None
+) -> str:
     from app.config import get_settings
     from app.memory.explicit_overlay import (
         load_explicit_overlay_entries_by_ids,
@@ -545,17 +600,28 @@ async def update_memory(agent_id: uuid.UUID, arguments: dict, tenant_id: uuid.UU
         from app.tools.runtime import ToolExecutionRequest
 
         try:
-            result = await execute_memory_operation(ToolExecutionRequest("update_memory", arguments, execution_context),
-                data_root=Path(get_settings().AGENT_DATA_DIR))
+            result = await execute_memory_operation(
+                ToolExecutionRequest("update_memory", arguments, execution_context),
+                data_root=Path(get_settings().AGENT_DATA_DIR),
+            )
             if isinstance(result, dict):
                 import json
-                return await _record_memory_output("update_memory", agent_id, arguments, execution_context, json.dumps(result))
+
+                return await _record_memory_output(
+                    "update_memory", agent_id, arguments, execution_context, json.dumps(result)
+                )
             if result.status in {"held", "rejected"}:
-                return await _record_memory_output("update_memory", agent_id, arguments, execution_context,
-                    f"[{result.status.title()}] {result.reason}")
+                return await _record_memory_output(
+                    "update_memory",
+                    agent_id,
+                    arguments,
+                    execution_context,
+                    f"[{result.status.title()}] {result.reason}",
+                )
             content = f"Updated explicit memory {memory_id} -> {result.entry_id} [{result.category}]: {result.content}"
-            return await _record_memory_output("update_memory", agent_id, arguments, execution_context,
-                content, entry_id=result.entry_id)
+            return await _record_memory_output(
+                "update_memory", agent_id, arguments, execution_context, content, entry_id=result.entry_id
+            )
         except Exception as exc:
             return await _record_memory_error("update_memory", agent_id, arguments, execution_context, exc)
 
@@ -640,7 +706,9 @@ async def update_memory(agent_id: uuid.UUID, arguments: dict, tenant_id: uuid.UU
         max_result_chars=RESULT_CHARS_UNLIMITED,
     )
 )
-async def retire_memory(agent_id: uuid.UUID, arguments: dict, tenant_id: uuid.UUID | str | None = None, *, execution_context=None) -> str:
+async def retire_memory(
+    agent_id: uuid.UUID, arguments: dict, tenant_id: uuid.UUID | str | None = None, *, execution_context=None
+) -> str:
     from app.config import get_settings
     from app.memory.explicit_overlay import load_explicit_overlay_entries_by_ids, update_explicit_overlay_status
     from app.memory.t3_platform_gate import is_accepted_t3_target
@@ -658,9 +726,13 @@ async def retire_memory(agent_id: uuid.UUID, arguments: dict, tenant_id: uuid.UU
         from app.tools.runtime import ToolExecutionRequest
 
         try:
-            result = await execute_memory_operation(ToolExecutionRequest("retire_memory", arguments, execution_context),
-                data_root=Path(get_settings().AGENT_DATA_DIR))
-            return await _record_memory_output("retire_memory", agent_id, arguments, execution_context, json.dumps(result))
+            result = await execute_memory_operation(
+                ToolExecutionRequest("retire_memory", arguments, execution_context),
+                data_root=Path(get_settings().AGENT_DATA_DIR),
+            )
+            return await _record_memory_output(
+                "retire_memory", agent_id, arguments, execution_context, json.dumps(result)
+            )
         except Exception as exc:
             return await _record_memory_error("retire_memory", agent_id, arguments, execution_context, exc)
 
@@ -685,20 +757,34 @@ async def retire_memory(agent_id: uuid.UUID, arguments: dict, tenant_id: uuid.UU
     )
 
 
-@tool(ToolMeta(
-    name="reconcile_memory_write",
-    description=("Inspect, retry the exact retained file/authority commit, or cancel your own unresolved explicit-memory write. "
-        "Use the operation_id from its receipt, or omit it with action=status to discover your unfinished writes after a lost response. "
-        "Retry never regenerates semantic content. An unresolved semantic review "
-        "can only be inspected or cancelled; do not issue a replacement generation without a new explicit request."),
-    parameters={"type": "object", "properties": {
-        "operation_id": {"type": "string"},
-        "action": {"type": "string", "enum": ["status", "retry", "cancel"]}},
-        "required": ["action"], "additionalProperties": False},
-    category="memory", display_name="Recover Memory Write", icon="\U0001f9e0",
-    read_only=False, parallel_safe=False, governance="sensitive", adapter="agent_args",
-    max_result_chars=RESULT_CHARS_UNLIMITED,
-))
+@tool(
+    ToolMeta(
+        name="reconcile_memory_write",
+        description=(
+            "Inspect, retry the exact retained file/authority commit, or cancel your own unresolved explicit-memory write. "
+            "Use the operation_id from its receipt, or omit it with action=status to discover your unfinished writes after a lost response. "
+            "Retry never regenerates semantic content. An unresolved semantic review "
+            "can only be inspected or cancelled; do not issue a replacement generation without a new explicit request."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "operation_id": {"type": "string"},
+                "action": {"type": "string", "enum": ["status", "retry", "cancel"]},
+            },
+            "required": ["action"],
+            "additionalProperties": False,
+        },
+        category="memory",
+        display_name="Recover Memory Write",
+        icon="\U0001f9e0",
+        read_only=False,
+        parallel_safe=False,
+        governance="sensitive",
+        adapter="agent_args",
+        max_result_chars=RESULT_CHARS_UNLIMITED,
+    )
+)
 async def reconcile_memory_write(agent_id, arguments, tenant_id=None, *, execution_context=None):
     import json
     from app.config import get_settings
@@ -710,15 +796,30 @@ async def reconcile_memory_write(agent_id, arguments, tenant_id=None, *, executi
     try:
         result = await reconcile_memory_operation(
             ToolExecutionRequest("reconcile_memory_write", arguments, execution_context),
-            operation_id=arguments.get("operation_id"), action=arguments["action"],
-            data_root=Path(get_settings().AGENT_DATA_DIR))
+            operation_id=arguments.get("operation_id"),
+            action=arguments["action"],
+            data_root=Path(get_settings().AGENT_DATA_DIR),
+        )
         if isinstance(result, dict):
-            return await _record_memory_output("reconcile_memory_write", agent_id, arguments, execution_context, json.dumps(result))
+            return await _record_memory_output(
+                "reconcile_memory_write", agent_id, arguments, execution_context, json.dumps(result)
+            )
         if result.status in {"held", "rejected"}:
-            return await _record_memory_output("reconcile_memory_write", agent_id, arguments, execution_context,
-                f"[{result.status.title()}] {result.reason}")
-        return await _record_memory_output("reconcile_memory_write", agent_id, arguments, execution_context,
-            f"Saved to explicit memory overlay [{result.category}] ({result.target_hint}): {result.content}", entry_id=result.entry_id)
+            return await _record_memory_output(
+                "reconcile_memory_write",
+                agent_id,
+                arguments,
+                execution_context,
+                f"[{result.status.title()}] {result.reason}",
+            )
+        return await _record_memory_output(
+            "reconcile_memory_write",
+            agent_id,
+            arguments,
+            execution_context,
+            f"Saved to explicit memory overlay [{result.category}] ({result.target_hint}): {result.content}",
+            entry_id=result.entry_id,
+        )
     except Exception as exc:
         return await _record_memory_error("reconcile_memory_write", agent_id, arguments, execution_context, exc)
 
@@ -755,7 +856,9 @@ async def reconcile_memory_write(agent_id, arguments, tenant_id=None, *, executi
         max_result_chars=RESULT_CHARS_UNLIMITED,
     )
 )
-def load_memory(agent_id: uuid.UUID, arguments: dict, *, execution_context=None, _authorized_explicit_entries=None) -> str:
+def load_memory(
+    agent_id: uuid.UUID, arguments: dict, *, execution_context=None, _authorized_explicit_entries=None
+) -> str:
     if execution_context is not None:
         return _load_scoped_memory(agent_id, arguments, execution_context)
     from pathlib import Path
@@ -841,11 +944,18 @@ async def _scoped_explicit_entries(agent_id, execution_context, *, ids=None, iss
     from app.tools.runtime import ToolExecutionRequest
 
     root = Path(get_settings().AGENT_DATA_DIR)
-    entries = (load_explicit_overlay_entries(root, agent_id) if ids is None
-        else load_explicit_overlay_entries_by_ids(root, agent_id, ids))
-    return await authorized_explicit_entries(tenant_id=uuid.UUID(str(execution_context.tenant_id)),
-        agent_id=agent_id, request=ToolExecutionRequest("load_memory", {}, execution_context), entries=entries,
-        issue_observer=issue_observer)
+    entries = (
+        load_explicit_overlay_entries(root, agent_id)
+        if ids is None
+        else load_explicit_overlay_entries_by_ids(root, agent_id, ids)
+    )
+    return await authorized_explicit_entries(
+        tenant_id=uuid.UUID(str(execution_context.tenant_id)),
+        agent_id=agent_id,
+        request=ToolExecutionRequest("load_memory", {}, execution_context),
+        entries=entries,
+        issue_observer=issue_observer,
+    )
 
 
 def _memory_availability(content, issues):
@@ -853,13 +963,20 @@ def _memory_availability(content, issues):
         return content
     import json
 
-    return content + "\n\n## Memory Availability\n" + json.dumps({
-        "schema": "hive.explicit_memory_availability.v1", "status": "partial", "issues": issues})
+    return (
+        content
+        + "\n\n## Memory Availability\n"
+        + json.dumps({"schema": "hive.explicit_memory_availability.v1", "status": "partial", "issues": issues})
+    )
 
 
 async def _load_scoped_memory(agent_id, arguments, execution_context):
     raw_ids = arguments.get("ids") or []
-    ids = [part.strip() for part in raw_ids.split(",") if part.strip()] if isinstance(raw_ids, str) else [str(value) for value in raw_ids]
+    ids = (
+        [part.strip() for part in raw_ids.split(",") if part.strip()]
+        if isinstance(raw_ids, str)
+        else [str(value) for value in raw_ids]
+    )
     try:
         from app.services.team_memory_runtime import read_entries, render_entry
         from app.tools.runtime import ToolExecutionRequest
@@ -868,13 +985,30 @@ async def _load_scoped_memory(agent_id, arguments, execution_context):
         local_ids = [value for value in ids if value not in team_ids]
         issues = []
         entries = await _scoped_explicit_entries(agent_id, execution_context, ids=local_ids, issue_observer=issues)
-        content = load_memory(agent_id, {**arguments, "ids": local_ids},
-            _authorized_explicit_entries=[entry for entry, _receipt in entries]) if local_ids else ""
-        teams = await read_entries(tenant_id=uuid.UUID(str(execution_context.tenant_id)),
-            request=ToolExecutionRequest("load_memory", arguments, execution_context), ids=team_ids, issues=issues) if team_ids else []
+        content = (
+            load_memory(
+                agent_id,
+                {**arguments, "ids": local_ids},
+                _authorized_explicit_entries=[entry for entry, _receipt in entries],
+            )
+            if local_ids
+            else ""
+        )
+        teams = (
+            await read_entries(
+                tenant_id=uuid.UUID(str(execution_context.tenant_id)),
+                request=ToolExecutionRequest("load_memory", arguments, execution_context),
+                ids=team_ids,
+                issues=issues,
+            )
+            if team_ids
+            else []
+        )
         if teams:
             content += "\n\n## Team Memory\n" + "\n".join(render_entry(entry) for entry, _receipt in teams)
-        content = _memory_availability(content or "No team memory was found for the supplied current load references.", issues)
+        content = _memory_availability(
+            content or "No team memory was found for the supplied current load references.", issues
+        )
         from app.config import get_settings
         from app.memory.explicit_overlay import load_explicit_overlay_entries_by_ids
         from app.memory.plane_read import load_plane_entries
@@ -882,8 +1016,16 @@ async def _load_scoped_memory(agent_id, arguments, execution_context):
         root = Path(get_settings().AGENT_DATA_DIR)
         explicit_ids = {e.entry_id for e in load_explicit_overlay_entries_by_ids(root, agent_id, local_ids)}
         plane = load_plane_entries(root, agent_id, [entry_id for entry_id in local_ids if entry_id not in explicit_ids])
-        return await _record_memory_output("load_memory", agent_id, arguments, execution_context, content,
-            entries=entries, team_entries=teams, unbound=("legacy_memory_sources",) if plane else ())
+        return await _record_memory_output(
+            "load_memory",
+            agent_id,
+            arguments,
+            execution_context,
+            content,
+            entries=entries,
+            team_entries=teams,
+            unbound=("legacy_memory_sources",) if plane else (),
+        )
     except Exception as exc:
         return await _record_memory_error("load_memory", agent_id, arguments, execution_context, exc)
 
@@ -946,16 +1088,24 @@ async def _load_scoped_memory(agent_id, arguments, execution_context):
         max_result_chars=RESULT_CHARS_UNLIMITED,
     )
 )
-async def search_memory(agent_id: uuid.UUID, arguments: dict, tenant_id: str | None = None, *, execution_context=None) -> str:
+async def search_memory(
+    agent_id: uuid.UUID, arguments: dict, tenant_id: str | None = None, *, execution_context=None
+) -> str:
     import json
     from pathlib import Path
 
     from app.config import get_settings
 
     if set(arguments) - {"query", "scope", "limit", "date_from", "date_to"}:
-        return json.dumps({"schema": "hive.session_recall_error.v1", "status": "invalid_arguments",
-            "code": "session_recall_arguments_invalid", "retryable": False,
-            "message": "Unsupported fields cannot select the memory reader."})
+        return json.dumps(
+            {
+                "schema": "hive.session_recall_error.v1",
+                "status": "invalid_arguments",
+                "code": "session_recall_arguments_invalid",
+                "retryable": False,
+                "message": "Unsupported fields cannot select the memory reader.",
+            }
+        )
     query = (arguments.get("query") or "").strip()
     if not query:
         return "[Error] query is required."
@@ -1049,8 +1199,11 @@ async def search_memory(agent_id: uuid.UUID, arguments: dict, tenant_id: str | N
                 limit=limit,
                 snippet_limit=3,
                 tenant_id=tenant_uuid,
-                runtime_request=ToolExecutionRequest(tool_name="search_memory", arguments=arguments,
-                    context=execution_context) if execution_context is not None else None,
+                runtime_request=ToolExecutionRequest(
+                    tool_name="search_memory", arguments=arguments, context=execution_context
+                )
+                if execution_context is not None
+                else None,
             )
             if recalled:
                 unbound.append("session_recall_sources")
@@ -1093,25 +1246,45 @@ async def search_memory(agent_id: uuid.UUID, arguments: dict, tenant_id: str | N
                             results.append(f"  - {snippet}")
         except SessionRecallError as exc:
             if scope == "sessions" and execution_context is not None:
-                from app.services.content_input_receipts import ContentInputReceiptError
-
-                return await _record_memory_error("search_memory", agent_id, arguments, execution_context,
-                    ContentInputReceiptError(exc.code, str(exc), 403 if exc.status == "denied" else 503))
-            results.append("## Session Recall\n" + json.dumps({"schema": "hive.session_recall_error.v1",
-                "status": exc.status, "code": exc.code, "retryable": exc.retryable, "message": str(exc)}))
+                return await _record_memory_error("search_memory", agent_id, arguments, execution_context, exc)
+            results.append(
+                "## Session Recall\n"
+                + json.dumps(
+                    {
+                        "schema": "hive.session_recall_error.v1",
+                        "status": exc.status,
+                        "code": exc.code,
+                        "retryable": exc.retryable,
+                        "message": str(exc),
+                    }
+                )
+            )
         except Exception:
-            results.append("## Session Recall\n" + json.dumps({"schema": "hive.session_recall_error.v1",
-                "status": "unavailable", "code": "session_recall_authority_unavailable", "retryable": True,
-                "message": "Session recall is temporarily unavailable. Retry later."}))
+            results.append(
+                "## Session Recall\n"
+                + json.dumps(
+                    {
+                        "schema": "hive.session_recall_error.v1",
+                        "status": "unavailable",
+                        "code": "session_recall_authority_unavailable",
+                        "retryable": True,
+                        "message": "Session recall is temporarily unavailable. Retry later.",
+                    }
+                )
+            )
 
     if execution_context is not None and overlay_facts:
         from app.services.explicit_memory_authority import authorized_explicit_entries
         from app.tools.runtime import ToolExecutionRequest
 
         ids = {fact["id"] for fact in overlay_facts}
-        overlay_pairs = await authorized_explicit_entries(tenant_id=uuid.UUID(str(execution_context.tenant_id)),
-            agent_id=agent_id, request=ToolExecutionRequest("search_memory", arguments, execution_context),
-            entries=[entry for entry, _receipt in overlay_pairs if entry.entry_id in ids], issue_observer=issues)
+        overlay_pairs = await authorized_explicit_entries(
+            tenant_id=uuid.UUID(str(execution_context.tenant_id)),
+            agent_id=agent_id,
+            request=ToolExecutionRequest("search_memory", arguments, execution_context),
+            entries=[entry for entry, _receipt in overlay_pairs if entry.entry_id in ids],
+            issue_observer=issues,
+        )
         allowed_ids = {entry.entry_id for entry, _receipt in overlay_pairs}
         overlay_facts = [fact for fact in overlay_facts if fact["id"] in allowed_ids]
     if execution_context is not None and scope in {"facts", "all"}:
@@ -1119,8 +1292,12 @@ async def search_memory(agent_id: uuid.UUID, arguments: dict, tenant_id: str | N
         from app.tools.runtime import ToolExecutionRequest
 
         try:
-            team_pairs = await read_entries(tenant_id=uuid.UUID(str(execution_context.tenant_id)), query=query, issues=issues,
-                request=ToolExecutionRequest("search_memory", arguments, execution_context))
+            team_pairs = await read_entries(
+                tenant_id=uuid.UUID(str(execution_context.tenant_id)),
+                query=query,
+                issues=issues,
+                request=ToolExecutionRequest("search_memory", arguments, execution_context),
+            )
             if limit is not None:
                 team_pairs = team_pairs[:limit]
             if team_pairs:
@@ -1132,9 +1309,11 @@ async def search_memory(agent_id: uuid.UUID, arguments: dict, tenant_id: str | N
         overlay_lines.append("## Explicit Memory Overlay")
         for fact in overlay_facts:
             entry_id = fact["id"]
-            overlay_lines.append(f"- id={entry_id} [{fact.get('category', 'general')}] source=explicit_overlay "
+            overlay_lines.append(
+                f"- id={entry_id} [{fact.get('category', 'general')}] source=explicit_overlay "
                 f"target={fact.get('target_hint', 'unknown')} {fact.get('content') or fact.get('preview', '')} "
-                f'load_memory(ids=["{entry_id}"])')
+                f'load_memory(ids=["{entry_id}"])'
+            )
     results = [*overlay_lines, *results]
     if not results:
         content = (
@@ -1148,8 +1327,16 @@ async def search_memory(agent_id: uuid.UUID, arguments: dict, tenant_id: str | N
     content = _memory_availability(content, issues)
     if execution_context is not None:
         used_ids = {fact["id"] for fact in overlay_facts}
-        return await _record_memory_output("search_memory", agent_id, arguments, execution_context, content,
-            entries=[pair for pair in overlay_pairs if pair[0].entry_id in used_ids], team_entries=team_pairs, unbound=unbound)
+        return await _record_memory_output(
+            "search_memory",
+            agent_id,
+            arguments,
+            execution_context,
+            content,
+            entries=[pair for pair in overlay_pairs if pair[0].entry_id in used_ids],
+            team_entries=team_pairs,
+            unbound=unbound,
+        )
     return content
 
 

@@ -398,6 +398,8 @@ async def create_schedule(
     await record_trigger_configuration(
         db, trigger=trigger, actor=current_user, changed_fields={"name", "type", "config", "reason"}
     )
+    # Request-scoped dependency cleanup runs after the response is delivered.
+    await db.commit()
     return _schedule_out(trigger, creator_username=current_user.username)
 
 
@@ -523,6 +525,7 @@ async def update_schedule(
         changed_fields=changed_fields,
         partial_fields=changed_fields & {"config"},
     )
+    await db.commit()
     return _schedule_out(
         trigger,
         authority_source=decision.authority_source,
@@ -563,7 +566,7 @@ async def delete_schedule(
         raise HTTPException(status_code=404, detail="Schedule not found")
     require_trigger_not_fire_inflight(trigger)
     await db.delete(trigger)
-    await db.flush()
+    await db.commit()
 
 
 @router.post("/{schedule_id}/run")
@@ -677,6 +680,7 @@ async def trigger_schedule(
         copied_from=trigger,
         copied_fields={"name", "reason"},
     )
+    await db.commit()
     return {"status": "queued", "schedule_id": str(schedule_id), "trigger_id": str(manual.id)}
 
 

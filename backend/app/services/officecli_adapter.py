@@ -115,14 +115,15 @@ class OfficeCLIAdapter:
         binary = Path(self._verify_binary_sha256())
         if not binary.is_file():
             binary = Path(shutil.which(str(binary)) or binary)
-        runtime = workspace / '.office-runtime'
+        runtime = workspace / ".office-runtime"
         runtime.mkdir()
         digest = hashlib.sha256(binary.read_bytes()).hexdigest()
         staged = runtime / binary.name
         shutil.copyfile(binary, staged)
         staged.chmod(0o700)
-        adapter = OfficeCLIAdapter(binary=str(staged), binary_sha256=digest, runner=self.runner,
-            timeout_seconds=self.timeout_seconds)
+        adapter = OfficeCLIAdapter(
+            binary=str(staged), binary_sha256=digest, runner=self.runner, timeout_seconds=self.timeout_seconds
+        )
         adapter._producer_workspace = workspace.resolve()
         adapter._producer_source = canonical_workspace.resolve()
         return adapter
@@ -168,10 +169,17 @@ class OfficeCLIAdapter:
                     raise OfficeCLIOutputError("OfficeCLI query returned invalid matched nodes")
                 expanded = []
                 for node in data["results"]:
-                    if not isinstance(node, dict) or not isinstance(node.get("path"), str) or not node["path"].startswith("/"):
+                    if (
+                        not isinstance(node, dict)
+                        or not isinstance(node.get("path"), str)
+                        or not node["path"].startswith("/")
+                    ):
                         raise OfficeCLIOutputError("OfficeCLI query returned an invalid node path")
-                    result = self._run_json("get", [verified_binary, "get", str(path), node["path"],
-                        "--depth", str(depth), "--json"], cwd=cwd)
+                    result = self._run_json(
+                        "get",
+                        [verified_binary, "get", str(path), node["path"], "--depth", str(depth), "--json"],
+                        cwd=cwd,
+                    )
                     if result.get("success") is not True or not isinstance(result.get("data"), dict):
                         raise OfficeCLIOutputError("OfficeCLI get could not expand the matched node")
                     expanded.append(result["data"])
@@ -317,24 +325,36 @@ class OfficeCLIAdapter:
             from app.services.subprocess_env import build_agent_subprocess_env
             from app.services.subprocess_sandbox import SandboxBuildSpec, build_sandboxed_agent_command
 
-            home = self._producer_workspace / '.office-home'
+            home = self._producer_workspace / ".office-home"
             home.mkdir(exist_ok=True)
-            scratch = home / 'tmp'
+            scratch = home / "tmp"
             scratch.mkdir(exist_ok=True)
             env = build_agent_subprocess_env(home=home)
-            env['TMPDIR'] = str(scratch)
-            env['DOTNET_BUNDLE_EXTRACT_BASE_DIR'] = str(home / '.net')
-            roots = (self._producer_source.parent, Path.cwd(), Path.home(),
-                Path('/Users'), Path(tempfile.gettempdir()), Path('/tmp'), Path('/var/tmp'))
+            env["TMPDIR"] = str(scratch)
+            env["DOTNET_BUNDLE_EXTRACT_BASE_DIR"] = str(home / ".net")
+            roots = (
+                self._producer_source.parent,
+                Path.cwd(),
+                Path.home(),
+                Path("/Users"),
+                Path(tempfile.gettempdir()),
+                Path("/tmp"),
+                Path("/var/tmp"),
+            )
             # The fresh private HOME holds the CLI's temporary and extracted runtime files.
-            spec = SandboxBuildSpec(profile=SandboxProfile.WORKSPACE_WRITE,
+            spec = SandboxBuildSpec(
+                profile=SandboxProfile.WORKSPACE_WRITE,
                 writable_roots=(str(self._producer_workspace), str(home)),
-                protected_roots=tuple(dict.fromkeys(str(root.resolve()) for root in roots if root.is_dir())))
+                protected_roots=tuple(dict.fromkeys(str(root.resolve()) for root in roots if root.is_dir())),
+            )
             sandbox = build_sandboxed_agent_command(args, work_dir=self._producer_workspace, env=env, spec=spec)
             cleanup = sandbox.cleanup_paths
             if sandbox.command is None:
-                raise OfficeCLIExecutionError(command=command, returncode=126,
-                    stderr='Office workspace sandbox unavailable; preserve the document and retry on a capable host')
+                raise OfficeCLIExecutionError(
+                    command=command,
+                    returncode=126,
+                    stderr="Office workspace sandbox unavailable; preserve the document and retry on a capable host",
+                )
             args = sandbox.command
         else:
             env = os.environ.copy()

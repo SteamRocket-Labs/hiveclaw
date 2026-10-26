@@ -100,14 +100,16 @@ jobs:
       - name: Install Linux sandbox
         run: |
           sudo apt-get update
-          sudo apt-get install --yes apparmor-profiles bubblewrap ripgrep
+          sudo apt-get install --yes apparmor-profiles bubblewrap ripgrep redis-server
           sudo install -m 0644 \
             /usr/share/apparmor/extra-profiles/bwrap-userns-restrict \
             /etc/apparmor.d/bwrap-userns-restrict
           sudo apparmor_parser -r /etc/apparmor.d/bwrap-userns-restrict
           bwrap --version
           rg --version
-          for tool in redis-server psql pg_dump pg_restore; do command -v "$tool"; done
+          for tool in redis-server psql pg_dump pg_restore; do
+            command -v "$tool" || { echo "Missing native integration prerequisite: $tool" >&2; exit 1; }
+          done
           .venv/bin/python -c 'from app.services.subprocess_sandbox import probe_os_sandbox_capability; probe = probe_os_sandbox_capability(); assert probe.available, probe.reason; print(f"{probe.provider}: {probe.reason}")'
 
       - name: Ruff changed Python paths

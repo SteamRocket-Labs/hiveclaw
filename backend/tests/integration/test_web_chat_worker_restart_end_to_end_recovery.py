@@ -28,7 +28,6 @@ production outbox consumer.
 
 from __future__ import annotations
 
-from contextlib import asynccontextmanager
 from types import SimpleNamespace
 
 import pytest
@@ -78,18 +77,8 @@ def _patch_environment_seams(monkeypatch, owner_sessionmaker) -> None:
     # Point the app's default engine surface at the integration container:
     # the terminal-boundary consumer's T0 bridge and tenant resolvers resolve
     # ``app.database.async_session`` at call time.
-    @asynccontextmanager
-    async def _app_tenant_session(_tenant_id=None, **_kwargs):
-        async with owner_sessionmaker() as db:
-            try:
-                yield db
-                await db.commit()
-            except BaseException:
-                await db.rollback()
-                raise
-
+    # Keep native tenant pinning and context restoration for every consumer.
     monkeypatch.setattr(app_database, "async_session", owner_sessionmaker, raising=False)
-    monkeypatch.setattr(app_database, "tenant_scoped_session", _app_tenant_session, raising=False)
 
 
 def _crash_on_effect_start(monkeypatch) -> None:
@@ -254,7 +243,7 @@ async def test_worker_crash_recovers_end_to_end_through_outer_run_and_terminal_o
         task_id=seed["run_id"],
         worker_id="e2e-recovery-worker",
     )
-    assert drained["delivered"] >= 1, drained
+    assert drained["target_delivered"] >= 1, drained
 
     async with owner_sessionmaker() as db:
         boundaries = list(
@@ -407,7 +396,7 @@ async def test_worker_crash_after_final_commit_settles_sealed_final_end_to_end(
         task_id=seed["run_id"],
         worker_id="final-recovery-worker",
     )
-    assert drained["delivered"] >= 1, drained
+    assert drained["target_delivered"] >= 1, drained
 
     async with owner_sessionmaker() as db:
         boundaries = list(
@@ -547,13 +536,19 @@ async def test_deferred_steer_is_consumed_by_real_successor_run(
         task_id=seed["run_id"],
         worker_id="l2-boundary-worker",
     )
-    assert boundary.get("delivered") == 1, f"natural terminal-boundary delivery failed: {boundary}"
+    assert boundary.get("target_delivered") == 1, f"natural terminal-boundary delivery failed: {boundary}"
 
     await runtime_task_worker.recover_session_input_dispatches_once(
-        worker_id="l2-dispatch-worker", stale_after=timedelta(seconds=0), session_factory=owner_sessionmaker
+        worker_id="l2-dispatch-worker",
+        stale_after=timedelta(seconds=0),
+        session_factory=owner_sessionmaker,
+        tenant_id=seed["tenant_id"],
     )
     rollover = await runtime_task_worker.recover_terminal_target_session_inputs_once(
-        worker_id="l2-rollover-worker", stale_after=timedelta(seconds=0), session_factory=owner_sessionmaker
+        worker_id="l2-rollover-worker",
+        stale_after=timedelta(seconds=0),
+        session_factory=owner_sessionmaker,
+        tenant_id=seed["tenant_id"],
     )
 
     async with owner_sessionmaker() as db:
@@ -644,6 +639,6 @@ async def test_deferred_steer_is_consumed_by_real_successor_run(
         task_id=successor.id,
         worker_id="l2-boundary-worker-2",
     )
-    assert successor_boundary.get("delivered") == 1, (
+    assert successor_boundary.get("target_delivered") == 1, (
         f"the successor's terminal boundary was not delivered: {successor_boundary}"
     )

@@ -143,7 +143,6 @@ async def test_original_work_authorization_reaches_the_actual_successor_worker(
     from app.models.runtime_terminal_boundary_outbox import RuntimeTerminalBoundaryOutbox
 
     monkeypatch.setattr(runtime_task_worker, "tenant_scoped_session", real_tenant_session)
-    monkeypatch.setattr("app.database.tenant_scoped_session", real_tenant_session)
 
     counts = await drain_terminal_boundary_for_task(
         runtime_task_worker.drain_web_terminal_boundary_outbox_once,
@@ -269,7 +268,7 @@ async def test_original_work_authorization_reaches_the_actual_successor_worker(
     # Preserve the production dispatch recovery age; do not shorten its fence.
     await asyncio.sleep(5.1)
     counts = await runtime_task_worker.recover_session_input_dispatches_once(
-        worker_id="oauth-input-dispatch", session_factory=scoped
+        worker_id="oauth-input-dispatch", session_factory=scoped, tenant_id=seed["tenant_id"]
     )
     assert counts["dispatched"] == 1, counts
     from app.services.runtime_task_claim_service import RuntimeTaskClaimService

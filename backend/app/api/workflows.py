@@ -412,6 +412,7 @@ async def preview_workflow_endpoint(
         args_hash=args_hash,
         preview_payload=preview_payload,
     )
+    await db.commit()
     return {**workflow_preview_artifact_payload(preview), "session_id": str(session.id)}
 
 

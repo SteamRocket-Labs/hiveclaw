@@ -204,7 +204,6 @@ async def scheduled_question_runtime(
     _patch_runtime_seams(monkeypatch, seed, scoped)
     _patch_runtime_settings(monkeypatch, seed)
     _patch_environment_seams(monkeypatch, scoped)
-    monkeypatch.setattr("app.database.tenant_scoped_session", real_tenant_session)
     scoped_factories()
     from app.config import get_settings
 
@@ -289,7 +288,15 @@ async def scheduled_question_runtime(
             worker_id="scheduled-question-boundary",
             session_factory=app_user_sessionmaker,
         )
-        assert report["delivered"] == 1, report
+        assert report["target_delivered"] == 1, report
+
+    async def direct_boundary(task_id, *, worker_id):
+        return await drain_terminal_boundary_for_task(
+            runtime_task_worker.drain_direct_terminal_boundary_outbox_once,
+            task_id=task_id,
+            worker_id=worker_id,
+            session_factory=app_user_sessionmaker,
+        )
 
     async def claim(kind):
         async with scoped() as db:
@@ -302,7 +309,7 @@ async def scheduled_question_runtime(
     await asyncio.wait_for(web_chat_runtime.execute_web_chat_run(seed["run_id"]), 20)
     await boundary(seed["run_id"])
     initial = await runtime_task_worker.recover_session_input_dispatches_once(
-        worker_id="scheduled-question-prior", session_factory=scoped
+        worker_id="scheduled-question-prior", session_factory=scoped, tenant_id=seed["tenant_id"]
     )
     assert initial["dispatched"] == 1, initial
     endpoint = f"/api/agents/{seed['agent_id']}"
@@ -349,13 +356,11 @@ async def scheduled_question_runtime(
     wrapper_id = await claim("trigger")
     assert wrapper_id == uuid.UUID(fired["runtime_task_id"])
     assert await trigger_daemon.execute_claimed_trigger_runtime_task(str(wrapper_id))
-    direct = await runtime_task_worker.drain_direct_terminal_boundary_outbox_once(
-        worker_id="scheduled-question-wrapper", session_factory=scoped
-    )
-    assert direct["delivered"] == 1, direct
+    direct = await direct_boundary(wrapper_id, worker_id="scheduled-question-wrapper")
+    assert direct["target_delivered"] == 1, direct
     await asyncio.sleep(5.1)
     dispatched = await runtime_task_worker.recover_session_input_dispatches_once(
-        worker_id="scheduled-question-input", session_factory=scoped
+        worker_id="scheduled-question-input", session_factory=scoped, tenant_id=seed["tenant_id"]
     )
     assert dispatched["dispatched"] == 1, dispatched
     scheduled_id = await claim("web_chat_turn")
@@ -432,6 +437,7 @@ async def scheduled_question_runtime(
         scoped=scoped,
         claim=claim,
         boundary=boundary,
+        direct_boundary=direct_boundary,
         original_origin=task.metadata_json["trigger_origin"],
         original_budget=task.budget_run_id,
         wrapper_id=wrapper_id,

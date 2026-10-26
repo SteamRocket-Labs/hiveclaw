@@ -532,7 +532,6 @@ async def test_enabled_routine_uses_native_tool_edits_and_returns_once_to_its_so
     _patch_runtime_seams(monkeypatch, seed, scoped)
     _patch_runtime_settings(monkeypatch, seed)
     _patch_environment_seams(monkeypatch, scoped)
-    monkeypatch.setattr("app.database.tenant_scoped_session", real_tenant_session)
     scoped_runtime_factories()
     from app.config import get_settings
     from app.services import agent_context, agent_manager
@@ -800,11 +799,11 @@ async def test_enabled_routine_uses_native_tool_edits_and_returns_once_to_its_so
         worker_id="g7-boundary",
         session_factory=app_user_sessionmaker,
     )
-    assert boundary["delivered"] == 1, boundary
+    assert boundary["target_delivered"] == 1, boundary
     # Acknowledge the already-applied original mailbox input before measuring
     # the later scheduled dispatch, just as the normal worker does.
     prior = await runtime_task_worker.recover_session_input_dispatches_once(
-        worker_id="g7-prior-input", session_factory=scoped
+        worker_id="g7-prior-input", session_factory=scoped, tenant_id=seed["tenant_id"]
     )
     assert prior["dispatched"] == 1, prior
     async with owner_sessionmaker() as db:
@@ -951,7 +950,7 @@ async def test_enabled_routine_uses_native_tool_edits_and_returns_once_to_its_so
             worker_id="g7-source-boundary",
             session_factory=app_user_sessionmaker,
         )
-        assert context_boundary["delivered"] == 1
+        assert context_boundary["target_delivered"] == 1
     if fault in {"context_kb_command_revoked", "context_kb_command"}:
         from datetime import datetime, timezone
         from app.models.knowledge import KnowledgeGrant
@@ -1016,12 +1015,15 @@ async def test_enabled_routine_uses_native_tool_edits_and_returns_once_to_its_so
         assert {row.id for row in inputs} == original_inputs | {expected_input}
         assert expected_input not in original_inputs
     direct_delivered = 0
-    # Each real worker tick claims one boundary; both known trigger receipts must drain.
-    for _ in range(2):
-        direct = await runtime_task_worker.drain_direct_terminal_boundary_outbox_once(
-            worker_id="g7-trigger-boundary", session_factory=scoped
+    # Count the two known task receipts independently of other tenant deliveries.
+    for terminal_task_id in (uuid.UUID(blocked["runtime_task_id"]), wrapper_id):
+        direct = await drain_terminal_boundary_for_task(
+            runtime_task_worker.drain_direct_terminal_boundary_outbox_once,
+            task_id=terminal_task_id,
+            worker_id="g7-trigger-boundary",
+            session_factory=app_user_sessionmaker,
         )
-        direct_delivered += direct["delivered"]
+        direct_delivered += direct["target_delivered"]
     assert direct_delivered == 2
     async with owner_sessionmaker() as db:
         from app.models.runtime_terminal_boundary_outbox import RuntimeTerminalBoundaryOutbox
@@ -1038,7 +1040,7 @@ async def test_enabled_routine_uses_native_tool_edits_and_returns_once_to_its_so
         assert statuses == ["delivered", "delivered"]
     await asyncio.sleep(5.1)
     dispatched = await runtime_task_worker.recover_session_input_dispatches_once(
-        worker_id="g7-input", session_factory=scoped
+        worker_id="g7-input", session_factory=scoped, tenant_id=seed["tenant_id"]
     )
     assert dispatched["dispatched"] == 1, dispatched
     async with scoped() as db:
@@ -1373,7 +1375,7 @@ async def test_enabled_routine_uses_native_tool_edits_and_returns_once_to_its_so
         worker_id="g7-final-boundary",
         session_factory=app_user_sessionmaker,
     )
-    assert final_boundary["delivered"] == 1, final_boundary
+    assert final_boundary["target_delivered"] == 1, final_boundary
     if fault == "context_kb_list":
         from datetime import datetime, timezone
         from app.models.knowledge import KnowledgeGrant

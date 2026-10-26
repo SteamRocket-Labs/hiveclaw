@@ -169,3 +169,87 @@ async def test_preview_survives_worker_restart_and_reconciles_crash_window(owner
         assert recovered.run_exists is True
         assert recovered.preview.status == "started"
         assert recovered.preview.run_id == preview_id
+
+
+async def test_preview_response_is_committed_before_request_teardown(
+    owner_sessionmaker,
+    app_user_sessionmaker,
+):
+    import asyncio
+    import socket
+
+    import httpx
+    import uvicorn
+    from fastapi import FastAPI
+
+    from app.api.workflows import router
+    from app.core.security import get_current_user
+    from app.database import get_db
+
+    tenant_id, user_id, agent_id, session_id = await _seed_identity(owner_sessionmaker)
+    async with owner_sessionmaker() as db:
+        user = await db.get(User, user_id)
+
+    teardown_started = asyncio.Event()
+    release_teardown = asyncio.Event()
+
+    async def deferred_commit_db():
+        async with tenant_scoped_session(tenant_id, session_factory=app_user_sessionmaker) as db:
+            yield db
+            teardown_started.set()
+            await asyncio.wait_for(release_teardown.wait(), 10)
+
+    app = FastAPI()
+    app.include_router(router, prefix="/api")
+    app.dependency_overrides[get_current_user] = lambda: user
+    app.dependency_overrides[get_db] = deferred_commit_db
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    server = uvicorn.Server(uvicorn.Config(app, lifespan="off", access_log=False, log_level="warning"))
+    serving = asyncio.create_task(server.serve(sockets=[listener]))
+    try:
+        async with asyncio.timeout(10):
+            while not server.started:
+                assert not serving.done()
+                await asyncio.sleep(0.01)
+        origin = f"http://127.0.0.1:{listener.getsockname()[1]}"
+        async with httpx.AsyncClient(base_url=origin, trust_env=False, timeout=10) as client:
+            response = await client.post(
+                f"/api/agents/{agent_id}/workflows/preview",
+                json={
+                    "definition": {
+                        "name": "Committed preview",
+                        "args_schema": {},
+                        "steps": [
+                            {
+                                "id": "verify",
+                                "type": "agent_step",
+                                "leaf": {"name": "preview-verifier", "type": "explorer"},
+                                "task": "Verify the saved preview.",
+                            }
+                        ],
+                    },
+                    "args": {},
+                    "session_id": str(session_id),
+                },
+            )
+            assert response.status_code == 200, response.text
+            await asyncio.wait_for(teardown_started.wait(), 10)
+            payload = response.json()
+            async with tenant_scoped_session(tenant_id, session_factory=app_user_sessionmaker) as reader:
+                preview = await load_workflow_preview(
+                    reader,
+                    preview_id=uuid.UUID(payload["preview_id"]),
+                    tenant_id=tenant_id,
+                    agent_id=agent_id,
+                    session_id=session_id,
+                    user_id=user_id,
+                )
+                assert preview.status == "ready"
+                assert preview.definition_hash == payload["definition_hash"]
+                assert str(preview.session_id) == payload["session_id"]
+    finally:
+        release_teardown.set()
+        server.should_exit = True
+        await asyncio.wait_for(serving, 10)
+        listener.close()

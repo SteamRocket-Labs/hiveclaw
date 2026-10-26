@@ -473,7 +473,6 @@ async def test_native_question_and_successor_consume_the_chosen_account_in_origi
     _patch_runtime_seams(monkeypatch, seed, scoped)
     _patch_runtime_settings(monkeypatch, seed)
     _patch_environment_seams(monkeypatch, scoped)
-    monkeypatch.setattr("app.database.tenant_scoped_session", tenant_scoped_session)
     ask = {
         "id": "choose-mailbox",
         "type": "function",
@@ -555,7 +554,7 @@ async def test_native_question_and_successor_consume_the_chosen_account_in_origi
         worker_id="g8-initial",
         session_factory=app_user_sessionmaker,
     )
-    assert boundary["delivered"] == 1, boundary
+    assert boundary["target_delivered"] == 1, boundary
 
     async def database():
         async with scoped() as db:
@@ -627,7 +626,7 @@ async def test_native_question_and_successor_consume_the_chosen_account_in_origi
         assert accepted.status == "rolled_over" and accepted.rolled_over_to_turn_id is not None
         assert queued is not None and queued.status == "pending"
     dispatch = await runtime_task_worker.recover_session_input_dispatches_once(
-        worker_id="g8-input", session_factory=scoped
+        worker_id="g8-input", session_factory=scoped, tenant_id=seed["tenant_id"]
     )
     assert dispatch["dispatched"] == 0, dispatch
     async with scoped() as db:
@@ -662,7 +661,7 @@ async def test_native_question_and_successor_consume_the_chosen_account_in_origi
             worker_id="g8-final",
             session_factory=app_user_sessionmaker,
         )
-    )["delivered"] == 1
+    )["target_delivered"] == 1
     from app.runtime import hooks_setup
 
     jobs = [

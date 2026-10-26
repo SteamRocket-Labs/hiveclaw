@@ -231,7 +231,7 @@ def drain_terminal_boundary_for_task(owner_sessionmaker):
                     )
                 )
             if states and all(state == "delivered" for state in states):
-                return counts
+                return {**counts, "target_delivered": len(states)}
         pytest.fail(f"Target boundary not delivered within discovery sweep: states={states}, counts={counts}")
 
     return drain

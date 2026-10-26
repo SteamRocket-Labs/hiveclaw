@@ -28,23 +28,35 @@ async def test_reclaimed_routine_does_not_restore_old_queued_native_authority(sc
     async with state.scoped() as db:
         trigger = await db.get(AgentTrigger, uuid.UUID(state.trigger_id))
     preflight, reason, _summary, metadata = await trigger_daemon._preflight_trigger_group(
-        state.seed["agent_id"], [trigger], datetime.now(timezone.utc))
+        state.seed["agent_id"], [trigger], datetime.now(timezone.utc)
+    )
     assert preflight, reason
     # A real durable admission, interrupted before marking/queuing its fire.
-    dormant_id = await trigger_daemon._create_trigger_runtime_task(state.seed["agent_id"], [trigger],
-        metadata_json={**metadata, "preflight_allowed": True, "fire_event_keys": {
-            state.trigger_id: trigger_daemon._default_trigger_event_key(trigger, datetime.now(timezone.utc))}})
+    dormant_id = await trigger_daemon._create_trigger_runtime_task(
+        state.seed["agent_id"],
+        [trigger],
+        metadata_json={
+            **metadata,
+            "preflight_allowed": True,
+            "fire_event_keys": {
+                state.trigger_id: trigger_daemon._default_trigger_event_key(trigger, datetime.now(timezone.utc))
+            },
+        },
+    )
     assert dormant_id is not None
     async with state.scoped() as db:
-        revoked = await quarantine_transferred_trigger_authority(db, agent_id=state.seed["agent_id"],
-            previous_owner_id=state.seed["user_id"])
+        revoked = await quarantine_transferred_trigger_authority(
+            db, agent_id=state.seed["agent_id"], previous_owner_id=state.seed["user_id"]
+        )
         assert revoked == [uuid.UUID(state.trigger_id)]
         await db.commit()
     async with AsyncClient(transport=ASGITransport(app=state.app), base_url="http://routine-revocation.test") as client:
         reclaimed = await client.post(state.endpoint + "/triggers/" + state.trigger_id + "/reclaim", json={})
         assert reclaimed.status_code == 200 and reclaimed.json()["is_enabled"] is False, reclaimed.text
-        history = await client.get(state.endpoint + f"/sessions/{state.seed['session_id']}/transcript",
-            params={"schema_version": 2, "direction": "backward", "limit": 100})
+        history = await client.get(
+            state.endpoint + f"/sessions/{state.seed['session_id']}/transcript",
+            params={"schema_version": 2, "direction": "backward", "limit": 100},
+        )
         assert history.status_code == 200 and str(state.question.item_id) in history.text, history.text
     requests_before = len(state.llm.requests)
     state.llm.script.append({"content": "OLD_RECLAIMED_ROUTINE_EXECUTED", "finish_reason": "stop"})
@@ -62,17 +74,35 @@ async def test_reclaimed_routine_does_not_restore_old_queued_native_authority(sc
     from app.services import runtime_task_worker
 
     async with AsyncClient(transport=ASGITransport(app=state.app), base_url="http://routine-revocation.test") as client:
-        review = await client.post(state.endpoint + "/plan-recommendations", json={
-            "original_request": "Enable this routine under its current authority.", "session_id": str(state.seed["session_id"]),
-            "source": "agent_aware", "action_kind": "enable_autonomous_wake", "tool_name": "trigger_rest"})
+        review = await client.post(
+            state.endpoint + "/plan-recommendations",
+            json={
+                "original_request": "Enable this routine under its current authority.",
+                "session_id": str(state.seed["session_id"]),
+                "source": "agent_aware",
+                "action_kind": "enable_autonomous_wake",
+                "tool_name": "trigger_rest",
+            },
+        )
         assert review.status_code == 201, review.text
         decline = await client.post(state.endpoint + "/plan-recommendations/" + review.json()["id"] + "/decline")
         assert decline.status_code == 200, decline.text
-        enabled = await client.patch(state.endpoint + "/triggers/" + state.trigger_id, json={"is_enabled": True,
-            "config": {"minutes": 15, "delivery": "same_session", "source_session_id": str(state.seed["session_id"]),
-                "model_id": str(state.pinned_id), "toolset": ["ask_user_question", "list_triggers"],
-                "excluded_tool_names": ["read_file"]},
-            "plan_mode_decision": "declined", "plan_recommendation_id": decline.json()["id"]})
+        enabled = await client.patch(
+            state.endpoint + "/triggers/" + state.trigger_id,
+            json={
+                "is_enabled": True,
+                "config": {
+                    "minutes": 15,
+                    "delivery": "same_session",
+                    "source_session_id": str(state.seed["session_id"]),
+                    "model_id": str(state.pinned_id),
+                    "toolset": ["ask_user_question", "list_triggers"],
+                    "excluded_tool_names": ["read_file"],
+                },
+                "plan_mode_decision": "declined",
+                "plan_recommendation_id": decline.json()["id"],
+            },
+        )
         assert enabled.status_code == 200, enabled.text
     fired = await trigger_daemon.fire_trigger_once_now(state.seed["agent_id"], state.trigger_id)
     assert fired["fired"], fired
@@ -86,21 +116,21 @@ async def test_reclaimed_routine_does_not_restore_old_queued_native_authority(sc
         current = await db.get(AgentTrigger, uuid.UUID(state.trigger_id))
         assert current.is_enabled and current.config["authority_state"] == "owned"
         assert current.config["_fire_inflight"]["runtime_task_id"] == fired["runtime_task_id"]
-        old_input = trigger_daemon._trigger_child_run_id(old_wrapper, effect="same_session",
-            discriminator=str(state.seed["session_id"]))
+        old_input = trigger_daemon._trigger_child_run_id(
+            old_wrapper, effect="same_session", discriminator=str(state.seed["session_id"])
+        )
         assert await db.get(SessionTurnInput, old_input) is None
-    old_boundary = await runtime_task_worker.drain_direct_terminal_boundary_outbox_once(
-        worker_id="old-routine-refusal-boundary", session_factory=state.scoped)
-    assert old_boundary["delivered"] == 1, old_boundary
+    old_boundary = await state.direct_boundary(old_wrapper, worker_id="old-routine-refusal-boundary")
+    assert old_boundary["target_delivered"] == 1, old_boundary
     wrapper_id = await state.claim("trigger")
     assert wrapper_id == uuid.UUID(fired["runtime_task_id"])
     assert await trigger_daemon.execute_claimed_trigger_runtime_task(str(wrapper_id))
-    direct = await runtime_task_worker.drain_direct_terminal_boundary_outbox_once(
-        worker_id="routine-regrant-boundary", session_factory=state.scoped)
-    assert direct["delivered"] == 1, direct
+    direct = await state.direct_boundary(wrapper_id, worker_id="routine-regrant-boundary")
+    assert direct["target_delivered"] == 1, direct
     await asyncio.sleep(5.1)
     dispatch = await runtime_task_worker.recover_session_input_dispatches_once(
-        worker_id="routine-regrant-input", session_factory=state.scoped)
+        worker_id="routine-regrant-input", session_factory=state.scoped, tenant_id=state.seed["tenant_id"]
+    )
     assert dispatch["dispatched"] == 1, dispatch
     fresh_id = await state.claim("web_chat_turn")
     state.llm.script[:] = [{"content": "FRESH_AUTHORIZED_ROUTINE_EXECUTED", "finish_reason": "stop"}]

@@ -130,6 +130,24 @@ def test_darwin_full_access_allows_work_and_home(monkeypatch):
     assert '(allow file-write* (subpath "/tmp/w") (subpath "/tmp/h"))' in profile
 
 
+@pytest.mark.parametrize("protected_roots", [(), ("/Users/owner/jobs",)])
+def test_darwin_entrypoint_ancestors_allow_only_metadata(monkeypatch, protected_roots):
+    work = Path("/Users/owner/jobs/execution/workspace")
+    home = Path("/Users/owner/jobs/execution/home")
+    profile = _darwin_profile(
+        monkeypatch,
+        SandboxBuildSpec(profile=SandboxProfile.FULL_ACCESS_LOCAL_ONLY, protected_roots=protected_roots),
+        work,
+        home,
+    )
+    for parent in ("/Users", "/Users/owner", "/Users/owner/jobs", "/Users/owner/jobs/execution"):
+        assert f'(allow file-read-metadata (literal "{parent}"))' in profile
+        assert f'(allow file-read* (subpath "{parent}"))' not in profile
+        assert f'(allow file-write* (subpath "{parent}"))' not in profile
+    assert '(deny file-read* (subpath "/Users"))' in profile
+    assert '(deny file-write* (subpath "/Users"))' in profile
+
+
 def test_darwin_network_toggle(monkeypatch):
     work, home = Path("/tmp/w"), Path("/tmp/h")
     denied = _darwin_profile(

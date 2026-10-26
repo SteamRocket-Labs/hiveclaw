@@ -2361,7 +2361,7 @@ async def _delegate_after_cycle_check(
             else (),
         )
 
-    publish_final = (
+    publish_final = delegation_result.terminal_reason != "delegation_session_reconciliation_required" and (
         delegation_result.failed or delegation_result.terminal_reason != TerminalReason.CLARIFICATION_REQUIRED.value
     )
     final_metadata = {

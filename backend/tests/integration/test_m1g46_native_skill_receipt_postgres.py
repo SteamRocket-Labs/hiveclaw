@@ -11,13 +11,25 @@ from sqlalchemy import select
 from tests.integration.test_web_chat_worker_restart_kernel_recovery import ScriptedLLMClient, _seed_run
 from tests.integration.test_m1g24_workspace_artifact_authority_postgres import native_workspace  # noqa: F401
 
-pytestmark = [pytest.mark.usefixtures("migrated_pg_url"), pytest.mark.skipif(platform.system() != "Darwin",
-    reason="Native macOS process gate; Linux delivery is deferred.")]
+pytestmark = [
+    pytest.mark.usefixtures("migrated_pg_url"),
+    pytest.mark.skipif(platform.system() != "Darwin", reason="Native macOS process gate; Linux delivery is deferred."),
+]
 
 
 async def _run_native_skill_task(
-    owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, *, load_skill_name="source-probe", delegated=False, client_script=None, compact_session_ids=False, settle_delegation=False,
-    skill_setup=None, prompt="Load source-probe, run scripts/probe.py and deliver the generated report to this work.",
+    owner_sessionmaker,
+    app_user_sessionmaker,
+    monkeypatch,
+    tmp_path,
+    *,
+    load_skill_name="source-probe",
+    delegated=False,
+    client_script=None,
+    compact_session_ids=False,
+    settle_delegation=False,
+    skill_setup=None,
+    prompt="Load source-probe, run scripts/probe.py and deliver the generated report to this work.",
     model_provider="openai",
 ):
     import app.database as database
@@ -47,10 +59,18 @@ async def _run_native_skill_task(
         model.api_key_encrypted = get_secrets_provider().encrypt("synthetic-local-provider-only")
         model.base_url = "http://127.0.0.1:1"
         model.max_input_tokens = 256_000
-        db.add(ChannelConfig(agent_id=agent.id, tenant_id=seed["tenant_id"], channel_type="feishu",
-            is_configured=True, is_connected=False))
-        await AgentManager().initialize_agent_files(db, agent, personality="NATIVE_SOUL_CONTEXT_PRESENT",
-            original_author_id=seed["user_id"])
+        db.add(
+            ChannelConfig(
+                agent_id=agent.id,
+                tenant_id=seed["tenant_id"],
+                channel_type="feishu",
+                is_configured=True,
+                is_connected=False,
+            )
+        )
+        await AgentManager().initialize_agent_files(
+            db, agent, personality="NATIVE_SOUL_CONTEXT_PRESENT", original_author_id=seed["user_id"]
+        )
         await db.commit()
     factory = database.async_session
     bindings = []
@@ -65,15 +85,25 @@ async def _run_native_skill_task(
     monkeypatch.setattr("app.tools.workspace.WORKSPACE_ROOT", seed["data_root"])
     monkeypatch.setattr(agent_tools, "_TOOL_RUNTIME_SERVICE", None)
     if skill_setup is None:
-        _skill_id, _publisher, imported = await _import_original_skill(seed, owner_sessionmaker, app_user_sessionmaker, monkeypatch)
+        _skill_id, _publisher, imported = await _import_original_skill(
+            seed, owner_sessionmaker, app_user_sessionmaker, monkeypatch
+        )
         assert imported["source_receipt"]["source_status"] == "verified"
     else:
         imported = await skill_setup(seed)
-    calls = [("load_skill", {"name": load_skill_name}),
-        ("run_skill_tool", {"skill": "source-probe", "script": "scripts/probe.py"})]
-    script = [{"tool_calls": [{"id": f"native-{index}", "type": "function",
-        "function": {"name": tool, "arguments": json.dumps(args)}}], "finish_reason": "tool_calls"}
-        for index, (tool, args) in enumerate(calls)] + [{"content": "Generated native-report.md", "finish_reason": "stop"}]
+    calls = [
+        ("load_skill", {"name": load_skill_name}),
+        ("run_skill_tool", {"skill": "source-probe", "script": "scripts/probe.py"}),
+    ]
+    script = [
+        {
+            "tool_calls": [
+                {"id": f"native-{index}", "type": "function", "function": {"name": tool, "arguments": json.dumps(args)}}
+            ],
+            "finish_reason": "tool_calls",
+        }
+        for index, (tool, args) in enumerate(calls)
+    ] + [{"content": "Generated native-report.md", "finish_reason": "stop"}]
     client = ScriptedLLMClient(script if client_script is None else client_script)
     monkeypatch.setattr(invoker, "create_llm_client", lambda **_kwargs: client)
     if delegated:
@@ -93,30 +123,74 @@ async def _run_native_skill_task(
         async with owner_sessionmaker() as db:
             child = await db.get(Agent, seed["agent_id"])
             model = await db.get(LLMModel, child.primary_model_id)
-            db.add(Agent(id=parent_id, tenant_id=seed["tenant_id"], name="Delegating peer",
-                creator_id=seed["user_id"], owner_user_id=seed["user_id"], primary_model_id=model.id))
+            db.add(
+                Agent(
+                    id=parent_id,
+                    tenant_id=seed["tenant_id"],
+                    name="Delegating peer",
+                    creator_id=seed["user_id"],
+                    owner_user_id=seed["user_id"],
+                    primary_model_id=model.id,
+                )
+            )
             await db.flush()
-            db.add(ChatSession(id=parent_session, tenant_id=seed["tenant_id"], agent_id=parent_id,
-                user_id=seed["user_id"], source_channel="web"))
-            db.add(RuntimeTask(id=run_id, task_type="delegation", status="running", tenant_id=seed["tenant_id"],
-                parent_agent_id=parent_id, child_agent_id=child.id, parent_session_id=parent_key,
-                child_session_id=child_key, root_session_id=parent_key, root_user_id=seed["user_id"],
-                root_runtime_task_id=run_id, claimed_by="delegation-native-worker", claim_version=1,
-                claim_expires_at=datetime.now(timezone.utc) + timedelta(minutes=10), attempt_count=1, metadata_json={}))
+            db.add(
+                ChatSession(
+                    id=parent_session,
+                    tenant_id=seed["tenant_id"],
+                    agent_id=parent_id,
+                    user_id=seed["user_id"],
+                    source_channel="web",
+                )
+            )
+            db.add(
+                RuntimeTask(
+                    id=run_id,
+                    task_type="delegation",
+                    status="running",
+                    tenant_id=seed["tenant_id"],
+                    parent_agent_id=parent_id,
+                    child_agent_id=child.id,
+                    parent_session_id=parent_key,
+                    child_session_id=child_key,
+                    root_session_id=parent_key,
+                    root_user_id=seed["user_id"],
+                    root_runtime_task_id=run_id,
+                    claimed_by="delegation-native-worker",
+                    claim_version=1,
+                    claim_expires_at=datetime.now(timezone.utc) + timedelta(minutes=10),
+                    attempt_count=1,
+                    metadata_json={},
+                )
+            )
             await db.commit()
-        principal = ExecutionPrincipal(tenant_id=seed["tenant_id"], source_agent_id=parent_id,
-            requester_user_id=seed["user_id"], root_session_id=parent_key, root_runtime_task_id=str(run_id))
-        request = orchestrator.AgentDelegationRequest(target=child, target_model=model,
+        principal = ExecutionPrincipal(
+            tenant_id=seed["tenant_id"],
+            source_agent_id=parent_id,
+            requester_user_id=seed["user_id"],
+            root_session_id=parent_key,
+            root_runtime_task_id=str(run_id),
+        )
+        request = orchestrator.AgentDelegationRequest(
+            target=child,
+            target_model=model,
             conversation_messages=[{"role": "user", "content": "Load source-probe and run scripts/probe.py."}],
-            owner_id=seed["user_id"], session_id=child_key, parent_agent_id=parent_id,
-            parent_session_id=parent_key, tenant_id=seed["tenant_id"], runtime_task_id=str(run_id),
-            root_runtime_task_id=str(run_id), trace_id="native-delegation",
+            owner_id=seed["user_id"],
+            session_id=child_key,
+            parent_agent_id=parent_id,
+            parent_session_id=parent_key,
+            tenant_id=seed["tenant_id"],
+            runtime_task_id=str(run_id),
+            root_runtime_task_id=str(run_id),
+            trace_id="native-delegation",
             execution_principal=principal.to_evidence(),
             execution_identity=ExecutionIdentityRef(identity_type="delegated_user", identity_id=seed["user_id"]),
             permission_profile=permission_profile_snapshot(None),
-            policy=orchestrator.OrchestrationPolicy(timeout_seconds=90))
-        request.execution_receipt = orchestrator._build_delegation_execution_receipt(request,
-            task_id=str(run_id), trace_id="native-delegation", status="running")
+            policy=orchestrator.OrchestrationPolicy(timeout_seconds=90),
+        )
+        request.execution_receipt = orchestrator._build_delegation_execution_receipt(
+            request, task_id=str(run_id), trace_id="native-delegation", status="running"
+        )
         assert orchestrator._delegation_authority_receipt_failure(request, required=True) is None
         async with owner_sessionmaker() as db:
             task = await db.get(RuntimeTask, run_id)
@@ -125,7 +199,9 @@ async def _run_native_skill_task(
         token = set_runtime_task_fence(task_id=run_id, worker_id="delegation-native-worker", claim_version=1)
         try:
             if settle_delegation:
-                orchestrator._spawn_async_delegation_task(task_id=str(run_id), request=request, trace_id="native-delegation")
+                orchestrator._spawn_async_delegation_task(
+                    task_id=str(run_id), request=request, trace_id="native-delegation"
+                )
                 pending = orchestrator._async_tasks[str(run_id)].task
                 try:
                     seed["delegation_result"] = await asyncio.wait_for(pending, timeout=90)
@@ -136,9 +212,13 @@ async def _run_native_skill_task(
                     orchestrator._async_task_fallback_records.pop(str(run_id), None)
                     orchestrator._async_task_parent_ids.pop(str(run_id), None)
             else:
-                seed["delegation_result"] = await orchestrator._delegate_after_cycle_check(request,
-                    trace_id="native-delegation", child_session_id=child_key,
-                    tool_profile=orchestrator._resolve_delegation_tool_profile("worker_safe"), is_delegation=True)
+                seed["delegation_result"] = await orchestrator._delegate_after_cycle_check(
+                    request,
+                    trace_id="native-delegation",
+                    child_session_id=child_key,
+                    tool_profile=orchestrator._resolve_delegation_tool_profile("worker_safe"),
+                    is_delegation=True,
+                )
         finally:
             reset_runtime_task_fence(token)
         seed.update(run_id=run_id, session_id=child_session, delegation_request=request)
@@ -148,54 +228,105 @@ async def _run_native_skill_task(
 
 
 async def test_cache_control_keeps_actual_native_model_inputs_bound(
-    owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path,
+    owner_sessionmaker,
+    app_user_sessionmaker,
+    monkeypatch,
+    tmp_path,
 ):
     from app.models.session_v2 import SessionModelResult
 
     script = [
-        {"content": "Load the source probe.", "tool_calls": [{"id": "cache-load", "type": "function",
-            "function": {"name": "load_skill", "arguments": json.dumps({"name": "source-probe"})}}],
-            "finish_reason": "tool_calls"},
-        {"content": "Run the source probe.", "tool_calls": [{"id": "cache-run", "type": "function",
-            "function": {"name": "run_skill_tool", "arguments": json.dumps({"skill": "source-probe", "script": "scripts/probe.py"})}}],
-            "finish_reason": "tool_calls"},
+        {
+            "content": "Load the source probe.",
+            "tool_calls": [
+                {
+                    "id": "cache-load",
+                    "type": "function",
+                    "function": {"name": "load_skill", "arguments": json.dumps({"name": "source-probe"})},
+                }
+            ],
+            "finish_reason": "tool_calls",
+        },
+        {
+            "content": "Run the source probe.",
+            "tool_calls": [
+                {
+                    "id": "cache-run",
+                    "type": "function",
+                    "function": {
+                        "name": "run_skill_tool",
+                        "arguments": json.dumps({"skill": "source-probe", "script": "scripts/probe.py"}),
+                    },
+                }
+            ],
+            "finish_reason": "tool_calls",
+        },
         {"content": "Generated native-report.md", "finish_reason": "stop"},
     ]
     seed, client, _bindings, _imported = await _run_native_skill_task(
-        owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path,
-        model_provider="minimax", client_script=script,
+        owner_sessionmaker,
+        app_user_sessionmaker,
+        monkeypatch,
+        tmp_path,
+        model_provider="minimax",
+        client_script=script,
     )
     assert len(client.requests) == 3
     async with owner_sessionmaker() as db:
-        results = list((await db.scalars(select(SessionModelResult).where(
-            SessionModelResult.run_id == seed["run_id"]).order_by(SessionModelResult.round_id))).all())
+        results = list(
+            (
+                await db.scalars(
+                    select(SessionModelResult)
+                    .where(SessionModelResult.run_id == seed["run_id"])
+                    .order_by(SessionModelResult.round_id)
+                )
+            ).all()
+        )
         snapshots = [row.model_request_snapshot_json for row in results]
         (tmp_path / "cache-native-inputs.json").write_text(json.dumps(snapshots, indent=2))
         assert len(snapshots) == 3
         assert all(isinstance(snapshot["messages"][0]["content"], list) for snapshot in snapshots)
         assert all(snapshot["input_bindings"]["dependency_coverage"]["complete"] for snapshot in snapshots)
-        assert all(entry["status"] == "bound" for snapshot in snapshots for entry in snapshot["input_bindings"]["messages"])
-        assert any(entry.get("presentation", {}).get("schema") == "hive.prompt_cache_presentation.v1"
-            for snapshot in snapshots for entry in snapshot["input_bindings"]["messages"])
+        assert all(
+            entry["status"] == "bound" for snapshot in snapshots for entry in snapshot["input_bindings"]["messages"]
+        )
+        assert any(
+            entry.get("presentation", {}).get("schema") == "hive.prompt_cache_presentation.v1"
+            for snapshot in snapshots
+            for entry in snapshot["input_bindings"]["messages"]
+        )
 
 
 async def test_normal_kernel_skill_output_has_a_usable_source_receipt(
-    owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path,
+    owner_sessionmaker,
+    app_user_sessionmaker,
+    monkeypatch,
+    tmp_path,
 ):
     from app.models.organization_identity import ContentInputReceipt
     from app.models.runtime_task import RuntimeTask
     from app.models.session_v2 import SessionModelResult
 
-    seed, client, bindings, imported = await _run_native_skill_task(owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path)
+    seed, client, bindings, imported = await _run_native_skill_task(
+        owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path
+    )
     async with owner_sessionmaker() as db:
         task = await db.get(RuntimeTask, seed["run_id"])
-        results = (await db.scalars(select(SessionModelResult).where(SessionModelResult.run_id == seed["run_id"])
-            .order_by(SessionModelResult.round_id))).all()
+        results = (
+            await db.scalars(
+                select(SessionModelResult)
+                .where(SessionModelResult.run_id == seed["run_id"])
+                .order_by(SessionModelResult.round_id)
+            )
+        ).all()
         snapshots = [row.model_request_snapshot_json for row in results]
         (tmp_path / "native-model-inputs.json").write_text(json.dumps(snapshots, indent=2, default=str))
         (tmp_path / "native-environment-bindings.json").write_text(json.dumps(bindings, indent=2))
-        (tmp_path / "native-run-state.json").write_text(json.dumps({"status": task.status,
-            "run_id": str(task.id), "metadata": task.metadata_json}, indent=2, default=str))
+        (tmp_path / "native-run-state.json").write_text(
+            json.dumps(
+                {"status": task.status, "run_id": str(task.id), "metadata": task.metadata_json}, indent=2, default=str
+            )
+        )
         assert len(client.requests) == 3, (task.status, task.metadata_json, snapshots)
         assert (seed["agent_root"] / "workspace/native-report.md").read_text() == "NATIVE_SKILL_REPORT"
         assert any("NATIVE_SKILL_EXECUTED" in str(message) for message in client.requests[-1]["messages"])
@@ -204,49 +335,104 @@ async def test_normal_kernel_skill_output_has_a_usable_source_receipt(
         assert "NATIVE_SOUL_CONTEXT_PRESENT" in actual_inputs
         assert "Controlled source probe." in actual_inputs
         assert "self/self.md" in actual_inputs
-        assert all(entry["status"] == "bound" for snapshot in snapshots for entry in snapshot["input_bindings"]["messages"])
-        for index, expected in [(0, {"skills/source-probe/SKILL.md"}), (1, {"skills/source-probe/SKILL.md"}),
-            (2, {"skills/source-probe/SKILL.md", "skills/source-probe/scripts/probe.py"})]:
-            selected = [ref for ref in snapshots[index]["input_bindings"]["dependencies"] if ref["source_kind"] == "agent_skill_file"]
+        assert all(
+            entry["status"] == "bound" for snapshot in snapshots for entry in snapshot["input_bindings"]["messages"]
+        )
+        for index, expected in [
+            (0, {"skills/source-probe/SKILL.md"}),
+            (1, {"skills/source-probe/SKILL.md"}),
+            (2, {"skills/source-probe/SKILL.md", "skills/source-probe/scripts/probe.py"}),
+        ]:
+            selected = [
+                ref
+                for ref in snapshots[index]["input_bindings"]["dependencies"]
+                if ref["source_kind"] == "agent_skill_file"
+            ]
             assert {ref["source_id"].split("\n")[1] for ref in selected} == expected
-            assert all(ref["source_id"].split("\n")[2] == imported["source_receipt"]["ref"].split(":", 1)[1] for ref in selected)
+            assert all(
+                ref["source_id"].split("\n")[2] == imported["source_receipt"]["ref"].split(":", 1)[1]
+                for ref in selected
+            )
         for snapshot in snapshots:
-            bundled = [ref for ref in snapshot["input_bindings"]["dependencies"] if ref["source_kind"] == "agent_platform_skill_file"]
+            bundled = [
+                ref
+                for ref in snapshot["input_bindings"]["dependencies"]
+                if ref["source_kind"] == "agent_platform_skill_file"
+            ]
             assert len(bundled) == 1 and bundled[0]["source_id"].split("\n")[1] == "skills/mcp-installer/SKILL.md"
-            assert any(ref["source_kind"] == "agent_resident_memory" and ref["source_id"] ==
-                f"{seed['agent_id']}\nmemory/self/self.md" for ref in snapshot["input_bindings"]["dependencies"])
-            context_sources = {ref["source_id"] for ref in snapshot["input_bindings"]["dependencies"]
-                if ref["source_kind"] == "agent_context_resource"}
+            assert any(
+                ref["source_kind"] == "agent_resident_memory"
+                and ref["source_id"] == f"{seed['agent_id']}\nmemory/self/self.md"
+                for ref in snapshot["input_bindings"]["dependencies"]
+            )
+            context_sources = {
+                ref["source_id"]
+                for ref in snapshot["input_bindings"]["dependencies"]
+                if ref["source_kind"] == "agent_context_resource"
+            }
             assert f"{seed['agent_id']}\nsoul" in context_sources
             assert f"{seed['agent_id']}\nchannels" in context_sources
         from app.services.content_input_receipts import validate_runtime_input_dependencies
         from app.tools.runtime import ToolExecutionContext, ToolExecutionRequest
 
-        source_reader = ToolExecutionRequest(tool_name="run_skill_tool", arguments={}, context=ToolExecutionContext(
-            agent_id=seed["agent_id"], user_id=seed["user_id"], tenant_id=str(seed["tenant_id"]),
-            workspace=seed["agent_root"], session_id=str(seed["session_id"]), runtime_task_id=str(seed["run_id"])))
+        source_reader = ToolExecutionRequest(
+            tool_name="run_skill_tool",
+            arguments={},
+            context=ToolExecutionContext(
+                agent_id=seed["agent_id"],
+                user_id=seed["user_id"],
+                tenant_id=str(seed["tenant_id"]),
+                workspace=seed["agent_root"],
+                session_id=str(seed["session_id"]),
+                runtime_task_id=str(seed["run_id"]),
+            ),
+        )
         for snapshot in snapshots:
-            await validate_runtime_input_dependencies(db, source_reader, [ref for ref in snapshot["input_bindings"]["dependencies"]
-                if ref["source_kind"] in {"agent_resident_memory", "agent_skill_file", "agent_platform_skill_file"} or
-                (ref["source_kind"] == "agent_context_resource" and ref["source_id"].endswith("\nsoul"))])
+            await validate_runtime_input_dependencies(
+                db,
+                source_reader,
+                [
+                    ref
+                    for ref in snapshot["input_bindings"]["dependencies"]
+                    if ref["source_kind"] in {"agent_resident_memory", "agent_skill_file", "agent_platform_skill_file"}
+                    or (ref["source_kind"] == "agent_context_resource" and ref["source_id"].endswith("\nsoul"))
+                ],
+            )
         for snapshot in snapshots:
             for index, message in enumerate(snapshot["wire_request"]["messages"]):
                 if message["role"] == "assistant":
-                    assert snapshot["input_bindings"]["messages"][index]["status"] == "bound", snapshot["input_bindings"]
-        receipt = await db.scalar(select(ContentInputReceipt).where(ContentInputReceipt.tenant_id == seed["tenant_id"],
-            ContentInputReceipt.carrier_kind == "workspace_artifact",
-            ContentInputReceipt.carrier_ref == f"{seed['agent_id']}\nworkspace/native-report.md"))
+                    assert snapshot["input_bindings"]["messages"][index]["status"] == "bound", snapshot[
+                        "input_bindings"
+                    ]
+        receipt = await db.scalar(
+            select(ContentInputReceipt).where(
+                ContentInputReceipt.tenant_id == seed["tenant_id"],
+                ContentInputReceipt.carrier_kind == "workspace_artifact",
+                ContentInputReceipt.carrier_ref == f"{seed['agent_id']}\nworkspace/native-report.md",
+            )
+        )
         from app.models.invocation_span import InvocationSpan
 
-        output_spans = (await db.scalars(select(InvocationSpan).where(InvocationSpan.agent_id == seed["agent_id"],
-            InvocationSpan.span_type == "workspace_output"))).all()
-        (tmp_path / "native-execution-receipts.json").write_text(json.dumps([
-            span.metadata_json for span in output_spans], indent=2, default=str))
+        output_spans = (
+            await db.scalars(
+                select(InvocationSpan).where(
+                    InvocationSpan.agent_id == seed["agent_id"], InvocationSpan.span_type == "workspace_output"
+                )
+            )
+        ).all()
+        (tmp_path / "native-execution-receipts.json").write_text(
+            json.dumps([span.metadata_json for span in output_spans], indent=2, default=str)
+        )
         assert receipt is not None, [snapshot.get("input_bindings") for snapshot in snapshots]
         from app.models.chat_artifact import ChatArtifact
 
-        artifact = await db.scalar(select(ChatArtifact).where(ChatArtifact.agent_id == seed["agent_id"],
-            ChatArtifact.runtime_task_id == seed["run_id"], ChatArtifact.path == "workspace/native-report.md"))
+        artifact = await db.scalar(
+            select(ChatArtifact).where(
+                ChatArtifact.agent_id == seed["agent_id"],
+                ChatArtifact.runtime_task_id == seed["run_id"],
+                ChatArtifact.path == "workspace/native-report.md",
+            )
+        )
         assert artifact is not None and artifact.session_id == seed["session_id"]
         assert artifact.snapshot_json["content_input_receipt_id"] == str(receipt.id)
         assert task.metadata_json["artifact_ids"] == [str(artifact.id)]
@@ -257,22 +443,46 @@ async def test_normal_kernel_skill_output_has_a_usable_source_receipt(
     from app.tools.handlers.knowledge import _personal_kb_runtime_principal
 
     service = agent_tools._get_tool_runtime_service()
-    context = await service.runtime_resolver.resolve(agent_id=seed["agent_id"], user_id=seed["user_id"],
-        session_id=str(seed["session_id"]), runtime_task_id=seed["run_id"].hex)
-    principal = _personal_kb_runtime_principal(ToolExecutionRequest(tool_name="read_file", arguments={}, context=context))
+    context = await service.runtime_resolver.resolve(
+        agent_id=seed["agent_id"],
+        user_id=seed["user_id"],
+        session_id=str(seed["session_id"]),
+        runtime_task_id=seed["run_id"].hex,
+    )
+    principal = _personal_kb_runtime_principal(
+        ToolExecutionRequest(tool_name="read_file", arguments={}, context=context)
+    )
     async with app_user_sessionmaker() as db:
         await pin_rls_tenant_context(db, seed["tenant_id"])
-        await authorize_resource_action(db, await db.get(User, seed["user_id"]), agent_id=seed["agent_id"],
-            resource_kind="chat_artifact", resource_id=artifact.id, action="read", owner_user_id=artifact.owner_user_id,
-            root_session_id=artifact.root_session_id, authority_state=artifact.authority_state, runtime_principal=principal)
-    read = await service.execute("read_file", {"path": "workspace/native-report.md"}, agent_id=seed["agent_id"],
-        user_id=seed["user_id"], session_id=str(seed["session_id"]), runtime_task_id=seed["run_id"].hex,
-        emit_runtime_hooks=False)
+        await authorize_resource_action(
+            db,
+            await db.get(User, seed["user_id"]),
+            agent_id=seed["agent_id"],
+            resource_kind="chat_artifact",
+            resource_id=artifact.id,
+            action="read",
+            owner_user_id=artifact.owner_user_id,
+            root_session_id=artifact.root_session_id,
+            authority_state=artifact.authority_state,
+            runtime_principal=principal,
+        )
+    read = await service.execute(
+        "read_file",
+        {"path": "workspace/native-report.md"},
+        agent_id=seed["agent_id"],
+        user_id=seed["user_id"],
+        session_id=str(seed["session_id"]),
+        runtime_task_id=seed["run_id"].hex,
+        emit_runtime_hooks=False,
+    )
     assert "NATIVE_SKILL_REPORT" in str(read), str(read)
 
 
 async def test_native_frozen_identity_and_policy_sources_revalidate_current_authority(
-    owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path,
+    owner_sessionmaker,
+    app_user_sessionmaker,
+    monkeypatch,
+    tmp_path,
 ):
     import uuid
     from app.database import pin_rls_tenant_context
@@ -284,9 +494,15 @@ async def test_native_frozen_identity_and_policy_sources_revalidate_current_auth
     from app.services.session_model_inputs import load_context_message_origin
     from app.tools.runtime import ToolExecutionRequest
 
-    seed, _client, _bindings, _imported = await _run_native_skill_task(owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path)
-    context = await agent_tools._get_tool_runtime_service().runtime_resolver.resolve(agent_id=seed["agent_id"],
-        user_id=seed["user_id"], session_id=str(seed["session_id"]), runtime_task_id=str(seed["run_id"]))
+    seed, _client, _bindings, _imported = await _run_native_skill_task(
+        owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path
+    )
+    context = await agent_tools._get_tool_runtime_service().runtime_resolver.resolve(
+        agent_id=seed["agent_id"],
+        user_id=seed["user_id"],
+        session_id=str(seed["session_id"]),
+        runtime_task_id=str(seed["run_id"]),
+    )
     request = ToolExecutionRequest(tool_name="read_file", arguments={}, context=context)
     async with app_user_sessionmaker() as db:
         await pin_rls_tenant_context(db, seed["tenant_id"])
@@ -295,33 +511,67 @@ async def test_native_frozen_identity_and_policy_sources_revalidate_current_auth
         inventory = []
         for row in rows:
             bindings = row.model_request_snapshot_json["input_bindings"]
-            sources = [ref for ref in bindings["dependencies"] if ref["source_kind"] in {"agent_identity", "owner_action_policy"}]
+            sources = [
+                ref
+                for ref in bindings["dependencies"]
+                if ref["source_kind"] in {"agent_identity", "owner_action_policy"}
+            ]
             assert len(sources) == 2 and bindings["dependency_coverage"]["complete"] is True
             await validate_runtime_input_dependencies(db, request, sources)
-            frozen_sources = [ref for ref in bindings["dependencies"] if ref["source_kind"] in {
-                "agent_identity", "owner_action_policy", "agent_context_resource"}]
+            frozen_sources = [
+                ref
+                for ref in bindings["dependencies"]
+                if ref["source_kind"] in {"agent_identity", "owner_action_policy", "agent_context_resource"}
+            ]
             await validate_runtime_input_dependencies(db, request, frozen_sources)
-            origin = await load_context_message_origin(db, tenant_id=seed["tenant_id"], agent_id=seed["agent_id"],
-                source_id=uuid.UUID(bindings["messages"][0]["source_ref"].split(":", 1)[1]))
+            origin = await load_context_message_origin(
+                db,
+                tenant_id=seed["tenant_id"],
+                agent_id=seed["agent_id"],
+                source_id=uuid.UUID(bindings["messages"][0]["source_ref"].split(":", 1)[1]),
+            )
             assert origin["dependency_coverage"] == {"complete": True, "unbound": []}
-            dynamic = await load_context_message_origin(db, tenant_id=seed["tenant_id"], agent_id=seed["agent_id"],
-                source_id=uuid.UUID(bindings["messages"][-1]["source_ref"].split(":", 1)[1]))
+            dynamic = await load_context_message_origin(
+                db,
+                tenant_id=seed["tenant_id"],
+                agent_id=seed["agent_id"],
+                source_id=uuid.UUID(bindings["messages"][-1]["source_ref"].split(":", 1)[1]),
+            )
             unknowns = set(dynamic["dependency_coverage"]["unbound"])
-            assert not unknowns.intersection({"dynamic_section_sources_unbound:plan_mode_guidance",
-                "dynamic_section_sources_unbound:task_profile", "dynamic_section_inventory_incomplete"})
+            assert not unknowns.intersection(
+                {
+                    "dynamic_section_sources_unbound:plan_mode_guidance",
+                    "dynamic_section_sources_unbound:task_profile",
+                    "dynamic_section_inventory_incomplete",
+                }
+            )
             assert unknowns == set()
-            assert not unknowns.intersection({"dynamic_section_sources_unbound:runtime_metadata_context",
-                "dynamic_section_sources_unbound:environment", "runtime_actor_identity_unavailable"})
+            assert not unknowns.intersection(
+                {
+                    "dynamic_section_sources_unbound:runtime_metadata_context",
+                    "dynamic_section_sources_unbound:environment",
+                    "runtime_actor_identity_unavailable",
+                }
+            )
             actors = [ref for ref in dynamic["dependencies"] if ref["source_kind"] == "session_actor_identity"]
             assert len(actors) == 1
             await validate_runtime_input_dependencies(db, request, actors)
-            inventory.append({"round_id": str(row.round_id), "frozen": origin["dependency_coverage"],
-                "dynamic": dynamic["dependency_coverage"], "sections": [
-                    {key: section.get(key) for key in ("name", "selected", "kind")} for section in dynamic["sections"]]})
+            inventory.append(
+                {
+                    "round_id": str(row.round_id),
+                    "frozen": origin["dependency_coverage"],
+                    "dynamic": dynamic["dependency_coverage"],
+                    "sections": [
+                        {key: section.get(key) for key in ("name", "selected", "kind")}
+                        for section in dynamic["sections"]
+                    ],
+                }
+            )
         (tmp_path / "native-context-source-ledger.json").write_text(json.dumps(inventory, indent=2))
         identity = next(ref for ref in sources if ref["source_kind"] == "agent_identity")
         policy = next(ref for ref in sources if ref["source_kind"] == "owner_action_policy")
-        roster = next(ref for ref in frozen_sources if ref["source_id"].endswith("\na2a-collaborators"))
+        roster = next(ref for ref in bindings["dependencies"] if ref["source_kind"] == "agent_directory_observation")
+        await validate_runtime_input_dependencies(db, request, [roster])
         with pytest.raises(ContentInputReceiptError) as forged_roster:
             await validate_runtime_input_dependencies(db, request, [{**roster, "source_version": "f" * 64}])
         assert forged_roster.value.status_code == 403 and forged_roster.value.code == "content_source_changed"
@@ -341,21 +591,34 @@ async def test_native_frozen_identity_and_policy_sources_revalidate_current_auth
                 await validate_runtime_input_dependencies(db, request, [{**source, "source_version": "f" * 64}])
         await validate_runtime_input_dependencies(db, request, sources)
     legacy = await _seed_run(owner_sessionmaker, tmp_path / "legacy")
-    legacy_context = await agent_tools._get_tool_runtime_service().runtime_resolver.resolve(agent_id=legacy["agent_id"],
-        user_id=legacy["user_id"], session_id=str(legacy["session_id"]), runtime_task_id=str(legacy["run_id"]))
+    legacy_context = await agent_tools._get_tool_runtime_service().runtime_resolver.resolve(
+        agent_id=legacy["agent_id"],
+        user_id=legacy["user_id"],
+        session_id=str(legacy["session_id"]),
+        runtime_task_id=str(legacy["run_id"]),
+    )
     async with app_user_sessionmaker() as db:
         await pin_rls_tenant_context(db, legacy["tenant_id"])
         agent = await db.get(Agent, legacy["agent_id"])
-        source = {"source_kind": "agent_identity", "source_id": f"{agent.id}\nidentity",
-            "source_version": canonical_content_hash({"name": agent.name, "role_description": agent.role_description or ""})}
+        source = {
+            "source_kind": "agent_identity",
+            "source_id": f"{agent.id}\nidentity",
+            "source_version": canonical_content_hash(
+                {"name": agent.name, "role_description": agent.role_description or ""}
+            ),
+        }
         with pytest.raises(ContentInputReceiptError) as missing:
-            await validate_runtime_input_dependencies(db, ToolExecutionRequest(tool_name="read_file", arguments={},
-                context=legacy_context), [source])
+            await validate_runtime_input_dependencies(
+                db, ToolExecutionRequest(tool_name="read_file", arguments={}, context=legacy_context), [source]
+            )
         assert missing.value.status_code == 503
 
 
 async def test_native_actor_observation_rejects_rehash_and_current_owner_loss(
-    owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path,
+    owner_sessionmaker,
+    app_user_sessionmaker,
+    monkeypatch,
+    tmp_path,
 ):
     import uuid
     from app.database import pin_rls_tenant_context
@@ -368,15 +631,24 @@ async def test_native_actor_observation_rejects_rehash_and_current_owner_loss(
     from app.services.session_model_inputs import _hash
     from app.tools.runtime import ToolExecutionRequest
 
-    seed, _client, _bindings, _imported = await _run_native_skill_task(owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path)
-    context = await agent_tools._get_tool_runtime_service().runtime_resolver.resolve(agent_id=seed["agent_id"],
-        user_id=seed["user_id"], session_id=str(seed["session_id"]), runtime_task_id=str(seed["run_id"]))
+    seed, _client, _bindings, _imported = await _run_native_skill_task(
+        owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path
+    )
+    context = await agent_tools._get_tool_runtime_service().runtime_resolver.resolve(
+        agent_id=seed["agent_id"],
+        user_id=seed["user_id"],
+        session_id=str(seed["session_id"]),
+        runtime_task_id=str(seed["run_id"]),
+    )
     request = ToolExecutionRequest(tool_name="read_file", arguments={}, context=context)
     async with app_user_sessionmaker() as db:
         await pin_rls_tenant_context(db, seed["tenant_id"])
         model = await db.scalar(select(SessionModelResult).where(SessionModelResult.run_id == seed["run_id"]))
-        refs = [ref for ref in model.model_request_snapshot_json["input_bindings"]["dependencies"]
-            if ref["source_kind"] == "session_actor_identity"]
+        refs = [
+            ref
+            for ref in model.model_request_snapshot_json["input_bindings"]["dependencies"]
+            if ref["source_kind"] == "session_actor_identity"
+        ]
         assert len(refs) == 1
         ref = refs[0]
         span_id = uuid.UUID(ref["source_id"])
@@ -400,7 +672,9 @@ async def test_native_actor_observation_rejects_rehash_and_current_owner_loss(
         async with owner_sessionmaker() as writer:
             (await writer.get(InvocationSpan, span_id)).metadata_json = original
             (await writer.get(User, seed["user_id"])).display_name = old_name
-            peer = await writer.scalar(select(User.id).where(User.tenant_id == seed["tenant_id"], User.id != seed["user_id"]))
+            peer = await writer.scalar(
+                select(User.id).where(User.tenant_id == seed["tenant_id"], User.id != seed["user_id"])
+            )
             assert peer is not None
             (await writer.get(ChatSession, seed["session_id"])).user_id = peer
             await writer.commit()
@@ -414,7 +688,10 @@ async def test_native_actor_observation_rejects_rehash_and_current_owner_loss(
 
 
 async def test_native_context_withholds_unverified_legacy_memory_without_blocking_authorized_work(
-    owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path,
+    owner_sessionmaker,
+    app_user_sessionmaker,
+    monkeypatch,
+    tmp_path,
 ):
     import hashlib
     from pathlib import Path
@@ -434,21 +711,38 @@ async def test_native_context_withholds_unverified_legacy_memory_without_blockin
         _write_overlay_entry(root, agent.id, entry_id="native-index")
 
     monkeypatch.setattr(AgentManager, "initialize_agent_files", seed_overlay)
-    seed, client, _bindings, _imported = await _run_native_skill_task(owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path)
+    seed, client, _bindings, _imported = await _run_native_skill_task(
+        owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path
+    )
     paths = ["memory/explicit/manifest.jsonl", "memory/explicit/entries/native-index.md"]
-    expected = {f"{seed['agent_id']}\n{path}": hashlib.sha256((seed["agent_root"] / path).read_bytes()).hexdigest() for path in paths}
+    expected = {
+        f"{seed['agent_id']}\n{path}": hashlib.sha256((seed["agent_root"] / path).read_bytes()).hexdigest()
+        for path in paths
+    }
     assert "周报永远用中文" not in json.dumps(client.requests, ensure_ascii=False)
-    request = ToolExecutionRequest(tool_name="run_skill_tool", arguments={}, context=ToolExecutionContext(
-        agent_id=seed["agent_id"], user_id=seed["user_id"], tenant_id=str(seed["tenant_id"]),
-        workspace=seed["agent_root"], session_id=str(seed["session_id"]), runtime_task_id=str(seed["run_id"])))
+    request = ToolExecutionRequest(
+        tool_name="run_skill_tool",
+        arguments={},
+        context=ToolExecutionContext(
+            agent_id=seed["agent_id"],
+            user_id=seed["user_id"],
+            tenant_id=str(seed["tenant_id"]),
+            workspace=seed["agent_root"],
+            session_id=str(seed["session_id"]),
+            runtime_task_id=str(seed["run_id"]),
+        ),
+    )
     async with app_user_sessionmaker() as db:
         from app.database import pin_rls_tenant_context
 
         await pin_rls_tenant_context(db, seed["tenant_id"])
         rows = (await db.scalars(select(SessionModelResult).where(SessionModelResult.run_id == seed["run_id"]))).all()
         assert len(rows) == 3
-        output = await db.scalar(select(InvocationSpan).where(InvocationSpan.runtime_task_id == seed["run_id"],
-            InvocationSpan.span_type == "workspace_output"))
+        output = await db.scalar(
+            select(InvocationSpan).where(
+                InvocationSpan.runtime_task_id == seed["run_id"], InvocationSpan.span_type == "workspace_output"
+            )
+        )
         receipts = output.metadata_json["native_content_receipts"]
         assert receipts["status"] == "captured" and receipts["failures"] == {}
         assert set(receipts["receipts"]) == {"workspace/native-report.md"}
@@ -465,15 +759,22 @@ async def test_native_context_withholds_unverified_legacy_memory_without_blockin
         from app.services.workspace_resource_authority import load_workspace_authority_scope
 
         user = await db.get(User, seed["user_id"])
-        scope = await load_workspace_authority_scope(db, user, agent_id=seed["agent_id"],
-            session_id=seed["session_id"])
+        scope = await load_workspace_authority_scope(db, user, agent_id=seed["agent_id"], session_id=seed["session_id"])
         assert all(not scope.can_read(path) for path in paths)
-    assert {f"{seed['agent_id']}\n{path}": hashlib.sha256((seed["agent_root"] / path).read_bytes()).hexdigest()
-        for path in paths} == expected
+    assert {
+        f"{seed['agent_id']}\n{path}": hashlib.sha256((seed["agent_root"] / path).read_bytes()).hexdigest()
+        for path in paths
+    } == expected
 
 
 @pytest.mark.parametrize("source_case", ["metadata_recovery", "source_revocation"])
-async def test_scoped_native_writer_binds_complete_control_input_once(native_workspace, app_user_sessionmaker, owner_sessionmaker, monkeypatch, source_case):  # noqa: F811
+async def test_scoped_native_writer_binds_complete_control_input_once(
+    native_workspace,  # noqa: F811
+    app_user_sessionmaker,
+    owner_sessionmaker,
+    monkeypatch,
+    source_case,
+):
     import uuid
     from dataclasses import replace
     from app.database import pin_rls_tenant_context
@@ -485,31 +786,64 @@ async def test_scoped_native_writer_binds_complete_control_input_once(native_wor
     from app.services.content_input_receipts import record_native_workspace_receipts
     from app.services.session_permission_runtime import _execution_evidence
     from app.services.web_chat_runtime import _persist_tool_call
-    from tests.integration.test_m1g24_workspace_artifact_authority_postgres import _admitted_write_messages, _prepare_write
+    from tests.integration.test_m1g24_workspace_artifact_authority_postgres import (
+        _admitted_write_messages,
+        _prepare_write,
+    )
 
     n = native_workspace
     n.path = "workspace/native-control.txt"
 
     async with app_user_sessionmaker() as db:
         await pin_rls_tenant_context(db, n.tenant)
-        invocation, arguments, turn = await _prepare_write(db, n, messages=[_context_message(role="system",
-            content="Use the authorized tools.", kind="platform_guidance", unbound=()), *await _admitted_write_messages(db, n)])
+        invocation, arguments, turn = await _prepare_write(
+            db,
+            n,
+            messages=[
+                _context_message(
+                    role="system", content="Use the authorized tools.", kind="platform_guidance", unbound=()
+                ),
+                *await _admitted_write_messages(db, n),
+            ],
+        )
         trace = {}
-        raw = await n.service.execute("write_file", arguments, agent_id=n.agent, user_id=n.user,
-            session_id=str(n.session), runtime_task_id=str(n.run), turn_id=turn,
-            tool_call_id=invocation.provider_tool_use_id, emit_runtime_hooks=False, trace_metadata_sink=trace)
+        raw = await n.service.execute(
+            "write_file",
+            arguments,
+            agent_id=n.agent,
+            user_id=n.user,
+            session_id=str(n.session),
+            runtime_task_id=str(n.run),
+            turn_id=turn,
+            tool_call_id=invocation.provider_tool_use_id,
+            emit_runtime_hooks=False,
+            trace_metadata_sink=trace,
+        )
         assert (n.root / n.path).read_text() == arguments["content"], str(raw)
         written = (n.root / n.path).stat()
-        await _persist_tool_call(agent_id=n.agent, user_id=n.user, session_id=str(n.session),
-            data={"name": "write_file", "args": arguments, "status": "done", "result": str(raw),
-                "tool_call_id": invocation.provider_tool_use_id, "provider_request_id": invocation.provider_request_id,
-                "runtime_task_id": str(n.run), "tool_execution_evidence": _execution_evidence(trace)})
+        await _persist_tool_call(
+            agent_id=n.agent,
+            user_id=n.user,
+            session_id=str(n.session),
+            data={
+                "name": "write_file",
+                "args": arguments,
+                "status": "done",
+                "result": str(raw),
+                "tool_call_id": invocation.provider_tool_use_id,
+                "provider_request_id": invocation.provider_request_id,
+                "runtime_task_id": str(n.run),
+                "tool_execution_evidence": _execution_evidence(trace),
+            },
+        )
         output = await db.get(InvocationSpan, uuid.uuid5(invocation.id, "workspace-output-evidence"))
         status = output.metadata_json["native_content_receipts"]
         assert status["status"] == "captured", status
         receipt_id = uuid.UUID(status["receipts"][n.path])
         receipt = await db.get(ContentInputReceipt, receipt_id)
-        assert receipt.dependencies_json and {ref["source_kind"] for ref in receipt.dependencies_json} == {"session_command"}
+        assert receipt.dependencies_json and {ref["source_kind"] for ref in receipt.dependencies_json} == {
+            "session_command"
+        }
         response = await n.client.get(f"/agents/{n.agent}/files/content", params={"path": n.path})
         assert response.status_code == 200 and response.json()["content"] == arguments["content"], response.text
         artifact = await db.scalar(select(ChatArtifact).where(ChatArtifact.agent_id == n.agent))
@@ -519,7 +853,8 @@ async def test_scoped_native_writer_binds_complete_control_input_once(native_wor
         assert artifact.snapshot_json["content_input_receipt_id"] == str(receipt_id)
         async with owner_sessionmaker() as writer:
             (await writer.get(ChatArtifact, artifact.id)).snapshot_json = {
-                key: value for key, value in artifact.snapshot_json.items() if key != "content_input_receipt_id"}
+                key: value for key, value in artifact.snapshot_json.items() if key != "content_input_receipt_id"
+            }
             await writer.commit()
         unavailable = await n.client.get(f"/agents/{n.agent}/files/artifacts/{artifact.id}/content")
         assert unavailable.status_code == 409 and arguments["content"] not in unavailable.text
@@ -539,23 +874,47 @@ async def test_scoped_native_writer_binds_complete_control_input_once(native_wor
             source = n.root.parent / "revocation-source.md"
             source.write_text("PRIVATE_REVOCABLE_CONTROL_SOURCE")
             digest = hashlib.sha256(source.read_bytes()).hexdigest()
-            document = KnowledgeDocument(id=uuid.uuid4(), tenant_id=n.tenant, scope_type="person", scope_id=n.foreign,
-                owner_user_id=n.foreign, source_kind="text", source_sha256=digest, title="Revocable source", status="ready",
-                canonical_md_path=source.name, canonical_md_sha256=digest)
-            grant = KnowledgeGrant(id=uuid.uuid4(), tenant_id=n.tenant, scope_id=n.foreign, resource_type="document",
-                resource_id=document.id, document_id=document.id, grantee_type="user", grantee_id=n.user, permission="read")
+            document = KnowledgeDocument(
+                id=uuid.uuid4(),
+                tenant_id=n.tenant,
+                scope_type="person",
+                scope_id=n.foreign,
+                owner_user_id=n.foreign,
+                source_kind="text",
+                source_sha256=digest,
+                title="Revocable source",
+                status="ready",
+                canonical_md_path=source.name,
+                canonical_md_sha256=digest,
+            )
+            grant = KnowledgeGrant(
+                id=uuid.uuid4(),
+                tenant_id=n.tenant,
+                scope_id=n.foreign,
+                resource_type="document",
+                resource_id=document.id,
+                document_id=document.id,
+                grantee_type="user",
+                grantee_id=n.user,
+                permission="read",
+            )
             # Known-source consumer fixture; the normal Agent path never receives prefilled inputs.
             async with owner_sessionmaker() as writer:
                 writer.add(document)
                 await writer.flush()
                 writer.add(grant)
                 retained = await writer.get(ContentInputReceipt, receipt_id)
-                retained.dependencies_json = [*retained.dependencies_json, {"source_kind": "knowledge_document",
-                    "source_id": str(document.id), "source_version": digest}]
+                retained.dependencies_json = [
+                    *retained.dependencies_json,
+                    {"source_kind": "knowledge_document", "source_id": str(document.id), "source_version": digest},
+                ]
                 await writer.commit()
-            context = await n.service.runtime_resolver.resolve(agent_id=n.agent, user_id=n.user,
-                session_id=str(n.session), runtime_task_id=str(n.run))
-            principal = _personal_kb_runtime_principal(ToolExecutionRequest(tool_name="read_file", arguments={}, context=context))
+            context = await n.service.runtime_resolver.resolve(
+                agent_id=n.agent, user_id=n.user, session_id=str(n.session), runtime_task_id=str(n.run)
+            )
+            principal = _personal_kb_runtime_principal(
+                ToolExecutionRequest(tool_name="read_file", arguments={}, context=context)
+            )
             reader = await db.get(User, n.user)
             from sqlalchemy import text
             from app.database import enter_rls_bypass
@@ -565,16 +924,26 @@ async def test_scoped_native_writer_binds_complete_control_input_once(native_wor
             validate = inputs._validate_input_dependencies
 
             async def observe_source_scope(source_db, tenant_id, dependencies, **kwargs):
-                observed_tenants.append(await source_db.scalar(text("SELECT current_setting('app.current_tenant_id', true)")))
+                observed_tenants.append(
+                    await source_db.scalar(text("SELECT current_setting('app.current_tenant_id', true)"))
+                )
                 await validate(source_db, tenant_id, dependencies, **kwargs)
 
             monkeypatch.setattr(inputs, "_validate_input_dependencies", observe_source_scope)
             async with enter_rls_bypass(db, reason="fixture artifact consumer must attenuate ambient bypass"):
                 with pytest.raises(HTTPException) as denial:
-                    await authorize_resource_action(db, reader, agent_id=n.agent, resource_kind="chat_artifact",
-                        resource_id=artifact.id, action="read", owner_user_id=artifact.owner_user_id,
-                        root_session_id=artifact.root_session_id, authority_state=artifact.authority_state,
-                        runtime_principal=principal)
+                    await authorize_resource_action(
+                        db,
+                        reader,
+                        agent_id=n.agent,
+                        resource_kind="chat_artifact",
+                        resource_id=artifact.id,
+                        action="read",
+                        owner_user_id=artifact.owner_user_id,
+                        root_session_id=artifact.root_session_id,
+                        authority_state=artifact.authority_state,
+                        runtime_principal=principal,
+                    )
             assert denial.value.status_code == 403
             assert observed_tenants and set(observed_tenants) == {str(n.tenant)}
             url = f"/agents/{n.agent}/files/artifacts/{artifact.id}"
@@ -583,9 +952,17 @@ async def test_scoped_native_writer_binds_complete_control_input_once(native_wor
             from app.runtime.a2a_workflow import A2AOutputArtifact
             from app.services.a2a_workflow_artifacts import A2AArtifactUnavailable, load_artifact_packet
 
-            packet_args = dict(tenant_id=n.tenant, requester_user_id=n.user, run_id=n.run,
-                node_id="producer", producer_agent_id=n.agent, producer_session_id=n.session,
-                producer_runtime_task_id=n.run, output=A2AOutputArtifact(name="report", path=n.path), max_bytes=1000)
+            packet_args = dict(
+                tenant_id=n.tenant,
+                requester_user_id=n.user,
+                run_id=n.run,
+                node_id="producer",
+                producer_agent_id=n.agent,
+                producer_session_id=n.session,
+                producer_runtime_task_id=n.run,
+                output=A2AOutputArtifact(name="report", path=n.path),
+                max_bytes=1000,
+            )
             # Browser access is valid; the actual native reader has no source grant.
             assert (await load_artifact_packet(db, **packet_args))["content"] == arguments["content"]
             with pytest.raises(A2AArtifactUnavailable, match="artifact_source_access_denied"):
@@ -601,22 +978,52 @@ async def test_scoped_native_writer_binds_complete_control_input_once(native_wor
 
             for rebind in (False, True):
                 errors = []
-                parts = await create_chat_artifacts_for_message(db=db, agent_id=n.agent, tenant_id=n.tenant,
-                    session_id=n.session, message_id=artifact.message_id, runtime_task_id=n.run,
-                    paths=[n.path], workspace_root=n.root, tool_invocation_id=invocation.id,
-                    rebind_existing_to_message=rebind, publication_errors=errors)
+                parts = await create_chat_artifacts_for_message(
+                    db=db,
+                    agent_id=n.agent,
+                    tenant_id=n.tenant,
+                    session_id=n.session,
+                    message_id=artifact.message_id,
+                    runtime_task_id=n.run,
+                    paths=[n.path],
+                    workspace_root=n.root,
+                    tool_invocation_id=invocation.id,
+                    rebind_existing_to_message=rebind,
+                    publication_errors=errors,
+                )
                 assert not parts and errors[0]["status"] == "denied", (parts, errors)
             return
-        model = await db.scalar(select(SessionModelResult).where(SessionModelResult.provider_request_id == invocation.provider_request_id))
-        context = await n.service.runtime_resolver.resolve(agent_id=n.agent, user_id=n.user,
-            session_id=str(n.session), runtime_task_id=str(n.run))
-        crossed = await record_native_workspace_receipts(db, context=replace(context, session_id=str(uuid.uuid4())),
-            invocation=invocation, model=model, arguments=arguments,
-            content_hash=output.metadata_json["workspace_execution_evidence"]["tool_result_hash"])
+        model = await db.scalar(
+            select(SessionModelResult).where(SessionModelResult.provider_request_id == invocation.provider_request_id)
+        )
+        context = await n.service.runtime_resolver.resolve(
+            agent_id=n.agent, user_id=n.user, session_id=str(n.session), runtime_task_id=str(n.run)
+        )
+        crossed = await record_native_workspace_receipts(
+            db,
+            context=replace(context, session_id=str(uuid.uuid4())),
+            invocation=invocation,
+            model=model,
+            arguments=arguments,
+            content_hash=output.metadata_json["workspace_execution_evidence"]["tool_result_hash"],
+        )
         assert crossed == {"status": "unavailable", "reason_code": "workspace_execution_scope_mismatch", "receipts": {}}
-        assert await record_native_workspace_receipts(db, context=context, invocation=invocation, model=model,
-            arguments=arguments, content_hash=output.metadata_json["workspace_execution_evidence"]["tool_result_hash"]) == status
-        assert (await db.scalars(select(ContentInputReceipt).where(ContentInputReceipt.carrier_ref == f"{n.agent}\n{n.path}"))).all() == [receipt]
+        assert (
+            await record_native_workspace_receipts(
+                db,
+                context=context,
+                invocation=invocation,
+                model=model,
+                arguments=arguments,
+                content_hash=output.metadata_json["workspace_execution_evidence"]["tool_result_hash"],
+            )
+            == status
+        )
+        assert (
+            await db.scalars(
+                select(ContentInputReceipt).where(ContentInputReceipt.carrier_ref == f"{n.agent}\n{n.path}")
+            )
+        ).all() == [receipt]
         command_id = uuid.UUID(receipt.dependencies_json[0]["source_id"])
         db.expunge(receipt)
         async with owner_sessionmaker() as writer:
@@ -625,8 +1032,14 @@ async def test_scoped_native_writer_binds_complete_control_input_once(native_wor
             command.target_hash = "0" * 64
             await writer.delete(await writer.get(ContentInputReceipt, receipt_id))
             await writer.commit()
-        denied = await record_native_workspace_receipts(db, context=context, invocation=invocation, model=model,
-            arguments=arguments, content_hash=output.metadata_json["workspace_execution_evidence"]["tool_result_hash"])
+        denied = await record_native_workspace_receipts(
+            db,
+            context=context,
+            invocation=invocation,
+            model=model,
+            arguments=arguments,
+            content_hash=output.metadata_json["workspace_execution_evidence"]["tool_result_hash"],
+        )
         assert denied["receipts"] == {} and denied["failures"][n.path]["reason_code"] == "content_source_changed"
         assert await db.get(ContentInputReceipt, receipt_id, populate_existing=True) is None
         assert (n.root / n.path).read_text() == arguments["content"]
@@ -634,19 +1047,33 @@ async def test_scoped_native_writer_binds_complete_control_input_once(native_wor
         async with owner_sessionmaker() as writer:
             (await writer.get(SessionCommand, command_id)).target_hash = original_target_hash
             await writer.commit()
-        recovered = await record_native_workspace_receipts(db, context=context, invocation=invocation, model=model,
-            arguments=arguments, content_hash=output.metadata_json["workspace_execution_evidence"]["tool_result_hash"])
+        recovered = await record_native_workspace_receipts(
+            db,
+            context=context,
+            invocation=invocation,
+            model=model,
+            arguments=arguments,
+            content_hash=output.metadata_json["workspace_execution_evidence"]["tool_result_hash"],
+        )
         assert recovered == status
         await db.commit()
         response = await n.client.get(f"/agents/{n.agent}/files/artifacts/{artifact.id}/content")
         assert response.status_code == 200 and arguments["content"] in response.text, response.text
         current = (n.root / n.path).stat()
-        assert (current.st_ino, current.st_mtime_ns, current.st_size) == (written.st_ino, written.st_mtime_ns, written.st_size)
+        assert (current.st_ino, current.st_mtime_ns, current.st_size) == (
+            written.st_ino,
+            written.st_mtime_ns,
+            written.st_size,
+        )
 
 
 @pytest.mark.parametrize("load_skill_name", ["source-probe", "skills/mcp-installer/SKILL.md"])
 async def test_actual_skill_input_capture_rejects_pointer_replay_and_rehashed_records(
-    owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, load_skill_name,
+    owner_sessionmaker,
+    app_user_sessionmaker,
+    monkeypatch,
+    tmp_path,
+    load_skill_name,
 ):
     from copy import deepcopy
     import uuid
@@ -658,27 +1085,43 @@ async def test_actual_skill_input_capture_rejects_pointer_replay_and_rehashed_re
     from app.services.session_semantic_history import _event_payload
     from app.services.session_tool_runtime import _sha256
 
-    seed, _client, _bindings, _imported = await _run_native_skill_task(owner_sessionmaker, app_user_sessionmaker, monkeypatch,
-        tmp_path, load_skill_name=load_skill_name)
+    seed, _client, _bindings, _imported = await _run_native_skill_task(
+        owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, load_skill_name=load_skill_name
+    )
     assert (seed["agent_root"] / "workspace/native-report.md").read_text() == "NATIVE_SKILL_REPORT"
     async with app_user_sessionmaker() as db:
         await pin_rls_tenant_context(db, seed["tenant_id"])
-        invocations = (await db.scalars(select(SessionToolInvocation).where(SessionToolInvocation.run_id == seed["run_id"])
-            .order_by(SessionToolInvocation.tool_name))).all()
+        invocations = (
+            await db.scalars(
+                select(SessionToolInvocation)
+                .where(SessionToolInvocation.run_id == seed["run_id"])
+                .order_by(SessionToolInvocation.tool_name)
+            )
+        ).all()
         assert [row.tool_name for row in invocations] == ["load_skill", "run_skill_tool"]
         selected = invocations[0]
         event = await db.get(ChatTranscriptEvent, selected.result_event_id)
         payload = _event_payload(event)
         pointer = payload["metadata"]["skill_input_receipt"]
         assert pointer["status"] == "verified" and pointer["unbound"] == [] and len(pointer["sources"]) == 1
-        assert pointer["sources"][0]["source_kind"] == ("agent_platform_skill_file" if load_skill_name.startswith("skills/") else "agent_skill_file")
-        model = await db.scalar(select(SessionModelResult).where(SessionModelResult.provider_request_id == selected.provider_request_id))
+        assert pointer["sources"][0]["source_kind"] == (
+            "agent_platform_skill_file" if load_skill_name.startswith("skills/") else "agent_skill_file"
+        )
+        model = await db.scalar(
+            select(SessionModelResult).where(SessionModelResult.provider_request_id == selected.provider_request_id)
+        )
         args = selected.effective_arguments_json or selected.provider_arguments_json
         capture = {"status": "captured", "receipt_ref": pointer["evidence_ref"]}
 
         async def load(**changes):
-            kwargs = dict(agent_id=seed["agent_id"], invocation=selected, model_result=model, arguments=args,
-                content_hash=payload["content_hash"], capture=capture)
+            kwargs = dict(
+                agent_id=seed["agent_id"],
+                invocation=selected,
+                model_result=model,
+                arguments=args,
+                content_hash=payload["content_hash"],
+                capture=capture,
+            )
             kwargs.update(changes)
             return await load_skill_input_evidence(db, **kwargs)
 
@@ -712,10 +1155,20 @@ async def test_actual_skill_input_capture_rejects_pointer_replay_and_rehashed_re
         refs = capture.snapshot()["sources"]
         owner = await db.get(User, seed["user_id"])
         await validate_browser_input_dependencies(db, seed["tenant_id"], owner, refs)
-        publisher = await db.scalar(select(User).where(User.tenant_id == seed["tenant_id"], User.role == "platform_admin"))
-        created = await skills.create_skill(skills.SkillCreateIn(name="Reinstalled bundle", folder_name="mcp-installer",
-            files=[skills.SkillFileIn(path="SKILL.md", content=raw.decode())]), current_user=publisher)
-        await files.import_skill_to_agent(seed["agent_id"], files.ImportSkillBody(skill_id=created["id"]), current_user=owner, db=db)
+        publisher = await db.scalar(
+            select(User).where(User.tenant_id == seed["tenant_id"], User.role == "platform_admin")
+        )
+        created = await skills.create_skill(
+            skills.SkillCreateIn(
+                name="Reinstalled bundle",
+                folder_name="mcp-installer",
+                files=[skills.SkillFileIn(path="SKILL.md", content=raw.decode())],
+            ),
+            current_user=publisher,
+        )
+        await files.import_skill_to_agent(
+            seed["agent_id"], files.ImportSkillBody(skill_id=created["id"]), current_user=owner, db=db
+        )
         await db.commit()
         with pytest.raises(ContentInputReceiptError):
             await validate_browser_input_dependencies(db, seed["tenant_id"], owner, refs)
@@ -723,4 +1176,6 @@ async def test_actual_skill_input_capture_rejects_pointer_replay_and_rehashed_re
         capture = SkillInputCapture(seed["agent_id"])
         await load_skill_input_snapshot(capture, seed["tenant_id"])
         capture.observe_file(path, hashlib.sha256(raw).hexdigest())
-        assert capture.snapshot()["unbound"] and all(ref["source_kind"] != "agent_platform_skill_file" for ref in capture.snapshot()["sources"])
+        assert capture.snapshot()["unbound"] and all(
+            ref["source_kind"] != "agent_platform_skill_file" for ref in capture.snapshot()["sources"]
+        )

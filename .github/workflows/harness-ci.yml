@@ -100,7 +100,7 @@ jobs:
       - name: Install Linux sandbox
         run: |
           sudo apt-get update
-          sudo apt-get install --yes apparmor-profiles bubblewrap ripgrep redis-server
+          sudo apt-get install --yes apparmor-profiles bubblewrap ripgrep redis-server libicu-dev
           sudo install -m 0644 \
             /usr/share/apparmor/extra-profiles/bwrap-userns-restrict \
             /etc/apparmor.d/bwrap-userns-restrict
@@ -111,6 +111,21 @@ jobs:
             command -v "$tool" || { echo "Missing native integration prerequisite: $tool" >&2; exit 1; }
           done
           .venv/bin/python -c 'from app.services.subprocess_sandbox import probe_os_sandbox_capability; probe = probe_os_sandbox_capability(); assert probe.available, probe.reason; print(f"{probe.provider}: {probe.reason}")'
+
+      - name: Install pinned OfficeCLI
+        env:
+          OFFICECLI_SKIP_UPDATE: "1"
+        run: |
+          officecli_download="$RUNNER_TEMP/hive-officecli-v1.0.88"
+          officecli_expected_sha256="b24ef538ee05f354cb52169cbd1825f967597f432d475e44e0bd0330c69558e3"
+          curl --fail --silent --show-error --location \
+            --connect-timeout 15 --max-time 120 \
+            https://github.com/iOfficeAI/OfficeCLI/releases/download/v1.0.88/officecli-linux-x64 \
+            --output "$officecli_download"
+          printf '%s  %s\n' "$officecli_expected_sha256" "$officecli_download" | sha256sum -c -
+          sudo install -m 0755 "$officecli_download" /usr/local/bin/officecli
+          rm "$officecli_download"
+          timeout 10 officecli --version
 
       - name: Ruff changed Python paths
         run: |

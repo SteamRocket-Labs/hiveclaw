@@ -54,6 +54,8 @@ bash restart.sh --source
 
 Open [localhost:3008](http://localhost:3008). In source mode, the backend listens on [localhost:8008](http://localhost:8008).
 
+Office document tools and their native integration tests require [OfficeCLI v1.0.88](https://github.com/iOfficeAI/OfficeCLI/releases/tag/v1.0.88). Verify the matching platform asset against the release checksums, then put `officecli` on `PATH` or set `OFFICECLI_BIN`; Linux also needs ICU. Container builds use `OFFICECLI_DOWNLOAD_URL` and `OFFICECLI_SHA256` to install the verified binary.
+
 ### Meet your first employee
 
 1. Register an account. The first registered user becomes the platform administrator.

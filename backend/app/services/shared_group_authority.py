@@ -529,7 +529,11 @@ async def shared_group_input_matches_run(db, *, session, authority, run_id):
 async def validate_shared_group_model_inputs(db, *, tenant_id, agent_id, session_id, run_id, input_bindings):
     from app.models.chat_session import ChatSession
     from app.models.runtime_task import RuntimeTask
-    from app.services.content_input_receipts import ContentInputReceiptError, _validate_input_dependencies
+    from app.services.content_input_receipts import (
+        ContentInputReceiptError,
+        _validate_input_dependencies,
+        group_source_read,
+    )
     from app.services.personal_knowledge_access import AgentRuntimePrincipal
 
     session = await db.scalar(
@@ -548,9 +552,10 @@ async def validate_shared_group_model_inputs(db, *, tenant_id, agent_id, session
     principal = AgentRuntimePrincipal(
         agent_id=agent_id, requester_user_id=actor.id, session_id=str(session_id), runtime_task_id=str(run_id)
     )
-    await _validate_input_dependencies(
-        db, tenant_id, input_bindings.get("dependencies"), user=None, runtime_request=principal
-    )
+    with group_source_read():
+        await _validate_input_dependencies(
+            db, tenant_id, input_bindings.get("dependencies"), user=None, runtime_request=principal
+        )
 
 
 async def bind_shared_group_permission_source(db, *, task, session, invocation):
@@ -713,7 +718,11 @@ async def authorize_group_tool_permission(db, *, authority, invocation):
 async def read_shared_group_history(db, *, session, messages, user=None, run_id=None):
     """Keep immutable protocol groups only when this reader can use their full sources."""
     from app.models.runtime_task import RuntimeTask
-    from app.services.content_input_receipts import ContentInputReceiptError, _validate_input_dependencies
+    from app.services.content_input_receipts import (
+        ContentInputReceiptError,
+        _validate_input_dependencies,
+        group_source_read,
+    )
     from app.services.personal_knowledge_access import AgentRuntimePrincipal
     from app.services.session_model_inputs import _origin_dependencies, _unique_dependencies
 
@@ -751,9 +760,10 @@ async def read_shared_group_history(db, *, session, messages, user=None, run_id=
                 raise ContentInputReceiptError(
                     "group_history_sources_unavailable", "The prior source inventory is incomplete.", 503
                 )
-            await _validate_input_dependencies(
-                db, session.tenant_id, _unique_dependencies(dependencies), user=user, runtime_request=principal
-            )
+            with group_source_read():
+                await _validate_input_dependencies(
+                    db, session.tenant_id, _unique_dependencies(dependencies), user=user, runtime_request=principal
+                )
         except (ContentInputReceiptError, HTTPException) as exc:
             denied = exc.status_code in {401, 403, 404}
             held.append(

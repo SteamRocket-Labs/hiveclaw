@@ -189,12 +189,14 @@ def _bundled_platform_skill_hashes():
     return hashes
 
 
-def original_platform_skill_hashes(workspace):
+def original_platform_skill_hashes(workspace, *, bundled=None):
     """Match only application-package bytes, never registry edits or custom templates."""
     from app.services.workspace_resource_authority import WorkspaceAuthorityError, open_workspace_file
 
     hashes = {}
-    for path, digest in _bundled_platform_skill_hashes().items():
+    if bundled is None:
+        bundled = _bundled_platform_skill_hashes()
+    for path, digest in bundled.items():
         try:
             with open_workspace_file(workspace, path) as reader:
                 if hashlib.file_digest(reader, "sha256").hexdigest() == digest:
@@ -301,10 +303,10 @@ async def _platform_skill_sources(db, tenant_id, agent_id):
         files, source_revision_id = content["platform_skill_sources"], str(revision.id)
     # Keep every original file claim frozen. Missing defaults may be recognized
     # as exact current application bytes, without attesting their copy history.
-    matching = original_platform_skill_hashes(Path(get_settings().AGENT_DATA_DIR) / str(agent_id))
-    files = {**matching, **files}
-    sources = {}
     bundled = _bundled_platform_skill_hashes()
+    matching = original_platform_skill_hashes(Path(get_settings().AGENT_DATA_DIR) / str(agent_id), bundled=bundled)
+    files = {**matching, **files}
+    candidates = {}
     for path, digest in files.items():
         parts = Path(path).parts
         if (
@@ -314,17 +316,26 @@ async def _platform_skill_sources(db, tenant_id, agent_id):
             or path != Path(path).as_posix()
         ):
             continue
-        # A later registry installation keeps its own lineage even when bytes match the bundle.
-        superseded = await db.scalar(
-            select(ConfigRevision.id)
-            .where(
-                ConfigRevision.tenant_id == tenant_id,
-                ConfigRevision.entity_type == "agent_skill_install",
-                ConfigRevision.entity_id == _installation_id(agent_id, parts[1]),
+        candidates[path] = (parts[1], digest)
+    installation_ids = {_installation_id(agent_id, folder) for folder, _digest in candidates.values()}
+    # Read every folder's current lineage together, anew for each source read.
+    superseded = (
+        set(
+            await db.scalars(
+                select(ConfigRevision.entity_id).where(
+                    ConfigRevision.tenant_id == tenant_id,
+                    ConfigRevision.entity_type == "agent_skill_install",
+                    ConfigRevision.entity_id.in_(installation_ids),
+                )
             )
-            .limit(1)
         )
-        if superseded is not None:
+        if installation_ids
+        else set()
+    )
+    sources = {}
+    for path, (folder, digest) in candidates.items():
+        # A later registry installation keeps its own lineage even when bytes match the bundle.
+        if _installation_id(agent_id, folder) in superseded:
             continue
         if bundled.get(path) == digest:
             sources[path] = (source_revision_id, digest)

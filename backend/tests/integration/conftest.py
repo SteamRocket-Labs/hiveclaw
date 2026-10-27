@@ -151,8 +151,12 @@ def _route_default_app_engine(migrated_pg_url):
                     setattr(module, name, after)
 
     _route(original_engine, routed_engine, original_async_session, routed_async_session)
+
+    def restore_factory_aliases(factory):
+        _route(routed_engine, routed_engine, factory, routed_async_session)
+
     try:
-        yield
+        yield restore_factory_aliases
     finally:
         _route(routed_engine, original_engine, routed_async_session, original_async_session)
 
@@ -164,8 +168,21 @@ def monkeypatch(_route_default_app_engine):
     Otherwise a later MonkeyPatch finalizer can resurrect a previous routed
     factory after its integration scope has already restored the defaults.
     """
-    with pytest.MonkeyPatch.context() as patch:
-        yield patch
+    import app.database as app_database
+
+    original_factory = app_database.async_session
+    patched_factory = original_factory
+    try:
+        with pytest.MonkeyPatch.context() as patch:
+            try:
+                yield patch
+            finally:
+                patched_factory = app_database.async_session
+    finally:
+        # Imports made while the default was patched are absent from MonkeyPatch's
+        # undo stack. Restore only aliases that captured that exact test factory.
+        if patched_factory is not original_factory:
+            _route_default_app_engine(patched_factory)
 
 
 @pytest.fixture()

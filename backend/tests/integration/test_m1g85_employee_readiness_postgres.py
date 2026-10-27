@@ -18,7 +18,19 @@ from app.database import get_db, pin_rls_tenant_context
 from app.models.llm import LLMModel
 from app.models.organization_identity import BusinessTeam, BusinessTeamMembership
 from app.models.tenant import Tenant
+from tests.integration import conftest as integration
 from tests.integration.test_m1e_business_teams_postgres import _agent, _user
+
+
+@pytest.fixture
+def pg_container():
+    # A native global worker must not consume queues left by unrelated tests.
+    yield from integration.pg_container.__wrapped__()
+
+
+@pytest.fixture
+def migrated_pg_url(pg_container):
+    return integration.migrated_pg_url.__wrapped__(pg_container)
 
 
 @pytest.fixture

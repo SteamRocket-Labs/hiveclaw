@@ -266,8 +266,13 @@ async def validate_directory(db, tenant_id, dependency, *, user=None, runtime_re
     external = proof["schema"] == EXTERNAL_SCHEMA
     if runtime_request is not None:
         principal, reader = await _runtime_input_actor(db, tenant_id, runtime_request)
-        if principal.agent_id != row.agent_id or reader.id != original.id:
+        if reader.id != original.id:
             raise _error()
+        if principal.agent_id != row.agent_id:
+            from app.services.project_context import project_source_read_allowed
+
+            if external or not project_source_read_allowed(tenant_id, principal):
+                raise _error()
         if external and (
             getattr(reader, "external_principal_id", None) != original.external_principal_id
             or str(principal.session_id) != row.session_id

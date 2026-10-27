@@ -166,10 +166,6 @@ export function useArtifactPreview({
       } catch (error) {
         if (!requestIsCurrent()) return;
         if (operatorView && isForbiddenOperatorResponse(error)) return;
-        if (typeof artifact.previewSnapshotContent === 'string') {
-          setArtifactPreview({ artifact, content: artifact.previewSnapshotContent, usingSnapshot: true });
-          return;
-        }
         setArtifactPreview({
           artifact,
           error: error instanceof Error && !String(error.message || '').includes('File not found')

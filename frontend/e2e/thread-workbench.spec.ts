@@ -277,6 +277,7 @@ async function bootstrap(page: Page, options: {
   theme?: Theme;
   transcriptDelayMs?: number;
   browserOwnSession?: boolean;
+  artifactPreviewSnapshot?: string;
 }) {
   const { audience, scenario, theme = 'light', transcriptDelayMs = 0, browserOwnSession = false } = options;
   const session = sessionFor(audience);
@@ -297,6 +298,13 @@ async function bootstrap(page: Page, options: {
     }]
     : [session];
   const transcript = transcriptFor(audience, scenario);
+  if (options.artifactPreviewSnapshot) {
+    for (const item of transcript) {
+      for (const part of item.parts) {
+        if (part.type === 'artifact') part.preview_snapshot_content = options.artifactPreviewSnapshot;
+      }
+    }
+  }
   const lineage = lineageFor(session, scenario);
   const consoleErrors: string[] = [];
   let sessionSocketSend: ((payload: string) => void) | null = null;
@@ -506,6 +514,38 @@ async function bootstrap(page: Page, options: {
     },
   };
 }
+
+test('ordinary artifact preview respects current source denial and can retry after recovery', async ({ page }, testInfo) => {
+  await bootstrap(page, {
+    audience: 'user', scenario: 'active', artifactPreviewSnapshot: 'CACHED_RELEASE_MARKER',
+  });
+  let sourceAllowed = true;
+  await page.route('**/api/agents/*/files/artifacts/*/content', (route) => route.fulfill(sourceAllowed
+    ? { json: { path: 'workspace/reports/release-report.md', content: 'AUTHORIZED_SERVER_MARKER', uses_snapshot: true } }
+    : { status: 403, json: { detail: 'Source access was revoked' } }));
+  const open = page.getByRole('button', { name: 'Open release-report.md', exact: true }).first();
+  const preview = page.getByTestId('session-artifact-preview-inspector');
+
+  await open.click();
+  await expect(preview).toContainText('AUTHORIZED_SERVER_MARKER');
+  await preview.getByRole('button', { name: 'Close', exact: true }).click();
+  await expect(preview).toHaveCount(0);
+
+  sourceAllowed = false;
+  await open.click();
+  await expect(preview).toContainText('Source access was revoked');
+  await expect(preview).not.toContainText('CACHED_RELEASE_MARKER');
+  await expect(preview).not.toContainText('AUTHORIZED_SERVER_MARKER');
+  const screenshot = testInfo.outputPath('source-denied-preview.png');
+  await page.screenshot({ path: screenshot });
+  await testInfo.attach('source-denied-preview', { path: screenshot, contentType: 'image/png' });
+
+  sourceAllowed = true;
+  await preview.getByRole('button', { name: 'Try Again', exact: true }).click();
+  await expect(preview).toContainText('AUTHORIZED_SERVER_MARKER');
+  await expect(preview).not.toContainText('Source access was revoked');
+  await expect(preview).not.toContainText('CACHED_RELEASE_MARKER');
+});
 
 async function scrollTimelineToBottom(page: Page) {
   const timeline = page.locator('.session-tui-history');

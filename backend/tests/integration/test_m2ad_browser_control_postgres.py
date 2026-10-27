@@ -106,6 +106,30 @@ async def browser_case(owner_sessionmaker, app_user_sessionmaker, tmp_path, monk
             await manager.close()
 
 
+@pytest.fixture
+async def unavailable_browser_rpc(monkeypatch):
+    import socket
+
+    import redis.asyncio as redis_async
+
+    from app.services import browser_rpc
+
+    # Reserve an endpoint without listening, so only this RPC transport refuses
+    # connections even when the host has a working shared Redis service.
+    with socket.socket() as endpoint:
+        endpoint.bind(("127.0.0.1", 0))
+        client = redis_async.Redis(host="127.0.0.1", port=endpoint.getsockname()[1], decode_responses=True)
+
+        async def unavailable():
+            return client
+
+        try:
+            monkeypatch.setattr(browser_rpc, "get_redis", unavailable)
+            yield
+        finally:
+            await client.aclose()
+
+
 async def call(manager, source, action, view=None, **kwargs):
     return await manager.execute(
         source,
@@ -255,7 +279,7 @@ async def test_unknown_mutation_uses_the_late_ack_without_replaying(browser_case
         )
 
 
-async def test_another_worker_cannot_duplicate_or_claim_the_private_resource(browser_case):
+async def test_another_worker_cannot_duplicate_or_claim_the_private_resource(browser_case, unavailable_browser_rpc):
     _, source, manager, _, root = browser_case
     view = (await call(manager, source, "start"))["browser"]
     other = BrowserControlService()

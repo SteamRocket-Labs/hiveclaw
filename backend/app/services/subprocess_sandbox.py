@@ -27,6 +27,8 @@ import os
 import platform
 import shutil
 import subprocess
+import sys
+import sysconfig
 import tempfile
 from dataclasses import dataclass, field
 from functools import lru_cache
@@ -113,6 +115,18 @@ def _resolve_writable_roots(spec: SandboxBuildSpec, *, work_dir: Path, home: Pat
     return tuple(resolved)
 
 
+def _python_runtime_paths() -> tuple[Path, ...]:
+    # Use this trusted process's runtime, never command text or caller env. A
+    # virtualenv needs both its own files and the base interpreter's libraries.
+    paths = {Path(sys.executable), Path(sys.executable).resolve()}
+    for prefix in {sys.prefix, sys.base_prefix}:
+        paths.update(Path(prefix) / name for name in ("bin", "lib", "lib64", "pyvenv.cfg"))
+    library_dir = sysconfig.get_config_var("LIBDIR")
+    if library_dir:
+        paths.add(Path(library_dir))
+    return tuple(path for path in sorted(paths) if path.exists())
+
+
 def _darwin_sandbox_command(
     command: list[str], *, work_dir: Path, home: Path, spec: SandboxBuildSpec
 ) -> tuple[list[str], list[Path]]:
@@ -145,6 +159,10 @@ def _darwin_sandbox_command(
         lines.append("(deny file-write*)")
         for root in writable:
             lines.append(f'(allow file-write* (subpath "{_escape_sandbox_string(str(root))}"))')
+    runtime_paths = _python_runtime_paths()
+    for path in runtime_paths:
+        selector = "subpath" if path.is_dir() else "literal"
+        lines.append(f'(allow file-read* ({selector} "{_escape_sandbox_string(str(path))}"))')
     for root in spec.protected_roots:
         lines.append(f'(deny file-read* file-write* (subpath "{_escape_sandbox_string(str(Path(root).resolve()))}"))')
     if spec.protected_roots:
@@ -159,7 +177,7 @@ def _darwin_sandbox_command(
         denied_roots.append(Path("/Users"))
     ancestors = {
         parent
-        for root in (work_dir, home)
+        for root in (work_dir, home, *runtime_paths)
         for parent in root.parents
         if any(parent.is_relative_to(denied) for denied in denied_roots)
     }
@@ -197,6 +215,16 @@ def _linux_bwrap_command(
         "--tmpfs",
         "/tmp",
     ]
+
+    # The interpreter can live outside the system mounts. Mount only its runtime
+    # before writable scopes and protected masks, which must retain precedence.
+    library_dir = sysconfig.get_config_var("LIBDIR")
+    if library_dir and Path(library_dir).is_dir():
+        # Do not forward a caller's LD_* variables into the sandbox. A relocated
+        # shared Python build still needs its own trusted library search path.
+        args += ["--setenv", "LD_LIBRARY_PATH", str(library_dir)]
+    for path in _python_runtime_paths():
+        args += ["--ro-bind", str(path), str(path)]
 
     # Writable roots are bound read-write; work_dir and home are otherwise bound
     # read-only so the sandbox can still read them (read_only binds both ro).

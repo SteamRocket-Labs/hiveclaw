@@ -12,7 +12,10 @@ Two layers:
 
 from __future__ import annotations
 
+import os
+import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -208,6 +211,84 @@ def test_bwrap_network_toggle(monkeypatch):
     assert "--share-net" in allowed
 
 
+@pytest.mark.parametrize("virtualenv", [False, True])
+def test_bwrap_exposes_the_active_python_runtime_without_its_installation_parent(monkeypatch, tmp_path, virtualenv):
+    runtime = tmp_path / "toolchain" / "python"
+    for directory in (runtime / "bin", runtime / "lib"):
+        directory.mkdir(parents=True)
+    executable = runtime / "bin" / "python3"
+    executable.touch()
+    prefix = runtime
+    if virtualenv:
+        prefix = tmp_path / "application" / ".venv"
+        (prefix / "bin").mkdir(parents=True)
+        (prefix / "lib").mkdir()
+        (prefix / "pyvenv.cfg").write_text(f"home = {runtime / 'bin'}\n")
+        (prefix / "bin" / "python3").symlink_to(executable)
+    monkeypatch.setattr(
+        subprocess_sandbox,
+        "sys",
+        SimpleNamespace(executable=str(prefix / "bin" / "python3"), prefix=str(prefix), base_prefix=str(runtime)),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        subprocess_sandbox,
+        "sysconfig",
+        SimpleNamespace(get_config_var=lambda key: str(runtime / "lib") if key == "LIBDIR" else None),
+        raising=False,
+    )
+    untrusted = tmp_path / "credentials"
+    untrusted.mkdir()
+    monkeypatch.setenv("LD_LIBRARY_PATH", str(untrusted))
+    monkeypatch.setenv("PYTHONHOME", str(untrusted))
+    work, home = tmp_path / "job" / "work", tmp_path / "job" / "home"
+    argv = _bwrap_argv(monkeypatch, SandboxBuildSpec(), work, home)
+
+    readonly = _pairs(argv, "--ro-bind")
+    for path in (runtime / "bin", runtime / "lib", prefix / "bin", prefix / "lib"):
+        assert (str(path), str(path)) in readonly
+        assert (str(path), str(path)) not in _pairs(argv, "--bind")
+    if virtualenv:
+        assert (str(prefix / "pyvenv.cfg"), str(prefix / "pyvenv.cfg")) in readonly
+    for path in (runtime, runtime.parent, prefix, prefix.parent, untrusted):
+        assert (str(path), str(path)) not in readonly
+    assert ("LD_LIBRARY_PATH", str(runtime / "lib")) in _pairs(argv, "--setenv")
+    assert str(untrusted) not in argv
+    assert (str(work), str(work)) in _pairs(argv, "--bind")
+    assert "--share-net" not in argv
+
+
+def test_bwrap_runtime_mounts_cannot_reveal_protected_sources_or_shadow_writable_work(monkeypatch, tmp_path):
+    prefix = tmp_path / "python"
+    (prefix / "bin").mkdir(parents=True)
+    (prefix / "lib").mkdir()
+    monkeypatch.setattr(
+        subprocess_sandbox,
+        "sys",
+        SimpleNamespace(executable=str(prefix / "bin" / "python3"), prefix=str(prefix), base_prefix=str(prefix)),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        subprocess_sandbox,
+        "sysconfig",
+        SimpleNamespace(get_config_var=lambda key: str(prefix / "lib") if key == "LIBDIR" else None),
+        raising=False,
+    )
+    work, home = prefix / "lib" / "work", tmp_path / "home"
+    argv = _bwrap_argv(monkeypatch, SandboxBuildSpec(protected_roots=(str(prefix),)), work, home)
+    runtime_mount = next(
+        index
+        for index in range(len(argv) - 2)
+        if argv[index : index + 3] == ["--ro-bind", str(prefix / "lib"), str(prefix / "lib")]
+    )
+    mask = next(index for index in range(len(argv) - 1) if argv[index : index + 2] == ["--tmpfs", str(prefix)])
+    work_mount = max(
+        index for index in range(len(argv) - 2) if argv[index : index + 3] == ["--bind", str(work), str(work)]
+    )
+    assert argv[runtime_mount] == "--ro-bind"
+    assert runtime_mount < mask < work_mount
+
+
 # ── Backward-compat: no spec preserves the legacy permissive scope ─────
 
 
@@ -227,6 +308,70 @@ def test_build_without_spec_uses_legacy_full_access(monkeypatch):
 
 
 # ── Behavior tests (skip-guarded by real sandbox availability) ─────────
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(not _SANDBOX_CAPABILITY.available, reason=_SANDBOX_CAPABILITY.reason)
+async def test_runtime_read_access_preserves_write_denial_and_protected_source_masks(monkeypatch, tmp_path):
+    from app.services.code_execution.local_provider import execute_local_sandboxed_command
+
+    prefix, work, home = tmp_path / "python", tmp_path / "work", tmp_path / "home"
+    for path in (prefix / "bin", prefix / "lib", work, home):
+        path.mkdir(parents=True)
+    source = prefix / "bin" / "runtime-data"
+    source.write_text("TRUSTED_RUNTIME_BYTES")
+    monkeypatch.setattr(
+        subprocess_sandbox,
+        "sys",
+        SimpleNamespace(executable=sys.executable, prefix=str(prefix), base_prefix=str(prefix)),
+    )
+
+    async def run(command, spec):
+        return await execute_local_sandboxed_command(
+            command,
+            work_dir=work,
+            env={"HOME": str(home)},
+            timeout=15,
+            spec=spec,
+        )
+
+    readable = await run(["/bin/cat", str(source)], SandboxBuildSpec())
+    assert readable.exit_code == 0 and readable.stdout == "TRUSTED_RUNTIME_BYTES"
+    write = await run(["/bin/sh", "-c", 'printf changed > "$1"', "sh", str(source)], SandboxBuildSpec())
+    assert write.exit_code != 0 and source.read_text() == "TRUSTED_RUNTIME_BYTES"
+    protected = await run(["/bin/cat", str(source)], SandboxBuildSpec(protected_roots=(str(prefix),)))
+    assert protected.exit_code != 0 and "TRUSTED_RUNTIME_BYTES" not in protected.stdout
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(not _SANDBOX_CAPABILITY.available, reason=_SANDBOX_CAPABILITY.reason)
+@pytest.mark.parametrize("executable", ["python3", str(Path(sys.executable).resolve())])
+@pytest.mark.parametrize("profile", [SandboxProfile.WORKSPACE_WRITE, SandboxProfile.FULL_ACCESS_LOCAL_ONLY])
+async def test_active_python_creates_a_consumable_file_in_the_real_sandbox(tmp_path, executable, profile):
+    from app.services.code_execution.local_provider import execute_local_sandboxed_command
+
+    work, home = tmp_path / "work", tmp_path / "home"
+    work.mkdir()
+    home.mkdir()
+    result = await execute_local_sandboxed_command(
+        [
+            executable,
+            "-I",
+            "-c",
+            "import hashlib; from pathlib import Path; "
+            "Path('saved.txt').write_text(hashlib.sha256(b'canonical').hexdigest()); print('PYTHON_EXECUTED')",
+        ],
+        work_dir=work,
+        env={"HOME": str(home), "PATH": str(Path(sys.executable).parent) + os.pathsep + os.defpath},
+        timeout=15,
+        spec=SandboxBuildSpec(profile=profile),
+    )
+
+    assert result.error is None, result.error
+    assert result.exit_code == 0, result.stderr
+    assert result.stdout == "PYTHON_EXECUTED\n"
+    assert (work / "saved.txt").read_text() == "0deeb8fa1dbbee4c0dbe7f5e3c9183940139f26d22797ee8ab07c00557a4c2ff"
+    assert result.evidence["isolation"] in {"bubblewrap", "sandbox-exec"}
 
 
 @pytest.mark.asyncio

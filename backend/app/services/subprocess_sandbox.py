@@ -223,7 +223,12 @@ def _linux_bwrap_command(
         # Do not forward a caller's LD_* variables into the sandbox. A relocated
         # shared Python build still needs its own trusted library search path.
         args += ["--setenv", "LD_LIBRARY_PATH", str(library_dir)]
-    for path in _python_runtime_paths():
+    runtime_paths = _python_runtime_paths()
+    for path in runtime_paths:
+        # A bound runtime directory already carries its entrypoint symlinks.
+        # Rebinding a child can follow an as-yet-unmounted base-runtime target.
+        if any(parent != path and parent.is_dir() and path.is_relative_to(parent) for parent in runtime_paths):
+            continue
         args += ["--ro-bind", str(path), str(path)]
 
     # Writable roots are bound read-write; work_dir and home are otherwise bound

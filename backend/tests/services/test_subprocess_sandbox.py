@@ -248,6 +248,10 @@ def test_bwrap_exposes_the_active_python_runtime_without_its_installation_parent
     for path in (runtime / "bin", runtime / "lib", prefix / "bin", prefix / "lib"):
         assert (str(path), str(path)) in readonly
         assert (str(path), str(path)) not in _pairs(argv, "--bind")
+    # The directory already exposes the entrypoint. A second file bind can
+    # follow its symlink before the base runtime's target directory is mounted.
+    for path in (prefix / "bin" / "python3", executable):
+        assert (str(path), str(path)) not in readonly
     if virtualenv:
         assert (str(prefix / "pyvenv.cfg"), str(prefix / "pyvenv.cfg")) in readonly
     for path in (runtime, runtime.parent, prefix, prefix.parent, untrusted):

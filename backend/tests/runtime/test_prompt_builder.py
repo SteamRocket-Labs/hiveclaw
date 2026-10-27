@@ -144,6 +144,36 @@ def test_dynamic_suffix_preserves_every_deferred_tool_despite_advisory_budget() 
     assert "more available in manifest" not in suffix
 
 
+def test_deferred_catalog_fits_the_existing_prompt_budget_without_losing_tool_metadata() -> None:
+    from app.runtime.prompt_builder import assemble_runtime_prompt, build_dynamic_prompt_suffix
+
+    candidates = [
+        {
+            "name": f"catalog_tool_{idx}",
+            "group": f"group_{idx % 3}",
+            "reason": "available_in_turn_via_tool_search",
+            "selector": f"select:catalog_tool_{idx}",
+            "schema_token_cost": 99,
+            "risk": f"risk_{idx % 2}",
+        }
+        for idx in range(95)
+    ]
+    suffix = build_dynamic_prompt_suffix(available_deferred_tools=candidates)
+    frozen = "Immutable agent contract\n" + "F" * 44975
+
+    prompt = assemble_runtime_prompt(frozen, suffix)
+
+    assert prompt.startswith(frozen)
+    assert len(prompt) <= 60000
+    assert "schema_tokens=99" in suffix
+    assert "reason=available_in_turn_via_tool_search" in suffix
+    for candidate in candidates:
+        line = next(line for line in suffix.splitlines() if line.startswith(f"- {candidate['name']} — "))
+        assert candidate["selector"] in line
+        assert f"group={candidate['group']}" in line
+        assert f"risk={candidate['risk']}" in line
+
+
 def test_dynamic_suffix_records_context_candidate_selection_ledger():
     from app.runtime.context_budget import TaskProfile
     from app.runtime.prompt_builder import build_dynamic_prompt_suffix

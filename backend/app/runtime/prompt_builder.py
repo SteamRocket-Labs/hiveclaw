@@ -418,12 +418,25 @@ def _render_deferred_tool_index(deferred_candidates: list[Any], *, budget_chars:
         "These tools are not loaded yet. To load exactly one schema, call `tool_search` with `select:<tool_name>`.",
     ]
     lines = list(header)
-    for candidate in deferred_candidates:
-        details = (
-            f"group={candidate.group}; risk={candidate.risk}; "
-            f"schema_tokens={candidate.schema_token_cost}; reason={candidate.reason}"
+    metadata = [
+        {
+            "group": candidate.group,
+            "risk": candidate.risk,
+            "schema_tokens": candidate.schema_token_cost,
+            "reason": candidate.reason,
+        }
+        for candidate in deferred_candidates
+    ]
+    shared = {key: value for key, value in metadata[0].items() if all(row[key] == value for row in metadata)}
+    if shared:
+        lines.append(
+            "Shared metadata for every listed tool: " + "; ".join(f"{key}={value}" for key, value in shared.items())
         )
-        line = f"- {candidate.name} — `{candidate.selector}` ({details})"
+    for candidate, row in zip(deferred_candidates, metadata):
+        details = "; ".join(f"{key}={value}" for key, value in row.items() if key not in shared)
+        line = f"- {candidate.name} — `{candidate.selector}`"
+        if details:
+            line += f" ({details})"
         lines.append(line)
     return "\n".join(lines)
 

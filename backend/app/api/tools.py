@@ -1616,6 +1616,7 @@ def _session_channel_configuration_response(question, target, snapshot, *, repla
         "configuration": snapshot,
         "target_agent_id": str(target.id),
         "target_agent_name": target.name,
+        "target_tenant_id": str(target.tenant_id) if target.tenant_id else None,
         "replayed": replayed,
     }
 

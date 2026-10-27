@@ -108,6 +108,7 @@ export interface SessionChannelConfiguration {
   replayed?: boolean;
   target_agent_id: string;
   target_agent_name: string;
+  target_tenant_id?: string | null;
   configuration: { id: string; updated_at: string; channel_type: string; scope: 'employee' | 'company' } | null;
 }
 

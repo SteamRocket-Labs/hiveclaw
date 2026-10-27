@@ -1329,6 +1329,8 @@
       "editChannel": "编辑渠道配置",
       "channelTitle": "为当前工作配置渠道",
       "companyChannel": "已有公司渠道",
+      "companyEditAccess": "公司管理员可以编辑此连接。你可以使用当前配置继续工作。",
+      "companyScopeMissing": "请重新核查当前配置，加载其所属公司后再编辑。",
       "employeeChannel": "员工专属渠道",
       "channelPrivate": "渠道凭据保存在连接设置中。配置读回不代表已验证外部投递，也不会增加使用权限。",
       "review": "重新核查配置",

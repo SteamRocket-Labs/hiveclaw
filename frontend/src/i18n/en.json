@@ -1329,6 +1329,8 @@
       "editChannel": "Edit channel configuration",
       "channelTitle": "Configure channel for this work",
       "companyChannel": "Existing company channel",
+      "companyEditAccess": "A company administrator can edit this connection. You can continue with the current configuration.",
+      "companyScopeMissing": "Review the current configuration to reload its company before editing.",
       "employeeChannel": "Employee channel",
       "channelPrivate": "Channel credentials stay in connection settings. Configuration readback does not verify external delivery or grant additional permissions.",
       "review": "Review current configuration",

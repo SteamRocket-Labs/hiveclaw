@@ -10,13 +10,18 @@ import './TenantFeishuSettings.css';
 import TenantFeishuGroupRoutes from './TenantFeishuGroupRoutes';
 
 
-export default function TenantFeishuSettings({ selectedTenantId }: { selectedTenantId: string }) {
+export default function TenantFeishuSettings({ selectedTenantId, onConfigured, onBusyChange }: {
+  selectedTenantId: string; onConfigured?: () => void; onBusyChange?: (busy: boolean) => void;
+}) {
   const current = useCompanyChannelScope(selectedTenantId);
   if (!current.user || !current.tenant || !['org_admin', 'platform_admin'].includes(current.user.role)) return null;
-  return <CompanyBotEditor key={current.key} scope={current.scope} scopeKey={current.key} />;
+  return <CompanyBotEditor key={current.key} scope={current.scope} scopeKey={current.key}
+    onConfigured={onConfigured} onBusyChange={onBusyChange} />;
 }
 
-function CompanyBotEditor({ scope, scopeKey }: { scope: TenantChannelScope; scopeKey: string }) {
+function CompanyBotEditor({ scope, scopeKey, onConfigured, onBusyChange }: {
+  scope: TenantChannelScope; scopeKey: string; onConfigured?: () => void; onBusyChange?: (busy: boolean) => void;
+}) {
   const { t } = useTranslation();
   const id = useId();
   const [base, setBase] = useState<TenantChannelConfig | null | undefined>(undefined);
@@ -45,7 +50,7 @@ function CompanyBotEditor({ scope, scopeKey }: { scope: TenantChannelScope; scop
     if (!latest.isError && latest.data) { if (base === undefined) setInitial(latest.data.config); setBase(latest.data.config); setOutcome(null); }
   }
   async function save() {
-    setBusy(true); setOutcome(null);
+    setBusy(true); onBusyChange?.(true); setOutcome(null);
     try {
       const saved = await channelApi.saveTenantFeishu({ ...scope, app_id: appId, is_active: active,
         ...(region !== 'keep' ? { platform_region: region } : {}),
@@ -57,10 +62,11 @@ function CompanyBotEditor({ scope, scopeKey }: { scope: TenantChannelScope; scop
       setBase(saved); setInitial(saved); setSecrets({ app_secret: '', encrypt_key: '', verification_token: '' });
       setClear({ encrypt_key: false, verification_token: false }); setOutcome('saved');
       await query.refetch();
+      onConfigured?.();
     } catch (error) {
       setOutcome(error instanceof ApiError && error.status === 422 ? 'invalid'
         : error instanceof ApiError && [400, 401, 403].includes(error.status) ? 'denied' : 'unknown');
-    } finally { setBusy(false); }
+    } finally { setBusy(false); onBusyChange?.(false); }
   }
   const saved = !query.isError ? query.data?.config : undefined;
   const groupScopeKey = JSON.stringify([scopeKey, saved?.id, saved?.app_id, saved?.extra_config.platform_region, saved?.extra_config.open_api_domain]);

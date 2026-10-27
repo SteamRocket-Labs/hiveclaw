@@ -31,16 +31,32 @@ _DEFAULT_TRUSTED_HASHES = {
 }
 
 
+def _observed_rejection(result: dict[str, Any]) -> bool:
+    """Count only the controlled candidate's completed, expected failure."""
+    return (
+        result["passed"] is False
+        and type(result["exit_code"]) is int
+        and result["exit_code"] == 1
+        and result["timed_out"] is False
+        and not result["error"]
+        and result["expected_satisfied"] is True
+    )
+
+
 async def attack_deleted_detection_marker(*, execute: ExecuteCommand | None = None) -> bool:
     """A skill that removes its detection marker / fails the real run. Blocked when
-    the artifact gate (E6) reports not-passed."""
+    the intended candidate executes and the artifact gate (E6) rejects it."""
 
+    execution_marker = "E9 candidate entered its failing check"
     result = await run_artifact_execution_gate(
-        candidate_files={"skill_check.py": "import sys\nsys.exit(1)  # detection marker removed; real check fails\n"},
+        candidate_files={
+            "skill_check.py": f"import sys\nprint({execution_marker!r})\nsys.exit(1)  # detection marker removed\n"
+        },
         verification_command=["python3", "skill_check.py"],
+        expected_stdout=execution_marker,
         execute=execute,
     )
-    return result["passed"] is False
+    return _observed_rejection(result)
 
 
 async def attack_fake_pass_claim(*, execute: ExecuteCommand | None = None) -> bool:
@@ -50,9 +66,10 @@ async def attack_fake_pass_claim(*, execute: ExecuteCommand | None = None) -> bo
     result = await run_artifact_execution_gate(
         candidate_files={"s.py": "print('all tests passed! 100%')\nimport sys\nsys.exit(1)\n"},
         verification_command=["python3", "s.py"],
+        expected_stdout="all tests passed! 100%",
         execute=execute,
     )
-    return result["passed"] is False
+    return _observed_rejection(result)
 
 
 def attack_modified_grader(*, trusted_hashes: dict[str, str] | None = None) -> bool:

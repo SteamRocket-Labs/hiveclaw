@@ -249,7 +249,11 @@ def _preview_kind_for_path(path: PurePosixPath) -> str:
 
 
 def _snapshot_hash(*, rel_path: PurePosixPath, stat_data: Any | None, content_hash: str | None = None) -> str:
-    payload = f"{rel_path.as_posix()}:sha256:{content_hash}" if content_hash else f"{rel_path.as_posix()}:{getattr(stat_data, 'st_size', '')}:{getattr(stat_data, 'st_mtime_ns', '')}"
+    payload = (
+        f"{rel_path.as_posix()}:sha256:{content_hash}"
+        if content_hash
+        else f"{rel_path.as_posix()}:{getattr(stat_data, 'st_size', '')}:{getattr(stat_data, 'st_mtime_ns', '')}"
+    )
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
@@ -290,11 +294,15 @@ def _safe_snapshot_relative_path(value: Any) -> Path | None:
 def _write_snapshot_gc_report(workspace_root: Path, report: dict[str, Any]) -> None:
     from app.services.workspace_resource_authority import _workspace_parent_descriptor
 
-    with _workspace_parent_descriptor(workspace_root, CHAT_ARTIFACT_SNAPSHOT_GC_REPORT.as_posix(), create=True) as (directory, name):
+    with _workspace_parent_descriptor(workspace_root, CHAT_ARTIFACT_SNAPSHOT_GC_REPORT.as_posix(), create=True) as (
+        directory,
+        name,
+    ):
         temporary = f".{name}.{uuid.uuid4().hex}.tmp"
         try:
-            descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
-                0o600, dir_fd=directory)
+            descriptor = os.open(
+                temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600, dir_fd=directory
+            )
             with os.fdopen(descriptor, "w", encoding="utf-8") as output:
                 json.dump(report, output, ensure_ascii=False, sort_keys=True, indent=2)
                 output.flush()
@@ -320,15 +328,26 @@ def cleanup_chat_artifact_snapshots(
     from app.services.chat_snapshot_store import snapshot_store_lock
 
     with snapshot_store_lock(workspace_root):
-        return _cleanup_chat_artifact_snapshots_locked(workspace_root=workspace_root,
-            referenced_snapshot_paths=referenced_snapshot_paths, protected_runtime_task_ids=protected_runtime_task_ids,
-            retention_days=retention_days, now=now, referenced_pin_paths=referenced_pin_paths or set(),
-            uncertain_payload_references=uncertain_payload_references)
+        return _cleanup_chat_artifact_snapshots_locked(
+            workspace_root=workspace_root,
+            referenced_snapshot_paths=referenced_snapshot_paths,
+            protected_runtime_task_ids=protected_runtime_task_ids,
+            retention_days=retention_days,
+            now=now,
+            referenced_pin_paths=referenced_pin_paths or set(),
+            uncertain_payload_references=uncertain_payload_references,
+        )
 
 
 def _cleanup_chat_artifact_snapshots_locked(
-    *, workspace_root, referenced_snapshot_paths, protected_runtime_task_ids, retention_days, now,
-    referenced_pin_paths, uncertain_payload_references,
+    *,
+    workspace_root,
+    referenced_snapshot_paths,
+    protected_runtime_task_ids,
+    retention_days,
+    now,
+    referenced_pin_paths,
+    uncertain_payload_references,
 ) -> dict[str, Any]:
     """Delete expired unreferenced delivery snapshots and write an audit report."""
     from app.services.workspace_resource_authority import _workspace_parent_descriptor
@@ -370,11 +389,16 @@ def _cleanup_chat_artifact_snapshots_locked(
         with _workspace_parent_descriptor(root, scan_path) as (snapshot_directory, _name):
             from app.services.chat_snapshot_store import STORE_LOCK, is_shared_snapshot_path, snapshot_pin_holds
 
-            pins = snapshot_pin_holds(snapshot_directory, referenced_pin_paths=referenced_pin_paths,
-                protected_runs=protected_runtime_task_ids or set(), cutoff=cutoff)
+            pins = snapshot_pin_holds(
+                snapshot_directory,
+                referenced_pin_paths=referenced_pin_paths,
+                protected_runs=protected_runtime_task_ids or set(),
+                cutoff=cutoff,
+            )
             manifest_errors = pins["errors"]
-            for current, directories, files, directory in os.fwalk(".", topdown=False,
-                follow_symlinks=False, dir_fd=snapshot_directory):
+            for current, directories, files, directory in os.fwalk(
+                ".", topdown=False, follow_symlinks=False, dir_fd=snapshot_directory
+            ):
                 for name in files:
                     if current == "." and name == STORE_LOCK:
                         continue
@@ -402,7 +426,7 @@ def _cleanup_chat_artifact_snapshots_locked(
                     if shared and manifest_errors:
                         kept_uncertain_count += 1
                         continue
-                    parts = PurePosixPath(rel_display).parts[len(CHAT_ARTIFACT_SNAPSHOT_DIR.parts):]
+                    parts = PurePosixPath(rel_display).parts[len(CHAT_ARTIFACT_SNAPSHOT_DIR.parts) :]
                     try:
                         run_id = uuid.UUID(parts[1]) if len(parts) >= 3 else None
                     except ValueError:
@@ -482,14 +506,31 @@ async def cleanup_chat_artifact_snapshots_for_agent(
         from app.models.runtime_task import RuntimeTask
         from app.models.audit import ApprovalRequest
 
-        protected_runs.update((await db.scalars(select(RuntimeTask.id).where(
-            or_(RuntimeTask.parent_agent_id == agent_id, RuntimeTask.child_agent_id == agent_id),
-            RuntimeTask.status.not_in(("completed", "failed", "killed", "skipped"))))).all())
-        envelopes = (await db.scalars(select(ApprovalRequest.execution_envelope).where(
-            ApprovalRequest.agent_id == agent_id,
-            or_(ApprovalRequest.status == "pending", ApprovalRequest.execution_status == "needs_reconciliation",
-                (ApprovalRequest.status == "approved") & ApprovalRequest.execution_status.in_(
-                    ("pending", "approved", "queued", "executing", "needs_reapproval")))))).all()
+        protected_runs.update(
+            (
+                await db.scalars(
+                    select(RuntimeTask.id).where(
+                        or_(RuntimeTask.parent_agent_id == agent_id, RuntimeTask.child_agent_id == agent_id),
+                        RuntimeTask.status.not_in(("completed", "failed", "killed", "skipped")),
+                    )
+                )
+            ).all()
+        )
+        envelopes = (
+            await db.scalars(
+                select(ApprovalRequest.execution_envelope).where(
+                    ApprovalRequest.agent_id == agent_id,
+                    or_(
+                        ApprovalRequest.status == "pending",
+                        ApprovalRequest.execution_status == "needs_reconciliation",
+                        (ApprovalRequest.status == "approved")
+                        & ApprovalRequest.execution_status.in_(
+                            ("pending", "approved", "queued", "executing", "needs_reapproval")
+                        ),
+                    ),
+                )
+            )
+        ).all()
         for envelope in envelopes:
             try:
                 protected_runs.add(uuid.UUID(str(envelope.get("runtime_task_id"))))
@@ -512,7 +553,11 @@ async def cleanup_chat_artifact_snapshots_for_agent(
                 from app.services.chat_snapshot_store import is_shared_snapshot_path
 
                 reference = str(snapshot.get("snapshot_ref_path") or "")
-                if not is_shared_snapshot_path(storage_path) or _safe_snapshot_relative_path(reference) is None or not reference.endswith(".ref.json"):
+                if (
+                    not is_shared_snapshot_path(storage_path)
+                    or _safe_snapshot_relative_path(reference) is None
+                    or not reference.endswith(".ref.json")
+                ):
                     uncertain_payload_references = True
                 else:
                     referenced_pins.add(reference)
@@ -545,7 +590,9 @@ def _cleanup_orphaned_office_preview_caches(
     if not cache_root.exists() and not cache_root.is_symlink():
         return 0
     if not shutil.rmtree.avoids_symlink_attacks:
-        raise WorkspaceAuthorityError("workspace_storage_unavailable", "Safe preview cache deletion is unavailable on this host.")
+        raise WorkspaceAuthorityError(
+            "workspace_storage_unavailable", "Safe preview cache deletion is unavailable on this host."
+        )
     removed_count = 0
     with _workspace_parent_descriptor(Path(workspace_root), ".office_meta/artifacts/.gc-scan") as (directory, _name):
         for name in os.listdir(directory):
@@ -577,12 +624,24 @@ def _write_content_snapshot(
     from app.services.workspace_resource_authority import WorkspaceAuthorityError
 
     try:
-        return publish_snapshot(root=workspace_root, source=source_path, session_id=session_id,
-            runtime_task_id=runtime_task_id, revision_id=snapshot_hash, artifact_path=rel_path, content_hash=content_hash)
+        return publish_snapshot(
+            root=workspace_root,
+            source=source_path,
+            session_id=session_id,
+            runtime_task_id=runtime_task_id,
+            revision_id=snapshot_hash,
+            artifact_path=rel_path,
+            content_hash=content_hash,
+        )
     except BlobIntegrityError as exc:
-        raise WorkspaceAuthorityError("workspace_resource_changed", "The immutable artifact snapshot changed; reconcile the stored version before retrying.") from exc
+        raise WorkspaceAuthorityError(
+            "workspace_resource_changed",
+            "The immutable artifact snapshot changed; reconcile the stored version before retrying.",
+        ) from exc
     except (BlobStoreError, OSError) as exc:
-        raise WorkspaceAuthorityError("workspace_storage_unavailable", "Snapshot storage is unavailable; retry the request.") from exc
+        raise WorkspaceAuthorityError(
+            "workspace_storage_unavailable", "Snapshot storage is unavailable; retry the request."
+        ) from exc
 
 
 def _read_preview_snapshot(path: Path, preview_kind: str) -> tuple[str | None, bool]:
@@ -611,9 +670,15 @@ def legacy_artifact_preview(workspace_root: Path, path: str) -> dict[str, Any]:
     try:
         kind = _preview_kind_for_path(relative)
         content, truncated = _read_preview_snapshot(captured, kind)
-        return {"name": relative.name, "preview_kind": kind, "size": captured.stat().st_size,
-            "mime_type": mimetypes.guess_type(relative.name)[0], "preview_snapshot_content": content,
-            "preview_snapshot_truncated": truncated, "legacy_current_file_fallback": True}
+        return {
+            "name": relative.name,
+            "preview_kind": kind,
+            "size": captured.stat().st_size,
+            "mime_type": mimetypes.guess_type(relative.name)[0],
+            "preview_snapshot_content": content,
+            "preview_snapshot_truncated": truncated,
+            "legacy_current_file_fallback": True,
+        }
     finally:
         directory.cleanup()
 
@@ -659,8 +724,10 @@ ArtifactFileSource = Literal[
 
 def is_chat_artifact_snapshot_storage_path(path: str) -> bool:
     normalized = PurePosixPath(str(path).replace("\\", "/").strip()).as_posix().strip("/")
-    return any(normalized == prefix or normalized.startswith(prefix + "/")
-        for prefix in (CHAT_ARTIFACT_SNAPSHOT_DIR.as_posix(), ".chat_artifact_snapshots"))
+    return any(
+        normalized == prefix or normalized.startswith(prefix + "/")
+        for prefix in (CHAT_ARTIFACT_SNAPSHOT_DIR.as_posix(), ".chat_artifact_snapshots")
+    )
 
 
 def resolve_chat_artifact_file(
@@ -798,7 +865,9 @@ def build_artifact_candidate(
         if execution_evidence_ref is not None:
             snapshot_hash = hashlib.sha256(f"{snapshot_hash}\n{execution_evidence_ref}".encode()).hexdigest()
         if selection_model_result_id is not None:
-            snapshot_hash = hashlib.sha256(f"{snapshot_hash}\nselection-model:{selection_model_result_id}".encode()).hexdigest()
+            snapshot_hash = hashlib.sha256(
+                f"{snapshot_hash}\nselection-model:{selection_model_result_id}".encode()
+            ).hexdigest()
         if source_receipt_id is not None:
             snapshot_hash = hashlib.sha256(f"{snapshot_hash}\ncontent-receipt:{source_receipt_id}".encode()).hexdigest()
         preview_kind = _preview_kind_for_path(rel)
@@ -928,7 +997,11 @@ def build_session_artifact_parts(
 
 def _artifact_part_from_candidate(candidate: dict[str, Any]) -> dict[str, Any]:
     return {
-        **({"snapshot_payload_schema": candidate["snapshot_payload_schema"]} if candidate.get("snapshot_payload_schema") else {}),
+        **(
+            {"snapshot_payload_schema": candidate["snapshot_payload_schema"]}
+            if candidate.get("snapshot_payload_schema")
+            else {}
+        ),
         "type": "artifact",
         "artifact_id": str(candidate.get("artifact_id") or candidate.get("id")),
         "path": candidate["path"],
@@ -954,21 +1027,42 @@ def _artifact_part_from_candidate(candidate: dict[str, Any]) -> dict[str, Any]:
 
 
 async def authorize_artifact_recipient_read(db, user, artifact, **authority):
-    """HTTP and UI readers cannot borrow business-inspection source access."""
+    """Keep actual recipients separate from explicitly requested inspection."""
+    from contextlib import nullcontext
+
     from app.core.resource_authority import authorize_resource_action
     from app.core.source_read_purpose import source_recipient_read
 
-    with source_recipient_read(session_id=artifact.root_session_id or artifact.session_id, user_id=user.id):
-        return await authorize_resource_action(db, user, agent_id=artifact.agent_id, resource_kind='chat_artifact',
-            resource_id=artifact.id, action='read', owner_user_id=artifact.owner_user_id,
+    # Core authority still enforces scope and audit; an outer recipient
+    # purpose stays in force even when inspection is requested.
+    scope = (
+        nullcontext()
+        if authority.get("allow_manager_override") is True
+        else source_recipient_read(session_id=artifact.root_session_id or artifact.session_id, user_id=user.id)
+    )
+    with scope:
+        return await authorize_resource_action(
+            db,
+            user,
+            agent_id=artifact.agent_id,
+            resource_kind="chat_artifact",
+            resource_id=artifact.id,
+            action="read",
+            owner_user_id=artifact.owner_user_id,
             root_session_id=artifact.root_session_id or artifact.session_id,
-            authority_state=artifact.authority_state, **authority)
+            authority_state=artifact.authority_state,
+            **authority,
+        )
 
 
 def artifact_part_from_model(artifact: ChatArtifact) -> dict[str, Any]:
     snapshot = artifact.snapshot_json or {}
     return {
-        **({"snapshot_payload_schema": snapshot["snapshot_payload_schema"]} if snapshot.get("snapshot_payload_schema") else {}),
+        **(
+            {"snapshot_payload_schema": snapshot["snapshot_payload_schema"]}
+            if snapshot.get("snapshot_payload_schema")
+            else {}
+        ),
         "type": "artifact",
         "artifact_id": str(artifact.id),
         "path": artifact.path,
@@ -1063,17 +1157,32 @@ async def _load_existing_chat_artifact(
 async def _native_artifact_for_final_message(db, *, tenant_id, agent_id, session_id, runtime_task_id, path):
     from app.models.chat_transcript_event import ChatTranscriptEvent
 
-    event = await db.scalar(select(ChatTranscriptEvent).where(
-        ChatTranscriptEvent.tenant_id == tenant_id, ChatTranscriptEvent.agent_id == agent_id,
-        ChatTranscriptEvent.session_id == session_id, ChatTranscriptEvent.run_id == runtime_task_id,
-        ChatTranscriptEvent.item_kind == "tool_result", ChatTranscriptEvent.lifecycle == "completed",
-        or_(ChatTranscriptEvent.parts_json.contains([{"type": "artifact", "path": path}]),
-            ChatTranscriptEvent.metadata_json["v2_payload"]["metadata"]["artifact_delivery"]["files"].contains([{"path": path}])),
-    ).order_by(ChatTranscriptEvent.sequence.desc()).limit(1))
+    event = await db.scalar(
+        select(ChatTranscriptEvent)
+        .where(
+            ChatTranscriptEvent.tenant_id == tenant_id,
+            ChatTranscriptEvent.agent_id == agent_id,
+            ChatTranscriptEvent.session_id == session_id,
+            ChatTranscriptEvent.run_id == runtime_task_id,
+            ChatTranscriptEvent.item_kind == "tool_result",
+            ChatTranscriptEvent.lifecycle == "completed",
+            or_(
+                ChatTranscriptEvent.parts_json.contains([{"type": "artifact", "path": path}]),
+                ChatTranscriptEvent.metadata_json["v2_payload"]["metadata"]["artifact_delivery"]["files"].contains(
+                    [{"path": path}]
+                ),
+            ),
+        )
+        .order_by(ChatTranscriptEvent.sequence.desc())
+        .limit(1)
+    )
     if event is None:
         return False, None
-    parts = [part for part in event.parts_json or []
-        if isinstance(part, dict) and part.get("type") == "artifact" and part.get("path") == path]
+    parts = [
+        part
+        for part in event.parts_json or []
+        if isinstance(part, dict) and part.get("type") == "artifact" and part.get("path") == path
+    ]
     if len(parts) != 1 or event.invocation_id is None:
         return True, None
     try:
@@ -1081,8 +1190,18 @@ async def _native_artifact_for_final_message(db, *, tenant_id, agent_id, session
     except ValueError:
         return True, None
     artifact = await db.get(ChatArtifact, artifact_id)
-    if artifact is None or (artifact.tenant_id, artifact.agent_id, artifact.session_id, artifact.runtime_task_id, artifact.path) != (
-        tenant_id, agent_id, session_id, runtime_task_id, path,
+    if artifact is None or (
+        artifact.tenant_id,
+        artifact.agent_id,
+        artifact.session_id,
+        artifact.runtime_task_id,
+        artifact.path,
+    ) != (
+        tenant_id,
+        agent_id,
+        session_id,
+        runtime_task_id,
+        path,
     ):
         return True, None
     snapshot = artifact.snapshot_json or {}
@@ -1129,7 +1248,9 @@ async def create_chat_artifacts_for_message(
     # Trusted tenant-scoped callers can retain their transaction's identity
     # locks; all other callers keep an independent source session by default.
     from app.services.content_input_receipts import (
-        ContentInputReceiptError, validate_artifact_content_receipt, validate_browser_workspace_receipt,
+        ContentInputReceiptError,
+        validate_artifact_content_receipt,
+        validate_browser_workspace_receipt,
         validate_runtime_workspace_receipt,
     )
     from app.services.workspace_resource_authority import WorkspaceAuthorityError, authorize_workspace_path
@@ -1140,6 +1261,7 @@ async def create_chat_artifacts_for_message(
     runtime_uuid = uuid.UUID(str(runtime_task_id)) if runtime_task_id else None
     authority_user = runtime_principal = authority_error = machine_scope = None
     from app.services.machine_runtime_authority import is_machine_runtime_actor
+
     if isinstance(db, AsyncSession):
         from app.services.runtime_user_identity import load_scoped_runtime_user
 
@@ -1157,25 +1279,49 @@ async def create_chat_artifacts_for_message(
             authority_session.root_session_id or authority_session.id if authority_session is not None else None
         )
         if authority_session is not None and authority_session.user_id is None and runtime_uuid is not None:
-            from app.services.machine_runtime_authority import MachineArtifactReader, load_machine_workspace_scope, machine_task_actor
+            from app.services.machine_runtime_authority import (
+                MachineArtifactReader,
+                load_machine_workspace_scope,
+                machine_task_actor,
+            )
             from app.services.personal_knowledge_access import AgentRuntimePrincipal
 
             try:
-                actor = await machine_task_actor(db, tenant_id=tenant_id, agent_id=agent_id,
-                    runtime_task_id=runtime_uuid, session_id=session_uuid, user_id=None,
-                    scope='task.read' if source == 'workspace_read' and selection_model_result_id is not None else 'agent.execute')
+                actor = await machine_task_actor(
+                    db,
+                    tenant_id=tenant_id,
+                    agent_id=agent_id,
+                    runtime_task_id=runtime_uuid,
+                    session_id=session_uuid,
+                    user_id=None,
+                    scope="task.read"
+                    if source == "workspace_read" and selection_model_result_id is not None
+                    else "agent.execute",
+                )
                 if actor is not None:
                     authority_user = actor
                     machine_scope = await load_machine_workspace_scope(db, actor=actor, session_id=session_uuid)
-                    principal_type = MachineArtifactReader if source == 'workspace_read' and selection_model_result_id is not None else AgentRuntimePrincipal
-                    runtime_principal = principal_type(agent_id=agent_id, requester_user_id=None,
-                        session_id=str(session_uuid), runtime_task_id=str(runtime_uuid), purpose='machine_task')
+                    principal_type = (
+                        MachineArtifactReader
+                        if source == "workspace_read" and selection_model_result_id is not None
+                        else AgentRuntimePrincipal
+                    )
+                    runtime_principal = principal_type(
+                        agent_id=agent_id,
+                        requester_user_id=None,
+                        session_id=str(session_uuid),
+                        runtime_task_id=str(runtime_uuid),
+                        purpose="machine_task",
+                    )
             except HTTPException as exc:
                 authority_error = exc
         if authority_session is not None and authority_session.audience_kind == "group":
             from app.models.runtime_task import RuntimeTask
             from app.services.personal_knowledge_access import AgentRuntimePrincipal
-            from app.services.shared_group_authority import _load_shared_group_task_actor, load_shared_group_runtime_actor
+            from app.services.shared_group_authority import (
+                _load_shared_group_task_actor,
+                load_shared_group_runtime_actor,
+            )
 
             try:
                 # A sealed read snapshot recovers its original reader, without starting another Agent effect.
@@ -1189,20 +1335,33 @@ async def create_chat_artifacts_for_message(
                     actor = await load_shared_group_runtime_actor(db, task=task, session=authority_session)
                 owner_user_id = actor.id
                 if owner_user_id is not None and source != "workspace_read" and not saved_remote:
-                    runtime_principal = AgentRuntimePrincipal(agent_id=agent_id, requester_user_id=owner_user_id,
-                        session_id=str(session_uuid), runtime_task_id=str(runtime_uuid))
+                    runtime_principal = AgentRuntimePrincipal(
+                        agent_id=agent_id,
+                        requester_user_id=owner_user_id,
+                        session_id=str(session_uuid),
+                        runtime_task_id=str(runtime_uuid),
+                    )
             except HTTPException as exc:
                 authority_error = exc
             except (PermissionError, ValueError):
                 owner_user_id = None
         if owner_user_id is not None:
             authority_user = await load_scoped_runtime_user(db, owner_user_id, tenant_id=tenant_id)
-    authority_state = "owned" if owner_user_id is not None or is_machine_runtime_actor(authority_user) else "quarantined"
+    authority_state = (
+        "owned" if owner_user_id is not None or is_machine_runtime_actor(authority_user) else "quarantined"
+    )
 
     def record_source_error(path, exc):
         if publication_errors is not None:
-            publication_errors.append({"path": path, "status": "denied" if exc.status_code == 403 else "unavailable",
-                "reason_code": exc.code, "retryable": False, "recovery_action": "reconcile_artifact_sources"})
+            publication_errors.append(
+                {
+                    "path": path,
+                    "status": "denied" if exc.status_code == 403 else "unavailable",
+                    "reason_code": exc.code,
+                    "retryable": False,
+                    "recovery_action": "reconcile_artifact_sources",
+                }
+            )
 
     async def _register_path(candidate: dict[str, Any]) -> None:
         if not isinstance(db, AsyncSession) or tenant_id is None or source == "workspace_read":
@@ -1232,39 +1391,64 @@ async def create_chat_artifacts_for_message(
                     raise authority_error
                 if authority_user is None:
                     raise WorkspaceAuthorityError(
-                        "artifact_source_principal_required", "Artifact publication requires the session's source reader.",
+                        "artifact_source_principal_required",
+                        "Artifact publication requires the session's source reader.",
                     )
                 if machine_scope is not None:
                     if not machine_scope.can_read(_safe_workspace_relative_path(path).as_posix()):
-                        raise WorkspaceAuthorityError('workspace_resource_forbidden', 'This output is outside the machine work.')
+                        raise WorkspaceAuthorityError(
+                            "workspace_resource_forbidden", "This output is outside the machine work."
+                        )
                 else:
                     await authorize_workspace_path(
-                        db, authority_user, agent_id=agent_id, path=path, action="read",
-                        path_exists=True, session_id=session_uuid, runtime_principal=runtime_principal,
+                        db,
+                        authority_user,
+                        agent_id=agent_id,
+                        path=path,
+                        action="read",
+                        path_exists=True,
+                        session_id=session_uuid,
+                        runtime_principal=runtime_principal,
                     )
             except (WorkspaceAuthorityError, HTTPException) as exc:
                 if publication_errors is not None:
                     denied = not isinstance(exc, HTTPException) or exc.status_code in {401, 403, 404}
-                    publication_errors.append({
-                        "path": path, "status": "denied" if denied else "unavailable",
-                        "reason_code": exc.code if isinstance(exc, WorkspaceAuthorityError) else "artifact_source_access_unavailable",
-                        "retryable": False, "recovery_action": "request_source_read_access" if denied else "retry_artifact_publication",
-                    })
+                    publication_errors.append(
+                        {
+                            "path": path,
+                            "status": "denied" if denied else "unavailable",
+                            "reason_code": exc.code
+                            if isinstance(exc, WorkspaceAuthorityError)
+                            else "artifact_source_access_unavailable",
+                            "retryable": False,
+                            "recovery_action": "request_source_read_access" if denied else "retry_artifact_publication",
+                        }
+                    )
                 continue
         if rebind_existing_to_message and runtime_uuid is not None and isinstance(db, AsyncSession):
             handled, native_artifact = await _native_artifact_for_final_message(
-                db, tenant_id=tenant_id, agent_id=agent_id, session_id=session_uuid,
-                runtime_task_id=runtime_uuid, path=_safe_workspace_relative_path(path).as_posix(),
+                db,
+                tenant_id=tenant_id,
+                agent_id=agent_id,
+                session_id=session_uuid,
+                runtime_task_id=runtime_uuid,
+                path=_safe_workspace_relative_path(path).as_posix(),
             )
             if handled:
                 if native_artifact is not None:
                     try:
                         async with (
-                            nullcontext(source_validation_session) if source_validation_session is not None
+                            nullcontext(source_validation_session)
+                            if source_validation_session is not None
                             else tenant_scoped_session(tenant_id)
                         ) as source_db:
-                            await validate_artifact_content_receipt(source_db, tenant_id, authority_user, native_artifact,
-                                runtime_principal=runtime_principal)
+                            await validate_artifact_content_receipt(
+                                source_db,
+                                tenant_id,
+                                authority_user,
+                                native_artifact,
+                                runtime_principal=runtime_principal,
+                            )
                         with captured_chat_artifact_file(native_artifact, workspace_root) as (captured, _source):
                             if captured is None:
                                 native_artifact = None
@@ -1277,9 +1461,15 @@ async def create_chat_artifacts_for_message(
                     native_artifact.message_id = message_id
                     parts.append(artifact_part_from_model(native_artifact))
                 elif publication_errors is not None:
-                    publication_errors.append({"path": path, "status": "unknown",
-                        "reason_code": "workspace_execution_unverified", "retryable": False,
-                        "recovery_action": "reconcile_artifact_publication"})
+                    publication_errors.append(
+                        {
+                            "path": path,
+                            "status": "unknown",
+                            "reason_code": "workspace_execution_unverified",
+                            "retryable": False,
+                            "recovery_action": "reconcile_artifact_publication",
+                        }
+                    )
                 continue
         try:
             candidate = build_artifact_candidate(
@@ -1296,7 +1486,9 @@ async def create_chat_artifacts_for_message(
                 source_agent_id=source_agent_id,
                 download_agent_id=download_agent_id,
                 delivery_agent_id=delivery_agent_id,
-                expected_content_hash=(expected_content_hashes or {}).get(_safe_workspace_relative_path(path).as_posix()),
+                expected_content_hash=(expected_content_hashes or {}).get(
+                    _safe_workspace_relative_path(path).as_posix()
+                ),
                 execution_evidence_ref=execution_evidence_ref,
                 tool_invocation_id=tool_invocation_id,
                 selection_model_result_id=selection_model_result_id,
@@ -1305,10 +1497,15 @@ async def create_chat_artifacts_for_message(
         except (OSError, WorkspaceAuthorityError):
             if publication_errors is None:
                 raise
-            publication_errors.append({
-                "path": path, "status": "unknown", "reason_code": "artifact_capture_failed",
-                "retryable": False, "recovery_action": "reconcile_artifact_publication",
-            })
+            publication_errors.append(
+                {
+                    "path": path,
+                    "status": "unknown",
+                    "reason_code": "artifact_capture_failed",
+                    "retryable": False,
+                    "recovery_action": "reconcile_artifact_publication",
+                }
+            )
             continue
         if not candidate:
             continue
@@ -1319,28 +1516,43 @@ async def create_chat_artifacts_for_message(
             # Native outputs bind only their executor's receipt, never a later same-byte write.
             receipt = None
             if (source_receipt_ids or {}).get(candidate["path"]):
-                receipt = await db.get(ContentInputReceipt, source_receipt_ids[candidate["path"]], populate_existing=True)
+                receipt = await db.get(
+                    ContentInputReceipt, source_receipt_ids[candidate["path"]], populate_existing=True
+                )
             elif tool_invocation_id:
-                receipt = await db.get(ContentInputReceipt,
-                    uuid.uuid5(uuid.UUID(str(tool_invocation_id)), f"workspace-content:{candidate['path']}"), populate_existing=True)
+                receipt = await db.get(
+                    ContentInputReceipt,
+                    uuid.uuid5(uuid.UUID(str(tool_invocation_id)), f"workspace-content:{candidate['path']}"),
+                    populate_existing=True,
+                )
             elif candidate["path"].startswith("workspace/"):
                 receipt = await latest_workspace_receipt(db, tenant_id, agent_id, candidate["path"])
-            candidate["snapshot"]["content_input_receipt_id"] = str(receipt.id) if (
-                receipt is not None and receipt.tenant_id == tenant_id and receipt.carrier_kind == "workspace_artifact"
-                and receipt.carrier_ref == workspace_artifact_ref(agent_id, candidate["path"])
-                and receipt.content_sha256 == candidate["content_hash"]) else None
+            candidate["snapshot"]["content_input_receipt_id"] = (
+                str(receipt.id)
+                if (
+                    receipt is not None
+                    and receipt.tenant_id == tenant_id
+                    and receipt.carrier_kind == "workspace_artifact"
+                    and receipt.carrier_ref == workspace_artifact_ref(agent_id, candidate["path"])
+                    and receipt.content_sha256 == candidate["content_hash"]
+                )
+                else None
+            )
             try:
                 async with (
-                    nullcontext(source_validation_session) if source_validation_session is not None
+                    nullcontext(source_validation_session)
+                    if source_validation_session is not None
                     else tenant_scoped_session(tenant_id)
                 ) as source_db:
                     source_receipt = receipt if candidate["snapshot"]["content_input_receipt_id"] is not None else None
                     if runtime_principal is not None:
-                        await validate_runtime_workspace_receipt(source_db, tenant_id, runtime_principal,
-                            source_receipt, candidate["content_hash"])
+                        await validate_runtime_workspace_receipt(
+                            source_db, tenant_id, runtime_principal, source_receipt, candidate["content_hash"]
+                        )
                     else:
-                        await validate_browser_workspace_receipt(source_db, tenant_id, authority_user,
-                            source_receipt, candidate["content_hash"])
+                        await validate_browser_workspace_receipt(
+                            source_db, tenant_id, authority_user, source_receipt, candidate["content_hash"]
+                        )
             except ContentInputReceiptError as exc:
                 record_source_error(path, exc)
                 continue
@@ -1400,11 +1612,13 @@ async def create_chat_artifacts_for_message(
             if isinstance(db, AsyncSession):
                 try:
                     async with (
-                        nullcontext(source_validation_session) if source_validation_session is not None
+                        nullcontext(source_validation_session)
+                        if source_validation_session is not None
                         else tenant_scoped_session(tenant_id)
                     ) as source_db:
-                        await validate_artifact_content_receipt(source_db, tenant_id, authority_user, existing,
-                            runtime_principal=runtime_principal)
+                        await validate_artifact_content_receipt(
+                            source_db, tenant_id, authority_user, existing, runtime_principal=runtime_principal
+                        )
                 except ContentInputReceiptError as exc:
                     record_source_error(path, exc)
                     continue
@@ -1439,7 +1653,10 @@ async def materialize_declared_read_artifacts(db, *, task, model_result_id, path
     model = await db.get(SessionModelResult, model_result_id)
     dependencies, complete = _model_dependencies(model) if model else ([], False)
     if model is None or (model.tenant_id, model.session_id, model.run_id) != (
-        task.tenant_id, uuid.UUID(task.parent_session_id), task.id):
+        task.tenant_id,
+        uuid.UUID(task.parent_session_id),
+        task.id,
+    ):
         return []
     read_ids = []
     for dep in dependencies:
@@ -1448,11 +1665,18 @@ async def materialize_declared_read_artifacts(db, *, task, model_result_id, path
                 read_ids.append(uuid.UUID(dep["source_id"]))
             except ValueError:
                 continue
-    invocations = list(await db.scalars(select(SessionToolInvocation).where(
-        SessionToolInvocation.id.in_(read_ids), SessionToolInvocation.tenant_id == task.tenant_id,
-        SessionToolInvocation.session_id == model.session_id, SessionToolInvocation.run_id == task.id,
-        SessionToolInvocation.tool_name.in_(("read_file", "fs_read", "read_document")),
-        SessionToolInvocation.effect_state == "effect_committed")))
+    invocations = list(
+        await db.scalars(
+            select(SessionToolInvocation).where(
+                SessionToolInvocation.id.in_(read_ids),
+                SessionToolInvocation.tenant_id == task.tenant_id,
+                SessionToolInvocation.session_id == model.session_id,
+                SessionToolInvocation.run_id == task.id,
+                SessionToolInvocation.tool_name.in_(("read_file", "fs_read", "read_document")),
+                SessionToolInvocation.effect_state == "effect_committed",
+            )
+        )
+    )
     parts = []
     attempted_paths = set()
     for invocation in invocations:
@@ -1461,13 +1685,19 @@ async def materialize_declared_read_artifacts(db, *, task, model_result_id, path
         if path is None or path.as_posix() not in paths:
             continue
         if not complete:
-            raise TerminalReadArtifactSelectionNeedsReconciliation("the file's selecting model has incomplete input sources")
+            raise TerminalReadArtifactSelectionNeedsReconciliation(
+                "the file's selecting model has incomplete input sources"
+            )
         path = path.as_posix()
         attempted_paths.add(path)
-        sources, bound = await _origin_dependencies(db, tenant_id=task.tenant_id, agent_id=task.parent_agent_id,
-            ref=f"session-tool-result:{invocation.id}")
-        if not bound or not any(dep in dependencies for dep in sources if dep["source_kind"] == "session_tool_invocation"
-            and dep["source_id"] == str(invocation.id)):
+        sources, bound = await _origin_dependencies(
+            db, tenant_id=task.tenant_id, agent_id=task.parent_agent_id, ref=f"session-tool-result:{invocation.id}"
+        )
+        if not bound or not any(
+            dep in dependencies
+            for dep in sources
+            if dep["source_kind"] == "session_tool_invocation" and dep["source_id"] == str(invocation.id)
+        ):
             continue
         evidence_id = uuid.uuid5(invocation.id, "workspace-input-evidence")
         span = await db.get(InvocationSpan, evidence_id)
@@ -1477,30 +1707,65 @@ async def materialize_declared_read_artifacts(db, *, task, model_result_id, path
         except (KeyError, ValueError, TypeError):
             continue
         receipt = await db.get(ContentInputReceipt, receipt_id)
-        if receipt is None or {"source_kind": "workspace_artifact", "source_id": str(receipt_id),
-            "source_version": receipt.content_sha256} not in sources:
+        if (
+            receipt is None
+            or {
+                "source_kind": "workspace_artifact",
+                "source_id": str(receipt_id),
+                "source_version": receipt.content_sha256,
+            }
+            not in sources
+        ):
             continue
         message_id = uuid.uuid5(invocation.id, "read-result-artifact-message")
-        anchor = await _ensure_tool_result_artifact_message(db, message_id=message_id, agent_id=task.parent_agent_id,
-            tenant_id=task.tenant_id, session_id=model.session_id, user_id=task.root_user_id,
-            external_principal_id=task.root_external_principal_id, content=json.dumps({"tool_name": invocation.tool_name,
-                "invocation_id": str(invocation.id), "path": path, "source_receipt_id": str(receipt_id)}))
+        anchor = await _ensure_tool_result_artifact_message(
+            db,
+            message_id=message_id,
+            agent_id=task.parent_agent_id,
+            tenant_id=task.tenant_id,
+            session_id=model.session_id,
+            user_id=task.root_user_id,
+            external_principal_id=task.root_external_principal_id,
+            content=json.dumps(
+                {
+                    "tool_name": invocation.tool_name,
+                    "invocation_id": str(invocation.id),
+                    "path": path,
+                    "source_receipt_id": str(receipt_id),
+                }
+            ),
+        )
         errors = []
-        created = await create_chat_artifacts_for_message(db=db, agent_id=task.parent_agent_id,
-            tenant_id=task.tenant_id, session_id=model.session_id, message_id=message_id, runtime_task_id=task.id,
-            paths=[path], workspace_root=Path(get_settings().AGENT_DATA_DIR) / str(task.parent_agent_id),
-            source="workspace_read", action="referenced", tool_call_id=invocation.provider_tool_use_id,
-            source_receipt_ids={path: receipt_id}, expected_content_hashes={path: receipt.content_sha256},
+        created = await create_chat_artifacts_for_message(
+            db=db,
+            agent_id=task.parent_agent_id,
+            tenant_id=task.tenant_id,
+            session_id=model.session_id,
+            message_id=message_id,
+            runtime_task_id=task.id,
+            paths=[path],
+            workspace_root=Path(get_settings().AGENT_DATA_DIR) / str(task.parent_agent_id),
+            source="workspace_read",
+            action="referenced",
+            tool_call_id=invocation.provider_tool_use_id,
+            source_receipt_ids={path: receipt_id},
+            expected_content_hashes={path: receipt.content_sha256},
             selection_model_result_id=model.id,
-            execution_evidence_ref=f"workspace-input:{evidence_id}", tool_invocation_id=invocation.id,
-            publication_errors=errors)
+            execution_evidence_ref=f"workspace-input:{evidence_id}",
+            tool_invocation_id=invocation.id,
+            publication_errors=errors,
+        )
         parts.extend(created)
         if errors:
             task.metadata_json = {**(task.metadata_json or {}), "artifact_read_publication_errors": errors}
-        if not created and not await db.scalar(select(ChatArtifact.id).where(ChatArtifact.message_id == message_id).limit(1)):
+        if not created and not await db.scalar(
+            select(ChatArtifact.id).where(ChatArtifact.message_id == message_id).limit(1)
+        ):
             await db.delete(anchor)
     if attempted_paths - {part["path"] for part in parts}:
-        raise TerminalReadArtifactSelectionNeedsReconciliation("declared file read cannot be recovered for its original reader")
+        raise TerminalReadArtifactSelectionNeedsReconciliation(
+            "declared file read cannot be recovered for its original reader"
+        )
     return parts
 
 

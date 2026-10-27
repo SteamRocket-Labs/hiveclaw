@@ -1262,25 +1262,33 @@ async def _resolve_origin_dependencies(db, *, tenant_id, agent_id, ref):
             load_native_empty_read_evidence,
         )
 
-        directory = (
+        receipts = []
+        if (
             invocation.tool_name in {"list_files", "fs_list", "glob_search"}
             and "native_directory_read_receipt" in metadata
-        )
-        pointer = metadata.get("native_directory_read_receipt" if directory else "native_empty_read_receipt")
-        if not isinstance(pointer, dict) or pointer.get("status") != "verified":
+        ):
+            receipts.append(("native_directory_read_receipt", load_native_directory_read_evidence))
+        if "native_empty_read_receipt" in metadata:
+            receipts.append(("native_empty_read_receipt", load_native_empty_read_evidence))
+        if not receipts:
             return _unique_dependencies(dependencies), False
         try:
-            loader = load_native_directory_read_evidence if directory else load_native_empty_read_evidence
-            bound = await loader(
-                db,
-                agent_id=agent_id,
-                invocation=invocation,
-                model_result=model,
-                arguments=arguments,
-                content_hash=payload["content_hash"],
-                capture={"status": "captured", "receipt_ref": pointer.get("evidence_ref")},
-            )
-            return _unique_dependencies(dependencies), inherited_complete and bound == pointer
+            for key, loader in receipts:
+                pointer = metadata[key]
+                if not isinstance(pointer, dict) or pointer.get("status") != "verified":
+                    return _unique_dependencies(dependencies), False
+                bound = await loader(
+                    db,
+                    agent_id=agent_id,
+                    invocation=invocation,
+                    model_result=model,
+                    arguments=arguments,
+                    content_hash=payload["content_hash"],
+                    capture={"status": "captured", "receipt_ref": pointer.get("evidence_ref")},
+                )
+                if bound != pointer:
+                    return _unique_dependencies(dependencies), False
+            return _unique_dependencies(dependencies), inherited_complete
         except (ContentInputReceiptError, ValueError, TypeError):
             return _unique_dependencies(dependencies), False
     if invocation.tool_name in {"read_file", "read_document", "fs_read"}:

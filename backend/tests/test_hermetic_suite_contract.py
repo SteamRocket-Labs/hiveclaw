@@ -52,7 +52,7 @@ def _run_worker_failure(tmp_path: Path, *, linked_log: Path | None = None):
 import os
 import sys
 
-def test_failed_worker(tmp_path):
+def test_failed_worker(tmp_path, request):
     worker_log = tmp_path / 'worker.log'
     if os.environ['FAILURE_TEST_LINK']:
         worker_log.symlink_to(os.environ['FAILURE_TEST_LINK'])
@@ -61,6 +61,7 @@ def test_failed_worker(tmp_path):
     print('synthetic worker stdout')
     print('synthetic worker stderr', file=sys.stderr)
     logging.warning('synthetic worker cause')
+    request.node.add_report_section('call', 'Synthetic target inventory', 'target-run-evidence')
     assert False, 'synthetic worker failed'
 """
     )
@@ -108,6 +109,7 @@ def test_failure_receipt_retains_captured_output_and_complete_worker_log(tmp_pat
     assert "synthetic worker stdout" in sections.get("Captured stdout call", "")
     assert "synthetic worker stderr" in sections.get("Captured stderr call", "")
     assert "synthetic worker cause" in sections.get("Captured log call", "")
+    assert any("target-run-evidence" in content for content in sections.values())
     files = receipt.get("files", [])
     assert len(files) == 1 and files[0]["name"] == "worker.log"
     archive = case / files[0]["archive"]
@@ -126,3 +128,13 @@ def test_failure_receipt_does_not_follow_worker_log_symlinks(tmp_path: Path) -> 
     assert not (case / "pytest-failure-files").exists()
     assert canary not in json.dumps(receipt)
     assert outside.read_text() == canary
+
+
+def test_phase_timings_survive_a_failed_suite_without_a_final_summary(tmp_path: Path) -> None:
+    case, receipt, _body = _run_worker_failure(tmp_path)
+    timings = [json.loads(line) for line in (case / "pytest-timings.jsonl").read_text().splitlines()]
+
+    assert [row["when"] for row in timings] == ["setup", "call", "teardown"]
+    assert [row["outcome"] for row in timings] == ["passed", "failed", "passed"]
+    assert all(row["nodeid"] == receipt["nodeid"] for row in timings)
+    assert all(row["duration"] >= 0 and row["stop"] >= row["start"] for row in timings)

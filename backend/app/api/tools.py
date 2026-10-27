@@ -75,10 +75,13 @@ class ToolCreateIn(BaseModel):
 class ToolUpdateIn(BaseModel):
     enabled: bool | None = None
     config: dict | None = None
-    confirm_mcp_credential: bool = Field(False, description=(
-        "Administrator declaration that the existing credential is company-controlled and authorized "
-        "for shared use at this tool's current endpoint. Requires the current MCP fingerprint."
-    ))
+    confirm_mcp_credential: bool = Field(
+        False,
+        description=(
+            "Administrator declaration that the existing credential is company-controlled and authorized "
+            "for shared use at this tool's current endpoint. Requires the current MCP fingerprint."
+        ),
+    )
     expected_mcp_fingerprint: str | None = None
 
 
@@ -145,7 +148,7 @@ async def _build_feishu_runtime_status(
     tenant_id: uuid.UUID | None = None,
 ) -> dict:
     from app.services.agent_tool_domains.feishu_cli import _feishu_cli_available
-    from app.services.feishu_service import _HAS_LARK
+    from app.services.feishu_service import lark_sdk_available
 
     settings = get_settings()
     cli_enabled = bool(getattr(settings, "FEISHU_CLI_ENABLED", False))
@@ -172,7 +175,7 @@ async def _build_feishu_runtime_status(
         docs_ready = cli_available or tenant_auth_ready
         payload["docs_read_ready"] = docs_ready
         payload["base_tasks_ready"] = docs_ready
-        payload["cardkit_dependency_ready"] = _HAS_LARK and tenant_auth_ready
+        payload["cardkit_dependency_ready"] = lark_sdk_available() and tenant_auth_ready
         payload["cardkit_ready"] = payload["cardkit_dependency_ready"]
         payload["ok"] = docs_ready or cli_enabled
         if tenant_auth_ready and cli_available:
@@ -224,7 +227,7 @@ async def _build_feishu_runtime_status(
             "office_access": office_access,
             "docs_read_ready": docs_ready,
             "base_tasks_ready": base_ready,
-            "cardkit_dependency_ready": _HAS_LARK and (channel_auth_valid or tenant_auth_ready),
+            "cardkit_dependency_ready": lark_sdk_available() and (channel_auth_valid or tenant_auth_ready),
             "ok": (channel_auth_valid if channel_configured else False) or docs_ready or cli_enabled or cli_available,
         }
     )
@@ -318,9 +321,9 @@ async def _probe_feishu_cardkit_status(
     db: AsyncSession | None,
     tenant_id: uuid.UUID | None,
 ) -> dict:
-    from app.services.feishu_service import _HAS_LARK, feishu_service
+    from app.services.feishu_service import lark_sdk_available, feishu_service
 
-    if not _HAS_LARK:
+    if not lark_sdk_available():
         return {
             "cardkit_verified": False,
             "cardkit_last_error": "lark-oapi package is not installed.",
@@ -562,7 +565,9 @@ def _serialize_agent_tool_row(tool: Tool, agent_tool: AgentTool | None, *, base_
         "agent_tool_id": str(agent_tool.id) if agent_tool else None,
         "source": agent_tool.source if agent_tool else "system",
         "global_config": mask_agent_tool_config_secrets(_public_tool_config(tool, defaults), tool.config_schema or {}),
-        "agent_config": mask_agent_tool_config_secrets(_public_tool_config(tool, agent_config), tool.config_schema or {}),
+        "agent_config": mask_agent_tool_config_secrets(
+            _public_tool_config(tool, agent_config), tool.config_schema or {}
+        ),
     }
 
 
@@ -801,8 +806,12 @@ async def update_global_tool(
     if data.confirm_mcp_credential and tool.tenant_id is None:
         raise HTTPException(status_code=400, detail="Company credential confirmation requires a company-owned MCP tool")
     if tool.type == "mcp" and tool.tenant_id is not None:
-        locked = await db.execute(select(Tool).where(Tool.id == tool_id, Tool.tenant_id == tool.tenant_id)
-            .with_for_update().execution_options(populate_existing=True))
+        locked = await db.execute(
+            select(Tool)
+            .where(Tool.id == tool_id, Tool.tenant_id == tool.tenant_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
         tool = locked.scalar_one_or_none()
         if tool is None:
             raise HTTPException(status_code=404, detail="Tool changed or is no longer available")
@@ -811,7 +820,9 @@ async def update_global_tool(
             from app.services.mcp_metadata_trust import current_mcp_fingerprint
 
             if not data.expected_mcp_fingerprint or data.expected_mcp_fingerprint != current_mcp_fingerprint(tool):
-                raise HTTPException(status_code=409, detail="MCP configuration changed; reload before confirming company use")
+                raise HTTPException(
+                    status_code=409, detail="MCP configuration changed; reload before confirming company use"
+                )
 
     if tool.tenant_id is None:
         if data.enabled is False and is_agent_base_tool(str(tool.name)):
@@ -843,9 +854,14 @@ async def update_global_tool(
         if data.enabled is not None:
             tool.enabled = data.enabled
             if tool.type == "mcp":
-                policy = (await db.execute(select(TenantToolConfig).where(
-                    TenantToolConfig.tenant_id == tool.tenant_id, TenantToolConfig.tool_id == tool.id,
-                ))).scalar_one_or_none()
+                policy = (
+                    await db.execute(
+                        select(TenantToolConfig).where(
+                            TenantToolConfig.tenant_id == tool.tenant_id,
+                            TenantToolConfig.tool_id == tool.id,
+                        )
+                    )
+                ).scalar_one_or_none()
                 if policy is not None:
                     policy.enabled = data.enabled
         if data.config is not None:
@@ -860,8 +876,9 @@ async def update_global_tool(
             supplied = data.config is not None and "api_key" in data.config
             explicit = supplied and data.config["api_key"] != MASKED_SECRET_SENTINEL
             if explicit or data.confirm_mcp_credential:
-                await _record_company_mcp_credential(db, tool, current_user.id,
-                    source="confirmation" if data.confirm_mcp_credential else "setting")
+                await _record_company_mcp_credential(
+                    db, tool, current_user.id, source="confirmation" if data.confirm_mcp_credential else "setting"
+                )
 
     await db.commit()
     return await _serialize_tool_for_tenant(db, tool, current_user.tenant_id)
@@ -870,7 +887,10 @@ async def update_global_tool(
 async def _record_company_mcp_credential(db, tool, actor_id, *, source):
     from sqlalchemy.exc import DBAPIError
     from app.services.mcp_authz import (
-        MCPAuthzError, MCPCompanyCredentialAuthorityDenied, record_mcp_company_credential, require_mcp_company_admin,
+        MCPAuthzError,
+        MCPCompanyCredentialAuthorityDenied,
+        record_mcp_company_credential,
+        require_mcp_company_admin,
     )
 
     try:
@@ -982,13 +1002,19 @@ async def list_agent_tools_with_config(
     ]
     tenant_defaults = {}
     if agent.tenant_id and tool_rows:
-        overrides = await db.execute(select(TenantToolConfig).where(
-            TenantToolConfig.tenant_id == agent.tenant_id,
-            TenantToolConfig.tool_id.in_([tool.id for tool in tool_rows]),
-        ))
+        overrides = await db.execute(
+            select(TenantToolConfig).where(
+                TenantToolConfig.tenant_id == agent.tenant_id,
+                TenantToolConfig.tool_id.in_([tool.id for tool in tool_rows]),
+            )
+        )
         tenant_defaults = {row.tool_id: row.config or {} for row in overrides.scalars().all()}
-    return [_serialize_agent_tool_row(tool, assignments.get(tool.id),
-        base_config={**(tool.config or {}), **tenant_defaults.get(tool.id, {})}) for tool in tool_rows]
+    return [
+        _serialize_agent_tool_row(
+            tool, assignments.get(tool.id), base_config={**(tool.config or {}), **tenant_defaults.get(tool.id, {})}
+        )
+        for tool in tool_rows
+    ]
 
 
 @router.get("/tools/agents/{agent_id}")
@@ -1173,13 +1199,16 @@ async def _write_agent_tool_config(db, *, agent_id, tool, config):
     return assignment
 
 
-async def _configuration_question_context(db, current_user, agent_id, session_id, question_id, *, target_management_required=True):
+async def _configuration_question_context(
+    db, current_user, agent_id, session_id, question_id, *, target_management_required=True
+):
     from app.services.chat_transcript import lock_transcript_session
     from app.services.session_user_question import load_configuration_question, question_payload
     from app.services.session_v2_persistence import resolve_session_mutation_authority
 
-    authority = await resolve_session_mutation_authority(db, user=current_user, agent_id=agent_id,
-        session_id=session_id, action="mutate_session_input")
+    authority = await resolve_session_mutation_authority(
+        db, user=current_user, agent_id=agent_id, session_id=session_id, action="mutate_session_input"
+    )
     await lock_transcript_session(db, session_id=session_id)
     question = await load_configuration_question(db, authority=authority, item_id=question_id)
     descriptor = question_payload(question)["configuration_request"]
@@ -1196,21 +1225,30 @@ async def _configuration_question_context(db, current_user, agent_id, session_id
 
 async def _configuration_request_context(db, current_user, agent_id, session_id, question_id):
     authority, question, target, descriptor = await _configuration_question_context(
-        db, current_user, agent_id, session_id, question_id, target_management_required=False)
+        db, current_user, agent_id, session_id, question_id, target_management_required=False
+    )
     if not descriptor.get("tool_name"):
         raise HTTPException(status_code=409, detail="Use the requested connection settings")
     # Match the runtime's platform-first lookup, then apply the existing visibility gate.
-    tool_id = await db.scalar(select(Tool.id).where(Tool.name == descriptor["tool_name"],
-        or_(Tool.tenant_id.is_(None), Tool.tenant_id == target.tenant_id))
-        .order_by(Tool.tenant_id.is_not(None)).limit(1))
+    tool_id = await db.scalar(
+        select(Tool.id)
+        .where(Tool.name == descriptor["tool_name"], or_(Tool.tenant_id.is_(None), Tool.tenant_id == target.tenant_id))
+        .order_by(Tool.tenant_id.is_not(None))
+        .limit(1)
+    )
     tool = await _get_visible_agent_tool(db, target, tool_id) if tool_id else None
     if tool is None:
         raise HTTPException(status_code=404, detail="Configuration tool not found")
     if tool.name != "send_email" and tool.type != "custom_api":
         await _require_manage_access(db, current_user, target.id)
     if tool.type == "mcp" or (not (tool.config_schema or {}).get("fields") and tool.name != "send_email"):
-        raise HTTPException(status_code=409, detail={"code": "configuration_uses_connection_settings",
-            "message": "Use the existing connection settings for this capability; this form only saves employee tool settings."})
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "configuration_uses_connection_settings",
+                "message": "Use the existing connection settings for this capability; this form only saves employee tool settings.",
+            },
+        )
     return authority, question, target, tool
 
 
@@ -1222,20 +1260,31 @@ async def _configuration_request_response(db, *, question, target, tool, replaye
     defaults, _enabled = await resolve_tool_config_for_tenant_display(db, tool, target.tenant_id)
     mailbox = saved.get("mailbox_selection") if tool.name == "send_email" else None
     api_account = saved.get("api_account_selection") if tool.type == "custom_api" else None
-    return {"state": "saved" if saved and (tool.name != "send_email" or mailbox) and (tool.type != "custom_api" or api_account) else "waiting", "receipt_ref": saved.get("receipt_ref"),
-        "replayed": replayed, "target_agent_id": str(target.id), "target_agent_name": target.name,
+    return {
+        "state": "saved"
+        if saved and (tool.name != "send_email" or mailbox) and (tool.type != "custom_api" or api_account)
+        else "waiting",
+        "receipt_ref": saved.get("receipt_ref"),
+        "replayed": replayed,
+        "target_agent_id": str(target.id),
+        "target_agent_name": target.name,
         "tool": _serialize_agent_tool_row(tool, assignment, base_config=defaults),
         **({"mailbox_selection": mailbox} if tool.name == "send_email" else {}),
-        **({"api_account_selection": api_account} if tool.type == "custom_api" else {})}
+        **({"api_account_selection": api_account} if tool.type == "custom_api" else {}),
+    }
 
 
 @router.get("/tools/agents/{agent_id}/sessions/{session_id}/questions/{question_id}/configuration")
 async def get_session_tool_configuration(
-    agent_id: uuid.UUID, session_id: uuid.UUID, question_id: uuid.UUID,
-    current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db),
+    agent_id: uuid.UUID,
+    session_id: uuid.UUID,
+    question_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
 ):
     _authority, question, target, tool = await _configuration_request_context(
-        db, current_user, agent_id, session_id, question_id)
+        db, current_user, agent_id, session_id, question_id
+    )
     response = await _configuration_request_response(db, question=question, target=target, tool=tool)
     if tool.name == "send_email":
         _agent, access = await check_agent_access(db, current_user, target.id)
@@ -1248,14 +1297,19 @@ async def get_session_tool_configuration(
 
 @router.put("/tools/agents/{agent_id}/sessions/{session_id}/questions/{question_id}/configuration")
 async def save_session_tool_configuration(
-    agent_id: uuid.UUID, session_id: uuid.UUID, question_id: uuid.UUID, data: CategoryConfigIn,
-    current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db),
+    agent_id: uuid.UUID,
+    session_id: uuid.UUID,
+    question_id: uuid.UUID,
+    data: CategoryConfigIn,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
 ):
     from app.services.session_user_question import question_payload
     from app.services.session_v2_persistence import SessionEventDraft, append_session_events
 
     authority, question, target, tool = await _configuration_request_context(
-        db, current_user, agent_id, session_id, question_id)
+        db, current_user, agent_id, session_id, question_id
+    )
     await _require_manage_access(db, current_user, target.id)
     payload = question_payload(question)
     if payload.get("configuration_saved") and tool.name != "send_email" and tool.type != "custom_api":
@@ -1263,14 +1317,32 @@ async def save_session_tool_configuration(
     if question.lifecycle not in {"created", "waiting"}:
         raise HTTPException(status_code=409, detail="Configuration request is no longer waiting")
     await _write_agent_tool_config(db, agent_id=target.id, tool=tool, config=data.config)
-    events = await append_session_events(db, tenant_id=authority.tenant_id, agent_id=agent_id,
-        session_id=session_id, drafts=[SessionEventDraft(
-            item_id=question.item_id, item_kind="user_question", lifecycle="waiting", scope=question.scope_json,
-            actor=authority.event_actor(), invocation_id=question.invocation_id, result_id=question.result_id,
-            provider_tool_use_id=question.provider_tool_use_id,
-            payload={**payload, "configuration_saved": {"receipt_ref": f"tool-configuration:{uuid.uuid4()}",
-                "target_agent_id": str(target.id), "tool_id": str(tool.id)}},
-        )])
+    events = await append_session_events(
+        db,
+        tenant_id=authority.tenant_id,
+        agent_id=agent_id,
+        session_id=session_id,
+        drafts=[
+            SessionEventDraft(
+                item_id=question.item_id,
+                item_kind="user_question",
+                lifecycle="waiting",
+                scope=question.scope_json,
+                actor=authority.event_actor(),
+                invocation_id=question.invocation_id,
+                result_id=question.result_id,
+                provider_tool_use_id=question.provider_tool_use_id,
+                payload={
+                    **payload,
+                    "configuration_saved": {
+                        "receipt_ref": f"tool-configuration:{uuid.uuid4()}",
+                        "target_agent_id": str(target.id),
+                        "tool_id": str(tool.id),
+                    },
+                },
+            )
+        ],
+    )
     await db.commit()
     return await _configuration_request_response(db, question=events[0], target=target, tool=tool)
 
@@ -1283,54 +1355,128 @@ class MailboxSelectionIn(BaseModel):
 
 
 @router.post("/tools/agents/{agent_id}/sessions/{session_id}/questions/{question_id}/configuration/api-account")
-async def confirm_session_api_account(agent_id: uuid.UUID, session_id: uuid.UUID, question_id: uuid.UUID, data: MailboxSelectionIn,
-    current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+async def confirm_session_api_account(
+    agent_id: uuid.UUID,
+    session_id: uuid.UUID,
+    question_id: uuid.UUID,
+    data: MailboxSelectionIn,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
     from app.services.custom_api_accounts import bind_account, binding_snapshot
     from app.services.session_user_question import question_payload
     from app.services.session_v2_persistence import SessionEventDraft, append_session_events
 
-    authority, question, target, tool = await _configuration_request_context(db, current_user, agent_id, session_id, question_id)
+    authority, question, target, tool = await _configuration_request_context(
+        db, current_user, agent_id, session_id, question_id
+    )
     if tool.type != "custom_api" or question.lifecycle not in {"created", "waiting"}:
         raise HTTPException(409, "This question is not waiting for an API account choice")
-    binding = await bind_account(db, agent=target, tool=tool, session_id=session_id, user=current_user,
-        account_id=data.account_id, account_version=data.account_version, grant_version=data.grant_version, company_revision=data.company_revision)
+    binding = await bind_account(
+        db,
+        agent=target,
+        tool=tool,
+        session_id=session_id,
+        user=current_user,
+        account_id=data.account_id,
+        account_version=data.account_version,
+        grant_version=data.grant_version,
+        company_revision=data.company_revision,
+    )
     payload = question_payload(question)
     snapshot = binding_snapshot(binding)
     if (payload.get("configuration_saved") or {}).get("api_account_selection") == snapshot:
         return await _configuration_request_response(db, question=question, target=target, tool=tool, replayed=True)
-    events = await append_session_events(db, tenant_id=authority.tenant_id, agent_id=agent_id, session_id=session_id,
-        drafts=[SessionEventDraft(item_id=question.item_id, item_kind="user_question", lifecycle="waiting", scope=question.scope_json,
-            actor=authority.event_actor(), invocation_id=question.invocation_id, result_id=question.result_id,
-            provider_tool_use_id=question.provider_tool_use_id, payload={**payload, "configuration_saved": {
-                "receipt_ref": f"api-account-selection:{uuid.uuid4()}", "target_agent_id": str(target.id), "tool_id": str(tool.id),
-                "api_account_selection": snapshot}})])
+    events = await append_session_events(
+        db,
+        tenant_id=authority.tenant_id,
+        agent_id=agent_id,
+        session_id=session_id,
+        drafts=[
+            SessionEventDraft(
+                item_id=question.item_id,
+                item_kind="user_question",
+                lifecycle="waiting",
+                scope=question.scope_json,
+                actor=authority.event_actor(),
+                invocation_id=question.invocation_id,
+                result_id=question.result_id,
+                provider_tool_use_id=question.provider_tool_use_id,
+                payload={
+                    **payload,
+                    "configuration_saved": {
+                        "receipt_ref": f"api-account-selection:{uuid.uuid4()}",
+                        "target_agent_id": str(target.id),
+                        "tool_id": str(tool.id),
+                        "api_account_selection": snapshot,
+                    },
+                },
+            )
+        ],
+    )
     await db.commit()
     return await _configuration_request_response(db, question=events[0], target=target, tool=tool)
 
 
 @router.post("/tools/agents/{agent_id}/sessions/{session_id}/questions/{question_id}/configuration/mailbox")
-async def confirm_session_mailbox(agent_id: uuid.UUID, session_id: uuid.UUID, question_id: uuid.UUID, data: MailboxSelectionIn,
-    current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+async def confirm_session_mailbox(
+    agent_id: uuid.UUID,
+    session_id: uuid.UUID,
+    question_id: uuid.UUID,
+    data: MailboxSelectionIn,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
     from app.services.email_accounts import bind_account, binding_snapshot
     from app.services.session_user_question import question_payload
     from app.services.session_v2_persistence import SessionEventDraft, append_session_events
 
-    authority, question, target, tool = await _configuration_request_context(db, current_user, agent_id, session_id, question_id)
+    authority, question, target, tool = await _configuration_request_context(
+        db, current_user, agent_id, session_id, question_id
+    )
     if tool.name != "send_email" or question.lifecycle not in {"created", "waiting"}:
         raise HTTPException(409, "This question is not waiting for a mailbox choice")
-    binding = await bind_account(db, agent=target, session_id=session_id, user=current_user,
-        account_id=data.account_id, account_version=data.account_version, grant_version=data.grant_version,
-        company_revision=data.company_revision)
+    binding = await bind_account(
+        db,
+        agent=target,
+        session_id=session_id,
+        user=current_user,
+        account_id=data.account_id,
+        account_version=data.account_version,
+        grant_version=data.grant_version,
+        company_revision=data.company_revision,
+    )
     payload = question_payload(question)
     snapshot = binding_snapshot(binding)
     if (payload.get("configuration_saved") or {}).get("mailbox_selection") == snapshot:
         return await _configuration_request_response(db, question=question, target=target, tool=tool, replayed=True)
-    events = await append_session_events(db, tenant_id=authority.tenant_id, agent_id=agent_id, session_id=session_id,
-        drafts=[SessionEventDraft(item_id=question.item_id, item_kind="user_question", lifecycle="waiting", scope=question.scope_json,
-            actor=authority.event_actor(), invocation_id=question.invocation_id, result_id=question.result_id,
-            provider_tool_use_id=question.provider_tool_use_id, payload={**payload, "configuration_saved": {
-                "receipt_ref": f"mailbox-selection:{uuid.uuid4()}", "target_agent_id": str(target.id), "tool_id": str(tool.id),
-                "mailbox_selection": snapshot}})])
+    events = await append_session_events(
+        db,
+        tenant_id=authority.tenant_id,
+        agent_id=agent_id,
+        session_id=session_id,
+        drafts=[
+            SessionEventDraft(
+                item_id=question.item_id,
+                item_kind="user_question",
+                lifecycle="waiting",
+                scope=question.scope_json,
+                actor=authority.event_actor(),
+                invocation_id=question.invocation_id,
+                result_id=question.result_id,
+                provider_tool_use_id=question.provider_tool_use_id,
+                payload={
+                    **payload,
+                    "configuration_saved": {
+                        "receipt_ref": f"mailbox-selection:{uuid.uuid4()}",
+                        "target_agent_id": str(target.id),
+                        "tool_id": str(tool.id),
+                        "mailbox_selection": snapshot,
+                    },
+                },
+            )
+        ],
+    )
     await db.commit()
     return await _configuration_request_response(db, question=events[0], target=target, tool=tool)
 
@@ -1351,8 +1497,12 @@ def _role_configuration_response(question, target, *, replayed=False):
     snapshot = role_snapshot(target)
     ready = question_payload(question).get("configuration_ready") or {}
     current = ready.get("role_revision") == snapshot["role_revision"]
-    return {**snapshot, "state": "ready" if current else "waiting",
-        "receipt_ref": ready.get("receipt_ref") if current else None, "replayed": replayed}
+    return {
+        **snapshot,
+        "state": "ready" if current else "waiting",
+        "receipt_ref": ready.get("receipt_ref") if current else None,
+        "replayed": replayed,
+    }
 
 
 async def _session_role_context(db, current_user, agent_id, session_id, question_id):
@@ -1364,50 +1514,88 @@ async def _session_role_context(db, current_user, agent_id, session_id, question
 
 @router.get("/tools/agents/{agent_id}/sessions/{session_id}/questions/{question_id}/role")
 async def get_session_role_configuration(
-    agent_id: uuid.UUID, session_id: uuid.UUID, question_id: uuid.UUID,
-    current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db),
+    agent_id: uuid.UUID,
+    session_id: uuid.UUID,
+    question_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
 ):
     _authority, question, target, _descriptor = await _session_role_context(
-        db, current_user, agent_id, session_id, question_id)
+        db, current_user, agent_id, session_id, question_id
+    )
     return _role_configuration_response(question, target)
 
 
 @router.post("/tools/agents/{agent_id}/sessions/{session_id}/questions/{question_id}/role/confirm")
 async def confirm_session_role_configuration(
-    agent_id: uuid.UUID, session_id: uuid.UUID, question_id: uuid.UUID, data: RoleConfigurationConfirmIn,
-    current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db),
+    agent_id: uuid.UUID,
+    session_id: uuid.UUID,
+    question_id: uuid.UUID,
+    data: RoleConfigurationConfirmIn,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
 ):
     from app.services.agent_role_settings import role_revision
     from app.services.session_user_question import question_payload
     from app.services.session_v2_persistence import SessionEventDraft, append_session_events
 
     authority, question, target, _descriptor = await _session_role_context(
-        db, current_user, agent_id, session_id, question_id)
+        db, current_user, agent_id, session_id, question_id
+    )
     if question.lifecycle not in {"created", "waiting"}:
         raise HTTPException(status_code=409, detail="Configuration request is no longer waiting")
-    target = await db.scalar(select(Agent).where(Agent.id == target.id, Agent.tenant_id == authority.tenant_id)
-        .with_for_update().execution_options(populate_existing=True))
+    target = await db.scalar(
+        select(Agent)
+        .where(Agent.id == target.id, Agent.tenant_id == authority.tenant_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
     if target is None or role_revision(target.role_description) != data.role_revision:
-        raise HTTPException(status_code=409, detail={"code": "role_configuration_changed",
-            "message": "Responsibilities changed. Review the current settings before continuing."})
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "role_configuration_changed",
+                "message": "Responsibilities changed. Review the current settings before continuing.",
+            },
+        )
     await _require_manage_access(db, current_user, target.id)
     payload = question_payload(question)
     if (payload.get("configuration_ready") or {}).get("role_revision") == data.role_revision:
         return _role_configuration_response(question, target, replayed=True)
-    events = await append_session_events(db, tenant_id=authority.tenant_id, agent_id=agent_id,
-        session_id=session_id, drafts=[SessionEventDraft(item_id=question.item_id, item_kind="user_question",
-            lifecycle="waiting", scope=question.scope_json, actor=authority.event_actor(),
-            invocation_id=question.invocation_id, result_id=question.result_id,
-            provider_tool_use_id=question.provider_tool_use_id, payload={**payload, "configuration_ready": {
-                "receipt_ref": f"role-configuration:{uuid.uuid4()}", "target_agent_id": str(target.id),
-                "role_revision": data.role_revision}})])
+    events = await append_session_events(
+        db,
+        tenant_id=authority.tenant_id,
+        agent_id=agent_id,
+        session_id=session_id,
+        drafts=[
+            SessionEventDraft(
+                item_id=question.item_id,
+                item_kind="user_question",
+                lifecycle="waiting",
+                scope=question.scope_json,
+                actor=authority.event_actor(),
+                invocation_id=question.invocation_id,
+                result_id=question.result_id,
+                provider_tool_use_id=question.provider_tool_use_id,
+                payload={
+                    **payload,
+                    "configuration_ready": {
+                        "receipt_ref": f"role-configuration:{uuid.uuid4()}",
+                        "target_agent_id": str(target.id),
+                        "role_revision": data.role_revision,
+                    },
+                },
+            )
+        ],
+    )
     await db.commit()
     return _role_configuration_response(events[0], target)
 
 
 async def _session_channel_configuration_context(db, current_user, agent_id, session_id, question_id):
     authority, question, target, descriptor = await _configuration_question_context(
-        db, current_user, agent_id, session_id, question_id)
+        db, current_user, agent_id, session_id, question_id
+    )
     channel_type = descriptor.get("channel_type")
     if not channel_type:
         raise HTTPException(status_code=409, detail="Use the requested tool settings")
@@ -1422,47 +1610,84 @@ def _session_channel_configuration_response(question, target, snapshot, *, repla
 
     ready = question_payload(question).get("configuration_ready") or {}
     matches = snapshot is not None and ready.get("configuration") == snapshot
-    return {"state": "ready" if matches else "waiting", "receipt_ref": ready.get("receipt_ref") if matches else None,
-        "configuration": snapshot, "target_agent_id": str(target.id), "target_agent_name": target.name,
-        "replayed": replayed}
+    return {
+        "state": "ready" if matches else "waiting",
+        "receipt_ref": ready.get("receipt_ref") if matches else None,
+        "configuration": snapshot,
+        "target_agent_id": str(target.id),
+        "target_agent_name": target.name,
+        "replayed": replayed,
+    }
 
 
 @router.get("/tools/agents/{agent_id}/sessions/{session_id}/questions/{question_id}/channel")
 async def get_session_channel_configuration(
-    agent_id: uuid.UUID, session_id: uuid.UUID, question_id: uuid.UUID,
-    current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db),
+    agent_id: uuid.UUID,
+    session_id: uuid.UUID,
+    question_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
 ):
     _authority, question, target, snapshot = await _session_channel_configuration_context(
-        db, current_user, agent_id, session_id, question_id)
+        db, current_user, agent_id, session_id, question_id
+    )
     return _session_channel_configuration_response(question, target, snapshot)
 
 
 @router.post("/tools/agents/{agent_id}/sessions/{session_id}/questions/{question_id}/channel/confirm")
 async def confirm_session_channel_configuration(
-    agent_id: uuid.UUID, session_id: uuid.UUID, question_id: uuid.UUID, data: ChannelConfigurationConfirmIn,
-    current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db),
+    agent_id: uuid.UUID,
+    session_id: uuid.UUID,
+    question_id: uuid.UUID,
+    data: ChannelConfigurationConfirmIn,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
 ):
     from app.services.session_user_question import question_payload
     from app.services.session_v2_persistence import SessionEventDraft, append_session_events
 
     authority, question, target, snapshot = await _session_channel_configuration_context(
-        db, current_user, agent_id, session_id, question_id)
+        db, current_user, agent_id, session_id, question_id
+    )
     if snapshot is None or snapshot["id"] != str(data.config_id) or snapshot["updated_at"] != data.updated_at:
-        raise HTTPException(status_code=409, detail={"code": "channel_configuration_changed",
-            "message": "Reload the channel settings and review the current configuration."})
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "channel_configuration_changed",
+                "message": "Reload the channel settings and review the current configuration.",
+            },
+        )
     payload = question_payload(question)
     if (payload.get("configuration_ready") or {}).get("configuration") == snapshot:
         return _session_channel_configuration_response(question, target, snapshot, replayed=True)
     if question.lifecycle not in {"created", "waiting"}:
         raise HTTPException(status_code=409, detail="Configuration request is no longer waiting")
-    events = await append_session_events(db, tenant_id=authority.tenant_id, agent_id=agent_id,
-        session_id=session_id, drafts=[SessionEventDraft(
-            item_id=question.item_id, item_kind="user_question", lifecycle="waiting", scope=question.scope_json,
-            actor=authority.event_actor(), invocation_id=question.invocation_id, result_id=question.result_id,
-            provider_tool_use_id=question.provider_tool_use_id,
-            payload={**payload, "configuration_ready": {"receipt_ref": f"channel-configuration:{uuid.uuid4()}",
-                "target_agent_id": str(target.id), "configuration": snapshot}},
-        )])
+    events = await append_session_events(
+        db,
+        tenant_id=authority.tenant_id,
+        agent_id=agent_id,
+        session_id=session_id,
+        drafts=[
+            SessionEventDraft(
+                item_id=question.item_id,
+                item_kind="user_question",
+                lifecycle="waiting",
+                scope=question.scope_json,
+                actor=authority.event_actor(),
+                invocation_id=question.invocation_id,
+                result_id=question.result_id,
+                provider_tool_use_id=question.provider_tool_use_id,
+                payload={
+                    **payload,
+                    "configuration_ready": {
+                        "receipt_ref": f"channel-configuration:{uuid.uuid4()}",
+                        "target_agent_id": str(target.id),
+                        "configuration": snapshot,
+                    },
+                },
+            )
+        ],
+    )
     await db.commit()
     return _session_channel_configuration_response(events[0], target, snapshot)
 
@@ -1513,23 +1738,38 @@ async def _session_mcp_configuration_context(db, current_user, agent_id, session
     from app.services.session_mcp_configuration import mcp_configuration_snapshot
 
     authority, question, target, descriptor = await _configuration_question_context(
-        db, current_user, agent_id, session_id, question_id, target_management_required=False)
+        db, current_user, agent_id, session_id, question_id, target_management_required=False
+    )
     if not descriptor.get("mcp_server_id"):
         raise HTTPException(status_code=409, detail="Use the requested configuration settings")
     from app.services.session_user_question import question_payload
-    previous_account = question_payload(question).get("configuration_selected_account_id") or (question_payload(question).get("configuration_ready") or {}).get("account_id")
+
+    previous_account = question_payload(question).get("configuration_selected_account_id") or (
+        question_payload(question).get("configuration_ready") or {}
+    ).get("account_id")
     selected = account_id or (uuid.UUID(previous_account) if previous_account else None)
     try:
-        snapshot = await mcp_configuration_snapshot(db, target=target, server_id=uuid.UUID(descriptor["mcp_server_id"]), user=current_user, account_id=selected)
+        snapshot = await mcp_configuration_snapshot(
+            db, target=target, server_id=uuid.UUID(descriptor["mcp_server_id"]), user=current_user, account_id=selected
+        )
     except HTTPException as exc:
         if account_id is not None or not previous_account or exc.status_code not in {403, 404}:
             raise
-        snapshot = await mcp_configuration_snapshot(db, target=target, server_id=uuid.UUID(descriptor["mcp_server_id"]), user=current_user)
+        snapshot = await mcp_configuration_snapshot(
+            db, target=target, server_id=uuid.UUID(descriptor["mcp_server_id"]), user=current_user
+        )
         snapshot["selection_unavailable"] = True
     from app.services.mcp_accounts import work_binding_matches
-    snapshot["work_selection_matches"] = await work_binding_matches(db,
-        ready=question_payload(question).get("configuration_ready") or {}, tenant_id=target.tenant_id,
-        agent_id=target.id, session_id=session_id, user_id=current_user.id, account_id=snapshot["account"]["id"])
+
+    snapshot["work_selection_matches"] = await work_binding_matches(
+        db,
+        ready=question_payload(question).get("configuration_ready") or {},
+        tenant_id=target.tenant_id,
+        agent_id=target.id,
+        session_id=session_id,
+        user_id=current_user.id,
+        account_id=snapshot["account"]["id"],
+    )
     _, employee_access = await check_agent_access(db, current_user, target.id)
     snapshot["can_manage_employee"] = employee_access == "manage"
     return authority, question, target, snapshot
@@ -1539,46 +1779,114 @@ def _session_mcp_configuration_response(question, target, snapshot, user, *, rep
     from app.services.session_user_question import question_payload
 
     ready = question_payload(question).get("configuration_ready") or {}
-    matches = snapshot["work_selection_matches"] and ready.get("revision") == snapshot["revision"] and snapshot["usable_tool_count"] > 0 and snapshot["authorization"] == "configured"
-    return {**snapshot, "state": "ready" if matches else "waiting", "receipt_ref": ready.get("receipt_ref") if matches else None,
-        "target_agent_id": str(target.id), "target_agent_name": target.name, "can_authorize": snapshot["can_authorize"], "replayed": replayed}
+    matches = (
+        snapshot["work_selection_matches"]
+        and ready.get("revision") == snapshot["revision"]
+        and snapshot["usable_tool_count"] > 0
+        and snapshot["authorization"] == "configured"
+    )
+    return {
+        **snapshot,
+        "state": "ready" if matches else "waiting",
+        "receipt_ref": ready.get("receipt_ref") if matches else None,
+        "target_agent_id": str(target.id),
+        "target_agent_name": target.name,
+        "can_authorize": snapshot["can_authorize"],
+        "replayed": replayed,
+    }
 
 
 @router.get("/tools/agents/{agent_id}/sessions/{session_id}/questions/{question_id}/mcp")
 async def get_session_mcp_configuration(
-    agent_id: uuid.UUID, session_id: uuid.UUID, question_id: uuid.UUID, account_id: uuid.UUID | None = None,
-    current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db),
+    agent_id: uuid.UUID,
+    session_id: uuid.UUID,
+    question_id: uuid.UUID,
+    account_id: uuid.UUID | None = None,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
 ):
-    _authority, question, target, snapshot = await _session_mcp_configuration_context(db, current_user, agent_id, session_id, question_id, account_id)
+    _authority, question, target, snapshot = await _session_mcp_configuration_context(
+        db, current_user, agent_id, session_id, question_id, account_id
+    )
     return _session_mcp_configuration_response(question, target, snapshot, current_user)
 
 
 @router.post("/tools/agents/{agent_id}/sessions/{session_id}/questions/{question_id}/mcp/confirm")
 async def confirm_session_mcp_configuration(
-    agent_id: uuid.UUID, session_id: uuid.UUID, question_id: uuid.UUID, data: McpConfigurationConfirmIn,
-    current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db),
+    agent_id: uuid.UUID,
+    session_id: uuid.UUID,
+    question_id: uuid.UUID,
+    data: McpConfigurationConfirmIn,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
 ):
     from app.services.session_user_question import question_payload
     from app.services.session_v2_persistence import SessionEventDraft, append_session_events
 
-    authority, question, target, snapshot = await _session_mcp_configuration_context(db, current_user, agent_id, session_id, question_id, data.account_id)
-    if (snapshot.get("selection_unavailable") and data.account_id is None) or snapshot["revision"] != data.revision or snapshot["authorization"] != "configured" or not snapshot["usable_tool_count"]:
-        raise HTTPException(status_code=409, detail={"code": "mcp_configuration_not_ready", "message": "Review the current authorization, employee use permission and approved tools before continuing."})
+    authority, question, target, snapshot = await _session_mcp_configuration_context(
+        db, current_user, agent_id, session_id, question_id, data.account_id
+    )
+    if (
+        (snapshot.get("selection_unavailable") and data.account_id is None)
+        or snapshot["revision"] != data.revision
+        or snapshot["authorization"] != "configured"
+        or not snapshot["usable_tool_count"]
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "mcp_configuration_not_ready",
+                "message": "Review the current authorization, employee use permission and approved tools before continuing.",
+            },
+        )
     payload = question_payload(question)
-    if snapshot["work_selection_matches"] and (payload.get("configuration_ready") or {}).get("revision") == snapshot["revision"]:
+    if (
+        snapshot["work_selection_matches"]
+        and (payload.get("configuration_ready") or {}).get("revision") == snapshot["revision"]
+    ):
         return _session_mcp_configuration_response(question, target, snapshot, current_user, replayed=True)
     if question.lifecycle not in {"created", "waiting"}:
         raise HTTPException(status_code=409, detail="Configuration request is no longer waiting")
     from app.models.mcp_server import MCPServer
     from app.services.mcp_accounts import account_access, bind_work_account
+
     server = await db.get(MCPServer, uuid.UUID(snapshot["server"]["id"]))
-    account, grant = await account_access(db, server=server, account_id=uuid.UUID(snapshot["account"]["id"]), agent_id=target.id, user=current_user)
-    binding = await bind_work_account(db, server=server, account=account, grant=grant, agent_id=target.id, session_id=session_id, user=current_user)
-    events = await append_session_events(db, tenant_id=authority.tenant_id, agent_id=agent_id, session_id=session_id,
-        drafts=[SessionEventDraft(item_id=question.item_id, item_kind="user_question", lifecycle="waiting", scope=question.scope_json,
-            actor=authority.event_actor(), invocation_id=question.invocation_id, result_id=question.result_id, provider_tool_use_id=question.provider_tool_use_id,
-            payload={**payload, "configuration_selected_account_id": str(account.id), "configuration_ready": {"receipt_ref": f"mcp-configuration:{uuid.uuid4()}",
-                "target_agent_id": str(target.id), "mcp_server_id": snapshot["server"]["id"], "account_id": str(account.id), "binding_id": str(binding.id), "revision": snapshot["revision"]}})])
+    account, grant = await account_access(
+        db, server=server, account_id=uuid.UUID(snapshot["account"]["id"]), agent_id=target.id, user=current_user
+    )
+    binding = await bind_work_account(
+        db, server=server, account=account, grant=grant, agent_id=target.id, session_id=session_id, user=current_user
+    )
+    events = await append_session_events(
+        db,
+        tenant_id=authority.tenant_id,
+        agent_id=agent_id,
+        session_id=session_id,
+        drafts=[
+            SessionEventDraft(
+                item_id=question.item_id,
+                item_kind="user_question",
+                lifecycle="waiting",
+                scope=question.scope_json,
+                actor=authority.event_actor(),
+                invocation_id=question.invocation_id,
+                result_id=question.result_id,
+                provider_tool_use_id=question.provider_tool_use_id,
+                payload={
+                    **payload,
+                    "configuration_selected_account_id": str(account.id),
+                    "configuration_ready": {
+                        "receipt_ref": f"mcp-configuration:{uuid.uuid4()}",
+                        "target_agent_id": str(target.id),
+                        "mcp_server_id": snapshot["server"]["id"],
+                        "account_id": str(account.id),
+                        "binding_id": str(binding.id),
+                        "revision": snapshot["revision"],
+                    },
+                },
+            )
+        ],
+    )
     await db.commit()
     snapshot["work_selection_matches"] = True
     return _session_mcp_configuration_response(events[0], target, snapshot, current_user)
@@ -1590,23 +1898,49 @@ class McpAccountSelectionIn(BaseModel):
 
 @router.post("/tools/agents/{agent_id}/sessions/{session_id}/questions/{question_id}/mcp/select")
 async def select_session_mcp_account(
-    agent_id: uuid.UUID, session_id: uuid.UUID, question_id: uuid.UUID, data: McpAccountSelectionIn,
-    current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db),
+    agent_id: uuid.UUID,
+    session_id: uuid.UUID,
+    question_id: uuid.UUID,
+    data: McpAccountSelectionIn,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
 ):
     from app.services.session_user_question import question_payload
     from app.services.session_v2_persistence import SessionEventDraft, append_session_events
-    authority, question, target, snapshot = await _session_mcp_configuration_context(db,
-        current_user, agent_id, session_id, question_id, data.account_id)
+
+    authority, question, target, snapshot = await _session_mcp_configuration_context(
+        db, current_user, agent_id, session_id, question_id, data.account_id
+    )
     if question.lifecycle not in {"created", "waiting"}:
         raise HTTPException(status_code=409, detail="Configuration request is no longer waiting")
     payload = question_payload(question)
-    previous = payload.get("configuration_selected_account_id") or (payload.get("configuration_ready") or {}).get("account_id")
+    previous = payload.get("configuration_selected_account_id") or (payload.get("configuration_ready") or {}).get(
+        "account_id"
+    )
     if previous != str(data.account_id):
-        events = await append_session_events(db, tenant_id=authority.tenant_id, agent_id=agent_id, session_id=session_id,
-            drafts=[SessionEventDraft(item_id=question.item_id, item_kind="user_question", lifecycle="waiting", scope=question.scope_json,
-                actor=authority.event_actor(), invocation_id=question.invocation_id, result_id=question.result_id,
-                provider_tool_use_id=question.provider_tool_use_id, payload={**payload,
-                    "configuration_selected_account_id": str(data.account_id), "configuration_ready": None})])
+        events = await append_session_events(
+            db,
+            tenant_id=authority.tenant_id,
+            agent_id=agent_id,
+            session_id=session_id,
+            drafts=[
+                SessionEventDraft(
+                    item_id=question.item_id,
+                    item_kind="user_question",
+                    lifecycle="waiting",
+                    scope=question.scope_json,
+                    actor=authority.event_actor(),
+                    invocation_id=question.invocation_id,
+                    result_id=question.result_id,
+                    provider_tool_use_id=question.provider_tool_use_id,
+                    payload={
+                        **payload,
+                        "configuration_selected_account_id": str(data.account_id),
+                        "configuration_ready": None,
+                    },
+                )
+            ],
+        )
         question = events[0]
         snapshot["work_selection_matches"] = False
         await db.commit()

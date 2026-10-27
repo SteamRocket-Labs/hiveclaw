@@ -4,21 +4,26 @@ from __future__ import annotations
 
 import json
 from collections import OrderedDict
+from importlib import import_module
 
 import httpx
 
 from app.config import get_settings
 from app.services.feishu_platform import resolve_feishu_platform, post_feishu_mutation
 
-try:
-    import lark_oapi as lark
-
-    _HAS_LARK = True
-except ImportError:
-    lark = None  # type: ignore
-    _HAS_LARK = False
-
 settings = get_settings()
+
+
+def _load_lark_sdk():
+    return import_module("lark_oapi")
+
+
+def lark_sdk_available() -> bool:
+    try:
+        _load_lark_sdk()
+    except ImportError:
+        return False
+    return True
 
 
 class FeishuService:
@@ -47,27 +52,45 @@ class FeishuService:
             authorization = resp.request.headers.get("Authorization", "")
         except (RuntimeError, AttributeError):
             authorization = ""
-        protected_values = (*protected_values, authorization,
-            authorization[7:] if authorization.startswith("Bearer ") else "")
+        protected_values = (
+            *protected_values,
+            authorization,
+            authorization[7:] if authorization.startswith("Bearer ") else "",
+        )
         try:
             data = resp.json()
         except Exception as exc:
-            raise FeishuAPIError(f"Feishu {stage} returned invalid JSON", http_status=resp.status_code,
-                platform=platform, protected_values=protected_values) from exc
+            raise FeishuAPIError(
+                f"Feishu {stage} returned invalid JSON",
+                http_status=resp.status_code,
+                platform=platform,
+                protected_values=protected_values,
+            ) from exc
 
         if not isinstance(data, dict):
-            raise FeishuAPIError(f"Feishu {stage} returned invalid JSON", http_status=resp.status_code,
-                platform=platform, protected_values=protected_values)
+            raise FeishuAPIError(
+                f"Feishu {stage} returned invalid JSON",
+                http_status=resp.status_code,
+                platform=platform,
+                protected_values=protected_values,
+            )
 
         if resp.status_code >= 400:
-            raise FeishuAPIError(f"Feishu {stage} HTTP {resp.status_code}: code={data.get('code')}, msg={data.get('msg', '')}",
-                http_status=resp.status_code, code=data.get("code"), platform=platform, protected_values=protected_values)
+            raise FeishuAPIError(
+                f"Feishu {stage} HTTP {resp.status_code}: code={data.get('code')}, msg={data.get('msg', '')}",
+                http_status=resp.status_code,
+                code=data.get("code"),
+                platform=platform,
+                protected_values=protected_values,
+            )
 
         if data.get("code") not in (None, 0):
             raise FeishuAPIError(
                 f"Feishu {stage} failed: code={data.get('code')}, msg={data.get('msg', '')}, message_id={message_id}",
-                http_status=resp.status_code, code=data.get("code"),
-                platform=platform, protected_values=protected_values,
+                http_status=resp.status_code,
+                code=data.get("code"),
+                platform=platform,
+                protected_values=protected_values,
             )
 
         return data
@@ -99,14 +122,19 @@ class FeishuService:
                 platform.open_api_url("/auth/v3/app_access_token/internal"),
                 json={"app_id": target_app_id, "app_secret": target_app_secret},
             )
-            data = self._parse_api_response(resp, stage="get_tenant_access_token", platform=platform,
-                protected_values=(target_app_secret,))
+            data = self._parse_api_response(
+                resp, stage="get_tenant_access_token", platform=platform, protected_values=(target_app_secret,)
+            )
         token = data.get("tenant_access_token") or data.get("app_access_token", "")
         if not isinstance(token, str) or not token:
             from app.services.feishu_platform import FeishuAPIError
 
-            raise FeishuAPIError("Feishu get_tenant_access_token returned no token",
-                http_status=resp.status_code, code=data.get("code"), platform=platform)
+            raise FeishuAPIError(
+                "Feishu get_tenant_access_token returned no token",
+                http_status=resp.status_code,
+                code=data.get("code"),
+                platform=platform,
+            )
         if app_id is None:
             self._app_access_token = token
         return token
@@ -498,7 +526,8 @@ class FeishuService:
         tenant_token = await self.get_tenant_access_token(app_id, app_secret, extra_config=extra_config)
         submitter_payload = self._approval_submitter_payload(user_id)
         async with httpx.AsyncClient(timeout=15) as client:
-            resp = await post_feishu_mutation(client,
+            resp = await post_feishu_mutation(
+                client,
                 platform.open_api_url("/approval/v4/instances"),
                 json={
                     "approval_code": approval_code,
@@ -566,8 +595,10 @@ class FeishuService:
         return self._parse_api_response(resp, stage="get_approval_instance", platform=platform).get("data", {})
 
     def _get_lark_client(self, app_id: str, app_secret: str, *, extra_config: dict | None = None):
-        if not _HAS_LARK:
-            raise RuntimeError("lark-oapi package is not installed. Install with: pip install lark-oapi")
+        try:
+            lark = _load_lark_sdk()
+        except ImportError as exc:
+            raise RuntimeError("lark-oapi package is not installed. Install with: pip install lark-oapi") from exc
         platform = resolve_feishu_platform(extra_config)
         cache_key = f"{platform.open_api_domain}:{app_id}:{app_secret}"
         client = self._lark_clients.get(cache_key)
@@ -582,7 +613,9 @@ class FeishuService:
             self._lark_clients.move_to_end(cache_key)
         return client
 
-    async def get_chat_member_open_ids(self, app_id: str, app_secret: str, chat_id: str, *, extra_config=None) -> set[str]:
+    async def get_chat_member_open_ids(
+        self, app_id: str, app_secret: str, chat_id: str, *, extra_config=None
+    ) -> set[str]:
         """Read complete current membership using the installed official SDK, without a cache."""
         from lark_oapi.api.im.v1 import GetChatMembersRequest
 
@@ -594,7 +627,12 @@ class FeishuService:
                 request.page_token(token)
             response = await client.im.v1.chat_members.aget(request.build())
             data = response.data
-            if not response.success() or data is None or data.trigger_security_conf_limit is True or not isinstance(data.items, list):
+            if (
+                not response.success()
+                or data is None
+                or data.trigger_security_conf_limit is True
+                or not isinstance(data.items, list)
+            ):
                 raise RuntimeError("group_membership_unavailable")
             for member in data.items:
                 if member.member_id_type != "open_id" or not isinstance(member.member_id, str) or not member.member_id:

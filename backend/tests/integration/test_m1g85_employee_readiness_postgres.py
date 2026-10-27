@@ -1,6 +1,7 @@
 """Readiness is an actual native worker receipt, without a provider inference."""
 
 import asyncio
+import json
 import os
 import signal
 import sys
@@ -21,7 +22,7 @@ from tests.integration.test_m1e_business_teams_postgres import _agent, _user
 
 
 @pytest.fixture
-async def readiness_case(owner_sessionmaker, app_user_sessionmaker, tmp_path):
+async def readiness_case(owner_sessionmaker, app_user_sessionmaker, tmp_path, request):
     from app.api import agents, business_teams, chat_sessions, employee_readiness
     from app.config import get_settings
 
@@ -29,14 +30,29 @@ async def readiness_case(owner_sessionmaker, app_user_sessionmaker, tmp_path):
     async with owner_sessionmaker() as db:
         db.add(Tenant(id=tenant, name="Readiness", slug=f"readiness-{tenant}"))
         await db.flush()
-        owner = _user(db, id=owner_id, tenant_id=tenant, username=f"owner-{owner_id.hex}", email=f"{owner_id}@ready.test")
+        owner = _user(
+            db, id=owner_id, tenant_id=tenant, username=f"owner-{owner_id.hex}", email=f"{owner_id}@ready.test"
+        )
         lead = _user(db, id=lead_id, tenant_id=tenant, username=f"lead-{lead_id.hex}", email=f"{lead_id}@ready.test")
         await db.flush()
         db.add(BusinessTeam(id=team_id, tenant_id=tenant, name="Delivery", status="active", created_by_user_id=lead_id))
-        db.add(LLMModel(id=model_id, tenant_id=tenant, provider="openai", model="synthetic", label="Approved model",
-            api_key_encrypted="SYNTHETIC_PRIVATE_KEY_CANARY", enabled=True))
+        db.add(
+            LLMModel(
+                id=model_id,
+                tenant_id=tenant,
+                provider="openai",
+                model="synthetic",
+                label="Approved model",
+                api_key_encrypted="SYNTHETIC_PRIVATE_KEY_CANARY",
+                enabled=True,
+            )
+        )
         await db.flush()
-        db.add(BusinessTeamMembership(tenant_id=tenant, business_team_id=team_id, user_id=lead_id, role="lead", status="active"))
+        db.add(
+            BusinessTeamMembership(
+                tenant_id=tenant, business_team_id=team_id, user_id=lead_id, role="lead", status="active"
+            )
+        )
         agent = await _agent(db, tenant_id=tenant, owner_id=owner_id, name="Analyst")
         agent.home_business_team_id = team_id
         agent.primary_model_id = model_id
@@ -47,18 +63,98 @@ async def readiness_case(owner_sessionmaker, app_user_sessionmaker, tmp_path):
     workspace.mkdir(parents=True)
     (workspace / "private.txt").write_text("SYNTHETIC_PRIVATE_KEY_CANARY")
     holder = {"user": lead}
+
     async def scoped_db():
         async with app_user_sessionmaker() as db:
             await pin_rls_tenant_context(db, holder["user"].tenant_id)
             yield db
+
     app = FastAPI()
     for router in (agents.router, business_teams.router, chat_sessions.router, employee_readiness.router):
         app.include_router(router, prefix="/api")
     app.dependency_overrides[get_current_user] = lambda: holder["user"]
     app.dependency_overrides[get_db] = scoped_db
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://readiness") as client:
-        yield SimpleNamespace(client=client, app=app, holder=holder, tenant=tenant, team=team_id, owner=owner,
-            lead=lead, agent=agent.id, model=model_id, workspace=workspace, tmp_path=tmp_path)
+        yield SimpleNamespace(
+            client=client,
+            app=app,
+            holder=holder,
+            tenant=tenant,
+            team=team_id,
+            owner=owner,
+            lead=lead,
+            agent=agent.id,
+            model=model_id,
+            workspace=workspace,
+            tmp_path=tmp_path,
+            owner_sessionmaker=owner_sessionmaker,
+            report=request.node.add_report_section,
+        )
+
+
+async def _capture_readiness_worker_inventory(case, phase):
+    from datetime import datetime, timezone
+    from sqlalchemy import func, select
+    from app.models.runtime_task import RuntimeTask
+    from app.services.runtime_task_claim_service import build_runtime_task_claim_candidate_statement
+
+    observation = {
+        "phase": phase,
+        "started_at": datetime.now(timezone.utc).isoformat(),
+        "candidate_scope": "All task types; before worker-local type capacity filtering",
+    }
+    try:
+        columns = (
+            RuntimeTask.id,
+            RuntimeTask.task_type,
+            RuntimeTask.status,
+            RuntimeTask.priority,
+            RuntimeTask.created_at,
+            RuntimeTask.claimed_by,
+            RuntimeTask.claim_version,
+            RuntimeTask.claim_expires_at,
+            RuntimeTask.attempt_count,
+            RuntimeTask.root_user_id.is_not(None).label("root_actor_present"),
+            RuntimeTask.metadata_json["user_id"].as_string().is_not(None).label("metadata_actor_present"),
+        )
+        async with case.owner_sessionmaker() as db:
+            targets = (
+                (
+                    await db.execute(
+                        select(*columns).where(
+                            RuntimeTask.tenant_id == case.tenant, RuntimeTask.task_type == "readiness_probe"
+                        )
+                    )
+                )
+                .mappings()
+                .all()
+            )
+            # Use the real discovery predicates/order, without claiming or locking.
+            candidates = list((await db.scalars(build_runtime_task_claim_candidate_statement().limit(None))).all())
+            head = (await db.execute(select(*columns).where(RuntimeTask.id.in_(candidates[:20])))).mappings().all()
+            counts = (
+                await db.execute(
+                    select(RuntimeTask.task_type, RuntimeTask.status, func.count()).group_by(
+                        RuntimeTask.task_type, RuntimeTask.status
+                    )
+                )
+            ).all()
+        positions = {task_id: index + 1 for index, task_id in enumerate(candidates)}
+        observation.update(
+            targets=[{**dict(row), "candidate_position": positions.get(row["id"])} for row in targets],
+            candidate_count=len(candidates),
+            candidate_head_ids=candidates[:20],
+            candidate_head=[dict(row) for row in head],
+            head_limit=20,
+            counts=[{"task_type": kind, "status": status, "count": count} for kind, status, count in counts],
+        )
+    except Exception as exc:
+        observation["diagnostic_error_type"] = type(exc).__name__
+    observation["finished_at"] = datetime.now(timezone.utc).isoformat()
+    body = json.dumps(observation, default=str)
+    case.report("call", f"Readiness worker inventory {phase}", body)
+    with (case.tmp_path / "readiness-worker-inventory.jsonl").open("a") as stream:
+        stream.write(body + "\n")
 
 
 async def test_team_readiness_is_queued_before_the_real_worker_checks_it(readiness_case):
@@ -84,10 +180,16 @@ async def test_team_readiness_is_queued_before_the_real_worker_checks_it(readine
 async def native_worker(case, engine):
     from app.config import get_settings
 
-    script = """import asyncio,signal,os
+    script = """import asyncio,signal,os,json
 from app.services.secrets_provider import init_secrets_provider
 init_secrets_provider(os.environ['SECRETS_MASTER_KEY'])
-from app.services.runtime_task_worker import start_runtime_task_worker_loop
+from app.config import get_settings
+from app.services.runtime_task_worker import start_runtime_task_worker_loop, _parse_task_type_limits, _worker_id, runtime_task_worker_enabled
+settings=get_settings()
+print(json.dumps({'readiness_worker_config':{'pid':os.getpid(),'worker_id':_worker_id(),
+    'enabled':runtime_task_worker_enabled(),'process_role':settings.HIVE_PROCESS_ROLE,
+    'max_concurrent':settings.RUNTIME_TASK_WORKER_MAX_CONCURRENT,
+    'batch_size':settings.RUNTIME_TASK_WORKER_BATCH_SIZE,'task_type_limits':_parse_task_type_limits()}}),flush=True)
 async def run():
     stop=asyncio.Event()
     loop=asyncio.get_running_loop()
@@ -98,11 +200,16 @@ async def run():
     await asyncio.gather(worker,return_exceptions=True)
 asyncio.run(run())
 """
-    env = {**os.environ, "DATABASE_URL": engine.url.render_as_string(hide_password=False),
-        "AGENT_DATA_DIR": str(get_settings().AGENT_DATA_DIR)}
+    env = {
+        **os.environ,
+        "DATABASE_URL": engine.url.render_as_string(hide_password=False),
+        "AGENT_DATA_DIR": str(get_settings().AGENT_DATA_DIR),
+    }
+    await _capture_readiness_worker_inventory(case, "before_start")
     with (case.tmp_path / "worker.log").open("w") as log:
-        process = await asyncio.create_subprocess_exec(sys.executable, "-B", "-c", script,
-            env=env, stdout=log, stderr=log)
+        process = await asyncio.create_subprocess_exec(
+            sys.executable, "-B", "-c", script, env=env, stdout=log, stderr=log
+        )
         try:
             yield process
         finally:
@@ -113,6 +220,7 @@ asyncio.run(run())
                 except asyncio.TimeoutError:
                     process.kill()
                     await process.wait()
+            await _capture_readiness_worker_inventory(case, "after_stop")
             assert process.returncode == 0, (case.tmp_path / "worker.log").read_text()[-3000:]
 
 
@@ -127,7 +235,9 @@ async def wait_checked(c, url, check_id, process):
     pytest.fail((c.tmp_path / "worker.log").read_text()[-5000:])
 
 
-async def test_separate_worker_records_actual_checks_without_reading_private_data(readiness_case, app_user_engine, owner_sessionmaker):
+async def test_separate_worker_records_actual_checks_without_reading_private_data(
+    readiness_case, app_user_engine, owner_sessionmaker
+):
     from app.models.runtime_task import RuntimeTask
 
     c = readiness_case
@@ -150,15 +260,26 @@ async def test_separate_worker_records_actual_checks_without_reading_private_dat
         assert task.claimed_by is None and task.completed_at is not None
 
 
-async def test_model_and_owner_failures_do_not_hide_other_check_results(readiness_case, app_user_engine, owner_sessionmaker):
+async def test_model_and_owner_failures_do_not_hide_other_check_results(
+    readiness_case, app_user_engine, owner_sessionmaker
+):
     from app.models.agent import Agent
     from app.models.user import User
 
     c = readiness_case
     async with owner_sessionmaker() as db:
         fallback_id = uuid.uuid4()
-        db.add(LLMModel(id=fallback_id, tenant_id=c.tenant, provider="openai", model="fallback", label="Do not silently substitute",
-            api_key_encrypted="SYNTHETIC_PRIVATE_KEY_CANARY", enabled=True))
+        db.add(
+            LLMModel(
+                id=fallback_id,
+                tenant_id=c.tenant,
+                provider="openai",
+                model="fallback",
+                label="Do not silently substitute",
+                api_key_encrypted="SYNTHETIC_PRIVATE_KEY_CANARY",
+                enabled=True,
+            )
+        )
         await db.flush()
         (await db.get(Agent, c.agent)).fallback_model_id = fallback_id
         (await db.get(LLMModel, c.model)).enabled = False
@@ -171,12 +292,17 @@ async def test_model_and_owner_failures_do_not_hide_other_check_results(readines
         checked = await wait_checked(c, url, created.json()["id"], process)
     checks = {row["key"]: row for row in checked.json()["checks"]}
     assert checks["identity"]["status"] == "blocked", checked.text
-    assert checks["model_configuration"]["status"] == "blocked" and checks["model_configuration"]["code"] == "primary_unavailable"
+    assert (
+        checks["model_configuration"]["status"] == "blocked"
+        and checks["model_configuration"]["code"] == "primary_unavailable"
+    )
     assert checks["storage"]["status"] == checks["worker"]["status"] == "passed"
     assert "Do not silently substitute" not in checked.text
 
 
-async def test_revoked_requester_can_cancel_own_check_and_worker_denies_the_other(readiness_case, app_user_engine, owner_sessionmaker):
+async def test_revoked_requester_can_cancel_own_check_and_worker_denies_the_other(
+    readiness_case, app_user_engine, owner_sessionmaker
+):
     from sqlalchemy import select
     from app.models.runtime_task import RuntimeTask
 
@@ -206,7 +332,9 @@ async def test_revoked_requester_can_cancel_own_check_and_worker_denies_the_othe
     assert (c.workspace / "private.txt").read_text() == "SYNTHETIC_PRIVATE_KEY_CANARY"
 
 
-async def test_request_is_idempotent_under_concurrency_and_never_grants_employee_access(readiness_case, owner_sessionmaker):
+async def test_request_is_idempotent_under_concurrency_and_never_grants_employee_access(
+    readiness_case, owner_sessionmaker
+):
     c = readiness_case
     team_url = f"/api/business-teams/{c.team}/agents/{c.agent}/readiness-checks"
     command = {"request_id": str(uuid.uuid4())}
@@ -219,6 +347,7 @@ async def test_request_is_idempotent_under_concurrency_and_never_grants_employee
     assert (await c.client.post(f"/api/agents/{c.agent}/sessions", json={})).status_code == 403
     async with owner_sessionmaker() as db:
         from sqlalchemy import select
+
         membership = await db.scalar(select(BusinessTeamMembership).where(BusinessTeamMembership.user_id == c.lead.id))
         membership.role = "member"
         await db.commit()
@@ -249,7 +378,9 @@ async def test_storage_check_refuses_a_symlink_without_touching_its_target(readi
     outside.rename(c.workspace)
 
 
-async def test_expired_claim_survives_startup_and_is_recovered_by_native_worker(readiness_case, app_user_engine, app_user_sessionmaker, owner_sessionmaker):
+async def test_expired_claim_survives_startup_and_is_recovered_by_native_worker(
+    readiness_case, app_user_engine, app_user_sessionmaker, owner_sessionmaker
+):
     from datetime import datetime, timedelta, timezone
     from app.database import tenant_scoped_session
     from app.models.runtime_task import RuntimeTask
@@ -261,7 +392,9 @@ async def test_expired_claim_survives_startup_and_is_recovered_by_native_worker(
     created = await c.client.post(url, json={"request_id": str(uuid.uuid4())})
     task_id = uuid.UUID(created.json()["id"])
     async with tenant_scoped_session(c.tenant, session_factory=app_user_sessionmaker) as db:
-        claimed = await RuntimeTaskClaimService(db=db, worker_id="stopped-worker", task_types=("readiness_probe",)).claim_available(batch_size=1)
+        claimed = await RuntimeTaskClaimService(
+            db=db, worker_id="stopped-worker", task_types=("readiness_probe",)
+        ).claim_available(batch_size=1)
         assert [task.id for task in claimed] == [task_id]
     async with owner_sessionmaker() as db:
         task = await db.get(RuntimeTask, task_id)
@@ -320,15 +453,27 @@ async def test_readiness_native_browser(readiness_case, app_user_engine, tmp_pat
             assert not serving.done()
             await asyncio.sleep(0.01)
         assert server.started
-        fixture = {"origin": f"http://127.0.0.1:{listener.getsockname()[1]}", "tenantId": str(c.tenant),
-            "agentId": str(c.agent), "teamId": str(c.team), "outputDir": str(tmp_path),
+        fixture = {
+            "origin": f"http://127.0.0.1:{listener.getsockname()[1]}",
+            "tenantId": str(c.tenant),
+            "agentId": str(c.agent),
+            "teamId": str(c.team),
+            "outputDir": str(tmp_path),
             "leadToken": create_access_token(str(c.lead.id), "user", str(c.tenant)),
-            "ownerToken": create_access_token(str(c.owner.id), "user", str(c.tenant))}
+            "ownerToken": create_access_token(str(c.owner.id), "user", str(c.tenant)),
+        }
         fixture_path = tmp_path / "browser-fixture.json"
         fixture_path.write_text(json.dumps(fixture))
         frontend = Path(__file__).resolve().parents[3] / "frontend"
-        process = await asyncio.create_subprocess_exec("node", str(frontend / "e2e/employee-readiness-native.mjs"), str(fixture_path),
-            cwd=frontend, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+        process = await asyncio.create_subprocess_exec(
+            "node",
+            str(frontend / "e2e/employee-readiness-native.mjs"),
+            str(fixture_path),
+            cwd=frontend,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
 
         async def receive(expected):
             line = await asyncio.wait_for(process.stdout.readline(), 60)

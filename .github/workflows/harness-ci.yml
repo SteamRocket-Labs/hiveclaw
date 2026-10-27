@@ -172,6 +172,7 @@ jobs:
           name: backend-test-failures
           path: |
             backend/pytest-failures.jsonl
+            backend/pytest-timings.jsonl
             backend/pytest-results.xml
             backend/pytest-failure-files/
           if-no-files-found: ignore

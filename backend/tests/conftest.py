@@ -128,10 +128,21 @@ def pytest_runtest_makereport(item, call):
     outcome = yield
     report = outcome.get_result()
     target = item.config.getoption("failure_receipts")
-    if target is None or not report.failed:
+    if target is None:
         return
 
     terminal = item.config.pluginmanager.get_plugin("terminalreporter")
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        timing = {key: getattr(report, key) for key in ("nodeid", "when", "outcome", "duration", "start", "stop")}
+        with target.with_name("pytest-timings.jsonl").open("a", encoding="utf-8") as stream:
+            stream.write(json.dumps(timing) + "\n")
+    except OSError as exc:
+        if terminal is not None:
+            terminal.write_line(f"Could not persist test timing: {exc}", yellow=True)
+    if not report.failed:
+        return
+
     if terminal is not None:
         terminal.write_sep("=", f"Failure: {report.nodeid} ({report.when})")
         terminal.write_line(report.longreprtext)

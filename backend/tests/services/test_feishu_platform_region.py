@@ -1,8 +1,41 @@
 from __future__ import annotations
 
+import os
+from pathlib import Path
+import subprocess
+import sys
 from types import SimpleNamespace
 
 import pytest
+
+
+def test_http_service_import_does_not_load_the_native_feishu_sdk():
+    script = """import sys
+class RejectSDK:
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname == 'lark_oapi' or fullname.startswith('lark_oapi.'):
+            raise AssertionError('HTTP service import loaded the native SDK')
+sys.meta_path.insert(0, RejectSDK())
+from app.config import Settings
+Settings.model_config['env_file'] = None
+from app.services.feishu_service import FeishuService
+service = FeishuService()
+assert 'lark_oapi' not in sys.modules
+sys.meta_path.pop(0)
+from app.services.feishu_service import lark_sdk_available
+assert lark_sdk_available()
+client = service._get_lark_client('synthetic-client', 'synthetic-secret')
+assert service._get_lark_client('synthetic-client', 'synthetic-secret') is client
+"""
+    result = subprocess.run(
+        [sys.executable, "-B", "-c", script],
+        cwd=Path(__file__).resolve().parents[2],
+        env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
 
 
 def test_feishu_platform_resolver_maps_lark_global_domains():
@@ -74,7 +107,7 @@ async def test_feishu_service_send_message_uses_lark_global_domain(monkeypatch):
 
 
 def test_feishu_lark_client_builder_receives_resolved_domain(monkeypatch):
-    from app.services.feishu_service import FeishuService
+    from app.services.feishu_service import FeishuService, lark_sdk_available
 
     captured: dict[str, object] = {}
 
@@ -95,8 +128,8 @@ def test_feishu_lark_client_builder_receives_resolved_domain(monkeypatch):
             return object()
 
     fake_lark = SimpleNamespace(Client=SimpleNamespace(builder=lambda: _FakeBuilder()))
-    monkeypatch.setattr("app.services.feishu_service._HAS_LARK", True)
-    monkeypatch.setattr("app.services.feishu_service.lark", fake_lark)
+    monkeypatch.setattr("app.services.feishu_service._load_lark_sdk", lambda: fake_lark)
+    assert lark_sdk_available() is True
 
     FeishuService()._get_lark_client(
         "cli_lark",
@@ -109,3 +142,15 @@ def test_feishu_lark_client_builder_receives_resolved_domain(monkeypatch):
         "app_secret": "secret",
         "domain": "https://open.larksuite.com",
     }
+
+
+def test_missing_sdk_still_refuses_native_client_and_reports_unavailable(monkeypatch):
+    from app.services.feishu_service import FeishuService, lark_sdk_available
+
+    def unavailable():
+        raise ImportError("Synthetic unavailable SDK")
+
+    monkeypatch.setattr("app.services.feishu_service._load_lark_sdk", unavailable)
+    assert lark_sdk_available() is False
+    with pytest.raises(RuntimeError, match="lark-oapi package is not installed"):
+        FeishuService()._get_lark_client("synthetic-app", "synthetic-secret")

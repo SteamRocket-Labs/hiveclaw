@@ -166,14 +166,20 @@ async def load_skill_input_snapshot(capture, tenant_id, *, runtime_request=None)
         capture.unbound.append("skill_installation_snapshot_unavailable")
 
 
-def _bundled_platform_skill_hashes():
+def _bundled_platform_skill_hashes(*, source_path=None):
     from app.services.skill_installation import collect_skill_package_files
-    from app.services.skill_seeder import builtin_skill_definitions
+    from app.services.skill_seeder import DEFAULT_PACK_SKILL_FOLDERS, builtin_skill_definitions
 
     backend = Path(__file__).resolve().parents[2]
+    pack_dirs = (
+        (backend / "packs",)
+        if source_path is None
+        or any(source_path.startswith(f"skills/{folder}/") for folder in DEFAULT_PACK_SKILL_FOLDERS)
+        else ()
+    )
     hashes = {
         f"skills/{skill['folder_name']}/{file['path']}": hashlib.sha256(file["content"].encode("utf-8")).hexdigest()
-        for skill in builtin_skill_definitions(pack_dirs=(backend / "packs",))
+        for skill in builtin_skill_definitions(pack_dirs=pack_dirs)
         if skill.get("is_default")
         for file in skill["files"]
     }
@@ -186,6 +192,8 @@ def _bundled_platform_skill_hashes():
                     for file in collect_skill_package_files(folder)
                 }
             )
+    if source_path is not None:
+        return {source_path: hashes[source_path]} if source_path in hashes else {}
     return hashes
 
 
@@ -229,7 +237,7 @@ async def record_original_platform_skill_sources(db, *, agent, workspace):
         )
 
 
-async def _platform_skill_sources(db, tenant_id, agent_id):
+async def _platform_skill_sources(db, tenant_id, agent_id, *, source_path=None):
     from app.config import get_settings
     from app.models.agent import Agent
 
@@ -303,11 +311,17 @@ async def _platform_skill_sources(db, tenant_id, agent_id):
         files, source_revision_id = content["platform_skill_sources"], str(revision.id)
     # Keep every original file claim frozen. Missing defaults may be recognized
     # as exact current application bytes, without attesting their copy history.
-    bundled = _bundled_platform_skill_hashes()
+    bundled = (
+        _bundled_platform_skill_hashes()
+        if source_path is None
+        else _bundled_platform_skill_hashes(source_path=source_path)
+    )
     matching = original_platform_skill_hashes(Path(get_settings().AGENT_DATA_DIR) / str(agent_id), bundled=bundled)
     files = {**matching, **files}
     candidates = {}
     for path, digest in files.items():
+        if source_path is not None and path != source_path:
+            continue
         parts = Path(path).parts
         if (
             len(parts) < 3
@@ -569,7 +583,7 @@ async def validate_skill_file_dependency(db, tenant_id, dependency, *, user, run
             "content_source_access_denied", "The Skill source reader is not authorized.", 403
         ) from exc
     if dependency["source_kind"] == "agent_platform_skill_file":
-        sources = await _platform_skill_sources(db, tenant_id, agent_id)
+        sources = await _platform_skill_sources(db, tenant_id, agent_id, source_path=path)
         if sources.get(path) != (str(revision_id), dependency["source_version"]):
             raise ContentInputReceiptError(
                 "content_source_unavailable", "The platform Skill lacks an original package witness.", 503

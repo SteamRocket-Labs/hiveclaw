@@ -72,6 +72,7 @@ filterwarnings = [
 ]
 markers = [
     "real_runtime_config: opt out of the runtime/conftest autouse fixture that stubs invoker._resolve_runtime_config (P0-1b)",
+    "isolated_migration: run destructive migration checks in a dedicated per-case PostgreSQL database",
 ]
 
 [build-system]

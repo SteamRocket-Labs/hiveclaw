@@ -771,6 +771,7 @@ async def _resolve_origin_dependencies(db, *, tenant_id, agent_id, ref):
                 ChatSession.tenant_id == tenant_id,
                 ChatSession.agent_id == agent_id,
             )
+            .execution_options(populate_existing=True)
         )
         return await recover_model_dependencies(db, tenant_id=tenant_id, agent_id=agent_id, result=result)
     if kind not in {"session-tool-result", "session-tool-permission"}:
@@ -789,13 +790,15 @@ async def _resolve_origin_dependencies(db, *, tenant_id, agent_id, ref):
         return [], False
     if kind == "session-tool-permission":
         model = await db.scalar(
-            select(SessionModelResult).where(
+            select(SessionModelResult)
+            .where(
                 SessionModelResult.tenant_id == tenant_id,
                 SessionModelResult.session_id == invocation.session_id,
                 SessionModelResult.run_id == invocation.run_id,
                 SessionModelResult.round_id == invocation.round_id,
                 SessionModelResult.provider_request_id == invocation.provider_request_id,
             )
+            .execution_options(populate_existing=True)
         )
         dependencies, complete = await recover_model_dependencies(
             db, tenant_id=tenant_id, agent_id=agent_id, result=model
@@ -854,12 +857,14 @@ async def _resolve_origin_dependencies(db, *, tenant_id, agent_id, ref):
     if not isinstance(content, str) or payload.get("content_hash") != _hash(content):
         return [], False
     model = await db.scalar(
-        select(SessionModelResult).where(
+        select(SessionModelResult)
+        .where(
             SessionModelResult.tenant_id == tenant_id,
             SessionModelResult.session_id == invocation.session_id,
             SessionModelResult.run_id == invocation.run_id,
             SessionModelResult.provider_request_id == invocation.provider_request_id,
         )
+        .execution_options(populate_existing=True)
     )
     dependencies, inherited_complete = await recover_model_dependencies(
         db, tenant_id=tenant_id, agent_id=agent_id, result=model

@@ -17,6 +17,7 @@ from app.services.content_input_receipts import (
     ContentInputReceiptError,
     _runtime_input_actor,
     _validate_input_dependencies,
+    group_source_read,
 )
 from app.services.session_model_inputs import _model_dependencies, _stored_dependencies
 
@@ -706,6 +707,11 @@ async def runtime_result_publication_bound(db, *, result, agent_id, session_id, 
 
 
 async def validate_runtime_result_sources(db, request, result_object, *, user=None, session=None):
+    with group_source_read():
+        return await _validate_runtime_result_sources(db, request, result_object, user=user, session=session)
+
+
+async def _validate_runtime_result_sources(db, request, result_object, *, user=None, session=None):
     if result_object.source_kind == "remote_a2a":
         from app.services.remote_a2a_artifacts import load_packet
 

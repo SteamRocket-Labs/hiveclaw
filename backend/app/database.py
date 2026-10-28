@@ -304,6 +304,7 @@ schema_engine = (
 # Set by get_db() from request.state.tenant_id (populated by TenantMiddleware).
 _current_tenant_id: ContextVar[str | None] = ContextVar("_current_tenant_id", default=None)
 _RLS_TENANT_INFO_KEY = "hive_rls_tenant_id"
+_RLS_PIN_OBSERVATION_INFO_KEY = "hive_rls_pin_observation"
 _RLS_BYPASS_VALUE = "BYPASS"
 _AFTER_COMMIT_CALLBACKS_KEY = "hive_after_commit_callbacks"
 AfterCommitCallback = Callable[[], Awaitable[None]]
@@ -470,6 +471,9 @@ def _apply_rls_tenant_for_transaction(session: SyncSession, _transaction, connec
         return
     tenant_id = _normalize_rls_transaction_scope_value(session.info.get(_RLS_TENANT_INFO_KEY))
     connection.exec_driver_sql(_rls_tenant_statement(tenant_id))
+    observation = session.info.get(_RLS_PIN_OBSERVATION_INFO_KEY)
+    if observation is not None:
+        observation.append(tenant_id)
 
 
 class Base(DeclarativeBase):
@@ -492,7 +496,21 @@ async def pin_rls_tenant_context(session: AsyncSession, tenant_id: str | uuid.UU
     """Pin the current transaction and future transactions on this ORM session to a tenant."""
     pinned_tenant_id = _set_rls_tenant_context(session, tenant_id)
     _current_tenant_id.set(pinned_tenant_id or None)
-    await session.execute(text(_rls_tenant_statement(pinned_tenant_id)))
+    info = session.sync_session.info
+    missing = object()
+    previous = info.get(_RLS_PIN_OBSERVATION_INFO_KEY, missing)
+    observation = []
+    info[_RLS_PIN_OBSERVATION_INFO_KEY] = observation
+    try:
+        # Checkout applies the frame through after_begin only for a new transaction.
+        await session.connection()
+        if observation != [pinned_tenant_id]:
+            await session.execute(text(_rls_tenant_statement(pinned_tenant_id)))
+    finally:
+        if previous is missing:
+            info.pop(_RLS_PIN_OBSERVATION_INFO_KEY, None)
+        else:
+            info[_RLS_PIN_OBSERVATION_INFO_KEY] = previous
     return uuid.UUID(pinned_tenant_id) if pinned_tenant_id else None
 
 

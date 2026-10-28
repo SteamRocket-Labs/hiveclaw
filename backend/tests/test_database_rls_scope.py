@@ -25,6 +25,14 @@ class _FakeAsyncSession:
     async def execute(self, statement) -> None:
         self.statements.append(str(statement))
 
+    async def connection(self):
+        from app import database
+
+        connection = _FakeConnection()
+        connection.statements = self.statements
+        database._apply_rls_tenant_for_transaction(self.sync_session, object(), connection)
+        return connection
+
     async def commit(self) -> None:
         self.commits += 1
 

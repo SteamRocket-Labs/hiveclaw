@@ -400,6 +400,7 @@ export function ArtifactCards({
   agentId,
   artifacts,
   onOpenArtifact,
+  onDownloadArtifact,
   context = 'assistant',
   operatorView = false,
   operatorReason,
@@ -408,6 +409,7 @@ export function ArtifactCards({
   agentId?: string | null;
   artifacts?: ChatArtifactPart[];
   onOpenArtifact?: (artifact: ChatArtifactPart) => void;
+  onDownloadArtifact?: (artifact: ChatArtifactPart) => void | Promise<unknown>;
   context?: ArtifactDeliveryContext;
   operatorView?: boolean;
   operatorReason?: string;
@@ -433,9 +435,12 @@ export function ArtifactCards({
           : undefined;
         const size = formatArtifactSize(artifact.size);
         const openArtifact = () => onOpenArtifact?.(artifact);
-        const downloadArtifact = () => downloadAgentId
-          ? downloadChatArtifact(artifact, downloadAgentId, authority, t)
-          : Promise.resolve();
+        const downloadArtifact = () => {
+          if (onDownloadArtifact) return onDownloadArtifact(artifact);
+          return downloadAgentId
+            ? downloadChatArtifact(artifact, downloadAgentId, authority, t)
+            : Promise.resolve();
+        };
         return (
           <div
             key={`${artifact.id || artifact.path}`}

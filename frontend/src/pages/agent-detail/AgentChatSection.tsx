@@ -827,6 +827,7 @@ interface ChatMessageItemProps {
   checkpointMessage?: AgentChatMessage | null;
   effectiveAgentId: string | null;
   onOpenArtifact: (artifact: ChatArtifactPart) => void | Promise<unknown>;
+  onDownloadArtifact: (artifact: ChatArtifactPart) => void | Promise<unknown>;
   onBranchMessage?: (message: AgentChatMessage) => void | Promise<unknown>;
   onFeedbackMessage?: (message: AgentChatMessage, label: RecordSessionFeedbackInput['label']) => void | Promise<unknown>;
   onRewindMessage?: (message: AgentChatMessage) => void | Promise<unknown>;
@@ -858,6 +859,7 @@ const ChatMessageItem = React.memo(function ChatMessageItem({
   checkpointMessage,
   effectiveAgentId,
   onOpenArtifact,
+  onDownloadArtifact,
   onBranchMessage,
   onFeedbackMessage,
   onRewindMessage,
@@ -879,6 +881,9 @@ const ChatMessageItem = React.memo(function ChatMessageItem({
   const authorizedImageUrl = sessionAuthorizedInlineImageUrl(msg.imageUrl, operatorView, operatorReason);
   const isImage = !!authorizedImageUrl && ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp'].includes(extension);
   const inlinePlanId = isLeft && msg.role === 'assistant' ? extractPlanIdFromPlanModeMessage(msg.content) : null;
+  const artifactCardProps = {
+    agentId: effectiveAgentId, onOpenArtifact, onDownloadArtifact, operatorView, operatorReason,
+  };
 
   const timestampHtml = (() => {
     let timeStr = '';
@@ -981,18 +986,14 @@ const ChatMessageItem = React.memo(function ChatMessageItem({
           <span>{t('companyMessaging.fileUnavailable')}</span>
         </div>)}
         {msg.role === 'user' && <ArtifactCards
-          agentId={effectiveAgentId}
+          {...artifactCardProps}
           artifacts={msg.inputAttachments}
-          onOpenArtifact={onOpenArtifact}
-          operatorView={operatorView} operatorReason={operatorReason}
           viewerUserId={viewerUserId}
         />}
         <ArtifactCards
-          agentId={effectiveAgentId}
+          {...artifactCardProps}
           artifacts={msg.artifacts}
-          onOpenArtifact={onOpenArtifact}
           context="assistant"
-          operatorView={operatorView} operatorReason={operatorReason}
         />
         {inlinePlanId && effectiveAgentId && !operatorView && (
           <div style={{ marginTop: '10px', minWidth: 'min(520px, 100%)' }} data-testid="chat-inline-plan-card">
@@ -1336,6 +1337,7 @@ function AgentChatSection({
       if (msg.eventType === 'remote_a2a_artifacts' && msg.artifacts?.length) {
         return <div key={msg.transcriptEventId || msg.id || `remote-files-${index}`} className="session-tui-render-cell">
           <ArtifactCards agentId={effectiveAgentId} artifacts={msg.artifacts} onOpenArtifact={openArtifact}
+            onDownloadArtifact={downloadArtifactFile}
             context="assistant" operatorView={operatorView} operatorReason={normalizedOperatorReason} />
         </div>;
       }
@@ -1397,7 +1399,7 @@ function AgentChatSection({
         </div>
       );
     },
-    [activeSession?.operator_view, activeSession?.audience_kind, currentUser?.id, canMutateSession, onBranchMessage, onResolveSessionPermission, selectThreadItem, selectedThreadItemId, t, toolEffectRecovery.blocked, visibleTimeline, effectiveAgentId, openArtifact, operatorView, normalizedOperatorReason],
+    [activeSession?.operator_view, activeSession?.audience_kind, currentUser?.id, canMutateSession, onBranchMessage, onResolveSessionPermission, selectThreadItem, selectedThreadItemId, t, toolEffectRecovery.blocked, visibleTimeline, effectiveAgentId, openArtifact, downloadArtifactFile, operatorView, normalizedOperatorReason],
   );
 
   const renderInlinePlanToolCall = (msg: AgentChatMessage, index: number) => {
@@ -1436,6 +1438,7 @@ function AgentChatSection({
         agentId={effectiveAgentId}
         artifacts={msg.artifacts}
         onOpenArtifact={openArtifact}
+        onDownloadArtifact={downloadArtifactFile}
         context="tool"
         operatorView={operatorView} operatorReason={normalizedOperatorReason}
       />
@@ -1468,6 +1471,7 @@ function AgentChatSection({
           viewerUserId={currentUser?.id}
           effectiveAgentId={effectiveAgentId}
           onOpenArtifact={openArtifact}
+          onDownloadArtifact={downloadArtifactFile}
           onBranchMessage={canMutateSession ? startBranchAction : undefined}
           onFeedbackMessage={canMutateSession ? submitMessageFeedback : undefined}
           onRewindMessage={canMutateSession && !rewindUnavailableReason ? rewindFromMessage : undefined}

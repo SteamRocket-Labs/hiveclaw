@@ -529,3 +529,45 @@ it('keeps original history visible but disables a cached writable composer durin
   expect(send).not.toHaveBeenCalled();
   useAuthStore.setState({ user: null });
 });
+
+it.each(['reason', 'unmount'] as const)(
+  'drops an obsolete direct artifact-card download after an operator %s change', async (change) => {
+    const stale = deferred<Blob>();
+    const fresh = deferred<Blob>();
+    const staleBlob = new Blob(['PRIVATE REASON A DIRECT DOWNLOAD']);
+    const freshBlob = new Blob(['PRIVATE REASON B DIRECT DOWNLOAD']);
+    harness.downloadArtifact
+      .mockReturnValueOnce(stale.promise)
+      .mockReturnValueOnce(fresh.promise);
+
+    const view = render(React.createElement(AgentChatSection as any, downloadProps('Reason A')));
+    fireEvent.click(screen.getByRole('button', { name: /^Download$/ }));
+    expect(harness.downloadArtifact).toHaveBeenCalledTimes(1);
+    expect(harness.downloadArtifact).toHaveBeenNthCalledWith(
+      1, 'agent-1', 'private-download-artifact', { operatorView: true, reason: 'Reason A' },
+    );
+
+    if (change === 'unmount') {
+      view.unmount();
+      render(React.createElement(AgentChatSection as any, downloadProps('Reason B')));
+    } else {
+      view.rerender(React.createElement(AgentChatSection as any, downloadProps('Reason B')));
+    }
+    await act(async () => {
+      stale.resolve(staleBlob);
+      await stale.promise;
+    });
+    expect(harness.saveBlob).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole('button', { name: /^Download$/ }));
+    await act(async () => {
+      fresh.resolve(freshBlob);
+      await fresh.promise;
+    });
+    expect(harness.saveBlob).toHaveBeenCalledTimes(1);
+    expect(harness.saveBlob).toHaveBeenCalledWith(freshBlob, 'private-Reason B.zip');
+    expect(harness.downloadArtifact).toHaveBeenNthCalledWith(
+      2, 'agent-1', 'private-download-artifact', { operatorView: true, reason: 'Reason B' },
+    );
+  },
+);

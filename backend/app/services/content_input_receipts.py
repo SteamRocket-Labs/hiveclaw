@@ -100,13 +100,22 @@ def observe_native_directory_read(tool_name, content, *, outcome):
         }
 
 
+class _DisclosureSourceValidations:
+    def __init__(self):
+        self.active = True
+        self.verified = {}
+
+
 @contextmanager
 def group_source_read():
     """Reuse successful exact source checks only inside one reader disclosure."""
-    token = _DISCLOSURE_SOURCE_VALIDATIONS.set(set())
+    scope = _DisclosureSourceValidations()
+    token = _DISCLOSURE_SOURCE_VALIDATIONS.set(scope)
     try:
         yield
     finally:
+        scope.active = False
+        scope.verified.clear()
         _DISCLOSURE_SOURCE_VALIDATIONS.reset(token)
 
 
@@ -177,10 +186,11 @@ async def _validate_input_dependencies(
         raise ContentInputReceiptError(
             "content_source_recipient_mismatch", "The source reader changed its recipient purpose.", 403
         )
-    verified = _DISCLOSURE_SOURCE_VALIDATIONS.get()
+    scope = _DISCLOSURE_SOURCE_VALIDATIONS.get()
     context = {"user": user, "runtime_request": runtime_request, "active_workspace_receipts": active_workspace_receipts}
     if (
-        verified is None
+        scope is None
+        or not scope.active
         or not isinstance(dependencies, list)
         or any(
             not isinstance(row, dict)
@@ -201,11 +211,15 @@ async def _validate_input_dependencies(
             active_workspace_receipts,
             source_key,
         )
-        if reader_key not in verified or (
-            source_key[0] == "session_tool_invocation" and source_key[1:] in _ACTIVE_GROUP_TOOL_SOURCES.get()
+        if (
+            not scope.active
+            or reader_key not in scope.verified
+            or (source_key[0] == "session_tool_invocation" and source_key[1:] in _ACTIVE_GROUP_TOOL_SOURCES.get())
         ):
             await _validate_input_dependency_batch(db, tenant_id, [dependency], **context)
-            verified.add(reader_key)
+            if scope.active:
+                # Keep identity keys bound to their objects until this disclosure ends.
+                scope.verified[reader_key] = (db, user, runtime_request)
 
 
 async def _validate_input_dependency_batch(

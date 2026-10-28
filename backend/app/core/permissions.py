@@ -50,7 +50,9 @@ def _platform_admin_selection_allows_agent(user, agent_tenant_id) -> bool:
     return selected_tenant_id is not None and str(selected_tenant_id) == str(agent_tenant_id)
 
 
-async def _load_agent_for_user(db: AsyncSession, user: User, agent_id: uuid.UUID, *, retirement_history: bool = False) -> Agent:
+async def _load_agent_for_user(
+    db: AsyncSession, user: User, agent_id: uuid.UUID, *, retirement_history: bool = False
+) -> Agent:
     """Load inside the exact tenant/RLS boundary; retirement reads stay explicit."""
 
     # The lookup joins the Agent's Tenant liveness so an Agent whose company
@@ -234,21 +236,25 @@ async def load_effective_business_team_ids(
         return []
     try:
         rows = (
-            await db.execute(
-                select(BusinessTeamMembership.business_team_id)
-                .join(BusinessTeam, BusinessTeam.id == BusinessTeamMembership.business_team_id)
-                .join(User, User.id == BusinessTeamMembership.user_id)
-                .where(
-                    BusinessTeamMembership.user_id == user.id,
-                    BusinessTeamMembership.status == "active",
-                    BusinessTeamMembership.tenant_id == tenant_id,
-                    BusinessTeam.status == "active",
-                    BusinessTeam.tenant_id == tenant_id,
-                    User.is_active.is_(True),
-                    User.tenant_id == tenant_id,
+            (
+                await db.execute(
+                    select(BusinessTeamMembership.business_team_id)
+                    .join(BusinessTeam, BusinessTeam.id == BusinessTeamMembership.business_team_id)
+                    .join(User, User.id == BusinessTeamMembership.user_id)
+                    .where(
+                        BusinessTeamMembership.user_id == user.id,
+                        BusinessTeamMembership.status == "active",
+                        BusinessTeamMembership.tenant_id == tenant_id,
+                        BusinessTeam.status == "active",
+                        BusinessTeam.tenant_id == tenant_id,
+                        User.is_active.is_(True),
+                        User.tenant_id == tenant_id,
+                    )
                 )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
     except Exception:
         return []
     return list(dict.fromkeys(rows))
@@ -319,9 +325,7 @@ async def resource_agent_access_levels(
     if tenant_id is None or getattr(user, "id", None) is None:
         return {}
     team_ids = await load_effective_business_team_ids(db, user, tenant_id)
-    principal_filters = [
-        and_(ResourcePermission.principal_type == "user", ResourcePermission.principal_id == user.id)
-    ]
+    principal_filters = [and_(ResourcePermission.principal_type == "user", ResourcePermission.principal_id == user.id)]
     if getattr(user, "role", None) != "platform_admin" and getattr(user, "department_id", None):
         principal_filters.append(
             and_(
@@ -347,7 +351,9 @@ async def resource_agent_access_levels(
                         or_(*principal_filters),
                     )
                 )
-            ).scalars().all()
+            )
+            .scalars()
+            .all()
         )
     except Exception:
         return {}
@@ -394,7 +400,9 @@ async def require_agent_execution_access(
     return agent, access_level
 
 
-async def check_agent_access(db: AsyncSession, user: User, agent_id: uuid.UUID, *, _retirement_history: bool = False) -> Tuple[Agent, str]:
+async def check_agent_access(
+    db: AsyncSession, user: User, agent_id: uuid.UUID, *, _retirement_history: bool = False
+) -> Tuple[Agent, str]:
     """Check whether a user may use or manage a specific Agent.
 
     Operator inspection is deliberately excluded. Read-only operator surfaces
@@ -447,8 +455,7 @@ async def check_agent_access(db: AsyncSession, user: User, agent_id: uuid.UUID, 
     if user.role != "platform_admin" and user.department_id:
         base_principals.append(("department", user.department_id))
     team_principals = [
-        ("business_team", team_id)
-        for team_id in await load_effective_business_team_ids(db, user, agent.tenant_id)
+        ("business_team", team_id) for team_id in await load_effective_business_team_ids(db, user, agent.tenant_id)
     ]
     use_principals = [*base_principals, *team_principals]
     context = {"tenant_id": str(agent.tenant_id)} if agent.tenant_id else None
@@ -758,8 +765,7 @@ async def require_agent_owner_or_admin(
     if lock:
         # The Agent lock may have waited after the company and actor reads.
         # Recheck both without taking a Tenant lock in the opposite order.
-        live_tenant = await db.scalar(select(Tenant.id).where(
-            Tenant.id == agent.tenant_id, Tenant.is_active.is_(True)))
+        live_tenant = await db.scalar(select(Tenant.id).where(Tenant.id == agent.tenant_id, Tenant.is_active.is_(True)))
         if live_tenant is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found")
         from app.services.runtime_user_identity import load_scoped_runtime_user

@@ -8,8 +8,10 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from tests.session_stub import ActiveTransactionSessionStub
 
-class _FakeDB:
+
+class _FakeDB(ActiveTransactionSessionStub):
     def __init__(self, results: list[object] | None = None):
         self.sync_session = SimpleNamespace(info={})
         self.statements: list[str] = []

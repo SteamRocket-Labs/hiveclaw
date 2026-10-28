@@ -11,6 +11,8 @@ from fastapi.testclient import TestClient
 from app.core.security import get_current_admin, get_current_user
 from app.database import get_db
 
+from tests.session_stub import ActiveTransactionSessionStub
+
 
 class _BombDB:
     sync_session = SimpleNamespace(info={})
@@ -154,7 +156,7 @@ class _ScalarResult:
         return self.value
 
 
-class _SettingDB:
+class _SettingDB(ActiveTransactionSessionStub):
     def __init__(self, results=()):
         self.results = list(results)
         self.statements = []
@@ -292,7 +294,7 @@ class _MappingsResult:
         return SimpleNamespace(all=lambda: self._scalars)
 
 
-class _AgentListDB:
+class _AgentListDB(ActiveTransactionSessionStub):
     def __init__(self, results=()):
         self.statements = []
         self.results = list(results)

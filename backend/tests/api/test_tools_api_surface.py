@@ -7,6 +7,8 @@ from uuid import uuid4
 import pytest
 from fastapi import HTTPException
 
+from tests.session_stub import ActiveTransactionSessionStub
+
 
 class _ListResult:
     def __init__(self, values):
@@ -27,7 +29,7 @@ class _ScalarResult:
         return self._value
 
 
-class _FakeDB:
+class _FakeDB(ActiveTransactionSessionStub):
     def __init__(self, results):
         self._results = list(results)
         self.added = []

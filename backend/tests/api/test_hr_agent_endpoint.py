@@ -9,6 +9,8 @@ from types import SimpleNamespace
 import pytest
 from sqlalchemy.exc import MultipleResultsFound
 
+from tests.session_stub import ActiveTransactionSessionStub
+
 
 def test_internal_system_agents_excluded_from_list():
     """The HR_AGENT_NAME constant should match the filter in list_agents."""
@@ -58,7 +60,7 @@ class _FakeResult:
         return _FakeScalars(self._rows)
 
 
-class _FakeDb:
+class _FakeDb(ActiveTransactionSessionStub):
     def __init__(self, rows: list[SimpleNamespace]) -> None:
         self.rows = rows
         self.commits = 0

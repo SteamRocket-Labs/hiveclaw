@@ -14,6 +14,8 @@ from fastapi.testclient import TestClient
 from app.api.auth import router
 from app.database import get_db
 
+from tests.session_stub import ActiveTransactionSessionStub
+
 
 def _fake_user(
     username: str = "alice",
@@ -54,7 +56,7 @@ class _FakeResult:
         return self._value
 
 
-class _FakeDB:
+class _FakeDB(ActiveTransactionSessionStub):
     """Returns prescribed results in the order of SELECT calls."""
 
     def __init__(self, results):

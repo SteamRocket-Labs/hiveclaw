@@ -15,6 +15,8 @@ from app.api.feishu import router
 from app.core.security import get_current_user
 from app.database import get_db
 
+from tests.session_stub import ActiveTransactionSessionStub
+
 
 def _fake_user(tenant_id=None):
     return SimpleNamespace(
@@ -39,7 +41,7 @@ def _fake_user(tenant_id=None):
     )
 
 
-class _FakeDB:
+class _FakeDB(ActiveTransactionSessionStub):
     def __init__(self, session=None, execute_results=None):
         self.session = session
         self.execute_results = list(execute_results or [])

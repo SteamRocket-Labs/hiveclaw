@@ -8,6 +8,8 @@ import pytest
 from fastapi import HTTPException
 from pydantic import ValidationError
 
+from tests.session_stub import ActiveTransactionSessionStub
+
 
 class _ScalarResult:
     def __init__(self, value):
@@ -28,7 +30,7 @@ class _ListResult:
         return SimpleNamespace(all=lambda: self._values)
 
 
-class _FakeDB:
+class _FakeDB(ActiveTransactionSessionStub):
     def __init__(self, results):
         self._results = list(results)
         self.added = []

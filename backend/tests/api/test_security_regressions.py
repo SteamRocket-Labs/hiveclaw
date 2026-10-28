@@ -14,6 +14,8 @@ from fastapi import BackgroundTasks, FastAPI, HTTPException
 from fastapi.testclient import TestClient
 from starlette.datastructures import UploadFile
 
+from tests.session_stub import ActiveTransactionSessionStub
+
 
 class _ScalarResult:
     def __init__(self, value):
@@ -37,7 +39,7 @@ class _ListResult:
         return self._values
 
 
-class _QueuedDB:
+class _QueuedDB(ActiveTransactionSessionStub):
     def __init__(self, results):
         self._results = list(results)
         self.added = []

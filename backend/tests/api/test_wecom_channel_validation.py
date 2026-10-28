@@ -6,6 +6,8 @@ from uuid import uuid4
 import pytest
 from fastapi import HTTPException
 
+from tests.session_stub import ActiveTransactionSessionStub
+
 
 class _ScalarResult:
     def __init__(self, value):
@@ -15,7 +17,7 @@ class _ScalarResult:
         return self._value
 
 
-class _FakeDB:
+class _FakeDB(ActiveTransactionSessionStub):
     """Minimal DB double returning a fixed scalar, plus an exact Tenant
     liveness scalar for the production ``select(Tenant.is_active)`` probe."""
 

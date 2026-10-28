@@ -11,8 +11,10 @@ from app.api.memory import router
 from app.core.security import get_current_admin, get_current_user
 from app.database import get_db
 
+from tests.session_stub import ActiveTransactionSessionStub
 
-class MemoryReceiptSession:
+
+class MemoryReceiptSession(ActiveTransactionSessionStub):
     """HTTP unit seam; PostgreSQL/RLS receipts are covered by the M1-G21 integration."""
     def __init__(self):
         self.info = {}

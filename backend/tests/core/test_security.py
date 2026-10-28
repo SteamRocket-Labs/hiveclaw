@@ -11,6 +11,8 @@ from fastapi import HTTPException
 
 from app.core.security import get_current_user, verify_refresh_token
 
+from tests.session_stub import ActiveTransactionSessionStub
+
 
 def _read_security_source() -> str:
     project_root = Path(__file__).resolve().parents[3]
@@ -63,7 +65,7 @@ class _Result:
         return self._scalar
 
 
-class _TenantOverrideDB:
+class _TenantOverrideDB(ActiveTransactionSessionStub):
     """Fake DB that hides the admin user unless the query enters RLS bypass.
 
     This reproduces production strict RLS: when the request is already scoped to
@@ -295,7 +297,7 @@ class _RefreshResult:
         return self._value
 
 
-class _RefreshTokenDB:
+class _RefreshTokenDB(ActiveTransactionSessionStub):
     def __init__(self, token_row, tenant_id):
         self.token_row = token_row
         self.tenant_id = tenant_id

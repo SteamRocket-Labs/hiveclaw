@@ -6,6 +6,8 @@ from uuid import uuid4
 import pytest
 from fastapi import HTTPException
 
+from tests.session_stub import ActiveTransactionSessionStub
+
 
 class _ScalarResult:
     def __init__(self, value):
@@ -23,7 +25,7 @@ class _ListResult:
         return SimpleNamespace(all=lambda: self._values)
 
 
-class _PermissionsDB:
+class _PermissionsDB(ActiveTransactionSessionStub):
     def __init__(self, *, agent, permissions=None):
         self.agent = agent
         self.permissions = permissions or []

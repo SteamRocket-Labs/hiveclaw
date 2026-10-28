@@ -10,8 +10,10 @@ import app.api.admin as admin_api
 from app.core.security import get_current_user
 from app.database import get_db
 
+from tests.session_stub import ActiveTransactionSessionStub
 
-class _FakeDB:
+
+class _FakeDB(ActiveTransactionSessionStub):
     def __init__(self):
         self.sync_session = SimpleNamespace(info={})
         self.statements: list[str] = []

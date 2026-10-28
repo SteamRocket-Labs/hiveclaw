@@ -21,6 +21,8 @@ from app.database import get_db
 
 # ─── Fixtures ───────────────────────────────────────────
 
+from tests.session_stub import ActiveTransactionSessionStub
+
 _TENANT_ID = uuid4()
 _USER_ID = uuid4()
 _MAIN_AGENT_ID = uuid4()
@@ -79,7 +81,7 @@ class _ListScalars:
         return self._v
 
 
-class _FakeDB:
+class _FakeDB(ActiveTransactionSessionStub):
     def __init__(self, *, configs=None, config=None, user=None, agent_id=None):
         self._configs = configs or []
         self._config = config

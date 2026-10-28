@@ -10,6 +10,8 @@ from uuid import uuid4
 import pytest
 from starlette.requests import Request
 
+from tests.session_stub import ActiveTransactionSessionStub
+
 
 class _ScalarResult:
     def __init__(self, value):
@@ -19,7 +21,7 @@ class _ScalarResult:
         return self._value
 
 
-class _DB:
+class _DB(ActiveTransactionSessionStub):
     """Answers the public channel lookup by statement shape: the ChannelConfig
     row, the owning Tenant's liveness (active), and benign results for the
     bypass scope's own SET LOCAL statements."""

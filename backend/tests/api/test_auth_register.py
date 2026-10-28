@@ -13,6 +13,8 @@ from sqlalchemy.exc import IntegrityError
 from app.api.auth import router
 from app.database import get_db
 
+from tests.session_stub import ActiveTransactionSessionStub
+
 
 def _fake_user(
     username: str = "occupied",
@@ -40,7 +42,7 @@ class _FakeResult:
         return self._value
 
 
-class _FakeDB:
+class _FakeDB(ActiveTransactionSessionStub):
     """Returns a prescribed user per SELECT call.
 
     Register issues one SELECT for email then one for username.

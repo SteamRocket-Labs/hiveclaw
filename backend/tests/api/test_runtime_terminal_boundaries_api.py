@@ -12,6 +12,8 @@ import app.api.runtime_terminal_boundaries as terminal_boundaries_api
 from app.core.security import get_current_user
 from app.database import get_db
 
+from tests.session_stub import ActiveTransactionSessionStub
+
 
 class _Rows:
     def __init__(self, rows=()):
@@ -24,7 +26,7 @@ class _Rows:
         return self._rows
 
 
-class _FakeDB:
+class _FakeDB(ActiveTransactionSessionStub):
     def __init__(self, rows=()):
         self.rows = list(rows)
         self.statements = []

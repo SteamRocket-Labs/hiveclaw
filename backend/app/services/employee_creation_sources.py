@@ -608,13 +608,15 @@ async def _owned_context_source(db, *, dependency, agent_id, tenant_id, session_
         payload = _event_payload(event) if event else {}
         model = (
             await db.scalar(
-                select(SessionModelResult).where(
+                select(SessionModelResult)
+                .where(
                     SessionModelResult.id == event.result_id,
                     SessionModelResult.tenant_id == tenant_id,
                     SessionModelResult.session_id == session_id,
                     SessionModelResult.run_id == call.run_id,
                     SessionModelResult.provider_request_id == call.provider_request_id,
                 )
+                .execution_options(populate_existing=True)
             )
             if event
             else None

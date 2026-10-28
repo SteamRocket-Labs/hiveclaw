@@ -365,6 +365,8 @@ async def create_agent_team(
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    # The next request may consume the returned Team before dependency cleanup.
+    await db.commit()
     payload.pop("requires_api_persist", None)
     return payload
 

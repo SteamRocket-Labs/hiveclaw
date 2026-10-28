@@ -1512,11 +1512,13 @@ async def _runtime_input_actor(db, tenant_id, request):
         if requester is None:
             raise ValueError("runtime_requester_unavailable")
         current_session = await db.scalar(
-            select(ChatSession).where(
+            select(ChatSession)
+            .where(
                 ChatSession.id == uuid.UUID(str(principal.session_id)),
                 ChatSession.tenant_id == tenant_id,
                 ChatSession.agent_id == principal.agent_id,
             )
+            .execution_options(populate_existing=True)
         )
         if current_session is None:
             raise ValueError("runtime_session_actor_mismatch")

@@ -420,7 +420,9 @@ async def check_agent_access(db: AsyncSession, user: User, agent_id: uuid.UUID, 
         return agent, "manage"
 
     # Check permission scopes
-    perms = await db.execute(select(AgentPermission).where(AgentPermission.agent_id == agent_id))
+    perms = await db.execute(
+        select(AgentPermission).where(AgentPermission.agent_id == agent_id).execution_options(populate_existing=True)
+    )
     permissions = perms.scalars().all()
 
     for perm in permissions:

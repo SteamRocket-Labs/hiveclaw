@@ -233,7 +233,7 @@ async def _validate_input_dependency_batch(
         from app.services.employee_creation_sources import published_creation_seed_sources
 
         published_user, published = await published_creation_seed_sources(
-            db, tenant_id=tenant_id, request=runtime_request
+            db, tenant_id=tenant_id, request=runtime_request, requested_dependencies=dependencies
         )
     for dependency in dependencies:
         if dependency["source_kind"] == "business_task_context":

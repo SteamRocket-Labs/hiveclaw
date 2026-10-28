@@ -387,7 +387,7 @@ async def _refinement_is_bound(db, *, draft, refinement):
     )
 
 
-async def published_creation_seed_sources(db, *, tenant_id, request):
+async def published_creation_seed_sources(db, *, tenant_id, request, requested_dependencies):
     """Read only original creation seed sources for its live explicit first task."""
     from datetime import datetime, timezone
     from app.agents.delegation_token import DelegationToken, validate_delegation_token
@@ -448,7 +448,14 @@ async def published_creation_seed_sources(db, *, tenant_id, request):
     parent = await db.get(Agent, task.parent_agent_id, populate_existing=True)
     child = await db.get(Agent, task.child_agent_id, populate_existing=True)
     if draft is None or task.id != uuid.uuid5(draft.id, "explicit-first-task.v1"):
-        return await _owned_delegation_parent_sources(db, task=task, requester=requester, parent=parent, child=child)
+        return await _owned_delegation_parent_sources(
+            db,
+            task=task,
+            requester=requester,
+            parent=parent,
+            child=child,
+            requested_dependencies=requested_dependencies,
+        )
     if (
         draft is None
         or task.id != uuid.uuid5(draft.id, "explicit-first-task.v1")
@@ -471,7 +478,12 @@ async def published_creation_seed_sources(db, *, tenant_id, request):
     original = await load_employee_creation_dependencies(db, draft=draft)
     if original is None or not original[1]:
         return None, []
-    return requester, await _creation_seed_dependencies(db, draft=draft, parent=parent, dependencies=original[0])
+    return requester, await _creation_seed_dependencies(
+        db,
+        draft=draft,
+        parent=parent,
+        dependencies=[dependency for dependency in original[0] if dependency in requested_dependencies],
+    )
 
 
 async def _creation_seed_dependencies(db, *, draft, parent, dependencies):
@@ -801,7 +813,7 @@ async def _owned_context_source(db, *, dependency, agent_id, tenant_id, session_
     return False
 
 
-async def _owned_delegation_parent_sources(db, *, task, requester, parent, child):
+async def _owned_delegation_parent_sources(db, *, task, requester, parent, child, requested_dependencies):
     from app.agents.orchestrator import _delegation_projection_request_from_record
     from app.models.chat_session import ChatSession
     from app.models.invocation_span import InvocationSpan
@@ -860,7 +872,8 @@ async def _owned_delegation_parent_sources(db, *, task, requester, parent, child
     published = [
         source
         for source in origin.sources
-        if await _owned_context_source(
+        if source in requested_dependencies
+        and await _owned_context_source(
             db,
             dependency=source,
             agent_id=parent.id,

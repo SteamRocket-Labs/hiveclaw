@@ -8,6 +8,8 @@ from uuid import uuid4
 
 import pytest
 
+from tests.session_stub import ActiveTransactionSessionStub
+
 
 class _FakeRedis:
     def __init__(self):
@@ -385,7 +387,7 @@ async def test_bridge_transcript_event_to_t0_writes_ledger_and_marks_metadata(mo
         def scalar_one_or_none(self):
             return transcript_event
 
-    class FakeSession:
+    class FakeSession(ActiveTransactionSessionStub):
         def __init__(self):
             self.commits = 0
 

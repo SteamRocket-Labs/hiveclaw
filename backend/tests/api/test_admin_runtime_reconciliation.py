@@ -45,9 +45,13 @@ def test_admin_runtime_reconciliation_requires_platform_admin() -> None:
     response = client.get("/admin/runtime-reconciliation", params={"tenant_id": str(uuid4())})
 
     assert response.status_code == 403
-    detail = client.get(f"/admin/runtime-reconciliation/{uuid4()}", params={
-        "tenant_id": str(uuid4()), "include_input_sources": "true",
-    })
+    detail = client.get(
+        f"/admin/runtime-reconciliation/{uuid4()}",
+        params={
+            "tenant_id": str(uuid4()),
+            "include_input_sources": "true",
+        },
+    )
     assert detail.status_code == 403
 
 

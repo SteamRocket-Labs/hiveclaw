@@ -389,8 +389,15 @@ def test_feishu_card_callback_requires_the_agent_installations_verified_principa
     current_user = _fake_user(tenant_id)
     approval = SimpleNamespace(id=approval_id, agent_id=agent_id, action_type="publish", status="approved")
     agent = SimpleNamespace(id=agent_id, tenant_id=tenant_id)
-    config = SimpleNamespace(id=uuid4(), agent_id=agent_id, tenant_id=tenant_id, is_configured=True,
-        app_id="synthetic-card-app", encrypt_key="synthetic-card-key", verification_token=None)
+    config = SimpleNamespace(
+        id=uuid4(),
+        agent_id=agent_id,
+        tenant_id=tenant_id,
+        is_configured=True,
+        app_id="synthetic-card-app",
+        encrypt_key="synthetic-card-key",
+        verification_token=None,
+    )
     principal = SimpleNamespace(id=uuid4(), linked_user_id=current_user.id)
     runtime_actor = SimpleNamespace(
         id=current_user.id,
@@ -426,9 +433,16 @@ def test_feishu_card_callback_requires_the_agent_installations_verified_principa
         raw = json.dumps(callback_body, separators=(",", ":"))
         timestamp, nonce = "1792684000", "synthetic-card-nonce"
         signature = hashlib.sha256((timestamp + nonce + config.encrypt_key + raw).encode()).hexdigest()
-        response = client.post("/channel/feishu/card-callback", content=raw, headers={
-            "Content-Type": "application/json", "X-Lark-Request-Timestamp": timestamp,
-            "X-Lark-Request-Nonce": nonce, "X-Lark-Signature": signature})
+        response = client.post(
+            "/channel/feishu/card-callback",
+            content=raw,
+            headers={
+                "Content-Type": "application/json",
+                "X-Lark-Request-Timestamp": timestamp,
+                "X-Lark-Request-Nonce": nonce,
+                "X-Lark-Signature": signature,
+            },
+        )
 
     assert response.status_code == 200
     load_actor_mock.assert_awaited_once()

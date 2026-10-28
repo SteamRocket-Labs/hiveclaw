@@ -197,6 +197,7 @@ def test_upsert_creates_new_config():
     assert resp.json()["app_id"] == "cli_new"
     from app.models.tenant_channel_config import TenantChannelConfig
     from app.models.audit import AuditLog
+
     assert len([row for row in fake_db.added if isinstance(row, TenantChannelConfig)]) == 1
     assert len([row for row in fake_db.added if isinstance(row, AuditLog)]) == 1
 
@@ -353,9 +354,16 @@ def test_webhook_unknown_sender_not_routed(monkeypatch):
     body = json.dumps(feishu_event, separators=(",", ":"))
     timestamp, nonce = "1700000000", "unknown-sender-test"
     signature = hashlib.sha256((timestamp + nonce + _EXISTING_CONFIG.encrypt_key + body).encode()).hexdigest()
-    resp = client.post(f"/channel/feishu/tenant/{_TENANT_ID}/webhook", content=body,
-        headers={"Content-Type": "application/json", "X-Lark-Request-Timestamp": timestamp,
-                 "X-Lark-Request-Nonce": nonce, "X-Lark-Signature": signature})
+    resp = client.post(
+        f"/channel/feishu/tenant/{_TENANT_ID}/webhook",
+        content=body,
+        headers={
+            "Content-Type": "application/json",
+            "X-Lark-Request-Timestamp": timestamp,
+            "X-Lark-Request-Nonce": nonce,
+            "X-Lark-Signature": signature,
+        },
+    )
     assert resp.status_code == 200
     assert resp.json()["routed"] is False
 

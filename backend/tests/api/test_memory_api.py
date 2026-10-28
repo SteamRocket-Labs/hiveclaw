@@ -16,6 +16,7 @@ from tests.session_stub import ActiveTransactionSessionStub
 
 class MemoryReceiptSession(ActiveTransactionSessionStub):
     """HTTP unit seam; PostgreSQL/RLS receipts are covered by the M1-G21 integration."""
+
     def __init__(self):
         self.info = {}
         self.rows = []
@@ -75,8 +76,11 @@ def _unit_receipt_database(monkeypatch):
         from app.services.content_input_receipts import team_memory_ref
 
         refs = {team_memory_ref(workspace_key, Path(entry.path).stem) for entry in entries}
-        return {row.carrier_ref: row for row in sorted(db.rows, key=lambda row: row.revision)
-            if row.tenant_id == tenant_id and row.carrier_ref in refs}
+        return {
+            row.carrier_ref: row
+            for row in sorted(db.rows, key=lambda row: row.revision)
+            if row.tenant_id == tenant_id and row.carrier_ref in refs
+        }
 
     monkeypatch.setattr("app.services.content_input_receipts.latest_team_memory_receipts", latest)
     monkeypatch.setattr("tests.api.test_memory_api._receipt_database", database)

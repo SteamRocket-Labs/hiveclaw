@@ -4,6 +4,8 @@ import importlib.util
 from pathlib import Path
 import uuid
 
+from alembic.config import Config
+from alembic.script import ScriptDirectory
 import pytest
 from sqlalchemy import text
 from sqlalchemy.engine import make_url
@@ -17,8 +19,8 @@ INCIDENT_HEAD = "completion_outbox_index_0721"
 KIMI_HEAD = "retire_agent_agent_relationships_table_0724"
 MERGE_HEAD = "merge_incident_kimi_0725"
 # The merge revision itself is immutable history; the closure head moves with
-# every newer revision (currently the A2A continuation task contract).
-CURRENT_HEAD = "session_v2_delete_fk_indexes_0907"
+# every newer revision in the checked-out migration graph.
+CURRENT_HEAD = ScriptDirectory.from_config(Config(str(BACKEND_ROOT / "alembic.ini"))).get_current_head()
 BRANCH_POINT = "im_unverified_transport_0719"
 
 

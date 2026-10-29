@@ -8,7 +8,7 @@ from typing import Tuple
 from fastapi import HTTPException, status
 from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
+from sqlalchemy.orm import joinedload, selectinload
 
 from app.core.policy import check_permission, classify_permission, permission_effect_applies
 from app.database import enter_rls_bypass, get_current_tenant_id, pin_rls_tenant_context
@@ -68,7 +68,7 @@ async def _load_agent_for_user(
         ) as bypass_db:
             result = await bypass_db.execute(
                 select(Agent)
-                .options(selectinload(Agent.owner), selectinload(Agent.creator))
+                .options(joinedload(Agent.owner), joinedload(Agent.creator))
                 .join(Tenant, and_(Tenant.id == Agent.tenant_id, Tenant.is_active.is_(True)))
                 .where(Agent.id == agent_id)
                 .execution_options(populate_existing=True)
@@ -76,7 +76,7 @@ async def _load_agent_for_user(
     else:
         result = await db.execute(
             select(Agent)
-            .options(selectinload(Agent.owner), selectinload(Agent.creator))
+            .options(joinedload(Agent.owner), joinedload(Agent.creator))
             .join(Tenant, and_(Tenant.id == Agent.tenant_id, Tenant.is_active.is_(True)))
             .where(Agent.id == agent_id)
             .execution_options(populate_existing=True)

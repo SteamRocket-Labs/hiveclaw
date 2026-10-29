@@ -5,7 +5,7 @@ import ast
 import json
 from pathlib import Path
 from types import SimpleNamespace
-from uuid import uuid4
+from uuid import uuid4, uuid5
 
 import pytest
 
@@ -362,7 +362,7 @@ async def test_delegate_to_agent_async_passes_tool_profile(monkeypatch):
 
     from_agent_id = uuid4()
     source_agent = SimpleNamespace(name="Source Agent", creator_id=uuid4())
-    target = SimpleNamespace(id=uuid4(), name="Target Agent", role_description="Helpful agent")
+    target = SimpleNamespace(agent_type="native", id=uuid4(), name="Target Agent", role_description="Helpful agent")
     target_model = SimpleNamespace(
         provider="openai", model="gpt-4.1", api_key="key", base_url=None, max_output_tokens=None
     )
@@ -410,7 +410,7 @@ async def test_delegate_to_agent_async_threads_runtime_budget_to_cloud_delegatio
     budget_run_id = uuid4()
     requester_user_id = uuid4()
     source_agent = SimpleNamespace(name="Source Agent", creator_id=uuid4(), tenant_id=uuid4())
-    target = SimpleNamespace(id=uuid4(), name="Target Agent", role_description="Helpful agent")
+    target = SimpleNamespace(agent_type="native", id=uuid4(), name="Target Agent", role_description="Helpful agent")
     target_model = SimpleNamespace(
         provider="openai", model="gpt-4.1", api_key="key", base_url=None, max_output_tokens=None
     )
@@ -468,7 +468,9 @@ async def test_delegate_async_propagates_authority_unavailable_as_typed_failure(
         creator_id=requester_user_id,
         tenant_id=tenant_id,
     )
-    target = SimpleNamespace(id=uuid4(), name="Target Agent", role_description="Helpful agent", tenant_id=tenant_id)
+    target = SimpleNamespace(
+        agent_type="native", id=uuid4(), name="Target Agent", role_description="Helpful agent", tenant_id=tenant_id
+    )
     target_model = SimpleNamespace(provider="openai", model="gpt-4.1")
     principal = ExecutionPrincipal(
         tenant_id=tenant_id,
@@ -866,14 +868,13 @@ async def test_local_agent_delegation_targets_target_owner_and_returns_stable_re
             },
         }
 
-    class FakeWsManager:
-        async def send_to_user(self, owner_user_id, payload):
-            captured["fanout"] = (owner_user_id, payload)
+    async def fake_dispatch_channel_message(_db, *, message_id, owner_user_id):
+        captured["fanout"] = (owner_user_id, message_id)
 
     monkeypatch.setattr(messaging, "tenant_scoped_session", lambda *_args, **_kwargs: FakeSession())
     monkeypatch.setattr(local_agent_channel_service, "create_channel_session", fake_create_channel_session)
     monkeypatch.setattr(local_agent_channel_service, "enqueue_channel_message", fake_enqueue_channel_message)
-    monkeypatch.setattr("app.api.local_agent_channel.channel_ws_manager", FakeWsManager())
+    monkeypatch.setattr(local_agent_channel_service, "dispatch_channel_message", fake_dispatch_channel_message)
 
     result = await _delegate_to_local_agent_channel(
         source_agent=source_agent,
@@ -899,6 +900,7 @@ async def test_local_agent_delegation_targets_target_owner_and_returns_stable_re
     assert captured["message"]["metadata"]["execution_principal"] == principal.to_evidence()
     assert captured["message"]["idempotency_key"].startswith(f"a2a-local:{runtime_task_id}:")
     assert captured["fanout"][0] == target_owner_id
+    assert captured["fanout"][1] == message_id
     assert result["receipt"]["schema"] == "hive.execution_receipt.v1"
     assert result["chat_session_id"] is None
     assert "delivered automatically back into this source Agent session" in result["next_action"]
@@ -911,7 +913,7 @@ async def test_delegate_to_agent_async_threads_cross_workspace_target_artifacts(
 
     from_agent_id = uuid4()
     source_agent = SimpleNamespace(name="Source Agent", creator_id=uuid4(), tenant_id=uuid4())
-    target = SimpleNamespace(id=uuid4(), name="Target Agent", role_description="Helpful agent")
+    target = SimpleNamespace(agent_type="native", id=uuid4(), name="Target Agent", role_description="Helpful agent")
     target_model = SimpleNamespace(
         provider="openai", model="gpt-4.1", api_key="key", base_url=None, max_output_tokens=None
     )
@@ -962,7 +964,9 @@ async def test_delegate_to_agent_async_defaults_to_peer_agent_tool_surface(monke
 
     from_agent_id = uuid4()
     source_agent = SimpleNamespace(name="Source Agent", creator_id=uuid4(), tenant_id=uuid4())
-    target = SimpleNamespace(id=uuid4(), name="Feishu Knowledge", role_description="Knowledge worker")
+    target = SimpleNamespace(
+        agent_type="native", id=uuid4(), name="Feishu Knowledge", role_description="Knowledge worker"
+    )
     target_model = SimpleNamespace(
         provider="openai", model="gpt-4.1", api_key="key", base_url=None, max_output_tokens=None
     )
@@ -998,7 +1002,9 @@ async def test_delegate_to_agent_async_accepts_timeout_override(monkeypatch):
 
     from_agent_id = uuid4()
     source_agent = SimpleNamespace(name="Source Agent", creator_id=uuid4())
-    target = SimpleNamespace(id=uuid4(), name="Knowledge Agent", role_description="Knowledge worker")
+    target = SimpleNamespace(
+        agent_type="native", id=uuid4(), name="Knowledge Agent", role_description="Knowledge worker"
+    )
     target_model = SimpleNamespace(
         provider="openai", model="gpt-4.1", api_key="key", base_url=None, max_output_tokens=None
     )
@@ -1035,7 +1041,7 @@ async def test_delegate_to_agent_async_accepts_research_readonly_profile(monkeyp
 
     from_agent_id = uuid4()
     source_agent = SimpleNamespace(name="Source Agent", creator_id=uuid4())
-    target = SimpleNamespace(id=uuid4(), name="Target Agent", role_description="Helpful agent")
+    target = SimpleNamespace(agent_type="native", id=uuid4(), name="Target Agent", role_description="Helpful agent")
     target_model = SimpleNamespace(
         provider="openai", model="gpt-4.1", api_key="key", base_url=None, max_output_tokens=None
     )
@@ -1072,7 +1078,7 @@ async def test_delegate_to_agent_async_threads_permission_profile(monkeypatch):
 
     from_agent_id = uuid4()
     source_agent = SimpleNamespace(name="Source Agent", creator_id=uuid4(), tenant_id=uuid4())
-    target = SimpleNamespace(id=uuid4(), name="Target Agent", role_description="Helpful agent")
+    target = SimpleNamespace(agent_type="native", id=uuid4(), name="Target Agent", role_description="Helpful agent")
     target_model = SimpleNamespace(
         provider="openai", model="gpt-4.1", api_key="key", base_url=None, max_output_tokens=None
     )
@@ -1301,6 +1307,13 @@ async def test_check_async_task_reads_authorized_local_agent_message_result(monk
         def __init__(self):
             self.values = [message, parent_session, outbox]
 
+        async def get(self, model, key):
+            from app.models.invocation_span import InvocationSpan
+
+            assert model is InvocationSpan
+            assert key == uuid5(message_id, "work_disposition:abandon")
+            return None
+
         async def execute(self, _stmt):
             return _ScalarResult(self.values.pop(0))
 
@@ -1324,6 +1337,8 @@ async def test_check_async_task_reads_authorized_local_agent_message_result(monk
     assert payload["message_id"] == str(message_id)
     assert payload["status"] == "completed"
     assert payload["terminal"] is True
+    assert payload["execution_state"] == "reported_completed"
+    assert payload["retryable"] is False
     assert payload["result"] == "Local evidence is complete."
     assert payload["artifacts"] == [{"path": "workspace/local-result.md"}]
     assert payload["target_agent_id"] == str(target_agent_id)

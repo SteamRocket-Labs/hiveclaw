@@ -171,6 +171,7 @@ def _model(tenant_id, *, name, enabled=True, model_id=None):
 
 def _agent(tenant_id, **over):
     data = {
+        "agent_type": "native",
         "id": uuid4(),
         "name": "Configured Agent",
         "role_description": "role",
@@ -589,6 +590,7 @@ async def test_subagent_dispatch_does_not_spawn_configured_primary(monkeypatch, 
     monkeypatch.setattr(service, "update_runtime_task_record", fake_update)
     monkeypatch.setattr(service, "_load_subagent_resume_messages", fake_messages)
     monkeypatch.setattr(service, "_hydrate_worker_runtime_context", fake_hydrate)
+
     def fake_completer(*_args, **_kwargs):
         async def _complete(_result):
             return None
@@ -628,8 +630,12 @@ async def test_spawn_tool_configured_primary_returns_without_provider(monkeypatc
             )
         )
 
-    monkeypatch.setattr("app.tools.handlers.subagent.resolve_tenant_for_agent", lambda *_a, **_k: _async_value(agent.tenant_id))
-    monkeypatch.setattr("app.tools.handlers.subagent.tenant_scoped_session", lambda *_a, **_k: _session_for(agent, models))
+    monkeypatch.setattr(
+        "app.tools.handlers.subagent.resolve_tenant_for_agent", lambda *_a, **_k: _async_value(agent.tenant_id)
+    )
+    monkeypatch.setattr(
+        "app.tools.handlers.subagent.tenant_scoped_session", lambda *_a, **_k: _session_for(agent, models)
+    )
     monkeypatch.setattr("app.tools.handlers.subagent.spawn_subagent", fake_spawn)
     monkeypatch.setattr("app.tools.handlers.subagent.memory_store_for_tenant", lambda *_a, **_k: None)
     monkeypatch.setattr("app.tools.handlers.subagent.memory_store_for_agent", lambda *_a, **_k: None)
@@ -1111,9 +1117,7 @@ async def test_inherit_child_model_keeps_parent_primary_failure(monkeypatch):
     spawned = []
     _patch_spawn(monkeypatch, agent, models, spawned)
 
-    payload = json.loads(
-        await spawn_subagent_tool(_spawn_request(agent, {"task": "read notes", "model": "inherit"}))
-    )
+    payload = json.loads(await spawn_subagent_tool(_spawn_request(agent, {"task": "read notes", "model": "inherit"})))
 
     assert spawned == []
     assert payload["ok"] is False
@@ -1189,11 +1193,13 @@ async def _dispatch_recorded_child(monkeypatch, child_kind: str):
     monkeypatch.setattr(service, "get_runtime_task_record", lambda _task_id: _async_value(record))
     monkeypatch.setattr(service, "update_runtime_task_record", fake_update)
     monkeypatch.setattr(
-        service, "_load_subagent_resume_messages", lambda **_kwargs: _async_value([{"role": "user", "content": "inspect"}])
+        service,
+        "_load_subagent_resume_messages",
+        lambda **_kwargs: _async_value([{"role": "user", "content": "inspect"}]),
     )
     monkeypatch.setattr(service, "_hydrate_worker_runtime_context", lambda runtime, **_kwargs: _async_value(runtime))
     monkeypatch.setattr(service, "spawn_subagent", fake_spawn)
-    monkeypatch.setattr(service, "make_run_completer", lambda *_a, **_k: (lambda _result: _async_true()))
+    monkeypatch.setattr(service, "make_run_completer", lambda *_a, **_k: lambda _result: _async_true())
     monkeypatch.setattr(service, "resolve_tenant_for_agent", lambda *_a, **_k: _async_value(agent.tenant_id))
     monkeypatch.setattr(service, "tenant_scoped_session", lambda *_a, **_k: _session_for(agent, [*models, child]))
     await service.dispatch_persisted_subagent_run(record["task_id"])

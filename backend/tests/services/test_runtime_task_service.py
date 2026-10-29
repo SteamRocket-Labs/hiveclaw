@@ -8,6 +8,8 @@ from uuid import UUID, uuid4, uuid5
 import pytest
 from sqlalchemy import select
 
+from tests.session_stub import ActiveTransactionSessionStub
+
 
 def _route_runtime_accessors(monkeypatch, fake_session, *, tenant_id=None):
     """Route the stage-2b RLS accessors onto the test's fake session.
@@ -157,7 +159,7 @@ class _LocatorSession:
         self.rollback_calls += 1
 
 
-class _ReconcileSession:
+class _ReconcileSession(ActiveTransactionSessionStub):
     def __init__(self, tasks):
         self.tasks = tasks
         self.tenant_id = uuid4()
@@ -319,7 +321,7 @@ class _OneTaskResult:
         return self._task
 
 
-class _UpdateSession:
+class _UpdateSession(ActiveTransactionSessionStub):
     def __init__(self, task):
         self.task = task
         for name, value in {

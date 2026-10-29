@@ -134,8 +134,10 @@ def test_explicit_index_sources_bind_actual_manifest_and_visible_entry_bytes(tmp
     resident = load_resident_memory(agent_id=agent_id, data_root=tmp_path)
     refs = {ref["source_id"].split("\n")[1]: ref["source_version"] for ref in resident.source_refs}
     assert "SELECTED_INDEX_BODY" in resident.text
-    assert refs == {"memory/explicit/manifest.jsonl": hashlib.sha256(manifest).hexdigest(),
-        "memory/explicit/entries/visible.md": hashlib.sha256(raw).hexdigest()}
+    assert refs == {
+        "memory/explicit/manifest.jsonl": hashlib.sha256(manifest).hexdigest(),
+        "memory/explicit/entries/visible.md": hashlib.sha256(raw).hexdigest(),
+    }
     (overlay / "entries/visible.md").write_text("REPLACED_AFTER_SELECTION")
     assert resident.source_refs and refs["memory/explicit/entries/visible.md"] == hashlib.sha256(raw).hexdigest()
 
@@ -149,10 +151,14 @@ def test_explicit_recall_keeps_reader_sources_through_selection_and_rendering(tm
     _write_overlay_entry(tmp_path, agent_id, entry_id="visible")
     root = tmp_path / str(agent_id)
     items = MemoryRetriever(data_root=tmp_path)._retrieve_explicit_overlay(agent_id)
-    expected = {f"{agent_id}\n{p}": hashlib.sha256((root / p).read_bytes()).hexdigest() for p in
-        ["memory/explicit/manifest.jsonl", "memory/explicit/entries/visible.md"]}
+    expected = {
+        f"{agent_id}\n{p}": hashlib.sha256((root / p).read_bytes()).hexdigest()
+        for p in ["memory/explicit/manifest.jsonl", "memory/explicit/entries/visible.md"]
+    }
     items[0].metadata["source_refs"] = [{"source_id": "FORGED_METADATA_ORIGIN"}]
-    items = MemoryRetriever._annotate_selection(MemoryRetriever._attach_selection_candidate_ids(items), status="model_selected")
+    items = MemoryRetriever._annotate_selection(
+        MemoryRetriever._attach_selection_candidate_ids(items), status="model_selected"
+    )
     assert {ref["source_id"]: ref["source_version"] for ref in items[0].source_refs} == expected
     (root / "memory/explicit/entries/visible.md").write_text("REPLACED_AFTER_READ")
     observed = []
@@ -417,6 +423,8 @@ async def test_build_memory_context_prepends_resident_untrimmed(tmp_path: Path, 
     )
 
     class _Principal:
+        current_user = None
+
         def can_access_sensitivity(self, _s: str) -> bool:
             return True
 
@@ -439,7 +447,9 @@ async def test_build_memory_context_prepends_resident_untrimmed(tmp_path: Path, 
         lambda: type("S", (), {"AGENT_DATA_DIR": str(tmp_path), "MEMORY_RESIDENT_BUDGET_CHARS": 20_000.0})(),
     )
 
-    context = await memory_service.build_memory_context(agent_id, tenant_id, query="rollup 扩容", current_user_id=uuid4())
+    context = await memory_service.build_memory_context(
+        agent_id, tenant_id, query="rollup 扩容", current_user_id=uuid4()
+    )
 
     assert "需求含糊时爱自己猜" in context  # active failure mode on top
     assert "偏好简洁中文汇报" in context  # profiles whole

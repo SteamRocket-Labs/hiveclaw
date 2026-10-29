@@ -160,6 +160,7 @@ async def test_resolve_memory_context_passes_current_user_to_memory(monkeypatch)
 async def test_resolve_memory_context_injects_skill_evolution_digest(monkeypatch, tmp_path):
     """Gap3: the agent's own skill evolution is surfaced into the dynamic memory
     context so skills are a first-class evolution axis beside memory."""
+    import hashlib
     import json
 
     from app.runtime import invoker
@@ -197,11 +198,31 @@ async def test_resolve_memory_context_injects_skill_evolution_digest(monkeypatch
         session_context=SessionContext(session_id="s-skill"),
     )
 
-    # tenant_id=None → memory snapshot skipped; only the skill digest is injected.
+    # This unit checks renderer/injection wiring through the observation IO seam.
+    # Native skill-source tests retain actual audience, work and receipt checks.
+    from app.runtime.context import ensure_runtime_assembly_state
+    from app.services.evolution_view import render_skill_evolution_digest
+
+    observation = {
+        "source_kind": "skill_evolution_observation",
+        "source_id": str(uuid4()),
+        "source_version": hashlib.sha256((usage_dir / "skill_usage.json").read_bytes()).hexdigest(),
+    }
+
+    async def observed_digest(actual_request, *, session_id):
+        assert actual_request is request
+        assert session_id == request.session_context.session_id
+        return render_skill_evolution_digest(usage_dir.parent), [observation]
+
+    monkeypatch.setattr("app.services.skill_evolution_sources.render_runtime_skill_digest", observed_digest)
+    # tenant_id=None skips memory retrieval; the declared observation is routed.
     result = await invoker._resolve_memory_context(request, None)
     assert "## Your Skill Assets" in result
     assert "deploy-checklist (7×)" in result
     assert '<context_block kind="skill_evolution_digest" source="skill_curator:digest">' in result
+
+    state = ensure_runtime_assembly_state(request.session_context)
+    assert observation in state.context_sources_for(agent_id=agent_id, content=result)
 
 
 @pytest.mark.asyncio

@@ -598,17 +598,24 @@ async def _record(db, task, state):
     from app.services.remote_a2a_withdrawal import refresh_summary
 
     await refresh_summary(db, task=task, state=state)
+    # Scoped consumption may append to the same tenant audit chain. Release
+    # journal locks only after the complete observation and projection commit.
+    await db.commit()
     if state.get("dispatch_kind") == "session":
         from app.services.web_chat_runtime import broadcast_web_chat_event
         from app.services.chat_message_parts import build_done_event
         from app.services.remote_a2a_chat import reply_text, validate_sources
         from app.services.content_input_receipts import ContentInputReceiptError
         from app.services.runtime_user_identity import load_scoped_runtime_user
+        from app.services.runtime_task_fence import clear_runtime_task_fence, reset_runtime_task_fence
 
         event = {
             "type": "run_updated", "status": task.status, "remote_state": state.get("remote_state"),
             "error_code": state.get("error_code")}
         if task.status == "completed":
+            # The committed result is consumed under its current reader's
+            # authority, independently of the now-finished worker claim.
+            fence_token = clear_runtime_task_fence()
             try:
                 # Journal maintenance may hold a bypass session; result consumption must not inherit it.
                 async with tenant_scoped_session(task.tenant_id) as reader_db:
@@ -620,7 +627,8 @@ async def _record(db, task, state):
             except (ContentInputReceiptError, HTTPException):
                 event.update(content_status="source_unavailable",
                     content_recovery_action="reconcile_instruction_sources")
-    await db.commit()
+            finally:
+                reset_runtime_task_fence(fence_token)
     if state.get("dispatch_kind") == "session":
         await broadcast_web_chat_event(task.parent_agent_id, uuid.UUID(task.parent_session_id),
             {**event, "run_id": str(task.id), "execution_target": "remote_a2a"})

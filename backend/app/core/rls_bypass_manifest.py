@@ -815,7 +815,10 @@ def fingerprint_rls_bypass_scopes(app_root: Path) -> str:
 # invocation binding. Existing tenant, owner and bypass query scopes are unchanged.
 # 2026-10-29: reviewed 58 changed scope/source entries in 15 modules.
 # Direct tenant pin bookkeeping preserves the existing dictionary and query scopes.
-RLS_BYPASS_SCOPES_SHA256 = "7c6ab667e647447a923ca272f82c6f8e89a52c3f8e56231bceb9fc76d259cba8"
+# Remote results commit their complete journal before current-reader consumption;
+# only the independent reader detaches and finally restores the worker fence.
+# Existing bypass query scopes and current source/actor checks remain unchanged.
+RLS_BYPASS_SCOPES_SHA256 = "896840546b3362bee006d44f80cdf0ae08b1d2e926eb8cacf4bd2fdef600ffa9"
 
 
 def scan_rls_bypass_callsites(app_root: Path) -> list[RLSBypassCallsite]:

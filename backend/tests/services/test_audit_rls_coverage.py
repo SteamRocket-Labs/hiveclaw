@@ -59,9 +59,15 @@ def test_bootstrap_tenant_tables_are_all_forced_for_owner_runtime() -> None:
     assert missing == []
 
 
-def test_force_all_tenant_rls_migration_covers_bootstrap_force_tables() -> None:
+def test_force_all_tenant_rls_migration_covers_bootstrap_force_tables(monkeypatch) -> None:
     import importlib.util
     from pathlib import Path
+    from io import StringIO
+    import re
+    from types import SimpleNamespace
+    from alembic.migration import MigrationContext
+    from alembic.operations import Operations
+    import sqlalchemy as sa
 
     from app.db_bootstrap import RLS_FORCED_TENANT_TABLES
 
@@ -133,6 +139,36 @@ def test_force_all_tenant_rls_migration_covers_bootstrap_force_tables() -> None:
         | set(identity_link_module.IDENTITY_LINK_TABLES)
         | set(assistant_binding_module.ASSISTANT_TABLES)
     )
+
+    analysis_module = _load_migration_module("company_knowledge_analysis_1020.py")
+    migration_tables |= set(analysis_module.TABLES)
+    inspector = SimpleNamespace(
+        has_table=lambda *_args, **_kwargs: False,
+        get_columns=lambda *_args, **_kwargs: [],
+        get_indexes=lambda *_args, **_kwargs: [],
+    )
+    # Count FORCE statements emitted by the remaining upgrades' create paths.
+    for filename in (
+        "mcp_owned_accounts_1016.py",
+        "email_owned_accounts_1017.py",
+        "custom_api_owned_accounts_1017.py",
+        "private_environment_1018.py",
+        "private_browser_control_1023.py",
+        "machine_credentials_1019.py",
+        "remote_a2a_connections_1020.py",
+        "company_channel_binding_1019.py",
+        "workbench_projects_1019.py",
+    ):
+        module = _load_migration_module(filename)
+        output = StringIO()
+        context = MigrationContext.configure(dialect_name="postgresql", opts={"as_sql": True, "output_buffer": output})
+        with monkeypatch.context() as patch:
+            patch.setattr(module, "op", Operations(context))
+            patch.setattr(sa, "inspect", lambda *_args, **_kwargs: inspector)
+            module.upgrade()
+        migration_tables.update(
+            re.findall(r'ALTER TABLE\s+"?([a-z_][a-z0-9_]*)"?\s+FORCE ROW LEVEL SECURITY;', output.getvalue())
+        )
 
     missing = sorted(set(RLS_FORCED_TENANT_TABLES) - migration_tables)
 

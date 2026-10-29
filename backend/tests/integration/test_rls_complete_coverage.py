@@ -171,9 +171,25 @@ async def test_team_parent_and_children_are_cross_tenant_read_write_isolated(
         async with app_user_engine.connect() as connection:
             transaction = await connection.begin()
             await connection.execute(text("SET LOCAL app.current_tenant_id = 'BYPASS'"))
-            assert await connection.scalar(text("SELECT count(*) FROM agent_teams")) == 2
-            assert await connection.scalar(text("SELECT count(*) FROM agent_team_members")) == 2
-            assert await connection.scalar(text("SELECT count(*) FROM agent_team_events")) == 2
+            assert (
+                await connection.scalar(
+                    text("SELECT count(*) FROM agent_teams WHERE id IN (:a, :b)"), {"a": team_a, "b": team_b}
+                )
+                == 2
+            )
+            assert (
+                await connection.scalar(
+                    text("SELECT count(*) FROM agent_team_members WHERE team_id IN (:a, :b)"),
+                    {"a": team_a, "b": team_b},
+                )
+                == 2
+            )
+            assert (
+                await connection.scalar(
+                    text("SELECT count(*) FROM agent_team_events WHERE team_id IN (:a, :b)"), {"a": team_a, "b": team_b}
+                )
+                == 2
+            )
             await transaction.rollback()
     finally:
         async with owner_sessionmaker() as session:

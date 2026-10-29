@@ -18,7 +18,11 @@ class SecurityAuditEvent(Base):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     _sequence = Sequence("security_audit_events_sequence_num_seq", metadata=Base.metadata)
     sequence_num: Mapped[int | None] = mapped_column(
-        BigInteger, _sequence, server_default=_sequence.next_value(), unique=True, nullable=True,
+        BigInteger,
+        _sequence,
+        server_default=_sequence.next_value(),
+        unique=True,
+        nullable=True,
     )
     event_type: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
     severity: Mapped[str] = mapped_column(String(10), nullable=False, default="info")

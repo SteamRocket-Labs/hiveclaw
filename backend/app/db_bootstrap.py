@@ -836,19 +836,23 @@ def apply_security_audit_sequence(connection: Connection) -> None:
         # The schema owner must see every tenant's high water under FORCE RLS.
         connection.execute(text("SELECT set_config('app.current_tenant_id', 'BYPASS', true)"))
         connection.execute(text("CREATE SEQUENCE IF NOT EXISTS security_audit_events_sequence_num_seq AS bigint"))
-        connection.execute(text(
-            "ALTER SEQUENCE security_audit_events_sequence_num_seq OWNED BY security_audit_events.sequence_num"
-        ))
-        connection.execute(text("""
+        connection.execute(
+            text("ALTER SEQUENCE security_audit_events_sequence_num_seq OWNED BY security_audit_events.sequence_num")
+        )
+        connection.execute(
+            text("""
             SELECT setval('security_audit_events_sequence_num_seq',
                 greatest(s.last_value, coalesce((SELECT max(sequence_num) FROM security_audit_events), s.last_value)),
                 s.is_called OR EXISTS (SELECT 1 FROM security_audit_events WHERE sequence_num >= s.last_value))
             FROM security_audit_events_sequence_num_seq s
-        """))
-        connection.execute(text("""
+        """)
+        )
+        connection.execute(
+            text("""
             ALTER TABLE security_audit_events ALTER COLUMN sequence_num
             SET DEFAULT nextval('security_audit_events_sequence_num_seq')
-        """))
+        """)
+        )
     finally:
         connection.execute(text("SELECT set_config('app.current_tenant_id', :scope, true)"), {"scope": previous or ""})
 

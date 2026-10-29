@@ -21,11 +21,15 @@ def upgrade():
     previous = connection.scalar(sa.text("SELECT current_setting('app.current_tenant_id', true)"))
     try:
         connection.execute(sa.text("SELECT set_config('app.current_tenant_id', 'BYPASS', true)"))
-        connection.execute(sa.text("""UPDATE channel_ingress_events
+        connection.execute(
+            sa.text("""UPDATE channel_ingress_events
             SET provider_namespace = metadata_json->>'feishu_message_scope'
-            WHERE provider = 'feishu' AND (metadata_json->>'feishu_message_scope') ~ '^[0-9a-f]{64}$'"""))
+            WHERE provider = 'feishu' AND (metadata_json->>'feishu_message_scope') ~ '^[0-9a-f]{64}$'""")
+        )
     finally:
-        connection.execute(sa.text("SELECT set_config('app.current_tenant_id', :scope, true)"), {"scope": previous or ""})
+        connection.execute(
+            sa.text("SELECT set_config('app.current_tenant_id', :scope, true)"), {"scope": previous or ""}
+        )
     op.drop_constraint(_CONSTRAINT, _TABLE, type_="unique")
     op.create_unique_constraint(_CONSTRAINT, _TABLE, [*_OLD_KEY[:3], "provider_namespace", _OLD_KEY[3]])
 
@@ -35,11 +39,15 @@ def downgrade():
     previous = connection.scalar(sa.text("SELECT current_setting('app.current_tenant_id', true)"))
     try:
         connection.execute(sa.text("SELECT set_config('app.current_tenant_id', 'BYPASS', true)"))
-        if connection.scalar(sa.text("""SELECT EXISTS(SELECT 1 FROM channel_ingress_events
-            GROUP BY tenant_id, provider, installation_ref, provider_event_id HAVING count(*) > 1)""")):
+        if connection.scalar(
+            sa.text("""SELECT EXISTS(SELECT 1 FROM channel_ingress_events
+            GROUP BY tenant_id, provider, installation_ref, provider_event_id HAVING count(*) > 1)""")
+        ):
             raise RuntimeError("Retain distinct application event identities before downgrade")
     finally:
-        connection.execute(sa.text("SELECT set_config('app.current_tenant_id', :scope, true)"), {"scope": previous or ""})
+        connection.execute(
+            sa.text("SELECT set_config('app.current_tenant_id', :scope, true)"), {"scope": previous or ""}
+        )
     op.drop_constraint(_CONSTRAINT, _TABLE, type_="unique")
     op.create_unique_constraint(_CONSTRAINT, _TABLE, _OLD_KEY)
     op.drop_column(_TABLE, "provider_namespace")

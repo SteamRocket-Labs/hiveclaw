@@ -42,10 +42,12 @@ def _digest(value):
 def _locally_unstarted(task, state):
     # Only this exact worker-local denial proves HTTP was never attempted.
     # Transport errors, expired dispatches and observed remote states do not.
-    return (task.status == "needs_reconciliation"
+    return (
+        task.status == "needs_reconciliation"
         and state.get("error_code") == "remote_a2a_authority_unavailable"
         and state["operations"][-1].get("phase") == "not_started"
-        and (state.get("dispatch_kind") != "session" or bool(state["operations"][-1].get("input_receipt"))))
+        and (state.get("dispatch_kind") != "session" or bool(state["operations"][-1].get("input_receipt")))
+    )
 
 
 def _view(task):
@@ -103,12 +105,20 @@ async def read_task_view(db, task):
     from app.services.remote_a2a_delegation import validate_instruction_sources
 
     try:
-        await validate_instruction_sources(db, task=task, state=task.metadata_json["remote_a2a"],
-            for_effect=False, reader=await db.get(User, task.root_user_id))
+        await validate_instruction_sources(
+            db,
+            task=task,
+            state=task.metadata_json["remote_a2a"],
+            for_effect=False,
+            reader=await db.get(User, task.root_user_id),
+        )
         return _view(task)
     except HTTPException:
-        return {**{key: value for key, value in _view(task).items() if key not in {"operations", "observation"}},
-            "content_status": "source_unavailable", "content_recovery_action": "reconcile_instruction_sources"}
+        return {
+            **{key: value for key, value in _view(task).items() if key not in {"operations", "observation"}},
+            "content_status": "source_unavailable",
+            "content_recovery_action": "reconcile_instruction_sources",
+        }
 
 
 async def _send_policy(db, *, tenant_id, source_agent_id):
@@ -138,15 +148,20 @@ async def _send_policy(db, *, tenant_id, source_agent_id):
 
 async def _work(db, *, actor, session_id, target, new_effect=True, shared=False):
     session = await db.get(ChatSession, session_id, populate_existing=True)
-    if session is None or session.tenant_id != target.tenant_id or (session.audience_kind != "group" and session.user_id != actor.id):
+    if (
+        session is None
+        or session.tenant_id != target.tenant_id
+        or (session.audience_kind != "group" and session.user_id != actor.id)
+    ):
         raise HTTPException(404, detail={"code": "remote_a2a_source_work_unavailable"})
     if session.audience_kind == "group":
         if not shared:
             raise HTTPException(409, detail={"code": "remote_a2a_shared_session_executor_required"})
         from app.services.session_v2_persistence import resolve_session_mutation_authority
 
-        await resolve_session_mutation_authority(db, user=actor, agent_id=session.agent_id,
-            session_id=session.id, action="mutate_session_input", audit=False)
+        await resolve_session_mutation_authority(
+            db, user=actor, agent_id=session.agent_id, session_id=session.id, action="mutate_session_input", audit=False
+        )
     source, _level = await require_agent_execution_access(db, actor, session.agent_id)
     if new_effect:
         await _send_policy(db, tenant_id=session.tenant_id, source_agent_id=session.agent_id)
@@ -242,7 +257,9 @@ async def start_task(
     if _runtime_dispatch is not None:
         from app.services.remote_a2a_runtime import require_runtime_authorization
 
-        await require_runtime_authorization(db, agent=agent, expected_hash=_runtime_dispatch["runtime_authorization_hash"])
+        await require_runtime_authorization(
+            db, agent=agent, expected_hash=_runtime_dispatch["runtime_authorization_hash"]
+        )
     _message(params)
     digest = _digest(
         {
@@ -274,11 +291,14 @@ async def start_task(
         parent_session_id=str(session.id),
         root_session_id=str(session.root_session_id or session.id),
         root_user_id=actor.id,
-        root_runtime_task_id=(uuid.UUID(_runtime_dispatch["root_runtime_task_id"]) if _runtime_dispatch
-            else session.runtime_task_id or run_id),
+        root_runtime_task_id=(
+            uuid.UUID(_runtime_dispatch["root_runtime_task_id"])
+            if _runtime_dispatch
+            else session.runtime_task_id or run_id
+        ),
         root_idempotency_key=f"remote-a2a:{run_id}",
         delegation_chain_json=(_runtime_dispatch.get("delegation_chain") if _runtime_dispatch else None)
-            or [str(session.agent_id), str(agent.id)],
+        or [str(session.agent_id), str(agent.id)],
         config_snapshot_hash=digest,
         policy_snapshot_hash=digest,
         metadata_json={
@@ -367,8 +387,14 @@ async def get_task(db, *, agent_id, task_id, actor, lock=False):
 
             await authorize_group_history_reader(db, session=session, user=actor)
         else:
-            await resolve_session_mutation_authority(db, user=actor, agent_id=session.agent_id,
-                session_id=session.id, action="mutate_session_input", audit=False)
+            await resolve_session_mutation_authority(
+                db,
+                user=actor,
+                agent_id=session.agent_id,
+                session_id=session.id,
+                action="mutate_session_input",
+                audit=False,
+            )
     return task
 
 
@@ -376,7 +402,11 @@ async def list_tasks(db, *, agent_id, source_session_id, actor, source_work=Fals
     from app.services.business_teams import _acting_tenant_id
 
     session = await db.get(ChatSession, source_session_id, populate_existing=True)
-    if session is None or (session.audience_kind != "group" and session.user_id != actor.id) or session.tenant_id != _acting_tenant_id(actor):
+    if (
+        session is None
+        or (session.audience_kind != "group" and session.user_id != actor.id)
+        or session.tenant_id != _acting_tenant_id(actor)
+    ):
         raise HTTPException(404, detail={"code": "remote_a2a_source_work_unavailable"})
     if source_work and session.agent_id != agent_id:
         raise HTTPException(404, detail={"code": "remote_a2a_source_work_unavailable"})
@@ -394,8 +424,14 @@ async def list_tasks(db, *, agent_id, source_session_id, actor, source_work=Fals
 
             await authorize_group_history_reader(db, session=session, user=actor)
         else:
-            await resolve_session_mutation_authority(db, user=actor, agent_id=session.agent_id,
-                session_id=session.id, action="mutate_session_input", audit=False)
+            await resolve_session_mutation_authority(
+                db,
+                user=actor,
+                agent_id=session.agent_id,
+                session_id=session.id,
+                action="mutate_session_input",
+                audit=False,
+            )
     tasks = list(
         await db.scalars(
             select(RuntimeTask)
@@ -448,8 +484,16 @@ async def operate_task(
     if action in {"observe", "pause_observation"}:
         from app.services.remote_a2a_observation import operate
 
-        return await operate(db, task=task, actor=actor, state=state, expected_version=expected_version,
-            operation_id=operation_id, action=action, params=params)
+        return await operate(
+            db,
+            task=task,
+            actor=actor,
+            state=state,
+            expected_version=expected_version,
+            operation_id=operation_id,
+            action=action,
+            params=params,
+        )
     if any(command["id"] == str(operation_id) for command in state.get("observation_commands", [])):
         raise HTTPException(409, detail={"code": "remote_a2a_request_conflict"})
     if action == "abandon":
@@ -501,12 +545,16 @@ async def operate_task(
         await _active_employee_budget(db, task)
     agent, _level = await require_agent_execution_access(db, actor, agent_id)
     await _work(
-        db, actor=actor, session_id=uuid.UUID(task.parent_session_id), target=agent, new_effect=method == "SendMessage", shared=bool(state.get("shared_session"))
+        db,
+        actor=actor,
+        session_id=uuid.UUID(task.parent_session_id),
+        target=agent,
+        new_effect=method == "SendMessage",
+        shared=bool(state.get("shared_session")),
     )
     endpoint, _scope = await _endpoint(db, agent=agent, version=expected_version, owner_scope=state["owner_scope"])
     if action == "retry":
-        await _employee_send_authority(db, task=task, state=state, agent=agent,
-            operation=previous, recipient=False)
+        await _employee_send_authority(db, task=task, state=state, agent=agent, operation=previous, recipient=False)
     if endpoint.redact_payload(params) != params:
         raise HTTPException(422, detail={"code": "remote_a2a_credential_in_request"})
     state["operations"].append(
@@ -518,9 +566,14 @@ async def operate_task(
             "request_hash": _digest(params),
             "control_hash": digest,
             **({"retry_of": previous["id"]} if previous is not None else {}),
-            **({"input_receipt": previous["input_receipt"],
-                "input_round_id": previous.get("input_round_id", previous["id"])}
-                if previous is not None and previous.get("input_receipt") else {}),
+            **(
+                {
+                    "input_receipt": previous["input_receipt"],
+                    "input_round_id": previous.get("input_round_id", previous["id"]),
+                }
+                if previous is not None and previous.get("input_receipt")
+                else {}
+            ),
         }
     )
     state.pop("error_code", None)
@@ -551,9 +604,16 @@ async def _record(db, task, state):
     remote_a2a_observation.schedule(task, state)
     result["automatic_observation"] = remote_a2a_observation.view(task, state)
     control = result["automatic_observation"] or {}
-    packet_hash = _digest({"observation": operation.get("observation"), "phase": operation["phase"],
-        "status": result["status"], "error_code": result["error_code"],
-        "observation_status": control.get("status"), "observation_reason": control.get("reason")})
+    packet_hash = _digest(
+        {
+            "observation": operation.get("observation"),
+            "phase": operation["phase"],
+            "status": result["status"],
+            "error_code": result["error_code"],
+            "observation_status": control.get("status"),
+            "observation_reason": control.get("reason"),
+        }
+    )
     unchanged = operation["method"] == "GetTask" and packet_hash == state.get("last_returned_packet_hash")
     state["last_returned_packet_hash"] = packet_hash
     outbox_id = await enqueue_completion_notification(
@@ -568,8 +628,11 @@ async def _record(db, task, state):
             root_runtime_task_id=task.root_runtime_task_id,
             terminal_status=task.status,
             task_type=TASK_TYPE,
-            delivery_mode="parent_continuation" if state.get("dispatch_kind") == "employee"
-                and not (state.get("connection_withdrawal") or {}).get("retirement_audit_id") and not unchanged else "session_projection",
+            delivery_mode="parent_continuation"
+            if state.get("dispatch_kind") == "employee"
+            and not (state.get("connection_withdrawal") or {}).get("retirement_audit_id")
+            and not unchanged
+            else "session_projection",
             summary=json.dumps({"remote_a2a": result}, ensure_ascii=False),
             metadata={
                 "runtime_task_id": str(task.id),
@@ -610,8 +673,11 @@ async def _record(db, task, state):
         from app.services.runtime_task_fence import clear_runtime_task_fence, reset_runtime_task_fence
 
         event = {
-            "type": "run_updated", "status": task.status, "remote_state": state.get("remote_state"),
-            "error_code": state.get("error_code")}
+            "type": "run_updated",
+            "status": task.status,
+            "remote_state": state.get("remote_state"),
+            "error_code": state.get("error_code"),
+        }
         if task.status == "completed":
             # The committed result is consumed under its current reader's
             # authority, independently of the now-finished worker claim.
@@ -625,13 +691,17 @@ async def _record(db, task, state):
                     await validate_sources(reader_db, task=task, state=state, for_effect=False, reader=reader)
                 event = build_done_event(reply_text(operation.get("observation") or {}))
             except (ContentInputReceiptError, HTTPException):
-                event.update(content_status="source_unavailable",
-                    content_recovery_action="reconcile_instruction_sources")
+                event.update(
+                    content_status="source_unavailable", content_recovery_action="reconcile_instruction_sources"
+                )
             finally:
                 reset_runtime_task_fence(fence_token)
     if state.get("dispatch_kind") == "session":
-        await broadcast_web_chat_event(task.parent_agent_id, uuid.UUID(task.parent_session_id),
-            {**event, "run_id": str(task.id), "execution_target": "remote_a2a"})
+        await broadcast_web_chat_event(
+            task.parent_agent_id,
+            uuid.UUID(task.parent_session_id),
+            {**event, "run_id": str(task.id), "execution_target": "remote_a2a"},
+        )
 
 
 async def execute_claimed_task(task_id):
@@ -675,7 +745,8 @@ async def execute_claimed_task(task_id):
                 actor=actor,
                 session_id=uuid.UUID(task.parent_session_id),
                 target=agent,
-                new_effect=operation["method"] == "SendMessage", shared=bool(state.get("shared_session")),
+                new_effect=operation["method"] == "SendMessage",
+                shared=bool(state.get("shared_session")),
             )
             endpoint, _scope = await _endpoint(
                 db, agent=agent, version=state["configuration_version"], owner_scope=state["owner_scope"]
@@ -688,9 +759,14 @@ async def execute_claimed_task(task_id):
                 await remote_a2a_observation.authorize(db, task=task, state=state, agent=agent)
         except (HTTPException, SessionSemanticHistoryUnavailable, ContentInputReceiptError) as exc:
             detail = getattr(exc, "detail", None)
-            state["source_error"] = detail if isinstance(detail, dict) else {
-                "code": getattr(exc, "code", "remote_a2a_context_unavailable"),
-                "status_code": getattr(exc, "status_code", 503)}
+            state["source_error"] = (
+                detail
+                if isinstance(detail, dict)
+                else {
+                    "code": getattr(exc, "code", "remote_a2a_context_unavailable"),
+                    "status_code": getattr(exc, "status_code", 503),
+                }
+            )
             state["error_code"], operation["phase"] = "remote_a2a_authority_unavailable", "not_started"
             task.status = "needs_reconciliation"
             await _record(db, task, state)
@@ -724,7 +800,8 @@ async def execute_claimed_task(task_id):
                 actor=actor,
                 session_id=uuid.UUID(task.parent_session_id),
                 target=agent,
-                new_effect=operation["method"] == "SendMessage", shared=bool(state.get("shared_session")),
+                new_effect=operation["method"] == "SendMessage",
+                shared=bool(state.get("shared_session")),
             )
             await _connection_scope(
                 db, agent=agent, version=state["configuration_version"], owner_scope=state["owner_scope"]
@@ -743,7 +820,11 @@ async def execute_claimed_task(task_id):
             operation["phase"], operation["observation"] = "received", observation
             state["observation"] = observation
             remote_task = observation.get("task", observation)
-            if state.get("remote_task_id") and not observation.get("message") and remote_task.get("id") != state["remote_task_id"]:
+            if (
+                state.get("remote_task_id")
+                and not observation.get("message")
+                and remote_task.get("id") != state["remote_task_id"]
+            ):
                 state["error_code"] = "remote_a2a_task_identity_mismatch"
             elif remote_task.get("id"):
                 state["remote_task_id"] = remote_task["id"]
@@ -782,9 +863,14 @@ async def _employee_send_authority(db, *, task, state, agent, operation, recipie
 
     await require_runtime_authorization(db, agent=agent, expected_hash=state["runtime_authorization_hash"])
     await _active_employee_budget(db, task)
-    await validate_instruction_sources(db, task=task, state=state, recipient=recipient,
+    await validate_instruction_sources(
+        db,
+        task=task,
+        state=state,
+        recipient=recipient,
         for_effect=recipient or not state.get("shared_session"),
-        reader=await db.get(User, task.root_user_id) if not recipient and state.get("shared_session") else None)
+        reader=await db.get(User, task.root_user_id) if not recipient and state.get("shared_session") else None,
+    )
 
 
 async def _active_employee_budget(db, task):
@@ -800,27 +886,50 @@ async def _active_employee_budget(db, task):
 async def _reserve_employee_budget(db, *, task, state):
     from app.models.runtime_budget import RuntimeBudgetRun
     from app.services.runtime_budget_service import (
-        RuntimeBudgetApprovalRequired, RuntimeBudgetDenied, RuntimeBudgetReservation, RuntimeBudgetService,
-        RuntimeBudgetSettlementConflict, assert_runtime_task_budget_reservation_open,
+        RuntimeBudgetApprovalRequired,
+        RuntimeBudgetDenied,
+        RuntimeBudgetReservation,
+        RuntimeBudgetService,
+        RuntimeBudgetSettlementConflict,
+        assert_runtime_task_budget_reservation_open,
     )
 
     if not state.get("budget_run_id"):
         return
     budget_id = uuid.UUID(state["budget_run_id"])
     budget = await db.get(RuntimeBudgetRun, budget_id, populate_existing=True)
-    if (budget is None or budget.tenant_id != task.tenant_id or budget.root_user_id != task.root_user_id
-        or budget.root_runtime_task_id != task.root_runtime_task_id):
+    if (
+        budget is None
+        or budget.tenant_id != task.tenant_id
+        or budget.root_user_id != task.root_user_id
+        or budget.root_runtime_task_id != task.root_runtime_task_id
+    ):
         raise HTTPException(403, detail={"code": "remote_a2a_source_budget_mismatch"})
     key = f"remote-employee:{task.id}:enqueue"
     try:
-        await RuntimeBudgetService().reserve(RuntimeBudgetReservation(budget_run_id=budget_id,
-            reservation_key=key, runtime_task_id=task.id, delegations=1, background_tasks=1,
-            reason="remote_employee_enqueue", metadata={"external_cost_metering": "unknown"}))
-        await assert_runtime_task_budget_reservation_open(db, budget_run_id=budget_id,
-            reservation_key=key, runtime_task_id=task.id)
+        await RuntimeBudgetService().reserve(
+            RuntimeBudgetReservation(
+                budget_run_id=budget_id,
+                reservation_key=key,
+                runtime_task_id=task.id,
+                delegations=1,
+                background_tasks=1,
+                reason="remote_employee_enqueue",
+                metadata={"external_cost_metering": "unknown"},
+            )
+        )
+        await assert_runtime_task_budget_reservation_open(
+            db, budget_run_id=budget_id, reservation_key=key, runtime_task_id=task.id
+        )
     except RuntimeBudgetDenied as exc:
-        raise HTTPException(409, detail={"code": "runtime_budget_approval_required"
-            if isinstance(exc, RuntimeBudgetApprovalRequired) else "runtime_budget_denied"}) from exc
+        raise HTTPException(
+            409,
+            detail={
+                "code": "runtime_budget_approval_required"
+                if isinstance(exc, RuntimeBudgetApprovalRequired)
+                else "runtime_budget_denied"
+            },
+        ) from exc
     except RuntimeBudgetSettlementConflict as exc:
         raise HTTPException(409, detail={"code": "remote_a2a_budget_reservation_unavailable"}) from exc
     # Only local work-amplification counts are measured. Remote provider usage

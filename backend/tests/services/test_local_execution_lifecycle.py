@@ -3,12 +3,10 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import json
 import os
 from pathlib import Path
 import shlex
-import signal
 import sys
 
 import pytest
@@ -52,10 +50,12 @@ async def _check_stop(tmp_path, monkeypatch, *, entry, stop, exit_leader=False, 
         "f=open('effects','ab',buffering=0)\n"
         "while True: f.write(b'x'); time.sleep(0.02)\n"
     )
-    code = (
-        "import subprocess,sys,time; "
-        f"subprocess.Popen([sys.executable,'-I','-c',{child_code!r}]); "
-        + ("sys.exit(0)" if exit_leader else "time.sleep(60)")
+    code = f"import subprocess,sys,time; subprocess.Popen([sys.executable,'-I','-c',{child_code!r}]); " + (
+        "from pathlib import Path\n"
+        "while not (Path('effects').exists() and Path('effects').stat().st_size): time.sleep(0.01)\n"
+        "sys.exit(0)"
+        if exit_leader
+        else "time.sleep(60)"
     )
     command = [str(Path(sys.executable).resolve()), "-I", "-c", code]
     processes = []
@@ -63,6 +63,7 @@ async def _check_stop(tmp_path, monkeypatch, *, entry, stop, exit_leader=False, 
     release_start = asyncio.Event()
 
     async def observe_create(*args, **kwargs):
+        assert kwargs.get("start_new_session") is (os.name == "posix")
         process = await create(*args, **kwargs)
         processes.append(process)
         if stop == "cancel_start":
@@ -72,16 +73,23 @@ async def _check_stop(tmp_path, monkeypatch, *, entry, stop, exit_leader=False, 
 
     monkeypatch.setattr(local_provider.asyncio, "create_subprocess_exec", observe_create)
     if entry == "run_command":
-        work_task = _run_command(tmp_path, {"command": shlex.join(command), "timeout": 1 if stop == "timeout" else 30},
-            canonical_workspace=tmp_path / "canonical")
+        work_task = _run_command(
+            tmp_path,
+            {"command": shlex.join(command), "timeout": 1 if stop == "timeout" else 30},
+            canonical_workspace=tmp_path / "canonical",
+        )
     else:
         work_task = execute_agent_command(
-            command, work_dir=work, env={"HOME": str(home)}, timeout=1 if stop == "timeout" else 30,
-            sandbox_spec=SandboxBuildSpec(profile=SandboxProfile.WORKSPACE_WRITE))
+            command,
+            work_dir=work,
+            env={"HOME": str(home)},
+            timeout=1 if stop == "timeout" else 30,
+            sandbox_spec=SandboxBuildSpec(profile=SandboxProfile.WORKSPACE_WRITE),
+        )
     task = asyncio.create_task(work_task)
     try:
         async with asyncio.timeout(5):
-            while not (work / "effects").exists():
+            while not ((work / "effects").exists() and (work / "effects").stat().st_size):
                 if task.done():
                     await task
                     pytest.fail("Command ended before the real child started")
@@ -99,15 +107,28 @@ async def _check_stop(tmp_path, monkeypatch, *, entry, stop, exit_leader=False, 
         else:
             result = await asyncio.wait_for(task, timeout=3)
             if entry == "service":
-                assert result.timed_out and "timed out after 1s" in result.error
+                if exit_leader and not result.timed_out:
+                    # A completed PID namespace can stop descendants before the deadline.
+                    # The common checks below still require all child effects to stop.
+                    assert result.evidence["isolation"] == "bubblewrap"
+                    assert (result.exit_code, result.error) == (0, None)
+                else:
+                    assert result.timed_out and "timed out after 1s" in result.error
             else:
                 assert "timed out after 1s" in result
         before = (work / "effects").stat().st_size
         await asyncio.sleep(0.1)
         after = (work / "effects").stat().st_size
-        observed = {"entry": entry, "stop": stop, "exit_leader": exit_leader,
+        observed = {
+            "entry": entry,
+            "stop": stop,
+            "exit_leader": exit_leader,
             "leader_exit_codes": [process.returncode for process in processes],
-            "effects_before": before, "effects_after": after}
+            "provider_pids": [process.pid for process in processes],
+            "child_pid_data": (work / "child.pid").read_text(),
+            "effects_before": before,
+            "effects_after": after,
+        }
         (tmp_path / "observed.json").write_text(json.dumps(observed))
         assert processes and all(process.returncode is not None for process in processes), observed
         assert before == after, observed
@@ -115,14 +136,10 @@ async def _check_stop(tmp_path, monkeypatch, *, entry, stop, exit_leader=False, 
         release_start.set()
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
-        child_pid = work / "child.pid"
-        if child_pid.exists():
-            with contextlib.suppress(ProcessLookupError):
-                os.kill(int(child_pid.read_text()), signal.SIGKILL)
         for process in processes:
-            with contextlib.suppress(ProcessLookupError):
-                process.kill()
-            await asyncio.wait_for(process.communicate(), timeout=3)
+            receipt = asyncio.get_running_loop().create_future()
+            receipt.set_result(process)
+            await asyncio.wait_for(local_provider._stop_local_command(receipt), timeout=3)
 
 
 async def test_normal_command_preserves_output_and_exit_status(tmp_path, monkeypatch):
@@ -131,7 +148,10 @@ async def test_normal_command_preserves_output_and_exit_status(tmp_path, monkeyp
     monkeypatch.setenv("HIVE_ALLOW_UNSANDBOXED_CODE_EXEC", "0")
     result = await execute_agent_command(
         ["/bin/sh", "-c", "printf stdout; printf stderr >&2; exit 7"],
-        work_dir=tmp_path, env={"HOME": str(tmp_path)}, timeout=5,
-        sandbox_spec=SandboxBuildSpec(profile=SandboxProfile.WORKSPACE_WRITE))
+        work_dir=tmp_path,
+        env={"HOME": str(tmp_path)},
+        timeout=5,
+        sandbox_spec=SandboxBuildSpec(profile=SandboxProfile.WORKSPACE_WRITE),
+    )
     assert (result.stdout, result.stderr, result.exit_code, result.error) == ("stdout", "stderr", 7, None)
     assert result.evidence["isolation"] in {"sandbox-exec", "bubblewrap"}

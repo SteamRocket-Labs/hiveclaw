@@ -17,7 +17,7 @@ def upgrade():
         postgresql_where=sa.text("state IN ('uploading','available')"))
 
 
-def downgrade():
+def downgrade_preflight():
     connection = op.get_bind()
     previous = connection.scalar(sa.text("SELECT current_setting('app.current_tenant_id', true)"))
     try:
@@ -31,5 +31,9 @@ def downgrade():
             raise RuntimeError("original_generations_require_recovery_before_downgrade")
     finally:
         connection.execute(sa.text("SELECT set_config('app.current_tenant_id', :scope, true)"), {"scope": previous or ""})
+
+
+def downgrade():
+    downgrade_preflight()
     op.drop_index("uq_storage_blobs_active_digest", table_name="storage_blobs")
     op.create_unique_constraint("uq_storage_blobs_tenant_digest", "storage_blobs", ["tenant_id", "content_sha256"])

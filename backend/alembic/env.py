@@ -45,6 +45,21 @@ def run_migrations_offline() -> None:
 
 def do_run_migrations(connection):
     script = ScriptDirectory.from_config(config)
+    context.configure(connection=connection, target_metadata=target_metadata)
+    migration_fn = context.get_context().opts["fn"]
+
+    def preflight_migrations(revisions, migration_context):
+        steps = list(migration_fn(revisions, migration_context))
+        # Concurrent index operations commit independently. Check migration-owned
+        # retention guards before any revision can change schema or version.
+        for step in steps:
+            if not step.is_upgrade and not step.info.is_stamp:
+                preflight = getattr(step.revision.module, "downgrade_preflight", None)
+                if preflight is not None:
+                    preflight()
+        return steps
+
+    context.configure(connection=connection, target_metadata=target_metadata, fn=preflight_migrations)
     run_migrations_with_bootstrap(
         connection,
         alembic_context=context,

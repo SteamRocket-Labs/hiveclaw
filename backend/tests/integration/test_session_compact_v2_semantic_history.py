@@ -22,7 +22,7 @@ import pytest
 from app.models.agent import Agent
 from app.models.chat_session import ChatSession
 from app.models.runtime_task import RuntimeTask
-from app.models.session_v2 import SessionModelResult
+from app.models.session_v2 import SessionModelResult, SessionTurnInput
 from app.models.tenant import Tenant
 from app.models.user import User
 from app.services.session_v2_persistence import SessionEventDraft, append_session_events
@@ -112,12 +112,11 @@ async def _seed_completed_v2_turn(
     """Seed the production shape: accepted HumanInput checkpoint, streamed
     and/or zero-copy assistant events, the ``result_commit.round_committed``
     event with its immutable seal, and the runtime's persisted debug ledger."""
+    from app.services.session_input_admission import run_user_prompt_admission
+    from app.services.session_input_dispatch import dispatch_admitted_input_fast_path
+    from app.services.session_model_round import bind_round_inputs, commit_sealed_model_round
     from app.services.session_v2_persistence import accept_human_input, resolve_session_mutation_authority
 
-    turn_id = f"turn-{uuid.uuid4().hex[:8]}"
-    run_id = uuid.uuid4()
-    round_id = f"round-{uuid.uuid4().hex[:8]}"
-    result_id = uuid.uuid4()
     input_id = uuid.uuid4()
     agent_id, session_id, tenant_id, user_id = seed
     async with owner_sessionmaker() as db:
@@ -140,44 +139,49 @@ async def _seed_completed_v2_turn(
                 "content_parts": [{"type": "text", "text": "current amount is 13"}],
             },
         )
-        db.add(
-            RuntimeTask(
-                id=run_id,
-                task_type="web_chat_turn",
-                status="completed",
-                parent_agent_id=agent_id,
-                child_agent_id=agent_id,
-                parent_session_id=str(session_id),
-                child_session_id=str(session_id),
-                tenant_id=tenant_id,
-                root_idempotency_key=f"compact-v2-run-{run_id}",
-                metadata_json={"turn_id": turn_id},
-            )
+        admission = await run_user_prompt_admission(
+            db, authority=authority, input_id=input_id, worker_id="compact-v2-test"
         )
+        dispatch = await dispatch_admitted_input_fast_path(
+            db, admission_id=admission.admission_id, worker_id="compact-v2-test"
+        )
+        assert dispatch.state == "dispatched", dispatch
+        run_id = uuid.UUID(dispatch.receipt["run_id"])
+        turn_id = dispatch.receipt["turn_id"]
+        round_id = f"{run_id}:round:1"
+        result_id = uuid.uuid5(run_id, f"session-model-result:{round_id}")
+        task = await db.get(RuntimeTask, run_id)
+        task.status = "running"
         await db.flush()
-
-        # The round-committed immutable provider seal; inserted before the
-        # events because the transcript's result-authority check constraint
-        # validates every result_id reference at insert time.
-        db.add(
-            SessionModelResult(
-                id=result_id,
-                tenant_id=tenant_id,
-                session_id=session_id,
-                turn_id=turn_id,
-                run_id=run_id,
-                round_id=round_id,
-                provider_request_id=f"compact-v2-{result_id}",
-                state="round_committed",
-                model_request_hash="0" * 64,
-                model_request_snapshot_json={},
-                seal_json={
-                    "semantic_content": ASSISTANT_TEXT,
-                    "content_hash": "0" * 64,
-                    "response": {"content": ASSISTANT_TEXT, "tool_calls": []},
-                },
-            )
+        messages = await bind_round_inputs(
+            db,
+            tenant_id=tenant_id,
+            agent_id=agent_id,
+            session_id=session_id,
+            run_id=run_id,
+            turn_id=turn_id,
+            round_index=1,
         )
+        assert messages == [
+            {
+                "role": "user",
+                "content": "current amount is 13",
+                "session_input_id": str(input_id),
+                "source_ref": f"session-input:{input_id}",
+                "bound_round_id": round_id,
+            }
+        ]
+        # Keep the zero-copy/streamed provider-event fixture, but settle its
+        # real admitted input through the canonical round-commit boundary.
+        model_result = await db.get(SessionModelResult, result_id)
+        assert model_result.bound_input_ids_json == [str(input_id)]
+        model_result.state = "sealed"
+        model_result.seal_json = {
+            "semantic_content": ASSISTANT_TEXT,
+            "content_hash": "0" * 64,
+            "response": {"content": ASSISTANT_TEXT, "tool_calls": []},
+            "provider_response_ref": f"compact-v2-response:{result_id}",
+        }
         await db.flush()
 
         assistant_drafts = [
@@ -227,20 +231,25 @@ async def _seed_completed_v2_turn(
                     payload={"reason": "completed"},
                 ),
                 *assistant_drafts,
-                SessionEventDraft(
-                    item_id=result_id,
-                    item_kind="result_commit",
-                    lifecycle="round_committed",
-                    scope=_round_scope(session_id, turn_id, run_id, round_id),
-                    actor={"type": "runtime"},
-                    payload={
-                        "provider_request_id": f"compact-v2-{result_id}",
-                        "continuation_verdict": "final",
-                    },
-                    result_id=result_id,
-                ),
             ],
         )
+        await commit_sealed_model_round(
+            db,
+            tenant_id=tenant_id,
+            agent_id=agent_id,
+            session_id=session_id,
+            run_id=run_id,
+            turn_id=turn_id,
+            round_index=1,
+            provider_request_id=model_result.provider_request_id,
+        )
+        applied = await db.get(SessionTurnInput, input_id)
+        assert applied.intent == "queue_next_turn"
+        assert applied.status == "applied"
+        assert applied.target_run_id == run_id
+        assert applied.bound_round_id == round_id
+        assert model_result.state == "round_committed"
+        task.status = "completed"
         # The debug projection the web runtime persists after every model round.
         from app.services.chat_transcript import append_session_event
 
@@ -336,6 +345,60 @@ async def test_compact_streamed_plus_terminal_round_emits_single_assistant_messa
     assert receipt["coverage"]["committed_provider_messages"] == 1
 
 
+@pytest.mark.parametrize("admitted", [False, True])
+async def test_compact_excludes_next_turn_input_until_its_round_is_applied(
+    owner_sessionmaker, monkeypatch, admitted
+) -> None:
+    from app.services.session_human_input import queue_admitted_human_input
+    from app.services.session_input_admission import run_user_prompt_admission
+    from app.services.session_v2_persistence import accept_human_input, resolve_session_mutation_authority
+
+    seed = await _seed(owner_sessionmaker)
+    await _seed_completed_v2_turn(owner_sessionmaker, seed, streamed=False)
+    agent_id, session_id, _tenant_id, user_id = seed
+    input_id = uuid.uuid4()
+    async with owner_sessionmaker() as db:
+        authority = await resolve_session_mutation_authority(
+            db,
+            user=await db.get(User, user_id),
+            agent_id=agent_id,
+            session_id=session_id,
+            action="mutate_session_input",
+        )
+        await accept_human_input(
+            db,
+            authority=authority,
+            intent={
+                "kind": "queue_next_turn",
+                "input_id": str(input_id),
+                "idempotency_key": f"compact-unapplied-{input_id}",
+                "session_id": str(session_id),
+                "content_parts": [{"type": "text", "text": "Unapplied next-turn content."}],
+            },
+        )
+        if admitted:
+            await run_user_prompt_admission(
+                db, authority=authority, input_id=input_id, worker_id="compact-unapplied-test"
+            )
+            await queue_admitted_human_input(db, authority=authority, input_id=input_id)
+        await db.commit()
+
+    captured = []
+    result = await _run_compact(owner_sessionmaker, seed, monkeypatch, captured)
+    assert result["ok"] is True
+    assert captured == [
+        [
+            {"role": "user", "content": "current amount is 13"},
+            {"role": "assistant", "content": ASSISTANT_TEXT},
+        ]
+    ]
+    async with owner_sessionmaker() as db:
+        queued = await db.get(SessionTurnInput, input_id)
+        assert queued.status == ("queued" if admitted else "accepted")
+        assert queued.target_run_id is None
+        assert queued.bound_round_id is None
+
+
 async def test_compact_unavailable_seal_keeps_projection_and_skips_summary_model(
     owner_sessionmaker, monkeypatch
 ) -> None:
@@ -366,9 +429,11 @@ async def test_compact_unavailable_seal_keeps_projection_and_skips_summary_model
 async def test_compact_source_scope_mismatch_fails_closed_without_mutation(owner_sessionmaker, monkeypatch) -> None:
     seed = await _seed(owner_sessionmaker)
     turn = await _seed_completed_v2_turn(owner_sessionmaker, seed, streamed=False)
-    # Simulate authority drift the read model must catch: the committed seal's
-    # run binding no longer matches the round-commit event's run scope. The
-    # binding trigger allows rebinding to another valid task of the same turn.
+    # A current reverse commit pointer protects the run binding in PostgreSQL.
+    # Legacy seals without that optional pointer still need the reader's
+    # independent check against the canonical round-commit event.
+    from sqlalchemy.exc import IntegrityError
+
     drift_run_id = uuid.uuid4()
     async with owner_sessionmaker() as db:
         db.add(
@@ -387,6 +452,12 @@ async def test_compact_source_scope_mismatch_fails_closed_without_mutation(owner
         )
         await db.flush()
         result_row = await db.get(SessionModelResult, turn.result_id)
+        with pytest.raises(IntegrityError, match="session_v2_authority_binding_mismatch"):
+            async with db.begin_nested():
+                result_row.run_id = drift_run_id
+                await db.flush()
+        await db.refresh(result_row)
+        result_row.round_committed_event_id = None
         result_row.run_id = drift_run_id
         await db.commit()
 

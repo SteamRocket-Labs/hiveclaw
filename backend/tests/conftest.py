@@ -208,6 +208,15 @@ def _reset_global_engine_pools():
         database.schema_engine.sync_engine.dispose(close=False)
 
 
+@pytest.fixture(autouse=True)
+async def _close_global_event_redis():
+    """Release the process-global client while its function event loop is alive."""
+    yield
+    from app.core.events import close_redis
+
+    await close_redis()
+
+
 @pytest.fixture(scope="session", autouse=True)
 def _initialize_test_secrets_provider():
     from app.services.secrets_provider import init_secrets_provider

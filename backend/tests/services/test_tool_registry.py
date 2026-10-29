@@ -71,6 +71,9 @@ def test_minimal_kernel_tool_set_stays_small_and_explicit():
     from app.services.agent_tools import CORE_TOOL_NAMES
 
     assert CORE_TOOL_NAMES == {
+        "browser_observe",
+        "browser_manage",
+        "browser_action",
         "execute_code",
         "run_command",
         "request_shell_escalation",

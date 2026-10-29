@@ -6,6 +6,8 @@ from uuid import uuid4
 
 import pytest
 
+from tests.session_stub import ActiveTransactionSessionStub
+
 
 @pytest.mark.asyncio
 async def test_tool_search_returns_structured_discovery_sections(monkeypatch, tmp_path):
@@ -338,7 +340,7 @@ async def test_ensure_workspace_creates_standard_structure_and_profile(monkeypat
         def scalar_one_or_none(self):
             return self._value
 
-    class _FakeSession:
+    class _FakeSession(ActiveTransactionSessionStub):
         async def __aenter__(self):
             return self
 

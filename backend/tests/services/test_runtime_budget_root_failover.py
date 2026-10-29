@@ -353,6 +353,7 @@ async def test_unavailable_turn_clears_previous_turn_budget_id_from_reused_sessi
             },
         },
         summary_turn_mode=False,
+        system_plan_mode=None,
         history_messages=[],
         session=None,
         ports=SimpleNamespace(

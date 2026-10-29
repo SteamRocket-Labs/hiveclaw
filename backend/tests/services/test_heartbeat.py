@@ -6,6 +6,8 @@ from uuid import uuid4
 
 import pytest
 
+from tests.session_stub import ActiveTransactionSessionStub
+
 
 class _FakeScalarResult:
     def __init__(self, value):
@@ -18,7 +20,7 @@ class _FakeScalarResult:
         return SimpleNamespace(all=lambda: self._value or [])
 
 
-class _FakeSession:
+class _FakeSession(ActiveTransactionSessionStub):
     """Fake async DB session that returns pre-configured values for sequential queries."""
 
     def __init__(self, execute_values):
@@ -54,6 +56,9 @@ class _FakeSession:
         self._flush_count += 1
 
     async def commit(self):
+        return None
+
+    async def rollback(self):
         return None
 
 

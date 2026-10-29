@@ -47,6 +47,9 @@ class _ScalarResult:
             return self._value[0] if self._value else None
         return self._value
 
+    def all(self):
+        return self.scalars().all()
+
     def scalars(self):
         value = self._value if isinstance(self._value, list) else ([] if self._value is None else [self._value])
         return _Scalars(value)

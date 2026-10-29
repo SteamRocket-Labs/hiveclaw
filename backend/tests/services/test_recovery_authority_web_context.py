@@ -89,6 +89,7 @@ async def test_web_runtime_session_carries_root_task_and_base_transcript_authori
             trace_id=f"web-chat:{run_uuid.hex}",
         ),
         summary_turn_mode=False,
+        system_plan_mode=None,
         history_messages=[],
         runtime_session_context=None,
         channel_delivery_suffix="",

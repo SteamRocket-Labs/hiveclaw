@@ -11,12 +11,12 @@ reconciliation fence on the production-shaped path.
 from __future__ import annotations
 
 import uuid
-from contextlib import asynccontextmanager
 from pathlib import Path
 
 import pytest
 from sqlalchemy import func, select
 
+from app.database import tenant_scoped_session
 
 pytestmark = pytest.mark.usefixtures("migrated_pg_url")
 
@@ -138,17 +138,11 @@ def _execution_evidence(args_hash: str, provider_tool_use_id: str, frame_status=
 
 def _patch_runtime_database(monkeypatch, owner_sessionmaker, tenant_id):
     import app.services.tenant_resolver as tenant_resolver
-    import app.services.web_chat_runtime as runtime
-
-    @asynccontextmanager
-    async def scoped_session(_tenant_id):
-        async with owner_sessionmaker() as db:
-            yield db
 
     async def resolve_tenant(_agent_id):
         return tenant_id
 
-    monkeypatch.setattr(runtime, "tenant_scoped_session", scoped_session)
+    # Preserve production tenant pinning while replacing its database factory.
     monkeypatch.setattr("app.database.async_session", owner_sessionmaker)
     monkeypatch.setattr(tenant_resolver, "resolve_tenant_for_agent", resolve_tenant)
 
@@ -171,14 +165,24 @@ async def _start_effect(
     from app.services.workspace_resource_authority import register_workspace_path
 
     async with owner_sessionmaker() as db:
-        await register_workspace_path(db, tenant_id=tenant_id, agent_id=agent_id, path=path,
-            owner_user_id=user_id, root_session_id=session_id, source="fixture")
+        await register_workspace_path(
+            db,
+            tenant_id=tenant_id,
+            agent_id=agent_id,
+            path=path,
+            owner_user_id=user_id,
+            root_session_id=session_id,
+            source="fixture",
+        )
         await db.commit()
 
     base = {
         "name": tool_name,
-        "args": ({"path": path, "content": "production-shaped artifact\n"}
-            if tool_name == "write_file" else {"language": "python", "code": "print(1)"}),
+        "args": (
+            {"path": path, "content": "production-shaped artifact\n"}
+            if tool_name == "write_file"
+            else {"language": "python", "code": "print(1)"}
+        ),
         "artifacts": [{"path": path}] if tool_name == "execute_code" else [],
         "tool_call_id": provider_tool_use_id,
         "runtime_task_id": str(run_id),
@@ -217,10 +221,21 @@ async def _start_effect(
         target.write_text("production-shaped artifact\n", encoding="utf-8")
         after = workspace_path_state(workspace=root / "workspace", path=path)
         proof = await persist_workspace_execution_evidence(
-            context=ToolExecutionContext(tenant_id=str(tenant_id), agent_id=agent_id, user_id=user_id,
-                workspace=root, session_id=str(session_id), runtime_task_id=str(run_id)), tool_name=tool_name,
-            tool_call_id=provider_tool_use_id, arguments=base["args"], result="Wrote workspace/report.md",
-            states={path: after}, lineage=[{"path": path, "before_state": before, "after_state": after}], errors={},
+            context=ToolExecutionContext(
+                tenant_id=str(tenant_id),
+                agent_id=agent_id,
+                user_id=user_id,
+                workspace=root,
+                session_id=str(session_id),
+                runtime_task_id=str(run_id),
+            ),
+            tool_name=tool_name,
+            tool_call_id=provider_tool_use_id,
+            arguments=base["args"],
+            result="Wrote workspace/report.md",
+            states={path: after},
+            lineage=[{"path": path, "before_state": before, "after_state": after}],
+            errors={},
         )
         assert proof["status"] == "captured", proof
         from app.models.organization_identity import ContentInputReceipt
@@ -228,16 +243,26 @@ async def _start_effect(
         import hashlib
 
         # Known fixture original; receipt production is covered by the native integration tests.
-        db.add(ContentInputReceipt(id=uuid.uuid5(invocation.id, f"workspace-content:{path}"), tenant_id=tenant_id,
-            carrier_kind="workspace_artifact", carrier_ref=workspace_artifact_ref(agent_id, path), revision=1,
-            content_sha256=hashlib.sha256(b"production-shaped artifact\n").hexdigest(), dependencies_json=[]))
+        db.add(
+            ContentInputReceipt(
+                id=uuid.uuid5(invocation.id, f"workspace-content:{path}"),
+                tenant_id=tenant_id,
+                carrier_kind="workspace_artifact",
+                carrier_ref=workspace_artifact_ref(agent_id, path),
+                revision=1,
+                content_sha256=hashlib.sha256(b"production-shaped artifact\n").hexdigest(),
+                dependencies_json=[],
+            )
+        )
         await db.commit()
         return base, invocation.id, invocation.args_hash
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("approved_continuation", [False, True])
-@pytest.mark.parametrize("tool_name,frame_status", [("write_file", "completed"), ("execute_code", "completed"), ("execute_code", "failed")])
+@pytest.mark.parametrize(
+    "tool_name,frame_status", [("write_file", "completed"), ("execute_code", "completed"), ("execute_code", "failed")]
+)
 async def test_write_file_artifact_and_v2_tool_result_commit_against_real_fk(
     owner_sessionmaker,
     monkeypatch,
@@ -273,13 +298,14 @@ async def test_write_file_artifact_and_v2_tool_result_commit_against_real_fk(
         run_id=run_id,
         provider_request_id=provider_request_id,
         provider_tool_use_id=provider_tool_use_id,
-        path=rel_path, tool_name=tool_name,
+        path=rel_path,
+        tool_name=tool_name,
     )
 
     if approved_continuation:
         from app.services.session_tool_runtime import complete_tool_invocation
 
-        async with owner_sessionmaker() as db:
+        async with tenant_scoped_session(tenant_id, session_factory=owner_sessionmaker) as db:
             await complete_tool_invocation(
                 db,
                 tenant_id=tenant_id,
@@ -462,10 +488,18 @@ async def test_legacy_tool_result_materializes_artifact_owner_before_fk_insert(
     import hashlib
 
     async with owner_sessionmaker() as db:
-        await register_workspace_path(db, tenant_id=tenant_id, agent_id=agent_id, path=rel_path,
-            owner_user_id=user_id, root_session_id=session_id, source="fixture")
-        record_workspace_receipt(db, tenant_id, agent_id, rel_path,
-            hashlib.sha256(b"legacy projection artifact\n").hexdigest(), None)
+        await register_workspace_path(
+            db,
+            tenant_id=tenant_id,
+            agent_id=agent_id,
+            path=rel_path,
+            owner_user_id=user_id,
+            root_session_id=session_id,
+            source="fixture",
+        )
+        record_workspace_receipt(
+            db, tenant_id, agent_id, rel_path, hashlib.sha256(b"legacy projection artifact\n").hexdigest(), None
+        )
         await db.commit()
 
     result = await runtime._persist_legacy_tool_call(

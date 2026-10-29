@@ -10,8 +10,17 @@ from app.models.channel_ingress_event import ChannelIngressEvent
 from app.models.chat_session import ChatSession
 from app.models.runtime_task import RuntimeTask
 from tests.integration.test_m3h_machine_identity_postgres import machine_api as _machine_api, _issue
+from tests.integration import conftest as _database_fixtures
 
 machine_api = _machine_api
+
+# Global return-worker assertions require an independent catalog.
+app_user_engine = _database_fixtures.app_user_engine
+app_user_sessionmaker = _database_fixtures.app_user_sessionmaker
+migrated_pg_url = _database_fixtures.migrated_pg_url
+owner_engine = _database_fixtures.owner_engine
+owner_sessionmaker = _database_fixtures.owner_sessionmaker
+pg_container = _database_fixtures.pg_container
 
 pytestmark = pytest.mark.usefixtures('migrated_pg_url')
 

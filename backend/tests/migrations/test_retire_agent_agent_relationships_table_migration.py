@@ -9,6 +9,12 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.pool import NullPool
 
+from tests.integration import conftest as _database_fixtures
+
+# Historical round trips must not downgrade another module's source evidence.
+migrated_pg_url = _database_fixtures.migrated_pg_url
+pg_container = _database_fixtures.pg_container
+
 
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
 MIGRATION = BACKEND_ROOT / "alembic" / "versions" / "retire_agent_agent_relationships_table_0724.py"

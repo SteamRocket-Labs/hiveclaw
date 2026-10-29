@@ -7,6 +7,8 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
+from alembic.config import Config
+from alembic.script import ScriptDirectory
 
 
 MIGRATION = Path(__file__).resolve().parents[2] / "alembic" / "versions" / "session_v2_0716.py"
@@ -33,7 +35,9 @@ SESSION_V2_EXISTING_TRANSCRIPT_INDEXES = (
 )
 
 SESSION_V2_PARENT_REVISION = "hr_runtime_authority_0715"
-SESSION_V2_HEAD_REVISION = "session_v2_delete_fk_indexes_0907"
+SESSION_V2_HEAD_REVISION = ScriptDirectory.from_config(
+    Config(str(MIGRATION.parents[2] / "alembic.ini"))
+).get_current_head()
 
 
 def test_session_v2_migration_is_the_single_head_and_secure_downgrade_preserves_evidence() -> None:
@@ -81,7 +85,7 @@ def test_session_v2_revision_snapshots_match_their_owned_live_contracts() -> Non
     from migration_snapshots.peer_a2a_session_authority_contract_0717 import (
         build_session_event_contract_function_sql as build_frozen_event_sql,
     )
-    from migration_snapshots.business_task_child_1022 import (
+    from migration_snapshots.delegation_permissions_1022 import (
         build_session_tenant_binding_function_sql as build_frozen_authority_sql,
     )
     from app.services.session_event_contract import (
@@ -157,13 +161,13 @@ async def test_session_v2_input_control_exact_parent_upgrade_is_nullable_and_cur
 async def test_session_v2_admission_revision_backfills_legacy_attempt_without_relabeling_current_bytes(
     session_v2_admission_revision_parent_pg_url: str,
 ) -> None:
-    from app.models.agent import Agent
     from app.models.tenant import Tenant
     from app.models.user import User
     from tests.migrations.conftest import (
         _alembic_downgrade,
         _alembic_upgrade,
         insert_chat_session_at_schema_revision,
+        insert_agent_at_schema_revision,
     )
 
     tenant_id, user_id, agent_id, session_id, command_id, input_id, admission_id = (uuid.uuid4() for _ in range(7))
@@ -184,7 +188,9 @@ async def test_session_v2_admission_revision_backfills_legacy_attempt_without_re
                 )
             )
             await db.flush()
-            db.add(Agent(id=agent_id, tenant_id=tenant_id, name="Admission Revision Agent", creator_id=user_id))
+            await insert_agent_at_schema_revision(
+                db, agent_id=agent_id, tenant_id=tenant_id, name="Admission Revision Agent", creator_id=user_id
+            )
             await db.flush()
             await insert_chat_session_at_schema_revision(
                 db,
@@ -1292,13 +1298,13 @@ async def test_downgrade_rejects_any_v2_event_even_before_cutover(
 ) -> None:
     """A schema-v2 fact is not mechanically provable as safe for an older binary."""
 
-    from app.models.agent import Agent
     from app.models.tenant import Tenant
     from app.models.user import User
     from tests.migrations.conftest import (
         _alembic_downgrade,
         _alembic_upgrade,
         insert_chat_session_at_schema_revision,
+        insert_agent_at_schema_revision,
     )
 
     # This test belongs to the original Session V2 revision.  Put the shared
@@ -1332,7 +1338,9 @@ async def test_downgrade_rejects_any_v2_event_even_before_cutover(
                 )
             )
             await db.flush()
-            db.add(Agent(id=agent_id, tenant_id=tenant_id, name="Pre-cutover Agent", creator_id=user_id))
+            await insert_agent_at_schema_revision(
+                db, agent_id=agent_id, tenant_id=tenant_id, name="Pre-cutover Agent", creator_id=user_id
+            )
             await db.flush()
             await insert_chat_session_at_schema_revision(
                 db,
@@ -1409,7 +1417,6 @@ async def test_downgrade_rejects_after_generation_two_facts_without_mutating_hea
 ) -> None:
     """A V2-aware rollback artifact is mandatory after the generation-2 fence."""
 
-    from app.models.agent import Agent
     from app.models.tenant import Tenant
     from app.models.user import User
     from tests.migrations.conftest import (
@@ -1417,6 +1424,7 @@ async def test_downgrade_rejects_after_generation_two_facts_without_mutating_hea
         _alembic_upgrade,
         insert_chat_session_at_schema_revision,
         insert_runtime_task_at_schema_revision,
+        insert_agent_at_schema_revision,
     )
 
     # Keep this legacy-revision rollback proof independent from the additive
@@ -1457,13 +1465,8 @@ async def test_downgrade_rejects_after_generation_two_facts_without_mutating_hea
                 )
             )
             await db.flush()
-            db.add(
-                Agent(
-                    id=agent_id,
-                    tenant_id=tenant_id,
-                    name="Downgrade Guard Agent",
-                    creator_id=user_id,
-                )
+            await insert_agent_at_schema_revision(
+                db, agent_id=agent_id, tenant_id=tenant_id, name="Downgrade Guard Agent", creator_id=user_id
             )
             await db.flush()
             await insert_chat_session_at_schema_revision(
@@ -2846,7 +2849,7 @@ async def test_delete_fk_index_revision_recovers_invalid_residue_and_validates_a
     try:
         async with verified.connect() as connection:
             version = await connection.scalar(text("SELECT version_num FROM alembic_version"))
-            assert version == "session_v2_delete_fk_indexes_0907"
+            assert version == SESSION_V2_HEAD_REVISION
             rows = (
                 await connection.execute(
                     text(

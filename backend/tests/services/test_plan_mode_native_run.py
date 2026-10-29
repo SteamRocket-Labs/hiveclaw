@@ -261,3 +261,48 @@ async def test_handoff_projection_rejects_an_unrelated_or_changed_receipt(native
     assert await reconcile_native_handoff(native.db, native.plan) is False
     assert native.plan.handoff_status == "queued"
     assert "runtime_task_id" not in native.plan.handoff_payload
+
+
+@pytest.mark.parametrize("state", ["queued", "applied", "foreign_owner"])
+async def test_native_handoff_retry_only_reconciles_existing_input(native, monkeypatch, state):
+    from app.services import plan_mode_service as module
+
+    confirmed_handoff(native)
+    native.plan.plan_json = {"handoff": {"target": "continue_current_session"}}
+    native.task.status = "needs_reconciliation"
+    if state == "queued":
+        native.row.status = "queued"
+        native.row.target_run_id = None
+    elif state == "foreign_owner":
+        native.command.principal_id = uuid4()
+    before_payload = deepcopy(native.plan.handoff_payload)
+    before_metadata = deepcopy(native.plan.metadata_json)
+    before_command = deepcopy(native.command.__dict__)
+
+    async def tenant(_identifier):
+        return native.plan.tenant_id
+
+    async def load(_db, _identifier):
+        return native.plan
+
+    async def unexpected_effect(**_kwargs):
+        raise AssertionError("A queued native handoff must not consume another lease or dispatch again")
+
+    service = module.PlanModeService()
+    service.register_handoff_handler("continue_current_session", unexpected_effect)
+    monkeypatch.setattr(module, "resolve_tenant_for_plan", tenant)
+    monkeypatch.setattr(module, "tenant_scoped_session", lambda *_args, **_kwargs: native.db)
+    monkeypatch.setattr(module, "consume_plan_authorization_lease", unexpected_effect)
+    monkeypatch.setattr(service, "_load", load)
+    result = await service.handoff_confirmed_plan(plan_id=native.plan.id)
+    assert result is native.plan
+    assert native.db.commits == 1
+    assert result.handoff_status == ("completed" if state == "applied" else "queued")
+    assert native.task.status == "needs_reconciliation"
+    assert native.plan.metadata_json == before_metadata
+    assert native.command.__dict__ == before_command
+    if state == "applied":
+        assert result.handoff_payload["runtime_task_id"] == str(native.task.id)
+        assert result.handoff_payload["runtime_task_status"] == "needs_reconciliation"
+    else:
+        assert result.handoff_payload == before_payload

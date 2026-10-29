@@ -46,9 +46,10 @@ Coverage map for the 9 entries (Reconciliation §7 row-00):
                                 by proving the delegation to the proven gate.
     [6] goal post-turn bridge . maybe_continue_session_goal_after_turn -> same
                                 start_web_chat_run gate as [5]; covered by [5].
-    [7] plan-mode session h/o . continue_current_session_handoff dispatches the
-                                continuation THROUGH start_web_chat_run (entry
-                                [1]); asserted by proving the delegation.
+    [7] plan-mode session h/o . continue_current_session_handoff accepts and
+                                admits a stable Session V2 input before dispatch
+                                through start_web_chat_run (entry [1]); unit
+                                wiring plus PostgreSQL acceptance ordering.
     [8] plan-mode team h/o .... creates Team container, then delegates teammate
                                 dispatch to spawn_agent_team_member_runtime, which
                                 reaches the mailbox continuation gate (entry [3]).
@@ -596,25 +597,26 @@ async def test_goal_continuation_dispatches_through_web_chat_gate_accepted_promp
 
 @pytest.mark.asyncio
 async def test_plan_mode_session_handoff_dispatches_through_web_chat_gate_accepted_prompt_first(monkeypatch):
-    """[7] plan-mode session handoff inherits accepted-prompt-first by dispatching
-    the confirmed-plan continuation THROUGH ``start_web_chat_run`` (gate [1]).
+    """[7] The handoff submits a stable canonical input before the web-chat gate.
 
-    A confirmed plan's execution prompt is handed to ``start_web_chat_run`` with
-    ``source=plan_mode_handoff``; the kernel is reached only via that gate, which
-    commits the run before dispatching it. This proves the delegation that carries
-    the accepted-prompt-first guarantee.
+    This unit seam checks the complete native ingress request. PostgreSQL plan
+    lease tests verify committed acceptance before the actual run is created.
     """
     import app.services.plan_mode_session_handoff as handoff
 
     captured: dict = {}
 
-    async def fake_start(**kwargs):
+    async def fake_submit(**kwargs):
         captured.update(kwargs)
-        return {"runtime_task_id": "run-plan-1", "status": "running", "run_id": "run-plan-1"}
+        return {"run": {"runtime_task_id": "run-plan-1", "status": "running", "run_id": "run-plan-1"}}
 
-    agent = SimpleNamespace(id=uuid4(), name="Agent", tenant_id=uuid4(), expires_at=None)
+    agent = SimpleNamespace(
+        id=uuid4(), name="Agent", tenant_id=uuid4(), expires_at=None, default_session_permission_mode=None
+    )
     user = SimpleNamespace(id=uuid4(), username="example-owner", display_name="Example Owner")
-    session = SimpleNamespace(id=uuid4(), agent_id=agent.id, user_id=user.id)
+    session = SimpleNamespace(
+        id=uuid4(), agent_id=agent.id, user_id=user.id, source_channel="web", transcript_metadata_json={}
+    )
 
     async def fake_load_agent(_db, _agent_id):
         return agent
@@ -628,7 +630,7 @@ async def test_plan_mode_session_handoff_dispatches_through_web_chat_gate_accept
     monkeypatch.setattr(handoff, "_load_agent", fake_load_agent)
     monkeypatch.setattr(handoff, "_load_user", fake_load_user)
     monkeypatch.setattr(handoff, "_load_session", fake_load_session)
-    monkeypatch.setattr("app.services.web_chat_runtime.start_web_chat_run", fake_start)
+    monkeypatch.setattr("app.services.session_live_input.submit_live_human_input", fake_submit)
 
     plan = SimpleNamespace(
         id=uuid4(),
@@ -657,11 +659,19 @@ async def test_plan_mode_session_handoff_dispatches_through_web_chat_gate_accept
     result = await handoff.continue_current_session_handoff(db=object(), plan=plan)
 
     # The confirmed plan's execution prompt is dispatched via the proven gate.
-    assert captured["extra_metadata"]["source"] == "plan_mode_handoff"
-    assert captured["extra_metadata"]["approved_plan_id"] == str(plan.id)
+    assert captured["runtime_metadata"]["source"] == "plan_mode_handoff"
+    assert captured["runtime_metadata"]["approved_plan_id"] == str(plan.id)
     assert captured["content"]  # a real, non-empty execution prompt is handed over
     assert result["execution"] == "current_session"
     assert result["runtime_task_id"] == "run-plan-1"
+
+    expected_input_id = uuid.uuid5(plan.id, f"plan-handoff:{plan.plan_version}:{plan.plan_hash}")
+    assert captured["source"] == "plan_mode_handoff"
+    assert captured["requested_kind"] == "queue_next_turn"
+    assert captured["input_id"] == expected_input_id
+    assert captured["idempotency_key"] == f"plan-handoff:{expected_input_id}"
+    assert captured["runtime_metadata"]["plan_authorization"] == plan.metadata_json["active_plan_authorization"]
+    assert captured["agent"] is agent and captured["user"] is user and captured["session"] is session
 
 
 def test_plan_mode_team_handoff_delegates_to_agenttool_teammate_runtime():

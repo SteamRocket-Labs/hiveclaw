@@ -161,6 +161,10 @@ class _E2ESession:
     async def flush(self):
         self.flush_calls += 1
 
+    async def get(self, model, identity, **_kwargs):
+        rows = [*self.plans, *self.triggers, *self.agents, *self.approvals, *self.added]
+        return next((row for row in rows if isinstance(row, model) and row.id == identity), None)
+
     async def commit(self):
         self.commit_calls += 1
 

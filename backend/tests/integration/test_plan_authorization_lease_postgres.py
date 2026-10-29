@@ -354,3 +354,123 @@ async def test_deterministic_handoff_can_resume_only_with_the_same_evidence_id(o
 
     assert resumed.lease_id == first.lease_id
     assert resumed.consumed_at == first.consumed_at
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("active_run", [False, True])
+async def test_confirmed_handoff_commits_native_input_before_start_and_reuses_it(
+    owner_sessionmaker,
+    app_user_sessionmaker,
+    monkeypatch,
+    active_run,
+):
+    from contextlib import asynccontextmanager
+
+    from sqlalchemy import select, text
+
+    from app.database import tenant_scoped_session
+    from app.models.chat_transcript_event import ChatTranscriptEvent
+    from app.models.plan_request import AgentPlanRequest
+    from app.models.runtime_task import RuntimeTask
+    from app.models.session_v2 import SessionCommand, SessionInputAdmission, SessionTurnInput
+    from app.services import plan_mode_service, tenant_resolver, web_chat_runtime
+    from app.services.plan_authorization_lease import issue_plan_authorization_leases
+    from app.services.plan_mode_core import compute_plan_hash
+    from app.services.plan_mode_registry import register_plan_mode_handoffs
+    from tests.services.test_session_input_control_v2 import _seed_session
+
+    tenant, user_id, agent_id, session_id, previous_run_id = await _seed_session(
+        owner_sessionmaker,
+        active_run=active_run,
+    )
+    plan_json = {
+        "schema": "hive_plan.v1",
+        "intent_type": "in_session_execution",
+        "title": "Native confirmed continuation",
+        "objective": "Preserve the exact approved plan.",
+        "plan_markdown": "## Plan\nRead the approved source and return its full report.",
+        "handoff": {"target": "continue_current_session"},
+    }
+    async with tenant_scoped_session(tenant, session_factory=app_user_sessionmaker) as db:
+        plan = AgentPlanRequest(
+            tenant_id=tenant,
+            agent_id=agent_id,
+            session_id=str(session_id),
+            requested_by_user_id=user_id,
+            confirmed_by_user_id=user_id,
+            confirmed_at=datetime.now(timezone.utc),
+            source="web_chat",
+            intent_type="in_session_execution",
+            original_request="Return the approved report.",
+            status="confirmed",
+            plan_version=1,
+            plan_hash=compute_plan_hash(plan_json),
+            plan_json=plan_json,
+        )
+        db.add(plan)
+        await db.flush()
+        leases = await issue_plan_authorization_leases(db=db, plan=plan, confirming_user_id=user_id)
+        assert len(leases) == 1
+        plan_id, plan_hash = plan.id, plan.plan_hash
+    input_id = uuid.uuid5(plan_id, f"plan-handoff:1:{plan_hash}")
+    starts = []
+    real_start = web_chat_runtime.start_web_chat_run
+
+    @asynccontextmanager
+    async def scoped(actual_tenant):
+        assert actual_tenant == tenant
+        async with tenant_scoped_session(actual_tenant, session_factory=app_user_sessionmaker) as db:
+            yield db
+
+    async def start_after_acceptance(**kwargs):
+        # A separate app-role connection can observe acceptance before startup.
+        async with tenant_scoped_session(tenant, session_factory=app_user_sessionmaker) as db:
+            role = (
+                await db.execute(text("SELECT rolsuper,rolbypassrls FROM pg_roles WHERE rolname=current_user"))
+            ).one()
+            assert tuple(role) == (False, False)
+            row = await db.get(SessionTurnInput, input_id)
+            assert row is not None
+            command = await db.get(SessionCommand, row.command_id)
+            admission = await db.scalar(select(SessionInputAdmission).where(SessionInputAdmission.input_id == input_id))
+            event = await db.scalar(
+                select(ChatTranscriptEvent).where(
+                    ChatTranscriptEvent.command_id == command.id,
+                    ChatTranscriptEvent.lifecycle == "accepted",
+                )
+            )
+            assert command.principal_type == "user" and command.principal_id == user_id
+            assert admission.state == "admitted" and event is not None
+            assert command.request_json["content_parts"][0]["text"] == kwargs["content"]
+            assert kwargs["extra_metadata"]["session_v2_input_id"] == str(input_id)
+        starts.append(kwargs["run_id"])
+        return await real_start(**kwargs)
+
+    async def notify(**_kwargs):
+        pass
+
+    monkeypatch.setattr(plan_mode_service, "tenant_scoped_session", scoped)
+    monkeypatch.setattr(tenant_resolver, "async_session", app_user_sessionmaker)
+    monkeypatch.setattr(web_chat_runtime, "start_web_chat_run", start_after_acceptance)
+    monkeypatch.setattr("app.services.runtime_task_worker.notify_runtime_task_worker", notify)
+    service = plan_mode_service.PlanModeService()
+    register_plan_mode_handoffs(service)
+    first = await service.handoff_confirmed_plan(plan_id=plan_id)
+    expected_status = "queued" if active_run else "completed"
+    assert first.handoff_status == expected_status, first.handoff_payload
+    second = await service.handoff_confirmed_plan(plan_id=plan_id)
+    assert second.handoff_status == expected_status, second.handoff_payload
+    assert second.handoff_payload == first.handoff_payload
+    assert len(starts) == (0 if active_run else 1)
+    async with tenant_scoped_session(tenant, session_factory=app_user_sessionmaker) as db:
+        inputs = list(
+            (await db.scalars(select(SessionTurnInput).where(SessionTurnInput.session_id == session_id))).all()
+        )
+        tasks = list(
+            (await db.scalars(select(RuntimeTask).where(RuntimeTask.parent_session_id == str(session_id)))).all()
+        )
+        assert [row.id for row in inputs] == [input_id]
+        assert len(tasks) == 1
+        assert tasks[0].id == (previous_run_id if active_run else starts[0])
+        stored = await db.get(AgentPlanRequest, plan_id)
+        assert stored.plan_json == plan_json and stored.plan_hash == plan_hash

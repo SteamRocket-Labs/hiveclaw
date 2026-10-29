@@ -833,6 +833,17 @@ class PlanModeService:
                 if plan.handoff_status == "completed":
                     return plan  # idempotent: already done
 
+                if (
+                    plan.handoff_status == "queued"
+                    and isinstance(plan.handoff_payload, dict)
+                    and plan.handoff_payload.get("reason") == "native_input_queued"
+                ):
+                    from app.services.plan_mode_session_handoff import reconcile_native_handoff
+
+                    await reconcile_native_handoff(db, plan)
+                    await db.commit()
+                    return plan
+
                 target = str((plan.plan_json or {}).get("handoff", {}).get("target") or "")
                 if target and self._handoff_handlers.get(target) is not None:
                     scope = build_plan_handoff_authorization_scope(plan)

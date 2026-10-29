@@ -4,6 +4,8 @@ from alembic import op
 import sqlalchemy as sa
 from sqlalchemy.dialects.postgresql import UUID
 
+from app.migration_compat import add_column_if_missing, create_check_constraint_if_missing, create_unique_constraint_if_missing
+
 revision = "company_directory_namespace_1019"
 down_revision = "workbench_projects_1019"
 branch_labels = None
@@ -11,11 +13,11 @@ depends_on = None
 
 
 def upgrade():
-    op.add_column("org_departments", sa.Column("provider_id", UUID(as_uuid=True), sa.ForeignKey("identity_providers.id")))
-    op.add_column("org_departments", sa.Column("provider_department_id", sa.String(100)))
-    op.create_unique_constraint("uq_org_department_provider_subject", "org_departments",
+    add_column_if_missing(op, "org_departments", sa.Column("provider_id", UUID(as_uuid=True), sa.ForeignKey("identity_providers.id")))
+    add_column_if_missing(op, "org_departments", sa.Column("provider_department_id", sa.String(100)))
+    create_unique_constraint_if_missing(op, "uq_org_department_provider_subject", "org_departments",
         ["tenant_id", "provider_id", "provider_department_id"])
-    op.create_check_constraint("ck_org_department_provider_subject", "org_departments",
+    create_check_constraint_if_missing(op, "ck_org_department_provider_subject", "org_departments",
         "(provider_id IS NULL) = (provider_department_id IS NULL)")
 
 

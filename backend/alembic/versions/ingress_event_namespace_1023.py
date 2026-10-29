@@ -3,6 +3,8 @@
 from alembic import op
 import sqlalchemy as sa
 
+from app.migration_compat import add_column_if_missing
+
 revision = "ingress_event_namespace_1023"
 down_revision = "tool_preflight_audit_1023"
 branch_labels = None
@@ -14,7 +16,7 @@ _OLD_KEY = ["tenant_id", "provider", "installation_ref", "provider_event_id"]
 
 
 def upgrade():
-    op.add_column(_TABLE, sa.Column("provider_namespace", sa.String(64), nullable=False, server_default=""))
+    add_column_if_missing(op, _TABLE, sa.Column("provider_namespace", sa.String(64), nullable=False, server_default=""))
     connection = op.get_bind()
     previous = connection.scalar(sa.text("SELECT current_setting('app.current_tenant_id', true)"))
     try:

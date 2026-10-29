@@ -14,6 +14,8 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects import postgresql
 
+from app.migration_compat import add_column_if_missing, create_check_constraint_if_missing
+
 revision = "m1d_directory_observation_1016"
 down_revision = "m1b_identity_links_1015"
 branch_labels = None
@@ -27,11 +29,13 @@ _OBSERVATION_SQL = (
 
 
 def upgrade() -> None:
-    op.add_column(
+    add_column_if_missing(
+        op,
         "org_members",
         sa.Column("observed_directory_department_ids", postgresql.JSONB(), nullable=True),
     )
-    op.create_check_constraint(
+    create_check_constraint_if_missing(
+        op,
         "ck_org_members_observed_directory_departments",
         "org_members",
         _OBSERVATION_SQL,

@@ -4,7 +4,7 @@ from alembic import op
 import sqlalchemy as sa
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 
-from app.migration_compat import create_table_if_missing, create_index_if_missing
+from app.migration_compat import add_column_if_missing, create_table_if_missing, create_index_if_missing
 
 revision = "company_knowledge_analysis_1020"
 down_revision = "remote_a2a_runtime_1020"
@@ -109,19 +109,23 @@ def upgrade():
             f'CREATE POLICY "tenant_isolation_{table}" ON "{table}" USING ({predicate}) WITH CHECK ({predicate})'
         )
     create_index_if_missing(op, "ix_company_analysis_claim", TABLES[0], ["tenant_id", "status", "available_at"])
-    op.add_column(
+    add_column_if_missing(
+        op,
         "company_knowledge_publications",
         sa.Column("graph_projection_status", sa.String(40), nullable=False, server_default="not_analyzed"),
     )
-    op.add_column(
+    add_column_if_missing(
+        op,
         "company_knowledge_publications",
         sa.Column("graph_projection_receipt_json", JSONB, nullable=False, server_default=sa.text("'{}'::jsonb")),
     )
-    op.add_column(
+    add_column_if_missing(
+        op,
         "company_knowledge_publications",
         sa.Column("analysis_extraction_id", UUID(as_uuid=True), sa.ForeignKey(TABLES[1] + ".id", ondelete="RESTRICT")),
     )
-    op.add_column(
+    add_column_if_missing(
+        op,
         "company_ontology_releases",
         sa.Column(
             "publication_id",

@@ -3,6 +3,8 @@
 from alembic import op
 import sqlalchemy as sa
 
+from app.migration_compat import create_index_if_missing
+
 revision = "original_blob_generations_1021"
 down_revision = "chat_snapshot_payload_refs_1021"
 branch_labels = None
@@ -10,8 +12,8 @@ depends_on = None
 
 
 def upgrade():
-    op.drop_constraint("uq_storage_blobs_tenant_digest", "storage_blobs", type_="unique")
-    op.create_index("uq_storage_blobs_active_digest", "storage_blobs", ["tenant_id", "content_sha256"], unique=True,
+    op.drop_constraint("uq_storage_blobs_tenant_digest", "storage_blobs", type_="unique", if_exists=True)
+    create_index_if_missing(op, "uq_storage_blobs_active_digest", "storage_blobs", ["tenant_id", "content_sha256"], unique=True,
         postgresql_where=sa.text("state IN ('uploading','available')"))
 
 

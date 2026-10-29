@@ -4,6 +4,13 @@ from alembic import op
 import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 
+from app.migration_compat import (
+    add_column_if_missing,
+    create_check_constraint_if_missing,
+    create_foreign_key_if_missing,
+    create_index_if_missing,
+)
+
 revision = "tenant_channel_principal_1018"
 down_revision = "employee_readiness_probe_1018"
 branch_labels = None
@@ -20,11 +27,11 @@ def _binding_constraint(enterprise):
 
 
 def upgrade():
-    op.add_column("external_principals", sa.Column("tenant_channel_config_id", postgresql.UUID(as_uuid=True), nullable=True))
-    op.create_foreign_key("fk_external_principals_tenant_channel", "external_principals", "tenant_channel_configs",
+    add_column_if_missing(op, "external_principals", sa.Column("tenant_channel_config_id", postgresql.UUID(as_uuid=True), nullable=True))
+    create_foreign_key_if_missing(op, "fk_external_principals_tenant_channel", "external_principals", "tenant_channel_configs",
         ["tenant_channel_config_id"], ["id"], ondelete="SET NULL")
-    op.create_index("ix_external_principals_tenant_channel_config_id", "external_principals", ["tenant_channel_config_id"])
-    op.create_check_constraint("ck_external_principals_installation_kind", "external_principals",
+    create_index_if_missing(op, "ix_external_principals_tenant_channel_config_id", "external_principals", ["tenant_channel_config_id"])
+    create_check_constraint_if_missing(op, "ck_external_principals_installation_kind", "external_principals",
         "channel_config_id IS NULL OR tenant_channel_config_id IS NULL")
     _binding_constraint(True)
 

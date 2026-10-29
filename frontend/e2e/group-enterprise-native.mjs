@@ -94,7 +94,7 @@ try {
     await inspector.getByRole('button', { name: 'Open current file', exact: true }).click();
     assert.equal((await current).status(), 200);
     await inspector.getByRole('button', { name: 'Edit', exact: true }).click();
-    await inspector.getByRole('textbox').fill('USER_EDITED_SAVED_REPORT');
+    await inspector.getByRole('textbox', { name: 'Your draft', exact: true }).fill('USER_EDITED_SAVED_REPORT');
     const saved = page.waitForResponse(response => response.url().includes('/files/content') && response.request().method() === 'PUT');
     await inspector.getByRole('button', { name: 'Save', exact: true }).click();
     assert.equal((await saved).status(), 200);

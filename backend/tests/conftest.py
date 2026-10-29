@@ -95,32 +95,34 @@ def _archive_worker_failure_log(item, report, target):
     basetemp = getattr(factory, "_basetemp", None)
     if not isinstance(tmp_path, Path) or not isinstance(basetemp, Path):
         return []
-    worker_log = tmp_path / "worker.log"
-    if (
-        worker_log.is_symlink()
-        or not worker_log.is_file()
-        or not worker_log.resolve().is_relative_to(basetemp.resolve())
-    ):
-        return []
+    files = []
+    for worker_log in sorted(tmp_path.rglob("worker.log")):
+        if (
+            worker_log.is_symlink()
+            or not worker_log.is_file()
+            or not worker_log.resolve().is_relative_to(basetemp.resolve())
+        ):
+            continue
 
-    body = worker_log.read_bytes()
-    digest = hashlib.sha256(body).hexdigest()
-    case_digest = hashlib.sha256(report.nodeid.encode()).hexdigest()
-    directory = target.parent / "pytest-failure-files"
-    directory.mkdir(parents=True, exist_ok=True)
-    archive = directory / f"{case_digest}-{report.when}-{digest}.log.gz"
-    if not archive.exists():
-        archive.write_bytes(gzip.compress(body, mtime=0))
-    if gzip.decompress(archive.read_bytes()) != body:
-        raise OSError("Worker failure log archive failed readback verification")
-    return [
-        {
-            "name": "worker.log",
-            "archive": archive.relative_to(target.parent).as_posix(),
-            "sha256": digest,
-            "bytes": len(body),
-        }
-    ]
+        body = worker_log.read_bytes()
+        digest = hashlib.sha256(body).hexdigest()
+        case_digest = hashlib.sha256(report.nodeid.encode()).hexdigest()
+        directory = target.parent / "pytest-failure-files"
+        directory.mkdir(parents=True, exist_ok=True)
+        archive = directory / f"{case_digest}-{report.when}-{digest}.log.gz"
+        if not archive.exists():
+            archive.write_bytes(gzip.compress(body, mtime=0))
+        if gzip.decompress(archive.read_bytes()) != body:
+            raise OSError("Worker failure log archive failed readback verification")
+        files.append(
+            {
+                "name": worker_log.relative_to(tmp_path).as_posix(),
+                "archive": archive.relative_to(target.parent).as_posix(),
+                "sha256": digest,
+                "bytes": len(body),
+            }
+        )
+    return files
 
 
 @pytest.hookimpl(hookwrapper=True)

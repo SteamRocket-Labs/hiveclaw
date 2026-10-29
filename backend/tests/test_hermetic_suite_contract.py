@@ -43,7 +43,7 @@ def test_ci_uses_the_same_full_backend_suite_command() -> None:
     )
 
 
-def _run_worker_failure(tmp_path: Path, *, linked_log: Path | None = None):
+def _run_worker_failure(tmp_path: Path, *, linked_log: Path | None = None, nested_logs: bool = False):
     case = tmp_path / "failure-case"
     case.mkdir()
     shutil.copyfile(Path(__file__).with_name("conftest.py"), case / "conftest.py")
@@ -58,6 +58,13 @@ def test_failed_worker(tmp_path, request):
         worker_log.symlink_to(os.environ['FAILURE_TEST_LINK'])
     else:
         worker_log.write_text(os.environ['FAILURE_TEST_LOG'])
+    if os.environ['FAILURE_TEST_NESTED']:
+        for name in ('worker-1', 'worker-2'):
+            directory = tmp_path / name
+            directory.mkdir()
+            (directory / 'worker.log').write_text(name + '\\n' + os.environ['FAILURE_TEST_LOG'])
+        if os.environ['FAILURE_TEST_LINK']:
+            (tmp_path / 'linked-worker').symlink_to(os.path.dirname(os.environ['FAILURE_TEST_LINK']))
     print('synthetic worker stdout')
     print('synthetic worker stderr', file=sys.stderr)
     logging.warning('synthetic worker cause')
@@ -74,6 +81,7 @@ def test_failed_worker(tmp_path, request):
         "REDIS_URL": "redis://127.0.0.1:1/15",
         "FAILURE_TEST_LOG": body,
         "FAILURE_TEST_LINK": str(linked_log) if linked_log is not None else "",
+        "FAILURE_TEST_NESTED": "1" if nested_logs else "",
     }
     receipts = case / "failures.jsonl"
     result = subprocess.run(
@@ -138,3 +146,23 @@ def test_phase_timings_survive_a_failed_suite_without_a_final_summary(tmp_path: 
     assert [row["outcome"] for row in timings] == ["passed", "failed", "passed"]
     assert all(row["nodeid"] == receipt["nodeid"] for row in timings)
     assert all(row["duration"] >= 0 and row["stop"] >= row["start"] for row in timings)
+
+
+def test_failure_receipt_retains_nested_worker_logs_without_following_linked_directories(tmp_path: Path) -> None:
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    linked_log = outside / "worker.log"
+    canary = "outside-nested-worker-log-must-stay-out"
+    linked_log.write_text(canary)
+    case, receipt, body = _run_worker_failure(tmp_path, linked_log=linked_log, nested_logs=True)
+
+    files = receipt.get("files", [])
+    assert {item["name"] for item in files} == {"worker-1/worker.log", "worker-2/worker.log"}
+    assert len(files) == 2
+    for item in files:
+        expected = item["name"].split("/")[0].encode() + b"\n" + body
+        assert gzip.decompress((case / item["archive"]).read_bytes()) == expected
+        assert item["sha256"] == hashlib.sha256(expected).hexdigest()
+        assert item["bytes"] == len(expected) > 5000
+    assert canary not in json.dumps(receipt)
+    assert linked_log.read_text() == canary

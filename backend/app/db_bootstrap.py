@@ -894,9 +894,9 @@ def apply_identity_link_guards(connection: Connection) -> None:
                 """
             )
         )
-        connection.execute(text(
-            "DROP TRIGGER IF EXISTS trg_identity_cutover_journal_immutable ON identity_cutover_journal"
-        ))
+        connection.execute(
+            text("DROP TRIGGER IF EXISTS trg_identity_cutover_journal_immutable ON identity_cutover_journal")
+        )
         connection.execute(
             text(
                 """
@@ -906,9 +906,9 @@ def apply_identity_link_guards(connection: Connection) -> None:
                 """
             )
         )
-        connection.execute(text(
-            "DROP TRIGGER IF EXISTS trg_identity_cutover_journal_no_truncate ON identity_cutover_journal"
-        ))
+        connection.execute(
+            text("DROP TRIGGER IF EXISTS trg_identity_cutover_journal_no_truncate ON identity_cutover_journal")
+        )
         connection.execute(
             text(
                 """
@@ -962,9 +962,9 @@ def apply_identity_link_guards(connection: Connection) -> None:
                 """
             )
         )
-        connection.execute(text(
-            "DROP TRIGGER IF EXISTS trg_content_input_receipts_dependencies ON content_input_receipts"
-        ))
+        connection.execute(
+            text("DROP TRIGGER IF EXISTS trg_content_input_receipts_dependencies ON content_input_receipts")
+        )
         connection.execute(
             text(
                 """
@@ -991,9 +991,7 @@ def apply_identity_link_guards(connection: Connection) -> None:
                 """
             )
         )
-        connection.execute(text(
-            "DROP TRIGGER IF EXISTS trg_business_teams_creator_immutable ON business_teams"
-        ))
+        connection.execute(text("DROP TRIGGER IF EXISTS trg_business_teams_creator_immutable ON business_teams"))
         connection.execute(
             text(
                 """
@@ -1060,6 +1058,22 @@ def apply_runtime_terminal_boundary_generation_contract(connection: Connection) 
             """
         )
     )
+
+
+def apply_runtime_terminal_boundary_route_contract(connection: Connection) -> None:
+    """Install canonical terminal routes for unversioned databases."""
+    if connection.dialect.name != "postgresql":
+        return
+    required = {"runtime_tasks", "runtime_terminal_boundary_outbox"}
+    if not required <= set(inspect(connection).get_table_names()):
+        return
+    from app.services.runtime_terminal_boundary_route import (
+        backfill_terminal_boundary_task_routes,
+        install_terminal_boundary_task_routes,
+    )
+
+    install_terminal_boundary_task_routes(connection)
+    backfill_terminal_boundary_task_routes(connection)
 
 
 def apply_session_v2_contracts(connection: Connection) -> None:
@@ -1170,6 +1184,7 @@ def prepare_runtime_schema(connection: Connection, metadata: MetaData) -> bool:
     apply_workflow_promotion_immutability(connection)
     apply_audit_evidence_immutability(connection)
     apply_runtime_terminal_boundary_generation_contract(connection)
+    apply_runtime_terminal_boundary_route_contract(connection)
     apply_session_v2_contracts(connection)
     apply_identity_link_guards(connection)
     return True
@@ -1215,6 +1230,7 @@ def bootstrap_database_to_head(connection: Connection, metadata: MetaData, heads
     apply_workflow_promotion_immutability(connection)
     apply_audit_evidence_immutability(connection)
     apply_runtime_terminal_boundary_generation_contract(connection)
+    apply_runtime_terminal_boundary_route_contract(connection)
     apply_session_v2_contracts(connection)
     apply_identity_link_guards(connection)
     ensure_alembic_version_table_width(connection)

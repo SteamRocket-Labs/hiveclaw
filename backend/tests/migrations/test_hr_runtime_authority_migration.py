@@ -96,7 +96,9 @@ async def test_fresh_bootstrap_installs_hr_blueprint_immutability_guard(migrated
 
 @pytest.mark.asyncio
 async def test_real_migration_backfills_valid_snapshot_and_quarantines_invalid_authority(pg_container) -> None:
-    from app.models.agent import Agent
+    from alembic.config import Config
+    from alembic.script import ScriptDirectory
+
     from app.models.hr_creation import HrCreationDraft
     from app.models.runtime_task import RuntimeTask
     from app.models.tenant import Tenant
@@ -104,6 +106,7 @@ async def test_real_migration_backfills_valid_snapshot_and_quarantines_invalid_a
     from app.services.hr_provisioning_runtime import _runtime_authority_issues
     from tests.integration.conftest import _async_url
     from tests.migrations.conftest import (
+        insert_agent_at_schema_revision,
         insert_chat_session_at_schema_revision,
         insert_runtime_task_at_schema_revision,
     )
@@ -149,18 +152,17 @@ async def test_real_migration_backfills_valid_snapshot_and_quarantines_invalid_a
                 )
             )
             await session.flush()
-            session.add(
-                Agent(
-                    id=agent_id,
-                    tenant_id=tenant_id,
-                    name="__system_hr__",
-                    role_description="System HR",
-                    creator_id=user_id,
-                    sponsor_user_id=user_id,
-                    owner_user_id=user_id,
-                    agent_class="internal_system",
-                    status="running",
-                )
+            await insert_agent_at_schema_revision(
+                session,
+                agent_id=agent_id,
+                tenant_id=tenant_id,
+                name="__system_hr__",
+                role_description="System HR",
+                creator_id=user_id,
+                sponsor_user_id=user_id,
+                owner_user_id=user_id,
+                agent_class="internal_system",
+                status="running",
             )
             await session.flush()
             await insert_chat_session_at_schema_revision(
@@ -312,7 +314,10 @@ async def test_real_migration_backfills_valid_snapshot_and_quarantines_invalid_a
                 and invalid_draft is not None
             )
             version = (await session.execute(text("SELECT version_num FROM alembic_version"))).scalar_one()
-            assert version == "session_v2_delete_fk_indexes_0907"
+            expected_head = ScriptDirectory.from_config(
+                Config(str(MIGRATION.parents[2] / "alembic.ini"))
+            ).get_current_head()
+            assert version == expected_head
             valid_issues = _runtime_authority_issues(valid_task, valid_draft)
             assert valid_issues == [], {
                 "issues": valid_issues,

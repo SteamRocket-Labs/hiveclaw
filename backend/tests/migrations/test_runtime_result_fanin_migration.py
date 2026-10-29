@@ -11,11 +11,11 @@ from sqlalchemy import inspect, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from app.models.agent import Agent
 from app.models.tenant import Tenant
 from app.models.user import User
 
 from tests.migrations.conftest import (
+    insert_agent_at_schema_revision,
     _alembic_downgrade,
     _alembic_upgrade,
     _async_url,
@@ -91,15 +91,14 @@ async def test_runtime_result_upgrade_backfills_legacy_payload_losslessly(runtim
             )
         )
         await db.flush()
-        db.add(
-            Agent(
-                id=agent_id,
-                tenant_id=tenant_id,
-                creator_id=user_id,
-                sponsor_user_id=user_id,
-                name="agent",
-                role_description="migration fixture",
-            )
+        await insert_agent_at_schema_revision(
+            db,
+            agent_id=agent_id,
+            tenant_id=tenant_id,
+            creator_id=user_id,
+            sponsor_user_id=user_id,
+            name="agent",
+            role_description="migration fixture",
         )
         await db.flush()
         await insert_chat_session_at_schema_revision(

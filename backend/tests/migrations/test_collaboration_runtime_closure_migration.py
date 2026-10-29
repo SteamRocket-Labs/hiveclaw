@@ -69,13 +69,13 @@ def test_revision_backfills_team_visibility_and_terminal_root_truth() -> None:
 
 async def test_upgrade_repairs_exact_legacy_collaboration_rows(migrated_pg_url: str) -> None:
     from app.models import import_all_models
-    from app.models.agent import Agent
     from app.models.chat_session import ChatSession
     from app.models.chat_transcript_event import ChatTranscriptEvent
     from app.models.runtime_root_item import RuntimeRootItem
     from app.models.tenant import Tenant
     from app.models.user import User
     from tests.migrations.conftest import (
+        insert_agent_at_schema_revision,
         _alembic_downgrade,
         _alembic_upgrade,
         insert_chat_session_at_schema_revision,
@@ -102,11 +102,11 @@ async def test_upgrade_repairs_exact_legacy_collaboration_rows(migrated_pg_url: 
                 )
             )
             await db.flush()
-            db.add_all(
-                [
-                    Agent(id=parent_agent_id, tenant_id=tenant_id, name="Lead", creator_id=user_id),
-                    Agent(id=child_agent_id, tenant_id=tenant_id, name="Peer", creator_id=user_id),
-                ]
+            await insert_agent_at_schema_revision(
+                db, agent_id=parent_agent_id, tenant_id=tenant_id, name="Lead", creator_id=user_id
+            )
+            await insert_agent_at_schema_revision(
+                db, agent_id=child_agent_id, tenant_id=tenant_id, name="Peer", creator_id=user_id
             )
             await db.flush()
             await insert_chat_session_at_schema_revision(

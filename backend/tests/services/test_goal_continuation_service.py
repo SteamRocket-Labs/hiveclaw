@@ -55,13 +55,18 @@ async def test_input_dispatch_binds_existing_goal_without_replacing_explicit_bin
     monkeypatch.setattr(web_chat_runtime, "start_web_chat_run", start)
     await session_input_dispatch._start_input_runtime(
         SimpleNamespace(scalar=scalar),
-        row=SimpleNamespace(id=uuid4(), target_turn_id=None, content_parts_json=[{"type": "text", "text": "Continue"}]),
+        row=SimpleNamespace(
+            id=uuid4(),
+            target_turn_id=None,
+            intent="start_turn",
+            content_parts_json=[{"type": "text", "text": "Continue"}],
+        ),
         command=SimpleNamespace(
             id=uuid4(), target_json={"runtime_metadata": {"goal_id": str(goal_id)} if prebound else {}}
         ),
         agent=SimpleNamespace(id=uuid4(), tenant_id=uuid4()),
         user=SimpleNamespace(id=uuid4()),
-        session=SimpleNamespace(id=uuid4()),
+        session=SimpleNamespace(id=uuid4(), audience_kind="private"),
         successor=False,
     )
     assert starts[0]["extra_metadata"]["goal_id"] == str(goal_id)

@@ -100,7 +100,7 @@ def _patch_authorize_with_real_rows(monkeypatch, goals_api, seed):
         agent = await db.get(Agent, agent_id)
         session = await db.get(ChatSession, session_id)
         assert agent is not None and session is not None
-        return SimpleNamespace(agent=agent, session=session)
+        return SimpleNamespace(agent=agent, session=session, access_level="manage")
 
     monkeypatch.setattr(goals_api, "authorize_session_action", fake_authorize)
 
@@ -117,6 +117,7 @@ def _patch_authorize(monkeypatch, goals_api, seed):
         return SimpleNamespace(
             agent=SimpleNamespace(id=agent_id, tenant_id=tenant_id),
             session=SimpleNamespace(id=session_id),
+            access_level="manage",
         )
 
     monkeypatch.setattr(goals_api, "authorize_session_action", fake_authorize)

@@ -32,6 +32,7 @@ from types import SimpleNamespace
 import pytest
 from sqlalchemy import select
 
+from app.database import tenant_scoped_session
 from tests.integration.test_web_chat_worker_restart_kernel_recovery import (  # noqa: E402
     ScriptedLLMClient,
     _expire_and_reclaim,
@@ -102,11 +103,13 @@ async def _drive_turn(
         )
     state = SimpleNamespace(
         agent=SimpleNamespace(id=seed["agent_id"], tenant_id=seed["tenant_id"]),
+        user=SimpleNamespace(id=seed["user_id"], machine_credential_id=None),
         session_id=str(seed["session_id"]),
         run_uuid=seed["run_id"],
         metadata=dict(seed.get("run_metadata") or {"turn_id": seed["turn_id"]}),
         runtime_task=SimpleNamespace(claimed_by=_owner[0], claim_version=_owner[1], attempt_count=_owner[2]),
         active_provider_request_id=None,
+        stream_batcher=None,
         ports=SimpleNamespace(
             runtime=SimpleNamespace(tenant_scoped_session=_tenant_session),
             events=SimpleNamespace(broadcast=_broadcast),
@@ -521,7 +524,7 @@ async def test_real_permission_approval_composes_with_committed_final_replay(
     monkeypatch.setattr(agent_tools, "execute_session_permission_tool", _seamed_permission_tool, raising=False)
 
     authority_negative: list[str] = []
-    async with owner_sessionmaker() as db:
+    async with tenant_scoped_session(seed["tenant_id"], session_factory=owner_sessionmaker) as db:
         from app.models.user import User
 
         user = await db.get(User, seed["user_id"])

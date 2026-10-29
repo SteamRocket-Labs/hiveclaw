@@ -12,7 +12,7 @@ from types import SimpleNamespace
 import uuid
 
 import pytest
-
+import pytest_asyncio
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 
@@ -208,7 +208,7 @@ def _reset_global_engine_pools():
         database.schema_engine.sync_engine.dispose(close=False)
 
 
-@pytest.fixture(autouse=True)
+@pytest_asyncio.fixture(autouse=True)
 async def _close_global_event_redis():
     """Release the process-global client while its function event loop is alive."""
     yield

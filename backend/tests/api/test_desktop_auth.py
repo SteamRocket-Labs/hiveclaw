@@ -6,19 +6,21 @@ Tests cover CSRF nonce validation, error message sanitization, and auth guards.
 
 from __future__ import annotations
 
+from contextlib import ExitStack, asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 import app.api.desktop_auth as desktop_auth_mod
 from app.api.desktop_auth import router, _oauth_state_fallback
+from app.core.events import close_redis
 from app.core.security import get_current_user
 from app.database import get_db
-
 
 # ─── Fixtures & helpers ─────────────────────────────────
 
@@ -74,8 +76,30 @@ class _FakeDB:
         return None
 
 
+@asynccontextmanager
+async def _desktop_auth_lifespan(_app):
+    try:
+        yield
+    finally:
+        await close_redis()
+
+
+@pytest.fixture(autouse=True)
+def _desktop_client_lifetimes(monkeypatch, _close_global_event_redis):
+    client_type = TestClient
+    with ExitStack() as clients:
+
+        def open_client(*args, **kwargs):
+            # Each router-only app owns its Redis client on its live portal loop.
+            clients.close()
+            return clients.enter_context(client_type(*args, **kwargs))
+
+        monkeypatch.setitem(globals(), "TestClient", open_client)
+        yield
+
+
 def _build_app() -> tuple[FastAPI, _FakeDB]:
-    app = FastAPI()
+    app = FastAPI(lifespan=_desktop_auth_lifespan)
     app.include_router(router)
     fake_db = _FakeDB()
 
@@ -227,7 +251,9 @@ def test_callback_desktop_uses_global_scope_and_rejects_company_accounts():
             new_callable=AsyncMock,
             return_value=(_GLOBAL_USER, "jwt_access_token_here"),
         ),
-        patch.object(desktop_auth_mod, "create_refresh_token", new_callable=AsyncMock, return_value="raw_refresh") as refresh,
+        patch.object(
+            desktop_auth_mod, "create_refresh_token", new_callable=AsyncMock, return_value="raw_refresh"
+        ) as refresh,
         patch.object(desktop_auth_mod, "settings", SimpleNamespace(DESKTOP_DEEP_LINK_SCHEME="copaw")),
     ):
         client = TestClient(app, raise_server_exceptions=False)
@@ -249,7 +275,9 @@ def test_callback_desktop_uses_global_scope_and_rejects_company_accounts():
             new_callable=AsyncMock,
             return_value=(_FAKE_USER, "jwt_access_token_here"),
         ),
-        patch.object(desktop_auth_mod, "create_refresh_token", new_callable=AsyncMock, return_value="raw_refresh") as company_refresh,
+        patch.object(
+            desktop_auth_mod, "create_refresh_token", new_callable=AsyncMock, return_value="raw_refresh"
+        ) as company_refresh,
         patch.object(desktop_auth_mod, "settings", SimpleNamespace(DESKTOP_DEEP_LINK_SCHEME="copaw")),
     ):
         client = TestClient(app, raise_server_exceptions=False)

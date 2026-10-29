@@ -496,11 +496,10 @@ async def pin_rls_tenant_context(session: AsyncSession, tenant_id: str | uuid.UU
     """Pin the current transaction and future transactions on this ORM session to a tenant."""
     pinned_tenant_id = _set_rls_tenant_context(session, tenant_id)
     _current_tenant_id.set(pinned_tenant_id or None)
-    info = session.sync_session.info
     missing = object()
-    previous = info.get(_RLS_PIN_OBSERVATION_INFO_KEY, missing)
+    previous = session.sync_session.info.get(_RLS_PIN_OBSERVATION_INFO_KEY, missing)
     observation = []
-    info[_RLS_PIN_OBSERVATION_INFO_KEY] = observation
+    session.sync_session.info[_RLS_PIN_OBSERVATION_INFO_KEY] = observation
     try:
         # Checkout applies the frame through after_begin only for a new transaction.
         await session.connection()
@@ -508,9 +507,9 @@ async def pin_rls_tenant_context(session: AsyncSession, tenant_id: str | uuid.UU
             await session.execute(text(_rls_tenant_statement(pinned_tenant_id)))
     finally:
         if previous is missing:
-            info.pop(_RLS_PIN_OBSERVATION_INFO_KEY, None)
+            session.sync_session.info.pop(_RLS_PIN_OBSERVATION_INFO_KEY, None)
         else:
-            info[_RLS_PIN_OBSERVATION_INFO_KEY] = previous
+            session.sync_session.info[_RLS_PIN_OBSERVATION_INFO_KEY] = previous
     return uuid.UUID(pinned_tenant_id) if pinned_tenant_id else None
 
 

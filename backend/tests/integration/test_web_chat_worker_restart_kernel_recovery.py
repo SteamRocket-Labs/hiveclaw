@@ -34,7 +34,21 @@ from types import SimpleNamespace
 import pytest
 from sqlalchemy import select
 
+from tests.integration import conftest as integration
+
 pytestmark = pytest.mark.usefixtures("migrated_pg_url")
+
+
+@pytest.fixture(scope="module")
+def pg_container():
+    # Recovery claims use the global queue. Keep earlier modules' valid work
+    # out of this module without changing claim predicates or batch limits.
+    yield from integration.pg_container.__wrapped__()
+
+
+@pytest.fixture(scope="module")
+def migrated_pg_url(pg_container):
+    return integration.migrated_pg_url.__wrapped__(pg_container)
 
 
 class SimulatedWorkerCrash(BaseException):
@@ -90,7 +104,9 @@ class ScriptedLLMClient:
         )
 
 
-async def _seed_run(owner_sessionmaker, tmp_path: Path, *, prompt: str = "write the marker file, read it back, and report") -> dict:
+async def _seed_run(
+    owner_sessionmaker, tmp_path: Path, *, prompt: str = "write the marker file, read it back, and report"
+) -> dict:
     from app.models.agent import Agent
     from app.models.chat_session import ChatSession
     from app.models.llm import LLMModel

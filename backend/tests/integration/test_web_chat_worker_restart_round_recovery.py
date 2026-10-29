@@ -16,7 +16,19 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from sqlalchemy import func, select
 
+from tests.integration import conftest as integration
+
 pytestmark = pytest.mark.usefixtures("migrated_pg_url")
+
+
+@pytest.fixture(scope="module")
+def pg_container():
+    yield from integration.pg_container.__wrapped__()
+
+
+@pytest.fixture(scope="module")
+def migrated_pg_url(pg_container):
+    return integration.migrated_pg_url.__wrapped__(pg_container)
 
 
 def _evidence(*, input_hash: str, outcome: str = "success") -> dict:

@@ -33,6 +33,7 @@ import pytest
 from sqlalchemy import select
 
 from app.database import tenant_scoped_session
+from tests.integration import conftest as integration
 from tests.integration.test_web_chat_worker_restart_kernel_recovery import (  # noqa: E402
     ScriptedLLMClient,
     _expire_and_reclaim,
@@ -44,6 +45,16 @@ from tests.integration.test_web_chat_worker_restart_kernel_recovery import (  # 
 )
 
 pytestmark = pytest.mark.usefixtures("migrated_pg_url")
+
+
+@pytest.fixture(scope="module")
+def pg_container():
+    yield from integration.pg_container.__wrapped__()
+
+
+@pytest.fixture(scope="module")
+def migrated_pg_url(pg_container):
+    return integration.migrated_pg_url.__wrapped__(pg_container)
 
 
 async def _drive_turn(

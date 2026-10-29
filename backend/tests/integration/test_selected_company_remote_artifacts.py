@@ -11,10 +11,20 @@ from app.models.chat_artifact import ChatArtifact
 from app.models.chat_session import ChatSession
 from app.models.tenant import Tenant
 from app.models.user import User
-from tests.integration.test_m3p_remote_artifacts_postgres import artifact_work, packet, recovery_frame  # noqa: F401
+from tests.integration.test_m3p_remote_artifacts_postgres import artifact_work as artifact_work, packet, recovery_frame  # noqa: F401
 from tests.integration.test_m3o_remote_a2a_tasks_postgres import command, configure, execute
 from tests.integration.test_m3o_remote_a2a_tasks_postgres import machine_api, remote_work  # noqa: F401
 from tests.services.test_remote_a2a_transport import remote_server
+
+from tests.integration import conftest as _database_fixtures
+
+# Global worker totals require the same independent catalog as other remote journeys.
+app_user_engine = _database_fixtures.app_user_engine
+app_user_sessionmaker = _database_fixtures.app_user_sessionmaker
+migrated_pg_url = _database_fixtures.migrated_pg_url
+owner_engine = _database_fixtures.owner_engine
+owner_sessionmaker = _database_fixtures.owner_sessionmaker
+pg_container = _database_fixtures.pg_container
 
 pytestmark = pytest.mark.usefixtures("migrated_pg_url")
 BODY = "Saved remote bytes for this selected-company requester."
@@ -22,7 +32,11 @@ BODY = "Saved remote bytes for this selected-company requester."
 
 @pytest.mark.parametrize("home_kind", ["tenantless", "foreign_home"])
 async def test_selected_company_requester_recovers_and_downloads_its_remote_artifact(
-    artifact_work, owner_sessionmaker, app_user_sessionmaker, monkeypatch, home_kind,  # noqa: F811
+    artifact_work,
+    owner_sessionmaker,
+    app_user_sessionmaker,
+    monkeypatch,
+    home_kind,  # noqa: F811
 ):
     seed, api, session_id = artifact_work
     subject = uuid4()
@@ -33,9 +47,18 @@ async def test_selected_company_requester_recovers_and_downloads_its_remote_arti
         if home is not None:
             db.add(Tenant(id=home, name="Requester home", slug=f"requester-{home.hex}"))
             await db.flush()
-        db.add(User(id=subject, tenant_id=home, username=f"requester-{subject.hex}",
-            email=f"{subject}@fixture.test", display_name="Selected company requester",
-            password_hash="synthetic-unused", role="platform_admin", is_active=True))
+        db.add(
+            User(
+                id=subject,
+                tenant_id=home,
+                username=f"requester-{subject.hex}",
+                email=f"{subject}@fixture.test",
+                display_name="Selected company requester",
+                password_hash="synthetic-unused",
+                role="platform_admin",
+                is_active=True,
+            )
+        )
         await db.flush()
         (await db.get(ChatSession, session_id)).user_id = subject
         await db.commit()
@@ -43,8 +66,13 @@ async def test_selected_company_requester_recovers_and_downloads_its_remote_arti
     selected = {**seed, "owner": subject}
     with remote_server() as remote:
         path = await configure(seed, api, remote)
-        api.headers.update({"Authorization": "Bearer " + create_access_token(str(subject), "platform_admin",
-            str(home) if home else None), "X-Tenant-Id": str(seed["tenant"])})
+        api.headers.update(
+            {
+                "Authorization": "Bearer "
+                + create_access_token(str(subject), "platform_admin", str(home) if home else None),
+                "X-Tenant-Id": str(seed["tenant"]),
+            }
+        )
         remote.reply = lambda _request: packet(BODY)
         queued = await api.post(path + "/tasks", json=command(selected, session_id))
         assert queued.status_code == 201, queued.text
@@ -56,7 +84,8 @@ async def test_selected_company_requester_recovers_and_downloads_its_remote_arti
         from app.services.runtime_notification_outbox import RuntimeNotificationOutboxService
 
         delivery = await RuntimeNotificationOutboxService(session_factory=app_user_sessionmaker).drain_once(
-            worker_id="selected-company-remote-return")
+            worker_id="selected-company-remote-return"
+        )
         assert delivery["claimed"] == delivery["delivered"] == 1, delivery
         returned = await api.post(path + f"/tasks/{task_id}/artifacts", json=recovery_frame(selected))
         assert returned.status_code == 200 and len(returned.json()["parts"]) == 1, returned.text
@@ -65,10 +94,15 @@ async def test_selected_company_requester_recovers_and_downloads_its_remote_arti
         assert repeated.status_code == 200 and repeated.json() == returned.json(), repeated.text
         assert len(remote.requests) == 2
         async with tenant_scoped_session(seed["tenant"], session_factory=app_user_sessionmaker) as db:
-            artifacts = list(await db.scalars(select(ChatArtifact).where(ChatArtifact.runtime_task_id == UUID(task_id))))
+            artifacts = list(
+                await db.scalars(select(ChatArtifact).where(ChatArtifact.runtime_task_id == UUID(task_id)))
+            )
             assert len(artifacts) == 1 and artifacts[0].id == artifact_id
             assert (artifacts[0].tenant_id, artifacts[0].session_id, artifacts[0].owner_user_id) == (
-                seed["tenant"], session_id, subject)
+                seed["tenant"],
+                session_id,
+                subject,
+            )
         url = f"/agents/{seed['agent']}/files/artifacts/{artifact_id}"
         content = await api.get(url + "/content")
         download = await api.get(url + "/download")

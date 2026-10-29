@@ -825,6 +825,34 @@ _AUDIT_EVIDENCE_TABLES: tuple[str, ...] = (
 )
 
 
+def apply_security_audit_sequence(connection: Connection) -> None:
+    """Order new audit writes without rewriting existing evidence."""
+
+    if connection.dialect.name != "postgresql" or not inspect(connection).has_table("security_audit_events"):
+        return
+    connection.execute(text("LOCK TABLE security_audit_events IN SHARE ROW EXCLUSIVE MODE"))
+    previous = connection.scalar(text("SELECT current_setting('app.current_tenant_id', true)"))
+    try:
+        # The schema owner must see every tenant's high water under FORCE RLS.
+        connection.execute(text("SELECT set_config('app.current_tenant_id', 'BYPASS', true)"))
+        connection.execute(text("CREATE SEQUENCE IF NOT EXISTS security_audit_events_sequence_num_seq AS bigint"))
+        connection.execute(text(
+            "ALTER SEQUENCE security_audit_events_sequence_num_seq OWNED BY security_audit_events.sequence_num"
+        ))
+        connection.execute(text("""
+            SELECT setval('security_audit_events_sequence_num_seq',
+                greatest(s.last_value, coalesce((SELECT max(sequence_num) FROM security_audit_events), s.last_value)),
+                s.is_called OR EXISTS (SELECT 1 FROM security_audit_events WHERE sequence_num >= s.last_value))
+            FROM security_audit_events_sequence_num_seq s
+        """))
+        connection.execute(text("""
+            ALTER TABLE security_audit_events ALTER COLUMN sequence_num
+            SET DEFAULT nextval('security_audit_events_sequence_num_seq')
+        """))
+    finally:
+        connection.execute(text("SELECT set_config('app.current_tenant_id', :scope, true)"), {"scope": previous or ""})
+
+
 def apply_audit_evidence_immutability(connection: Connection) -> None:
     """Install append-only guards skipped by create_all + stamp bootstrap."""
 
@@ -1182,6 +1210,7 @@ def prepare_runtime_schema(connection: Connection, metadata: MetaData) -> bool:
     apply_config_revision_immutability(connection)
     apply_hr_creation_blueprint_immutability(connection)
     apply_workflow_promotion_immutability(connection)
+    apply_security_audit_sequence(connection)
     apply_audit_evidence_immutability(connection)
     apply_runtime_terminal_boundary_generation_contract(connection)
     apply_runtime_terminal_boundary_route_contract(connection)
@@ -1228,6 +1257,7 @@ def bootstrap_database_to_head(connection: Connection, metadata: MetaData, heads
     apply_config_revision_immutability(connection)
     apply_hr_creation_blueprint_immutability(connection)
     apply_workflow_promotion_immutability(connection)
+    apply_security_audit_sequence(connection)
     apply_audit_evidence_immutability(connection)
     apply_runtime_terminal_boundary_generation_contract(connection)
     apply_runtime_terminal_boundary_route_contract(connection)

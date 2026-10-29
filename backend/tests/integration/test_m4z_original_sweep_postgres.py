@@ -16,7 +16,14 @@ import pytest
 from sqlalchemy import select
 
 from app.database import pin_rls_tenant_context
-from tests.integration.test_m4w_original_reconciliation_postgres import pending, provider, original_api, delivered, s3_server, BODY  # noqa: F401
+from tests.integration.test_m4w_original_reconciliation_postgres import (
+    pending as pending,
+    provider as provider,
+    original_api as original_api,
+    delivered as delivered,
+    s3_server as s3_server,
+    BODY,
+)  # noqa: F401
 from tests.integration.test_m4y_original_quarantine_postgres import apply, configure, recover
 
 pytestmark = pytest.mark.usefixtures("migrated_pg_url")
@@ -31,13 +38,23 @@ async def prepare(client, blob_id):
 
 
 async def sweep(client, blob_id, snapshot, *, action="sweep", headers=None, **changes):
-    return await client.post(f"/enterprise/storage-originals/{blob_id}/sweep", headers=headers, json={
-        "operation_id": str(uuid.uuid4()), "expected_content_sha256": hashlib.sha256(BODY).hexdigest(),
-        "expected_policy_version": snapshot["policy_version"],
-        "expected_manifest_sha256": snapshot.get("manifest_sha256", "0" * 64), "action": action, **changes})
+    return await client.post(
+        f"/enterprise/storage-originals/{blob_id}/sweep",
+        headers=headers,
+        json={
+            "operation_id": str(uuid.uuid4()),
+            "expected_content_sha256": hashlib.sha256(BODY).hexdigest(),
+            "expected_policy_version": snapshot["policy_version"],
+            "expected_manifest_sha256": snapshot.get("manifest_sha256", "0" * 64),
+            "action": action,
+            **changes,
+        },
+    )
 
 
-async def test_sweep_commits_exact_intent_before_effect_and_never_replays_deletion(pending, app_user_sessionmaker, monkeypatch):  # noqa: F811
+async def test_sweep_commits_exact_intent_before_effect_and_never_replays_deletion(
+    pending, app_user_sessionmaker, monkeypatch
+):  # noqa: F811
     from app.models.storage_blob import StorageBlob, StorageGCRun
     from app.services.blob_store import FilesystemBlobStore
     from app.services.s3_blob_store import S3BlobStore
@@ -75,15 +92,21 @@ async def test_sweep_commits_exact_intent_before_effect_and_never_replays_deleti
     assert observed == [True] and len(remote.requests) == requests
     # A later identical upload owns a new object. Old operation replay stays
     # historical and cannot delete or grant access to the new payload.
-    uploaded = await client.post("/chat/upload", headers=member, files={"file": ("new.bin", BODY)},
-        data={"agent_id": str(d.agent), "skip_personal_kb": "true"})
+    uploaded = await client.post(
+        "/chat/upload",
+        headers=member,
+        files={"file": ("new.bin", BODY)},
+        data={"agent_id": str(d.agent), "skip_personal_kb": "true"},
+    )
     assert uploaded.status_code == 200, uploaded.text
     assert (await sweep(client, blob_id, snapshot, operation_id=operation)).json()["replayed"] is True
     ref = uploaded.json()["original_attachment"]["id"]
     assert (await client.get(f"/chat/attachments/{ref}/download", headers=member)).content == BODY
 
 
-async def test_lost_final_receipt_preserves_unknown_then_read_only_reconciliation(pending, app_user_sessionmaker, monkeypatch):  # noqa: F811
+async def test_lost_final_receipt_preserves_unknown_then_read_only_reconciliation(
+    pending, app_user_sessionmaker, monkeypatch
+):  # noqa: F811
     from app.models.storage_blob import StorageBlob
     from app.services.blob_store import BlobStoreError, FilesystemBlobStore
     from app.services.s3_blob_store import S3BlobStore
@@ -127,8 +150,17 @@ async def test_current_references_and_increased_grace_hold_physical_sweep(pendin
     await configure(client, grace_days=0)
     async with app_user_sessionmaker() as db:
         await pin_rls_tenant_context(db, d.tenant)
-        db.add(StorageBlobRef(tenant_id=d.tenant, blob_id=blob_id, owner_type="unknown_work", owner_id=str(uuid.uuid4()),
-            purpose="retained_evidence", legal_hold=True, metadata_json={}))
+        db.add(
+            StorageBlobRef(
+                tenant_id=d.tenant,
+                blob_id=blob_id,
+                owner_type="unknown_work",
+                owner_id=str(uuid.uuid4()),
+                purpose="retained_evidence",
+                legal_hold=True,
+                metadata_json={},
+            )
+        )
         await db.commit()
     inspected = (await apply(client, blob_id, "inspect", version=3)).json()
     held = await sweep(client, blob_id, inspected)
@@ -145,14 +177,20 @@ async def test_unknown_present_effect_requires_reconciliation_and_explicit_prede
         if selected == "s3":
             remote.mode = "delete_unknown"
         else:
+
             async def unknown(*args, **kwargs):
                 return BlobDeleteReceipt("unknown", True)
+
             failure.setattr(FilesystemBlobStore, "delete", unknown)
         first = await sweep(client, blob_id, snapshot, operation_id=operation)
     assert first.json()["state"] == "deleting" and first.json()["outcome"] == "unknown", first.text
     remote.mode = None
-    uploaded = await client.post("/chat/upload", headers=member, files={"file": ("new-generation.bin", BODY)},
-        data={"agent_id": str(d.agent), "skip_personal_kb": "true"})
+    uploaded = await client.post(
+        "/chat/upload",
+        headers=member,
+        files={"file": ("new-generation.bin", BODY)},
+        data={"agent_id": str(d.agent), "skip_personal_kb": "true"},
+    )
     assert uploaded.status_code == 200, uploaded.text
     before = len(remote.deletes)
     assert (await sweep(client, blob_id, snapshot, operation_id=operation)).json()["replayed"] is True
@@ -168,8 +206,10 @@ async def test_unknown_present_effect_requires_reconciliation_and_explicit_prede
         if selected == "s3":
             remote.mode = "missing_etag"
         else:
+
             async def unavailable(*args, **kwargs):
                 return BlobDeleteReceipt("unavailable")
+
             failure.setattr(FilesystemBlobStore, "delete", unavailable)
         rejected = await sweep(client, blob_id, inspected, retry_operation_id=operation)
     assert rejected.json()["state"] == "deleting" and rejected.json()["outcome"] == "unavailable", rejected.text
@@ -185,7 +225,8 @@ async def test_unknown_present_effect_requires_reconciliation_and_explicit_prede
 
 
 async def test_real_process_exit_after_delete_preserves_intent_and_blocks_incomplete_backup(
-    pending, app_user_sessionmaker, owner_sessionmaker, tmp_path_factory):  # noqa: F811
+    pending, app_user_sessionmaker, owner_sessionmaker, tmp_path_factory
+):  # noqa: F811
     from app.config import get_settings
     from app.models.storage_blob import StorageBlob, StorageGCRun
     from tests.scripts.test_self_hosted_installation import installer
@@ -195,46 +236,103 @@ async def test_real_process_exit_after_delete_preserves_intent_and_blocks_incomp
     operation = str(uuid.uuid4())
     work = tmp_path_factory.mktemp("native-original-sweep-crash")
     module = work / "crash_sweep.py"
-    module.write_text("import os\nfrom fastapi import FastAPI\nfrom app.api.enterprise import router\n"
+    module.write_text(
+        "import os\nfrom fastapi import FastAPI\nfrom app.api.enterprise import router\n"
         "from app.core.tenant_middleware import TenantMiddleware\n"
         "from app.services.blob_store import FilesystemBlobStore\nfrom app.services.s3_blob_store import S3BlobStore\n"
         "cls=S3BlobStore if os.environ['BLOB_STORAGE_PROVIDER']=='s3' else FilesystemBlobStore\n"
         "original=cls.delete\nasync def crash(*args,**kwargs):\n"
         "    result=await original(*args,**kwargs)\n    assert result.outcome=='absent'\n    os._exit(73)\n"
-        "cls.delete=crash\napp=FastAPI()\napp.add_middleware(TenantMiddleware)\napp.include_router(router)\n")
+        "cls.delete=crash\napp=FastAPI()\napp.add_middleware(TenantMiddleware)\napp.include_router(router)\n"
+    )
     settings = get_settings()
     values = {}
-    for key in ("SECRET_KEY", "JWT_SECRET_KEY", "BLOB_STORAGE_PROVIDER", "BLOB_S3_ENDPOINT", "BLOB_S3_REGION",
-        "BLOB_S3_BUCKET", "BLOB_S3_ACCESS_KEY_ID", "BLOB_S3_SECRET_ACCESS_KEY", "BLOB_S3_SESSION_TOKEN"):
+    for key in (
+        "SECRET_KEY",
+        "JWT_SECRET_KEY",
+        "BLOB_STORAGE_PROVIDER",
+        "BLOB_S3_ENDPOINT",
+        "BLOB_S3_REGION",
+        "BLOB_S3_BUCKET",
+        "BLOB_S3_ACCESS_KEY_ID",
+        "BLOB_S3_SECRET_ACCESS_KEY",
+        "BLOB_S3_SESSION_TOKEN",
+    ):
         value = getattr(settings, key)
         values[key] = value.get_secret_value() if hasattr(value, "get_secret_value") else str(value)
     runtime = app_user_sessionmaker.kw["bind"].url.render_as_string(hide_password=False)
     with socket.socket() as reserved:
         reserved.bind(("127.0.0.1", 0))
         port = reserved.getsockname()[1]
-    environment = {**os.environ, **values, "DATABASE_URL": runtime, "AGENT_DATA_DIR": str(d.root.parent),
-        "PYTHONPATH": str(work) + os.pathsep + os.environ["PYTHONPATH"]}
-    process = await asyncio.create_subprocess_exec(sys.executable, "-B", "-m", "uvicorn", "crash_sweep:app",
-        "--host", "127.0.0.1", "--port", str(port), "--no-access-log", env=environment,
-        cwd=Path(__file__).resolve().parents[2], stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
+    environment = {
+        **os.environ,
+        **values,
+        "DATABASE_URL": runtime,
+        "AGENT_DATA_DIR": str(d.root.parent),
+        "PYTHONPATH": os.pathsep.join(
+            filter(
+                None,
+                (
+                    str(work),
+                    str(Path(__file__).resolve().parents[2]),
+                    os.environ.get("PYTHONPATH"),
+                ),
+            )
+        ),
+    }
+    process = await asyncio.create_subprocess_exec(
+        sys.executable,
+        "-B",
+        "-m",
+        "uvicorn",
+        "crash_sweep:app",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        str(port),
+        "--no-access-log",
+        env=environment,
+        cwd=Path(__file__).resolve().parents[2],
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.STDOUT,
+    )
     lines = []
     try:
+
         async def started():
             while line := await process.stdout.readline():
                 lines.append(line)
                 if b"Uvicorn running on" in line:
                     return
             pytest.fail("Native server exited before its startup notification")
+
         await asyncio.wait_for(started(), 20)
-        body = {"operation_id": operation, "expected_content_sha256": hashlib.sha256(BODY).hexdigest(),
-            "expected_policy_version": 1, "expected_manifest_sha256": snapshot["manifest_sha256"], "action": "sweep"}
+        body = {
+            "operation_id": operation,
+            "expected_content_sha256": hashlib.sha256(BODY).hexdigest(),
+            "expected_policy_version": 1,
+            "expected_manifest_sha256": snapshot["manifest_sha256"],
+            "action": "sweep",
+        }
         async with httpx.AsyncClient(timeout=20, trust_env=False) as wire:
             with pytest.raises(httpx.HTTPError):
-                await wire.post(f"http://127.0.0.1:{port}/enterprise/storage-originals/{blob_id}/sweep",
-                    headers={"Authorization": client.headers["Authorization"]}, json=body)
+                await wire.post(
+                    f"http://127.0.0.1:{port}/enterprise/storage-originals/{blob_id}/sweep",
+                    headers={"Authorization": client.headers["Authorization"]},
+                    json=body,
+                )
         assert await asyncio.wait_for(process.wait(), 20) == 73
-        (work / "crash-receipt.json").write_text(json.dumps({"pid": process.pid, "exit_code": process.returncode,
-            "provider": selected, "request": body, "exit_boundary": "after provider absence before final database commit"}))
+        (work / "crash-receipt.json").write_text(
+            json.dumps(
+                {
+                    "pid": process.pid,
+                    "exit_code": process.returncode,
+                    "provider": selected,
+                    "request": body,
+                    "exit_boundary": "after provider absence before final database commit",
+                }
+            )
+        )
     finally:
         if process.returncode is None:
             process.terminate()
@@ -244,8 +342,12 @@ async def test_real_process_exit_after_delete_preserves_intent_and_blocks_incomp
     async with app_user_sessionmaker() as db:
         await pin_rls_tenant_context(db, d.tenant)
         row = await db.get(StorageBlob, blob_id)
-        ledger = await db.scalar(select(StorageGCRun).where(StorageGCRun.tenant_id == d.tenant,
-            StorageGCRun.receipt_json["request"]["operation_id"].astext == operation))
+        ledger = await db.scalar(
+            select(StorageGCRun).where(
+                StorageGCRun.tenant_id == d.tenant,
+                StorageGCRun.receipt_json["request"]["operation_id"].astext == operation,
+            )
+        )
         assert row.state == "deleting" and ledger.status == "running"
         if selected == "s3":
             assert not remote.objects
@@ -258,18 +360,48 @@ async def test_real_process_exit_after_delete_preserves_intent_and_blocks_incomp
     profile.write_text("".join(f"{key}='{value}'\n" for key, value in profile_values.items()))
     target = work / "incomplete-backup"
     binary = Path(os.environ.get("M1E_PSQL") or shutil.which("psql")).parent
-    backed = subprocess.run([sys.executable, "-B", "-m", "app.scripts.self_hosted_recovery", "backup", "--offline",
-        "--profile", str(profile), "--agents", str(d.root.parent), "--output", str(target), "--pg-bin", str(binary)],
-        cwd=Path(__file__).resolve().parents[2], env={**os.environ, "PGHOST": source.host, "PGPORT": str(source.port),
-            "PGDATABASE": source.database, "PGUSER": source.username, "PGPASSWORD": source.password}, capture_output=True, text=True, timeout=60)
-    assert backed.returncode == 3 and json.loads(backed.stdout)["code"] == "original_delete_intents_require_reconciliation", backed.stdout
+    backed = subprocess.run(
+        [
+            sys.executable,
+            "-B",
+            "-m",
+            "app.scripts.self_hosted_recovery",
+            "backup",
+            "--offline",
+            "--profile",
+            str(profile),
+            "--agents",
+            str(d.root.parent),
+            "--output",
+            str(target),
+            "--pg-bin",
+            str(binary),
+        ],
+        cwd=Path(__file__).resolve().parents[2],
+        env={
+            **os.environ,
+            "PGHOST": source.host,
+            "PGPORT": str(source.port),
+            "PGDATABASE": source.database,
+            "PGUSER": source.username,
+            "PGPASSWORD": source.password,
+        },
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert (
+        backed.returncode == 3 and json.loads(backed.stdout)["code"] == "original_delete_intents_require_reconciliation"
+    ), backed.stdout
     assert not target.exists()
     inspected = (await apply(client, blob_id, "inspect")).json()
     resolved = await sweep(client, blob_id, inspected, action="reconcile")
     assert resolved.json()["state"] == "deleted", resolved.text
 
 
-async def test_revoked_role_after_durable_intent_is_denied_before_provider_effect(pending, owner_sessionmaker, monkeypatch):  # noqa: F811
+async def test_revoked_role_after_durable_intent_is_denied_before_provider_effect(
+    pending, owner_sessionmaker, monkeypatch
+):  # noqa: F811
     from app.core.security import decode_access_token
     from app.models.user import User
     from app.services import original_sweep
@@ -304,7 +436,8 @@ async def test_revoked_role_after_durable_intent_is_denied_before_provider_effec
 
 
 async def test_platform_sweep_uses_live_audited_selected_company_at_both_gates(
-    pending, owner_sessionmaker, app_user_sessionmaker, monkeypatch):  # noqa: F811
+    pending, owner_sessionmaker, app_user_sessionmaker, monkeypatch
+):  # noqa: F811
     from app.core.security import create_access_token, decode_access_token
     from app.core.tenant_middleware import TenantMiddleware
     from app.api import enterprise
@@ -320,13 +453,17 @@ async def test_platform_sweep_uses_live_audited_selected_company_at_both_gates(
         await db.commit()
     # Pin the actual independently committed audit consumer, not an audit stub.
     monkeypatch.setattr("app.services.audit_logger.async_session", app_user_sessionmaker)
-    headers = {"Authorization": "Bearer " + create_access_token(str(actor), "platform_admin", str(home)),
-        "X-Tenant-Id": str(d.tenant)}
+    headers = {
+        "Authorization": "Bearer " + create_access_token(str(actor), "platform_admin", str(home)),
+        "X-Tenant-Id": str(d.tenant),
+    }
     # The company-only fixture pins token home directly. This cross-company
     # path needs the real middleware and get_db selected-company consumer.
     app = FastAPI()
     app.add_middleware(TenantMiddleware)
     app.include_router(enterprise.router)
-    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://selected-original.test", headers=headers) as selected:
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://selected-original.test", headers=headers
+    ) as selected:
         response = await sweep(selected, blob_id, snapshot)
     assert response.status_code == 200 and response.json()["state"] == "deleted", response.text

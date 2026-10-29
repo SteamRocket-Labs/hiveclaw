@@ -62,7 +62,7 @@ def pg_container():
 
     _ensure_docker_host()
     try:
-        container = PostgresContainer("postgres:16-alpine")
+        container = PostgresContainer("postgres:16-alpine", password=uuid.uuid4().hex)
         container.start()
     except Exception as exc:  # Docker daemon missing or not running
         pytest.skip(f"Docker unavailable for Testcontainers: {exc}")

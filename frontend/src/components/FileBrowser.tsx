@@ -293,6 +293,10 @@ export default function FileBrowser({
     // ─── Actions ──────────────────────────────────────
 
     const beginEditing = () => {
+        if (conflict || saveUnknown) {
+            setEditing(true);
+            return;
+        }
         draftRef.current = content;
         setEditContent(content);
         setEditBaseHash(contentHash);

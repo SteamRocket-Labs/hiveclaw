@@ -94,7 +94,7 @@ it('does not offer a mutable file follow-up in operator inspection', () => {
   expect(send).not.toHaveBeenCalled();
 });
 
-it('continues after an uncertain save is read back and explicitly saved successfully', async () => {
+it.each([false, true])('continues after an uncertain save is read back and explicitly saved successfully (reopen: %s)', async (reopen) => {
   const read = vi.spyOn(fileApi, 'read')
     .mockResolvedValueOnce({ path: preview.artifact.path, content: 'Saved file', content_hash: 'a'.repeat(64) })
     .mockResolvedValueOnce({ path: preview.artifact.path, content: 'Current saved file', content_hash: 'c'.repeat(64) });
@@ -109,7 +109,7 @@ it('continues after an uncertain save is read back and explicitly saved successf
   fireEvent.click(screen.getByRole('button', { name: 'Open current file' }));
   await screen.findByText('Saved file');
   fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
-  const editor = screen.getByRole('textbox', { name: 'Your draft' });
+  let editor = screen.getByRole('textbox', { name: 'Your draft' });
   fireEvent.change(editor, { target: { value: 'Human revision' } });
   fireEvent.click(screen.getByRole('button', { name: 'Save' }));
   await screen.findByText(en.agent.workspace.fileSave.unknown);
@@ -118,6 +118,14 @@ it('continues after an uncertain save is read back and explicitly saved successf
   expect((editor as HTMLTextAreaElement).value).toBe('Human revision');
   expect(write).toHaveBeenCalledTimes(1);
   expect(send).not.toHaveBeenCalled();
+  if (reopen) {
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(submit.disabled).toBe(true);
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
+    editor = screen.getByRole('textbox', { name: 'Your draft' });
+    expect(submit.disabled).toBe(true);
+    expect((editor as HTMLTextAreaElement).value).toBe('Human revision');
+  }
   fireEvent.click(screen.getByRole('button', { name: 'Load current version' }));
   await screen.findByText('Current saved file');
   expect(read).toHaveBeenCalledTimes(2);

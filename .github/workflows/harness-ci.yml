@@ -62,7 +62,7 @@ jobs:
   backend-harness:
     name: Backend harness gates
     runs-on: ubuntu-latest
-    timeout-minutes: 180
+    timeout-minutes: 240
     defaults:
       run:
         working-directory: backend

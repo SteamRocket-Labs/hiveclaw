@@ -46,7 +46,7 @@ def test_harness_ci_uses_the_locked_backend_environment_and_linux_sandbox() -> N
     assert "uv sync --frozen" not in source
     assert "backend/uv.lock" in backend_job
     assert "backend/uv.lock" in atomic_job
-    assert "timeout-minutes: 180" in backend_job
+    assert "timeout-minutes: 240" in backend_job
     assert "sudo apt-get install --yes apparmor-profiles bubblewrap" in backend_job
     assert "/usr/share/apparmor/extra-profiles/bwrap-userns-restrict" in backend_job
     assert "sudo apparmor_parser -r /etc/apparmor.d/bwrap-userns-restrict" in backend_job

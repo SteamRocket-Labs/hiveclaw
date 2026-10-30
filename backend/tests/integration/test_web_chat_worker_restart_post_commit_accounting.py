@@ -34,6 +34,7 @@ from contextlib import asynccontextmanager
 import pytest
 from sqlalchemy import select
 
+from tests.integration import conftest as integration
 from tests.integration.test_web_chat_worker_restart_kernel_recovery import (
     SimulatedWorkerCrash,
     ScriptedLLMClient,
@@ -47,6 +48,17 @@ from tests.integration.test_web_chat_worker_restart_kernel_recovery import (
 )
 
 pytestmark = pytest.mark.usefixtures("migrated_pg_url")
+
+
+@pytest.fixture(scope="module")
+def pg_container():
+    # Recovery uses global claim candidates; isolate this module's catalog.
+    yield from integration.pg_container.__wrapped__()
+
+
+@pytest.fixture(scope="module")
+def migrated_pg_url(pg_container):
+    return integration.migrated_pg_url.__wrapped__(pg_container)
 
 
 def _install_ledger_recorder(monkeypatch, sink: list[dict]) -> None:

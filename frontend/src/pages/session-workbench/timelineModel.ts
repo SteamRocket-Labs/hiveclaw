@@ -56,6 +56,7 @@ export interface SessionWorkbenchHeaderModel {
   sessionId: string | null;
   title: string;
   status: SessionWorkbenchStatus;
+  requiresReconciliation?: boolean;
   modelLabel: string | null;
   providerLabel: string | null;
   resumeHealth: string;
@@ -1716,6 +1717,21 @@ function getHeaderStatus(
   return 'idle';
 }
 
+function currentHeaderRunLifecycle(
+  cells: ThreadTimelineCell[], sessionId: string | null, activeRunId: string | null, activeRunStatus?: string | null,
+): string | null {
+  for (let index = cells.length - 1; index >= 0; index -= 1) {
+    const cell = cells[index];
+    if (cell.kind === 'user_turn') break;
+    if (cell.kind !== 'boundary') continue;
+    const item = cell.message.sessionItem;
+    if (item?.kind === 'run' && item.scope?.level === 'run'
+      && item.scope.session_id === sessionId
+      && (!activeRunId || isSameSessionRunId(item.scope.run_id, activeRunId))) return item.lifecycle;
+  }
+  return normalizedActiveRunStatus(activeRunStatus);
+}
+
 function normalizedActiveRunStatus(status?: string | null): string | null {
   const value = String(status || '').trim().toLowerCase();
   if (!value) return null;
@@ -2366,7 +2382,12 @@ export function buildThreadTimeline(input: BuildThreadTimelineInput): ThreadTime
   const sessionWorkbench = input.sessionWorkbench && !Array.isArray(input.sessionWorkbench) ? input.sessionWorkbench : null;
   const contextWindow = getContextWindowProjection(sessionWorkbench);
   const runtimeSummary = input.runtimeSummary || null;
-  const headerStatus = livePhase
+  const needsReconciliation = currentHeaderRunLifecycle(
+    cells, getSessionId(input.activeSession), activeRunId, input.activeRunStatus,
+  ) === 'needs_reconciliation';
+  const headerStatus = needsReconciliation
+    ? 'failed'
+    : livePhase
     ? livePhaseHeaderStatus(livePhase)
     : terminalDeliveryPending
       ? 'running'
@@ -2380,6 +2401,7 @@ export function buildThreadTimeline(input: BuildThreadTimelineInput): ThreadTime
       sessionId: getSessionId(input.activeSession),
       title: getSessionTitle(input.activeSession),
       status: headerStatus,
+      ...(needsReconciliation ? { requiresReconciliation: true } : {}),
       modelLabel: runtimeSummary?.model?.label || runtimeSummary?.model?.name || null,
       providerLabel: runtimeSummary?.model?.provider || null,
       resumeHealth: getResumeHealth(sessionIndex),

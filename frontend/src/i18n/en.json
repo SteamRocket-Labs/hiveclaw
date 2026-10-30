@@ -446,12 +446,14 @@
       "waiting": "waiting",
       "streaming": "streaming",
       "complete": "complete",
-      "failed": "failed"
+      "failed": "failed",
+      "needs_reconciliation": "Needs reconciliation"
     },
     "permission": "permission",
     "governance": "governance",
     "activeProjection": "projection",
     "failedGuidance": "Review the failed step below and its recovery instructions.",
+    "reconciliationGuidance": "Execution outcome is unconfirmed. Review the original operation before continuing.",
     "rewind": {
       "activeRunBlocked": "Stop the current turn before rewinding. Creating a new branch session remains available.",
       "sameSessionHere": "Rewind this session here",

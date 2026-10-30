@@ -917,6 +917,45 @@ async def test_governance_timeout_is_typed_unavailable_not_policy_denied(monkeyp
     assert events[-1]["status"] == "unavailable"
 
 
+@pytest.mark.asyncio
+async def test_governance_timeout_reports_await_locations_without_arguments(monkeypatch, caplog):
+    import asyncio
+
+    from app.tools import governance
+
+    async def waiting_security_zone(_agent_id):
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(governance, "_GOVERNANCE_TIMEOUT_SECONDS", 0.01)
+    events = []
+    private_content = "private-memory-input-must-not-enter-timeout-logs"
+    with caplog.at_level("WARNING", logger="app.tools.governance"):
+        message = await governance.run_tool_governance(
+            governance.ToolGovernanceContext(
+                agent_id=uuid4(),
+                user_id=uuid4(),
+                tenant_id=str(uuid4()),
+                tool_name="save_memory",
+                arguments={"content": private_content},
+            ),
+            governance.GovernanceDependencies(
+                resolve_security_zone=waiting_security_zone,
+                check_capability=lambda *_args: None,
+                write_audit_event=lambda **_kwargs: None,
+                request_approval=lambda **_kwargs: None,
+            ),
+            event_callback=events.append,
+        )
+
+    assert message.outcome.value == "unavailable"
+    assert message.retryable is True
+    assert events[-1]["status"] == "unavailable"
+    assert "_check_security_zone" in caplog.text
+    assert "waiting_security_zone" in caplog.text
+    assert private_content not in caplog.text
+    assert "waiting_security_zone" not in message
+
+
 # ── P0-1a: tenant_id=None fail-closed for non-safe tools ──────────────
 # Closes the bypass where invoker._resolve_runtime_config fallbacks (agent_id
 # missing / agent not found / DB exception) returned tenant_id=None and

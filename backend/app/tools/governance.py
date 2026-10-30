@@ -999,11 +999,20 @@ async def run_tool_governance(
         if isinstance(message, ToolBoundaryBlock):
             return message
         return _typed_governance_block(str(message), observed_events)
-    except asyncio.TimeoutError:
+    except asyncio.TimeoutError as exc:
+        interrupted_awaits: list[str] = []
+        interrupted_traceback = (exc.__cause__ or exc).__traceback__
+        while interrupted_traceback is not None and len(interrupted_awaits) < 32:
+            code = interrupted_traceback.tb_frame.f_code
+            module = interrupted_traceback.tb_frame.f_globals.get("__name__", "?")
+            interrupted_awaits.append(f"{module}.{code.co_qualname}:{interrupted_traceback.tb_lineno}")
+            interrupted_traceback = interrupted_traceback.tb_next
+        interrupted_traceback = None
         logger.warning(
-            "[Governance] Timeout (%ss) for tool %s — authority unavailable (fail-closed)",
+            "[Governance] Timeout (%ss) for tool %s — authority unavailable (fail-closed); interrupted_awaits=%s",
             _GOVERNANCE_TIMEOUT_SECONDS,
             context.tool_name,
+            interrupted_awaits,
         )
         await _emit_event(
             event_callback,

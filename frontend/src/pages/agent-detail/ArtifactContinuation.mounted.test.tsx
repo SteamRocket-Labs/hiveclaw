@@ -94,6 +94,47 @@ it('does not offer a mutable file follow-up in operator inspection', () => {
   expect(send).not.toHaveBeenCalled();
 });
 
+it('continues after an uncertain save is read back and explicitly saved successfully', async () => {
+  const read = vi.spyOn(fileApi, 'read')
+    .mockResolvedValueOnce({ path: preview.artifact.path, content: 'Saved file', content_hash: 'a'.repeat(64) })
+    .mockResolvedValueOnce({ path: preview.artifact.path, content: 'Current saved file', content_hash: 'c'.repeat(64) });
+  const write = vi.spyOn(fileApi, 'writeIfUnchanged')
+    .mockRejectedValueOnce(new ApiError(503, 'Save not confirmed', { outcome: 'unknown' }))
+    .mockResolvedValueOnce({ content_hash: 'b'.repeat(64) });
+  const send = vi.fn().mockResolvedValue(undefined);
+  render(<ArtifactPreviewPanel preview={preview} agentId="employee" onClose={vi.fn()} t={t as never}
+    continuation={{ sessionId: 'original-work', send }} />);
+  const followUp = screen.getByRole('textbox', { name: 'Continue with this file' });
+  fireEvent.change(followUp, { target: { value: 'Continue with my saved revision.' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Open current file' }));
+  await screen.findByText('Saved file');
+  fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
+  const editor = screen.getByRole('textbox', { name: 'Your draft' });
+  fireEvent.change(editor, { target: { value: 'Human revision' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+  await screen.findByText(en.agent.workspace.fileSave.unknown);
+  const submit = screen.getByRole('button', { name: 'Continue in this work' }) as HTMLButtonElement;
+  expect(submit.disabled).toBe(true);
+  expect((editor as HTMLTextAreaElement).value).toBe('Human revision');
+  expect(write).toHaveBeenCalledTimes(1);
+  expect(send).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole('button', { name: 'Load current version' }));
+  await screen.findByText('Current saved file');
+  expect(read).toHaveBeenCalledTimes(2);
+  expect(write).toHaveBeenCalledTimes(1);
+  expect(submit.disabled).toBe(true);
+  expect((editor as HTMLTextAreaElement).value).toBe('Human revision');
+  fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+  await waitFor(() => expect(screen.queryByRole('textbox', { name: 'Your draft' })).toBeNull());
+  expect(write).toHaveBeenLastCalledWith('employee', preview.artifact.path, 'Human revision', 'c'.repeat(64));
+  await waitFor(() => expect(submit.disabled).toBe(false));
+  fireEvent.click(submit);
+  await waitFor(() => expect(send).toHaveBeenCalledTimes(1));
+  expect(send.mock.calls[0][1].expectedSessionId).toBe('original-work');
+  expect(send.mock.calls[0][0]).toContain('"human_saved_hash":"' + 'b'.repeat(64) + '"');
+  expect(send.mock.calls[0][0]).not.toContain('Human revision');
+});
+
 it('uses a new input for a newly acknowledged human file version after an uncertain request', async () => {
   vi.spyOn(fileApi, 'read').mockResolvedValue({ path: 'workspace/report.md', content: 'Saved file', content_hash: 'a'.repeat(64) });
   vi.spyOn(fileApi, 'writeIfUnchanged').mockResolvedValue({ content_hash: 'b'.repeat(64) });

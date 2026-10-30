@@ -337,6 +337,7 @@ export default function FileBrowser({
             setContent(submitted);
             setContentHash(result?.content_hash ?? null);
             setLastSavedHash(result?.content_hash ?? null);
+            setSaveUnknown(false);
             setEditBaseHash(result?.content_hash ?? null);
             setCurrentVersion(null);
             setEditing(draftRef.current !== submitted);

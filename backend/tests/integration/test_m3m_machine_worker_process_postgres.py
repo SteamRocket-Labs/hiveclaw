@@ -15,11 +15,24 @@ from sqlalchemy import select
 
 from app.database import get_db, tenant_scoped_session
 from app.models.runtime_task import RuntimeTask
+from tests.integration import conftest as integration
 from tests.integration.test_m3h_machine_identity_postgres import machine_api as _machine_api, _issue
 from tests.integration.test_m3i_machine_tasks_postgres import _prepare_native_machine
 
 machine_api = _machine_api
 pytestmark = pytest.mark.usefixtures("migrated_pg_url")
+
+
+@pytest.fixture(scope="module")
+def pg_container():
+    # The unrestricted worker must consume this journey's real catalog.
+    yield from integration.pg_container.__wrapped__()
+
+
+@pytest.fixture(scope="module")
+def migrated_pg_url(pg_container):
+    return integration.migrated_pg_url.__wrapped__(pg_container)
+
 
 _WORKER = """
 import asyncio,json,os,signal

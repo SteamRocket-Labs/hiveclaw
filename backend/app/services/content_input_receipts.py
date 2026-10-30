@@ -2823,6 +2823,7 @@ async def record_native_workspace_receipts(db, *, context, invocation, model, ar
         return {"status": "unavailable", "reason_code": "model_input_inventory_incomplete", "receipts": {}}
     if invocation.tool_name not in {
         "write_file",
+        "edit_file",
         "fs_write",
         "run_skill_tool",
         "run_command",

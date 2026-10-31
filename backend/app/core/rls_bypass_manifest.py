@@ -819,7 +819,10 @@ def fingerprint_rls_bypass_scopes(app_root: Path) -> str:
 # only the independent reader detaches and finally restores the worker fence.
 # Existing bypass query scopes and current source/actor checks remain unchanged.
 # Ruff formatting preserves the complete ASTs of all changed consumers.
-RLS_BYPASS_SCOPES_SHA256 = "b829290f90902a6f43514dfbc57692f3b8762ffe522e797c4fc823893435f621"
+# Native file edits use the existing workspace receipt producer path. Only the
+# content_input_receipts module-source entry changes; all 780 scope entries and
+# 120 registered bypass callsites retain their query and authority boundaries.
+RLS_BYPASS_SCOPES_SHA256 = "4710b7acd43dabc3a0d18d69c0c19fa9a30522903dcda0e8343a2551bd9b8354"
 
 
 def scan_rls_bypass_callsites(app_root: Path) -> list[RLSBypassCallsite]:

@@ -161,10 +161,13 @@ def _safe_path(agent_id: uuid.UUID, rel_path: str) -> Path:
     from app.services.workspace_resource_authority import WorkspaceAuthorityError, resolve_workspace_storage_path
 
     if is_chat_artifact_snapshot_storage_path(rel_path):
-        raise HTTPException(status_code=403, detail={
-            "code": "artifact_snapshot_raw_access_forbidden",
-            "message": "Open the artifact by its authorized artifact id; edit its canonical workspace file.",
-        })
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "code": "artifact_snapshot_raw_access_forbidden",
+                "message": "Open the artifact by its authorized artifact id; edit its canonical workspace file.",
+            },
+        )
     try:
         return resolve_workspace_storage_path(_agent_base_dir(agent_id), rel_path)
     except WorkspaceAuthorityError as exc:
@@ -190,8 +193,9 @@ async def _authorize_session_source(db, user, agent_id, path, operator_view, ope
     from app.services.workspace_resource_authority import WorkspaceAuthorityError, authorize_browser_session_source
 
     try:
-        return await authorize_browser_session_source(db, user, agent_id=agent_id, path=path,
-            operator_view=operator_view, operator_reason=operator_reason)
+        return await authorize_browser_session_source(
+            db, user, agent_id=agent_id, path=path, operator_view=operator_view, operator_reason=operator_reason
+        )
     except WorkspaceAuthorityError as exc:
         raise _workspace_authority_http_error(exc) from exc
 
@@ -217,8 +221,9 @@ def _require_workspace_file_path(path: str) -> str:
 
 
 def _content_receipt_http_error(exc) -> HTTPException:
-    return HTTPException(status_code=exc.status_code,
-        detail={"code": exc.code, "message": str(exc), "retryable": False})
+    return HTTPException(
+        status_code=exc.status_code, detail={"code": exc.code, "message": str(exc), "retryable": False}
+    )
 
 
 def _workspace_content_hash(agent_id: uuid.UUID, path: str) -> str:
@@ -262,7 +267,10 @@ async def _workspace_download_response(agent_id, path, filename, expected_sha256
 
     try:
         snapshot_dir, delivery_path = await asyncio.to_thread(
-            snapshot_workspace_file, _agent_base_dir(agent_id), path, expected_sha256,
+            snapshot_workspace_file,
+            _agent_base_dir(agent_id),
+            path,
+            expected_sha256,
         )
     except WorkspaceAuthorityError as exc:
         raise _workspace_authority_http_error(exc) from exc
@@ -539,8 +547,9 @@ async def list_files(
         logical_rel = entry.relative_to(target).as_posix()
         logical_rel = f"{path.rstrip('/')}/{logical_rel}" if path else logical_rel
         try:
-            source_authority = await _authorize_session_source(db, current_user, agent_id, logical_rel,
-                operator_view, operator_reason)
+            source_authority = await _authorize_session_source(
+                db, current_user, agent_id, logical_rel, operator_view, operator_reason
+            )
             rel = _safe_path(agent_id, logical_rel).relative_to(base_abs).as_posix()
         except HTTPException as exc:
             if exc.status_code not in {403, 404}:
@@ -662,14 +671,21 @@ async def read_file(
         from app.services.content_input_receipts import ContentInputReceiptError
 
         try:
-            await authorize_browser_learning_path(db, current_user, agent_id=agent_id, path=path,
-                observed_sha256=content_hash or await asyncio.to_thread(_workspace_content_hash, agent_id, path))
+            await authorize_browser_learning_path(
+                db,
+                current_user,
+                agent_id=agent_id,
+                path=path,
+                observed_sha256=content_hash or await asyncio.to_thread(_workspace_content_hash, agent_id, path),
+            )
         except ContentInputReceiptError as exc:
             raise _content_receipt_http_error(exc) from exc
     receipt = None
     if resource_decision is not None:
         from app.services.content_input_receipts import (
-            ContentInputReceiptError, latest_workspace_receipt, validate_browser_workspace_receipt,
+            ContentInputReceiptError,
+            latest_workspace_receipt,
+            validate_browser_workspace_receipt,
         )
 
         receipt = await latest_workspace_receipt(db, _agent.tenant_id, agent_id, path)
@@ -779,10 +795,17 @@ async def read_file_version(
         from app.services.content_input_receipts import ContentInputReceiptError
         from app.services.workspace_receipt_versions import read_receipt_version
 
-        version = await read_receipt_version(db, _agent_access[0].tenant_id, agent_id, normalized, version_id, current_user)
+        version = await read_receipt_version(
+            db, _agent_access[0].tenant_id, agent_id, normalized, version_id, current_user
+        )
         if version is None:
             version = await asyncio.to_thread(
-                read_workspace_file_version, agent_id=agent_id, path=normalized, version_id=version_id, sessions=sessions)
+                read_workspace_file_version,
+                agent_id=agent_id,
+                path=normalized,
+                version_id=version_id,
+                sessions=sessions,
+            )
     except ContentInputReceiptError as exc:
         raise _content_receipt_http_error(exc) from exc
     except WorkspaceFileVersionNotFound as exc:
@@ -845,10 +868,17 @@ async def download_file_version(
         from app.services.content_input_receipts import ContentInputReceiptError
         from app.services.workspace_receipt_versions import read_receipt_version
 
-        version = await read_receipt_version(db, _agent_access[0].tenant_id, agent_id, normalized, version_id, current_user)
+        version = await read_receipt_version(
+            db, _agent_access[0].tenant_id, agent_id, normalized, version_id, current_user
+        )
         if version is None:
             version = await asyncio.to_thread(
-                read_workspace_file_version, agent_id=agent_id, path=normalized, version_id=version_id, sessions=sessions)
+                read_workspace_file_version,
+                agent_id=agent_id,
+                path=normalized,
+                version_id=version_id,
+                sessions=sessions,
+            )
     except ContentInputReceiptError as exc:
         raise _content_receipt_http_error(exc) from exc
     except WorkspaceFileVersionNotFound as exc:
@@ -916,9 +946,20 @@ async def restore_file_version(
             from app.services.content_input_receipts import ContentInputReceiptError
             from app.services.workspace_receipt_versions import resolve_receipt_version
 
-            receipted = await resolve_receipt_version(db, agent.tenant_id, agent_id, normalized, version_id, current_user)
-            version = receipted[1] if receipted is not None else await asyncio.to_thread(
-                resolve_workspace_file_version, agent_id=agent_id, path=normalized, version_id=version_id, sessions=sessions)
+            receipted = await resolve_receipt_version(
+                db, agent.tenant_id, agent_id, normalized, version_id, current_user
+            )
+            version = (
+                receipted[1]
+                if receipted is not None
+                else await asyncio.to_thread(
+                    resolve_workspace_file_version,
+                    agent_id=agent_id,
+                    path=normalized,
+                    version_id=version_id,
+                    sessions=sessions,
+                )
+            )
         except ContentInputReceiptError as exc:
             raise _content_receipt_http_error(exc) from exc
         except WorkspaceFileVersionNotFound as exc:
@@ -960,16 +1001,44 @@ async def restore_file_version(
         except Exception as exc:
             raise _workspace_authority_http_error(exc) from exc
 
-        from app.services.content_input_receipts import latest_workspace_receipt, validate_browser_workspace_receipt
+        from app.services.content_input_receipts import (
+            latest_workspace_receipt,
+            validate_browser_input_dependencies,
+            validate_browser_workspace_receipt,
+        )
 
         previous_receipt = await latest_workspace_receipt(db, agent.tenant_id, agent_id, normalized)
+        recover_quarantined = (
+            receipted is not None
+            and previous_receipt is not None
+            and mutation_decision.manifest is not None
+            and mutation_decision.manifest.authority_state == "quarantined"
+            and mutation_decision.manifest.owner_user_id is not None
+        )
         if previous_receipt is not None:
             if receipted is None:
-                raise HTTPException(status_code=409, detail={"code": "workspace_content_unverified",
-                    "message": "This checkpoint lacks its original source receipt. Preserve it and reconcile before restoring."})
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "code": "workspace_content_unverified",
+                        "message": "This checkpoint lacks its original source receipt. Preserve it and reconcile before restoring.",
+                    },
+                )
             try:
-                await validate_browser_workspace_receipt(db, agent.tenant_id, current_user, previous_receipt,
-                    current.get("sha256") if current.get("exists") else previous_receipt.content_sha256)
+                if recover_quarantined:
+                    # An explicit restore replaces rejected bytes with a verified snapshot.
+                    # Validate the retained source restrictions without attesting those bytes.
+                    await validate_browser_input_dependencies(
+                        db, agent.tenant_id, current_user, previous_receipt.dependencies_json
+                    )
+                else:
+                    await validate_browser_workspace_receipt(
+                        db,
+                        agent.tenant_id,
+                        current_user,
+                        previous_receipt,
+                        current.get("sha256") if current.get("exists") else previous_receipt.content_sha256,
+                    )
             except ContentInputReceiptError as exc:
                 raise _content_receipt_http_error(exc) from exc
 
@@ -977,9 +1046,35 @@ async def restore_file_version(
             from app.services.content_input_receipts import validate_browser_input_dependencies
 
             try:
-                await validate_browser_input_dependencies(db, agent.tenant_id, current_user, receipted[0].dependencies_json)
+                await validate_browser_input_dependencies(
+                    db, agent.tenant_id, current_user, receipted[0].dependencies_json
+                )
             except ContentInputReceiptError as exc:
                 raise _content_receipt_http_error(exc) from exc
+
+        retained_quarantined_version = None
+        if recover_quarantined and current.get("exists"):
+            from app.services.workspace_receipt_versions import retain_quarantined_workspace_version
+            from app.services.workspace_resource_authority import WorkspaceAuthorityError
+
+            try:
+                retained_quarantined_version = await asyncio.to_thread(
+                    retain_quarantined_workspace_version,
+                    agent_id=agent_id,
+                    path=normalized,
+                    content_hash=current["sha256"],
+                    tenant_id=agent.tenant_id,
+                    actor_user_id=current_user.id,
+                    version_id=version.version_id,
+                )
+            except (WorkspaceAuthorityError, OSError) as exc:
+                raise HTTPException(
+                    status_code=503,
+                    detail={
+                        "code": "workspace_quarantine_retention_unavailable",
+                        "message": "The rejected bytes could not be retained. The file has not been restored.",
+                    },
+                ) from exc
 
         restore = await asyncio.to_thread(
             restore_workspace_snapshot_locked,
@@ -1017,17 +1112,31 @@ async def restore_file_version(
             else:
                 await mark_workspace_path_deleted(db, agent_id=agent_id, path=normalized)
             if receipted is not None:
-                from app.services.content_input_receipts import record_workspace_receipt, validate_browser_input_dependencies
+                from app.services.content_input_receipts import (
+                    record_workspace_receipt,
+                    validate_browser_input_dependencies,
+                )
                 from app.services.workspace_receipt_versions import capture_receipt_version
 
-                restored_receipt = record_workspace_receipt(db, agent.tenant_id, agent_id, normalized,
-                    target_state["sha256"], previous_receipt, additional_dependencies=receipted[0].dependencies_json)
+                restored_receipt = record_workspace_receipt(
+                    db,
+                    agent.tenant_id,
+                    agent_id,
+                    normalized,
+                    target_state["sha256"],
+                    previous_receipt,
+                    additional_dependencies=receipted[0].dependencies_json,
+                )
                 await db.flush()
                 try:
-                    await validate_browser_input_dependencies(db, agent.tenant_id, current_user, restored_receipt.dependencies_json)
+                    await validate_browser_input_dependencies(
+                        db, agent.tenant_id, current_user, restored_receipt.dependencies_json
+                    )
                     await asyncio.to_thread(capture_receipt_version, agent_id, normalized, restored_receipt)
                 except ContentInputReceiptError as exc:
                     raise _content_receipt_http_error(exc) from exc
+            if recover_quarantined:
+                mutation_decision.manifest.authority_state = "owned"
             db.add(
                 AuditLog(
                     tenant_id=agent.tenant_id,
@@ -1044,6 +1153,14 @@ async def restore_file_version(
                         "target_content_hash": target_state.get("sha256"),
                         "authority_source": mutation_decision.authority_source,
                         "operator_view": bool(mutation_decision.operator_view),
+                        **(
+                            {
+                                "previous_authority_state": "quarantined",
+                                "retained_quarantined_version": retained_quarantined_version,
+                            }
+                            if recover_quarantined
+                            else {}
+                        ),
                     },
                 )
             )
@@ -1148,8 +1265,14 @@ async def read_artifact_content(
     artifact = await _load_chat_artifact_or_404(db=db, agent_id=agent_id, artifact_id=artifact_id)
     from app.services.chat_artifact_delivery import authorize_artifact_recipient_read
 
-    decision = await authorize_artifact_recipient_read(db, current_user, artifact,
-        allow_manager_override=operator_view, manager_override_reason=operator_reason, agent_access=agent_access)
+    decision = await authorize_artifact_recipient_read(
+        db,
+        current_user,
+        artifact,
+        allow_manager_override=operator_view,
+        manager_override_reason=operator_reason,
+        agent_access=agent_access,
+    )
     from app.services.workspace_resource_authority import WorkspaceAuthorityError
 
     try:
@@ -1199,7 +1322,10 @@ async def download_file(
             if not target.exists() or not target.is_file():
                 raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
             return await _workspace_download_response(
-                agent_id, path, target.name, channel_token.get("content_sha256"),
+                agent_id,
+                path,
+                target.name,
+                channel_token.get("content_sha256"),
             )
 
     # Resolve JWT token from either Bearer header or query param
@@ -1278,8 +1404,14 @@ async def download_artifact(
     artifact = await _load_chat_artifact_or_404(db=db, agent_id=agent_id, artifact_id=artifact_id)
     from app.services.chat_artifact_delivery import authorize_artifact_recipient_read
 
-    await authorize_artifact_recipient_read(db, user, artifact,
-        allow_manager_override=operator_view, manager_override_reason=operator_reason, agent_access=agent_access)
+    await authorize_artifact_recipient_read(
+        db,
+        user,
+        artifact,
+        allow_manager_override=operator_view,
+        manager_override_reason=operator_reason,
+        agent_access=agent_access,
+    )
     from app.services.workspace_resource_authority import WorkspaceAuthorityError
 
     try:
@@ -1310,9 +1442,16 @@ async def write_file(
     db: AsyncSession = Depends(get_db),
 ):
     """Write content to a file (create or overwrite)."""
-    return await _write_file_bytes(agent_id, path, data.content.encode("utf-8"),
-        expected_current_hash=data.expected_current_hash, operator_view=operator_view, operator_reason=operator_reason,
-        current_user=current_user, db=db)
+    return await _write_file_bytes(
+        agent_id,
+        path,
+        data.content.encode("utf-8"),
+        expected_current_hash=data.expected_current_hash,
+        operator_view=operator_view,
+        operator_reason=operator_reason,
+        current_user=current_user,
+        db=db,
+    )
 
 
 async def _write_file_bytes(
@@ -1358,8 +1497,11 @@ async def _write_file_bytes(
         receipt = None
         if resource_decision is not None:
             from app.services.content_input_receipts import (
-                ContentInputReceiptError, latest_workspace_receipt, lock_workspace_receipt_write,
-                record_workspace_receipt, validate_browser_workspace_receipt,
+                ContentInputReceiptError,
+                latest_workspace_receipt,
+                lock_workspace_receipt_write,
+                record_workspace_receipt,
+                validate_browser_workspace_receipt,
             )
 
             await lock_workspace_receipt_write(db, agent.tenant_id, agent_id, path)
@@ -1373,23 +1515,47 @@ async def _write_file_bytes(
                     if resource_decision.manifest is not None:
                         resource_decision.manifest.authority_state = "quarantined"
                         await db.commit()
-                    raise _content_receipt_http_error(ContentInputReceiptError("workspace_content_unverified",
-                        "The file no longer matches its verified receipt. Preserve it and regenerate from authorized inputs."))
+                    raise _content_receipt_http_error(
+                        ContentInputReceiptError(
+                            "workspace_content_unverified",
+                            "The file no longer matches its verified receipt. Preserve it and regenerate from authorized inputs.",
+                        )
+                    )
                 if expected_current_hash is not None and verified_base != expected_current_hash:
-                    raise HTTPException(status_code=409, detail={
-                        "code": "workspace_content_conflict", "retryable": False, "outcome": "conflict",
-                        "message": "The file changed since it was read. Keep your draft and read the current version before saving again.",
-                    })
+                    raise HTTPException(
+                        status_code=409,
+                        detail={
+                            "code": "workspace_content_conflict",
+                            "retryable": False,
+                            "outcome": "conflict",
+                            "message": "The file changed since it was read. Keep your draft and read the current version before saving again.",
+                        },
+                    )
                 try:
-                    await validate_browser_workspace_receipt(db, agent.tenant_id, current_user, previous_receipt, verified_base)
+                    await validate_browser_workspace_receipt(
+                        db, agent.tenant_id, current_user, previous_receipt, verified_base
+                    )
                 except ContentInputReceiptError as exc:
                     raise _content_receipt_http_error(exc) from exc
             elif expected_current_hash is not None:
-                raise HTTPException(status_code=409, detail={"code": "workspace_content_conflict", "retryable": False,
-                    "outcome": "conflict", "message": "The file is missing. Keep the draft and reconcile before saving again."})
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "code": "workspace_content_conflict",
+                        "retryable": False,
+                        "outcome": "conflict",
+                        "message": "The file is missing. Keep the draft and reconcile before saving again.",
+                    },
+                )
             elif previous_receipt is not None:
-                raise HTTPException(status_code=409, detail={"code": "workspace_content_unverified", "retryable": False,
-                    "message": "The previously receipted file is missing. Preserve its history and regenerate a new path."})
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "code": "workspace_content_unverified",
+                        "retryable": False,
+                        "message": "The previously receipted file is missing. Preserve its history and regenerate a new path.",
+                    },
+                )
 
         content_hash = hashlib.sha256(raw).hexdigest()
         write_started = False
@@ -1409,12 +1575,15 @@ async def _write_file_bytes(
                 return
             with open_workspace_file(_agent_base_dir(agent_id), path, mode="r+b") as output:
                 if hashlib.file_digest(output, "sha256").hexdigest() != expected:
-                    raise HTTPException(status_code=409, detail={
-                        "code": "workspace_content_conflict",
-                        "message": "The file changed since it was read. Keep your draft and read the current version before saving again.",
-                        "outcome": "conflict",
-                        "retryable": False,
-                    })
+                    raise HTTPException(
+                        status_code=409,
+                        detail={
+                            "code": "workspace_content_conflict",
+                            "message": "The file changed since it was read. Keep your draft and read the current version before saving again.",
+                            "outcome": "conflict",
+                            "retryable": False,
+                        },
+                    )
                 output.seek(0)
                 write_started = True
                 output.write(raw)
@@ -1429,12 +1598,15 @@ async def _write_file_bytes(
             raise
         except WorkspaceAuthorityError as exc:
             if write_started:
-                raise HTTPException(status_code=503, detail={
-                    "code": "workspace_save_unknown",
-                    "message": "The save could not be confirmed. Keep your draft and read the file before another save.",
-                    "outcome": "unknown",
-                    "retryable": False,
-                }) from exc
+                raise HTTPException(
+                    status_code=503,
+                    detail={
+                        "code": "workspace_save_unknown",
+                        "message": "The save could not be confirmed. Keep your draft and read the file before another save.",
+                        "outcome": "unknown",
+                        "retryable": False,
+                    },
+                ) from exc
             raise _workspace_authority_http_error(exc) from exc
         if resource_decision is not None:
             from app.services.workspace_resource_authority import register_workspace_path
@@ -1458,7 +1630,11 @@ async def _write_file_bytes(
                     raise RuntimeError("workspace_content_changed_before_receipt")
                 if previous_receipt is not None:
                     await validate_browser_workspace_receipt(
-                        db, agent.tenant_id, current_user, previous_receipt, verified_base,
+                        db,
+                        agent.tenant_id,
+                        current_user,
+                        previous_receipt,
+                        verified_base,
                     )
                 receipt = record_workspace_receipt(db, agent.tenant_id, agent_id, path, content_hash, previous_receipt)
                 from app.services.workspace_receipt_versions import capture_receipt_version
@@ -1468,12 +1644,15 @@ async def _write_file_bytes(
                 await db.commit()
             except Exception as exc:
                 await db.rollback()
-                raise HTTPException(status_code=503, detail={
-                    "code": "workspace_save_unknown",
-                    "message": "The saved file could not be registered. Keep your draft and reconcile before another save.",
-                    "outcome": "unknown",
-                    "retryable": False,
-                }) from exc
+                raise HTTPException(
+                    status_code=503,
+                    detail={
+                        "code": "workspace_save_unknown",
+                        "message": "The saved file could not be registered. Keep your draft and reconcile before another save.",
+                        "outcome": "unknown",
+                        "retryable": False,
+                    },
+                ) from exc
 
     return {
         "status": "ok",
@@ -1554,11 +1733,13 @@ async def delete_file(
             await asyncio.to_thread(delete_workspace_path, _agent_base_dir(agent_id), path, directory=is_directory)
         except WorkspaceAuthorityError as exc:
             error = _workspace_authority_http_error(exc)
-            error.detail.update({
-                "outcome": "denied" if error.status_code == 403 else "unknown",
-                "retryable": False,
-                "actionable_hint": "Refresh and reconcile the canonical resource before another deletion.",
-            })
+            error.detail.update(
+                {
+                    "outcome": "denied" if error.status_code == 403 else "unknown",
+                    "retryable": False,
+                    "actionable_hint": "Refresh and reconcile the canonical resource before another deletion.",
+                }
+            )
             raise error from exc
 
         from app.services.workspace_resource_authority import mark_workspace_path_deleted
@@ -1596,8 +1777,9 @@ async def uninstall_skill_from_agent(
     from app.services.content_input_receipts import ContentInputReceiptError
 
     try:
-        retired = await retire_learned_installation(db, agent_id=agent_id, user=current_user,
-            workspace=_agent_base_dir(agent_id), folder_name=body.folder_name)
+        retired = await retire_learned_installation(
+            db, agent_id=agent_id, user=current_user, workspace=_agent_base_dir(agent_id), folder_name=body.folder_name
+        )
         if retired is not None:
             return retired
         return uninstall_active_skill_package(
@@ -1645,8 +1827,9 @@ async def import_skill_to_agent(
     from app.services.skill_source_receipts import install_registry_skill_with_sources
 
     try:
-        install_result = await install_registry_skill_with_sources(db, workspace=base, agent=agent,
-            skill=skill, actor=current_user)
+        install_result = await install_registry_skill_with_sources(
+            db, workspace=base, agent=agent, skill=skill, actor=current_user
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -1735,8 +1918,14 @@ async def upload_file_to_workspace(
                 extracted_path = Path(relative_save_path).with_suffix(".txt").as_posix()
                 try:
                     companion_decision = await authorize_workspace_path(
-                        db, current_user, agent_id=agent_id, path=extracted_path, action="write",
-                        path_exists=(base / extracted_path).exists(), for_update=True, agent_access=(agent, _access),
+                        db,
+                        current_user,
+                        agent_id=agent_id,
+                        path=extracted_path,
+                        action="write",
+                        path_exists=(base / extracted_path).exists(),
+                        for_update=True,
+                        agent_access=(agent, _access),
                     )
                 except WorkspaceAuthorityError as exc:
                     raise _workspace_authority_http_error(exc) from exc

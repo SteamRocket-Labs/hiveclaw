@@ -46,7 +46,7 @@
 | D01 | W5 / GT-04 | 指定 macOS 强隔离环境提供持久代码/文件/进程路径；第二任务及重启保留成果 | 准确 provider/profile、隔离与出网检查、重启后文件消费 | 条件待满足：具体环境采用与费用边界 |
 | D02 | W5 / GT-04 | 真实网页登录、独占人工接管、归还后重新观察，再交付 | 实际接管人与状态切换、归还观察、新成果 | 条件待满足：网站、账号、接管人 |
 | D03 | W5 / GT-04 | 控制断线、worker/provider 丢失可恢复；跨环境访问及停用后效果拒绝 | 故障前后同工作/文件、恢复收据、负向拒绝 | 待指定隔离验收环境 |
-| E01 | W7 / GT-05 | 指定 Hive Connect profile 的认证/在线状态真实，错误有可执行恢复入口 | 当前 CLI/daemon/profile 对照、产品绑定及连接回执 | 原 profile 已过期；过期状态及恢复提示已修复，待发布。负责人已批准取消两条旧未投递请求后恢复原绑定；十条待对账保持原状。实际取消与登录恢复待执行 |
+| E01 | W7 / GT-05 | 指定 Hive Connect profile 的认证/在线状态真实，错误有可执行恢复入口 | 当前 CLI/daemon/profile 对照、产品绑定及连接回执 | 原设备已恢复：同账号/员工/运行时/工作目录及六项权限，CLI 和产品页均 online。两条旧请求已阻止派发、执行事实保留 unknown，原十条待对账未变。过期状态及恢复指引修复仍待发布 |
 | E02 | W7 / GT-05 | 原生 Claude Code、Codex 各在同团队完成一个文件任务，成果回原工作 | 各 native session、请求人/任务绑定、实际下载、工具控制范围 | 条件待满足：准确绑定与两次模型任务额度 |
 | E03 | W7 / GT-05 | 受控远程 A2A 接活；外部机器身份调用 Hive A2A/MCP 并可撤销 | 精确端点/机器身份、交付、撤销后拒绝 | 条件待满足：参考端点和客户端身份 |
 | E04 | W7,8 / GT-05 | 离线、重复投递、取消未确认和费用未知均有真实状态与安全下一步 | 请求/回执去重，unknown 对账，取消确认或明确未确认 | 随 E02/E03 执行，不盲重发 |
@@ -119,7 +119,24 @@ R01 审查期限续期：负责人认可保持 120 项既有例外，将下一�
 exit 0，`1 passed in 0.66s`；Ruff check / format 和 diff check 均 exit 0。
 复用同范围其余 16 项的已有通过证据，不将定点重验拼作一次新的完整模块或 CI 成功。
 证据：`m5-R01-expiry-renewal-test.log`、`m5-R01-expiry-renewal-proof.json`。
-E01 状态修复提交为 `638b7ed6`；本次审查日期单独提交。
+E01 状态修复提交为 `638b7ed6`；审查日期独立提交为 `7fb46915`。
+
+E01 原设备恢复验收：经负责人批准，在两条旧请求的原产品会话各点击一次取消。
+两个 `remote_control` 回执均为 `ok`，实际状态为 `needs_reconciliation`、执行为 `unknown`，
+已阻止后续派发。旧协议记录缺少可证明未派发的租约收据，且其中一条会话已有历史执行回复；
+投递计数为零不能据此宣称从未执行。其余十四条消息（含原十条待对账）逐字段保持。
+
+已安装 CLI 登录默认申请额外三个 gateway 权限且不提供 scope 参数，因此使用同一现有配对
+协议只请求原六项权限，由原登录账号的产品页面审批。init HTTP 201、exchange/status HTTP 200；
+服务端返回同一账号和员工，六项权限逐项相同。原配置只替换凭据，原生 Codex、项目和工作目录不变。
+`hive-connect daemon start` exit 0；`hive-connect daemon status` exit 0 / Running；
+`hive-connect status` exit 0 / connected / presence_status online / runtime_kind codex。
+刷新后的产品页面显示原设备在线。重连后 app_rls 只读检查 exit 0，十六条原消息均与取消后相同，
+可派发请求为零；没有新任务、模型调用、旧请求重放或追加权限。
+证据：`m5-E01-post-cancel-preflight.json`、`m5-E01-credential-refresh.json`、
+`m5-E01-restarted-status.json`、`m5-E01-post-reconnect-preflight.json`、`m5-E01-online.png`。
+一次性配对凭据文件在正式配置保存并验证后删除；证据不含凭据值。常驻服务按恢复目标保留在线。
+当前线上旧版仍将其他过期连接计入链接数量，该已提交修复随 R02 发布，故不宣称 E01 整项已闭合。
 
 ## 外部依赖处理
 

@@ -6,6 +6,7 @@ import en from '../../i18n/en.json';
 import { translateFromCatalog } from '../../test/i18nMock';
 import { fileApi } from '../../api/domains/files';
 import { ApiError } from '../../api/core';
+import * as authenticatedResource from '../../utils/authenticatedResource';
 
 const t = (...args: Parameters<typeof translateFromCatalog> extends [unknown, ...infer T] ? T : never) => translateFromCatalog(en, ...args);
 vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: (...args: Parameters<typeof t>) => t(...args) }) }));
@@ -164,4 +165,44 @@ it('uses a new input for a newly acknowledged human file version after an uncert
   expect(send.mock.calls[1][1].inputId).not.toBe(send.mock.calls[0][1].inputId);
   expect(send.mock.calls[1][0]).toContain('"human_saved_hash":"' + 'b'.repeat(64) + '"');
   expect(send.mock.calls[1][0]).not.toContain('New saved bytes');
+});
+
+it('downloads the saved workspace revision from the current-file panel and keeps delivery download separate', async () => {
+  vi.spyOn(fileApi, 'read').mockResolvedValue({ path: preview.artifact.path, content: 'Current file', content_hash: 'a'.repeat(64) });
+  vi.spyOn(fileApi, 'writeIfUnchanged').mockResolvedValue({ content_hash: 'b'.repeat(64) });
+  const savedBlob = new Blob(['Human revision']);
+  const download = vi.spyOn(fileApi, 'download').mockResolvedValue(savedBlob);
+  const save = vi.spyOn(authenticatedResource, 'saveBlob').mockImplementation(() => undefined);
+  const downloadDelivery = vi.fn();
+  render(<ArtifactPreviewPanel preview={preview} agentId="employee" onClose={vi.fn()} t={t as never}
+    onDownload={downloadDelivery} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Open current file' }));
+  await screen.findByText('Current file');
+  fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
+  fireEvent.change(screen.getByRole('textbox', { name: 'Your draft' }), { target: { value: 'Human revision' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+  await waitFor(() => expect(screen.queryByRole('textbox', { name: 'Your draft' })).toBeNull());
+  fireEvent.click(screen.getByRole('button', { name: /Download/ }));
+  await waitFor(() => expect(save).toHaveBeenCalledWith(savedBlob, 'report.md'));
+  expect(download).toHaveBeenCalledWith('employee', preview.artifact.path, undefined);
+  expect(downloadDelivery).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole('button', { name: en.agent.chat.artifacts.backToDelivery }));
+  fireEvent.click(screen.getByRole('button', { name: /Download/ }));
+  expect(downloadDelivery).toHaveBeenCalledOnce();
+  expect(download).toHaveBeenCalledOnce();
+});
+
+it('reports a denied current-file download without exporting cached content or the delivery snapshot', async () => {
+  vi.spyOn(fileApi, 'read').mockResolvedValue({ path: preview.artifact.path, content: 'Previously readable', content_hash: 'a'.repeat(64) });
+  vi.spyOn(fileApi, 'download').mockRejectedValue(new ApiError(403, 'File access revoked'));
+  const save = vi.spyOn(authenticatedResource, 'saveBlob').mockImplementation(() => undefined);
+  const downloadDelivery = vi.fn();
+  render(<ArtifactPreviewPanel preview={preview} agentId="employee" onClose={vi.fn()} t={t as never}
+    onDownload={downloadDelivery} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Open current file' }));
+  await screen.findByText('Previously readable');
+  fireEvent.click(screen.getByRole('button', { name: /Download/ }));
+  await screen.findByText('File access revoked');
+  expect(save).not.toHaveBeenCalled();
+  expect(downloadDelivery).not.toHaveBeenCalled();
 });

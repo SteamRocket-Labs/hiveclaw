@@ -1,5 +1,6 @@
 import AxeBuilder from '@axe-core/playwright';
 import { expect, test, type Page } from '@playwright/test';
+import { readFile } from 'node:fs/promises';
 
 const AGENT_ID = '7e57a9e7-0000-4000-8000-000000000010';
 const SESSION_ID = '8e57a9e7-0000-4000-8000-000000000020';
@@ -545,6 +546,33 @@ test('ordinary artifact preview respects current source denial and can retry aft
   await expect(preview).toContainText('AUTHORIZED_SERVER_MARKER');
   await expect(preview).not.toContainText('Source access was revoked');
   await expect(preview).not.toContainText('CACHED_RELEASE_MARKER');
+});
+
+test('current artifact file downloads the saved workspace bytes through the authenticated file API', async ({ page }, testInfo) => {
+  await bootstrap(page, { audience: 'user', scenario: 'active' });
+  const path = 'workspace/reports/release-report.md';
+  const saved = '# Saved human revision\nBoth reviewers agreed on this version.\n';
+  await page.route('**/api/agents/*/files/artifacts/*/content', (route) => route.fulfill({
+    json: { path, content: '# Original delivery', uses_snapshot: true, workspace_changed: true },
+  }));
+  await page.route('**/api/agents/*/files/content?*', (route) => route.fulfill({
+    json: { path, content: saved, content_hash: 'b'.repeat(64) },
+  }));
+  await page.route('**/api/agents/*/files/download?*', async (route) => {
+    expect(new URL(route.request().url()).searchParams.get('path')).toBe(path);
+    expect(await route.request().headerValue('authorization')).toBe('Bearer e2e-token');
+    await route.fulfill({ contentType: 'text/markdown', body: saved });
+  });
+  await page.getByRole('button', { name: 'Open release-report.md', exact: true }).first().click();
+  const preview = page.getByTestId('session-artifact-preview-inspector');
+  await preview.getByRole('button', { name: 'Open current file', exact: true }).click();
+  await expect(preview).toContainText('Both reviewers agreed on this version.');
+  const downloaded = page.waitForEvent('download');
+  await preview.getByRole('button', { name: /Download/ }).click();
+  const file = await downloaded;
+  expect(file.suggestedFilename()).toBe('release-report.md');
+  expect(await readFile((await file.path())!, 'utf8')).toBe(saved);
+  await page.screenshot({ path: testInfo.outputPath('current-file-download.png') });
 });
 
 async function scrollTimelineToBottom(page: Page) {

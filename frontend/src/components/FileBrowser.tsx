@@ -589,6 +589,11 @@ export default function FileBrowser({
             <div className="card">
                 <div className="file-browser-toolbar">
                     {title ? <h3>{title}</h3> : <div />}
+                    {api.download && !editing && (
+                        <button className="btn btn-secondary" onClick={() => void handleDownload(singleFile)}>
+                            ⬇ {t('common.download', 'Download')}
+                        </button>
+                    )}
                     {fileHistory.available && !editing && (
                         <button className="btn btn-secondary" onClick={fileHistory.openHistory}>
                             {t('agent.workspace.fileHistory.title', 'Version history')}

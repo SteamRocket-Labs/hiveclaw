@@ -877,7 +877,7 @@ def _grant(
         reason_expression=reason_expression,
         allowed_query_fields=allowed_query_fields,
         owner="platform-security",
-        expires_on=date(2026, 10, 31),
+        expires_on=date(2026, 11, 30),
     )
 
 

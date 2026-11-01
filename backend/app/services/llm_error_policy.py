@@ -63,6 +63,7 @@ def classify_llm_error(exc: Exception) -> LLMErrorClassification:
         or "quotaexhausted" in lower
         or "allocated quota exceeded" in lower
         or "token-plan quota has been exhausted" in lower
+        or "token plan 用量上限" in lower
     ):
         return LLMErrorClassification(
             kind="quota_exhausted",

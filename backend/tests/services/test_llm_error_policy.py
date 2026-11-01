@@ -64,3 +64,26 @@ def test_non_402_typed_status_does_not_become_quota() -> None:
         LLMError("HTTP 429: too many requests", delivery_state="rejected", http_status=429)
     )
     assert rate_limited.kind == "rate_limited"
+
+
+def test_minimax_token_plan_limit_is_quota_without_changing_delivery_facts() -> None:
+    from app.kernel.engine import _humanize_llm_error
+    from app.services.llm_client import LLMError
+    from app.services.llm_error_policy import should_surface_without_model_fallback
+
+    message = (
+        'HTTP 429: {"type":"error","error":{"type":"rate_limit_error",'
+        '"message":"已达到 Token Plan 用量上限：请升级 Token Plan 套餐或购买积分补充用量。 (2056)",'
+        '"http_code":"429"}}'
+    )
+    for delivery_state in ("rejected", "unknown"):
+        error = LLMError(message, delivery_state=delivery_state, http_status=429)
+
+        classification = classify_llm_error(error)
+
+        assert classification.kind == "quota_exhausted"
+        assert classification.requires_user_decision is True
+        assert should_surface_without_model_fallback(error) is True
+        assert "额度已耗尽" in _humanize_llm_error(error)
+        assert error.delivery_state == delivery_state
+        assert error.http_status == 429

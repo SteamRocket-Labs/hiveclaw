@@ -32,7 +32,7 @@
 
 | ID | 范围 | 要实现或验证的具体结果 | 完成证据 | 当前状态 |
 |---|---|---|---|---|
-| R01 | W0 / M5 | 收取 `55e9ee81` 原完整 CI 终态；失败则定位具体回归并修复，不重派掩盖旧结果 | 全部 job 与三个 eval 的终态、原命令/退出码/计数，同提交绑定 | 运行中：14:36 UTC 后端完整 pytest，前端/native 已通过 |
+| R01 | W0 / M5 | 收取 `55e9ee81` 原完整 CI 终态；失败则定位具体回归并修复，不重派掩盖旧结果 | 全部 job 与三个 eval 的终态、原命令/退出码/计数，同提交绑定 | 原 CI 后端仍待终态；本地新发现继承的 RLS 审查期限于 10/31 到期，安全模块 16 passed / 1 failed；未延长日期或削弱断言 |
 | R02 | W0 / M5 | 完整门通过后发布同一准确源码到三服务；检查身份、迁移、RLS、健康和实际额度提示消费 | 三服务终态、实际 build identity、数据库检查及用户入口 | 待 R01 |
 | A01 | W1 / GT-01,07 | 模板及明确职责两种开通进入完整员工；批准默认项可直接创建，普通派活不招人、重复请求不多开工 | 两入口实际创建身份/首任务、重复与权限拒绝回执；Web 已有切片复用 | 待执行；企业安装部分与 H 联动 |
 | A02 | W2 / GT-01,02 | 明确缺项的首任务在原工作提问，用户补充后继续；审批、进度、结果回同工作，刷新后可继续 | 原请求人/任务/回答绑定、一次首任务、最终文件实际下载 | 条件待满足：具体日期输入及新增模型用量范围 |
@@ -46,7 +46,7 @@
 | D01 | W5 / GT-04 | 指定 macOS 强隔离环境提供持久代码/文件/进程路径；第二任务及重启保留成果 | 准确 provider/profile、隔离与出网检查、重启后文件消费 | 条件待满足：具体环境采用与费用边界 |
 | D02 | W5 / GT-04 | 真实网页登录、独占人工接管、归还后重新观察，再交付 | 实际接管人与状态切换、归还观察、新成果 | 条件待满足：网站、账号、接管人 |
 | D03 | W5 / GT-04 | 控制断线、worker/provider 丢失可恢复；跨环境访问及停用后效果拒绝 | 故障前后同工作/文件、恢复收据、负向拒绝 | 待指定隔离验收环境 |
-| E01 | W7 / GT-05 | 指定 Hive Connect profile 的认证/在线状态真实，错误有可执行恢复入口 | 当前 CLI/daemon/profile 对照、产品绑定及连接回执 | 11/1 14:44 UTC 直接二进制复核仍为 401；daemon Running。配置指向同一 Hive 后端，正在核具体绑定状态 |
+| E01 | W7 / GT-05 | 指定 Hive Connect profile 的认证/在线状态真实，错误有可执行恢复入口 | 当前 CLI/daemon/profile 对照、产品绑定及连接回执 | 原 profile 已过期；过期状态及恢复提示已修复，待发布。已获原 profile 恢复授权；发现 1 条旧排队、1 条待审批和 10 条待对账，按约定停在重新登录前，等待两条未投递请求的处置决定；完整安全门有继承的到期失败 |
 | E02 | W7 / GT-05 | 原生 Claude Code、Codex 各在同团队完成一个文件任务，成果回原工作 | 各 native session、请求人/任务绑定、实际下载、工具控制范围 | 条件待满足：准确绑定与两次模型任务额度 |
 | E03 | W7 / GT-05 | 受控远程 A2A 接活；外部机器身份调用 Hive A2A/MCP 并可撤销 | 精确端点/机器身份、交付、撤销后拒绝 | 条件待满足：参考端点和客户端身份 |
 | E04 | W7,8 / GT-05 | 离线、重复投递、取消未确认和费用未知均有真实状态与安全下一步 | 请求/回执去重，unknown 对账，取消确认或明确未确认 | 随 E02/E03 执行，不盲重发 |
@@ -75,7 +75,8 @@
 | ID | 实现 / 验收提交 | 命令与退出码 | 决定性结果及限制 |
 |---|---|---|---|
 | 清单基线 | 本文初始提交 | `git status --short --branch` exit 0；`git rev-parse HEAD` exit 0；`gh run view 41312231978 --json status,conclusion,headSha,jobs,url` exit 0 | HEAD 为 `55e9ee814452552b89a82a37ae936af65de78abe`；14:36 UTC 后端 in_progress，前端/native success；没有把历史绿证归给当前全套 |
-| C02 当前文件下载修复 | 本条所在修复提交；清单基线 `1b5d2230` | `npm test -- --run` exit 0：1799 passed / 4 skipped；`npm run build` exit 0；`npm run i18n:check` exit 0；`npm run test:e2e -- e2e/thread-workbench.spec.ts --grep 'current artifact file downloads' --workers=1`（隔离的锁定 Playwright 浏览器目录）exit 0：1 passed | 复用受授权的文件下载 API；下载当前已保存文件，交付快照保持独立；403 不导出缓存正文或退回快照。真实生产两视图同基线、陈旧保存出现冲突且保留草稿、显式合并 HTTP 200、重开字节一致；最初冲突响应的原始 HTTP 状态未捕获，仅保留界面与代码对应证据，不伪称取得原始 409 回执。生产新下载入口尚待发布 |
+| C02 当前文件下载修复 | `7afbeff1`；清单基线 `1b5d2230` | `npm test -- --run` exit 0：1799 passed / 4 skipped；`npm run build` exit 0；`npm run i18n:check` exit 0；`npm run test:e2e -- e2e/thread-workbench.spec.ts --grep 'current artifact file downloads' --workers=1`（隔离的锁定 Playwright 浏览器目录）exit 0：1 passed | 复用受授权的文件下载 API；下载当前已保存文件，交付快照保持独立；403 不导出缓存正文或退回快照。真实生产两视图同基线、陈旧保存出现冲突且保留草稿、显式合并 HTTP 200、重开字节一致；最初冲突响应的原始 HTTP 状态未捕获，仅保留界面与代码对应证据，不伪称取得原始 409 回执。生产新下载入口尚待发布 |
+| E01 过期状态与恢复指引 | 本条所在修复提交 | `pytest tests/services/test_local_bridge_presence.py tests/services/test_local_bridge_service.py tests/api/test_local_bridge_pairing.py -q -p no:cacheprovider` exit 0：32 passed；`npm test -- --run` exit 0：1800 passed / 4 skipped；build / i18n exit 0；浏览器 `--grep 'expired local login' --workers=1` exit 0：1 passed；原完整安全模块 exit 1：16 passed / 1 failed | 列表与在线状态按实际有效期投影，过期绑定不计为可用；有效离线绑定继续允许排队。页面保留设备名、显示登录恢复指引。只读检查不会改写数据库状态，认证及权限查询保持。安全失败是父提交已有审查期限到期，原工厂/清单 AST 和安全测试逐字一致；不称全门通过。实际过期绑定仍未恢复，不将本地修复算作 E01 完成 |
 
 C02 证据文件：`m5-C02-browser-observations.json`、`m5-C02-merge-response.json`、
 `m5-C02-conflict-ui.txt`、`m5-C02-conflict.png`、`m5-C02-reopened.png`、
@@ -86,6 +87,31 @@ C02 证据文件：`m5-C02-browser-observations.json`、`m5-C02-merge-response.j
 本机首次浏览器检查缺 Chromium，第二次替代检查缺 ffmpeg，均未到达业务断言；补齐锁定依赖后
 原项目浏览器命令通过。前两次失败日志保留，不能把它们说成成功。
 临时测试服务已停止，构建与新浏览器缓存准确清理 206602240 字节；原失败证据及人工文件保留。
+
+E01 原始生产证据为 `m5-E01-product-connections.json`、`m5-E01-original-device-expired.png`、
+`m5-E01-profile-preflight.json` 和 `m5-E01-undelivered-review.json`：登录态列表 HTTP 200，
+原本机绑定的有效期为 2026-10-01；另三条旧记录虽仍存储为 active，其有效期也已过去。
+原 CLI status exit 1 / HTTP 401，后台进程曾 Running；两者不能互相替代。
+恢复前经授权执行 `hive-connect daemon stop` exit 0。限定租户的实际 app_rls 只读快照 exit 0，
+发现两条投递次数为 0 的旧 pwd 验收请求及十条待对账请求；未重新登录、执行、重放或取消。
+
+后端反例为 2 failed / 5 passed，前端反例为 1 failed / 12 passed，均 exit 1；修复后相关模块通过。
+旧 presence fixture 补充有效期，以符合现有认证合同；全部原测试函数及断言保持。
+Ruff 要求格式化旧服务文件，完整 AST 在格式化前后相同。
+`m5-E01-rls-review.json` 对照准确父提交：780 条范围记录、120 个调用签名保持，
+仅 local bridge 模块源码摘要变化；原认证、SQL 和其他函数 AST 相同。
+首浏览器验证因外置配置的工作目录错误未到达业务断言，exit 1；修正后 1 passed，
+再补齐本地 WebSocket fixture 后最终 1 passed / exit 0。浏览器使用本机 Chrome、关闭视频，
+保留实际页面截图；这是受控前端验证，不是生产重连证据。
+证据日志统一以 `m5-E01-` 开头。原完整 `tests/security/test_rls_bypass_allowlist.py`
+报告 16 passed / 1 failed / 305.33s / exit 1，唯一失败为
+`test_every_rls_bypass_grant_has_owner_expiry_and_query_fields`：原 `expires_on=2026-10-31`
+早于实际日期 `2026-11-01`。`m5-E01-inherited-expiry.json` 证明父提交的授权工厂及清单 AST
+未变，完整安全测试字节未变；新指纹检查本身已通过。到期问题归入 R01，保留原失败，
+不通过改时钟、放宽断言或无依据延期消除。
+构建 identity 与当前 677 份输入一致，166 个构建产物在无进程引用后准确删除 4231168 字节；
+五个操作脚本/格式化前源码/外置浏览器配置经可恢复归档核验后净回收 53248 字节。
+原失败、生产响应、截图及用户文件保留；未停止其他服务、删除生产数据或运行模型任务。
 
 ## 外部依赖处理
 

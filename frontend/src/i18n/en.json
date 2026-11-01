@@ -1060,6 +1060,8 @@
     "offline": "Local agent offline",
     "neverSeen": "No background service seen yet",
     "noConnections": "No linked local agent yet",
+    "loginExpired": "Local agent login expired",
+    "expiredLoginHint": "Sign in again on the affected device using Hive Connect, then restart its background service. An expired login cannot recover by reconnecting alone.",
     "connectionCount": "{{count}} linked",
     "setupInstruction": "Setup instruction",
     "copied": "Copied",

@@ -822,7 +822,10 @@ def fingerprint_rls_bypass_scopes(app_root: Path) -> str:
 # Native file edits use the existing workspace receipt producer path. Only the
 # content_input_receipts module-source entry changes; all 780 scope entries and
 # 120 registered bypass callsites retain their query and authority boundaries.
-RLS_BYPASS_SCOPES_SHA256 = "4710b7acd43dabc3a0d18d69c0c19fa9a30522903dcda0e8343a2551bd9b8354"
+# Local bridge list/presence projections now reflect authentication expiry.
+# Only its module-source digest changes; all 780 entries, 120 callsites,
+# authentication, query predicates and authority checks retain their boundaries.
+RLS_BYPASS_SCOPES_SHA256 = "2b48582757e66d0e18c3a6318803105d5b5b75560e2a4461b301f5ad9fdcf6ef"
 
 
 def scan_rls_bypass_callsites(app_root: Path) -> list[RLSBypassCallsite]:

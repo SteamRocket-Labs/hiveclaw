@@ -4,6 +4,8 @@ from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from uuid import uuid4
 
+import pytest
+
 from app.services.local_bridge_service import serialize_connection_for_list
 
 
@@ -20,6 +22,7 @@ def _connection(*, status: str = "active") -> SimpleNamespace:
         last_seen_at=None,
         created_at=datetime(2026, 6, 23, tzinfo=timezone.utc),
         revoked_at=None,
+        expires_at=datetime.now(timezone.utc) + timedelta(days=1),
     )
 
 
@@ -54,6 +57,29 @@ def test_stale_online_presence_is_offline_while_login_stays_active() -> None:
     assert payload["presence_status"] == "offline"
     assert payload["presence_last_seen_at"] == stale_seen_at.isoformat()
     assert payload["runtime_kind"] == "codex"
+
+
+@pytest.mark.parametrize("expiry", ["past", "missing"])
+def test_expired_binding_is_not_active_even_with_recent_online_presence(expiry: str) -> None:
+    connection = _connection()
+    connection.expires_at = datetime.now(timezone.utc) - timedelta(seconds=1) if expiry == "past" else None
+    channel = SimpleNamespace(status="online", runtime_kind="codex", last_seen_at=datetime.now(timezone.utc))
+
+    payload = serialize_connection_for_list(connection, channel=channel)
+
+    assert payload["status"] == "expired"
+    assert payload["presence_status"] == "offline"
+    assert connection.status == "active"
+
+
+def test_expiry_does_not_replace_revocation_status() -> None:
+    connection = _connection(status="revoked")
+    connection.expires_at = datetime.now(timezone.utc) - timedelta(days=1)
+
+    payload = serialize_connection_for_list(connection)
+
+    assert payload["status"] == "revoked"
+    assert payload["presence_status"] == "offline"
 
 
 def test_disconnected_runner_presence_is_offline_while_login_stays_active() -> None:

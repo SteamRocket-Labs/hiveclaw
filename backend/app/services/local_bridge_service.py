@@ -161,33 +161,55 @@ class BridgeAuthContext:
     device_name: str
 
 
-async def require_live_bridge_context(db: AsyncSession, context: BridgeAuthContext, *, lock_connection: bool = False) -> BridgeAuthContext:
+async def require_live_bridge_context(
+    db: AsyncSession, context: BridgeAuthContext, *, lock_connection: bool = False
+) -> BridgeAuthContext:
     """Revalidate a cached channel identity before accepting another runtime frame."""
     if lock_connection:
-        locked = await db.scalar(select(LocalAgentBridgeConnection.id).where(
+        locked = await db.scalar(
+            select(LocalAgentBridgeConnection.id)
+            .where(
+                LocalAgentBridgeConnection.id == context.connection_id,
+                LocalAgentBridgeConnection.tenant_id == context.tenant_id,
+                LocalAgentBridgeConnection.agent_id == context.agent_id,
+                LocalAgentBridgeConnection.user_id == context.user_id,
+            )
+            .with_for_update()
+        )
+        if locked is None:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN, detail="Local Agent connection is no longer authorized"
+            )
+    # A joined row-lock query can retain pre-wait liveness facts and deadline.
+    # Build the authority query only after the connection lock is acquired.
+    query = (
+        select(LocalAgentBridgeConnection)
+        .join(User, User.id == LocalAgentBridgeConnection.user_id)
+        .join(Tenant, Tenant.id == LocalAgentBridgeConnection.tenant_id)
+        .where(
             LocalAgentBridgeConnection.id == context.connection_id,
             LocalAgentBridgeConnection.tenant_id == context.tenant_id,
             LocalAgentBridgeConnection.agent_id == context.agent_id,
-            LocalAgentBridgeConnection.user_id == context.user_id).with_for_update())
-        if locked is None:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail='Local Agent connection is no longer authorized')
-    # A joined row-lock query can retain pre-wait liveness facts and deadline.
-    # Build the authority query only after the connection lock is acquired.
-    query = select(LocalAgentBridgeConnection).join(User, User.id == LocalAgentBridgeConnection.user_id).join(
-        Tenant, Tenant.id == LocalAgentBridgeConnection.tenant_id).where(
-        LocalAgentBridgeConnection.id == context.connection_id,
-        LocalAgentBridgeConnection.tenant_id == context.tenant_id,
-        LocalAgentBridgeConnection.agent_id == context.agent_id,
-        LocalAgentBridgeConnection.user_id == context.user_id,
-        LocalAgentBridgeConnection.status == 'active', LocalAgentBridgeConnection.expires_at > utcnow(),
-        User.is_active.is_(True), User.tenant_id == context.tenant_id, Tenant.is_active.is_(True))
+            LocalAgentBridgeConnection.user_id == context.user_id,
+            LocalAgentBridgeConnection.status == "active",
+            LocalAgentBridgeConnection.expires_at > utcnow(),
+            User.is_active.is_(True),
+            User.tenant_id == context.tenant_id,
+            Tenant.is_active.is_(True),
+        )
+    )
     if context.agent_id is not None:
         query = query.join(Agent, Agent.id == LocalAgentBridgeConnection.agent_id).where(
-            Agent.tenant_id == context.tenant_id, Agent.deleted_at.is_(None), Agent.deactivated_at.is_(None),
-            func.coalesce(Agent.owner_user_id, Agent.creator_id) == context.user_id)
+            Agent.tenant_id == context.tenant_id,
+            Agent.deleted_at.is_(None),
+            Agent.deactivated_at.is_(None),
+            func.coalesce(Agent.owner_user_id, Agent.creator_id) == context.user_id,
+        )
     connection = await db.scalar(query.execution_options(populate_existing=True))
     if connection is None:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail='Local Agent connection is no longer authorized')
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="Local Agent connection is no longer authorized"
+        )
     return replace(context, scopes=tuple(scope for scope in context.scopes if scope in set(connection.scopes or ())))
 
 
@@ -210,18 +232,25 @@ def select_effective_capability_policy(agent_policy, tenant_policy):
         return agent_policy or tenant_policy
     policies = (tenant_policy, agent_policy)
     conditions = {**dict(tenant_policy.conditions or {}), **dict(agent_policy.conditions or {})}
-    sources = [p.conditions['allowed_sources'] for p in policies
-        if isinstance((p.conditions or {}).get('allowed_sources'), list)]
+    sources = [
+        p.conditions["allowed_sources"]
+        for p in policies
+        if isinstance((p.conditions or {}).get("allowed_sources"), list)
+    ]
     if sources:
-        conditions['allowed_sources'] = sorted(set.intersection(*({str(v) for v in values} for values in sources)))
-    for key in ('max_content_chars', 'max_attachments'):
+        conditions["allowed_sources"] = sorted(set.intersection(*({str(v) for v in values} for values in sources)))
+    for key in ("max_content_chars", "max_attachments"):
         limits = [(p.conditions or {}).get(key) for p in policies]
         limits = [v for v in limits if isinstance(v, int) and v >= 0]
         if limits:
             conditions[key] = min(limits)
-    return EffectiveLocalAgentPolicy(capability=agent_policy.capability,
-        allowed=all(p.allowed for p in policies), requires_approval=any(p.requires_approval for p in policies),
-        conditions=conditions, source_policies=policies)
+    return EffectiveLocalAgentPolicy(
+        capability=agent_policy.capability,
+        allowed=all(p.allowed for p in policies),
+        requires_approval=any(p.requires_approval for p in policies),
+        conditions=conditions,
+        source_policies=policies,
+    )
 
 
 async def require_local_agent_capability_policy(
@@ -241,7 +270,9 @@ async def require_local_agent_capability_policy(
     policies = (
         (
             await db.execute(
-                select(CapabilityPolicy).execution_options(populate_existing=True).where(
+                select(CapabilityPolicy)
+                .execution_options(populate_existing=True)
+                .where(
                     CapabilityPolicy.tenant_id == tenant_id,
                     or_(CapabilityPolicy.agent_id.is_(None), CapabilityPolicy.agent_id == agent_id),
                     CapabilityPolicy.capability == capability,
@@ -922,8 +953,14 @@ async def resolve_bridge_auth_context(
     )
 
 
+def _connection_status_for(connection: LocalAgentBridgeConnection) -> str:
+    if connection.status == "active" and (connection.expires_at is None or connection.expires_at <= utcnow()):
+        return "expired"
+    return connection.status
+
+
 def _presence_status_for(connection: LocalAgentBridgeConnection, channel: LocalAgentChannel | None) -> str:
-    if connection.status != "active":
+    if _connection_status_for(connection) != "active":
         return "offline"
     if channel is None:
         return "unknown"
@@ -946,8 +983,11 @@ def serialize_connection_for_list(
     presence_status = _presence_status_for(connection, channel)
     metadata = getattr(connection, "metadata_json", None)
     control = metadata.get("work_control") if isinstance(metadata, dict) else None
-    if not (isinstance(control, dict) and control.get("schema") == "hive.local_connection_control.v1"
-        and control.get("connection_id") == str(connection.id)):
+    if not (
+        isinstance(control, dict)
+        and control.get("schema") == "hive.local_connection_control.v1"
+        and control.get("connection_id") == str(connection.id)
+    ):
         control = None
     return {
         "id": str(connection.id),
@@ -956,7 +996,7 @@ def serialize_connection_for_list(
         "user_id": str(connection.user_id),
         "device_name": connection.device_name,
         "client_kind": connection.client_kind,
-        "status": connection.status,
+        "status": _connection_status_for(connection),
         "work_control": control,
         "presence_status": presence_status,
         "presence_last_seen_at": channel.last_seen_at.isoformat() if channel and channel.last_seen_at else None,
@@ -1042,15 +1082,24 @@ async def revoke_connection(
         raise HTTPException(status_code=400, detail="An authenticated revocation actor is required")
     metadata = dict(connection.metadata_json or {})
     work_control = metadata.get("work_control")
-    if (connection.status == "revoked" and isinstance(work_control, dict)
+    if (
+        connection.status == "revoked"
+        and isinstance(work_control, dict)
         and work_control.get("schema") == "hive.local_connection_control.v1"
-        and work_control.get("connection_id") == str(connection.id)):
+        and work_control.get("connection_id") == str(connection.id)
+    ):
         return {"status": "revoked", "connection_id": str(connection.id), "work_control": work_control}
     from app.services.local_agent_channel_service import withdraw_connection_requests
+
     connection.status = "revoked"
     connection.revoked_at = connection.revoked_at or utcnow()
-    work_control = await withdraw_connection_requests(db, tenant_id=connection.tenant_id,
-        owner_user_id=connection.user_id, connection_id=connection.id, actor_user_id=actor_id)
+    work_control = await withdraw_connection_requests(
+        db,
+        tenant_id=connection.tenant_id,
+        owner_user_id=connection.user_id,
+        connection_id=connection.id,
+        actor_user_id=actor_id,
+    )
     connection.metadata_json = {**metadata, "work_control": work_control}
     await db.commit()
     return {"status": "revoked", "connection_id": str(connection.id), "work_control": work_control}

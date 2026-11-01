@@ -585,6 +585,32 @@ async function scrollTimelineToBottom(page: Page) {
   ))).toBe(true);
 }
 
+test('expired local login offers authentication recovery while valid offline binding can queue', async ({ page }, testInfo) => {
+  await bootstrap(page, { audience: 'user', scenario: 'idle' });
+  await page.routeWebSocket('**/ws/local-agents/**', () => {});
+  let status = 'expired';
+  await page.route('**/api/local-bridge/connections', (route) => route.fulfill({ json: {
+    connections: [{
+      id: 'local-connection', device_name: 'Operator Mac', client_kind: 'hive-connect',
+      status, presence_status: 'offline',
+    }],
+  } }));
+  await page.route('**/api/local-agents/sessions/default', (route) => route.fulfill({ json: {
+    id: 'local-session', status: 'active', source: 'web',
+  } }));
+  await page.goto('/local-agents');
+  await expect(page.getByText('Local agent login expired', { exact: true })).toBeVisible();
+  await expect(page.getByText('Sign in again on the affected device using Hive Connect', { exact: false })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Send to local agent', exact: true })).toBeDisabled();
+  await page.screenshot({ path: testInfo.outputPath('expired-local-login.png'), fullPage: true });
+
+  status = 'active';
+  await page.reload();
+  await expect(page.getByText('Local agent offline', { exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Send to local agent', exact: true })).toBeEnabled();
+  await expect(page.getByText('Local agent login expired', { exact: true })).toHaveCount(0);
+});
+
 async function expectVisual(page: Page, name: string, options: {
   maxDiffPixelRatio?: number;
   capture?: 'element' | 'viewport';

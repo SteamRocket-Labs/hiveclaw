@@ -257,6 +257,25 @@ describe('LocalAgents page', () => {
     expect(markup).not.toContain('Local Agent Channel</h2>');
   });
 
+  it('shows expired authentication with a login recovery instead of an offline reconnect promise', () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    queryClient.setQueryData(['local-bridge-connections'], {
+      connections: [{
+        id: 'expired-connection', device_name: 'My Mac', client_kind: 'hive-connect',
+        status: 'expired', presence_status: 'offline',
+      }],
+    });
+    const markup = renderToStaticMarkup(
+      <QueryClientProvider client={queryClient}><LocalAgents /></QueryClientProvider>,
+    );
+
+    expect(markup).toContain('Local agent login expired');
+    expect(markup).toContain('My Mac');
+    expect(markup).toContain('Sign in again on the affected device using Hive Connect');
+    expect(markup).not.toContain('it will reconnect automatically');
+    expect(markup).toMatch(/<button[^>]*disabled=""[^>]*>Send to local agent<\/button>/);
+  });
+
   it('builds setup instructions around the background daemon instead of a foreground runner', () => {
     const guide = buildSetupInstruction({
       product_name: 'Hive Connect',

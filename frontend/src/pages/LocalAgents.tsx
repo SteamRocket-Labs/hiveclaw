@@ -290,8 +290,10 @@ export default function LocalAgents({ agentId, agentName, embedded = false, init
   });
 
   const activeConnections = (connectionData?.connections ?? []).filter((connection) => connection.status === 'active');
+  const expiredConnection = connectionData?.connections.find((connection) => connection.status === 'expired');
+  const loginExpired = activeConnections.length === 0 && Boolean(expiredConnection);
   const onlineConnections = activeConnections.filter(isOnlineConnection);
-  const primaryConnection = onlineConnections[0] ?? activeConnections[0] ?? null;
+  const primaryConnection = onlineConnections[0] ?? activeConnections[0] ?? expiredConnection ?? null;
   const localAgentOnline = onlineConnections.length > 0;
   const localAgentBound = activeConnections.length > 0;
   const primaryPresence = primaryConnection ? connectionPresenceStatus(primaryConnection) : 'unknown';
@@ -629,11 +631,13 @@ export default function LocalAgents({ agentId, agentName, embedded = false, init
               <div className="local-agents-status-title">
                 {connectionsLoading
                   ? t('localAgents.statusLoading', 'Checking local agent...')
-                  : localAgentOnline
-                    ? t('localAgents.online', 'Local agent online')
-                    : activeConnections.length > 0 && primaryPresence === 'unknown'
-                      ? t('localAgents.unknown', 'Local agent status unknown')
-                      : t('localAgents.offline', 'Local agent offline')}
+                  : loginExpired
+                    ? t('localAgents.loginExpired', 'Local agent login expired')
+                    : localAgentOnline
+                      ? t('localAgents.online', 'Local agent online')
+                      : activeConnections.length > 0 && primaryPresence === 'unknown'
+                        ? t('localAgents.unknown', 'Local agent status unknown')
+                        : t('localAgents.offline', 'Local agent offline')}
               </div>
               <div className="local-agents-status-detail u-truncate">
                 {primaryConnection
@@ -756,15 +760,20 @@ export default function LocalAgents({ agentId, agentName, embedded = false, init
                 {messageBusy ? t('localAgents.sending', 'Sending...') : t('localAgents.send', 'Send to local agent')}
               </button>
               <span className="local-agents-note">
-                {localAgentOnline
+                {loginExpired
                   ? t(
-                      'localAgents.sendHint',
-                      'When the background service is online, messages are delivered over WebSocket. If the computer sleeps, shuts down, or loses network, Hive shows the local agent as offline.',
+                      'localAgents.expiredLoginHint',
+                      'Sign in again on the affected device using Hive Connect, then restart its background service. An expired login cannot recover by reconnecting alone.',
                     )
-                  : t(
-                      'localAgents.offlineSendHint',
-                      'The local agent is offline. Keep Hive Connect installed; it will reconnect automatically when the computer and background service are available.',
-                    )}
+                  : localAgentOnline
+                    ? t(
+                        'localAgents.sendHint',
+                        'When the background service is online, messages are delivered over WebSocket. If the computer sleeps, shuts down, or loses network, Hive shows the local agent as offline.',
+                      )
+                    : t(
+                        'localAgents.offlineSendHint',
+                        'The local agent is offline. Keep Hive Connect installed; it will reconnect automatically when the computer and background service are available.',
+                      )}
               </span>
             </div>
             {messageStatus && (

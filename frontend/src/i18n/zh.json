@@ -1035,6 +1035,8 @@
     "offline": "本地 Agent 离线",
     "neverSeen": "还没有后台服务在线记录",
     "noConnections": "还没有链接本地 Agent",
+    "loginExpired": "本地 Agent 登录已过期",
+    "expiredLoginHint": "请在对应设备上使用 Hive Connect 重新登录，再重启后台服务。登录已过期时，仅等待自动重连无法恢复。",
     "connectionCount": "已链接 {{count}} 个",
     "setupInstruction": "安装指令",
     "copied": "已复制",

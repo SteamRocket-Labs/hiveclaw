@@ -10,34 +10,42 @@ current user request or verified repository state.
 
 ## Product north star
 
-HiveClaw exists to provide:
+HiveClaw is a Claude Code-grade assistant that everyone on a team can use, through one
+main path: **the user asks, the agent does the work, the user gets a result they can
+keep editing**. Web chat is the main entry; IM (Feishu, DingTalk, WeCom, Slack,
+Telegram) enters the same runtime. Companies use our cloud or deploy privately.
 
-1. highly capable, self-evolving digital employees with durable identity, memory,
-   learning, tools, and recoverable work; and
-2. an enterprise control plane for authority, organization, budgets, coordination,
-   evidence, and operations.
+Agent capability comes first: a polished surface around an agent that cannot use its
+selected model, authorized context, and tools effectively is a product failure. The
+surface is held to a consumer bar: fast, quiet, and free of internal machinery.
+Governance is the floor that lets a company trust the product; it is not the product.
 
-Agent capability is foundational. A sophisticated control plane around an agent that
-cannot use its selected model, authorized context, tools, and feedback effectively is
-a product failure.
+### What the user sees
 
-The optimization objective is **capability-preserving determinism**:
+- The default web UI shows the conversation, the input, attachments, the current model,
+  and stop. Everything else sits behind "…" or in settings.
+- A run is in exactly one of five user-visible states: running, waiting for you, done,
+  failed, stopped. Running offers stop; waiting for you offers approve or decline;
+  failed offers retry.
+- Internal vocabulary such as receipt, source binding, principal, lease, reconcile,
+  provenance, or quarantine never appears in the default UI, IM messages, or
+  user-facing errors.
 
-- make authority, external effects, state, evidence, and recovery predictable;
-- preserve the selected model's effective capability envelope inside that frame; and
-- never gain determinism by starving context or output, silently changing models,
-  deleting unrelated tools, or replacing model-authored semantics.
+### Governance floor
 
-Design priority is capability and usefulness. Runtime order is different: establish
-the trusted frame before inference and enforce the narrowest consequential effect
-before execution. Capability-first never means execute an unauthorized effect first.
+These six are required, and sufficient for this release: tenant isolation; login and
+SSO; personal data private by default; externally visible or irreversible actions
+approved first, with the run resuming in place; credentials held by the vault, never in
+prompts, files, or logs; audit log and budget caps.
 
-## Calibrate instructions
+### Frozen for this release
 
-Distinguish invariants from defaults, conditional patterns, and examples or case law.
-Only authority, trust, effect, evidence, or recovery properties are presumed hard;
-other guidance needs a task-specific reason. Every compensating rule remains removable
-when a stronger model, tool, host, or evaluation makes it unnecessary.
+Do not extend, reconnect, or build on: new persistent-computer or private-browser
+mechanisms, remote A2A, organization identity cutover, original-artifact lifecycle,
+per-read receipts and source checks, reconcile passes, and new third-party agent
+onboarding (the existing local bridge stays as is). They leave the default path and
+will be deleted. A customer need brings one back only by swapping another out, with the
+owner's approval.
 
 ## Hard invariants
 
@@ -48,15 +56,13 @@ when a stronger model, tool, host, or evaluation makes it unnecessary.
 - Credentials and privileged effects stay behind a trusted runtime boundary with the
   least necessary scope. Prompt wording is not access control.
 - Keep denial local to the disallowed effect. Do not remove unrelated capabilities,
-  terminate useful reasoning, or block safe alternatives such as analysis, drafting,
-  or requesting scoped approval.
+  terminate useful reasoning, quarantine the user's own files, or block safe
+  alternatives such as analysis, drafting, or requesting scoped approval.
 - Do not silently downgrade the selected model, reasoning mode, authorized evidence
-  coverage, output budget, or tool surface. A real resource limit produces a visible,
-  typed, recoverable state.
-- Do not claim an operation or business outcome succeeded without proportionate
-  evidence from the relevant environment. Preserve `unknown` when truth is ambiguous.
-- Every non-terminal state retains a reachable safe next action: continue, revise,
-  approve, retry safely, reconcile, cancel, or abandon.
+  coverage, output budget, or tool surface, and do not silently drop context or a
+  user's message. A real resource limit produces a visible, recoverable state.
+- Do not report an operation or business outcome as succeeded without evidence from
+  the environment that performed it; a failed delivery is shown as failed.
 
 ## Model and platform ownership
 
@@ -65,14 +71,9 @@ planning, synthesis, prioritization, repair strategy, and expression. The platfo
 owns identities, scopes, source access, secrets, exact schemas, explicit resources,
 external effects, durable commits, receipts, ordering, recovery, and audit.
 
-This boundary is not absolute semantic anarchy:
-
-- exact, versioned, testable business definitions may be authoritative hard rules;
-- a semantic evaluator may advise, route, or block when its criterion, measured error,
-  accountable owner, distribution monitoring, and appeal/recovery path justify that
-  role; and
-- deterministic code is appropriate for syntax, protocol, quotas, identity, policy,
-  transactions, and other exactly representable properties.
+Exact, versioned, testable business definitions may be authoritative hard rules, and
+deterministic code is appropriate for syntax, protocol, quotas, identity, policy,
+transactions, and other exactly representable properties.
 
 Do not use natural-language keywords, regexes, counters, or similarity heuristics as
 universal judges of intent, truth, completion, contradiction, or answer correctness.
@@ -85,34 +86,39 @@ authorized evidence.
 
 For agent turns and background intelligence lanes:
 
-1. Establish principal, authority, source provenance, and explicit resource limits.
+1. Establish principal, authority, and explicit resource limits.
 2. Expose the authorized evidence, real capability surface, task-sized context/output
    budget, and environmental feedback needed for the intelligent step.
 3. Before a consequential effect, enforce capability policy, approval, sandbox,
    secret/data-flow boundaries, quota, and idempotency where relevant.
 4. Return typed execution status, evidence references, retryability, and recovery
-   state. Distinguish `denied`, `approval_required`, `unavailable`, `failed`, and
-   `unknown`.
+   state to the model. Distinguish `denied`, `approval_required`, `unavailable`,
+   `failed`, and `unknown`; the user still sees only the five states above.
 5. Persist exact mechanical facts; let the model or accountable owner interpret them.
 
 Enforce a protected property at the narrowest boundary that can actually protect it.
 Do not delete broad reasoning or tool capability when a scoped credential, ingress
-check, sandbox, transaction, or pre-effect gate contains the real risk.
+check, sandbox, transaction, or pre-effect gate contains the real risk. Establish the
+frame once per turn and pass it down; layers do not re-derive identity, authority, or
+provenance. Work the user waits on (send to first token, a tool call, an IM reply) is
+on the user's clock: keep it to what the turn needs, and move maintenance, evidence
+writes, and reconcile passes off that path.
 
-## Admit and retire controls deliberately
+## Admit new mechanisms deliberately
 
-Before adding a hard control, record:
+Prefer fixing, reusing, or deleting code on the main path. A change that adds a
+mechanism (a new persisted state or table, daemon or periodic sweep, gate, ledger,
+user-visible status, or required step before the model call) needs the owner's
+approval in the task before it is built. Bring:
 
-1. the protected property or authoritative obligation;
+1. the protected property or user outcome it serves;
 2. the trusted fact source that can decide it;
-3. why a narrower ingress or effect boundary is insufficient;
-4. its capability tax and false-block cost;
+3. why fixing existing code or a narrower ingress or effect boundary is insufficient;
+4. its cost: main-path latency, capability tax, and false-block cost;
 5. denial, failure, appeal, and recovery behavior; and
-6. the evaluation, model improvement, or host capability that would retire it.
+6. what would let us remove it.
 
-Preventive controls do not require a prior incident when credible threats, regulation,
-or irreversible impact justify them. Conversely, past usefulness does not make a
-control permanent.
+Past usefulness does not make a control permanent.
 
 ## Context and long-running work
 
@@ -127,7 +133,7 @@ For work spanning contexts or processes:
   active failures, and one next action;
 - preserve full artifacts or truthful recovery references before trimming inline data;
 - use a task-sized budget or a typed pause instead of premature completion;
-- reconcile recovered state with the live environment before continuing;
+- re-check recovered state against the live environment before continuing;
 - preserve user steering without discarding unrelated valid progress; and
 - never treat a plan, ledger, summary, or acting model's confidence as authority or
   proof of completion.
@@ -149,19 +155,20 @@ prefer single-writer integration.
 ## Completion and delivery
 
 Never present scaffolding, a registered function, a passing unit test, a route, or a UI
-shell as a completed production capability. For a material production closure, trace
-the relevant atoms proportionally: Input, Authority, Execution, Evidence, Recovery,
-Consumption, and Acceptance.
+shell as a completed production capability. Scoped vertical slices are valid when they
+are real, usable, testable, explicitly bounded, and not misrepresented as the full
+product. Do not defer required migration, error handling, or recovery for a scope
+claimed as complete.
 
-The seven atoms are a completeness lens, not mandatory ceremony for every small edit.
-Scoped vertical slices are valid when they are real, usable, testable, explicitly
-bounded, and not misrepresented as the full product. Do not defer required migration,
-error handling, or recovery for a scope claimed as complete.
+Judge a change by what the user can now see it do. A change to anything users see or
+wait for is done only when it has been seen working on the live entry it changes (web,
+or the IM channel it touches): attach a screenshot or recording, and for the main path
+the measured time from send to first visible response, before and after. Green tests
+are necessary, not sufficient; they can exercise a fake or orphan path.
 
-Verify the live entry and consumption path; green tests can still exercise a fake or
-orphan path. Use the smallest validation that covers the changed behavior, and report
-what remains unverified. Deployment, publication, production mutation, credential
-changes, and destructive cleanup require explicit authorization.
+Use the smallest validation that covers the changed behavior, and report what remains
+unverified. Deployment, publication, production mutation, credential changes, and
+destructive cleanup require explicit authorization.
 
 ## Working in this repository
 
@@ -202,7 +209,7 @@ belong near their code or in nested instructions when a real consumer needs them
 
 Read only those relevant to the task:
 
-- Product goals and quality floor: `docs/hive-sota-master-goal.md`
+- Product definition, golden tasks, and acceptance: `docs/product-definition-2026-11.md`
 - CCPlus product boundary: `docs/ccplus-north-star-contract-2026-06-24.md`
 - Model-agency case law and closure record:
   `docs/runtime-model-agency-constraint-audit-2026-07-13.md`
@@ -211,7 +218,6 @@ Read only those relevant to the task:
 - Memory architecture: `docs/memory-system-flow-map-2026-06-17.md`
 - Memory path contract: `docs/memory-vault-path-contract-2026-06-23.md`
 - Frontend product authority: `docs/frontend-design-refinement-2026-07-03.md`
-- Current production acceptance: `docs/acceptance/2026-08-30-weekend-rc/README.md`
 - Railway production deployment: `docs/railway-production-runbook.md`
 
 Historical baselines such as FreeCode, Claude Code, Codex, Hermes, or other providers

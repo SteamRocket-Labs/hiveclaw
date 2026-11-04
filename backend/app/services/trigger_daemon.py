@@ -330,7 +330,7 @@ async def _create_trigger_runtime_task(
             # An independent fire owns a fresh durable work root from admission.
             # The same reserved identity becomes its Reflection Session later.
             batch_root_session_id = _trigger_child_run_id(task_id, effect="reflection_session", discriminator="")
-        if tenant_id is not None:
+        if tenant_id is not None and bool(metadata.get("preflight_allowed", True)):
             reservation_service = RuntimeBudgetService()
             budget_lookup = RuntimeBudgetPolicyLookup(
                 tenant_id=tenant_id,
@@ -382,22 +382,21 @@ async def _create_trigger_runtime_task(
                     },
                 )
             )
-            if bool(metadata.get("preflight_allowed", True)):
-                budget_reservation_key = f"trigger:{task_id}:start"
-                admission_decision = await ExecutionAdmission(reservation_service).admit(
-                    RuntimeBudgetReservation(
-                        budget_run_id=budget_run.id,
-                        reservation_key=budget_reservation_key,
-                        background_tasks=1,
-                        reason="trigger_start",
-                        runtime_task_id=uuid.UUID(task_id),
-                        metadata={
-                            "work_type": "trigger",
-                            "agent_id": str(agent_id),
-                            "trigger_ids": [str(value) for value in trigger_id_values],
-                        },
-                    )
+            budget_reservation_key = f"trigger:{task_id}:start"
+            admission_decision = await ExecutionAdmission(reservation_service).admit(
+                RuntimeBudgetReservation(
+                    budget_run_id=budget_run.id,
+                    reservation_key=budget_reservation_key,
+                    background_tasks=1,
+                    reason="trigger_start",
+                    runtime_task_id=uuid.UUID(task_id),
+                    metadata={
+                        "work_type": "trigger",
+                        "agent_id": str(agent_id),
+                        "trigger_ids": [str(value) for value in trigger_id_values],
+                    },
                 )
+            )
         metadata.update(
             {
                 "runtime_task_id": task_id,
@@ -1162,6 +1161,9 @@ async def _evaluate_trigger(trigger: AgentTrigger, now: datetime) -> bool:
             return False
 
     elif t == "once":
+        # A blocked one-shot remains enabled and retries daily until it can run.
+        if trigger.last_fired_at and now - trigger.last_fired_at < timedelta(days=1):
+            return False
         at_str = cfg.get("at")
         if not at_str:
             return False
@@ -1563,7 +1565,7 @@ def _default_trigger_event_key(trigger: AgentTrigger, now: datetime, evaluation:
         minutes = max(int(cfg.get("minutes", 30) or 30), 1)
         return f"interval:{trigger.id}:{int(now.timestamp()) // (minutes * 60)}"
     if trigger.type == "poll":
-        current_value = str(cfg.get("_last_value") or "")
+        current_value = f"{trigger.last_fired_at or trigger.created_at}:{cfg.get('_last_value') or ''}"
         return f"poll:{trigger.id}:{hashlib.sha256(current_value.encode('utf-8')).hexdigest()[:16]}"
     if trigger.type == "webhook":
         payload = str(cfg.get("_webhook_payload") or "")

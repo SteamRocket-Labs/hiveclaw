@@ -233,6 +233,17 @@ async def _settle_trigger_runtime_task(
     newly_settled_outcomes: dict[str, str] = {}
     for trigger in rows:
         config = dict(trigger.config or {})
+        if status == "skipped" and metadata.get("preflight_allowed") is False:
+            from app.services.trigger_daemon import _inflight_fire_is_active
+            from app.services.trigger_resource_authority import trigger_fire_authority_block_reason
+
+            # Consume the schedule slot atomically with its visible skipped record.
+            # No execution occurred: preserve fire_count, max_fires and enabled state.
+            if (trigger.type in {"cron", "interval", "poll", "once"}
+                    and not _inflight_fire_is_active(config, now)
+                    and not trigger_fire_authority_block_reason(trigger, metadata)):
+                trigger.last_fired_at = now
+            continue
         if not _trigger_inflight_matches(config, task.id):
             continue
         trigger_outcome = str(overrides.get(str(trigger.id)) or outcome)

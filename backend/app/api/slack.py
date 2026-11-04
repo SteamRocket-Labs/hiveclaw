@@ -156,7 +156,10 @@ def _verify_slack_signature(signing_secret: str, body: bytes, headers: dict) -> 
     if not ts or not sig:
         return False
     # Reject requests older than 5 minutes
-    if abs(time.time() - int(ts)) > 300:
+    try:
+        if abs(time.time() - int(ts)) > 300:
+            return False
+    except ValueError:
         return False
     base = f"v0:{ts}:{body.decode()}"
     expected = "v0=" + hmac.new(signing_secret.encode(), base.encode(), hashlib.sha256).hexdigest()
@@ -185,7 +188,9 @@ async def slack_event_webhook(
 ):
     """Handle Slack Event API callbacks."""
     body_bytes = await request.body()
-    replay_event_id = getattr(getattr(request, "state", None), "channel_ingress_event_id", None)
+    from app.services.channel_ingress_dispatcher import ChannelIngressReplayRequest
+
+    is_replay = isinstance(request, ChannelIngressReplayRequest)
 
     # Get channel config and pin tenant RLS for this public webhook.
     config = await load_public_agent_channel_config(db, agent_id=agent_id, channel_type="slack")
@@ -194,8 +199,8 @@ async def slack_event_webhook(
 
     # Verify Slack signature
     signing_secret = config.encrypt_key or ""
-    if signing_secret and replay_event_id is None:
-        if not _verify_slack_signature(signing_secret, body_bytes, dict(request.headers)):
+    if not is_replay:
+        if not signing_secret or not _verify_slack_signature(signing_secret, body_bytes, dict(request.headers)):
             return Response(status_code=401)
 
     import json
@@ -213,7 +218,7 @@ async def slack_event_webhook(
 
     event = body.get("event", {})
     event_id = body.get("event_id", "")
-    if replay_event_id is None:
+    if not is_replay:
         from app.services.channel_ingress_inbox import accept_authenticated_channel_event, channel_installation_ref
 
         await accept_authenticated_channel_event(

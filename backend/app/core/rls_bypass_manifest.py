@@ -825,7 +825,9 @@ def fingerprint_rls_bypass_scopes(app_root: Path) -> str:
 # Local bridge list/presence projections now reflect authentication expiry.
 # Only its module-source digest changes; all 780 entries, 120 callsites,
 # authentication, query predicates and authority checks retain their boundaries.
-RLS_BYPASS_SCOPES_SHA256 = "2b48582757e66d0e18c3a6318803105d5b5b75560e2a4461b301f5ad9fdcf6ef"
+# Telegram webhook operator: one read-only cross-tenant inventory scope;
+# inactive or missing known companies are excluded before HTTP registration.
+RLS_BYPASS_SCOPES_SHA256 = "124ccb3b5c679313db892e9df6dd5b6e4bf72bbc96d730a78fef9c1d82d00b3d"
 
 
 def scan_rls_bypass_callsites(app_root: Path) -> list[RLSBypassCallsite]:
@@ -1147,6 +1149,12 @@ RLS_BYPASS_ALLOWLIST = (
             "'tenantless authenticated identity lookup before company bootstrap'",
             ("session-state-only",),
         )
+    ),
+    _grant(
+        "app/scripts/reregister_telegram_webhooks.py",
+        "run",
+        "'Operator Telegram webhook secret migration'",
+        ("select:*columns",),
     ),
     _grant(
         *(

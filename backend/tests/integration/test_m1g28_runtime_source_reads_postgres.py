@@ -1,4 +1,4 @@
-"""Registered native file readers revalidate receipt sources as an Agent."""
+"""Owned working copies remain readable; original source grants stay separate."""
 
 import hashlib
 import json
@@ -35,7 +35,7 @@ async def _read(n, tool, path):
 
 
 @pytest.mark.parametrize("tool", ["read_file", "fs_read", "read_document", "fs_read_document"])
-async def test_native_reader_refuses_unreceipted_legacy_body_without_resigning_it(
+async def test_native_reader_reads_owned_body_without_manufacturing_a_receipt(
     native_workspace, app_user_sessionmaker, tool,  # noqa: F811
 ):
     from app.database import pin_rls_tenant_context
@@ -53,8 +53,7 @@ async def test_native_reader_refuses_unreceipted_legacy_body_without_resigning_i
             content_hash=hashlib.sha256(before).hexdigest())
         await db.commit()
     result = await _read(n, tool, path)
-    assert before.decode() not in result and "workspace_content_unverified" in result
-    assert '"retryable": false' in result
+    assert before.decode() in result and "workspace_content_unverified" not in result
     assert target.read_bytes() == before
     async with app_user_sessionmaker() as db:
         await pin_rls_tenant_context(db, n.tenant)
@@ -63,7 +62,7 @@ async def test_native_reader_refuses_unreceipted_legacy_body_without_resigning_i
 
 
 @pytest.mark.parametrize("tool", ["read_file", "fs_read", "read_document", "fs_read_document"])
-async def test_scoped_browser_admin_inspection_never_authorizes_agent_receipt_consumption(
+async def test_owned_working_copy_does_not_inherit_source_read_gates(
     native_workspace, owner_sessionmaker, tool,  # noqa: F811
 ):
     from app.models.user import User
@@ -89,7 +88,7 @@ async def test_scoped_browser_admin_inspection_never_authorizes_agent_receipt_co
     browser = await n.client.get(f"/agents/{n.agent}/files/content", params={"path": path})
     assert browser.status_code == 200 and body in browser.text, browser.text
     denied = await _read(n, tool, path)
-    assert body not in denied and "content_source_access_denied" in denied, denied
+    assert body in denied and "content_source_access_denied" not in denied, denied
     grant = KnowledgeGrant(id=uuid.uuid4(), tenant_id=n.tenant, scope_id=n.foreign, resource_type="document",
         resource_id=document.id, document_id=document.id, grantee_type="agent", grantee_id=n.agent,
         requester_user_id=n.user, session_id=str(n.session), purpose="interactive_session", permission="read",
@@ -103,12 +102,12 @@ async def test_scoped_browser_admin_inspection_never_authorizes_agent_receipt_co
         (await db.get(KnowledgeGrant, grant.id)).revoked_at = datetime.now(timezone.utc)
         await db.commit()
     denied = await _read(n, tool, path)
-    assert body not in denied and "content_source_access_denied" in denied, denied
+    assert body in denied and "content_source_access_denied" not in denied, denied
     assert (n.root / path).read_text() == body
 
 
 @pytest.mark.parametrize("tool", ["read_file", "fs_read", "read_document", "fs_read_document"])
-async def test_native_reader_never_releases_rewritten_bytes_under_an_old_receipt(native_workspace, tool):  # noqa: F811
+async def test_native_reader_reads_current_owned_bytes_after_member_edit(native_workspace, tool):  # noqa: F811
     n = native_workspace
     path = "workspace/receipted.txt"
     target = await _create(n, path, "Original verified body")
@@ -116,7 +115,7 @@ async def test_native_reader_never_releases_rewritten_bytes_under_an_old_receipt
     target.write_text("FORGED FILE BODY".ljust(stat.st_size))
     os.utime(target, ns=(stat.st_atime_ns, stat.st_mtime_ns))
     result = await _read(n, tool, path)
-    assert "FORGED FILE BODY" not in result and "workspace_content_unverified" in result, result
+    assert "FORGED FILE BODY" in result and "workspace_content_unverified" not in result, result
 
 
 @pytest.mark.parametrize("return_format", ["markdown", "metadata"])

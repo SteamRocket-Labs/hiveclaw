@@ -123,11 +123,11 @@ def _pre_effect_abort_evidence(*, receipt_ref: str) -> dict[str, Any]:
     }
 
 
-def _typed_execution_abort(*, invocation: SessionToolInvocation, reason_code: str) -> str:
+def _typed_execution_abort(*, invocation: SessionToolInvocation, reason_code: str, status: str = "aborted") -> str:
     return json.dumps(
         {
             "schema": "hive.tool_permission_execution_abort.v1",
-            "status": "aborted",
+            "status": status,
             "reason_code": reason_code,
             "invocation_id": str(invocation.id),
             "provider_tool_use_id": invocation.provider_tool_use_id,
@@ -859,10 +859,9 @@ async def _resolve_session_tool_permission(
                         session_id=authority.session_id,
                         invocation_id=invocation.id,
                         provider_result_content=_typed_execution_abort(
-                            invocation=invocation,
-                            reason_code="approved_tool_execution_not_released",
+                            invocation=invocation, reason_code="approved_tool_execution_failed", status="failed",
                         ),
-                        execution_evidence=_pre_effect_abort_evidence(receipt_ref=abort_ref),
+                        execution_evidence={**_pre_effect_abort_evidence(receipt_ref=abort_ref), "status": "failed"},
                         effective_arguments=effective_arguments,
                     )
                 else:

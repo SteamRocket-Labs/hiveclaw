@@ -1632,6 +1632,7 @@ async def _claim_canonical_hr_blueprint(
 @tool(
     ToolMeta(
         name="create_employee_from_request",
+        destructive=True,
         category="hr",
         display_name="Create Requested Employee",
         adapter="request",

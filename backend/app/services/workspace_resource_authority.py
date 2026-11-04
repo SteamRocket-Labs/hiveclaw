@@ -798,7 +798,6 @@ async def authorize_workspace_path(
             action=action,
             owner_user_id=manifest.owner_user_id,
             root_session_id=manifest.root_session_id,
-            authority_state=manifest.authority_state,
             allow_manager_override=allow_manager_override,
             manager_override_reason=manager_override_reason,
             agent_access=(agent, access_level),
@@ -1004,7 +1003,6 @@ async def load_workspace_authority_scope(
                 action="read",
                 owner_user_id=manifest.owner_user_id,
                 root_session_id=manifest.root_session_id,
-                authority_state=manifest.authority_state,
                 agent_access=resolved_agent_access,
                 runtime_principal=runtime_principal,
             )
@@ -1017,7 +1015,7 @@ async def load_workspace_authority_scope(
             full_control_paths.add(manifest.path)
             action_permissions.update((manifest.path, action) for action in _WORKSPACE_EFFECT_ACTIONS)
     grant_candidates = [manifest for manifest in manifests
-        if manifest.path not in full_control_paths and manifest.authority_state == OWNED_AUTHORITY_STATE]
+        if manifest.path not in full_control_paths and manifest.owner_user_id is not None]
     if grant_candidates:
         for action in _WORKSPACE_EFFECT_ACTIONS:
             resource_ids = await load_explicit_resource_grant_ids(db, user=user, resource_kind="workspace_file", action=action)

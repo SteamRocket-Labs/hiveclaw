@@ -682,21 +682,9 @@ async def read_file(
             raise _content_receipt_http_error(exc) from exc
     receipt = None
     if resource_decision is not None:
-        from app.services.content_input_receipts import (
-            ContentInputReceiptError,
-            latest_workspace_receipt,
-            validate_browser_workspace_receipt,
-        )
+        from app.services.content_input_receipts import latest_workspace_receipt
 
         receipt = await latest_workspace_receipt(db, _agent.tenant_id, agent_id, path)
-        if receipt is not None:
-            digest = content_hash
-            if digest is None:
-                digest = await asyncio.to_thread(_workspace_content_hash, agent_id, path)
-            try:
-                await validate_browser_workspace_receipt(db, _agent.tenant_id, current_user, receipt, digest)
-            except ContentInputReceiptError as exc:
-                raise _content_receipt_http_error(exc) from exc
     return FileContent(
         path=path,
         content=content,
@@ -1497,11 +1485,9 @@ async def _write_file_bytes(
         receipt = None
         if resource_decision is not None:
             from app.services.content_input_receipts import (
-                ContentInputReceiptError,
                 latest_workspace_receipt,
                 lock_workspace_receipt_write,
                 record_workspace_receipt,
-                validate_browser_workspace_receipt,
             )
 
             await lock_workspace_receipt_write(db, agent.tenant_id, agent_id, path)
@@ -1511,16 +1497,6 @@ async def _write_file_bytes(
                     verified_base = await asyncio.to_thread(_workspace_content_hash, agent_id, path)
                 except WorkspaceAuthorityError as exc:
                     raise _workspace_authority_http_error(exc) from exc
-                if previous_receipt is not None and previous_receipt.content_sha256 != verified_base:
-                    if resource_decision.manifest is not None:
-                        resource_decision.manifest.authority_state = "quarantined"
-                        await db.commit()
-                    raise _content_receipt_http_error(
-                        ContentInputReceiptError(
-                            "workspace_content_unverified",
-                            "The file no longer matches its verified receipt. Preserve it and regenerate from authorized inputs.",
-                        )
-                    )
                 if expected_current_hash is not None and verified_base != expected_current_hash:
                     raise HTTPException(
                         status_code=409,
@@ -1531,12 +1507,6 @@ async def _write_file_bytes(
                             "message": "The file changed since it was read. Keep your draft and read the current version before saving again.",
                         },
                     )
-                try:
-                    await validate_browser_workspace_receipt(
-                        db, agent.tenant_id, current_user, previous_receipt, verified_base
-                    )
-                except ContentInputReceiptError as exc:
-                    raise _content_receipt_http_error(exc) from exc
             elif expected_current_hash is not None:
                 raise HTTPException(
                     status_code=409,
@@ -1545,15 +1515,6 @@ async def _write_file_bytes(
                         "retryable": False,
                         "outcome": "conflict",
                         "message": "The file is missing. Keep the draft and reconcile before saving again.",
-                    },
-                )
-            elif previous_receipt is not None:
-                raise HTTPException(
-                    status_code=409,
-                    detail={
-                        "code": "workspace_content_unverified",
-                        "retryable": False,
-                        "message": "The previously receipted file is missing. Preserve its history and regenerate a new path.",
                     },
                 )
 
@@ -1628,14 +1589,6 @@ async def _write_file_bytes(
                     manifest.authority_state = "quarantined"
                     await db.commit()
                     raise RuntimeError("workspace_content_changed_before_receipt")
-                if previous_receipt is not None:
-                    await validate_browser_workspace_receipt(
-                        db,
-                        agent.tenant_id,
-                        current_user,
-                        previous_receipt,
-                        verified_base,
-                    )
                 receipt = record_workspace_receipt(db, agent.tenant_id, agent_id, path, content_hash, previous_receipt)
                 from app.services.workspace_receipt_versions import capture_receipt_version
 

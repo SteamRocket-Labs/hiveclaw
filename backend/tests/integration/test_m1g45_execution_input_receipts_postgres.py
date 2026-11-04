@@ -1,4 +1,4 @@
-"""Copied process inputs retain the live source and exact-byte receipt checks."""
+"""Process workspaces include current owned files without content receipt gates."""
 
 import os
 import platform
@@ -21,7 +21,7 @@ pytestmark = [pytest.mark.usefixtures("migrated_pg_url"), pytest.mark.skipif(pla
 
 @pytest.mark.parametrize("tool", ["execute_code", "run_command", "run_skill_tool"])
 @pytest.mark.parametrize("change", ["revoked", "tampered", "copied_bytes"])
-async def test_process_materialization_keeps_source_receipts_without_blocking_other_inputs(
+async def test_process_materialization_reads_current_owned_copies(
     workspace_source, owner_sessionmaker, monkeypatch, tool, change,  # noqa: F811
 ):
     from app.core.resource_authority import workspace_resource_id
@@ -82,29 +82,19 @@ async def test_process_materialization_keeps_source_receipts_without_blocking_ot
             return copy_resource(source, destination, path, **kwargs)
 
         monkeypatch.setattr(code_exec, "_copy_workspace_resource", change_at_copy)
-    negative = await call()
-    assert "AUTHORIZED_PROCESS_INPUT" in str(negative) and "DERIVED_INPUT_DENIED" in str(negative), negative
-    assert s.body not in str(negative) and "FORGED_EXECUTION_INPUT" not in str(negative), negative
-    denied = negative.metadata["workspace_input_denials"]
-    assert any(row["path"] == s.derived and row["reason_code"] == (
-        "content_source_access_denied" if change == "revoked" else "workspace_content_unverified") for row in denied), denied
-    assert "workspace_input_denials" in str(negative)
+    current = await call()
+    assert "AUTHORIZED_PROCESS_INPUT" in str(current), current
+    expected = s.body if change == "revoked" else "FORGED_EXECUTION_INPUT"
+    assert expected in str(current) and "DERIVED_INPUT_DENIED" not in str(current), current
+    assert "workspace_input_denials" not in current.metadata
     assert (n.root / "workspace/delivery.txt").read_text() == "AUTHORIZED_PROCESS_DELIVERY"
-    if change == "revoked":
-        async with owner_sessionmaker() as db:
-            (await db.get(ResourcePermission, grant_id)).revoked_at = None
-            await db.commit()
-        recovered = await call()
-        assert s.body in str(recovered) and "AUTHORIZED_PROCESS_INPUT" in str(recovered), recovered
-    else:
-        async with owner_sessionmaker() as db:
-            manifest = await db.scalar(select(WorkspaceResourceManifest).where(
-                WorkspaceResourceManifest.agent_id == n.agent, WorkspaceResourceManifest.path == s.derived))
-            assert manifest.authority_state == "quarantined"
-        assert target.read_text().strip() == "FORGED_EXECUTION_INPUT"
+    async with owner_sessionmaker() as db:
+        manifest = await db.scalar(select(WorkspaceResourceManifest).where(
+            WorkspaceResourceManifest.agent_id == n.agent, WorkspaceResourceManifest.path == s.derived))
+        assert manifest.authority_state == "owned"
 
 
-async def test_selected_receipted_skill_script_cannot_execute_rewritten_bytes(native_workspace, owner_sessionmaker):  # noqa: F811
+async def test_selected_owned_script_executes_current_member_edited_bytes(native_workspace, owner_sessionmaker):  # noqa: F811
     from app.models.workspace_resource import WorkspaceResourceManifest
 
     n = native_workspace
@@ -122,11 +112,11 @@ async def test_selected_receipted_skill_script_cannot_execute_rewritten_bytes(na
     assert positive.metadata["code_execution_evidence"]["isolation"] == "sandbox-exec", positive.metadata
     script.write_text("print('FORGED_SKILL_EXECUTED')\n")
     negative = await call()
-    assert "FORGED_SKILL_EXECUTED" not in str(negative), negative
-    assert "workspace_content_unverified" in str(negative), negative
-    assert "code_execution_evidence" not in negative.metadata
+    assert "FORGED_SKILL_EXECUTED" in str(negative), negative
+    assert "workspace_content_unverified" not in str(negative), negative
+    assert negative.metadata["code_execution_evidence"]["isolation"] == "sandbox-exec"
     async with owner_sessionmaker() as db:
         manifest = await db.scalar(select(WorkspaceResourceManifest).where(
             WorkspaceResourceManifest.agent_id == n.agent, WorkspaceResourceManifest.path == path))
-        assert manifest.authority_state == "quarantined"
+        assert manifest.authority_state == "owned"
     assert script.read_text() == "print('FORGED_SKILL_EXECUTED')\n"

@@ -615,6 +615,7 @@ async def permission_abort_result_bound(db, *, invocation, event, content):
         reason = payload.get("reason_code")
         suffix = {
             "approved_tool_execution_not_released": "effect-authority-not-released",
+            "approved_tool_execution_failed": "effect-authority-not-released",
             "approved_permission_not_consumed": "approved-effect-not-released",
         }.get(reason)
         receipt = f"session-permission:{control_id}:{suffix}"
@@ -631,7 +632,7 @@ async def permission_abort_result_bound(db, *, invocation, event, content):
             and payload
             == {
                 "schema": "hive.tool_permission_execution_abort.v1",
-                "status": "aborted",
+                "status": "failed" if reason == "approved_tool_execution_failed" else "aborted",
                 "reason_code": reason,
                 "invocation_id": str(invocation.id),
                 "provider_tool_use_id": invocation.provider_tool_use_id,

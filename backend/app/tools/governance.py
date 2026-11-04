@@ -770,6 +770,13 @@ async def request_action_preflight_approval(
 ) -> ToolBoundaryBlock | None:
     """Route a typed ActionPreflight confirmation through a durable ticket."""
 
+    if reason_code == "preflight_ask" and context.session_id and context.approval_decision is None:
+        message = await _emit_session_no_policy_result(
+            context, capability=f"tool.action_preflight.{context.tool_name}", reason=reason_code,
+            action=_session_explicit_policy_action(context), event_callback=event_callback,
+        )
+        return _typed_governance_block(message, []) if message is not None else None
+
     message = await _emit_enterprise_approval_result(
         context,
         deps,

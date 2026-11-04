@@ -657,7 +657,7 @@ async def _validate_agent_context_dependency(db, tenant_id, dependency, *, user,
                 "The context source has changed. Regenerate from current authorized inputs.",
                 403,
             )
-    if resident or identity or ref == "soul":
+    if resident or identity:
         from app.models.config_revision import ConfigRevision
         from app.services.config_versioning import canonical_content_hash
 
@@ -721,16 +721,6 @@ async def _validate_agent_context_dependency(db, tenant_id, dependency, *, user,
                 )
             _validate_source_bytes(Path(get_settings().AGENT_DATA_DIR) / str(agent_id) / ref, version)
             return
-        soul = content.get("soul", {})
-        if (
-            not isinstance(soul, dict)
-            or soul.get("resource_sha256") != resource.sha256
-            or not soul.get("content_sha256")
-        ):
-            raise ContentInputReceiptError(
-                "content_source_unavailable", "The identity source lacks an exact bootstrap witness.", 503
-            )
-        _validate_source_bytes(Path(get_settings().AGENT_DATA_DIR) / str(agent_id) / "soul.md", soul["content_sha256"])
 
 
 async def record_session_actor_identity(
@@ -1793,203 +1783,52 @@ async def _validate_workspace_receipt_inputs(
     )
 
 
-async def authorize_workspace_execution_inputs(request) -> list[dict]:
-    """Exclude unavailable inputs, preserving other process capabilities."""
-    from dataclasses import replace
-    from sqlalchemy.exc import SQLAlchemyError
-    from app.database import tenant_scoped_session
-    from app.services.session_tool_runtime import _sha256
-    from app.services.workspace_resource_authority import WorkspaceAuthorityScope, WorkspaceInputRead
-
-    context = request.context
-    scope = context.workspace_authority_scope
-    if request.tool_name not in {
-        "grep_search",
-        "execute_code",
-        "run_command",
-        "run_skill_tool",
-        "office_document_create",
-        "office_document_apply",
-    } or not isinstance(scope, WorkspaceAuthorityScope):
-        return []
-    paths = {path for path in scope.allowed_paths if path.startswith("workspace/")}
-    reads, denied = [], []
-    try:
-        if request.tool_name in {"office_document_create", "office_document_apply"}:
-            from app.core.resource_authority import normalize_workspace_resource_path
-
-            raw = (
-                request.arguments.get("template_path")
-                if request.tool_name == "office_document_create"
-                else request.arguments.get("path")
-            )
-            resources = (
-                (request.arguments.get("resource_paths") or []) if request.tool_name == "office_document_apply" else []
-            )
-            if not isinstance(resources, list) or any(not isinstance(path, str) for path in resources):
-                raise ValueError("invalid Office resource paths")
-            paths &= {normalize_workspace_resource_path(path) for path in [*([str(raw)] if raw else []), *resources]}
-        tenant_id = uuid.UUID(str(context.tenant_id))
-        if scope.agent_id != context.agent_id or scope.user_id != context.user_id or scope.operator_view:
-            raise ContentInputReceiptError(
-                "content_source_access_denied", "The execution input scope does not match.", 403
-            )
-        async with tenant_scoped_session(tenant_id) as db:
-            await _runtime_input_actor(db, tenant_id, request)
-            for path in sorted(paths):
-                receipt = await latest_workspace_receipt(db, tenant_id, context.agent_id, path)
-                if receipt is None:
-                    denied.append(
-                        {
-                            "path": path,
-                            "reason_code": "workspace_execution_inputs_unverified",
-                            "status": "unavailable",
-                            "retryable": False,
-                        }
-                    )
-                    continue  # Preserve legacy bytes without mounting or inventing their source receipts.
-                try:
-                    await _validate_workspace_receipt_inputs(
-                        db, receipt, runtime_request=request, active_receipts=frozenset({receipt.id})
-                    )
-                except ContentInputReceiptError as exc:
-                    denied.append(
-                        {
-                            "path": path,
-                            "reason_code": exc.code,
-                            "status": "denied" if exc.status_code == 403 else "unavailable",
-                            "retryable": exc.status_code == 503,
-                        }
-                    )
-                    continue
-                reads.append(
-                    WorkspaceInputRead(
-                        path=path,
-                        receipt_id=receipt.id,
-                        revision=receipt.revision,
-                        content_sha256=receipt.content_sha256,
-                        dependencies_hash=_sha256(receipt.dependencies_json),
-                    )
-                )
-    except (ContentInputReceiptError, OSError, ValueError, SQLAlchemyError) as exc:
-        code = exc.code if isinstance(exc, ContentInputReceiptError) else "content_source_unavailable"
-        status = exc.status_code if isinstance(exc, ContentInputReceiptError) else 503
-        reads = []
-        denied = [
-            {
-                "path": path,
-                "reason_code": code,
-                "status": "denied" if status == 403 else "unavailable",
-                "retryable": status == 503,
-            }
-            for path in sorted(paths)
-        ]
-    context.workspace_authority_scope = replace(
-        scope, allowed_paths=scope.allowed_paths - {row["path"] for row in denied}, input_reads=tuple(reads)
-    )
-    return denied
-
-
 async def authorize_workspace_receipt_read(request):
-    """Refuse unverified workspace bodies; recheck receipts as the actual Agent."""
-    from dataclasses import replace
-    from sqlalchemy.exc import SQLAlchemyError
+    """Keep platform memory boundaries separate from ordinary working copies."""
     from app.core.resource_authority import normalize_workspace_resource_path
-    from app.database import tenant_scoped_session
-    from app.services.workspace_resource_authority import WorkspaceAuthorityScope, WorkspaceInputRead
-    from app.services.session_tool_runtime import _sha256
 
     if request.tool_name not in {"read_file", "read_document", "exit_plan_mode"} and not (
         request.tool_name == "fs_read"
         and str(request.arguments.get("mode") or "text").strip().lower() in {"text", "document"}
     ):
         return None
-    if request.tool_name != "exit_plan_mode" and "original_attachment_id" in request.arguments:
-        # The original reader authorizes its own exact source and records an
-        # invocation-bound receipt. A mutable work-copy receipt is unrelated.
+    if "original_attachment_id" in request.arguments:
         return None
-    context = request.context
-    path = None
-    try:
-        raw_path = request.arguments.get("path")
-        if request.tool_name == "exit_plan_mode":
-            from app.services.plan_mode_runtime_context import interactive_plan_mode_metadata
+    raw_path = request.arguments.get("path")
+    if request.tool_name == "exit_plan_mode":
+        from app.services.plan_mode_runtime_context import interactive_plan_mode_metadata
 
-            raw_path = interactive_plan_mode_metadata().get("plan_file_path")
-            if not raw_path:
-                return None
-        path = normalize_workspace_resource_path(str(raw_path or ""))
-        if path == "memory/explicit" or path.startswith("memory/explicit/"):
-            from app.services.explicit_memory_authority import authorize_explicit_memory_file_read
+        raw_path = interactive_plan_mode_metadata().get("plan_file_path")
+    path = normalize_workspace_resource_path(str(raw_path or ""))
+    if path == "memory/explicit" or path.startswith("memory/explicit/"):
+        from app.services.explicit_memory_authority import authorize_explicit_memory_file_read
 
-            return await authorize_explicit_memory_file_read(request, path)
-        if path.startswith("memory/control/"):
-            # These mutable platform sidecars have no independent body source
-            # receipt. Fail at disclosure rather than poisoning later model
-            # inputs; the native no-body status remains consumable.
-            from app.tools.result_envelope import ToolContentEnvelope
+        return await authorize_explicit_memory_file_read(request, path)
+    if path.startswith("memory/control/"):
+        from app.tools.result_envelope import ToolContentEnvelope
 
-            return ToolContentEnvelope(
-                text=_platform_control_read_unavailable(request.tool_name),
-                metadata={"native_read_denial": {"kind": "platform_control_read_unavailable", "path": path}},
-            )
-        if not path.startswith("workspace/"):
-            return None
+        return ToolContentEnvelope(
+            text=_platform_control_read_unavailable(request.tool_name),
+            metadata={"native_read_denial": {"kind": "platform_control_read_unavailable", "path": path}},
+        )
+    if path.startswith("workspace/"):
+        from dataclasses import replace
+        from app.database import tenant_scoped_session
+        from app.services.session_tool_runtime import _sha256
+        from app.services.workspace_resource_authority import WorkspaceAuthorityScope, WorkspaceInputRead
+
+        context = request.context
         scope = context.workspace_authority_scope
-        if scope is not None and not scope.can_read(path):
-            return None  # The existing path boundary denies before body access.
-        tenant_id = uuid.UUID(str(context.tenant_id))
-        async with tenant_scoped_session(tenant_id) as db:
-            receipt = await latest_workspace_receipt(db, tenant_id, context.agent_id, path)
-            if receipt is None:
-                raise ContentInputReceiptError(
-                    "workspace_content_unverified",
-                    "The workspace file has no independently bound content receipt.",
-                    403,
-                )
-            if (
-                not isinstance(scope, WorkspaceAuthorityScope)
-                or scope.agent_id != context.agent_id
-                or scope.user_id != context.user_id
-            ):
-                raise ContentInputReceiptError(
-                    "content_source_access_denied", "The runtime file scope does not match.", 403
-                )
-            await _validate_workspace_receipt_inputs(
-                db, receipt, runtime_request=request, active_receipts=frozenset({receipt.id})
-            )
-            # This hash is checked against the very bytes returned by the file reader.
-            scope = context.workspace_authority_scope
-            observed = WorkspaceInputRead(
-                path=path,
-                receipt_id=receipt.id,
-                revision=receipt.revision,
-                content_sha256=receipt.content_sha256,
-                dependencies_hash=_sha256(receipt.dependencies_json),
-            )
-            context.workspace_authority_scope = replace(
-                scope, input_reads=tuple(read for read in scope.input_reads if read.path != path) + (observed,)
-            )
-        return observed
-    except (ContentInputReceiptError, OSError, ValueError, SQLAlchemyError) as exc:
-        status = exc.status_code if isinstance(exc, ContentInputReceiptError) else 503
-        code = exc.code if isinstance(exc, ContentInputReceiptError) else "content_source_unavailable"
-        result = _workspace_read_denial(request.tool_name, status, code)
-        if path is not None and path.startswith("workspace/"):
-            from app.tools.result_envelope import ToolContentEnvelope
-
-            return ToolContentEnvelope(
-                text=result,
-                metadata={
-                    "native_read_denial": {
-                        "kind": "workspace_source_read_denied",
-                        "path": path,
-                        "http_status": status,
-                        "reason_code": code,
-                    }
-                },
-            )
-        return result
+        if isinstance(scope, WorkspaceAuthorityScope) and scope.can_read(path):
+            async with tenant_scoped_session(uuid.UUID(str(context.tenant_id))) as db:
+                receipt = await latest_workspace_receipt(db, uuid.UUID(str(context.tenant_id)), context.agent_id, path)
+                if receipt is not None:
+                    observed = WorkspaceInputRead(path=path, receipt_id=receipt.id, revision=receipt.revision,
+                        content_sha256=receipt.content_sha256, dependencies_hash=_sha256(receipt.dependencies_json))
+                    context.workspace_authority_scope = replace(scope,
+                        input_reads=tuple(read for read in scope.input_reads if read.path != path) + (observed,))
+                    return observed
+    return None
 
 
 def _platform_control_read_unavailable(tool_name):
@@ -3062,6 +2901,8 @@ async def settle_workspace_receipt_read(*, request, read, tool_call_id, result):
             input_read=read,
         )
         return None, evidence
+    if read.carrier_kind == "workspace_artifact":
+        return None, {"status": "unavailable", "reason_code": "workspace_input_read_unverified"}
     status, code, quarantine = 503, "workspace_input_read_unverified", "not_attempted"
     if read.observed_sha256 is not None:
         try:

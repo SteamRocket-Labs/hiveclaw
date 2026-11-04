@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import type { AssistantBinding } from '../../api/domains/assistant';
@@ -13,7 +13,6 @@ interface AssistantPanelProps {
   onOpen: (replaceUnavailable: boolean) => void;
   onSelect: (agentId: string) => void;
   onRetry: () => void;
-  onFirstWork: (content: string, idempotencyKey: string) => Promise<void>;
 }
 
 function stateText(state: string, t: (key: string) => string): string {
@@ -58,6 +57,11 @@ function stateText(state: string, t: (key: string) => string): string {
   }
 }
 
+/**
+ * Minimal fallback shown only when no assistant conversation can be opened
+ * (first run, or the bound assistant is unavailable). Diagnostics live in
+ * settings/admin surfaces, not on this panel (product definition P3).
+ */
 export default function AssistantPanel({
   payload,
   loading,
@@ -67,35 +71,11 @@ export default function AssistantPanel({
   onOpen,
   onSelect,
   onRetry,
-  onFirstWork,
 }: AssistantPanelProps) {
   const { t } = useTranslation();
   const [chosen, setChosen] = useState<string | null>(null);
-  const [draft, setDraft] = useState('');
-  const [sending, setSending] = useState(false);
-  const [sendError, setSendError] = useState<string | null>(null);
-  const sendLock = useRef(false);
-  const idempotencyKey = useRef(typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : 'assistant-first-work');
   const state = errorState || payload?.state || (loading ? 'loading' : 'unbound');
   const replaceStates = new Set(['employee_deleted', 'employee_inactive', 'inaccessible', 'cross_company']);
-  const canSend = Boolean(payload?.agent?.id) && !payload?.readiness.blockers.includes('model_unavailable') && payload?.readiness.model !== 'missing';
-  const showFirstWork = Boolean(payload?.next_actions.includes('first_work') && payload.agent?.id);
-
-  const send = async () => {
-    const content = draft.trim();
-    if (!content || sendLock.current || !canSend) return;
-    sendLock.current = true;
-    setSending(true);
-    setSendError(null);
-    try {
-      await onFirstWork(content, idempotencyKey.current);
-    } catch (error) {
-      setSendError(error instanceof Error ? error.message : t('assistant.actionFailed'));
-    } finally {
-      sendLock.current = false;
-      setSending(false);
-    }
-  };
 
   return (
     <section className="assistant-entry" aria-labelledby="assistant-title">
@@ -111,23 +91,8 @@ export default function AssistantPanel({
             <strong>{payload.agent.name}</strong>
           </p>
         ) : null}
-        <p>
-          <span>{t('assistant.model')}</span>
-          {' '}
-          {payload?.agent?.model_label || payload?.readiness.model_label
-            || t(payload?.readiness.model === 'forbidden' ? 'assistant.modelForbidden' : 'assistant.modelMissing')}
-        </p>
-        <p>
-          <span>{t('assistant.readiness')}</span>
-          {' '}
-          {payload?.readiness.ready ? t('assistant.ready') : t('assistant.notReady')}
-        </p>
-        {payload?.readiness.blockers.includes('workspace_missing') ? <p>{t('assistant.workspaceMissing')}</p> : null}
-        {state !== 'worker_unavailable' && payload?.readiness.worker === 'unavailable' ? <p>{t('assistant.workerUnavailable')}</p> : null}
-        {state !== 'worker_unknown' && payload?.readiness.worker === 'unknown' ? <p>{t('assistant.workerUnknown')}</p> : null}
-        {state === 'employee_deleted' ? <p>{t('assistant.historyKept')}</p> : null}
       </div>
-      {actionError || sendError ? <p role="alert">{actionError || sendError}</p> : null}
+      {actionError ? <p role="alert">{actionError}</p> : null}
       {payload && payload.candidates.length > 0 ? (
         <fieldset className="assistant-candidates">
           <legend>{t('assistant.chooseAnother')}</legend>
@@ -166,32 +131,6 @@ export default function AssistantPanel({
           <Link className="btn btn-secondary" to={payload.entry.path}>{t('assistant.continue')}</Link>
         ) : null}
       </div>
-      {showFirstWork ? (
-        <form
-          className="assistant-first-work"
-          onSubmit={(event) => {
-            event.preventDefault();
-            void send();
-          }}
-        >
-          <label htmlFor="assistant-first-work">{t('assistant.firstWork')}</label>
-          <textarea
-            id="assistant-first-work"
-            value={draft}
-            placeholder={t('assistant.firstWorkPlaceholder')}
-            onChange={(event) => setDraft(event.target.value)}
-          />
-          <button className="btn btn-primary" type="submit" disabled={sending || busy || !draft.trim() || !canSend}>
-            {t('assistant.send')}
-          </button>
-        </form>
-      ) : null}
-      <nav className="assistant-links" aria-label={t('assistant.title')}>
-        <Link to="/home">{t('assistant.home')}</Link>
-        <Link to="/agents">{t('assistant.employees')}</Link>
-        <Link to="/team">{t('assistant.team')}</Link>
-        <Link to="/messages">{t('assistant.messages')}</Link>
-      </nav>
     </section>
   );
 }

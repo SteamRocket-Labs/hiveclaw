@@ -9,7 +9,13 @@ function company(fallback: string) {
   try { return localStorage.getItem('current_tenant_id') || fallback; } catch { return fallback; }
 }
 
-export default function RemoteA2AWorkControls({ agentId, sessionId }: { agentId: string; sessionId: string }) {
+// On-demand panel (opened from the composer "+" menu): users with an existing
+// remote task can still reply, cancel and recover files, but nothing remote
+// renders on the default chat surface (7.3). `open` is caller-controlled so
+// closing only hides the mounted instance, keeping an unconfirmed request.
+export default function RemoteA2AWorkControls({ agentId, sessionId, open = false, onClose }: {
+  agentId: string; sessionId: string; open?: boolean; onClose?: () => void;
+}) {
   const user = useAuthStore((state) => state.user);
   const [generation, setGeneration] = useState(0);
   useEffect(() => {
@@ -22,13 +28,13 @@ export default function RemoteA2AWorkControls({ agentId, sessionId }: { agentId:
   const tenantId = company(user?.tenant_id || '');
   if (!user || !tenantId) return null;
   return <Work key={`${agentId}:${sessionId}:${user.id}:${tenantId}:${generation}`}
-    agentId={agentId} sessionId={sessionId} actorId={user.id} tenantId={tenantId} />;
+    agentId={agentId} sessionId={sessionId} actorId={user.id} tenantId={tenantId}
+    open={open} onClose={onClose} />
 }
 
 type Pending = { taskId?: string; targetAgentId?: string; body: RemoteA2ATaskInput | RemoteA2ATaskOperation };
-function Work({ agentId, sessionId, actorId, tenantId }: { agentId: string; sessionId: string; actorId: string; tenantId: string }) {
+function Work({ agentId, sessionId, actorId, tenantId, open, onClose }: { agentId: string; sessionId: string; actorId: string; tenantId: string; open?: boolean; onClose?: () => void }) {
   const { t } = useTranslation();
-  const [open, setOpen] = useState(false);
   const [text, setText] = useState('');
   const [effects, setEffects] = useState(false);
   const [cost, setCost] = useState(false);
@@ -141,7 +147,10 @@ function Work({ agentId, sessionId, actorId, tenantId }: { agentId: string; sess
     };
     return labels[task.status] || labels.needs_reconciliation;
   }
-  return <details className="card-pad-sm" open={open} onToggle={(event) => setOpen(event.currentTarget.open)}>
+  return <details className="card-pad-sm" open={open} hidden={!open} onToggle={(event) => {
+    // Collapsing the on-demand panel removes it from the chat surface again.
+    if (!event.currentTarget.open) onClose?.();
+  }}>
     <summary>{t('remoteWork.title', 'Remote A2A requests in this work')}</summary>
     <p>{t('remoteWork.boundary', 'Send an explicit request through this employee’s configured remote endpoint. Its internal actions cannot be intercepted here; external charges remain unknown. The employee’s selected native model is unchanged.')}</p>
     {query.isPending && <p role="status">{t('common.loading', 'Loading…')}</p>}

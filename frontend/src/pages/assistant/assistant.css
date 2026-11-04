@@ -16,12 +16,6 @@
 }
 
 .assistant-card,
-.assistant-strip {
-  border: 1px solid var(--border-default);
-  background: var(--bg-elevated);
-  border-radius: 8px;
-  padding: var(--space-4);
-}
 
 .assistant-actions,
 .assistant-links {
@@ -56,13 +50,4 @@
   max-width: 100%;
   min-height: 6rem;
   box-sizing: border-box;
-}
-
-.assistant-strip {
-  margin: var(--space-3) var(--space-4) 0;
-  font-size: var(--text-body);
-}
-
-.assistant-strip a {
-  color: var(--text-primary);
 }

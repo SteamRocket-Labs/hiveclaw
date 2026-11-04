@@ -20,10 +20,8 @@ const task = (overrides: Partial<RemoteA2ATask> = {}): RemoteA2ATask => ({ id: '
 
 async function mount(strict = false) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });clients.push(client);
-  const component = <QueryClientProvider client={client}><RemoteA2AWorkControls agentId="employee" sessionId="original-work" /></QueryClientProvider>;
-  const { container } = render(strict ? <StrictMode>{component}</StrictMode> : component);
-  const details = container.querySelector('details')!;
-  await act(async () => { details.open = true;details.dispatchEvent(new Event('toggle')); });
+  const component = <QueryClientProvider client={client}><RemoteA2AWorkControls agentId="employee" sessionId="original-work" open /></QueryClientProvider>;
+  render(strict ? <StrictMode>{component}</StrictMode> : component);
   return client;
 }
 async function fill() {
@@ -87,6 +85,25 @@ it('keeps a lost request nonce/body immutable and retries without another dispat
   fireEvent.click(screen.getByText('Retry exact request'));
   await waitFor(() => expect(send).toHaveBeenCalledTimes(2));
   expect(send.mock.calls[1][1]).toEqual(first);
+});
+
+it('keeps an unconfirmed request recoverable after the panel closes and reopens', async () => {
+  const send = vi.spyOn(remoteA2AApi, 'startTask').mockRejectedValue(new Error('Reply lost'));
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });clients.push(client);
+  // The caller keeps one mounted instance per conversation and only hides it
+  // when closed; reopening must restore the exact request, not a new identity.
+  const panel = (open: boolean) => <QueryClientProvider client={client}>
+    <RemoteA2AWorkControls agentId="employee" sessionId="original-work" open={open} onClose={() => {}} />
+  </QueryClientProvider>;
+  const view = render(panel(true));
+  await fill();fireEvent.click(screen.getByText('Send new remote request'));
+  await screen.findByText('Retry exact request');
+  const original = send.mock.calls[0][1];
+  view.rerender(panel(false));
+  view.rerender(panel(true));
+  fireEvent.click(screen.getByText('Retry exact request'));
+  await waitFor(() => expect(send).toHaveBeenCalledTimes(2));
+  expect(send.mock.calls[1][1]).toEqual(original);
 });
 
 it('reconciles a saved request from the work without resending', async () => {

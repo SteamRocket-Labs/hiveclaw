@@ -30,13 +30,14 @@ import RunDisclosureBlock from './RunDisclosureBlock';
 import SlashCommandMenu from './SlashCommandMenu';
 import ChatWorkLedgerDock from './ChatWorkLedgerDock';
 import RemoteA2AWorkControls from '../../components/RemoteA2AWorkControls';
+import { composerShortcutText, getComposerIntentLabel, getSessionPermissionModeLabel, sessionPermissionModeOptions, sessionPermissionModeVisible } from './sessionComposerShortcuts';
 import { SessionTransportStatus } from './SessionTransportStatus';
 import type { ChatTransportPhase } from './chatTransportRecovery';
 import { SessionWorkbenchHeader } from '../session-workbench/SessionWorkbenchChrome';
 import { sessionTitleForUser } from '../session-workbench/sessionTitlePresentation';
 import { shouldRenderThreadItemInConversation, ThreadItemRenderer } from '../session-workbench/ThreadItemRenderer';
 import { normalizeThreadItemPayload } from '../session-workbench/threadItemReducer';
-import { SessionComposer } from '../session-workbench/SessionComposer';
+import { SessionComposer, type ComposerActionKey } from '../session-workbench/SessionComposer';
 import { ProjectContextPicker, type SelectedProjectContext } from '../session-workbench/ProjectContextPicker';
 import { SessionGoalPanel } from '../session-workbench/SessionGoalPanel';
 import {
@@ -80,7 +81,6 @@ import {
   submitWorkflowPromotionProposal,
 } from '../../api/domains/workflows';
 import { showAppToast } from '../../components/AppDialogs';
-import { composerShortcutText } from './sessionComposerShortcuts';
 import { operatorSessionRequestOptions } from './useOperatorAuthorityLifecycle';
 import type { ToolCallMeta, WorkflowPreviewToolMeta } from './toolResultEnvelope';
 import {
@@ -109,7 +109,6 @@ import {
   isUserFacingDeliveryArtifact,
 } from './ArtifactSurface';
 import { useArtifactPreview } from './useArtifactPreview';
-import OriginalUploadAction from './OriginalUploadAction';
 import type { SessionMessageOptions } from './ArtifactContinuation';
 import {
   ActiveTailStatusLine,
@@ -145,56 +144,12 @@ type AttachedFile = {
   imageUrl?: string;
 };
 
-type ComposerActionKey = 'upload' | 'plan' | 'goal' | 'schedule';
 export type SessionPermissionMode = 'auto' | 'default' | 'bypassPermissions';
 const EMPTY_CHAT_MESSAGES: AgentChatMessage[] = [];
 
 function isForbiddenOperatorResponse(error: unknown): boolean {
   if (!error || typeof error !== 'object') return false;
   return Number((error as { status?: unknown }).status) === 403;
-}
-
-const SESSION_PERMISSION_MODE_OPTIONS: Array<{
-  value: SessionPermissionMode;
-  label: string;
-  description: string;
-}> = [
-  {
-    value: 'default',
-    label: 'Ask first',
-    description: 'Ask before sensitive session actions',
-  },
-  {
-    value: 'auto',
-    label: 'Approve for me',
-    description: 'Approve low-risk actions and ask for risky ones',
-  },
-  {
-    value: 'bypassPermissions',
-    label: 'Full access',
-    description: 'Bypass session prompts, still obey enterprise rules',
-  },
-];
-
-export const sessionPermissionModeOptions = () => SESSION_PERMISSION_MODE_OPTIONS;
-
-function getSessionPermissionModeLabel(
-  mode: SessionPermissionMode,
-  t: (key: string, fallback: string) => string,
-): string {
-  if (mode === 'default') return t('agent.chat.composer.permissionMode.default', 'Ask first');
-  if (mode === 'bypassPermissions') return t('agent.chat.composer.permissionMode.bypassPermissions', 'Full access');
-  return t('agent.chat.composer.permissionMode.auto', 'Approve for me');
-}
-
-function getComposerIntentLabel(
-  planModeRequested: boolean,
-  goalModeRequested: boolean,
-  t: (key: string, fallback: string) => string,
-): string | null {
-  if (goalModeRequested) return t('agent.chat.composer.goalModeActive', 'Goal mode');
-  if (planModeRequested) return t('agent.chat.composer.planModeActive', 'Plan Mode');
-  return null;
 }
 
 type ConversationBranchMode =
@@ -964,8 +919,6 @@ const ChatMessageItem = React.memo(function ChatMessageItem({
             </div>
           )
         )}
-        {msg.role === 'user' && effectiveAgentId && msg.originalWorkspacePath && msg.fileName && <OriginalUploadAction
-          agentId={effectiveAgentId} path={msg.originalWorkspacePath} name={msg.fileName} viewerUserId={viewerUserId} discover />}
         {msg.thinking && (
           <ThinkingDisclosure thinking={msg.thinking} streaming={Boolean((msg as any)._streaming)} />
         )}
@@ -1174,6 +1127,7 @@ function AgentChatSection({
     : `owner:${principalScopeKey}:${currentUser?.id ?? ''}:${currentUser?.role ?? ''}:${effectiveAgentId ?? ''}:${activeSessionId ?? ''}`;
   const [projectContext, setProjectContext] = React.useState<{ scope: string; selection: SelectedProjectContext | null } | null>(null);
   const [projectSending, setProjectSending] = React.useState(false);
+  const [projectPickerOpen, setProjectPickerOpen] = React.useState(false);
   const [projectSendError, setProjectSendError] = React.useState('');
   const projectAttempt = React.useRef<{ fingerprint: string; inputId: string } | null>(null);
   const projectScopeRef = React.useRef(childAuthorityIdentity);
@@ -1214,6 +1168,23 @@ function AgentChatSection({
     ? t('agentCreate.hrAgentName', 'HR Agent')
     : agent?.name || '';
   const permissionModeLabel = getSessionPermissionModeLabel(sessionPermissionMode, t);
+  const permissionModeVisible = sessionPermissionModeVisible(agent, sessionPermissionMode, planModeRequested, goalModeRequested);
+  const projectContextAvailable = !operatorView && !isDraftSession && activeSession?.audience_kind !== 'group' && Boolean(currentUser?.id && activeSessionId);
+  // Remote A2A work is on demand (retrospective §7.3): nothing remote renders
+  // on the default chat surface; the "+" menu keeps reply / cancel / recover
+  // reachable. Closing only hides the panel so an unconfirmed request keeps
+  // its nonce; a conversation change unmounts the instance.
+  const [remoteWorkPanel, setRemoteWorkPanel] = React.useState<{ scope: string; open: boolean } | null>(null);
+  const remoteWorkMounted = remoteWorkPanel?.scope === childAuthorityIdentity;
+  const remoteWorkOpen = Boolean(remoteWorkMounted && remoteWorkPanel?.open);
+  const remoteWorkAvailable = !operatorView && Boolean(effectiveAgentId && activeSession?.id && !isDraftSession)
+    && (canUseComposer || (agent?.deactivation_reason === 'retirement_pending'
+      && (activeSession?.user_id === currentUser?.id || activeSession?.audience_kind === 'group')));
+  const remoteWorkElement = remoteWorkMounted ? (
+    <RemoteA2AWorkControls key={`remote-work:${childAuthorityIdentity}`} agentId={effectiveAgentId!}
+      sessionId={String(activeSession!.id)} open={remoteWorkOpen}
+      onClose={() => setRemoteWorkPanel({ scope: childAuthorityIdentity, open: false })} />
+  ) : null;
   const composerIntentLabel = getComposerIntentLabel(planModeRequested, goalModeRequested, t);
   const modelBadgeLabel = composerRuntime.modelLabel || t('agent.chat.composer.currentModel', 'Current model');
   const modelBadgeTitle = [modelBadgeLabel, runtimeUsageTitle].filter(Boolean).join(' · ');
@@ -1243,8 +1214,15 @@ function AgentChatSection({
         focusChatInput();
         return;
       }
+      if (action === 'project') { setProjectPickerOpen(true); focusChatInput(); return; }
+      if (action === 'remote') {
+        // A real toggle: the menu entry opens the panel or hides it again.
+        setRemoteWorkPanel((panel) => (panel?.scope === childAuthorityIdentity && panel.open
+          ? { scope: childAuthorityIdentity, open: false } : { scope: childAuthorityIdentity, open: true }));
+        focusChatInput();
+      }
     },
-    [fileInputRef, focusChatInput, onSetChatInput, onToggleGoalMode, onTogglePlanMode],
+    [childAuthorityIdentity, fileInputRef, focusChatInput, onSetChatInput, onToggleGoalMode, onTogglePlanMode],
   );
 
   const sendFromComposer = React.useCallback(async () => {
@@ -2280,11 +2258,6 @@ function AgentChatSection({
                   operatorView={Boolean(activeSession.operator_view)} operatorReason={operatorReason}
                 />
               )}
-              {!operatorView && effectiveAgentId && activeSession?.id && !isDraftSession
-                && (canUseComposer || (agent?.deactivation_reason === 'retirement_pending'
-                  && (activeSession.user_id === currentUser?.id || activeSession.audience_kind === 'group'))) && (
-                <RemoteA2AWorkControls agentId={effectiveAgentId} sessionId={String(activeSession.id)} />
-              )}
               {operatorReadEnabled && artifactPreview && (
                 <ArtifactPreviewPanel
                   key={`artifact-preview:${childAuthorityIdentity}`}
@@ -2322,13 +2295,15 @@ function AgentChatSection({
                 agentUsage={{ usedToday: agent?.tokens_used_today, limitToday: agent?.max_tokens_per_day, usedMonth: agent?.tokens_used_month, limitMonth: agent?.max_tokens_per_month }}
                 agentPermissions={agentPermissions} sessionPermissionMode={sessionPermissionMode}
               />
-              {!operatorView && !isDraftSession && activeSession?.audience_kind !== 'group' && currentUser?.id && activeSessionId && (
+              {projectContextAvailable && (projectPickerOpen || selectedProjectContext) && (
                 <ProjectContextPicker key={`project-context:${childAuthorityIdentity}`} scope={{ userId: currentUser.id,
                   tenantId: currentUser.role === 'platform_admin' ? localStorage.getItem('current_tenant_id') || '' : currentUser.tenant_id }}
                   disabled={!canUseComposer || projectSending} selection={selectedProjectContext}
+                  open={projectPickerOpen} onClose={() => setProjectPickerOpen(false)}
                   onSelect={selection => { setProjectContext({ scope: childAuthorityIdentity, selection }); setProjectSendError(''); }} />
               )}
               {projectSendError && <p role="alert">{projectSendError}</p>}
+              {remoteWorkElement}
               <SessionComposer
                 value={chatInput}
                 inputRef={chatInputRef}
@@ -2338,7 +2313,12 @@ function AgentChatSection({
                 attachments={attachedFiles}
                 permissionMode={sessionPermissionMode}
                 permissionModeLabel={permissionModeLabel}
+                permissionModeVisible={permissionModeVisible}
                 permissionOptions={sessionPermissionModeOptions()}
+                projectContextAvailable={projectContextAvailable}
+                projectContextSelected={Boolean(selectedProjectContext)}
+                remoteWorkAvailable={remoteWorkAvailable}
+                remoteWorkOpen={remoteWorkOpen}
                 modelLabel={modelBadgeLabel}
                 modelTitle={modelBadgeTitle}
                 runtimeUsageLabel={runtimeUsageLabel}

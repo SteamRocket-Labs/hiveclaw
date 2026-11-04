@@ -188,12 +188,12 @@ describe('HrBlueprintPreviewCard decision hierarchy', () => {
     const details = container.querySelector<HTMLDetailsElement>('details.hr-blueprint-technical-details');
     expect(details).not.toBeNull();
     expect(details?.open).toBe(false);
-    expect(details?.querySelector('summary')?.textContent).toBe('Configuration & sources');
+    expect(details?.querySelector('summary')?.textContent).toBe('Configuration');
     expect(details?.textContent).toContain('builtin tools + 9 default skills');
     expect(details?.textContent).toContain('workspace, memory, heartbeat, and self-evolution scaffolding');
     expect(details?.textContent).toContain('mcp: company-search');
     expect(details?.textContent).toContain('web research until separately approved');
-    expect(details?.textContent).toContain('Company release coordinator');
+    expect(details?.textContent).not.toContain('Company release coordinator');
     expect(details?.textContent).toContain('No historical release retrospective found');
 
     for (const decisionText of [

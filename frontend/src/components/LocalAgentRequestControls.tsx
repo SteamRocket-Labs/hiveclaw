@@ -93,7 +93,7 @@ function RequestList({ sessionId, actorId, tenantId }: { sessionId: string; acto
         && <a href={`/agents/${encodeURIComponent(request.target_agent_id)}#approvals`}>
           {t('localRequests.reviewApproval', 'Review this employee’s approvals')}</a>}
       {request.decision_reason && <p>{request.decision_reason}</p>}
-      {request.source_delivery?.status === 'needs_reconciliation' && <p role="status">{t('localRequests.sourceHeld', 'The local result is retained. Return to the original work needs reconciliation. Review its access and binding, then retry the return.')}</p>}
+      {request.source_delivery?.status === 'needs_reconciliation' && <p role="status">{t('localRequests.sourceHeld', 'The local result is retained. Returning to the original work is not finished. Review its access, then retry the return.')}</p>}
       {request.source_delivery?.status === 'queued' && <p>{t('localRequests.sourceRecorded', 'The original-work return is recorded. Execution is not repeated.')}</p>}
       {request.can_retry_source_return && <button type="button" className="btn btn-secondary" disabled={!!busy || unknown}
         onClick={() => { void control(request, 'retry_source'); }}>{t('localRequests.retrySource', 'Retry original-work return')}</button>}

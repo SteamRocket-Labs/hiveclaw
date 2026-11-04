@@ -22,9 +22,12 @@ export interface SessionRunControlsProps {
   canSend: boolean;
   running: boolean;
   composerMenuOpen: boolean;
+  /** Keeps "+" reachable while sending is paused if remote tasks remain operable. */
+  plusButtonDisabled?: boolean;
   permissionMenuOpen: boolean;
   permissionMode: SessionPermissionMode;
   permissionModeLabel: string;
+  permissionModeVisible?: boolean;
   permissionOptions: SessionPermissionOption[];
   intentLabel?: string | null;
   modelLabel: string;
@@ -46,9 +49,11 @@ export function SessionRunControls({
   canSend,
   running,
   composerMenuOpen,
+  plusButtonDisabled,
   permissionMenuOpen,
   permissionMode,
   permissionModeLabel,
+  permissionModeVisible = true,
   permissionOptions,
   intentLabel,
   modelLabel,
@@ -74,51 +79,55 @@ export function SessionRunControls({
         aria-label={t('agent.chat.composer.openMenu', 'Open composer actions')}
         aria-expanded={composerMenuOpen}
         aria-controls="session-composer-actions"
-        disabled={disabled}
+        disabled={plusButtonDisabled ?? disabled}
       >
         <IconPlus size={20} stroke={1.7} aria-hidden="true" />
       </button>
-      <button
-        type="button"
-        data-testid="session-composer-permission-badge"
-        className="session-composer-permission-button"
-        aria-label={t('agent.chat.composer.permissionTitle', 'Session permission mode')}
-        aria-expanded={permissionMenuOpen}
-        aria-controls="session-composer-permission-menu"
-        onClick={onTogglePermissionMenu}
-      >
-        <IconShieldCheck size={15} stroke={1.8} aria-hidden="true" />
-        {permissionModeLabel}
-      </button>
-      <div
-        id="session-composer-permission-menu"
-        data-testid="session-composer-permission-menu"
-        className="session-composer-menu session-composer-permission-menu"
-        role="radiogroup"
-        aria-label={t('agent.chat.composer.permissionTitle', 'Session permission mode')}
-        hidden={!permissionMenuOpen}
-      >
-        {permissionOptions.map((option) => {
-          const selected = option.value === permissionMode;
-          return (
-            <button
-              key={option.value}
-              type="button"
-              role="radio"
-              aria-checked={selected}
-              data-testid={`session-composer-permission-mode-${option.value}`}
-              className={selected ? 'is-selected' : undefined}
-              onClick={() => onPermissionModeChange(option.value)}
-            >
-              <IconShieldCheck size={15} stroke={selected ? 2.2 : 1.7} aria-hidden="true" />
-              <span>
-                <strong>{t(`agent.chat.composer.permissionMode.${option.value}`, option.label)}</strong>
-                <small>{t(`agent.chat.composer.permissionModeDesc.${option.value}`, option.description)}</small>
-              </span>
-            </button>
-          );
-        })}
-      </div>
+      {permissionModeVisible && (
+        <button
+          type="button"
+          data-testid="session-composer-permission-badge"
+          className="session-composer-permission-button"
+          aria-label={t('agent.chat.composer.permissionTitle', 'Session permission mode')}
+          aria-expanded={permissionMenuOpen}
+          aria-controls="session-composer-permission-menu"
+          onClick={onTogglePermissionMenu}
+        >
+          <IconShieldCheck size={15} stroke={1.8} aria-hidden="true" />
+          {permissionModeLabel}
+        </button>
+      )}
+      {(permissionModeVisible || permissionMenuOpen) && (
+        <div
+          id="session-composer-permission-menu"
+          data-testid="session-composer-permission-menu"
+          className="session-composer-menu session-composer-permission-menu"
+          role="radiogroup"
+          aria-label={t('agent.chat.composer.permissionTitle', 'Session permission mode')}
+          hidden={!permissionMenuOpen}
+        >
+          {permissionOptions.map((option) => {
+            const selected = option.value === permissionMode;
+            return (
+              <button
+                key={option.value}
+                type="button"
+                role="radio"
+                aria-checked={selected}
+                data-testid={`session-composer-permission-mode-${option.value}`}
+                className={selected ? 'is-selected' : undefined}
+                onClick={() => onPermissionModeChange(option.value)}
+              >
+                <IconShieldCheck size={15} stroke={selected ? 2.2 : 1.7} aria-hidden="true" />
+                <span>
+                  <strong>{t(`agent.chat.composer.permissionMode.${option.value}`, option.label)}</strong>
+                  <small>{t(`agent.chat.composer.permissionModeDesc.${option.value}`, option.description)}</small>
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      )}
       {intentLabel && <span data-testid="session-composer-intent-badge" className="session-composer-intent">{intentLabel}</span>}
       {uploading && uploadProgress >= 0 && (
         <div className="session-composer-upload" role="status" aria-live="polite">

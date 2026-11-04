@@ -175,6 +175,10 @@ export function shouldRenderThreadItemInConversation(item: ThreadItem, operatorV
   if (operatorView && item.audience === 'operator') return true;
   if (item.audience === 'operator') return false;
   if (NON_BLOCKING_STATUS_EVENTS.has(item.event_type)) return false;
+  // The platform does not interpose source-access cards in the conversation
+  // (product definition P3): when the model truly cannot answer within its
+  // authorized evidence, it says so itself. Operators still see the raw item.
+  if (item.event_type === 'source_access_notice') return false;
   if (item.item_type === 'approval_decision' && item.event_type === 'permission_resolved') return true;
   if (USER_CONVERSATION_ITEM_TYPES.has(item.item_type)) return true;
   return Boolean(item.user_action && item.user_action.kind !== 'open_artifact');
@@ -218,6 +222,19 @@ export function ThreadItemRenderer({
       ))}
     </dl>
   );
+
+  if (item.item_type === 'approval_decision' && item.event_type === 'permission_resolved') {
+    // A settled permission decision collapses to one plain line (product
+    // definition P3) instead of a full decision card.
+    const action = item.item_data.action;
+    return <p>
+      <IconCheck size={14} aria-hidden="true" /> {action === 'allow_once'
+        ? t('sessionWorkbench.threadItem.permissionDecision.allowOnce', 'Allowed · this time')
+        : action === 'allow_session'
+          ? t('sessionWorkbench.threadItem.permissionDecision.allowSession', 'Allowed · for this session')
+          : t('sessionWorkbench.threadItem.permissionDecision.deny', 'Declined')}
+    </p>;
+  }
 
   return (
     <article

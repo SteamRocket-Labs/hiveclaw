@@ -41,8 +41,12 @@ describe('workbench unconfirmed execution', () => {
     expect(header.status).toBe('failed');
     expect(header.requiresReconciliation).toBe(true);
     const markup = renderToStaticMarkup(<SessionWorkbenchHeader model={header} />);
-    expect(markup).toContain('Execution outcome is unconfirmed');
-    expect(markup).not.toContain('Review the failed step');
+    // The header no longer has a dedicated unconfirmed-outcome chip: the five
+    // user-visible states only, so an unconfirmed run surfaces as failed.
+    expect(markup).toContain('failed');
+    expect(markup).toContain('Review the failed step');
+    expect(markup).not.toContain('unconfirmed');
+    expect(markup).not.toContain('Needs reconciliation');
     expect(markup).not.toContain('<button');
     expect(JSON.stringify(messages)).toBe(before);
   });
@@ -83,8 +87,10 @@ describe('workbench unconfirmed execution', () => {
     expect(model([prompt, runEvent('failed')]).header.status).toBe('failed');
   });
 
-  it('provides explicit unconfirmed-outcome copy in both shipped locales', () => {
-    expect((en.sessionWorkbench.status as Record<string, string>).needs_reconciliation).toBe('Needs reconciliation');
-    expect((zh.sessionWorkbench.status as Record<string, string>).needs_reconciliation).toBe('待核对');
+  it('keeps internal reconciliation vocabulary out of the header copy in both shipped locales', () => {
+    expect((en.sessionWorkbench.status as Record<string, string>).needs_reconciliation).toBeUndefined();
+    expect((zh.sessionWorkbench.status as Record<string, string>).needs_reconciliation).toBeUndefined();
+    expect((en.sessionWorkbench as Record<string, unknown>).reconciliationGuidance).toBeUndefined();
+    expect((zh.sessionWorkbench as Record<string, unknown>).reconciliationGuidance).toBeUndefined();
   });
 });

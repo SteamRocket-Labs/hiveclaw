@@ -75,30 +75,31 @@ describe('assistant scope', () => {
 
 describe('AssistantPanel recovery', () => {
   it.each([
-    ['ok', 'Company approved model', 'Company approved model'],
-    ['forbidden', null, 'assistant.modelForbidden'],
-    ['unconfigured', null, 'assistant.modelMissing'],
-  ])('shows the unbound company model preview: %s', (model, label, expected) => {
+    ['ok', 'Company approved model'],
+    ['forbidden', null],
+    ['unconfigured', null],
+  ])('keeps the fallback panel free of readiness diagnostics: %s', (model, label) => {
     const onOpen = vi.fn();
     render(<MemoryRouter><AssistantPanel
       payload={binding({ readiness: {
         ready: false, worker: 'available', model, model_label: label, workspace: 'missing', blockers: [],
       } })}
-      loading={false} onOpen={onOpen} onSelect={vi.fn()} onRetry={vi.fn()} onFirstWork={vi.fn()}
+      loading={false} onOpen={onOpen} onSelect={vi.fn()} onRetry={vi.fn()}
     /></MemoryRouter>);
-    expect(screen.getByText(expected)).toBeTruthy();
+    expect(screen.getByText('assistant.empty')).toBeTruthy();
+    expect(screen.queryByText('assistant.model')).toBeNull();
+    expect(screen.queryByText('assistant.readiness')).toBeNull();
     expect(screen.queryByText('assistant.ready')).toBeNull();
     expect(onOpen).not.toHaveBeenCalled();
     expect(screen.getByRole('button', { name: 'assistant.open' })).toHaveProperty('disabled', false);
-    if (model !== 'unconfigured') expect(screen.queryByText('assistant.modelMissing')).toBeNull();
   });
 
-  it('shows server identity and does not preselect an employee', () => {
+  it('shows server identity without diagnostics links and does not preselect an employee', () => {
     const markup = render(
       <MemoryRouter>
         <AssistantPanel
           payload={binding({
-            state: 'active',
+            state: 'provision_incomplete',
             agent: {
               id: 'agent-1', name: 'Ledger', role_description: 'Research', status: 'idle',
               primary_model_id: 'model-1', model_label: 'Approved model',
@@ -111,57 +112,21 @@ describe('AssistantPanel recovery', () => {
           onOpen={vi.fn()}
           onSelect={vi.fn()}
           onRetry={vi.fn()}
-          onFirstWork={vi.fn()}
         />
       </MemoryRouter>,
     );
 
     expect(screen.getByRole('status').textContent).toContain('Ledger');
-    expect(screen.getByRole('status').textContent).toContain('Approved model');
-    expect(screen.getByRole('status').textContent).toContain('assistant.notReady');
-    expect(screen.getByRole('status').textContent).toContain('assistant.workerUnavailable');
+    expect(screen.getByRole('status').textContent).toContain('assistant.pending');
+    expect(screen.getByRole('status').textContent).not.toContain('Approved model');
+    expect(screen.getByRole('status').textContent).not.toContain('assistant.notReady');
+    expect(screen.getByRole('status').textContent).not.toContain('assistant.workerUnavailable');
     expect(markup.container.querySelector('input[type="radio"]:checked')).toBeNull();
-    expect(screen.getByRole('link', { name: 'assistant.team' }).getAttribute('href')).toBe('/team');
-    expect(screen.getByRole('link', { name: 'assistant.messages' }).getAttribute('href')).toBe('/messages');
-    expect(screen.getByRole('link', { name: 'assistant.home' }).getAttribute('href')).toBe('/home');
-    expect(screen.getByRole('link', { name: 'assistant.employees' }).getAttribute('href')).toBe('/agents');
-  });
-
-  it('submits explicit first work once and does not open an assistant while rendering', async () => {
-    const onOpen = vi.fn();
-    let release: (() => void) | undefined;
-    const onFirstWork = vi.fn(() => new Promise<void>((resolve) => {
-      release = resolve;
-    }));
-    render(
-      <MemoryRouter>
-        <AssistantPanel
-          payload={binding({
-            state: 'active',
-            agent: {
-              id: 'agent-1', name: 'My Assistant', role_description: '', status: 'idle',
-              primary_model_id: 'model-1', model_label: 'Approved model',
-            },
-            readiness: { ready: true, worker: 'available', model: 'ok', workspace: 'ok', blockers: [] },
-            next_actions: ['continue', 'first_work', 'home'],
-            entry: { kind: 'employee', path: '/agents/agent-1', agent_id: 'agent-1', session_id: null },
-          })}
-          loading={false}
-          onOpen={onOpen}
-          onSelect={vi.fn()}
-          onRetry={vi.fn()}
-          onFirstWork={onFirstWork}
-        />
-      </MemoryRouter>,
-    );
-
-    expect(onOpen).not.toHaveBeenCalled();
-    fireEvent.change(screen.getByLabelText('assistant.firstWork'), { target: { value: 'Write the weekly note' } });
-    const send = screen.getByRole('button', { name: 'assistant.send' });
-    fireEvent.click(send);
-    fireEvent.click(send);
-    expect(onFirstWork).toHaveBeenCalledTimes(1);
-    await act(async () => release?.());
+    // The quick-links nav block is gone from the fallback panel (P3).
+    expect(screen.queryByRole('link', { name: 'assistant.team' })).toBeNull();
+    expect(screen.queryByRole('link', { name: 'assistant.messages' })).toBeNull();
+    expect(screen.queryByRole('link', { name: 'assistant.home' })).toBeNull();
+    expect(screen.queryByRole('link', { name: 'assistant.employees' })).toBeNull();
   });
 });
 
@@ -274,44 +239,38 @@ describe('AssistantEntry synthetic transport', () => {
   });
 
 
-  it('keeps the first work and shows its refusal', async () => {
-    vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: RequestInit) => new Response(JSON.stringify(
-      init?.method === 'POST' ? { detail: { message: 'Execution is denied' } } : workingBinding(),
-    ), { status: init?.method === 'POST' ? 403 : 200, headers: { 'content-type': 'application/json' } })));
+  it('opens the assistant chat page when the binding is active but has no conversation yet', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify(binding({
+      state: 'active',
+      agent: {
+        id: 'agent-1', name: 'My Assistant', role_description: '', status: 'idle',
+        primary_model_id: 'model-1', model_label: 'Approved model',
+      },
+      readiness: { ready: true, worker: 'available', model: 'ok', workspace: 'ok', blockers: [] },
+      entry: { kind: 'setup', path: '/assistant', agent_id: null, session_id: null },
+    })), { status: 200, headers: { 'content-type': 'application/json' } })));
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-    render(<MemoryRouter><QueryClientProvider client={client}><AssistantEntry mode="assistant" /></QueryClientProvider></MemoryRouter>);
-    const draft = await screen.findByLabelText('assistant.firstWork');
-    fireEvent.change(draft, { target: { value: 'Keep this request' } });
-    fireEvent.click(screen.getByRole('button', { name: 'assistant.send' }));
-    expect((await screen.findByRole('alert')).textContent).toContain('Execution is denied');
-    expect(draft).toHaveProperty('value', 'Keep this request');
-    expect(screen.getByRole('button', { name: 'assistant.send' })).toHaveProperty('disabled', false);
+    render(
+      <MemoryRouter initialEntries={['/']}>
+        <QueryClientProvider client={client}>
+          <Routes>
+            <Route path="/" element={<AssistantEntry mode="entry" />} />
+            <Route path="/agents/:id" element={<LocationProbe />} />
+          </Routes>
+        </QueryClientProvider>
+      </MemoryRouter>,
+    );
+
+    await waitFor(() => expect(screen.getByTestId('location').textContent).toBe('/agents/agent-1'));
   });
 
-  it('does not navigate to old company work after the first work response arrives', async () => {
-    useAuthStore.setState({ user: { id: 'user-1', role: 'platform_admin', tenant_id: null } as never });
-    let finish: ((response: Response) => void) | undefined;
-    vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: RequestInit) => {
-      if (init?.method === 'POST') return new Promise<Response>((resolve) => { finish = resolve; });
-      const tenant = new Headers(init?.headers).get('X-Tenant-Id') || '';
-      return new Response(JSON.stringify(workingBinding(tenant)), { status: 200, headers: { 'content-type': 'application/json' } });
-    }));
+  it('keeps an unresolvable assistant on the minimal panel without a first-work form', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify(workingBinding()), { status: 503, headers: { 'content-type': 'application/json' } })));
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-    render(<MemoryRouter initialEntries={['/assistant']}><QueryClientProvider client={client}><Routes>
-      <Route path="/assistant" element={<AssistantEntry mode="assistant" />} />
-      <Route path="/agents/:id/sessions/:sessionId" element={<LocationProbe />} />
-    </Routes></QueryClientProvider></MemoryRouter>);
-    fireEvent.change(await screen.findByLabelText('assistant.firstWork'), { target: { value: 'Work in company one' } });
-    fireEvent.click(screen.getByRole('button', { name: 'assistant.send' }));
-    await waitFor(() => expect(finish).toBeTypeOf('function'));
-    act(() => {
-      localStorage.setItem('current_tenant_id', 'tenant-2');
-      window.dispatchEvent(new StorageEvent('storage', { key: 'current_tenant_id', newValue: 'tenant-2' }));
-    });
-    await act(async () => finish?.(new Response(JSON.stringify({ session: { id: 'company-one-session' }, run: {} }),
-      { status: 201, headers: { 'content-type': 'application/json' } })));
-    expect(screen.queryByTestId('location')).toBeNull();
-    await screen.findByText('tenant-2 assistant');
+    render(<MemoryRouter><QueryClientProvider client={client}><AssistantEntry mode="assistant" /></QueryClientProvider></MemoryRouter>);
+    expect(await screen.findByText('assistant.unavailable')).toBeTruthy();
+    expect(screen.queryByLabelText('assistant.firstWork')).toBeNull();
+    expect(screen.getByRole('button', { name: 'assistant.retry' })).toHaveProperty('disabled', false);
   });
 
 });

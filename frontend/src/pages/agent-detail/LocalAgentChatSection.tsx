@@ -562,9 +562,18 @@ export default function LocalAgentChatSection({ agentId, agent, agentPermissions
       fileInputRef.current?.click();
       return;
     }
+    if (action === 'project') {
+      // Local agents have no project references; the menu item is not offered.
+      return;
+    }
     if (action === 'plan') {
       setLocalPlanModeRequested((current) => !current);
       setTimeout(() => textAreaRef.current?.focus(), 0);
+      return;
+    }
+    if (action === 'permission' || action === 'remote') {
+      // Permission selection is handled inside the composer; local agents have
+      // no remote tasks. Neither action reaches this callback in practice.
       return;
     }
     setInput(composerShortcutText(action));
@@ -626,6 +635,7 @@ export default function LocalAgentChatSection({ agentId, agent, agentPermissions
           disabled={disabled}
           attachments={attachments.map((file) => ({ name: file.filename || file.saved_filename }))}
           permissionMode="default"
+          permissionModeVisible={localPlanModeRequested}
           permissionModeLabel={permissionBadgeLabel}
           permissionOptions={[{
             value: 'default',

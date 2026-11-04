@@ -66,9 +66,18 @@ vi.mock('@tanstack/react-query', () => ({
         refetch: vi.fn(),
       };
     }
+    if (queryKey[0] === 'remote-a2a-work') {
+      return {
+        data: { agent_id: 'agent-1', source_session_id: 'retirement-session',
+          connection: { ready: false, version: null }, items: [] },
+        isLoading: false,
+        refetch: vi.fn(),
+      };
+    }
     return { data: [], isLoading: false, refetch: vi.fn() };
   },
   useMutation: () => ({ mutate: vi.fn(), mutateAsync: vi.fn(), isPending: false }),
+  useQueryClient: () => ({ invalidateQueries: vi.fn() }),
 }));
 
 vi.mock('../../api/domains/files', () => ({
@@ -140,10 +149,27 @@ it('keeps selected project inputs and the same input identifier after an unconfi
     owner_user_id: 'operator-user', archived: false, can_manage: true, can_write: true, next_offset: null,
     entries: [{ id: 'source', target_kind: 'workspace_file', section: '', removed: false, state: 'linked', title: 'source.md' }] });
   const send = vi.fn().mockResolvedValueOnce(undefined).mockResolvedValueOnce(true);
+  useAuthStore.setState({ user: { id: 'operator-user', tenant_id: 'company' } as any });
   render(<AgentChatSection {...base} agent={{ ...base.agent, access_level: 'use' }} currentUser={{ id: 'operator-user', tenant_id: 'company' }}
     activeSession={{ ...base.activeSession, user_id: 'operator-user', read_only: false, is_current_user_session: true, operator_view: false }}
     historyMsgs={[]} chatInput="Use the selected sources" onSendChatMsg={send} planModeRequested={true} goalModeRequested={true} />);
-  fireEvent.click(screen.getByRole('button', { name: 'projects.context' }));
+  // Project references now open from the composer "+" menu (P3). Remote A2A
+  // task operations live behind the same menu, on demand (7.3 L2): opening and
+  // collapsing the panel must not disturb the composer's pending input.
+  fireEvent.click(screen.getByRole('button', { name: 'Open composer actions' }));
+  fireEvent.click(screen.getByRole('menuitem', { name: /Remote tasks/ }));
+  expect(screen.getByText('Remote A2A requests in this work')).toBeTruthy();
+  // jsdom does not toggle <details> from <summary> clicks; simulate a collapse.
+  const remotePanel = screen.getByText('Remote A2A requests in this work').closest('details')!;
+  await act(async () => { remotePanel.open = false; remotePanel.dispatchEvent(new Event('toggle')); });
+  // Closing only hides the panel; the same mounted instance reopens from the
+  // menu, so an unconfirmed request keeps its exact identity.
+  await waitFor(() => expect(remotePanel.hidden).toBe(true));
+  fireEvent.click(screen.getByRole('button', { name: 'Open composer actions' }));
+  fireEvent.click(screen.getByRole('menuitem', { name: /Remote tasks/ }));
+  await waitFor(() => expect(remotePanel.hidden).toBe(false));
+  fireEvent.click(screen.getByRole('button', { name: 'Open composer actions' }));
+  fireEvent.click(screen.getByRole('menuitem', { name: /Project files/ }));
   await waitFor(() => expect(screen.getByRole('option', { name: 'Research' })).toBeTruthy());
   fireEvent.change(screen.getByRole('combobox', { name: 'projects.contextProject' }), { target: { value: 'project' } });
   fireEvent.click(await screen.findByRole('checkbox', { name: 'source.md' }));
@@ -525,6 +551,10 @@ it('keeps original history visible but disables a cached writable composer durin
   expect(screen.getByText('Retained original result')).toBeTruthy();
   const composer = screen.queryByTestId('session-composer-shell');
   expect(!composer || composer.querySelector('textarea')?.disabled).toBe(true);
+  // Sending is paused, but the retiring employee's remote tasks stay operable
+  // on demand from the composer "+" menu (7.3 L2), as before the trim.
+  fireEvent.click(screen.getByRole('button', { name: 'Open composer actions' }));
+  fireEvent.click(screen.getByRole('menuitem', { name: /Remote tasks/ }));
   expect(screen.getByText('Remote A2A requests in this work')).toBeTruthy();
   expect(send).not.toHaveBeenCalled();
   useAuthStore.setState({ user: null });

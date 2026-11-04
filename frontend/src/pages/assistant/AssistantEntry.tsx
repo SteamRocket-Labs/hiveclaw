@@ -1,10 +1,9 @@
 import { useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { Navigate, useNavigate } from 'react-router-dom';
+import { Navigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { ApiError } from '../../api/core';
 import { assistantApi, type AssistantBinding, type AssistantScopeEcho } from '../../api/domains/assistant';
-import { chatApi } from '../../api/domains/chat';
 import { useAuthStore } from '../../stores';
 import AssistantPanel from './AssistantPanel';
 import { assistantScopeStillCurrent, entryShouldNavigate, useAssistantTenant } from './assistantScope';
@@ -41,12 +40,14 @@ export default function AssistantEntry({ mode }: { mode: 'entry' | 'assistant' }
   const user = useAuthStore((state) => state.user);
   const tenantId = useAssistantTenant(user?.tenant_id ?? null);
   const scope = { userId: user?.id ?? null, tenantId: tenantId || null, role: user?.role ?? null };
-  return <ScopedAssistantEntry key={`${scope.userId}|${scope.tenantId}|${scope.role}`} mode={mode} scope={scope} />;
+  // Both "/" and "/assistant" land in the same place: the latest My Assistant
+  // conversation, or the minimal open/retry panel when none can open.
+  void mode;
+  return <ScopedAssistantEntry key={`${scope.userId}|${scope.tenantId}|${scope.role}`} scope={scope} />;
 }
 
-function ScopedAssistantEntry({ mode, scope }: { mode: 'entry' | 'assistant'; scope: Scope }) {
+function ScopedAssistantEntry({ scope }: { scope: Scope }) {
   const { t } = useTranslation();
-  const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [pending, setPending] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -85,8 +86,17 @@ function ScopedAssistantEntry({ mode, scope }: { mode: 'entry' | 'assistant'; sc
     }
   }
 
-  if (mode === 'entry' && !query.isFetching && payload && entryShouldNavigate(payload.entry)) {
-    return <Navigate to={payload.entry.path} replace />;
+  if (!query.isFetching && payload) {
+    // The app opens straight into the latest conversation with My Assistant
+    // (product definition P3). When no conversation is bound yet, open the
+    // assistant's own chat page; only a missing/ineligible assistant falls
+    // through to the minimal open/retry panel.
+    if (entryShouldNavigate(payload.entry)) {
+      return <Navigate to={payload.entry.path} replace />;
+    }
+    if (payload.state === 'active' && payload.agent?.id) {
+      return <Navigate to={`/agents/${payload.agent.id}`} replace />;
+    }
   }
 
   return <AssistantPanel
@@ -103,14 +113,6 @@ function ScopedAssistantEntry({ mode, scope }: { mode: 'entry' | 'assistant'; sc
       } else {
         setActionError(null);
         void query.refetch();
-      }
-    }}
-    onFirstWork={async (content, idempotencyKey) => {
-      if (!payload?.agent?.id) return;
-      const agentId = payload.agent.id;
-      const result = await chatApi.createSessionRun(agentId, { content, idempotency_key: idempotencyKey });
-      if (stillCurrent(scope) && queryClient.getQueryData<AssistantBinding>(queryKey)?.agent?.id === agentId && result.session?.id) {
-        navigate(`/agents/${agentId}/sessions/${result.session.id}`);
       }
     }}
   />;

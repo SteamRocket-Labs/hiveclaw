@@ -4,9 +4,12 @@ import {
   IconCalendarTime,
   IconChecklist,
   IconFileText,
+  IconFolder,
   IconLoader2,
   IconPaperclip,
+  IconShieldCheck,
   IconTargetArrow,
+  IconWorld,
   IconX,
 } from '@tabler/icons-react';
 
@@ -17,7 +20,7 @@ import {
 } from './SessionRunControls';
 import './SessionComposer.css';
 
-export type ComposerActionKey = 'upload' | 'plan' | 'goal' | 'schedule';
+export type ComposerActionKey = 'upload' | 'plan' | 'goal' | 'schedule' | 'project' | 'permission' | 'remote';
 
 export interface ComposerAttachment {
   name: string;
@@ -37,7 +40,12 @@ export interface SessionComposerProps {
   attachments: ComposerAttachment[];
   permissionMode: SessionPermissionMode;
   permissionModeLabel: string;
+  permissionModeVisible?: boolean;
   permissionOptions: SessionPermissionOption[];
+  projectContextAvailable?: boolean;
+  projectContextSelected?: boolean;
+  remoteWorkAvailable?: boolean;
+  remoteWorkOpen?: boolean;
   modelLabel: string;
   modelTitle?: string;
   runtimeUsageLabel?: string;
@@ -69,7 +77,12 @@ export function SessionComposer({
   attachments,
   permissionMode,
   permissionModeLabel,
+  permissionModeVisible = true,
   permissionOptions,
+  projectContextAvailable = false,
+  projectContextSelected = false,
+  remoteWorkAvailable = false,
+  remoteWorkOpen = false,
   modelLabel,
   modelTitle,
   runtimeUsageLabel,
@@ -104,6 +117,14 @@ export function SessionComposer({
       disabled: disabled || uploading || attachments.length >= 10,
     },
     {
+      key: 'project' as const,
+      label: t('agent.chat.composer.projectContext', 'Project files'),
+      description: t('agent.chat.composer.projectContextDesc', 'Reference files from a project in the next message'),
+      icon: <IconFolder size={16} />,
+      selected: projectContextSelected,
+      disabled: disabled,
+    },
+    {
       key: 'plan' as const,
       label: t('agent.chat.composer.planMode', 'Plan Mode'),
       description: planModeRequested
@@ -112,6 +133,24 @@ export function SessionComposer({
       icon: <IconChecklist size={16} />,
       selected: planModeRequested,
       disabled: disabled || running,
+    },
+    {
+      // Session permissions stay reachable from "+" while the badge is hidden
+      // on the agent's default mode (product definition P3).
+      key: 'permission' as const,
+      label: t('agent.chat.composer.permissionEntry', 'Session permissions'),
+      description: t('agent.chat.composer.permissionEntryDesc', 'View or change what this session may do without asking'),
+      icon: <IconShieldCheck size={16} />,
+      disabled: disabled,
+    },
+    {
+      key: 'remote' as const,
+      label: t('agent.chat.composer.remoteWork', 'Remote tasks'),
+      description: t('agent.chat.composer.remoteWorkDesc', 'Reply to, cancel, or recover files from this conversation’s remote tasks'),
+      icon: <IconWorld size={16} />,
+      selected: remoteWorkOpen,
+      // Task recovery stays operable while message sending is paused (retirement-pending).
+      disabled: false,
     },
     {
       key: 'goal' as const,
@@ -131,7 +170,8 @@ export function SessionComposer({
       disabled: disabled || running,
     },
   ];
-  const visibleActions = actions.filter((action) => goalModeAvailable || action.key !== 'goal');
+  const visibleActions = actions.filter((action) => (goalModeAvailable || action.key !== 'goal')
+    && (projectContextAvailable || action.key !== 'project') && (remoteWorkAvailable || action.key !== 'remote'));
 
   return (
     <div
@@ -172,6 +212,13 @@ export function SessionComposer({
               disabled={action.disabled}
               onClick={() => {
                 setComposerMenuOpen(false);
+                if (action.key === 'permission') {
+                  setPermissionMenuOpen(true);
+                  // The chosen menu item disappears; focus moves into the picker.
+                  setTimeout(() => document.getElementById('session-composer-permission-menu')
+                    ?.querySelector<HTMLButtonElement>('[role="radio"]')?.focus(), 0);
+                  return;
+                }
                 onAction(action.key);
               }}
             >
@@ -217,9 +264,11 @@ export function SessionComposer({
           canSend={canSend}
           running={running}
           composerMenuOpen={composerMenuOpen}
+          plusButtonDisabled={disabled && !remoteWorkAvailable}
           permissionMenuOpen={permissionMenuOpen}
           permissionMode={permissionMode}
           permissionModeLabel={permissionModeLabel}
+          permissionModeVisible={permissionModeVisible}
           permissionOptions={permissionOptions}
           intentLabel={intentLabel}
           modelLabel={modelLabel}

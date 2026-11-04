@@ -60,45 +60,6 @@ function PreviewList({ label, items }: { label: string; items: unknown[] }) {
 
 type Translate = (key: string, fallback: string) => string;
 
-function sourceAuthorityLabel(sourceType: unknown, t: Translate): string {
-  switch (sourceType) {
-    case 'confirmed_by_user':
-      return t('agent.chat.toolResults.sourceConfirmedByUser', 'User confirmed');
-    case 'supported_by_company_kb':
-      return t('agent.chat.toolResults.sourceCompanyKnowledge', 'Company knowledge');
-    case 'suggested_by_history':
-      return t('agent.chat.toolResults.sourceHistorySuggestion', 'Past-work suggestion');
-    case 'suggested_by_general_knowledge':
-      return t('agent.chat.toolResults.sourceGeneralKnowledge', 'Role best practice');
-    default:
-      return t('agent.chat.toolResults.sourceNeedsReview', 'Source needs review');
-  }
-}
-
-function SourceAttributionList({ items, t }: { items: Record<string, unknown>[]; t: Translate }) {
-  const visible = items.map((item) => ({
-    authority: sourceAuthorityLabel(item.source_type, t),
-    summary: typeof item.value_summary === 'string' && item.value_summary.trim()
-      ? item.value_summary.trim()
-      : t('agent.chat.toolResults.sourceFieldFallback', 'Blueprint detail'),
-  }));
-  if (visible.length === 0) return null;
-  return (
-    <section className="hr-blueprint-list hr-blueprint-sources">
-      <h4>{t('agent.chat.toolResults.sources', 'Sources')}</h4>
-      <ul>
-        {visible.map((item, index) => (
-          <li key={`${item.authority}-${item.summary}-${index}`}>
-            <strong>{item.authority}</strong>
-            <span>{item.summary}</span>
-          </li>
-        ))}
-      </ul>
-    </section>
-  );
-}
-
-
 function permissionScopeLabel(scope: string | null, t: Translate): string | null {
   if (!scope) return null;
   if (scope === 'company') return t('agent.chat.toolResults.scopeCompany', 'Company');
@@ -193,7 +154,6 @@ export function HrBlueprintPreviewCard({ agentId, preview, onSendMessage }: HrBl
   const hasConfigurationDetails = canonicalPreview.readyNow.length > 0
     || canonicalPreview.willInstall.length > 0
     || canonicalPreview.deferredCapabilities.length > 0
-    || canonicalPreview.sourceAttributions.length > 0
     || canonicalPreview.knowledgeDebt.length > 0;
   const durableAction = draft?.recovery?.can_retry ? 'retry' : hrCreationActionForStatus(status);
   const firstTask = draft?.provisioning?.first_task as { status?: string; session_id?: string; error?: string } | undefined;
@@ -363,12 +323,11 @@ export function HrBlueprintPreviewCard({ agentId, preview, onSendMessage }: HrBl
       )}
       {hasConfigurationDetails && (
         <details className="hr-blueprint-technical-details">
-          <summary>{t('agent.chat.toolResults.configurationDetails', 'Configuration & sources')}</summary>
+          <summary>{t('agent.chat.toolResults.configurationDetails', 'Configuration')}</summary>
           <div>
             <PreviewList label={t('agent.chat.toolResults.readyNow', 'Included capabilities')} items={canonicalPreview.readyNow} />
             <PreviewList label={t('agent.chat.toolResults.willInstall', 'Added during setup')} items={canonicalPreview.willInstall} />
             <PreviewList label={t('agent.chat.toolResults.deferredCapabilities', 'Not enabled')} items={canonicalPreview.deferredCapabilities} />
-            <SourceAttributionList items={canonicalPreview.sourceAttributions} t={t} />
             <PreviewList label={t('agent.chat.toolResults.knowledgeDebt', 'Information still missing')} items={canonicalPreview.knowledgeDebt} />
           </div>
         </details>

@@ -16,24 +16,40 @@ function mount() {
   localStorage.setItem('current_tenant_id', 'company');
   return render(<><AppDialogs /><ArtifactCards agentId="employee" viewerUserId="owner" artifacts={[artifact]} /></>);
 }
+// The uploader's original-file actions sit behind the attachment's own "…"
+// menu; opening it is part of every flow below.
+function openMenu() {
+  fireEvent.click(screen.getByRole('button', { name: 'More file actions' }));
+}
 const response = (value: unknown) => ({ ok: true, json: async () => value });
+
+it('keeps original actions hidden until the attachment "…" menu opens and never renders always-visible buttons', () => {
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response(active)));
+  mount();
+  expect(screen.queryByRole('button', { name: 'Original status' })).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Withdraw / delete file' })).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Download original' })).toBeNull();
+  expect(screen.getByRole('button', { name: 'Download' })).toBeTruthy();
+  openMenu();
+  expect(screen.getByRole('button', { name: 'Original status' })).toBeTruthy();
+});
 
 it('queries current authority on demand and withdraws through a confirmed authenticated action', async () => {
   const fetcher = vi.fn().mockResolvedValueOnce(response(active)).mockResolvedValueOnce(response({ state: 'withdrawn' }));
   vi.stubGlobal('fetch', fetcher);
   mount();
   expect(fetcher).not.toHaveBeenCalled();
+  openMenu();
   fireEvent.click(screen.getByRole('button', { name: 'Original status' }));
-  fireEvent.click(await screen.findByRole('button', { name: 'Withdraw original' }));
+  fireEvent.click(await screen.findByRole('button', { name: 'Withdraw / delete file' }));
   const modal = await screen.findByRole('dialog');
   expect(fetcher).toHaveBeenCalledOnce();
-  fireEvent.click(within(modal).getByRole('button', { name: 'Withdraw original' }));
+  fireEvent.click(within(modal).getByRole('button', { name: 'Withdraw / delete file' }));
   await screen.findByText('Original withdrawn. Select an authorized source to continue.');
   expect(fetcher.mock.calls[1]).toEqual(['/api/chat/attachments/source-ref/withdraw', expect.objectContaining({
     method: 'POST', body: JSON.stringify({ expected_content_sha256: digest }),
     headers: expect.objectContaining({ Authorization: 'Bearer owner-token', 'X-Tenant-Id': 'company' }),
   })]);
-  expect(screen.queryByRole('button', { name: 'Original upload' })).toBeNull();
   expect(screen.getByRole('button', { name: 'Download' })).toBeTruthy();
   expect(screen.getByRole('button', { name: 'Open' })).toBeTruthy();
 });
@@ -42,10 +58,11 @@ it('reopens withdrawn status and never offers another withdrawal or a substitute
   const fetcher = vi.fn().mockResolvedValue(response({ ...active, state: 'withdrawn', can_withdraw: false }));
   vi.stubGlobal('fetch', fetcher);
   mount();
+  openMenu();
   fireEvent.click(screen.getByRole('button', { name: 'Original status' }));
   await screen.findByText('Original withdrawn. Select an authorized source to continue.');
   expect(fetcher).toHaveBeenCalledOnce();
-  expect(screen.queryByRole('button', { name: 'Withdraw original' })).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Withdraw / delete file' })).toBeNull();
   expect(screen.getByRole('button', { name: 'Download' })).toBeTruthy();
 });
 
@@ -53,10 +70,11 @@ it('uses server withdrawal authority independently from original visibility', as
   const fetcher = vi.fn().mockResolvedValue(response({ ...active, can_withdraw: false }));
   vi.stubGlobal('fetch', fetcher);
   mount();
+  openMenu();
   fireEvent.click(screen.getByRole('button', { name: 'Original status' }));
-  await screen.findByText('Original active');
-  expect(screen.queryByRole('button', { name: 'Withdraw original' })).toBeNull();
-  expect(screen.getByRole('button', { name: 'Original upload' })).toBeTruthy();
+  await screen.findByText('Original still in use');
+  expect(screen.queryByRole('button', { name: 'Withdraw / delete file' })).toBeNull();
+  expect(screen.getByRole('button', { name: 'Download original' })).toBeTruthy();
 });
 
 it('keeps a qualified retained inspection visible without reactivating the withdrawn source', async () => {
@@ -67,11 +85,12 @@ it('keeps a qualified retained inspection visible without reactivating the withd
   const downloads = await import('../../utils/authenticatedResource');
   const save = vi.spyOn(downloads, 'saveBlob').mockImplementation(() => {});
   mount();
+  openMenu();
   fireEvent.click(screen.getByRole('button', { name: 'Original status' }));
   fireEvent.click(await screen.findByRole('button', { name: 'Inspect retained original' }));
   await waitFor(() => expect(save).toHaveBeenCalledWith(bytes, 'source.txt'));
   expect(screen.getByText('Original withdrawn. Select an authorized source to continue.')).toBeTruthy();
-  expect(screen.queryByRole('button', { name: 'Withdraw original' })).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Withdraw / delete file' })).toBeNull();
   expect(fetcher.mock.calls[1][0]).toBe('/api/chat/attachments/source-ref/download');
 });
 
@@ -81,11 +100,12 @@ it('does not submit a confirmation completed under a different authenticated com
   const fetcher = vi.fn().mockResolvedValue(response(active));
   vi.stubGlobal('fetch', fetcher);
   mount();
+  openMenu();
   fireEvent.click(screen.getByRole('button', { name: 'Original status' }));
-  fireEvent.click(await screen.findByRole('button', { name: 'Withdraw original' }));
+  fireEvent.click(await screen.findByRole('button', { name: 'Withdraw / delete file' }));
   localStorage.setItem('current_tenant_id', 'another-company');
   confirm(true);
-  await waitFor(() => expect(screen.getByRole('button', { name: 'Withdraw original' })).not.toHaveProperty('disabled', true));
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Withdraw / delete file' })).not.toHaveProperty('disabled', true));
   expect(fetcher).toHaveBeenCalledOnce();
 });
 
@@ -95,8 +115,9 @@ it('reads back a lost withdrawal receipt without submitting another mutation', a
   vi.stubGlobal('fetch', fetcher);
   vi.spyOn(dialogs, 'requestAppConfirm').mockResolvedValue(true);
   mount();
+  openMenu();
   fireEvent.click(screen.getByRole('button', { name: 'Original status' }));
-  fireEvent.click(await screen.findByRole('button', { name: 'Withdraw original' }));
+  fireEvent.click(await screen.findByRole('button', { name: 'Withdraw / delete file' }));
   await screen.findByText('Could not confirm withdrawal. Check Original status before retrying.');
   fireEvent.click(screen.getByRole('button', { name: 'Original status' }));
   await screen.findByText('Original withdrawn. Select an authorized source to continue.');

@@ -240,7 +240,7 @@ const hubCopy: Record<HubKind, HubCopy> = {
   },
   documents: {
     title: 'Documents & Research',
-    eyebrow: 'Workspace evidence',
+    eyebrow: 'Files',
     subtitle: 'Files, Office documents, workspace artifacts, and research exports are surfaced through the employee workspace and Office runtime.',
     icon: <IconFileText size={20} stroke={1.7} />,
   },
@@ -1070,7 +1070,7 @@ export default function WorkspaceFeatureHub({ kind, initialAutomationCreateOpen 
         <section className="workbench-panel">
           <div className="workbench-panel-header">
             <div>
-              <h2>{t('featureHub.documentsTitle', 'Workspace evidence')}</h2>
+              <h2>{t('featureHub.documentsTitle', 'Files')}</h2>
               <p>{t('featureHub.documentsDesc', 'Recent root workspace files; open the employee workspace for editing and Office runtime actions.')}</p>
             </div>
           </div>
@@ -1126,7 +1126,7 @@ export default function WorkspaceFeatureHub({ kind, initialAutomationCreateOpen 
           <div className="workbench-grid three">
             <Link to={primaryAgent ? `/agents/${primaryAgent.id}#chat` : '/agents'} className="workbench-data-card">
               <strong>{t('featureHub.sessionLocalTeam', 'Session-local team')}</strong>
-              <p>{t('featureHub.sessionLocalTeamDesc', 'Team windows belong to the active conversation timeline and are reconciled back into the main session.')}</p>
+              <p>{t('featureHub.sessionLocalTeamDesc', 'Team windows belong to the active conversation timeline and are merged back into the main session.')}</p>
             </Link>
             <Link to={primaryAgent ? `/agents/${primaryAgent.id}#a2a` : '/agents'} className="workbench-data-card">
               <strong>{t('featureHub.orgDelegation', 'A2A collaborators')}</strong>

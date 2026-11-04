@@ -9,7 +9,6 @@ import { notificationsApi } from '../api/domains/notifications';
 import { systemApi } from '../api/domains/system';
 import { adminApi } from '../api/domains/admin';
 import { isChineseLanguage, nextInterfaceLanguage } from '../i18n/language';
-import AssistantRecoveryStrip from './assistant/AssistantRecoveryStrip';
 import AppSidebar, {
     COMPACT_SIDEBAR_MAX_WIDTH,
     isCompactSidebarViewport,
@@ -412,7 +411,6 @@ export default function Layout() {
             />
 
             <main className="main-content">
-                <AssistantRecoveryStrip userId={user?.id} tenantId={currentTenant} />
                 <Outlet />
             </main>
 

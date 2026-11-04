@@ -4,12 +4,17 @@ import { projectsApi, type ProjectDetail, type ProjectScope, type ProjectSummary
 
 export interface SelectedProjectContext { type: 'project_ref'; project_id: string; entry_ids: string[] }
 
-export function ProjectContextPicker({ scope, disabled, selection, onSelect }: {
+export function ProjectContextPicker({ scope, disabled, selection, onSelect, open: controlledOpen, onClose }: {
   scope: ProjectScope; disabled: boolean; selection: SelectedProjectContext | null;
   onSelect: (selection: SelectedProjectContext | null) => void;
+  /** When provided, the picker is controlled: it renders as an on-demand panel
+   * (no standalone toggle button) used from the composer "+" menu. */
+  open?: boolean;
+  onClose?: () => void;
 }) {
   const { t } = useTranslation();
-  const [open, setOpen] = useState(false);
+  const [uncontrolledOpen, setOpen] = useState(false);
+  const open = controlledOpen ?? uncontrolledOpen;
   const [projects, setProjects] = useState<ProjectSummary[]>([]);
   const [next, setNext] = useState<number | null>(null);
   const [detail, setDetail] = useState<ProjectDetail | null>(null);
@@ -18,6 +23,14 @@ export function ProjectContextPicker({ scope, disabled, selection, onSelect }: {
   const generation = useRef(0);
   const selected = useRef('');
   useEffect(() => () => { generation.current += 1; }, []);
+  useEffect(() => {
+    // Controlled mode opens from the composer "+" menu: load whenever the
+    // panel is open and no list is held yet. A StrictMode double-invoke that
+    // discards the first load therefore restarts it here instead of leaving
+    // the picker permanently disabled (no load-once latch).
+    if (controlledOpen && projects.length === 0 && !busy) void list();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [controlledOpen]);
   const list = async (offset = 0) => {
     const attempt = ++generation.current;
     setBusy(true); setError('');
@@ -42,11 +55,12 @@ export function ProjectContextPicker({ scope, disabled, selection, onSelect }: {
     finally { if (attempt === generation.current) setBusy(false); }
   };
   return <div className="session-project-picker">
-    <button type="button" disabled={disabled || busy} aria-expanded={open} onClick={() => {
+    {controlledOpen === undefined && <button type="button" disabled={disabled || busy} aria-expanded={open} onClick={() => {
       setOpen(!open); if (!open) void list();
-    }}>{t('projects.context')}</button>
+    }}>{t('projects.context')}</button>}
     {selection && <span role="status">{t('projects.contextSelected', { count: selection.entry_ids.length })}</span>}
     {selection && <button type="button" disabled={disabled} onClick={() => onSelect(null)}>{t('projects.contextRemove')}</button>}
+    {controlledOpen !== undefined && <button type="button" onClick={onClose}>{t('common.close', 'Close')}</button>}
     {open && <fieldset disabled={disabled || busy}>
       <legend>{t('projects.contextChoose')}</legend>
       <p>{t('projects.contextHint')}</p>

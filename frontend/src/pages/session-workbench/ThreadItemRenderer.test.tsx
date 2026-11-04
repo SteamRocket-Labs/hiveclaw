@@ -14,7 +14,7 @@ vi.mock('react-i18next', () => ({
         return '模型服务的身份验证或权限检查失败。请联系管理员检查 API Key 和模型访问权限，修复后再重试。';
       }
       if (_key === 'sessionWorkbench.threadItem.failure.deliveryUnknown') {
-        return '模型请求的结果尚不明确。请联系平台管理员核对该任务，再决定如何继续。';
+        return '这次请求没有确认完成。';
       }
       const value = typeof fallback === 'string' ? fallback : String(options?.defaultValue || _key);
       return value.replace('{{status}}', String(options?.status || '')).replace('{{count}}', String(options?.count || ''));
@@ -92,16 +92,15 @@ function item(itemType: ThreadItemType): ThreadItem {
 }
 
 describe('ThreadItemRenderer', () => {
-  it.each([false, true])('shows reconciliation for typed unknown delivery independently of retry hints: %s', (retryable) => {
+  it.each([false, true])('shows an unconfirmed finish for typed unknown delivery without promising a retry: %s', (retryable) => {
     const failure = { ...item('error'), event_type: 'runtime_failure', item_status: 'failed', audience: 'user',
       metadata: { delivery_state: 'unknown' },
       content: 'PRIVATE_PROVIDER_ERROR', user_summary: 'Check the configuration before retrying.',
       item_data: { code: 'auth_or_permission', retryable, reason: 'provider_error', retry_reason: null },
     } as ThreadItem;
     const markup = renderToStaticMarkup(<ThreadItemRenderer item={failure} />);
-    expect(markup).toContain('模型请求的结果尚不明确');
-    expect(markup).toContain('请联系平台管理员核对该任务');
-    expect(markup).not.toMatch(/API Key|修复后再重试|安全重试|Check the configuration|PRIVATE_PROVIDER_ERROR/);
+    expect(markup).toContain('这次请求没有确认完成');
+    expect(markup).not.toMatch(/可以重试|API Key|修复后再重试|安全重试|Check the configuration|PRIVATE_PROVIDER_ERROR/);
   });
 
   it.each([true, false])('explains authentication recovery independently of replay safety: %s', (retryable) => {
@@ -116,24 +115,28 @@ describe('ThreadItemRenderer', () => {
     expect(markup).not.toMatch(/temporarily unavailable|Stale temporary|PRIVATE_PROVIDER_ERROR/);
   });
 
-  it('shows a local permission decision while retaining operator-only visibility', () => {
+  it('shows a settled permission decision as one plain line while retaining operator-only visibility', () => {
     const decision = { ...item('approval_decision'), audience: 'user', event_type: 'permission_resolved' } as ThreadItem;
     expect(shouldRenderThreadItemInConversation(decision, false)).toBe(true);
     expect(shouldRenderThreadItemInConversation({ ...decision, audience: 'operator' }, false)).toBe(false);
     const markup = renderToStaticMarkup(<ThreadItemRenderer item={decision} />);
-    expect(markup).toContain('Approval decision');
-    expect(markup).toContain('Allow once');
+    expect(markup).toContain('Allowed · this time');
+    expect(markup).not.toContain('Approval decision');
     expect(markup).not.toContain('allow_once');
     expect(markup).not.toContain('Approval required');
+    const denied = { ...decision, item_data: { ...decision.item_data, action: 'deny' } } as ThreadItem;
+    expect(renderToStaticMarkup(<ThreadItemRenderer item={denied} />)).toContain('Declined');
+    const sessionWide = { ...decision, item_data: { ...decision.item_data, action: 'allow_session' } } as ThreadItem;
+    expect(renderToStaticMarkup(<ThreadItemRenderer item={sessionWide} />)).toContain('Allowed · for this session');
   });
-  it('presents source access without claiming the task failed or rendering runtime bytes', () => {
+  it('keeps the source-access notice out of the conversation; operators still get a clean card', () => {
     const notice = { ...item('warning'), event_type: 'source_access_notice', item_status: 'waiting_user',
       audience: 'user', content: 'PRIVATE_CANARY', user_summary: 'PRIVATE_CANARY' } as ThreadItem;
-    expect(shouldRenderThreadItemInConversation(notice, false)).toBe(true);
-    const markup = renderToStaticMarkup(<ThreadItemRenderer item={notice} />);
-    expect(markup).toContain('Source access');
-    expect(markup).toContain('refresh this conversation');
-    expect(markup).not.toMatch(/Runtime error|Runtime warning|task stopped|PRIVATE_CANARY|retryable/);
+    // The platform no longer interposes source cards in the user conversation (P3).
+    expect(shouldRenderThreadItemInConversation(notice, false)).toBe(false);
+    const operatorMarkup = renderToStaticMarkup(<ThreadItemRenderer item={{ ...notice, audience: 'operator' }} />);
+    expect(operatorMarkup).toContain('Source access');
+    expect(operatorMarkup).not.toMatch(/Runtime error|Runtime warning|task stopped|PRIVATE_CANARY|retryable/);
   });
   it('renders every discriminated variant with an explicit technical-details control', () => {
     for (const itemType of Object.keys(DATA_BY_TYPE) as ThreadItemType[]) {

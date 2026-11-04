@@ -266,8 +266,7 @@ async def recover_enterprise_permission_waits(db, *, limit=500):
                         SessionToolInvocation.provider_request_id == invocation.provider_request_id,
                         SessionToolInvocation.result_event_id.is_(None),
                         SessionToolInvocation.effect_state.in_(("effect_started", "needs_reconciliation")),
-                        *([SessionToolInvocation.id > after_id] if after_id is not None else []),
-        ).order_by(SessionToolInvocation.id).limit(1))
+                    ).order_by(SessionToolInvocation.id).limit(1))
                     if uncertain is None:
                         raise
                     source = await _source_result(db, invocation)

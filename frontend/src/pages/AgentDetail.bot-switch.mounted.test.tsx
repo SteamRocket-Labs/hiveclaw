@@ -21,6 +21,7 @@ const mocks = vi.hoisted(() => ({
   listSessionDecisions: vi.fn(),
   getSessionWorkbench: vi.fn(),
   getSessionContextUsage: vi.fn(),
+  getSessionWorkLedger: vi.fn(),
   navigate: vi.fn(),
   chatProps: null as any,
   // Session-scoped query keys the real components built, as
@@ -57,6 +58,7 @@ const SESSION_QUERY_PREFIXES = new Set([
   'chat-session-index',
   'chat-session-decisions',
   'chat-session-context-usage',
+  'chat-session-work-ledger',
 ]);
 const executedQueryFetches = new Set<string>();
 
@@ -152,6 +154,16 @@ vi.mock('../api/domains/ccParity', () => ({
     getSessionContextUsage: mocks.getSessionContextUsage,
   },
 }));
+
+// The session work ledger read reaches the backend through autonomyApi, not
+// chatApi: only that function is recorded, the rest of the module stays real.
+vi.mock('../api/domains/autonomy', async (importOriginal) => {
+  const real = await importOriginal<typeof import('../api/domains/autonomy')>();
+  return {
+    ...real,
+    autonomyApi: { ...real.autonomyApi, getSessionWorkLedger: mocks.getSessionWorkLedger },
+  };
+});
 
 vi.mock('../api/domains/activity', () => ({
   activityApi: { list: vi.fn().mockResolvedValue([]), getToolFailureSummary: vi.fn().mockResolvedValue(undefined) },
@@ -264,6 +276,7 @@ beforeEach(() => {
   mocks.listSessionDecisions.mockResolvedValue([]);
   mocks.getSessionWorkbench.mockResolvedValue({ schema: 'session_workbench.v1', runtime_sections: {} });
   mocks.getSessionContextUsage.mockResolvedValue(null);
+  mocks.getSessionWorkLedger.mockResolvedValue({ todo_items: [] });
   mocks.listSessions.mockImplementation((agentId: string, scope: string) => {
     if (scope !== 'mine') return Promise.resolve([]);
     if (agentId === 'agent-b' && holdBotBList) {
@@ -289,6 +302,7 @@ function endpointReads(): Array<[string, string | null, string]> {
   for (const call of mocks.listSessionDecisions.mock.calls) push('decisions', call[0], call[1]);
   for (const call of mocks.getSessionWorkbench.mock.calls) push('workbench', call[0], call[1]);
   for (const call of mocks.getSessionContextUsage.mock.calls) push('context-usage', call[0], call[1]);
+  for (const call of mocks.getSessionWorkLedger.mock.calls) push('work-ledger', call[0], call[1]);
   for (const call of mocks.getRuntimeSummary.mock.calls) push('runtime-summary', null, call[0]);
   return reads;
 }
@@ -361,9 +375,13 @@ describe('returning to a bot after a bot switch (B5-fix2)', () => {
     expect(readFor('decisions')).toHaveLength(1);
     expect(readFor('workbench')).toHaveLength(1);
     expect(readFor('context-usage')).toHaveLength(1);
+    expect(readFor('work-ledger')).toHaveLength(1);
     expect(mocks.getRuntimeSummary.mock.calls.some(([sessionId]) => sessionId === 's-b-1')).toBe(true);
     expect(mocks.sessionQueryKeys.some(([prefix, agentId, sessionId]) => (
       prefix === 'chat-runtime-summary' && agentId === 'agent-b' && sessionId === 's-b-1'
+    ))).toBe(true);
+    expect(mocks.sessionQueryKeys.some(([prefix, agentId, sessionId]) => (
+      prefix === 'chat-session-work-ledger' && agentId === 'agent-b' && sessionId === 's-b-1'
     ))).toBe(true);
 
     // And no read — on any endpoint, at any moment — paired a bot with a

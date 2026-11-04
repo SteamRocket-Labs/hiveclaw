@@ -479,6 +479,7 @@ async def _emit_session_no_policy_result(
     reason: str | None,
     action: str,
     event_callback: EventCallback | None,
+    apply_hook: bool = True,
 ) -> str | None:
     if action == "allow":
         return None
@@ -591,16 +592,17 @@ async def _emit_session_no_policy_result(
         "pending_tool_frame": asdict(pending_frame),
         **risk_metadata,
     }
-    hook_decision = await _apply_permission_request_hook(
-        context=context,
-        permission_request=permission_request,
-        capability=request_capability,
-        reason=request_reason,
-        mode=mode.value,
-        event_callback=event_callback,
-    )
-    if hook_decision is not _NO_PERMISSION_HOOK_DECISION:
-        return hook_decision
+    if apply_hook:
+        hook_decision = await _apply_permission_request_hook(
+            context=context,
+            permission_request=permission_request,
+            capability=request_capability,
+            reason=request_reason,
+            mode=mode.value,
+            event_callback=event_callback,
+        )
+        if hook_decision is not _NO_PERMISSION_HOOK_DECISION:
+            return hook_decision
 
     await _emit_event(
         event_callback,
@@ -771,11 +773,28 @@ async def request_action_preflight_approval(
     """Route a typed ActionPreflight confirmation through a durable ticket."""
 
     if reason_code == "preflight_ask" and context.session_id and context.approval_decision is None:
-        message = await _emit_session_no_policy_result(
-            context, capability=f"tool.action_preflight.{context.tool_name}", reason=reason_code,
-            action=_session_explicit_policy_action(context), event_callback=event_callback,
-        )
-        return _typed_governance_block(message, []) if message is not None else None
+        from app.database import tenant_scoped_session
+        from app.models.agent import Agent
+        from app.models.audit import ApprovalRequest
+        from app.models.user import User
+        from app.services.approval_service import can_resolve_approval
+
+        async with tenant_scoped_session(uuid.UUID(str(context.tenant_id))) as db:
+            agent, user = await db.get(Agent, context.agent_id), await db.get(User, context.user_id)
+            approval = ApprovalRequest(id=uuid.UUID(_stable_session_permission_request_id(context)),
+                tenant_id=uuid.UUID(str(context.tenant_id)), agent_id=context.agent_id,
+                action_type=f"tool.action_preflight.{context.tool_name}",
+                details={"origin": {"type": "action_preflight"}})
+            authorized = agent is not None and user is not None and await can_resolve_approval(
+                db, agent=agent, user=user, approval=approval)
+        if authorized:
+            action = "allow" if _has_exact_session_grant(context) else (
+                "deny" if _permission_mode_for_context(context) in {PermissionMode.DONT_ASK, PermissionMode.PLAN} else "ask")
+            message = await _emit_session_no_policy_result(
+                context, capability=approval.action_type, reason=reason_code,
+                action=action, event_callback=event_callback, apply_hook=False,
+            )
+            return _typed_governance_block(message, []) if message is not None else None
 
     message = await _emit_enterprise_approval_result(
         context,

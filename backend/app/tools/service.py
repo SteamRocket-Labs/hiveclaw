@@ -1352,7 +1352,7 @@ class ToolRuntimeService:
 
             async def _execute_backend() -> str | ToolContentEnvelope:
                 from app.services.content_input_receipts import (
-                    authorize_workspace_receipt_read, native_clock_read_scope, native_directory_read_scope,
+                    authorize_workspace_execution_inputs, authorize_workspace_receipt_read, native_clock_read_scope, native_directory_read_scope,
                     settle_workspace_receipt_read,
                 )
 
@@ -1380,6 +1380,7 @@ class ToolRuntimeService:
                                 context=context, tool_name=tool_name, tool_call_id=tool_call_id, arguments=arguments,
                                 result=input_read, states={}, lineage=[], errors={}, native_read_denial=input_read.metadata["native_read_denial"])
                     return input_read
+                await authorize_workspace_execution_inputs(request)
                 from app.services.workspace_resource_authority import (
                     WorkspaceAuthorityError, WorkspaceAuthorityScope, WorkspaceOutputWrite, authorize_workspace_tool_path,
                 )

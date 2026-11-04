@@ -82,8 +82,7 @@ async def _office_content_source(db, current_user, *, agent_id, path):
     receipt = await latest_workspace_receipt(db, access[0].tenant_id, agent_id, normalized)
     source = None
     try:
-        source, captured = await asyncio.to_thread(snapshot_workspace_file, _agent_workspace(agent_id), normalized,
-            expected_sha256=receipt.content_sha256 if receipt is not None else None)
+        source, captured = await asyncio.to_thread(snapshot_workspace_file, _agent_workspace(agent_id), normalized)
         digest = await asyncio.to_thread(_content_hash, captured)
         if captured.stat().st_size > settings.OFFICECLI_PREVIEW_MAX_BYTES:
             raise HTTPException(status_code=413, detail="Document exceeds the configured Office processing limit")

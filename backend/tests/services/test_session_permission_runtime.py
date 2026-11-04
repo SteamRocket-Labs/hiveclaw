@@ -557,6 +557,11 @@ async def test_exception_before_effect_fence_is_failed_once_and_same_run_resumes
         from app.services.session_model_inputs import permission_abort_result_bound
 
         assert await permission_abort_result_bound(db, invocation=invocation, event=event, content=payload["content"])
+        legacy = json.loads(payload["content"])
+        assert legacy.pop("message") == "The approved action failed before it started."
+        assert await permission_abort_result_bound(db, invocation=invocation, event=event, content=json.dumps(legacy))
+        legacy["message"] = "An unbound replacement."
+        assert not await permission_abort_result_bound(db, invocation=invocation, event=event, content=json.dumps(legacy))
         replay = await resolve_session_tool_permission(db, authority=authority,
             permission_request_id=seed.permission_ids[0], decision="allow_once")
         assert replay.result_event_id == receipt.result_event_id

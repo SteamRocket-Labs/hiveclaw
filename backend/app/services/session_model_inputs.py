@@ -634,6 +634,7 @@ async def permission_abort_result_bound(db, *, invocation, event, content):
                 "schema": "hive.tool_permission_execution_abort.v1",
                 "status": "failed" if reason == "approved_tool_execution_failed" else "aborted",
                 "reason_code": reason,
+                **({"message": "The approved action failed before it started."} if "message" in payload else {}),
                 "invocation_id": str(invocation.id),
                 "provider_tool_use_id": invocation.provider_tool_use_id,
             }
@@ -1356,6 +1357,8 @@ async def _resolve_origin_dependencies(db, *, tenant_id, agent_id, ref):
             )
             if bound != pointer:
                 return _unique_dependencies(dependencies), False
+            if bound["content_input_receipt_id"] is None:
+                return _unique_dependencies(dependencies), inherited_complete
             receipt = await db.get(ContentInputReceipt, uuid.UUID(bound["content_input_receipt_id"]))
             inherited = _stored_dependencies(receipt.dependencies_json)
             if inherited is None:

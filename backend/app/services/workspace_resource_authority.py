@@ -372,7 +372,7 @@ def snapshot_workspace_file(
 @dataclass(slots=True)
 class WorkspaceInputRead:
     path: str
-    receipt_id: uuid.UUID
+    receipt_id: uuid.UUID | None
     revision: int
     content_sha256: str
     dependencies_hash: str
@@ -384,7 +384,7 @@ class WorkspaceInputRead:
 
     def verify_digest(self, digest: str) -> None:
         self.observed_sha256 = digest
-        if self.observed_sha256 != self.content_sha256:
+        if self.carrier_kind != "workspace_artifact" and self.observed_sha256 != self.content_sha256:
             raise WorkspaceAuthorityError("workspace_content_unverified",
                 "The file bytes no longer match the verified input receipt. Regenerate from authorized inputs.")
 
@@ -430,11 +430,11 @@ class WorkspaceExecutionInputs:
         for state in states.values():
             path, digest = state["path"], state.get("sha256")
             read = scope.input_read(path)
-            if read is None or not digest or read.observed_sha256 != digest or read.content_sha256 != digest:
+            if read is None or not digest or read.observed_sha256 != digest:
                 self.unbound.append(path)
-            else:
+            elif read.receipt_id is not None:
                 self.sources.append({"source_kind": "workspace_artifact", "source_id": str(read.receipt_id),
-                    "source_version": digest})
+                    "source_version": read.content_sha256})
         self.observed = True
 
     def snapshot(self) -> dict:
@@ -798,6 +798,7 @@ async def authorize_workspace_path(
             action=action,
             owner_user_id=manifest.owner_user_id,
             root_session_id=manifest.root_session_id,
+            authority_state=manifest.authority_state,
             allow_manager_override=allow_manager_override,
             manager_override_reason=manager_override_reason,
             agent_access=(agent, access_level),
@@ -1003,6 +1004,7 @@ async def load_workspace_authority_scope(
                 action="read",
                 owner_user_id=manifest.owner_user_id,
                 root_session_id=manifest.root_session_id,
+                authority_state=manifest.authority_state,
                 agent_access=resolved_agent_access,
                 runtime_principal=runtime_principal,
             )
@@ -1015,7 +1017,7 @@ async def load_workspace_authority_scope(
             full_control_paths.add(manifest.path)
             action_permissions.update((manifest.path, action) for action in _WORKSPACE_EFFECT_ACTIONS)
     grant_candidates = [manifest for manifest in manifests
-        if manifest.path not in full_control_paths and manifest.owner_user_id is not None]
+        if manifest.path not in full_control_paths and manifest.authority_state == OWNED_AUTHORITY_STATE]
     if grant_candidates:
         for action in _WORKSPACE_EFFECT_ACTIONS:
             resource_ids = await load_explicit_resource_grant_ids(db, user=user, resource_kind="workspace_file", action=action)

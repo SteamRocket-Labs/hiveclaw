@@ -1250,7 +1250,7 @@ async def create_chat_artifacts_for_message(
     from app.services.content_input_receipts import (
         ContentInputReceiptError,
         validate_artifact_content_receipt,
-        validate_browser_workspace_receipt,
+        validate_published_workspace_receipt,
         validate_runtime_workspace_receipt,
     )
     from app.services.workspace_resource_authority import WorkspaceAuthorityError, authorize_workspace_path
@@ -1550,7 +1550,7 @@ async def create_chat_artifacts_for_message(
                             source_db, tenant_id, runtime_principal, source_receipt, candidate["content_hash"]
                         )
                     else:
-                        await validate_browser_workspace_receipt(
+                        await validate_published_workspace_receipt(
                             source_db, tenant_id, authority_user, source_receipt, candidate["content_hash"]
                         )
             except ContentInputReceiptError as exc:

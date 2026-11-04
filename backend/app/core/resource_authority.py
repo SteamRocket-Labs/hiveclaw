@@ -306,7 +306,7 @@ async def authorize_resource_action(
             raise HTTPException(status_code=exc.status_code, detail={"code": exc.code, "message": str(exc)}) from exc
     state = str(authority_state or QUARANTINED_AUTHORITY_STATE).strip().lower()
 
-    if state == OWNED_AUTHORITY_STATE:
+    if state == OWNED_AUTHORITY_STATE or (resource_kind == "workspace_file" and owner_user_id is not None):
         if owner_user_id is not None and str(owner_user_id) == str(user.id):
             return ResourceAuthorityDecision(
                 agent=agent,

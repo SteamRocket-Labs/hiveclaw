@@ -129,6 +129,7 @@ def _typed_execution_abort(*, invocation: SessionToolInvocation, reason_code: st
             "schema": "hive.tool_permission_execution_abort.v1",
             "status": status,
             "reason_code": reason_code,
+            **({"message": "The approved action failed before it started."} if status == "failed" else {}),
             "invocation_id": str(invocation.id),
             "provider_tool_use_id": invocation.provider_tool_use_id,
         },

@@ -1783,6 +1783,34 @@ async def _validate_workspace_receipt_inputs(
     )
 
 
+async def authorize_workspace_execution_inputs(request):
+    """Bind known upstream inputs without denying access to working copies."""
+    from dataclasses import replace
+    from app.database import tenant_scoped_session
+    from app.core.resource_authority import normalize_workspace_resource_path
+    from app.services.session_tool_runtime import _sha256
+    from app.services.workspace_resource_authority import WorkspaceAuthorityScope, WorkspaceInputRead
+
+    context, scope = request.context, request.context.workspace_authority_scope
+    if request.tool_name not in {"grep_search", "execute_code", "run_command", "run_skill_tool",
+        "office_document_create", "office_document_apply"} or not isinstance(scope, WorkspaceAuthorityScope):
+        return
+    paths = {path for path in scope.allowed_paths if path.startswith("workspace/")}
+    if request.tool_name in {"office_document_create", "office_document_apply"}:
+        raw = request.arguments.get("template_path" if request.tool_name == "office_document_create" else "path")
+        resources = request.arguments.get("resource_paths") or []
+        paths &= {normalize_workspace_resource_path(path) for path in [*([str(raw)] if raw else []), *resources]}
+    reads = []
+    tenant_id = uuid.UUID(str(context.tenant_id))
+    async with tenant_scoped_session(tenant_id) as db:
+        for path in sorted(paths):
+            receipt = await latest_workspace_receipt(db, tenant_id, context.agent_id, path)
+            reads.append(WorkspaceInputRead(path=path, receipt_id=receipt.id if receipt else None,
+                revision=receipt.revision if receipt else 0, content_sha256=receipt.content_sha256 if receipt else "",
+                dependencies_hash=_sha256(receipt.dependencies_json if receipt else [])))
+    context.workspace_authority_scope = replace(scope, input_reads=tuple(reads))
+
+
 async def authorize_workspace_receipt_read(request):
     """Keep platform memory boundaries separate from ordinary working copies."""
     from app.core.resource_authority import normalize_workspace_resource_path
@@ -1792,43 +1820,50 @@ async def authorize_workspace_receipt_read(request):
         and str(request.arguments.get("mode") or "text").strip().lower() in {"text", "document"}
     ):
         return None
-    if "original_attachment_id" in request.arguments:
+    if request.tool_name != "exit_plan_mode" and "original_attachment_id" in request.arguments:
         return None
-    raw_path = request.arguments.get("path")
-    if request.tool_name == "exit_plan_mode":
-        from app.services.plan_mode_runtime_context import interactive_plan_mode_metadata
+    from sqlalchemy.exc import SQLAlchemyError
 
-        raw_path = interactive_plan_mode_metadata().get("plan_file_path")
-    path = normalize_workspace_resource_path(str(raw_path or ""))
-    if path == "memory/explicit" or path.startswith("memory/explicit/"):
-        from app.services.explicit_memory_authority import authorize_explicit_memory_file_read
+    try:
+        raw_path = request.arguments.get("path")
+        if request.tool_name == "exit_plan_mode":
+            from app.services.plan_mode_runtime_context import interactive_plan_mode_metadata
 
-        return await authorize_explicit_memory_file_read(request, path)
-    if path.startswith("memory/control/"):
-        from app.tools.result_envelope import ToolContentEnvelope
+            raw_path = interactive_plan_mode_metadata().get("plan_file_path")
+        path = normalize_workspace_resource_path(str(raw_path or ""))
+        if path == "memory/explicit" or path.startswith("memory/explicit/"):
+            from app.services.explicit_memory_authority import authorize_explicit_memory_file_read
 
-        return ToolContentEnvelope(
-            text=_platform_control_read_unavailable(request.tool_name),
-            metadata={"native_read_denial": {"kind": "platform_control_read_unavailable", "path": path}},
-        )
-    if path.startswith("workspace/"):
-        from dataclasses import replace
-        from app.database import tenant_scoped_session
-        from app.services.session_tool_runtime import _sha256
-        from app.services.workspace_resource_authority import WorkspaceAuthorityScope, WorkspaceInputRead
+            return await authorize_explicit_memory_file_read(request, path)
+        if path.startswith("memory/control/"):
+            from app.tools.result_envelope import ToolContentEnvelope
 
-        context = request.context
-        scope = context.workspace_authority_scope
-        if isinstance(scope, WorkspaceAuthorityScope) and scope.can_read(path):
-            async with tenant_scoped_session(uuid.UUID(str(context.tenant_id))) as db:
-                receipt = await latest_workspace_receipt(db, uuid.UUID(str(context.tenant_id)), context.agent_id, path)
-                if receipt is not None:
-                    observed = WorkspaceInputRead(path=path, receipt_id=receipt.id, revision=receipt.revision,
-                        content_sha256=receipt.content_sha256, dependencies_hash=_sha256(receipt.dependencies_json))
+            return ToolContentEnvelope(
+                text=_platform_control_read_unavailable(request.tool_name),
+                metadata={"native_read_denial": {"kind": "platform_control_read_unavailable", "path": path}},
+            )
+        if path.startswith("workspace/"):
+            from dataclasses import replace
+            from app.database import tenant_scoped_session
+            from app.services.session_tool_runtime import _sha256
+            from app.services.workspace_resource_authority import WorkspaceAuthorityScope, WorkspaceInputRead
+
+            context = request.context
+            scope = context.workspace_authority_scope
+            if isinstance(scope, WorkspaceAuthorityScope) and scope.can_read(path):
+                async with tenant_scoped_session(uuid.UUID(str(context.tenant_id))) as db:
+                    receipt = await latest_workspace_receipt(db, uuid.UUID(str(context.tenant_id)), context.agent_id, path)
+                    observed = WorkspaceInputRead(path=path, receipt_id=receipt.id if receipt else None,
+                        revision=receipt.revision if receipt else 0, content_sha256=receipt.content_sha256 if receipt else "",
+                        dependencies_hash=_sha256(receipt.dependencies_json if receipt else []))
                     context.workspace_authority_scope = replace(scope,
                         input_reads=tuple(read for read in scope.input_reads if read.path != path) + (observed,))
                     return observed
-    return None
+        return None
+    except (ContentInputReceiptError, OSError, ValueError, SQLAlchemyError) as exc:
+        return _workspace_read_denial(request.tool_name,
+            exc.status_code if isinstance(exc, ContentInputReceiptError) else 503,
+            exc.code if isinstance(exc, ContentInputReceiptError) else "content_source_unavailable")
 
 
 def _platform_control_read_unavailable(tool_name):
@@ -1919,6 +1954,11 @@ async def latest_workspace_receipt(db, tenant_id: uuid.UUID, agent_id: uuid.UUID
 
 
 async def validate_browser_workspace_receipt(db, tenant_id: uuid.UUID, user, receipt, content_sha256: str) -> None:
+    """Path authority governs working copies; sources are checked at publication."""
+    return None
+
+
+async def validate_published_workspace_receipt(db, tenant_id: uuid.UUID, user, receipt, content_sha256: str) -> None:
     if receipt is None or receipt.content_sha256 != content_sha256:
         raise ContentInputReceiptError(
             "workspace_content_unverified",
@@ -2133,7 +2173,7 @@ async def persist_workspace_execution_evidence(
                     carrier_ref = memory_ref(context.agent_id, Path(input_read.path).stem)
                 proof.update(
                     schema="hive.workspace_input_evidence.v1",
-                    content_input_receipt_id=str(input_read.receipt_id),
+                    content_input_receipt_id=str(input_read.receipt_id) if input_read.receipt_id else None,
                     carrier_ref=carrier_ref,
                     revision=input_read.revision,
                     content_sha256=input_read.content_sha256,
@@ -2888,7 +2928,7 @@ async def settle_workspace_receipt_read(*, request, read, tool_call_id, result):
     from app.tools.result_envelope import render_tool_error
 
     context = request.context
-    if read.observed_sha256 == read.content_sha256:
+    if read.observed_sha256 is not None and (read.carrier_kind == "workspace_artifact" or read.observed_sha256 == read.content_sha256):
         evidence = await persist_workspace_execution_evidence(
             context=context,
             tool_name=request.tool_name,
@@ -2901,8 +2941,6 @@ async def settle_workspace_receipt_read(*, request, read, tool_call_id, result):
             input_read=read,
         )
         return None, evidence
-    if read.carrier_kind == "workspace_artifact":
-        return None, {"status": "unavailable", "reason_code": "workspace_input_read_unverified"}
     status, code, quarantine = 503, "workspace_input_read_unverified", "not_attempted"
     if read.observed_sha256 is not None:
         try:
@@ -2987,12 +3025,19 @@ async def load_workspace_input_evidence(db, *, agent_id, invocation, model_resul
             or proof.get("authority_snapshot_hash") != invocation.authority_snapshot_hash
             or proof.get("effective_args_hash") != _sha256({"tool_name": invocation.tool_name, "arguments": arguments})
             or proof.get("tool_result_hash") != content_hash
-            or proof.get("observed_sha256") != proof.get("content_sha256")
+            or not proof.get("observed_sha256")
+            or (proof.get("carrier_kind", "workspace_artifact") != "workspace_artifact"
+                and proof.get("observed_sha256") != proof.get("content_sha256"))
         )
     ):
         raise ContentInputReceiptError(
             "workspace_input_evidence_invalid", "The read evidence is not bound to this invocation."
         )
+    if proof.get("content_input_receipt_id") is None and proof.get("carrier_kind", "workspace_artifact") == "workspace_artifact":
+        if proof.get("revision") != 0 or proof.get("content_sha256") != "" or proof.get("dependencies_hash") != _sha256([]):
+            raise ContentInputReceiptError("workspace_input_evidence_invalid", "The working-copy input is invalid.")
+        return {"status": "verified", "evidence_ref": f"workspace-input:{evidence_id}",
+            "content_input_receipt_id": None, "revision": 0, "observed_sha256": proof["observed_sha256"]}
     try:
         receipt_id = uuid.UUID(proof["content_input_receipt_id"])
         path = (
@@ -3039,6 +3084,8 @@ async def load_workspace_input_evidence(db, *, agent_id, invocation, model_resul
         "evidence_ref": f"workspace-input:{evidence_id}",
         "content_input_receipt_id": str(receipt.id),
         "revision": receipt.revision,
+        **({"observed_sha256": proof["observed_sha256"]}
+            if proof["observed_sha256"] != receipt.content_sha256 else {}),
     }
 
 

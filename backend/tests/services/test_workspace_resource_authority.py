@@ -9,7 +9,7 @@ from fastapi import HTTPException
 
 @pytest.mark.parametrize("source", ["empty", "receipted", "legacy", "tampered"])
 @pytest.mark.parametrize("path", ["workspace/source.txt", "workspace/.hive/source.txt"])
-def test_execution_inventory_binds_all_copied_bytes_without_authorizing_legacy_sources(tmp_path, source, path):
+def test_execution_inventory_keeps_working_copies_and_known_upstream_sources(tmp_path, source, path):
     import hashlib
     from app.services.agent_tool_domains.code_exec import authorized_execution_workspace
     from app.services.workspace_resource_authority import (
@@ -29,12 +29,12 @@ def test_execution_inventory_binds_all_copied_bytes_without_authorizing_legacy_s
         allowed_paths=frozenset() if source == "empty" else frozenset({path}),
         operator_view=False, authority_source="resource_owner", input_reads=reads, execution_inputs=capture)
     with authorized_execution_workspace(tmp_path, scope) as private:
-        assert (private / path).exists() is (source in {"receipted", "legacy"})
+        assert (private / path).exists() is (source in {"receipted", "legacy", "tampered"})
     observed = capture.snapshot()
     assert observed["observed"] is True
     assert observed["unbound"] == ([path] if source == "legacy" else [])
     assert observed["sources"] == ([{"source_kind": "workspace_artifact", "source_id": str(receipt_id),
-        "source_version": digest}] if source == "receipted" else [])
+        "source_version": digest}] if source in {"receipted", "tampered"} else [])
 
 
 @pytest.mark.parametrize("operator_view", [False, True])

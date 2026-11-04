@@ -62,12 +62,13 @@ class SkillInputCapture:
             if path in self.files:
                 self.observe_file(path, digest)
                 continue
-            if read is None or not digest or read.observed_sha256 != digest or read.content_sha256 != digest:
+            if read is None or not digest or read.observed_sha256 != digest:
                 self.unbound.append(f"workspace_file_unbound:{path}")
                 continue
-            self.sources.append(
-                {"source_kind": "workspace_artifact", "source_id": str(read.receipt_id), "source_version": digest}
-            )
+            if read.receipt_id is not None:
+                self.sources.append(
+                    {"source_kind": "workspace_artifact", "source_id": str(read.receipt_id), "source_version": read.content_sha256}
+                )
 
     def snapshot(self):
         sources = sorted({(row["source_kind"], row["source_id"], row["source_version"]) for row in self.sources})

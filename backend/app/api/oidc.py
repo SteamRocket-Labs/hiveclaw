@@ -98,7 +98,7 @@ async def oidc_callback(
 ):
     """Handle OIDC callback — exchange code for tokens, login or register user."""
     from app.models.tenant import Tenant
-    from app.services.oidc_service import exchange_code, get_tenant_oidc_config, login_or_register
+    from app.services.oidc_service import OIDCAccountConflict, exchange_code, get_tenant_oidc_config, login_or_register
     from sqlalchemy import select
 
     # Resolve tenant
@@ -140,11 +140,12 @@ async def oidc_callback(
     auto_provision = cfg.get("auto_provision", True)
     try:
         user, token = await login_or_register(db, oidc_user, tenant_uuid, auto_provision)
+    except (OIDCAccountConflict, IntegrityError):
+        await db.rollback()
+        logger.warning("OIDC account conflict")
+        raise HTTPException(status_code=409, detail="OIDC account conflicts with an existing account")
     except ValueError as e:
         raise HTTPException(status_code=403, detail=str(e))
-    except IntegrityError:
-        await db.rollback()
-        raise HTTPException(status_code=409, detail="OIDC account conflicts with an existing account")
 
     # Audit event
     try:
@@ -216,6 +217,7 @@ async def bind_oidc_account(
         await db.flush()
     except IntegrityError:
         await db.rollback()
+        logger.warning("OIDC account conflict")
         raise HTTPException(status_code=409, detail="OIDC account conflicts with an existing account")
 
     return UserOut.model_validate(current_user)

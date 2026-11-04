@@ -12,12 +12,14 @@ import pytest
 from authlib.jose import JsonWebKey, jwt
 from fastapi import FastAPI
 from loguru import logger
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
 from app.api.oidc import router
 from app.core.security import get_current_user
 from app.database import get_db
 from app.models.participant import Participant
+from app.models.tenant import Tenant  # noqa: F401 - register the User foreign-key target
 from app.models.user import User
 from app.services import oidc_service
 from tests.api.test_auth_login import _fake_user
@@ -100,7 +102,7 @@ async def call_route(monkeypatch, route, nonce=NONCE, *, db=None, user=None, ten
     if user is None:
         user = _fake_user(tenant_id=tenant_id)
         user.oidc_sub = "verified-subject" if route == "callback" else None
-        user.oidc_issuer = None
+        user.oidc_issuer = ISSUER if route == "callback" else None
     setting = SimpleNamespace(value={
         "issuer_url": ISSUER, "client_id": CLIENT_ID, "client_secret": "fake-client-secret",
     })
@@ -167,6 +169,7 @@ async def test_rejects_invalid_login(monkeypatch, provider, signing_keys, route,
         del provider.claims["sub"]
     elif case == "empty_sub":
         provider.claims["sub"] = ""
+        provider.userinfo["sub"] = ""
     elif case == "symmetric_key":
         provider.algorithm = "HS256"
         provider.key = JsonWebKey.generate_key("oct", 256, is_private=True)
@@ -248,19 +251,31 @@ async def test_malformed_tenant_is_plain_refusal(monkeypatch, provider):
 
 
 @pytest.fixture
-async def account_db():
+async def account_db(monkeypatch):
     engine = create_async_engine("sqlite+aiosqlite:///:memory:")
     async with engine.begin() as connection:
         await connection.run_sync(User.__table__.create)
         await connection.run_sync(Participant.__table__.create)
     try:
         async with AsyncSession(engine, expire_on_commit=False) as db:
+            execute = db.execute
+
+            async def sqlite_execute(statement, *args, **kwargs):
+                # SQLite has no GUCs; retain the real bypass scope and SQL queries.
+                if str(statement).startswith("SET LOCAL"):
+                    return None
+                return await execute(statement, *args, **kwargs)
+
+            monkeypatch.setattr(db, "execute", sqlite_execute)
             yield db
     finally:
         await engine.dispose()
 
 
-@pytest.mark.parametrize("collision", ["email_same_tenant", "email_other_tenant", "sub_other_tenant", "bind_sub"])
+@pytest.mark.parametrize("collision", [
+    "email_same_tenant", "email_other_tenant", "sub_other_tenant", "bind_sub",
+    "sub_other_issuer", "email_case_same_tenant", "email_case_other_tenant",
+])
 async def test_account_conflicts_are_plain_refusals(monkeypatch, provider, account_db, collision):
     tenant_id = uuid4()
     victim = User(**vars(_fake_user(
@@ -269,20 +284,28 @@ async def test_account_conflicts_are_plain_refusals(monkeypatch, provider, accou
     )))
     victim.role = "platform_admin"
     victim.oidc_sub = "verified-subject" if "sub" in collision else "original-subject"
-    victim.oidc_issuer = ISSUER
+    victim.oidc_issuer = "https://original-idp.test" if collision == "sub_other_issuer" else ISSUER
     actor = User(**vars(_fake_user(username="bob", email="bob@example.com", tenant_id=tenant_id)))
     account_db.add_all([victim, actor])
     await account_db.commit()
-    victim_id, actor_id, original_sub = victim.id, actor.id, victim.oidc_sub
+    victim_id, actor_id, original_sub, original_issuer = victim.id, actor.id, victim.oidc_sub, victim.oidc_issuer
     if "sub" in collision:
         provider.claims["email"] = "new@example.com"
+    elif "email_case" in collision:
+        provider.claims["email"] = provider.claims["email"].upper()
     # Even a provider's verified-email claim must not link an existing account.
     provider.claims["email_verified"] = True
     route = "bind" if collision == "bind_sub" else "callback"
-    response, _, _, audit = await call_route(
-        monkeypatch, route, db=account_db, user=actor, tenant_id=tenant_id,
-    )
-    assert response.status_code in {400, 403, 409}
+    messages = []
+    sink = logger.add(lambda message: messages.append(message.record["message"]))
+    try:
+        response, _, _, audit = await call_route(
+            monkeypatch, route, db=account_db, user=actor, tenant_id=tenant_id,
+        )
+    finally:
+        logger.remove(sink)
+    assert response.status_code == 409
+    assert "OIDC account conflict" in messages
     assert set(response.json()) == {"detail"}
     assert "token" not in response.json()
     audit.assert_not_awaited()
@@ -290,8 +313,32 @@ async def test_account_conflicts_are_plain_refusals(monkeypatch, provider, accou
     victim = await account_db.get(User, victim_id)
     actor = await account_db.get(User, actor_id)
     assert victim.oidc_sub == original_sub
+    assert victim.oidc_issuer == original_issuer
     assert victim.role == "platform_admin"
     assert actor.oidc_sub is None
+    assert await account_db.scalar(select(func.count()).select_from(User)) == 2
+
+
+async def test_admin_save_refuses_discovery_issuer_mismatch(monkeypatch, provider):
+    from app.api import enterprise
+    from app.core.security import get_current_admin
+
+    provider.metadata["issuer"] = ISSUER + "/"
+    db = _FakeDB([])
+    admin = _fake_user(tenant_id=uuid4())
+    monkeypatch.setattr(enterprise, "resolve_and_pin_tenant_scope", AsyncMock(return_value=admin.tenant_id))
+    app = FastAPI()
+    app.include_router(enterprise.router, prefix="/api")
+    app.dependency_overrides[get_db] = lambda: db
+    app.dependency_overrides[get_current_admin] = lambda: admin
+    async with AsyncClient(transport=httpx.ASGITransport(app=app, raise_app_exceptions=False), base_url="http://app.test") as client:
+        response = await client.put("/api/enterprise/oidc-config", json={
+            "issuer_url": ISSUER, "client_id": CLIENT_ID, "client_secret": "fake-client-secret",
+        })
+    assert response.status_code == 400
+    assert response.json() == {"detail": "OIDC discovery issuer does not match configured issuer"}
+    assert not db.statements
+    assert not db.committed
 
 
 @pytest.mark.parametrize("route", ["callback", "bind"])

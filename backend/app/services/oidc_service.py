@@ -9,16 +9,21 @@ import time
 import uuid
 
 import httpx
-from sqlalchemy import select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import create_access_token, hash_password
+from app.database import enter_rls_bypass
 from app.models.tenant_setting import TenantSetting
 from app.models.user import User
 
 # Cache discovered OIDC metadata per issuer URL with TTL (in-process)
 _discovery_cache: dict[str, tuple[dict, float]] = {}
 _CACHE_TTL = 3600  # 1 hour
+
+
+class OIDCAccountConflict(ValueError):
+    pass
 
 
 async def discover_oidc(issuer_url: str) -> dict:
@@ -148,15 +153,16 @@ async def login_or_register(
     tenant_id: uuid.UUID,
     auto_provision: bool = True,
 ) -> tuple[User, str]:
-    """Find existing user by oidc_sub or register a new one.
+    """Find the bound issuer/subject in this tenant or register a new user.
 
     Returns (user, jwt_token).
     """
     sub = oidc_user["sub"]
     issuer = oidc_user["issuer"]
 
-    # Look up by oidc_sub (tenant-scoped to prevent cross-tenant identity confusion)
-    result = await db.execute(select(User).where(User.oidc_sub == sub, User.tenant_id == tenant_id))
+    result = await db.execute(select(User).where(
+        User.oidc_sub == sub, User.oidc_issuer == issuer, User.tenant_id == tenant_id,
+    ))
     user = result.scalar_one_or_none()
 
     if user:
@@ -165,7 +171,6 @@ async def login_or_register(
         # Update profile info from IdP
         if oidc_user.get("picture"):
             user.avatar_url = oidc_user["picture"]
-        user.oidc_issuer = issuer
         await db.flush()
         token = create_access_token(
             str(user.id),
@@ -174,15 +179,22 @@ async def login_or_register(
         )
         return user, token
 
-    if not auto_provision:
-        raise ValueError("User not found and auto-provisioning is disabled")
-
-    # Create new user
     email = oidc_user.get("email", "")
     name = oidc_user.get("name", "")
     username = email.split("@")[0] if email else f"oidc_{sub[:8]}"
     if not email:
         email = f"{username}@oidc.local"
+
+    # Global account uniqueness must also cover rows hidden by the tenant pin.
+    async with enter_rls_bypass(db, reason="OIDC account uniqueness check") as bypass_db:
+        existing = await bypass_db.execute(select(User.id).where(or_(
+            User.oidc_sub == sub, func.lower(User.email) == email.lower(),
+        )).limit(1))
+        if existing.scalar_one_or_none() is not None:
+            raise OIDCAccountConflict("OIDC account conflicts with an existing account")
+
+    if not auto_provision:
+        raise ValueError("User not found and auto-provisioning is disabled")
 
     # Ensure unique username
     existing = await db.execute(select(User).where(User.username == username))

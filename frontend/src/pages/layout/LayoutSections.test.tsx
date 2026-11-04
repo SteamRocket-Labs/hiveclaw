@@ -106,9 +106,12 @@ describe('Layout extracted sections', () => {
     expect(markup).toContain('HiveClaw');
     expect(markup).toContain('Workspace');
     expect(markup).toContain('Company A');
-    // One entry per bot, no per-bot action buttons, no session rows.
-    expect(markup).toContain('href="/agents/agent-1"');
-    expect(markup).toContain('href="/agents/agent-2"');
+    // One entry per bot, no per-bot action buttons, no session rows. B5:
+    // opening a bot opens its conversation (#chat); local-runtime bots keep
+    // the management landing because their channel has no chat sessions.
+    expect(markup).toContain('href="/agents/agent-1#chat"');
+    expect(markup).toContain('href="/agents/agent-2#chat"');
+    expect(markup).toContain('href="/agents/agent-5"');
     expect(markup).toContain('Codex on Mac');
     expect(markup).toContain('Local');
     expect(markup).toContain('New digital employee');

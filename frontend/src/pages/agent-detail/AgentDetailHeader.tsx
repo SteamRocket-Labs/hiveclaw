@@ -14,7 +14,6 @@ interface AgentDetailHeaderProps {
   isOperatorOnly: boolean;
   isSystemHr: boolean;
   onError: (message: string) => void;
-  onSelectChat: () => void;
   statusKey: string;
 }
 
@@ -41,7 +40,6 @@ export default function AgentDetailHeader({
   isOperatorOnly,
   isSystemHr,
   onError,
-  onSelectChat,
   statusKey,
 }: AgentDetailHeaderProps) {
   const { t, i18n } = useTranslation();
@@ -186,7 +184,6 @@ export default function AgentDetailHeader({
       </div>
       {!isOperatorOnly && (
         <div className="agent-detail-header-actions">
-          <button className="btn btn-primary" onClick={onSelectChat}>{t('agent.actions.chat')}</button>
           {canManage && !isLocalAgentRuntimeType(agent) && (
             <>
               {agent.status === 'stopped' ? (

@@ -1,5 +1,6 @@
 import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
+import { MemoryRouter } from 'react-router-dom';
 import { describe, expect, it, vi } from 'vitest';
 
 import en from '../../i18n/en.json';
@@ -11,6 +12,7 @@ import { runtimeItemDisplayMeta, runtimeItemDisplayStatus } from '../agent-detai
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
     t: (_key: string, fallback?: string) => fallback || _key,
+    i18n: { language: 'en' },
   }),
 }));
 
@@ -22,23 +24,33 @@ describe('session experience information policy', () => {
     expect(zh.agent.chat.phase).not.toHaveProperty('resuming');
   });
 
+  it('offers the single management entry only when this person can manage the bot (B5)', () => {
+    const model = { title: 'Quarterly research', status: 'idle' as const, modelLabel: null };
+    const withManage = renderToStaticMarkup(
+      <MemoryRouter>
+        <SessionWorkbenchHeader model={model} history={{
+          agentId: 'agent-1', sessions: [], activeSessionId: null,
+          manageHref: '/agents/agent-1?manage=true#status',
+        }} />
+      </MemoryRouter>,
+    );
+    expect(withManage).toContain('href="/agents/agent-1?manage=true#status"');
+    expect(withManage).toContain('Settings');
+    const withoutManage = renderToStaticMarkup(
+      <MemoryRouter>
+        <SessionWorkbenchHeader model={model} history={{ agentId: 'agent-1', sessions: [], activeSessionId: null }} />
+      </MemoryRouter>,
+    );
+    expect(withoutManage).not.toContain('manage=true');
+  });
+
   it('keeps the ordinary session header semantic and hides runtime mechanics', () => {
+    // B5: the header model carries only rendered fields; the unread inspector
+    // metadata was deleted with the header chrome it used to feed.
     const model: SessionWorkbenchHeaderModel = {
-      sessionId: '00000000-0000-4000-8000-000000000001',
       title: 'Quarterly research',
       status: 'waiting',
       modelLabel: 'GPT Test',
-      providerLabel: 'openai',
-      resumeHealth: 'healthy',
-      permissionMode: 'default',
-      governanceLabel: '12 tools · 2 roots',
-      activeProjection: 'rewind',
-      checkpointCount: 8,
-      branchDepth: 3,
-      compactionCount: 2,
-      contextWindowStatusLabel: '14% used',
-      contextWindowTitle: '18,400 / 128,000 tokens',
-      activeRunStatus: 'waiting_user',
     };
 
     const markup = renderToStaticMarkup(<SessionWorkbenchHeader model={model} />);

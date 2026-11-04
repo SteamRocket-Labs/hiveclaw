@@ -1206,7 +1206,6 @@ describe('session workbench timeline model', () => {
     });
 
     expect(model.header.status).toBe('complete');
-    expect(model.header.activeRunStatus).toBeNull();
     expect(model.cells.filter((cell) => cell.kind === 'active_run')).toHaveLength(1);
   });
 
@@ -1281,22 +1280,10 @@ describe('session workbench timeline model', () => {
     expect(model.header).toMatchObject({
       title: 'Recovered session',
       modelLabel: 'GPT-5.5',
-      resumeHealth: 'events.jsonl + checkpoints',
-      activeProjection: 'rewind',
-      checkpointCount: 1,
-      branchDepth: 1,
-      compactionCount: 2,
-      contextWindowStatusLabel: 'skipped: below_autocompact_threshold',
     });
-    expect(model.header.contextWindowTitle).toContain('active 50.0K tokens');
-    expect(model.header.contextWindowTitle).toContain('173.0K tokens until compaction');
-    expect(model.header.contextWindowTitle).toContain('latest decision: below_autocompact_threshold');
-    expect(model.inspector.sessionEventCount).toBe(42);
-    expect(model.inspector.t0SegmentCount).toBe(2);
-    expect(model.inspector.latestCheckpointLabel).toBe('user_turn_stop');
   });
 
-  it('projects context usage diagnostics into the context chip when window decisions are absent', () => {
+  it('keeps the model stable when context usage diagnostics are present', () => {
     const sessionWorkbench = {
       schema: 'hive.ccplus.session_workbench.v1',
       agent_id: 'agent-1',
@@ -1329,13 +1316,10 @@ describe('session workbench timeline model', () => {
       activeRunStatus: null,
     });
 
-    expect(model.header.contextWindowStatusLabel).toBe('96.0K used');
-    expect(model.header.contextWindowTitle).toContain('window 128.0K tokens');
-    expect(model.header.contextWindowTitle).toContain('free 32.0K tokens');
-    expect(model.header.contextWindowTitle).toContain('4 candidates');
-    expect(model.header.contextWindowTitle).toContain('2 selected');
-    expect(model.header.contextWindowTitle).toContain('3 deferred tools');
-    expect(model.header.contextWindowTitle).toContain('1 skills');
+    // B5: the context chip and its unread header metadata were deleted; the
+    // diagnostics payload must not disturb the five-state header.
+    expect(model.header.title).toBe('Context usage');
+    expect(model.header.status).toBe('idle');
   });
 
   it('projects background completion wakes into a compact UI model', () => {
@@ -2417,7 +2401,6 @@ describe('RuntimePhase in the thread projection (§3 seam 3)', () => {
         timeline: expect.objectContaining({ status: 'blocked' }),
       }),
     ]));
-    expect(model.header.activeRunStatus).toBeNull();
     expect(model.header.status).toBe('complete');
   });
 

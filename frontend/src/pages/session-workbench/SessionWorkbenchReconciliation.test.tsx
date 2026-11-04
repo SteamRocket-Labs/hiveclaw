@@ -39,7 +39,6 @@ describe('workbench unconfirmed execution', () => {
     const before = JSON.stringify(messages);
     const header = model(messages, phase).header;
     expect(header.status).toBe('failed');
-    expect(header.requiresReconciliation).toBe(true);
     const markup = renderToStaticMarkup(<SessionWorkbenchHeader model={header} />);
     // The header no longer has a dedicated unconfirmed-outcome chip: the five
     // user-visible states only, so an unconfirmed run surfaces as failed.
@@ -54,7 +53,6 @@ describe('workbench unconfirmed execution', () => {
   it('preserves an explicit current runtime reconciliation status without a transcript boundary', () => {
     const header = model([prompt], 'failed', 'needs_reconciliation').header;
     expect(header.status).toBe('failed');
-    expect(header.requiresReconciliation).toBe(true);
   });
 
   it('does not carry an earlier unknown outcome into a new accepted user turn', () => {
@@ -69,12 +67,11 @@ describe('workbench unconfirmed execution', () => {
   it('does not let an earlier completed run hide the current run requiring reconciliation', () => {
     const header = model([prompt, runEvent('completed')], 'failed', 'needs_reconciliation', 'run-2').header;
     expect(header.status).toBe('failed');
-    expect(header.requiresReconciliation).toBe(true);
   });
 
   it('recognizes compact and canonical UUIDs as the same current run', () => {
     expect(model([prompt, runEvent('needs_reconciliation', 1, '123e4567-e89b-12d3-a456-426614174000')],
-      'failed', 'failed', '123e4567e89b12d3a456426614174000').header.requiresReconciliation).toBe(true);
+      'failed', 'failed', '123e4567e89b12d3a456426614174000').header.status).toBe('failed');
   });
 
   it('keeps a later canonical resolution and a known failure distinct', () => {

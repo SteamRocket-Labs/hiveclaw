@@ -33,6 +33,8 @@ export interface SessionHistoryMenuProps {
   sessions: Array<Record<string, unknown>>;
   loading?: boolean;
   activeSessionId?: string | null;
+  /** Management entry (B5): set only for people who can manage this bot. */
+  manageHref?: string | null;
 }
 
 /** The menu routes between conversations, so it needs a Router; mounted
@@ -146,6 +148,11 @@ export function SessionWorkbenchHeader({ model, history }: {
       <div className="swb-header-title-row">
         <h2 className="swb-header-title">{model.title}</h2>
         {history && <SessionHistoryMenuWithRouter {...history} />}
+        {history?.manageHref && (
+          <Link className="swb-history-trigger" to={history.manageHref}>
+            {t('nav.settings', 'Settings')}
+          </Link>
+        )}
         <span className="swb-header-status">
           <span className="swb-status-dot" style={{ background: statusColor(model.status) }} />
           <span>{statusLabel}</span>

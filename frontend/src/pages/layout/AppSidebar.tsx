@@ -283,10 +283,17 @@ export default function AppSidebar({
             const avatarChar = ((Array.from(agent.name || '?')[0] as string) || '?').toUpperCase();
             const isAgentRowActive = String(activeAgentId || '') === String(agent.id);
             const operatorOnly = agent.access_level === 'operator';
+            // B5: opening a bot opens its conversation (#chat is the workbench),
+            // or a fresh one when it has none. Operator-only bots keep their
+            // managed entry; local-runtime bots keep the management landing
+            // (their channel does not use chat sessions).
+            const botEntry = operatorOnly
+              ? `/agents/${agent.id}?manage=true#chat`
+              : isLocalAgentRuntimeType(agent) ? `/agents/${agent.id}` : `/agents/${agent.id}#chat`;
             return (
               <NavLink
                 key={agent.id}
-                to={operatorOnly ? `/agents/${agent.id}?manage=true#chat` : `/agents/${agent.id}`}
+                to={botEntry}
                 className={() => `sidebar-item sidebar-agent-link ${isAgentRowActive ? 'active' : ''}`}
                 title={agent.name}
                 aria-label={`Open ${agent.name}`}

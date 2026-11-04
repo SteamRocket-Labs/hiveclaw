@@ -210,13 +210,9 @@ export default function ControlPlane({ tab }: ControlPlaneProps) {
       <div className="workbench-page control-plane-page">
         <div className="workbench-hero compact">
           <div>
-            <span className="workbench-eyebrow">{t('controlPlane.sectionEyebrow', 'Control Plane')}</span>
             <h1 className="page-title">{t(`controlPlane.sections.${tab}.title`, section.title)}</h1>
             <p className="page-subtitle">{t(`controlPlane.sections.${tab}.description`, section.description)}</p>
           </div>
-          <Link to={WORKSPACE_DEFAULT_PATH} className="btn btn-secondary">
-            {t('controlPlane.backToOverview', 'Back to overview')}
-          </Link>
         </div>
         <section className="workbench-panel control-plane-section-panel">
           <EnterpriseSettings forcedTab={tab} hideTabs chrome="embedded" />

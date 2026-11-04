@@ -227,8 +227,6 @@ interface AgentChatSectionProps {
   isAdmin: boolean;
   operatorReason?: string;
   onOperatorAuthorityDenied?: (error: unknown) => void;
-  chatScope: 'mine' | 'all';
-  onSetChatScope: (scope: 'mine' | 'all') => void;
   onLoadAllSessions: () => void;
   onCreateNewSession: () => void;
   sessionsLoading: boolean;
@@ -972,8 +970,6 @@ function AgentChatSection({
   isAdmin,
   operatorReason = '',
   onOperatorAuthorityDenied,
-  chatScope,
-  onSetChatScope,
   onLoadAllSessions,
   onCreateNewSession,
   sessionsLoading,
@@ -1086,7 +1082,8 @@ function AgentChatSection({
     queryFn: () => guardOperatorRead(
       ccParityApi.getSessionWorkbench(effectiveAgentId!, activeSessionId!, sessionOperatorOptions),
     ),
-    enabled: Boolean(effectiveAgentId && activeSessionId && operatorReadEnabled),
+    // A draft session has no durable runtime to ask the server about.
+    enabled: Boolean(effectiveAgentId && activeSessionId && !isDraftSession && operatorReadEnabled),
     staleTime: 60_000,
     refetchOnWindowFocus: false,
   });
@@ -1562,7 +1559,7 @@ function AgentChatSection({
     queryFn: () => guardOperatorRead(
       chatApi.getSessionIndex(effectiveAgentId!, activeSessionId!, sessionOperatorOptions),
     ),
-    enabled: Boolean(effectiveAgentId && activeSessionId && operatorReadEnabled),
+    enabled: Boolean(effectiveAgentId && activeSessionId && !isDraftSession && operatorReadEnabled),
     staleTime: 60_000,
     refetchOnWindowFocus: false,
   });
@@ -1636,7 +1633,7 @@ function AgentChatSection({
     queryFn: () => guardOperatorRead(
       ccParityApi.getSessionContextUsage(effectiveAgentId!, activeSessionId!, sessionOperatorOptions),
     ),
-    enabled: Boolean(effectiveAgentId && activeSessionId && operatorReadEnabled),
+    enabled: Boolean(effectiveAgentId && activeSessionId && !isDraftSession && operatorReadEnabled),
     staleTime: 60_000,
     refetchOnWindowFocus: false,
   });
@@ -2035,6 +2032,10 @@ function AgentChatSection({
               )),
               loading: sessionsLoading,
               activeSessionId: activeSession?.id ? String(activeSession.id) : null,
+              // 设置 (B5): the one management entry, for people who can already manage this bot.
+              manageHref: (agent as any)?.action_capabilities?.can_manage === true
+                ? `/agents/${effectiveAgentId}?manage=true#status`
+                : null,
             } : undefined}
           />
         )}

@@ -543,8 +543,7 @@ it('keeps original history visible but disables a cached writable composer durin
   const base = props('Audit', false, 'retirement-session');
   const send = vi.fn();
   useAuthStore.setState({ user: { id: 'operator-user', tenant_id: 'company' } as any });
-  render(<AgentChatSection {...base} agent={{ ...base.agent, access_level: 'read', deactivation_reason: 'retirement_pending', action_capabilities: { can_use: false } }}
-    chatScope="mine" activeSession={{ ...base.activeSession, user_id: 'operator-user', read_only: false, operator_view: false, is_current_user_session: true }}
+  render(<AgentChatSection {...base} agent={{ ...base.agent, access_level: 'read', deactivation_reason: 'retirement_pending', action_capabilities: { can_use: false } }} activeSession={{ ...base.activeSession, user_id: 'operator-user', read_only: false, operator_view: false, is_current_user_session: true }}
     currentUser={{ id: 'operator-user' }} historyMsgs={[{ id: 'retained-result', role: 'assistant', content: 'Retained original result' }]}
     chatMessagesSessionId="retirement-session" chatMessages={[{ id: 'retained-result', role: 'assistant', content: 'Retained original result' }]}
     onSendMessage={send} />);

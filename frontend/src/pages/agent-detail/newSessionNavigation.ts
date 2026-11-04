@@ -19,6 +19,8 @@ export interface CreateDraftChatSessionInput {
   permissionMode: string;
   now?: Date;
   requestId?: string;
+  /** Display title; defaults to a timestamped Session label. */
+  title?: string;
 }
 
 function recordValue(value: unknown): Record<string, unknown> {
@@ -52,6 +54,7 @@ export function createDraftChatSession({
   permissionMode,
   now = new Date(),
   requestId = createRequestId(),
+  title,
 }: CreateDraftChatSessionInput) {
   const pad = (value: number) => String(value).padStart(2, '0');
   const draftId = `draft:${requestId}`;
@@ -61,7 +64,8 @@ export function createDraftChatSession({
     is_draft: true,
     agent_id: agentId,
     user_id: userId,
-    title: `Session ${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}`,
+    title: title
+      || `Session ${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}`,
     created_at: now.toISOString(),
     updated_at: now.toISOString(),
     source_channel: 'web',

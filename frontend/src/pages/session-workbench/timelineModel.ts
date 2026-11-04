@@ -53,89 +53,16 @@ export type ThreadTimelineCell =
 
 export type SessionWorkbenchStatus = 'idle' | 'running' | 'waiting' | 'streaming' | 'complete' | 'failed' | 'cancelled';
 
+// B5: the header model carries only what the conversation header renders
+// (title, five-state status, model label). The inspector metadata that used to
+// feed removed header chrome is deleted with the fields below.
 export interface SessionWorkbenchHeaderModel {
-  sessionId: string | null;
   title: string;
   status: SessionWorkbenchStatus;
-  requiresReconciliation?: boolean;
   modelLabel: string | null;
-  providerLabel: string | null;
-  resumeHealth: string;
-  permissionMode: string | null;
-  governanceLabel: string | null;
-  activeProjection: string | null;
-  checkpointCount: number;
-  branchDepth: number;
-  compactionCount: number;
-  contextWindowStatusLabel: string | null;
-  contextWindowTitle: string | null;
-  activeRunStatus: string | null;
-}
-
-
-function getHeaderPermissionMode(
-  activeSession: Record<string, unknown> | null | undefined,
-  workbench: unknown,
-): string | null {
-  const record = (workbench && typeof workbench === 'object' ? workbench : {}) as Record<string, unknown>;
-  const profile = record.permission_profile as Record<string, unknown> | null | undefined;
-  const mode =
-    (profile && typeof profile.mode === 'string' && profile.mode) ||
-    (typeof record.permission_mode === 'string' && record.permission_mode) ||
-    (activeSession && typeof activeSession.permission_mode === 'string' && activeSession.permission_mode) ||
-    null;
-  return mode ? String(mode) : null;
-}
-
-function getHeaderGovernanceLabel(workbench: unknown): string | null {
-  const record = (workbench && typeof workbench === 'object' ? workbench : {}) as Record<string, unknown>;
-  const profile = record.permission_profile as Record<string, unknown> | null | undefined;
-  if (!profile) return null;
-  const allowed = Array.isArray(profile.allowed_tools) ? profile.allowed_tools.length : null;
-  const roots = Array.isArray(profile.writable_roots) ? profile.writable_roots.length : null;
-  if (allowed == null && roots == null) return null;
-  const parts: string[] = [];
-  if (allowed != null) parts.push(`${allowed} tools`);
-  if (roots != null) parts.push(`${roots} roots`);
-  return parts.join(' · ') || null;
-}
-
-function projectionLabel(value: unknown): string | null {
-  if (!value) return null;
-  if (typeof value === 'string') return value.trim() || null;
-  if (typeof value !== 'object' || Array.isArray(value)) return null;
-  const record = value as Record<string, unknown>;
-  const reason = record.projection_reason ?? record.command ?? record.status ?? record.kind ?? record.type;
-  return typeof reason === 'string' && reason.trim() ? reason.trim() : null;
-}
-
-function getHeaderActiveProjection(
-  runtimeSummary: ChatRuntimeSummary | null | undefined,
-  sessionIndex?: SessionIndex | null,
-): string | null {
-  const summary = runtimeSummary as unknown as Record<string, unknown> | null | undefined;
-  const compaction = summary?.compaction as Record<string, unknown> | null | undefined;
-  const projection =
-    projectionLabel(sessionIndex?.active_projection) ||
-    projectionLabel(compaction?.active_projection) ||
-    projectionLabel(summary?.active_projection) ||
-    null;
-  return projection;
-}
-
-export interface SessionWorkbenchInspectorModel {
-  sessionEventCount: number | null;
-  t0SegmentCount: number;
-  latestCheckpointLabel: string | null;
-  usedToolCount: number;
-  blockedCapabilityCount: number;
-  activatedToolGroupCount: number;
-}
-
-export interface ThreadTimelineModel {
+}export interface ThreadTimelineModel {
   cells: ThreadTimelineCell[];
   header: SessionWorkbenchHeaderModel;
-  inspector: SessionWorkbenchInspectorModel;
 }
 
 export interface ThreadTimelineCache {
@@ -1550,34 +1477,12 @@ function messageId(message: AgentChatMessage, fallback: string): string {
 }
 
 function getSessionTitle(activeSession?: Record<string, unknown> | null): string {
-  return sessionTitleForUser(activeSession, 'Untitled session');
+  // B5: an untitled conversation reads as 新对话/New conversation, not "Untitled session".
+  return sessionTitleForUser(activeSession, 'New conversation');
 }
 
 function getSessionId(activeSession?: Record<string, unknown> | null): string | null {
   const raw = activeSession?.id;
-  return raw == null ? null : String(raw);
-}
-
-function getResumeHealth(sessionIndex?: SessionIndex | null): string {
-  const health = sessionIndex?.resume_health;
-  if (!health || typeof health !== 'object') return 'unknown';
-  const status = health.status ?? health.state ?? health.kind;
-  if (typeof status === 'string' && status.trim()) return status.trim();
-  const truthSurface = typeof health.truth_surface === 'string' && health.truth_surface.trim()
-    ? health.truth_surface.trim()
-    : null;
-  const hasT0Truth = health.has_t0_truth === true;
-  const hasCheckpoints = health.has_checkpoints === true;
-  if (hasT0Truth && hasCheckpoints) return `${truthSurface || 'T0 truth'} + checkpoints`;
-  if (hasT0Truth) return truthSurface || 'T0 truth';
-  if (hasCheckpoints) return 'checkpoints only';
-  return truthSurface ? `${truthSurface} unavailable` : 'unknown';
-}
-
-function getLatestCheckpointLabel(sessionIndex?: SessionIndex | null): string | null {
-  const latest = sessionIndex?.checkpoints?.[sessionIndex.checkpoints.length - 1];
-  if (!latest) return null;
-  const raw = latest.checkpoint_kind ?? latest.kind ?? latest.type ?? latest.id;
   return raw == null ? null : String(raw);
 }
 
@@ -1590,94 +1495,6 @@ function compactTokenCount(value: number | null): string | null {
   if (Math.abs(value) >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`;
   if (Math.abs(value) >= 1_000) return `${(value / 1_000).toFixed(1)}K`;
   return String(value);
-}
-
-function getContextWindowProjection(sessionWorkbench?: SessionWorkbench | null): {
-  label: string | null;
-  title: string | null;
-} {
-  const contextWindow = sessionWorkbench?.context_window;
-  if (!contextWindow) return getContextUsageProjection(sessionWorkbench);
-  const latestStatus = contextWindow.latest_status || null;
-  const latestSkipped = contextWindow.latest_skipped || null;
-  const latestBudget = contextWindow.latest_tool_result_budget || null;
-  const reason = String(latestSkipped?.reason || latestBudget?.reason || '').trim();
-  const tokensUntil = finiteNumber(latestStatus?.tokens_until_compaction);
-  const activeTokens = finiteNumber(latestStatus?.active_context_tokens ?? latestSkipped?.active_context_tokens);
-  const scopeTokens = finiteNumber(latestStatus?.auto_compact_scope_tokens);
-  const scopeLimit = finiteNumber(latestStatus?.auto_compact_scope_limit);
-  const cumulative = finiteNumber(latestStatus?.cumulative_run_tokens ?? latestSkipped?.cumulative_run_tokens);
-
-  let label: string | null = null;
-  if (reason) {
-    label = `skipped: ${reason}`;
-  } else if (tokensUntil !== null) {
-    label = `${compactTokenCount(tokensUntil)} left`;
-  } else if (contextWindow.decision_count) {
-    label = `${contextWindow.decision_count} decisions`;
-  }
-
-  const titleParts = [
-    activeTokens !== null ? `active ${compactTokenCount(activeTokens)} tokens` : null,
-    scopeTokens !== null ? `scope ${compactTokenCount(scopeTokens)} tokens` : null,
-    scopeLimit !== null ? `limit ${compactTokenCount(scopeLimit)} tokens` : null,
-    tokensUntil !== null ? `${compactTokenCount(tokensUntil)} tokens until compaction` : null,
-    cumulative !== null ? `run total ${compactTokenCount(cumulative)} tokens` : null,
-    reason ? `latest decision: ${reason}` : null,
-  ].filter(Boolean);
-
-  return {
-    label,
-    title: titleParts.length ? titleParts.join(' · ') : null,
-  };
-}
-
-function getContextUsageProjection(sessionWorkbench?: SessionWorkbench | null): {
-  label: string | null;
-  title: string | null;
-} {
-  const usage = sessionWorkbench?.context_usage;
-  if (!usage) return { label: null, title: null };
-  const usedTokens = finiteNumber(usage.used_tokens);
-  const freeTokens = finiteNumber(usage.free_space_tokens);
-  const windowTokens = finiteNumber(usage.model_window_tokens);
-  const counts = usage.counts && typeof usage.counts === 'object' ? usage.counts : {};
-  const contextCandidates = finiteNumber(counts.context_candidates);
-  const selectedContexts = finiteNumber(counts.selected_contexts);
-  const deferredTools = finiteNumber(counts.deferred_tools);
-  const skills = finiteNumber(counts.skills);
-
-  const label = usedTokens !== null ? `${compactTokenCount(usedTokens)} used` : null;
-  const titleParts = [
-    windowTokens !== null ? `window ${compactTokenCount(windowTokens)} tokens` : null,
-    freeTokens !== null ? `free ${compactTokenCount(freeTokens)} tokens` : null,
-    contextCandidates !== null ? `${contextCandidates} candidates` : null,
-    selectedContexts !== null ? `${selectedContexts} selected` : null,
-    deferredTools !== null ? `${deferredTools} deferred tools` : null,
-    skills !== null ? `${skills} skills` : null,
-  ].filter(Boolean);
-
-  return {
-    label,
-    title: titleParts.length ? titleParts.join(' · ') : null,
-  };
-}
-
-function getBranchDepth(activeSession?: Record<string, unknown> | null, branchLineage?: Array<{ id: unknown; parent_session_id?: unknown }> | null): number {
-  if (!activeSession?.id || !Array.isArray(branchLineage) || branchLineage.length <= 1) return 0;
-  const activeId = String(activeSession.id);
-  const byId = new Map(branchLineage.map((item) => [String(item.id), item]));
-  let depth = 0;
-  let cursor = byId.get(activeId);
-  const seen = new Set<string>();
-  while (cursor?.parent_session_id && !seen.has(String(cursor.id))) {
-    seen.add(String(cursor.id));
-    const parent = byId.get(String(cursor.parent_session_id));
-    if (!parent) break;
-    depth += 1;
-    cursor = parent;
-  }
-  return depth;
 }
 
 function getHeaderStatus(
@@ -2381,7 +2198,6 @@ export function buildThreadTimeline(input: BuildThreadTimelineInput): ThreadTime
   ensureOpenRunDisclosureContinuity(cells, input);
   const sessionIndex = input.sessionIndex && !Array.isArray(input.sessionIndex) ? input.sessionIndex : null;
   const sessionWorkbench = input.sessionWorkbench && !Array.isArray(input.sessionWorkbench) ? input.sessionWorkbench : null;
-  const contextWindow = getContextWindowProjection(sessionWorkbench);
   const runtimeSummary = input.runtimeSummary || null;
   const needsReconciliation = currentHeaderRunLifecycle(
     cells, getSessionId(input.activeSession), activeRunId, input.activeRunStatus,
@@ -2399,30 +2215,9 @@ export function buildThreadTimeline(input: BuildThreadTimelineInput): ThreadTime
   return {
     cells,
     header: {
-      sessionId: getSessionId(input.activeSession),
       title: getSessionTitle(input.activeSession),
       status: headerStatus,
-      ...(needsReconciliation ? { requiresReconciliation: true } : {}),
       modelLabel: runtimeSummary?.model?.label || runtimeSummary?.model?.name || null,
-      providerLabel: runtimeSummary?.model?.provider || null,
-      resumeHealth: getResumeHealth(sessionIndex),
-      permissionMode: getHeaderPermissionMode(input.activeSession, input.sessionWorkbench),
-      governanceLabel: getHeaderGovernanceLabel(input.sessionWorkbench),
-      activeProjection: getHeaderActiveProjection(input.runtimeSummary, sessionIndex),
-      checkpointCount: sessionIndex?.checkpoints?.length ?? 0,
-      branchDepth: getBranchDepth(input.activeSession, input.branchLineage),
-      compactionCount: runtimeSummary?.compaction_count ?? 0,
-      contextWindowStatusLabel: contextWindow.label,
-      contextWindowTitle: contextWindow.title,
-      activeRunStatus,
-    },
-    inspector: {
-      sessionEventCount: typeof sessionIndex?.event_count === 'number' ? sessionIndex.event_count : null,
-      t0SegmentCount: sessionIndex?.t0_segments?.length ?? 0,
-      latestCheckpointLabel: getLatestCheckpointLabel(sessionIndex),
-      usedToolCount: runtimeSummary?.used_tools?.length ?? 0,
-      blockedCapabilityCount: runtimeSummary?.blocked_capabilities?.length ?? 0,
-      activatedToolGroupCount: runtimeSummary?.activated_tool_groups?.length ?? 0,
     },
   };
 }

@@ -1400,7 +1400,22 @@
   border-radius: var(--radius-md);
   background: transparent;
   cursor: pointer;
-  transition: transform 140ms cubic-bezier(0.25, 1, 0.5, 1);
+  /* B5: rail nodes stay hidden until the person points at the rail or tabs
+     into it — the same reveal pattern as per-message actions. Keyboard focus
+     (focus-within) keeps rewind reachable without a pointer. */
+  opacity: 0;
+  transition:
+    transform 140ms cubic-bezier(0.25, 1, 0.5, 1),
+    opacity 120ms ease;
+}
+
+.session-gitline:hover .session-gitline-node,
+.session-gitline:focus-within .session-gitline-node,
+.session-gitline:hover .session-gitline-branch-node,
+.session-gitline:focus-within .session-gitline-branch-node,
+.session-gitline:hover .session-gitline-branch-cluster,
+.session-gitline:focus-within .session-gitline-branch-cluster {
+  opacity: 1;
 }
 
 .session-gitline-node::after,

@@ -18,7 +18,11 @@ Telegram) enters the same runtime. Companies use our cloud or deploy privately.
 Agent capability comes first: a polished surface around an agent that cannot use its
 selected model, authorized context, and tools effectively is a product failure. The
 surface is held to a consumer bar: fast, quiet, and free of internal machinery.
-Governance is the floor that lets a company trust the product; it is not the product.
+What the company pays for stays with the company and stays governable: digital
+employees are created, never deleted, and handed over when people leave. This
+management system is what sets HiveClaw apart; it lives on the admin side, and members
+meet it only at an externally visible or irreversible moment. Mechanisms that re-prove
+every step stay frozen.
 
 ### What the user sees
 
@@ -152,6 +156,30 @@ Keep shared decisions visible and define ownership and merge rules. Parallel wri
 need disjoint ownership, isolation, transactions, or real conflict detection; otherwise
 prefer single-writer integration.
 
+## Delivery loop
+
+The plan of record is `docs/hiveclaw-complete-plan-2026-11.md`; its section 9 holds the
+owner's standing authorizations. Each slice moves through:
+
+1. A brief with goal, acceptance, and boundary. One worker (Codex or zCode) implements
+   it in its own worktree and commits on its own branch.
+2. Another vendor reviews the diff and answers whether the same acceptance can be met
+   with less; at most two rounds, then the owner decides. Slices touching security or
+   permissions get one extra high-effort review.
+3. The controller verifies: full tests, build, i18n, new tests failing on the
+   pre-change code, net production lines, and a live check on an isolated stack.
+4. Merge to local `main` with `--no-ff` (body: cause, scope, verification, rollback),
+   push `main` to `backup/p1-main`, and deploy the touched services to production, whose
+   tenant `rocky的实验室` is the test environment. A database migration needs the owner
+   first.
+5. Codex runs the affected golden tasks there as the ordinary member `test123`, one
+   screenshot per step; the controller judges each screenshot against the acceptance,
+   and findings become the next brief.
+
+Update `html/hiveclaw-progress.html` after each merge or deploy and at least daily, and
+keep evidence under `~/hiveclaw-evidence/`, not `/tmp`. Involve the owner only for
+decisions that only they can make.
+
 ## Completion and delivery
 
 Never present scaffolding, a registered function, a passing unit test, a route, or a UI
@@ -210,6 +238,7 @@ belong near their code or in nested instructions when a real consumer needs them
 Read only those relevant to the task:
 
 - Product definition, golden tasks, and acceptance: `docs/product-definition-2026-11.md`
+- Plan of record, schedule, and authorizations: `docs/hiveclaw-complete-plan-2026-11.md`
 - CCPlus product boundary: `docs/ccplus-north-star-contract-2026-06-24.md`
 - Model-agency case law and closure record:
   `docs/runtime-model-agency-constraint-audit-2026-07-13.md`

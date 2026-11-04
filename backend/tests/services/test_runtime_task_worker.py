@@ -1245,94 +1245,43 @@ async def test_runtime_worker_consumes_team_fanout_recovery_and_records_counts(m
 
 
 @pytest.mark.asyncio
-async def test_runtime_worker_loop_calls_hr_reconciler_before_claiming(monkeypatch):
+@pytest.mark.parametrize("slow_lane", ["_runtime_maintenance_loop", "start_terminal_boundary_worker_loop"])
+async def test_runtime_worker_claims_without_waiting_and_preserves_concurrent_wakeup(monkeypatch, slow_lane):
     import asyncio
-
     import app.services.runtime_task_worker as worker
 
+    entered = asyncio.Event()
+    wakeup = asyncio.Event()
     calls = []
 
-    async def stop_after_reconcile():
-        calls.append("reconcile")
-        raise asyncio.CancelledError
-
-    async def listener():
+    async def blocked(*_args, **_kwargs):
         await asyncio.Event().wait()
 
-    monkeypatch.setattr(
-        worker,
-        "_settings",
-        lambda: SimpleNamespace(
-            HIVE_PROCESS_ROLE="runtime",
-            RUNTIME_TASK_WORKER_ENABLED=True,
-            RUNTIME_TASK_WORKER_ID="test-worker",
-        ),
-    )
-    monkeypatch.setattr(worker, "_redis_wakeup_listener", listener)
-    monkeypatch.setattr(worker, "reconcile_hr_creation_drafts_once", stop_after_reconcile)
+    async def slow(*_args, **_kwargs):
+        entered.set()
+        await blocked()
 
+    async def claim(**_kwargs):
+        calls.append("claim")
+        if len(calls) == 1:
+            await entered.wait()
+            wakeup.set()  # A new input arrives while the claim is in flight.
+        else:
+            raise asyncio.CancelledError
+
+    monkeypatch.setattr(worker, "_settings", lambda: SimpleNamespace(
+        HIVE_PROCESS_ROLE="runtime", RUNTIME_TASK_WORKER_ENABLED=True,
+        RUNTIME_TASK_WORKER_ID="test-worker", RUNTIME_TASK_CLAIM_POLL_SECONDS=60,
+    ))
+    monkeypatch.setattr(worker, "_wakeup_event", lambda: wakeup)
+    monkeypatch.setattr(worker, "_redis_wakeup_listener", blocked)
+    monkeypatch.setattr(worker, "_runtime_maintenance_loop", blocked)
+    monkeypatch.setattr(worker, "start_terminal_boundary_worker_loop", blocked)
+    monkeypatch.setattr(worker, slow_lane, slow)
+    monkeypatch.setattr(worker, "claim_and_dispatch_once", claim)
     with pytest.raises(asyncio.CancelledError):
-        await worker.start_runtime_task_worker_loop()
-
-    assert calls == ["reconcile"]
-
-
-@pytest.mark.asyncio
-async def test_runtime_worker_claim_path_does_not_wait_for_slow_terminal_boundary(monkeypatch):
-    import asyncio
-
-    import app.services.runtime_task_worker as worker
-
-    calls = []
-    terminal_started = asyncio.Event()
-
-    async def noop(*_args, **_kwargs):
-        return {}
-
-    async def listener():
-        await asyncio.Event().wait()
-
-    async def terminal_recovery(*_args, **_kwargs):
-        calls.append("terminal_recovery")
-        return {}
-
-    async def terminal_boundary(*_args, **_kwargs):
-        calls.append("terminal_boundary")
-        terminal_started.set()
-        await asyncio.Event().wait()
-
-    async def input_dispatch(*_args, **_kwargs):
-        await terminal_started.wait()
-        calls.append("input_dispatch")
-        raise asyncio.CancelledError
-
-    monkeypatch.setattr(
-        worker,
-        "_settings",
-        lambda: SimpleNamespace(
-            HIVE_PROCESS_ROLE="runtime",
-            RUNTIME_TASK_WORKER_ENABLED=True,
-            RUNTIME_TASK_WORKER_ID="test-worker",
-        ),
-    )
-    monkeypatch.setattr(worker, "_redis_wakeup_listener", listener)
-    for name in (
-        "drain_session_event_outbox_once",
-        "recover_session_control_inputs_once",
-        "expire_session_permission_requests_once",
-        "recover_stale_session_input_admissions_once",
-        "recover_turn_replacement_sagas_once",
-        "recover_session_model_rounds_once",
-    ):
-        monkeypatch.setattr(worker, name, noop)
-    monkeypatch.setattr(worker, "recover_session_terminal_outcomes_once", terminal_recovery)
-    monkeypatch.setattr(worker, "start_terminal_boundary_worker_loop", terminal_boundary)
-    monkeypatch.setattr(worker, "recover_session_input_dispatches_once", input_dispatch)
-
-    with pytest.raises(asyncio.CancelledError):
-        await worker.start_runtime_task_worker_loop()
-
-    assert calls == ["terminal_recovery", "terminal_boundary", "input_dispatch"]
+        await asyncio.wait_for(worker.start_runtime_task_worker_loop(), timeout=1)
+    assert calls == ["claim", "claim"]
 
 
 @pytest.mark.parametrize("lane", ["web", "direct"])
@@ -1405,3 +1354,32 @@ def test_terminal_lane_snapshot_reports_missing_event_loop():
 
     observation = worker.runtime_task_worker_snapshot()["terminal_boundary_execution"]
     assert observation == {"status": "unavailable", "reason_code": "event_loop_unavailable", "tasks": []}
+
+
+@pytest.mark.asyncio
+async def test_enterprise_wait_recovery_advances_past_an_unrecoverable_page(monkeypatch):
+    from app.services.session_approval import recover_enterprise_permission_waits
+
+    ids = sorted([uuid4(), uuid4()])
+    statements = []
+
+    class DB:
+        async def execute(self, statement):
+            statements.append(statement)
+            rows = [(ids[len(statements) - 1], uuid4())] if len(statements) <= 2 else []
+            return SimpleNamespace(all=lambda: rows)
+
+        async def scalar(self, _statement):
+            return None  # A concurrently claimed or no-longer-eligible row.
+
+        async def rollback(self):
+            pass
+
+    async def lock(*_args, **_kwargs):
+        pass
+
+    monkeypatch.setattr("app.services.chat_transcript.lock_transcript_session", lock)
+    assert await recover_enterprise_permission_waits(DB(), limit=1) == 0
+    assert len(statements) == 3
+    assert ids[0] in statements[1].compile().params.values()
+    assert ids[1] in statements[2].compile().params.values()

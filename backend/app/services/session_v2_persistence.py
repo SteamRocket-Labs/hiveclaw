@@ -1026,6 +1026,7 @@ async def resolve_session_command_authority(
 class RegisteredCommand:
     command: SessionCommand
     replayed: bool
+    session: ChatSession
 
 
 @dataclass(frozen=True, slots=True)
@@ -1251,7 +1252,7 @@ async def register_session_command(
             or existing.target_hash != target_hash
         ):
             raise IdempotencyConflict(command=existing)
-        return RegisteredCommand(existing, True)
+        return RegisteredCommand(existing, True, locked_session)
 
     if (
         locked_session.audience_kind == "group"
@@ -1291,7 +1292,7 @@ async def register_session_command(
     )
     db.add(command)
     await db.flush()
-    return RegisteredCommand(command, False)
+    return RegisteredCommand(command, False, locked_session)
 
 
 async def allocate_session_sequence_range(
@@ -1301,31 +1302,31 @@ async def allocate_session_sequence_range(
     tenant_id: uuid.UUID,
     agent_id: uuid.UUID,
     count: int,
+    locked_session: ChatSession | None = None,
 ) -> SessionSequenceAllocation:
     """The sole V1/V2 sequence authority for one transactional event group."""
 
     if count <= 0:
         raise ValueError("event group cannot be empty")
-    await _lock_sequence_authority(db, session_id=session_id)
-    session = await _lock_session(
-        db,
-        session_id=session_id,
-        tenant_id=tenant_id,
-        agent_id=agent_id,
-        for_update=False,
-    )
-    committed_max = int(
-        await db.scalar(
-            select(func.coalesce(func.max(ChatTranscriptEvent.sequence), 0)).where(
-                ChatTranscriptEvent.session_id == session_id
-            )
-        )
-        or 0
-    )
+    if locked_session is None:
+        await _lock_sequence_authority(db, session_id=session_id)
+    # The advisory serializes all cursor writers, including the old MAX+1 writer.
+    # Read the session, cursor and legacy high-water mark in one round trip.
+    maximum = select(func.coalesce(func.max(ChatTranscriptEvent.sequence), 0)).where(
+        ChatTranscriptEvent.session_id == session_id
+    ).scalar_subquery()
     result = await db.execute(
-        select(SessionEventCursor).where(SessionEventCursor.session_id == session_id).with_for_update()
+        select(ChatSession, SessionEventCursor, maximum).outerjoin(
+            SessionEventCursor, SessionEventCursor.session_id == ChatSession.id
+        ).where(ChatSession.id == session_id, ChatSession.tenant_id == tenant_id)
     )
-    cursor = result.scalar_one_or_none()
+    row = result.first()
+    if row is None:
+        raise ValueError("session_not_found")
+    session, cursor, committed_max = row
+    if session.agent_id != agent_id:
+        raise ValueError("session_agent_mismatch")
+    committed_max = int(committed_max)
     if cursor is None:
         cursor = SessionEventCursor(
             session_id=session_id,
@@ -1357,6 +1358,7 @@ async def append_session_events(
     agent_id: uuid.UUID | str,
     session_id: uuid.UUID | str,
     drafts: Sequence[SessionEventDraft],
+    locked_session: ChatSession | None = None,
 ) -> list[ChatTranscriptEvent]:
     """Append a canonical event group and matching outbox rows in one transaction."""
 
@@ -1369,6 +1371,7 @@ async def append_session_events(
         tenant_id=tenant_uuid,
         agent_id=agent_uuid,
         count=len(drafts),
+        locked_session=locked_session,
     )
     rows: list[ChatTranscriptEvent] = []
     for sequence, draft in zip(allocation.sequences, drafts, strict=True):
@@ -1645,6 +1648,7 @@ async def accept_human_input(
         tenant_id=tenant_uuid,
         agent_id=authority.agent_id,
         session_id=session_uuid,
+        locked_session=registered.session,
         drafts=[
             SessionEventDraft(
                 item_id=input_id,

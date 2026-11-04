@@ -117,12 +117,15 @@ async def test_slack_ack_happens_after_durable_accept_without_running_agent(monk
 async def test_discord_deferred_ack_is_backed_by_durable_accept(monkeypatch):
     import app.api.discord_bot as discord
 
+    from nacl.signing import SigningKey
+
+    signing_key = SigningKey.generate()
     agent_id = uuid4()
     config = SimpleNamespace(
         id=uuid4(),
         tenant_id=uuid4(),
         agent_id=agent_id,
-        encrypt_key="",
+        encrypt_key=signing_key.verify_key.encode().hex(),
         channel_type="discord",
     )
     captured = await _capture_accept(monkeypatch)
@@ -135,7 +138,10 @@ async def test_discord_deferred_ack_is_backed_by_durable_accept(monkeypatch):
         "data": {"name": "ask", "options": [{"name": "message", "value": "hello"}]},
     }
 
-    result = await discord.discord_interaction_webhook(agent_id, _request(body), _DB(config))
+    timestamp = str(int(time.time())).encode()
+    signature = signing_key.sign(timestamp + json.dumps(body).encode()).signature.hex().encode()
+    request = _request(body, [(b"x-signature-timestamp", timestamp), (b"x-signature-ed25519", signature)])
+    result = await discord.discord_interaction_webhook(agent_id, request, _DB(config))
 
     assert result == {"type": 5}
     assert captured["provider_event_id"] == "interaction-1"

@@ -629,7 +629,9 @@ class TestTelegramChannelFileSender:
         monkeypatch.setattr(tg_mod, "_send_telegram_message", fake_send_telegram_message)
 
         clear_execution_identity()
-        request.state.channel_ingress_event_id = uuid4()
+        from app.services.channel_ingress_dispatcher import ChannelIngressReplayRequest
+
+        request = ChannelIngressReplayRequest(event_id=uuid4(), body=await request.json())
         result = await tg_mod.telegram_webhook(config.agent_id, request, db)
 
         assert result == {"ok": True}

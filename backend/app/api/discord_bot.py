@@ -226,7 +226,9 @@ async def discord_interaction_webhook(
 ):
     """Handle Discord Interaction webhooks (PING + slash commands)."""
     body_bytes = await request.body()
-    replay_event_id = getattr(getattr(request, "state", None), "channel_ingress_event_id", None)
+    from app.services.channel_ingress_dispatcher import ChannelIngressReplayRequest
+
+    is_replay = isinstance(request, ChannelIngressReplayRequest)
 
     # Get channel config and pin tenant RLS for this public webhook.
     config = await load_public_agent_channel_config(db, agent_id=agent_id, channel_type="discord")
@@ -236,9 +238,8 @@ async def discord_interaction_webhook(
     # Verify Discord signature
     public_key = config.encrypt_key or ""
     if (
-        replay_event_id is None
-        and public_key
-        and not _verify_discord_signature(public_key, body_bytes, dict(request.headers))
+        not is_replay
+        and (not public_key or not _verify_discord_signature(public_key, body_bytes, dict(request.headers)))
     ):
         return Response(content="Invalid signature", status_code=401)
 
@@ -265,7 +266,7 @@ async def discord_interaction_webhook(
         if not user_text:
             return {"type": 4, "data": {"content": "⚠️ 请提供消息内容。Usage: `/ask message:<你的问题>`"}}
 
-        if replay_event_id is None:
+        if not is_replay:
             from app.services.channel_ingress_inbox import accept_authenticated_channel_event, channel_installation_ref
 
             await accept_authenticated_channel_event(

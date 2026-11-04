@@ -86,12 +86,15 @@ def _validate_bot_token(token: str) -> None:
         )
 
 
-async def _register_telegram_webhook(bot_token: str, agent_id: uuid.UUID) -> None:
+async def _register_telegram_webhook(
+    bot_token: str, agent_id: uuid.UUID, *, public_base: str | None = None,
+) -> bool:
     """Register webhook URL with Telegram Bot API, including secret_token."""
-    public_base = await _resolve_public_base_url()
+    if public_base is None:
+        public_base = await _resolve_public_base_url()
     if not public_base:
         logger.warning("[Telegram] No PUBLIC_BASE_URL set, cannot register webhook")
-        return
+        return False
 
     webhook_url = f"{public_base}/api/channel/telegram/{agent_id}/webhook"
     secret_token = _compute_webhook_secret(bot_token)
@@ -108,10 +111,12 @@ async def _register_telegram_webhook(bot_token: str, agent_id: uuid.UUID) -> Non
             resp_data = resp.json()
             if resp_data.get("ok"):
                 logger.info("[Telegram] Webhook registered: %s", webhook_url)
+                return True
             else:
                 logger.error("[Telegram] Webhook registration failed: %s", resp_data)
     except Exception as e:
         logger.error("[Telegram] Failed to register webhook: %s", e)
+    return False
 
 
 async def _send_telegram_message(bot_token: str, chat_id: int | str, text: str) -> None:
@@ -388,7 +393,9 @@ async def telegram_webhook(
 ):
     """Handle Telegram Bot API webhook updates."""
     body_bytes = await request.body()
-    replay_event_id = getattr(getattr(request, "state", None), "channel_ingress_event_id", None)
+    from app.services.channel_ingress_dispatcher import ChannelIngressReplayRequest
+
+    is_replay = isinstance(request, ChannelIngressReplayRequest)
     try:
         body = json.loads(body_bytes)
     except (json.JSONDecodeError, UnicodeDecodeError):
@@ -406,9 +413,9 @@ async def telegram_webhook(
 
     # Only authenticated internal replay bypasses transport verification.
     received_secret = request.headers.get("x-telegram-bot-api-secret-token")
-    if replay_event_id is None:
+    if not is_replay:
         expected_secret = _compute_webhook_secret(bot_token)
-        if received_secret is None or not hmac.compare_digest(expected_secret, received_secret):
+        if received_secret is None or not received_secret.isascii() or not hmac.compare_digest(expected_secret, received_secret):
             logger.warning("[Telegram] Webhook secret missing or mismatched for agent %s", agent_id)
             return Response(status_code=403)
 
@@ -430,7 +437,7 @@ async def telegram_webhook(
     if sender.get("is_bot"):
         return {"ok": True}
 
-    if replay_event_id is None:
+    if not is_replay:
         from app.services.channel_ingress_inbox import accept_authenticated_channel_event, channel_installation_ref
 
         await accept_authenticated_channel_event(

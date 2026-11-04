@@ -314,5 +314,8 @@ async def test_webhook_url_uses_configured_public_address(monkeypatch, base):
         stored = next(item for item in session.added if isinstance(item, AgentTrigger))
         assert f"https://instance.example/api/webhooks/t/{stored.config['token']}" in result
     else:
+        assert not any(isinstance(item, AgentTrigger) for item in session.added)
+        assert "not_configured" in result
+        assert "PUBLIC_BASE_URL" in result and "admin platform setting" in result
         assert "public address is not configured" in result
         assert "http://" not in result and "https://" not in result

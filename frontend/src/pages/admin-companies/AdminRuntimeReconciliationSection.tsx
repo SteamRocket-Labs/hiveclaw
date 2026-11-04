@@ -1,3 +1,4 @@
+import { runtimeStatusLabel } from '../agent-detail/runtimeStatus';
 import React, { useEffect, useId, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -456,7 +457,7 @@ export default function AdminRuntimeReconciliationSection({
                     {String(result.trigger_name || result.trigger_id || '-')}: {String(result.status || '-')}
                     {' · '}{t('admin.reconciliation.run', 'run')} {String(result.run_id || '-')}
                     {' · '}{t('admin.reconciliation.session', 'session')} {String(result.session_id || '-')}
-                    {result.run_status ? ` · ${String(result.run_status)}` : ''}
+                    {result.run_status ? ` · ${runtimeStatusLabel(result.run_status, t)}` : ''}
                     {result.reason ? ` · ${String(result.reason)}` : ''}
                   </div>
                 ))}
@@ -504,7 +505,7 @@ export default function AdminRuntimeReconciliationSection({
                 )}
               </div>
               <div>
-                <span className="badge badge-warning">{task.status}</span>
+                <span className="badge badge-warning">{runtimeStatusLabel(task.status, t)}</span>
               </div>
               <div className="admin-reconcile-actions">
                 <label className="admin-reconcile-field-label" htmlFor={evidenceInputId}>

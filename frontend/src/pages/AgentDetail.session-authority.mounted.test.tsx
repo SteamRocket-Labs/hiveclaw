@@ -5,6 +5,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { ApiError } from '../api/core';
+import { ccParityApi } from '../api/domains/ccParity';
 
 const mocks = vi.hoisted(() => ({
   queryCalls: [] as Array<{ key: unknown[]; enabled: unknown }>,
@@ -28,9 +29,12 @@ const mocks = vi.hoisted(() => ({
   startSessionRun: vi.fn(),
   createSessionRun: vi.fn(),
   cancelSessionRun: vi.fn(),
+  upload: vi.fn(),
   activeSessionRun: null as null | { run_id: string; status: string },
   chatProps: null as any,
 }));
+
+vi.mock('../api/core/upload-progress', () => ({ uploadFileWithProgress: (...args: unknown[]) => ({ promise: mocks.upload(...args) }) }));
 
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
@@ -159,7 +163,8 @@ vi.mock('./agent-detail/LocalAgentChatSection', () => ({
 }));
 vi.mock('./agent-detail/AgentChatSection', () => ({
   default: ({ activeSession, chatMessages, historyMsgs, allSessions, chatMessagesSessionId, historyMessagesSessionId, onSendMessage,
-    activeRunId, activeRunStatus, onAbortGeneration }: {
+    activeRunId, activeRunStatus, onAbortGeneration, ...composer }: {
+    [key: string]: any;
     activeSession?: any;
     chatMessages?: Array<{ content?: string }>;
     historyMsgs?: Array<{ content?: string }>;
@@ -171,7 +176,7 @@ vi.mock('./agent-detail/AgentChatSection', () => ({
     activeRunStatus?: string | null;
     onAbortGeneration?: () => unknown;
   }) => {
-    mocks.chatProps = { activeSession, onSendMessage, chatMessages, activeRunId, activeRunStatus, onAbortGeneration };
+    mocks.chatProps = { activeSession, onSendMessage, chatMessages, activeRunId, activeRunStatus, onAbortGeneration, ...composer };
     return (
     <div data-testid="fabricated-session-shell">
       {activeSession?.operator_view ? <strong>Operator View</strong> : activeSession?.read_only ? 'Read-only · User' : null}
@@ -224,7 +229,7 @@ beforeEach(() => {
   mocks.activeSessionRun = null;
 });
 
-afterEach(cleanup);
+afterEach(() => { cleanup(); vi.restoreAllMocks(); });
 
 async function mountOwnedArtifactWork() {
   mocks.sessionId = 'owned-artifact-work';
@@ -585,4 +590,116 @@ describe('AgentDetail direct-session authority presentation', () => {
     expect(mocks.listSessions.mock.calls.filter((call) => call[1] === 'all')).toHaveLength(0);
     expect(screen.queryByTestId('agent-operator-reason')).toBeNull();
   });
+});
+
+async function composeOrdinaryMessage(text = 'Keep this message') {
+  await mountOwnedArtifactWork();
+  act(() => mocks.chatProps.onSetChatInput(text));
+}
+
+it('shows the ordinary message before the response and sends only once on a double press', async () => {
+  const request = deferred<any>();
+  mocks.startSessionRun.mockReturnValue(request.promise);
+  await composeOrdinaryMessage();
+  let first!: Promise<unknown>;
+  act(() => {
+    first = mocks.chatProps.onSendChatMsg();
+    void mocks.chatProps.onSendChatMsg();
+  });
+  expect(mocks.startSessionRun).toHaveBeenCalledTimes(1);
+  expect(mocks.chatProps.chatMessages.filter((m: any) => m.role === 'user')).toHaveLength(1);
+  expect(mocks.chatProps.chatMessages.at(-1)).toMatchObject({ content: 'Keep this message', sendState: 'sending' });
+  expect(mocks.chatProps.chatInput).toBe('Keep this message');
+  await act(async () => { request.resolve({ schema: 'hive.human_input_receipt', admission_state: 'admitted', run: null }); await first; });
+  expect(mocks.chatProps.chatInput).toBe('');
+  expect(mocks.chatProps.chatMessages.at(-1).sendState).toBeUndefined();
+});
+
+it.each(['rejected', 'cancelled', 'needs_reconciliation'])('keeps text and offers a new attempt after HTTP 202 with %s', async admission_state => {
+  mocks.startSessionRun.mockResolvedValue({ schema: 'hive.human_input_receipt', admission_state, run: null });
+  await composeOrdinaryMessage();
+  await act(async () => { expect(await mocks.chatProps.onSendChatMsg()).toBe(false); });
+  expect(mocks.chatProps.chatInput).toBe('Keep this message');
+  const failed = mocks.chatProps.chatMessages.at(-1);
+  expect(failed).toMatchObject({ content: 'Keep this message', sendState: 'failed', retrySend: expect.any(Function) });
+  expect(failed.sendError).not.toMatch(/admission|reconciliation/);
+  const firstId = mocks.startSessionRun.mock.calls[0][2].input_id;
+  mocks.startSessionRun.mockResolvedValue({ run_id: 'accepted-run', status: 'running' });
+  await act(async () => { failed.retrySend(); });
+  await waitFor(() => expect(mocks.chatProps.chatInput).toBe(''));
+  expect(mocks.startSessionRun).toHaveBeenCalledTimes(2);
+  const retry = mocks.startSessionRun.mock.calls[1][2];
+  expect(retry.input_id).not.toBe(firstId);
+  expect(retry.idempotency_key).toBe(`session-input:${retry.input_id}`);
+  expect(mocks.chatProps.chatMessages.filter((m: any) => m.role === 'user')).toHaveLength(1);
+});
+
+it('reuses the same attempt after a network failure with no response', async () => {
+  mocks.startSessionRun.mockRejectedValue(new TypeError('Failed to fetch'));
+  await composeOrdinaryMessage();
+  await act(async () => { await mocks.chatProps.onSendChatMsg(); });
+  const firstId = mocks.startSessionRun.mock.calls[0][2].input_id;
+  mocks.startSessionRun.mockResolvedValue({ run_id: 'accepted-run', status: 'running' });
+  await act(async () => { mocks.chatProps.chatMessages.at(-1).retrySend(); });
+  expect(mocks.startSessionRun.mock.calls[1][2].input_id).toBe(firstId);
+});
+
+
+it('keeps attachments on a refusal and resends their original bytes', async () => {
+  mocks.startSessionRun.mockResolvedValue({ schema: 'hive.human_input_receipt', admission_state: 'rejected', run: null });
+  mocks.upload.mockResolvedValue({ filename: 'notes.txt', extracted_text: 'Private notes', workspace_path: 'workspace/uploads/notes.txt' });
+  await composeOrdinaryMessage();
+  await act(async () => { await mocks.chatProps.onHandleChatFile({ target: { files: [new File(['Private notes'], 'notes.txt')] } }); });
+  await act(async () => { await mocks.chatProps.onSendChatMsg(); });
+  expect(mocks.chatProps.attachedFiles).toMatchObject([{ name: 'notes.txt', text: 'Private notes' }]);
+  const originalInput = mocks.startSessionRun.mock.calls[0][2];
+  mocks.startSessionRun.mockResolvedValue({ run_id: 'accepted', status: 'pending' });
+  await act(async () => { mocks.chatProps.chatMessages.at(-1).retrySend(); });
+  const nextInput = mocks.startSessionRun.mock.calls[1][2];
+  expect(nextInput.content).toBe(originalInput.content);
+  expect(nextInput.attachments).toEqual(originalInput.attachments);
+  expect(mocks.chatProps.attachedFiles).toEqual([]);
+});
+
+it.each([true, false])('clears slash input only after its existing success result: %s', async success => {
+  const request = deferred<any>();
+  vi.spyOn(ccParityApi, 'executeCommand').mockReturnValue(request.promise);
+  await composeOrdinaryMessage('/help');
+  let send!: Promise<unknown>;
+  act(() => { send = mocks.chatProps.onSendChatMsg(); });
+  await waitFor(() => expect(ccParityApi.executeCommand).toHaveBeenCalledTimes(1));
+  expect(mocks.chatProps.chatInput).toBe('/help');
+  await act(async () => { if (success) request.resolve({ result: 'Help available' }); else request.reject(new Error('Command unavailable')); await send; });
+  expect(mocks.chatProps.chatInput).toBe(success ? '' : '/help');
+});
+
+it.each([true, false])('preserves the goal run-id success criterion and input on failure: %s', async success => {
+  const request = deferred<any>();
+  vi.spyOn(ccParityApi, 'startGoal').mockReturnValue(request.promise);
+  await composeOrdinaryMessage('Goal objective');
+  act(() => mocks.chatProps.onToggleGoalMode());
+  let send!: Promise<unknown>;
+  act(() => { send = mocks.chatProps.onSendChatMsg(); });
+  await waitFor(() => expect(ccParityApi.startGoal).toHaveBeenCalledTimes(1));
+  expect(mocks.chatProps.chatInput).toBe('Goal objective');
+  await act(async () => { request.resolve({ run: success ? { run_id: 'goal-run', status: 'pending' } : null }); await send; });
+  expect(mocks.chatProps.chatInput).toBe(success ? '' : 'Goal objective');
+});
+
+it('keeps the optimistic message visible when a draft becomes a durable session before transcript hydration', async () => {
+  await mountOwnedArtifactWork();
+  mocks.sessionId = undefined;
+  await act(async () => { await mocks.chatProps.onCreateNewSession(); });
+  expect(mocks.chatProps.activeSession.id).toMatch(/^draft:/);
+  act(() => mocks.chatProps.onSetChatInput('Keep the first draft message'));
+  mocks.createSessionRun.mockResolvedValue({
+    session: { id: 'new-durable-session', agent_id: 'agent-1', user_id: 'platform-admin-1',
+      session_kind: 'human_chat', read_only: false },
+    run: { schema: 'hive.human_input_receipt', admission_state: 'admitted', run: null },
+  });
+  await act(async () => { await mocks.chatProps.onSendChatMsg(); });
+  expect(mocks.chatProps.activeSession.id).toBe('new-durable-session');
+  expect(mocks.chatProps.chatMessages).toEqual(expect.arrayContaining([
+    expect.objectContaining({ role: 'user', content: 'Keep the first draft message', sendState: undefined }),
+  ]));
 });

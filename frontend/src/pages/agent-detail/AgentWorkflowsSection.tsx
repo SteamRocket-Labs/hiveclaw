@@ -1,3 +1,4 @@
+import { runtimeStatusLabel } from './runtimeStatus';
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
@@ -61,15 +62,6 @@ export function runStatusTone(status: WorkflowRunStatus): Tone {
   if (status === 'running' || status === 'suspended') return 'warn';
   return 'muted';
 }
-
-const RUN_STATUS_KEYS: Record<string, string> = {
-  completed: 'workflows.runCompleted',
-  failed: 'workflows.runFailed',
-  running: 'workflows.runRunning',
-  suspended: 'workflows.runSuspended',
-  killed: 'workflows.runKilled',
-  pending: 'workflows.runPending',
-};
 
 const DEFINITION_STATUS_KEYS: Record<string, string> = {
   draft: 'workflows.statusDraft',
@@ -500,7 +492,7 @@ export default function AgentWorkflowsSection({ agentId, canManage = false }: Ag
                     <div className="agent-workflows-card-head">
                       <strong className="u-emphasis">{run.name}</strong>
                       <span className={badgeClass(runStatusTone(run.status))}>
-                        {t(RUN_STATUS_KEYS[run.status] ?? run.status)}
+                        {runtimeStatusLabel(run.status, t)}
                       </span>
                       {dynamicWorkflow && <span className={badgeClass('muted')}>{t('workflows.dynamicWorkflow')}</span>}
                       {run.steps_total > 0 && (

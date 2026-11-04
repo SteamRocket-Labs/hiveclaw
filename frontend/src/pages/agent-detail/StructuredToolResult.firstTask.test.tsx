@@ -78,7 +78,7 @@ it('answers in the original creation card and reuses the input ID after a networ
   fireEvent.click(screen.getByRole('button', { name: /Submit/ }));
   await screen.findByText('The answer is stored but could not be applied. Retry or review this work.');
   fireEvent.click(screen.getByRole('button', { name: /Submit/ }));
-  await screen.findByText('Working');
+  await screen.findByText('Running');
   expect(chat.answerQuestion).toHaveBeenCalledTimes(3);
   expect(chat.answerQuestion.mock.calls[0]).toEqual(chat.answerQuestion.mock.calls[1]);
   expect(chat.answerQuestion.mock.calls[1]).toEqual(chat.answerQuestion.mock.calls[2]);

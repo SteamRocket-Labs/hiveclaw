@@ -11,6 +11,7 @@ from typing import Any
 from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.services.runtime_display_status import runtime_display_status
 from app.models.agent import Agent
 from app.models.agent_session_goal import AgentSessionGoal
 from app.models.agent_team import AgentTeam, AgentTeamMember
@@ -1886,19 +1887,6 @@ WORKBENCH_HEAVY_SECTIONS = frozenset({"timeline", "tool_calls", "hooks", "compac
 WORKBENCH_DEFAULT_TIMELINE_LIMIT = 50
 WORKBENCH_MAX_TIMELINE_LIMIT = 1000
 
-_USER_RUNTIME_STATUS = {
-    "pending": "等待开始",
-    "queued": "等待开始",
-    "running": "正在处理",
-    "resumable": "等待恢复",
-    "waiting_budget_approval": "等待批准",
-    "completed": "已完成",
-    "succeeded": "已完成",
-    "failed": "需要处理",
-    "needs_reconciliation": "等待管理员核对",
-    "killed": "已停止",
-    "cancelled": "已取消",
-}
 _USER_WORKBENCH_KEYS = {
     "schema",
     "agent_id",
@@ -1980,7 +1968,7 @@ def _user_runtime_task(task: dict[str, Any]) -> dict[str, Any]:
         "id": task.get("id"),
         "task_type": task.get("task_type"),
         "status": task.get("status"),
-        "user_status": _USER_RUNTIME_STATUS.get(status, "正在处理"),
+        "user_status": runtime_display_status(status),
         "result_summary": task.get("result_summary"),
         "user_blocker": _sanitize_user_workbench_value(task.get("user_blocker")),
         "safe_to_retry": task.get("safe_to_retry"),

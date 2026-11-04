@@ -8,6 +8,7 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
 
+from app.services.runtime_display_status import runtime_display_status as _user_status
 from app.core.security import get_current_admin
 from app.models.user import User
 from app.services.budget_transition_outbox import BudgetTransitionOutboxService
@@ -211,20 +212,6 @@ def _require_tenant(user: User) -> uuid.UUID:
     return user.tenant_id
 
 
-def _user_status(status_value: str) -> str:
-    return {
-        "active": "正在运行",
-        "waiting_budget_approval": "等待批准",
-        "resuming": "正在恢复",
-        "completed": "已完成",
-        "exhausted": "已暂停",
-        "hard_stopped": "已停止",
-        "expired": "已停止",
-        "cancelled": "已停止",
-        "stopped": "已停止",
-    }.get(status_value, "需要处理")
-
-
 def _user_reason(status_value: str, terminal_reason: str | None) -> str:
     reason = terminal_reason or ""
     if status_value == "active":
@@ -232,7 +219,7 @@ def _user_reason(status_value: str, terminal_reason: str | None) -> str:
     if status_value == "waiting_budget_approval":
         return "运行额度已达上限，正在等待管理员批准"
     if status_value == "resuming":
-        return "运行额度已批准，任务正在自动恢复"
+        return "运行额度已批准，任务正在继续"
     if status_value == "stopped" and "approval_rejected" in reason:
         return "运行额度申请未获批准"
     if "budget" in reason or status_value == "exhausted":
@@ -252,7 +239,7 @@ def _user_next_action(status_value: str) -> str:
     if status_value == "waiting_budget_approval":
         return "你可以继续其他工作；管理员批准后本任务会自动恢复"
     if status_value == "resuming":
-        return "无需重复提交，等待任务恢复"
+        return "无需重复提交，等待运行结果"
     if status_value in {"exhausted", "hard_stopped"}:
         return "查看已完成结果，或联系管理员批准继续"
     if status_value == "active":

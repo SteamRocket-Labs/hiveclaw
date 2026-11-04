@@ -70,11 +70,7 @@ describe('i18n interpolation contract', () => {
     // agent.runtimeStatus.* is the render vocabulary for every runtime status
     // chip (SessionRuntimePanel); zh must carry real translations.
     const expectedZh: Record<string, string> = {
-      ready: '就绪',
-      working: '运行中',
-      waitingApproval: '等待审批',
-      needsAttention: '需要处理',
-      needsAdminReview: '需要管理员处理',
+      running: '运行中', waiting: '等你决定', done: '完成', failed: '失败', stopped: '已停止',
     };
     for (const [key, expected] of Object.entries(expectedZh)) {
       expect(zhFlat[`agent.runtimeStatus.${key}`], `agent.runtimeStatus.${key}`).toBe(expected);

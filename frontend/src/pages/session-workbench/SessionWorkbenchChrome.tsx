@@ -1,3 +1,4 @@
+import { runtimeStatusLabel } from '../agent-detail/runtimeStatus';
 import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Link, useInRouterContext, useNavigate } from 'react-router-dom';
@@ -134,7 +135,7 @@ export function SessionWorkbenchHeader({ model, history }: {
   // The header shows only the five user-visible states (running, waiting for
   // you, done, failed, stopped). Unconfirmed-outcome sessions surface through
   // their underlying status, not a dedicated chip (product definition P3).
-  const statusLabel = t(`sessionWorkbench.status.${model.status}`, model.status);
+  const statusLabel = runtimeStatusLabel(model.status, t);
   const guidance = model.status === 'waiting'
     ? t('sessionWorkbench.waitingGuidance', 'Review the request below and choose the next action.')
     : model.status === 'failed'

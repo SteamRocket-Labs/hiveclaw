@@ -144,7 +144,7 @@ describe('AdminTerminalBoundariesSection — explicit dead-letter redrive (mount
     ));
     // Truthful requeued receipt, then an in-place reload of the same state.
     await screen.findByText(
-      `Boundary ${row.id} requeued with status pending. Requeued means it will be attempted again — not delivered and not business success.`,
+      `Boundary ${row.id} requeued with status Running. Requeued means it will be attempted again — not delivered and not business success.`,
     );
     await waitFor(() => expect(api.listRuntimeTerminalBoundaries).toHaveBeenCalledTimes(2));
     expect(api.listRuntimeTerminalBoundaries).toHaveBeenLastCalledWith({
@@ -208,7 +208,7 @@ describe('AdminTerminalBoundariesSection — explicit dead-letter redrive (mount
 
     gate.resolve(makeBoundary(row.id, { status: 'pending' }));
     await waitFor(() => expect(api.redriveRuntimeTerminalBoundary).toHaveBeenCalledTimes(1));
-    await screen.findByText(/requeued with status pending/);
+    await screen.findByText(/requeued with status Running/);
   });
 
   it('shows the redrive error and keeps the queue truthful when the mutation fails', async () => {
@@ -297,7 +297,7 @@ describe('AdminTerminalBoundariesSection — explicit dead-letter redrive (mount
     // The truthful requeued receipt survives the failed reload and is shown
     // alongside the reload error.
     await screen.findByText(
-      `Boundary ${row.id} requeued with status pending. Requeued means it will be attempted again — not delivered and not business success.`,
+      `Boundary ${row.id} requeued with status Running. Requeued means it will be attempted again — not delivered and not business success.`,
     );
     await screen.findByText('HTTP 500');
     // The old dead-letter rows are no longer bound truth: no count claim and

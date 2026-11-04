@@ -24,27 +24,34 @@ describe('WorkspaceLayout audience navigation', () => {
     auth.role = 'org_admin';
   });
 
-  it('renders the full company workspace for an organization administrator', () => {
+  it('renders the five company admin areas for an organization administrator', () => {
     const markup = renderToStaticMarkup(<WorkspaceLayout />);
 
     expect(markup).toContain('data-heading-key="nav.enterprise"');
     expect(markup).toContain('data-heading="Company Admin"');
-    expect(markup).toContain('href="/enterprise/knowledge"');
     expect(markup).toContain('href="/enterprise/users"');
-    expect(markup).toContain('href="/enterprise/invitations"');
+    expect(markup).toContain('href="/enterprise/llm"');
+    expect(markup).toContain('href="/enterprise/info"');
+    expect(markup).toContain('href="/enterprise/approvals"');
+    expect(markup).toContain('href="/enterprise/audit"');
+    // The dashboard and the other sections left the navigation (B4); their
+    // routes stay reachable by URL.
+    expect(markup).not.toContain('href="/enterprise/dashboard"');
+    expect(markup).not.toContain('href="/enterprise/knowledge"');
+    expect(markup).not.toContain('href="/enterprise/invitations"');
+    expect(markup).not.toContain('href="/enterprise/runtime-budgets"');
   });
 
-  it('renders the full selected-company workspace with a truthful platform heading for a platform administrator', () => {
+  it('renders the same five areas for a platform administrator with a truthful platform heading', () => {
     auth.role = 'platform_admin';
 
     const markup = renderToStaticMarkup(<WorkspaceLayout />);
 
     expect(markup).toContain('data-heading-key="nav.superAdmin"');
     expect(markup).toContain('data-heading="Platform Admin"');
-    expect(markup).toContain('href="/enterprise/runtime-budgets"');
-    expect(markup).toContain('href="/enterprise/knowledge"');
     expect(markup).toContain('href="/enterprise/users"');
-    expect(markup).toContain('href="/enterprise/invitations"');
+    expect(markup).toContain('href="/enterprise/audit"');
+    expect(markup).not.toContain('href="/enterprise/dashboard"');
   });
 
   it.each(['org_admin', 'platform_admin'])('keeps a direct Back to App return for %s', (role) => {
@@ -52,7 +59,7 @@ describe('WorkspaceLayout audience navigation', () => {
 
     const markup = renderToStaticMarkup(<WorkspaceLayout />);
 
-    expect(markup).toContain('href="/home"');
+    expect(markup).toContain('href="/"');
     expect(markup).toContain('data-label-key="nav.backToApp"');
   });
 });

@@ -86,15 +86,17 @@ afterEach(() => {
 });
 
 describe('EnterpriseSettings scoped-administrator company content', () => {
-  it('loads the selected company business content for a platform administrator (PDEC-013)', async () => {
+  it('keeps the org-admin-only company intro unread for a platform administrator (B4 403 fix)', async () => {
     renderSettings();
 
     await waitFor(() => expect(mocks.getTenant).toHaveBeenCalled());
-    await waitFor(() => expect(mocks.getSetting).toHaveBeenCalledWith('company_intro_tenant-1'));
+    // company_intro is a tenant system setting the server releases only to
+    // organization administrators; a platform administrator must not ask.
     await waitFor(() => expect(mocks.getLegacyCompanyFilesStatus).toHaveBeenCalled());
     await waitFor(() => expect(mocks.getStats).toHaveBeenCalledWith('tenant-1'));
-    expect(await screen.findByDisplayValue('PRIVATE-COMPANY-BODY')).toBeTruthy();
-    expect(screen.queryByText('Tenant configuration only')).toBeNull();
+    expect(mocks.getSetting).not.toHaveBeenCalled();
+    expect(screen.queryByDisplayValue('PRIVATE-COMPANY-BODY')).toBeNull();
+    expect(screen.queryByText('Company Intro')).toBeNull();
   });
 
   it('keeps company content away from a plain member projection', async () => {

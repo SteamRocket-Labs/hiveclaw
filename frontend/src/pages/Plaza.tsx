@@ -404,16 +404,22 @@ export default function Plaza() {
         }
     }, [searchParams]);
 
+    // Agent Circle is an organization-membership surface; the server refuses
+    // platform administrators by design, so a platform admin never asks.
+    const canReadPlaza = user?.role !== 'platform_admin';
+
     const { data: posts = [], isLoading } = useQuery<Post[]>({
         queryKey: ['plaza-posts', tenantId],
         queryFn: () => plazaApi.listPosts({ limit: 50, tenantId }) as Promise<Post[]>,
         refetchInterval: 15000,
+        enabled: canReadPlaza,
     });
 
     const { data: stats } = useQuery<PlazaStats>({
         queryKey: ['plaza-stats', tenantId],
         queryFn: () => plazaApi.getStats(tenantId) as Promise<PlazaStats>,
         refetchInterval: 30000,
+        enabled: canReadPlaza,
     });
 
     const { data: agents = [] } = useQuery<Agent[]>({

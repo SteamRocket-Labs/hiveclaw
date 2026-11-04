@@ -73,6 +73,7 @@
     "tagline": "Enterprise Digital Employee Platform"
   },
   "sessionWorkbench": {
+    "history": "History",
     "resumeHealth": "resume",
     "checkpoints": "checkpoints",
     "branchDepth": "branch",
@@ -570,14 +571,10 @@
   },
   "nav": {
     "dashboard": "Dashboard",
-    "home": "Home",
-    "myAssistant": "My Assistant",
     "newDigitalEmployee": "New digital employee",
     "currentWorkspace": "Workspace",
     "myWorkspace": "My Workspace",
     "topActions": "My Workspace",
-    "digitalEmployees": "Digital Employees",
-    "tasksAutomation": "Automation",
     "knowledge": "Knowledge",
     "bridge": "Local connection",
     "conversationsTasks": "Conversations & Tasks",
@@ -602,12 +599,6 @@
     "publicBadge": "Public",
     "managedBadge": "Managed",
     "localBadge": "Local",
-    "sessionA2aBadge": "A2A",
-    "sessionBranchBadge": "Branch",
-    "sessionTaskBadge": "Task",
-    "branchCount": "{{count}} branches",
-    "expandBranchSessions": "Expand branch sessions",
-    "collapseBranchSessions": "Collapse branch sessions",
     "myAgents": "My Digital Employees",
     "myCreated": "Created by me",
     "companyShared": "Company shared",
@@ -627,12 +618,8 @@
     "orgAdmin": "Company Admin",
     "member": "Member",
     "language": "Language",
-    "plaza": "Agent Circle",
     "localAgents": "Local Agent",
-    "collapseAgentSessions": "Collapse sessions",
-    "expandAgentSessions": "Expand sessions",
     "logout": "Log out",
-    "sessionImBadge": "IM",
     "settings": "Settings"
   },
   "employees": {
@@ -946,6 +933,50 @@
       "sections": "Admin surfaces"
     },
     "sections": {
+      "info": {
+        "title": "Company Connections",
+        "description": "Company identity, channels, and third-party integrations."
+      },
+      "llm": {
+        "title": "Models & Budget",
+        "description": "Provider pool, default model, and budget-facing runtime settings."
+      },
+      "memory": {
+        "title": "Memory Governance",
+        "description": "Agent memory retention, hygiene, and governed writes."
+      },
+      "digital_employees": {
+        "title": "Digital Employees",
+        "description": "Company-wide employee inventory, lifecycle controls, and admin deletion."
+      },
+      "hr": {
+        "title": "Agent Governance",
+        "description": "HR Agent setup and employee creation policy."
+      },
+      "quotas": {
+        "title": "Quotas",
+        "description": "Default employee token quotas, trigger caps, and company-level usage boundaries."
+      },
+      "users": {
+        "title": "Members & Login",
+        "description": "Users, role changes, quota assignment, and organization access."
+      },
+      "org": {
+        "title": "Organization Structure",
+        "description": "Departments, members, Feishu sync, and the company directory."
+      },
+      "approvals": {
+        "title": "Approval Rules",
+        "description": "Sensitive action review, platform-gated confirmations, and approval state."
+      },
+      "audit": {
+        "title": "Audit Log",
+        "description": "Tenant-scoped audit stream for runtime events, action traces, and background work."
+      },
+      "invites": {
+        "title": "Invitation Codes",
+        "description": "Company invites and controlled onboarding into this tenant."
+      },
       "extensions": {
         "title": "Extension Catalog",
         "description": "MCP servers, plugins, skills, subagents, connectors, and tenant-level capability installs."
@@ -3696,6 +3727,13 @@
     "retryDelivery": "Retry delivery"
   },
   "enterprise": {
+    "nav": {
+      "membersAndLogin": "Members & Login",
+      "modelsAndBudget": "Models & Budget",
+      "companyConnections": "Company Connections",
+      "approvalRules": "Approval Rules",
+      "auditLog": "Audit Log"
+    },
     "originals": {
       "open": "Manage original attachments",
       "title": "Original attachments",

@@ -14,6 +14,7 @@ import { toolsApi, type FeishuRuntimeStatus } from '../../api/domains/tools';
 import FeishuRuntimeStatusCard from '../../components/FeishuRuntimeStatusCard';
 import WorkspaceOrgCutoverCard from './WorkspaceOrgCutoverCard';
 import WorkspaceCompanyDirectory from './WorkspaceCompanyDirectory';
+import { useAuthStore } from '../../stores';
 
 import './WorkspaceOrgSection.css';
 
@@ -788,6 +789,10 @@ export default function WorkspaceOrgSection({
 }: WorkspaceOrgSectionProps) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
+  // feishu_org_sync is a tenant system setting the server releases only to
+  // organization administrators; asking for it as a platform administrator is
+  // a guaranteed 403, so don't ask.
+  const isPlatformAdmin = useAuthStore((s) => s.user?.role === 'platform_admin');
   const [syncForm, setSyncForm] = useState({ app_id: '', app_secret: '' });
   const [syncing, setSyncing] = useState(false);
   const [syncResult, setSyncResult] = useState<{
@@ -818,6 +823,7 @@ export default function WorkspaceOrgSection({
   const { data: config } = useQuery({
     queryKey: ['system-settings', 'feishu_org_sync'],
     queryFn: () => enterpriseApi.getSetting('feishu_org_sync'),
+    enabled: !isPlatformAdmin,
   });
   const { data: departments = [] } = useQuery({
     queryKey: ['org-departments', selectedTenantId],

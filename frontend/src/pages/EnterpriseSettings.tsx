@@ -335,6 +335,10 @@ export default function EnterpriseSettings({ forcedTab, hideTabs = false, chrome
     const { t } = useTranslation();
     const navigate = useNavigate();
     const canManageCompanyContent = useAuthStore((s) => isAdministratorRole(s.user?.role));
+    // company_intro is a tenant system setting the server releases only to
+    // organization administrators (platform administrators get platform keys);
+    // asking for it as a platform administrator is a guaranteed 403, so don't ask.
+    const canEditCompanyIntro = useAuthStore((s) => s.user?.role === 'org_admin');
     const setUser = useAuthStore((s) => s.setUser);
     const qc = useQueryClient();
     // Use forcedTab directly as the source of truth — no intermediate state.
@@ -364,7 +368,7 @@ export default function EnterpriseSettings({ forcedTab, hideTabs = false, chrome
     // Load Company Intro (tenant-scoped only, no fallback to global)
     useEffect(() => {
         setCompanyIntro('');
-        if (!selectedTenantId || !canManageCompanyContent) return;
+        if (!selectedTenantId || !canEditCompanyIntro) return;
         const tenantKey = `company_intro_${selectedTenantId}`;
         enterpriseApi.getSetting(tenantKey)
             .then(d => {
@@ -374,10 +378,10 @@ export default function EnterpriseSettings({ forcedTab, hideTabs = false, chrome
                 // No fallback — each company starts empty with placeholder watermark
             })
             .catch(() => { });
-    }, [canManageCompanyContent, selectedTenantId]);
+    }, [canEditCompanyIntro, selectedTenantId]);
 
     const saveCompanyIntro = async () => {
-        if (!canManageCompanyContent) return;
+        if (!canEditCompanyIntro) return;
         setCompanyIntroSaving(true);
         try {
             await enterpriseApi.updateSetting(companyIntroKey, { content: companyIntro });
@@ -743,6 +747,7 @@ export default function EnterpriseSettings({ forcedTab, hideTabs = false, chrome
                     <WorkspaceInfoSection
                         selectedTenantId={selectedTenantId}
                         canManageCompanyContent={canManageCompanyContent}
+                        canEditCompanyIntro={canEditCompanyIntro}
                         companyNameEditor={<CompanyNameEditor key={`name-${selectedTenantId}`} />}
                         companyTimezoneEditor={<CompanyTimezoneEditor key={`tz-${selectedTenantId}`} />}
                         companyIntro={companyIntro}

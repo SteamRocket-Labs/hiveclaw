@@ -1,6 +1,11 @@
+import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { Link, useInRouterContext, useNavigate } from 'react-router-dom';
+import { IconChevronDown, IconPlus } from '@tabler/icons-react';
 
 import type { SessionWorkbenchHeaderModel } from './timelineModel';
+import { sessionTitleForUser } from './sessionTitlePresentation';
+import { buildNewSessionDraftNavigation } from '../agent-detail/newSessionNavigation';
 import './SessionWorkbenchChrome.css';
 
 function statusColor(status: SessionWorkbenchHeaderModel['status']): string {
@@ -10,7 +15,121 @@ function statusColor(status: SessionWorkbenchHeaderModel['status']): string {
   return 'var(--text-tertiary)';
 }
 
-export function SessionWorkbenchHeader({ model }: { model: SessionWorkbenchHeaderModel }) {
+function historyTime(session: Record<string, unknown>, locale: string): string {
+  const raw = session.last_message_at || session.updated_at || session.created_at;
+  if (!raw) return '';
+  try {
+    return new Date(String(raw)).toLocaleDateString(locale, { month: 'short', day: 'numeric' });
+  } catch {
+    return '';
+  }
+}
+
+export interface SessionHistoryMenuProps {
+  /** The bot whose conversations these are; also the new-conversation target. */
+  agentId: string;
+  /** This bot's conversations, most recent first; existing session rows only. */
+  sessions: Array<Record<string, unknown>>;
+  loading?: boolean;
+  activeSessionId?: string | null;
+}
+
+/** The menu routes between conversations, so it needs a Router; mounted
+ * harnesses that render the chat section bare get no menu. */
+function SessionHistoryMenuWithRouter(props: SessionHistoryMenuProps) {
+  if (!useInRouterContext()) return null;
+  return <SessionHistoryMenu {...props} />;
+}
+
+function SessionHistoryMenu({ agentId, sessions, loading, activeSessionId }: SessionHistoryMenuProps) {
+  const { t, i18n } = useTranslation();
+  const navigate = useNavigate();
+  const [open, setOpen] = useState(false);
+  const wrapRef = useRef<HTMLDivElement | null>(null);
+  const locale = i18n.language?.startsWith('zh') ? 'zh-CN' : 'en-US';
+
+  useEffect(() => {
+    if (!open) return;
+    const handleClickOutside = (event: MouseEvent) => {
+      if (wrapRef.current && !wrapRef.current.contains(event.target as Node)) setOpen(false);
+    };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setOpen(false);
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [open]);
+
+  return (
+    <div className="swb-history" ref={wrapRef}>
+      <button
+        type="button"
+        className="swb-history-trigger"
+        aria-expanded={open}
+        aria-haspopup="listbox"
+        onClick={() => setOpen((value) => !value)}
+        title={t('sessionWorkbench.history', 'History')}
+      >
+        {t('sessionWorkbench.history', 'History')}
+        <IconChevronDown size={13} stroke={1.8} style={{ transform: open ? 'rotate(180deg)' : 'none' }} />
+      </button>
+      {open && (
+        <div className="swb-history-menu" data-testid="session-history-menu">
+          <button
+            type="button"
+            className="swb-history-new"
+            onClick={() => {
+              setOpen(false);
+              const request = buildNewSessionDraftNavigation(agentId);
+              navigate(request.to, { state: request.state });
+            }}
+          >
+            <IconPlus size={13} stroke={1.8} />
+            {t('agent.chat.newSession', 'New Conversation')}
+          </button>
+          <div className="swb-history-list" role="listbox">
+            {loading ? (
+              <div className="swb-history-empty">{t('common.loading', 'Loading')}</div>
+            ) : sessions.length === 0 ? (
+              <div className="swb-history-empty">{t('agent.chat.noSessionsYet', 'No conversations yet.')}</div>
+            ) : (
+              sessions.map((session) => {
+                const id = String(session.id ?? '');
+                const isActive = Boolean(activeSessionId) && (id === String(activeSessionId)
+                  || String(session.chat_session_id || '') === String(activeSessionId));
+                return (
+                  <Link
+                    key={id}
+                    to={`/agents/${agentId}?session_id=${encodeURIComponent(id)}#chat`}
+                    role="option"
+                    aria-selected={isActive}
+                    className={`swb-history-item ${isActive ? 'active' : ''}`}
+                    onClick={() => setOpen(false)}
+                  >
+                    <span className="swb-history-item-title">
+                      {sessionTitleForUser(session, t('agent.chat.session', 'Session'))}
+                    </span>
+                    <span className="swb-history-item-meta">{historyTime(session, locale)}</span>
+                  </Link>
+                );
+              })
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+export function SessionWorkbenchHeader({ model, history }: {
+  model: SessionWorkbenchHeaderModel;
+  /** When provided, the header offers this bot's conversations and a fresh one. */
+  history?: SessionHistoryMenuProps;
+}) {
   const { t } = useTranslation();
   // The header shows only the five user-visible states (running, waiting for
   // you, done, failed, stopped). Unconfirmed-outcome sessions surface through
@@ -25,6 +144,7 @@ export function SessionWorkbenchHeader({ model }: { model: SessionWorkbenchHeade
     <div data-testid="session-workbench-header" className="swb-header">
       <div className="swb-header-title-row">
         <h2 className="swb-header-title">{model.title}</h2>
+        {history && <SessionHistoryMenuWithRouter {...history} />}
         <span className="swb-header-status">
           <span className="swb-status-dot" style={{ background: statusColor(model.status) }} />
           <span>{statusLabel}</span>

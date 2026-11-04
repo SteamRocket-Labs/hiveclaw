@@ -73,6 +73,7 @@
     "tagline": "企业数字员工平台"
   },
   "sessionWorkbench": {
+    "history": "历史",
     "resumeHealth": "恢复",
     "checkpoints": "检查点",
     "branchDepth": "分支",
@@ -545,14 +546,10 @@
   },
   "nav": {
     "dashboard": "工作台",
-    "home": "首页",
-    "myAssistant": "我的助理",
     "newDigitalEmployee": "新建数字员工",
     "currentWorkspace": "工作区",
     "myWorkspace": "我的工作台",
     "topActions": "我的工作台",
-    "digitalEmployees": "数字员工",
-    "tasksAutomation": "自动化",
     "knowledge": "知识库",
     "bridge": "本地连接",
     "conversationsTasks": "对话与任务",
@@ -577,12 +574,6 @@
     "publicBadge": "公共",
     "managedBadge": "受管",
     "localBadge": "本地",
-    "sessionA2aBadge": "A2A",
-    "sessionBranchBadge": "分支",
-    "sessionTaskBadge": "任务",
-    "branchCount": "{{count}} 个分支",
-    "expandBranchSessions": "展开分支对话",
-    "collapseBranchSessions": "收起分支对话",
     "myAgents": "我的数字员工",
     "myCreated": "我创建的",
     "companyShared": "公司共用",
@@ -602,12 +593,8 @@
     "orgAdmin": "公司管理员",
     "member": "成员",
     "language": "语言",
-    "plaza": "Agent圈",
     "localAgents": "本地 Agent",
-    "collapseAgentSessions": "收起会话",
-    "expandAgentSessions": "展开会话",
     "logout": "退出登录",
-    "sessionImBadge": "IM",
     "settings": "设置"
   },
   "employees": {
@@ -911,7 +898,7 @@
     "title": "控制中台",
     "subtitle": "面向公司规模治理数字员工：人员、模型、工具、记忆、委派、审批、审计和本地运行时通道。",
     "sectionEyebrow": "控制中台",
-    "backToOverview": "返回总览",
+    "backToOverview": "返回公司后台",
     "operatingAreas": "运行区域",
     "operatingAreasDesc": "每张卡片都打开已经实现的工作区 section 或用户级运行时页面。旧后台能力不会被藏在 legacy 导航后面。",
     "metrics": {
@@ -921,6 +908,50 @@
       "sections": "后台页面"
     },
     "sections": {
+      "info": {
+        "title": "公司连接",
+        "description": "公司信息、渠道与第三方集成。"
+      },
+      "llm": {
+        "title": "模型和预算",
+        "description": "模型池、默认模型与预算相关的运行设置。"
+      },
+      "memory": {
+        "title": "记忆治理",
+        "description": "数字员工记忆的保留、清理与写入治理。"
+      },
+      "digital_employees": {
+        "title": "数字员工",
+        "description": "公司全部数字员工清单、生命周期控制与管理删除。"
+      },
+      "hr": {
+        "title": "Agent 治理",
+        "description": "HR Agent 设置与数字员工创建策略。"
+      },
+      "quotas": {
+        "title": "用量配额",
+        "description": "默认员工 token 配额、触发上限与公司级用量边界。"
+      },
+      "users": {
+        "title": "成员和登录",
+        "description": "成员、角色调整、配额分配与公司访问。"
+      },
+      "org": {
+        "title": "组织架构",
+        "description": "部门、成员、飞书同步与公司目录。"
+      },
+      "approvals": {
+        "title": "审批规则",
+        "description": "敏感动作审批、平台级确认与审批状态。"
+      },
+      "audit": {
+        "title": "审计日志",
+        "description": "公司级运行事件、动作记录与后台工作的审计流水。"
+      },
+      "invites": {
+        "title": "邀请码",
+        "description": "公司邀请与受控加入。"
+      },
       "extensions": {
         "title": "插件目录",
         "description": "统一管理 MCP 服务器、插件、技能、子代理、连接器和租户级能力安装。"
@@ -3696,6 +3727,13 @@
     "retryDelivery": "重试送达"
   },
   "enterprise": {
+    "nav": {
+      "membersAndLogin": "成员和登录",
+      "modelsAndBudget": "模型和预算",
+      "companyConnections": "公司连接",
+      "approvalRules": "审批规则",
+      "auditLog": "审计日志"
+    },
     "originals": {
       "open": "管理原件",
       "title": "原件管理",

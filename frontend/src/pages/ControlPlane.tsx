@@ -21,6 +21,7 @@ import { isAdministratorRole } from '../roles';
 import { useAuthStore } from '../stores';
 import {
   canRoleAccessWorkspaceSection,
+  WORKSPACE_DEFAULT_PATH,
   WORKSPACE_SETTINGS_SECTIONS,
   workspaceSectionsForRole,
   type WorkspaceSettingsSectionTab,
@@ -201,7 +202,7 @@ export default function ControlPlane({ tab }: ControlPlaneProps) {
   });
 
   if (tab && !canRoleAccessWorkspaceSection(role, tab)) {
-    return <Navigate to="/enterprise/dashboard" replace />;
+    return <Navigate to={WORKSPACE_DEFAULT_PATH} replace />;
   }
 
   if (tab && section) {
@@ -213,7 +214,7 @@ export default function ControlPlane({ tab }: ControlPlaneProps) {
             <h1 className="page-title">{t(`controlPlane.sections.${tab}.title`, section.title)}</h1>
             <p className="page-subtitle">{t(`controlPlane.sections.${tab}.description`, section.description)}</p>
           </div>
-          <Link to="/enterprise/dashboard" className="btn btn-secondary">
+          <Link to={WORKSPACE_DEFAULT_PATH} className="btn btn-secondary">
             {t('controlPlane.backToOverview', 'Back to overview')}
           </Link>
         </div>

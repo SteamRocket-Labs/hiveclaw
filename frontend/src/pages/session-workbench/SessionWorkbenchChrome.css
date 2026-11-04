@@ -49,6 +49,112 @@
   line-height: 1.4;
 }
 
+/* 历史: this bot's conversations live behind one header entry, not in the app sidebar. */
+.swb-history {
+  position: relative;
+  flex-shrink: 0;
+}
+
+.swb-history-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-full, 999px);
+  background: var(--bg-primary);
+  color: var(--text-secondary);
+  font-size: var(--text-meta);
+  cursor: pointer;
+}
+
+.swb-history-trigger:hover {
+  color: var(--text-primary);
+  border-color: var(--border-default);
+}
+
+.swb-history-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  inset-inline-start: 0;
+  z-index: 40;
+  width: 280px;
+  max-width: min(280px, 86vw);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md, 8px);
+  box-shadow: var(--shadow-popover, 0 8px 24px rgba(0, 0, 0, 0.16));
+  overflow: hidden;
+}
+
+.swb-history-new {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 8px 12px;
+  border: 0;
+  border-bottom: 1px solid var(--border-subtle);
+  background: transparent;
+  color: var(--text-primary);
+  font-size: var(--text-sm);
+  font-weight: 600;
+  cursor: pointer;
+  text-align: start;
+}
+
+.swb-history-new:hover {
+  background: var(--bg-secondary);
+}
+
+.swb-history-list {
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+.swb-history-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 12px;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  text-align: start;
+}
+
+.swb-history-item:hover {
+  background: var(--bg-secondary);
+}
+
+.swb-history-item.active {
+  background: var(--bg-active, var(--bg-secondary));
+}
+
+.swb-history-item-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--text-sm);
+  color: var(--text-primary);
+}
+
+.swb-history-item-meta {
+  flex-shrink: 0;
+  font-size: var(--text-meta);
+  color: var(--text-tertiary);
+}
+
+.swb-history-empty {
+  padding: 12px;
+  font-size: var(--text-sm);
+  color: var(--text-tertiary);
+}
+
 /* Session shell: preserve all three information planes without horizontal overflow. */
 @media (max-width: 1180px) {
   .session-tui-shell-managed .detail-session-browser {

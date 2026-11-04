@@ -29,7 +29,6 @@ import PlanCard from './PlanCard';
 import RunDisclosureBlock from './RunDisclosureBlock';
 import SlashCommandMenu from './SlashCommandMenu';
 import ChatWorkLedgerDock from './ChatWorkLedgerDock';
-import RemoteA2AWorkControls from '../../components/RemoteA2AWorkControls';
 import { SessionTransportStatus } from './SessionTransportStatus';
 import type { ChatTransportPhase } from './chatTransportRecovery';
 import { SessionWorkbenchHeader } from '../session-workbench/SessionWorkbenchChrome';
@@ -48,6 +47,7 @@ import {
   useResponsiveRuntimePanel,
   useThreadItemRuntimeController,
 } from '../session-workbench/threadItemRuntimeController';
+import { defaultSessionPermissionModeFromAgent } from './agentDetailPolicy';
 import type { ThreadItem } from '../../api/domains/threadItems.generated';
 import {
   buildSessionRightPanelModel,
@@ -109,7 +109,6 @@ import {
   isUserFacingDeliveryArtifact,
 } from './ArtifactSurface';
 import { useArtifactPreview } from './useArtifactPreview';
-import OriginalUploadAction from './OriginalUploadAction';
 import type { SessionMessageOptions } from './ArtifactContinuation';
 import {
   ActiveTailStatusLine,
@@ -145,7 +144,7 @@ type AttachedFile = {
   imageUrl?: string;
 };
 
-type ComposerActionKey = 'upload' | 'plan' | 'goal' | 'schedule';
+type ComposerActionKey = 'upload' | 'plan' | 'goal' | 'schedule' | 'project';
 export type SessionPermissionMode = 'auto' | 'default' | 'bypassPermissions';
 const EMPTY_CHAT_MESSAGES: AgentChatMessage[] = [];
 
@@ -964,8 +963,6 @@ const ChatMessageItem = React.memo(function ChatMessageItem({
             </div>
           )
         )}
-        {msg.role === 'user' && effectiveAgentId && msg.originalWorkspacePath && msg.fileName && <OriginalUploadAction
-          agentId={effectiveAgentId} path={msg.originalWorkspacePath} name={msg.fileName} viewerUserId={viewerUserId} discover />}
         {msg.thinking && (
           <ThinkingDisclosure thinking={msg.thinking} streaming={Boolean((msg as any)._streaming)} />
         )}
@@ -1174,6 +1171,7 @@ function AgentChatSection({
     : `owner:${principalScopeKey}:${currentUser?.id ?? ''}:${currentUser?.role ?? ''}:${effectiveAgentId ?? ''}:${activeSessionId ?? ''}`;
   const [projectContext, setProjectContext] = React.useState<{ scope: string; selection: SelectedProjectContext | null } | null>(null);
   const [projectSending, setProjectSending] = React.useState(false);
+  const [projectPickerOpen, setProjectPickerOpen] = React.useState(false);
   const [projectSendError, setProjectSendError] = React.useState('');
   const projectAttempt = React.useRef<{ fingerprint: string; inputId: string } | null>(null);
   const projectScopeRef = React.useRef(childAuthorityIdentity);
@@ -1214,6 +1212,9 @@ function AgentChatSection({
     ? t('agentCreate.hrAgentName', 'HR Agent')
     : agent?.name || '';
   const permissionModeLabel = getSessionPermissionModeLabel(sessionPermissionMode, t);
+  const permissionModeVisible = sessionPermissionMode !== defaultSessionPermissionModeFromAgent(agent)
+    || planModeRequested || goalModeRequested;
+  const projectContextAvailable = !operatorView && !isDraftSession && activeSession?.audience_kind !== 'group' && Boolean(currentUser?.id && activeSessionId);
   const composerIntentLabel = getComposerIntentLabel(planModeRequested, goalModeRequested, t);
   const modelBadgeLabel = composerRuntime.modelLabel || t('agent.chat.composer.currentModel', 'Current model');
   const modelBadgeTitle = [modelBadgeLabel, runtimeUsageTitle].filter(Boolean).join(' · ');
@@ -1243,6 +1244,7 @@ function AgentChatSection({
         focusChatInput();
         return;
       }
+      if (action === 'project') { setProjectPickerOpen(true); focusChatInput(); }
     },
     [fileInputRef, focusChatInput, onSetChatInput, onToggleGoalMode, onTogglePlanMode],
   );
@@ -2280,11 +2282,6 @@ function AgentChatSection({
                   operatorView={Boolean(activeSession.operator_view)} operatorReason={operatorReason}
                 />
               )}
-              {!operatorView && effectiveAgentId && activeSession?.id && !isDraftSession
-                && (canUseComposer || (agent?.deactivation_reason === 'retirement_pending'
-                  && (activeSession.user_id === currentUser?.id || activeSession.audience_kind === 'group'))) && (
-                <RemoteA2AWorkControls agentId={effectiveAgentId} sessionId={String(activeSession.id)} />
-              )}
               {operatorReadEnabled && artifactPreview && (
                 <ArtifactPreviewPanel
                   key={`artifact-preview:${childAuthorityIdentity}`}
@@ -2322,10 +2319,11 @@ function AgentChatSection({
                 agentUsage={{ usedToday: agent?.tokens_used_today, limitToday: agent?.max_tokens_per_day, usedMonth: agent?.tokens_used_month, limitMonth: agent?.max_tokens_per_month }}
                 agentPermissions={agentPermissions} sessionPermissionMode={sessionPermissionMode}
               />
-              {!operatorView && !isDraftSession && activeSession?.audience_kind !== 'group' && currentUser?.id && activeSessionId && (
+              {projectContextAvailable && (projectPickerOpen || selectedProjectContext) && (
                 <ProjectContextPicker key={`project-context:${childAuthorityIdentity}`} scope={{ userId: currentUser.id,
                   tenantId: currentUser.role === 'platform_admin' ? localStorage.getItem('current_tenant_id') || '' : currentUser.tenant_id }}
                   disabled={!canUseComposer || projectSending} selection={selectedProjectContext}
+                  open={projectPickerOpen} onClose={() => setProjectPickerOpen(false)}
                   onSelect={selection => { setProjectContext({ scope: childAuthorityIdentity, selection }); setProjectSendError(''); }} />
               )}
               {projectSendError && <p role="alert">{projectSendError}</p>}
@@ -2338,7 +2336,10 @@ function AgentChatSection({
                 attachments={attachedFiles}
                 permissionMode={sessionPermissionMode}
                 permissionModeLabel={permissionModeLabel}
+                permissionModeVisible={permissionModeVisible}
                 permissionOptions={sessionPermissionModeOptions()}
+                projectContextAvailable={projectContextAvailable}
+                projectContextSelected={Boolean(selectedProjectContext)}
                 modelLabel={modelBadgeLabel}
                 modelTitle={modelBadgeTitle}
                 runtimeUsageLabel={runtimeUsageLabel}

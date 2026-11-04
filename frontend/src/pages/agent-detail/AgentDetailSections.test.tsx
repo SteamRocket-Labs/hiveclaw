@@ -2846,7 +2846,7 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).toContain('Every day at 09:00');
     expect(markup).toContain('Daily release check');
     expect(markup).toContain('All systems green.');
-    expect(markup).toContain('Configuration &amp; sources');
+    expect(markup).toContain('Configuration');
     expect(markup).toContain('Not enabled');
     expect(markup).toContain('github-research');
     expect(markup).toContain('Deploy Playbook');
@@ -6289,13 +6289,13 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).not.toContain('data-testid="session-composer-action-schedule-switch"');
     expect(markup).toContain('role="switch"');
     expect(markup).toContain('aria-checked="false"');
+    expect(markup).toContain('Project files');
     expect(markup).toContain('Approve for me');
     expect(markup).toContain('Ask first');
     expect(markup).toContain('Full access');
     expect(markup).toContain('data-testid="session-composer-permission-mode-auto"');
     expect(markup).toContain('data-testid="session-composer-permission-mode-default"');
     expect(markup).toContain('data-testid="session-composer-permission-mode-bypassPermissions"');
-    expect(markup).toContain('data-testid="session-composer-permission-mode-default"');
     expect(markup).not.toContain('Manage access');
     expect(markup).not.toContain('acceptEdits');
     expect(markup).toContain('GPT-5.4');
@@ -6307,6 +6307,140 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).not.toContain('fallback:');
     expect(markup).not.toContain('model locked by user');
     expect(markup).not.toMatch(/microphone|voice|语音/i);
+  });
+
+  it('surfaces the permission badge only when the session leaves its default mode', () => {
+    const section = renderToStaticMarkup(
+      <AgentChatSection
+        agent={{ id: 'agent-1', name: 'Agent' }}
+        currentUser={{ id: 'user-1' }}
+        isAdmin={false}
+        chatScope="mine"
+        onSetChatScope={vi.fn()}
+        onLoadAllSessions={vi.fn()}
+        onCreateNewSession={vi.fn()}
+        sessionsLoading={false}
+        sessions={[]}
+        activeSession={{ id: 'session-1', user_id: 'user-1', title: 'Permission badge', created_at: '2026-06-23T09:00:00Z' }}
+        wsConnected
+        allSessions={[]}
+        allSessionsLoading={false}
+        allUserFilter=""
+        onSetAllUserFilter={vi.fn()}
+        onSelectSession={vi.fn()}
+        onDeleteSession={vi.fn()}
+        historyContainerRef={React.createRef<HTMLDivElement>()}
+        onHistoryScroll={vi.fn()}
+        historyMsgs={[]}
+        historyMessagesSessionId={null}
+        showHistoryScrollBtn={false}
+        onScrollHistoryToBottom={vi.fn()}
+        chatContainerRef={React.createRef<HTMLDivElement>()}
+        onChatScroll={vi.fn()}
+        chatMessages={[]}
+        chatMessagesSessionId="session-1"
+        runtimeSummary={null}
+        agentPermissions={{
+          scope_type: 'company',
+          scope_ids: [],
+          access_level: 'manage',
+          is_owner: true,
+        }}
+        transportNotice={null}
+        isWaiting={false}
+        activeRunStatus={null}
+        sessionPermissionMode="bypassPermissions"
+        chatEndRef={React.createRef<HTMLDivElement>()}
+        showScrollBtn={false}
+        onScrollToBottom={vi.fn()}
+        agentExpired={false}
+        attachedFiles={[]}
+        onRemoveAttachedFile={vi.fn()}
+        fileInputRef={React.createRef<HTMLInputElement>()}
+        onHandleChatFile={vi.fn()}
+        uploading={false}
+        uploadProgress={-1}
+        uploadAbortRef={{ current: null }}
+        chatInputRef={React.createRef<HTMLTextAreaElement>()}
+        chatInput=""
+        onSetChatInput={vi.fn()}
+        onHandlePaste={vi.fn()}
+        onSendChatMsg={vi.fn()}
+        isStreaming={false}
+        onAbortGeneration={vi.fn()}
+      />,
+    );
+    expect(section).toContain('data-testid="session-composer-permission-badge"');
+    expect(section).toContain('Ask first');
+    expect(section).toContain('Approve for me');
+    expect(section).toContain('Full access');
+    expect(section).toContain('data-testid="session-composer-permission-mode-default"');
+  });
+
+  it('hides the permission badge when the session sits on its default mode', () => {
+    const section = renderToStaticMarkup(
+      <AgentChatSection
+        agent={{ id: 'agent-1', name: 'Agent', default_session_permission_mode: 'default' }}
+        currentUser={{ id: 'user-1' }}
+        isAdmin={false}
+        chatScope="mine"
+        onSetChatScope={vi.fn()}
+        onLoadAllSessions={vi.fn()}
+        onCreateNewSession={vi.fn()}
+        sessionsLoading={false}
+        sessions={[]}
+        activeSession={{ id: 'session-1', user_id: 'user-1', title: 'Permission badge', created_at: '2026-06-23T09:00:00Z' }}
+        wsConnected
+        allSessions={[]}
+        allSessionsLoading={false}
+        allUserFilter=""
+        onSetAllUserFilter={vi.fn()}
+        onSelectSession={vi.fn()}
+        onDeleteSession={vi.fn()}
+        historyContainerRef={React.createRef<HTMLDivElement>()}
+        onHistoryScroll={vi.fn()}
+        historyMsgs={[]}
+        historyMessagesSessionId={null}
+        showHistoryScrollBtn={false}
+        onScrollHistoryToBottom={vi.fn()}
+        chatContainerRef={React.createRef<HTMLDivElement>()}
+        onChatScroll={vi.fn()}
+        chatMessages={[]}
+        chatMessagesSessionId="session-1"
+        runtimeSummary={null}
+        agentPermissions={{
+          scope_type: 'company',
+          scope_ids: [],
+          access_level: 'manage',
+          is_owner: true,
+        }}
+        transportNotice={null}
+        isWaiting={false}
+        activeRunStatus={null}
+        sessionPermissionMode="default"
+        chatEndRef={React.createRef<HTMLDivElement>()}
+        showScrollBtn={false}
+        onScrollToBottom={vi.fn()}
+        agentExpired={false}
+        attachedFiles={[]}
+        onRemoveAttachedFile={vi.fn()}
+        fileInputRef={React.createRef<HTMLInputElement>()}
+        onHandleChatFile={vi.fn()}
+        uploading={false}
+        uploadProgress={-1}
+        uploadAbortRef={{ current: null }}
+        chatInputRef={React.createRef<HTMLTextAreaElement>()}
+        chatInput=""
+        onSetChatInput={vi.fn()}
+        onHandlePaste={vi.fn()}
+        onSendChatMsg={vi.fn()}
+        isStreaming={false}
+        onAbortGeneration={vi.fn()}
+      />,
+    );
+    expect(section).not.toContain('data-testid="session-composer-permission-badge"');
+    expect(section).not.toContain('Ask first');
+    expect(section).toContain('data-testid="session-composer-model-badge"');
   });
 
   it('renders A2A agent sessions as read-only and disables composer actions', () => {
@@ -6762,7 +6896,7 @@ describe('AgentDetail extracted sections', () => {
     );
 
     expect(markup).toContain('Research Bot');
-    expect(markup).toContain('Configuration &amp; sources');
+    expect(markup).toContain('Configuration');
     expect(markup).toContain('Included capabilities');
     expect(markup).toContain('Added during setup');
     expect(markup).toContain('Not enabled');

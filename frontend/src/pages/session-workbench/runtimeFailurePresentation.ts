@@ -11,7 +11,7 @@ export function runtimeFailurePresentation(
   if (deliveryState === 'unknown') {
     return {
       kind: 'delivery_unknown',
-      fallback: 'The model request outcome is unknown. Ask a platform administrator to reconcile this task before continuing.',
+      fallback: 'The request did not finish. You can retry it.',
     };
   }
   if (failureCode === 'auth_or_permission') {

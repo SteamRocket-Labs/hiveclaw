@@ -249,7 +249,10 @@ describe('LocalAgentChatSection local-channel projection', () => {
     expect(markup).not.toContain('data-testid="session-composer-action-schedule-switch"');
     expect(markup).toContain('role="switch"');
     expect(markup).toContain('aria-checked="false"');
-    expect(markup).toContain('Manage access');
+    // The fixed local permission mode is the default, so its badge stays hidden
+    // until a Plan/Goal intent makes the mode visible (P3).
+    expect(markup).not.toContain('Manage access');
+    expect(markup).not.toContain('data-testid="session-composer-permission-badge"');
     expect(markup).toContain('Hive Connect');
     expect(markup).not.toContain('aria-label="Attach file"');
     expect(markup).not.toContain('microphone');

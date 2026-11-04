@@ -43,7 +43,7 @@ const EXECUTION_PRESENTATIONS: Record<string, ApprovalExecutionPresentation> = {
   failed: { key: 'failed', label: 'Failed', tone: 'error', agentClassName: 'is-rejected' },
   needs_reconciliation: {
     key: 'needs_reconciliation',
-    label: 'Needs reconciliation',
+    label: 'Needs admin attention',
     tone: 'error',
     agentClassName: 'is-rejected',
   },

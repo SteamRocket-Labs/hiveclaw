@@ -6,7 +6,6 @@ import { ArtifactCards } from './ArtifactSurface';
 import { parseUserAttachment } from './chatAttachments';
 import type { AgentChatMessage } from './chatRuntime';
 import * as downloads from '../../utils/authenticatedResource';
-import * as dialogs from '../../components/AppDialogs';
 
 vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: (_key: string, fallback?: string) => fallback || _key }) }));
 
@@ -26,44 +25,34 @@ function restoredInput(actor = 'owner') {
   return parseUserAttachment(message, 'employee').inputAttachments;
 }
 
-it('downloads the saved original with current authentication while retaining current-file actions', async () => {
+// An attachment is just an attachment (P3): the original-upload controls are
+// gone from message rows and artifact cards; the current file keeps its
+// ordinary download and open actions for every viewer.
+it('keeps ordinary download and open actions on a restored attachment without original-upload controls', async () => {
   localStorage.setItem('token', 'current-owner-token');
   localStorage.setItem('current_tenant_id', 'current-company');
-  const original = new Blob(['ORIGINAL']);
   const current = new Blob(['EDITED']);
-  const fetcher = vi.fn().mockImplementation(async (path: string) => ({ ok: true, blob: async () => path.includes('/chat/attachments/') ? original : current }));
+  const fetcher = vi.fn().mockImplementation(async () => ({ ok: true, blob: async () => current }));
   vi.stubGlobal('fetch', fetcher);
   const saved = vi.spyOn(downloads, 'saveBlob').mockImplementation(() => {});
   const open = vi.fn();
   render(<ArtifactCards agentId="employee" viewerUserId="owner" artifacts={restoredInput()} onOpenArtifact={open} />);
-  fireEvent.click(screen.getByRole('button', { name: 'Original upload' }));
-  await waitFor(() => expect(saved).toHaveBeenCalledWith(original, 'source.bin'));
-  expect(fetcher).toHaveBeenNthCalledWith(1, '/api/chat/attachments/original-ref/download', expect.objectContaining({
-    headers: { Authorization: 'Bearer current-owner-token', 'X-Tenant-Id': 'current-company' },
-  }));
+  expect(screen.queryByRole('button', { name: 'Original upload' })).toBeNull();
   fireEvent.click(screen.getByRole('button', { name: 'Download' }));
   await waitFor(() => expect(saved).toHaveBeenCalledWith(current, 'source.bin'));
-  expect(fetcher.mock.calls[1][0]).toContain('/api/agents/employee/files/download?');
+  expect(fetcher).toHaveBeenNthCalledWith(1, expect.stringContaining('/api/agents/employee/files/download?'), expect.objectContaining({
+    headers: { Authorization: 'Bearer current-owner-token', 'X-Tenant-Id': 'current-company' },
+  }));
   fireEvent.click(screen.getByRole('button', { name: 'Open' }));
   expect(open).toHaveBeenCalledWith(expect.objectContaining({ path: 'workspace/uploads/source.bin' }));
 });
 
-it('retains the reference after a typed download failure without substituting workspace bytes', async () => {
-  const fetcher = vi.fn().mockResolvedValue({ ok: false, status: 503,
-    json: async () => ({ detail: { code: 'original_attachment_unavailable', retryable: true } }) });
-  vi.stubGlobal('fetch', fetcher);
-  const saved = vi.spyOn(downloads, 'saveBlob').mockImplementation(() => {});
-  const toast = vi.spyOn(dialogs, 'showAppToast').mockImplementation(() => {});
-  render(<ArtifactCards agentId="employee" viewerUserId="owner" artifacts={restoredInput()} />);
-  fireEvent.click(screen.getByRole('button', { name: 'Original upload' }));
-  await waitFor(() => expect(toast).toHaveBeenCalledOnce());
-  expect(saved).not.toHaveBeenCalled();
-  expect(fetcher).toHaveBeenCalledOnce();
-  expect(screen.getByRole('button', { name: 'Original upload' })).toBeTruthy();
-});
-
-it.each([['other', 'owner'], ['owner', 'forged-owner']])('hides private original actions for viewer %s and actor %s', (viewer, actor) => {
-  render(<ArtifactCards agentId="employee" viewerUserId={viewer} artifacts={restoredInput(actor)} />);
-  expect(screen.queryByRole('button', { name: 'Original upload' })).toBeNull();
-  expect(screen.getByRole('button', { name: 'Download' })).toBeTruthy();
-});
+it.each([['other', 'owner'], ['owner', 'forged-owner'], ['owner', 'owner']])(
+  'shows the same plain attachment actions for viewer %s and actor %s',
+  (viewer, actor) => {
+    render(<ArtifactCards agentId="employee" viewerUserId={viewer} artifacts={restoredInput(actor)} />);
+    expect(screen.queryByRole('button', { name: 'Original upload' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Withdraw original' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Download' })).toBeTruthy();
+  },
+);

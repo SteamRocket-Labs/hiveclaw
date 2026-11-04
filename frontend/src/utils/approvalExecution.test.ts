@@ -10,7 +10,7 @@ describe('approvalExecutionPresentation', () => {
     ['executing', 'executing', 'Executing'],
     ['succeeded', 'succeeded', 'Succeeded'],
     ['failed', 'failed', 'Failed'],
-    ['needs_reconciliation', 'needs_reconciliation', 'Needs reconciliation'],
+    ['needs_reconciliation', 'needs_reconciliation', 'Needs admin attention'],
     ['needs_reapproval', 'needs_reapproval', 'Needs reapproval'],
   ])('maps %s to a user-facing durable execution state', (executionStatus, key, label) => {
     expect(

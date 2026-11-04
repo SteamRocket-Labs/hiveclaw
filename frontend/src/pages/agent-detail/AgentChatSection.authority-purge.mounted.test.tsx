@@ -143,7 +143,9 @@ it('keeps selected project inputs and the same input identifier after an unconfi
   render(<AgentChatSection {...base} agent={{ ...base.agent, access_level: 'use' }} currentUser={{ id: 'operator-user', tenant_id: 'company' }}
     activeSession={{ ...base.activeSession, user_id: 'operator-user', read_only: false, is_current_user_session: true, operator_view: false }}
     historyMsgs={[]} chatInput="Use the selected sources" onSendChatMsg={send} planModeRequested={true} goalModeRequested={true} />);
-  fireEvent.click(screen.getByRole('button', { name: 'projects.context' }));
+  // Project references now open from the composer "+" menu (P3).
+  fireEvent.click(screen.getByRole('button', { name: 'Open composer actions' }));
+  fireEvent.click(screen.getByRole('menuitem', { name: /Project files/ }));
   await waitFor(() => expect(screen.getByRole('option', { name: 'Research' })).toBeTruthy());
   fireEvent.change(screen.getByRole('combobox', { name: 'projects.contextProject' }), { target: { value: 'project' } });
   fireEvent.click(await screen.findByRole('checkbox', { name: 'source.md' }));
@@ -525,7 +527,6 @@ it('keeps original history visible but disables a cached writable composer durin
   expect(screen.getByText('Retained original result')).toBeTruthy();
   const composer = screen.queryByTestId('session-composer-shell');
   expect(!composer || composer.querySelector('textarea')?.disabled).toBe(true);
-  expect(screen.getByText('Remote A2A requests in this work')).toBeTruthy();
   expect(send).not.toHaveBeenCalled();
   useAuthStore.setState({ user: null });
 });

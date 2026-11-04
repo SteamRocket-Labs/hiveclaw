@@ -135,7 +135,7 @@ export default function HrCreationRecoveryPanel() {
                     : <p>{t('employees.hrRecovery.retirementAdministrator', 'Ask a company administrator to review this employee’s retirement, then retry removal here.')}</p>}
                 </div>}
                 {recovery?.requires_operator && (
-                  <small>{t('employees.hrRecovery.operatorRequired', 'Operator reconciliation is required before retry.')}</small>
+                  <small>{t('employees.hrRecovery.operatorRequired', 'An operator needs to review this before retry.')}</small>
                 )}
               </div>
               <div className="hr-recovery-actions">

@@ -19,6 +19,9 @@ export default function InlineApprovalCard({ agentId, sessionId, approvalId, aut
     refetchInterval: (current) => {
       const data = current.state.data;
       if (!data) return false;
+      // The requester only sees one waiting line and does not poll it forever;
+      // the conversation thread itself reports the outcome (P3).
+      if (data.status === 'pending' && !data.can_resolve) return false;
       return data.status === 'pending' || ['queued', 'executing'].includes(data.execution_status || '')
         || ['queued', 'continuing', 'retrying'].includes(data.execution_receipt?.continuation_status || '') ? 3_000 : false;
     },
@@ -51,12 +54,16 @@ export default function InlineApprovalCard({ agentId, sessionId, approvalId, aut
   const execution = approvalExecutionPresentation(data);
   const continuation = approvalContinuationPresentation(data);
   const canDecide = data.can_resolve && data.status === 'pending' && !query.isError;
+  // The requester is not the approver: one plain line, no approval machinery
+  // (P3). Only the responsible approver sees the decision card.
+  if (data.status === 'pending' && !data.can_resolve) {
+    return <p role="status">{t('agent.chat.approval.waiting', 'Waiting for the responsible approver.')}</p>;
+  }
   return <div className="card card-pad-sm" style={{ display: 'grid', gap: '8px' }}>
     <strong>{t('agent.chat.approval.title', 'Company approval')}</strong>
     <ApprovalRequestSummary approval={data} showDetails />
     <div role="status">{t(`approvalExecution.${execution.key}`, execution.label)}</div>
     {continuation && <div>{t(`approvalContinuation.${continuation.status}`, continuation.label)}</div>}
-    {data.status === 'pending' && !data.can_resolve && <p>{t('agent.chat.approval.waiting', 'Waiting for the responsible approver.')}</p>}
     {actionError && <div role="alert">{actionError}</div>}
     {query.isError && <div role="alert">
       {t('agent.chat.approval.loadFailed', 'Approval status could not load.')}

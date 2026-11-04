@@ -4,6 +4,7 @@ import {
   IconCalendarTime,
   IconChecklist,
   IconFileText,
+  IconFolder,
   IconLoader2,
   IconPaperclip,
   IconTargetArrow,
@@ -17,7 +18,7 @@ import {
 } from './SessionRunControls';
 import './SessionComposer.css';
 
-export type ComposerActionKey = 'upload' | 'plan' | 'goal' | 'schedule';
+export type ComposerActionKey = 'upload' | 'plan' | 'goal' | 'schedule' | 'project';
 
 export interface ComposerAttachment {
   name: string;
@@ -37,7 +38,10 @@ export interface SessionComposerProps {
   attachments: ComposerAttachment[];
   permissionMode: SessionPermissionMode;
   permissionModeLabel: string;
+  permissionModeVisible?: boolean;
   permissionOptions: SessionPermissionOption[];
+  projectContextAvailable?: boolean;
+  projectContextSelected?: boolean;
   modelLabel: string;
   modelTitle?: string;
   runtimeUsageLabel?: string;
@@ -69,7 +73,10 @@ export function SessionComposer({
   attachments,
   permissionMode,
   permissionModeLabel,
+  permissionModeVisible = true,
   permissionOptions,
+  projectContextAvailable = false,
+  projectContextSelected = false,
   modelLabel,
   modelTitle,
   runtimeUsageLabel,
@@ -104,6 +111,16 @@ export function SessionComposer({
       disabled: disabled || uploading || attachments.length >= 10,
     },
     {
+      key: 'project' as const,
+      label: t('agent.chat.composer.projectContext', 'Project files'),
+      description: projectContextSelected
+        ? t('agent.chat.composer.projectContextSelectedDesc', 'Project files are attached to the next message')
+        : t('agent.chat.composer.projectContextDesc', 'Reference files from a project in the next message'),
+      icon: <IconFolder size={16} />,
+      selected: projectContextSelected,
+      disabled: disabled,
+    },
+    {
       key: 'plan' as const,
       label: t('agent.chat.composer.planMode', 'Plan Mode'),
       description: planModeRequested
@@ -131,7 +148,8 @@ export function SessionComposer({
       disabled: disabled || running,
     },
   ];
-  const visibleActions = actions.filter((action) => goalModeAvailable || action.key !== 'goal');
+  const visibleActions = actions.filter((action) => (goalModeAvailable || action.key !== 'goal')
+    && (projectContextAvailable || action.key !== 'project'));
 
   return (
     <div
@@ -220,6 +238,7 @@ export function SessionComposer({
           permissionMenuOpen={permissionMenuOpen}
           permissionMode={permissionMode}
           permissionModeLabel={permissionModeLabel}
+          permissionModeVisible={permissionModeVisible}
           permissionOptions={permissionOptions}
           intentLabel={intentLabel}
           modelLabel={modelLabel}

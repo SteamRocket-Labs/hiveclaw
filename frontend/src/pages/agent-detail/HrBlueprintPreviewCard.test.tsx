@@ -119,7 +119,7 @@ describe('HrBlueprintPreviewCard', () => {
     expect(primaryButton).toContain('disabled');
   });
 
-  it('shows source authority in user language without exposing machine codes or evidence ids', () => {
+  it('keeps blueprint source attributions off the card without exposing machine codes or evidence ids', () => {
     const markup = renderToStaticMarkup(
       <QueryClientProvider client={new QueryClient()}>
         <HrBlueprintPreviewCard
@@ -145,11 +145,11 @@ describe('HrBlueprintPreviewCard', () => {
       </QueryClientProvider>,
     );
 
-    expect(markup).toContain('Sources');
-    expect(markup).toContain('User confirmed');
-    expect(markup).toContain('Company knowledge');
-    expect(markup).toContain('Never publish without approval.');
-    expect(markup).toContain('Use authorized company documents and cite every claim.');
+    expect(markup).not.toContain('Sources');
+    expect(markup).not.toContain('User confirmed');
+    expect(markup).not.toContain('Company knowledge');
+    expect(markup).not.toContain('Never publish without approval.');
+    expect(markup).not.toContain('Use authorized company documents and cite every claim.');
     expect(markup).not.toContain('confirmed_by_user');
     expect(markup).not.toContain('supported_by_company_kb');
     expect(markup).not.toContain('company-evidence://');

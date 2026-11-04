@@ -343,7 +343,7 @@ export default function AgentAwareSection({
       backoff_active: t('agent.aware.reasonBackoff', 'Cooling down after a recent failure.'),
       missing_model: t('agent.aware.reasonMissingModel', 'No model is configured for this autonomous run.'),
       failed_recently: t('agent.aware.reasonFailedRecently', 'The most recent run failed or was skipped.'),
-      needs_reconciliation: t('agent.aware.reasonNeedsReconciliation', 'This run needs admin reconciliation before retry.'),
+      needs_reconciliation: t('agent.aware.reasonNeedsReconciliation', 'This run needs attention before retry.'),
     };
     return known[code] || null;
   };
@@ -354,7 +354,7 @@ export default function AgentAwareSection({
       return t('agent.aware.reasonFailedRecently', 'The most recent run failed or was skipped.');
     }
     if (code === 'needs_reconciliation') {
-      return t('agent.aware.reasonNeedsReconciliation', 'This run needs admin reconciliation before retry.');
+      return t('agent.aware.reasonNeedsReconciliation', 'This run needs attention before retry.');
     }
     return null;
   };

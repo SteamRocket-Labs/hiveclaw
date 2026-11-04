@@ -168,7 +168,6 @@ async def test_daily_blocked_fire_consumes_slot_and_recovers(schedule, monkeypat
     ("kind", "config", "minutes"),
     [
         ("interval", {"minutes": 30}, 30),
-        ("poll", {"interval_min": 5}, 5),
         ("once", {"at": "2026-11-04T09:00:00+00:00"}, 1440),
     ],
 )
@@ -179,7 +178,7 @@ async def test_blocked_schedule_waits_without_spending_max_fires(schedule, monke
     monkeypatch.setattr(daemon, "_poll_check", AsyncMock(return_value=True))
     start = s.clock.now
     await daemon._tick()
-    for minute in range(1, min(minutes, 10)):
+    for minute in range(1, min(minutes, 31)):
         s.clock.now = start + timedelta(minutes=minute)
         await daemon._tick()
     assert len(s.records) == 1
@@ -189,6 +188,56 @@ async def test_blocked_schedule_waits_without_spending_max_fires(schedule, monke
     await daemon._tick()
     assert [t.status for t in s.records.values()] == ["skipped", "completed"]
     assert s.trigger.fire_count == 1
+
+
+@pytest.mark.asyncio
+async def test_once_honours_edited_at_after_blocked_attempt(schedule):
+    s = schedule
+    start = s.clock.now
+    s.trigger.type = "once"
+    s.trigger.config["at"] = start.isoformat()
+    await daemon._tick()
+    assert [t.status for t in s.records.values()] == ["skipped"]
+    s.agent.primary_model_id = uuid4()
+    s.trigger.config["at"] = (start + timedelta(hours=6)).isoformat()
+    s.clock.now = start + timedelta(hours=6) - timedelta(minutes=1)
+    await daemon._tick()
+    assert len(s.records) == 1
+    s.clock.now += timedelta(minutes=1)
+    await daemon._tick()
+    assert [t.status for t in s.records.values()] == ["skipped", "completed"]
+    assert s.trigger.fire_count == 1
+    assert not s.trigger.is_enabled
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("blocked", [False, True], ids=["healthy", "blocked"])
+async def test_match_poll_preserves_lease_cadence(schedule, monkeypatch, blocked):
+    s = schedule
+    start = s.clock.now
+    s.trigger.type = "poll"
+    s.trigger.max_fires = None
+    s.trigger.config.update(interval_min=5, fire_on="match", match_value="ready", _last_value="ready")
+    monkeypatch.setattr(daemon, "_poll_check", AsyncMock(return_value=True))
+    if not blocked:
+        s.agent.primary_model_id = uuid4()
+    for minute in range(21):
+        s.clock.now = start + timedelta(minutes=minute)
+        await daemon._tick()
+        assert len(s.records) == minute // 10 + 1
+    assert [t.status for t in s.records.values()] == ["skipped" if blocked else "completed"] * 3
+    assert s.trigger.fire_count == (0 if blocked else 3)
+    assert s.trigger.is_enabled
+    if blocked:
+        s.agent.primary_model_id = uuid4()
+        for minute in range(21, 30):
+            s.clock.now = start + timedelta(minutes=minute)
+            await daemon._tick()
+            assert len(s.records) == 3
+        s.clock.now = start + timedelta(minutes=30)
+        await daemon._tick()
+        assert [t.status for t in s.records.values()] == ["skipped"] * 3 + ["completed"]
+        assert s.trigger.fire_count == 1
 
 
 @pytest.mark.asyncio

@@ -1161,9 +1161,6 @@ async def _evaluate_trigger(trigger: AgentTrigger, now: datetime) -> bool:
             return False
 
     elif t == "once":
-        # A blocked one-shot remains enabled and retries daily until it can run.
-        if trigger.last_fired_at and now - trigger.last_fired_at < timedelta(days=1):
-            return False
         at_str = cfg.get("at")
         if not at_str:
             return False
@@ -1171,6 +1168,9 @@ async def _evaluate_trigger(trigger: AgentTrigger, now: datetime) -> bool:
             at = datetime.fromisoformat(at_str)
             if at.tzinfo is None:
                 at = at.replace(tzinfo=timezone.utc)
+            # Retry daily unless the owner scheduled a later, unconsumed time.
+            if trigger.last_fired_at and at <= trigger.last_fired_at:
+                at = trigger.last_fired_at + timedelta(days=1)
             return now >= at and trigger.fire_count == 0
         except Exception:
             return False
@@ -1565,7 +1565,7 @@ def _default_trigger_event_key(trigger: AgentTrigger, now: datetime, evaluation:
         minutes = max(int(cfg.get("minutes", 30) or 30), 1)
         return f"interval:{trigger.id}:{int(now.timestamp()) // (minutes * 60)}"
     if trigger.type == "poll":
-        current_value = f"{trigger.last_fired_at or trigger.created_at}:{cfg.get('_last_value') or ''}"
+        current_value = str(cfg.get("_last_value") or "")
         return f"poll:{trigger.id}:{hashlib.sha256(current_value.encode('utf-8')).hexdigest()[:16]}"
     if trigger.type == "webhook":
         payload = str(cfg.get("_webhook_payload") or "")

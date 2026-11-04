@@ -56,6 +56,26 @@ def _runtime_content(row: SessionTurnInput) -> str:
     return json.dumps(parts, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
+def _runtime_display_content(parts: list[dict[str, Any]]) -> str:
+    """The member's own words for this input, never the runtime JSON encoding."""
+
+    for part in parts:
+        if not isinstance(part, dict) or part.get("type") not in (None, "text"):
+            continue
+        display = part.get("display_content")
+        if isinstance(display, str) and display.strip():
+            return display
+    # A plain single-part message has no separate display text: the text IS
+    # the member's message. A multi-part input without a display_content must
+    # not leak its internal prompt into a title, so it yields nothing and the
+    # caller falls back to the file name.
+    if len(parts) == 1 and isinstance(parts[0], dict):
+        text = parts[0].get("text") or parts[0].get("content")
+        if isinstance(text, str) and text.strip():
+            return text
+    return ""
+
+
 def _json_receipt(value: Any) -> Any:
     """Normalize typed dataclass/UUID receipts before storing them in JSONB."""
 
@@ -350,6 +370,7 @@ async def _start_input_runtime(
         )
         budget_interactive = False
     content = _runtime_content(row)
+    display_content = _runtime_display_content(list(row.content_parts_json or []))
     if row.intent == "answer_request":
         from app.services.session_user_question import answer_projection
 
@@ -379,7 +400,7 @@ async def _start_input_runtime(
         user=user,
         session=session,
         content=content,
-        display_content="",
+        display_content=display_content,
         plan_mode_requested=plan_mode_requested,
         append_user_message=False,
         run_id=run_id,

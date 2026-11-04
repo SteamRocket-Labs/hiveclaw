@@ -33,8 +33,11 @@ export function parseUserAttachment(msg: AgentChatMessage, agentId?: string): Ag
                 && inputAttachments.length + inputAttachmentFailures.length === records.filter(part => part.type === 'attachment_ref').length;
             return { ...msg, fileName: undefined, imageUrl: undefined, inputAttachments,
                 inputAttachmentFailures: inputAttachmentFailures.length ? inputAttachmentFailures : undefined,
+                // The bubble shows the member's own words: a text part's
+                // display_content when it exists, never the model-facing
+                // prompt that lives in `text` (B2).
                 content: plain ? records.filter(part => part.type === 'text')
-                .map(part => sharedGoal && typeof part.display_content === 'string' ? part.display_content
+                .map(part => typeof part.display_content === 'string' ? part.display_content
                     : typeof part.text === 'string' ? part.text : typeof part.content === 'string' ? part.content : '').join('\n') : msg.content };
         }
     }

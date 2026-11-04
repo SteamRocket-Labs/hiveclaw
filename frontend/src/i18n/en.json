@@ -149,17 +149,17 @@
       "failure": {
         "deliveryUnknown": "This request did not confirm it finished.",
         "authOrPermission": "Model authentication or permission checks failed. Ask an administrator to check the API key and model access, then retry after fixing the configuration.",
-        "modelMissing": "No model is configured for this Agent. Choose one in Permissions & Settings, or ask an administrator to configure it before retrying.",
+        "modelMissing": "This digital employee has no model configured yet, so it cannot run. Ask an administrator to set it up, then retry.",
         "quotaExhausted": "Model quota or balance is insufficient. Ask an administrator to check quota, or switch models and retry.",
         "rateLimited": "The model service is busy. Try again later, or switch models and retry.",
         "retryable": "The model service is temporarily unavailable. This task can be retried safely.",
         "unavailable": "The model service could not finish this task. Check the configuration before retrying."
       },
-      "permissionNeeded": "The agent needs permission to use {{tool}}.",
+      "permissionNeeded": "This needs your approval: {{tool}}.",
       "thisTool": "this tool",
       "type": {
         "user_message": "User message",
-        "agent_message": "Agent message",
+        "agent_message": "Reply",
         "reasoning": "Reasoning",
         "tool_call": "Tool call",
         "tool_result": "Tool result",
@@ -167,9 +167,9 @@
         "approval_decision": "Approval decision",
         "plan": "Plan",
         "workflow_activity": "Workflow",
-        "subagent_activity": "Sub-agent",
-        "agent_team_activity": "Agent Team",
-        "peer_a2a_activity": "A2A digital employee",
+        "subagent_activity": "Subtask",
+        "agent_team_activity": "Teamwork",
+        "peer_a2a_activity": "Digital employee collaboration",
         "context_compaction": "Context compaction",
         "artifact": "Artifact",
         "boundary": "Run boundary",
@@ -209,7 +209,7 @@
         "step": "step",
         "task": "task",
         "label": "label",
-        "agent": "agent",
+        "agent": "Digital employee",
         "child session": "child session",
         "parent session": "parent session",
         "original messages": "original messages",
@@ -220,7 +220,8 @@
         "revision": "revision",
         "retry": "retry",
         "retry reason": "retry reason",
-        "event": "event"
+        "event": "event",
+        "name": "Name"
       },
       "value": {
         "success": "success",
@@ -233,7 +234,8 @@
         "notRetryable": "not retryable"
       },
       "inspectTechnicalDetails": "Inspect technical details",
-      "operatorOnly": "Technical details are available only in Operator View."
+      "operatorOnly": "Technical details are available only in Operator View.",
+      "permissionNeededWithTarget": "This needs your approval: {{tool}} “{{name}}”."
     },
     "inspectorTitle": "Session context",
     "events": "events",
@@ -442,7 +444,6 @@
     "permission": "permission",
     "governance": "governance",
     "activeProjection": "projection",
-    "failedGuidance": "Review the failed step below and its recovery instructions.",
     "rewind": {
       "activeRunBlocked": "Stop the current turn before rewinding. Creating a new branch session remains available.",
       "sameSessionHere": "Rewind this session here",
@@ -467,7 +468,28 @@
       "composerTarget": "Composer target",
       "composerTargetValue": "Agent Team member"
     },
-    "waitingGuidance": "Review the request below and choose the next action."
+    "waitingGuidance": "Review the request below and choose the next action.",
+    "approvalAction": {
+      "createEmployee": "create a digital employee",
+      "sendEmail": "send an email",
+      "replyEmail": "reply to an email",
+      "sendMessage": "send a message",
+      "sendFile": "send a file",
+      "delegate": "hand work to another digital employee",
+      "browser": "operate a web page",
+      "plazaPost": "publish a post",
+      "plazaComment": "comment on a post",
+      "feishuDoc": "edit a Feishu document",
+      "feishuSheet": "edit a Feishu spreadsheet",
+      "feishuBase": "edit a Feishu bitable",
+      "feishuCalendar": "change a Feishu calendar",
+      "feishuTask": "change a Feishu task",
+      "feishuApproval": "submit a Feishu approval",
+      "generic": "an externally visible action",
+      "writeFile": "write a file",
+      "editFile": "edit a file",
+      "deleteFile": "delete a file"
+    }
   },
   "login": {
     "hero": {
@@ -567,11 +589,8 @@
     "automations": "Automations",
     "memoryKnowledge": "Memory & Knowledge",
     "documentsResearch": "Documents & Research",
-    "a2aTeam": "A2A / Team",
-    "localAgentChannel": "Local Agent Channel",
     "controlPlane": "Control Plane",
     "controlOverview": "Overview",
-    "agentGovernance": "Agent Governance",
     "modelsBudget": "Models & Budget",
     "capabilitiesTools": "Capabilities & Tools",
     "teamDelegation": "Team & Delegation",
@@ -603,7 +622,6 @@
     "orgAdmin": "Company Admin",
     "member": "Member",
     "language": "Language",
-    "localAgents": "Local Agent",
     "logout": "Log out",
     "settings": "Settings"
   },
@@ -2432,7 +2450,7 @@
       "sessionNotFound": "Session not found",
       "sessionNotFoundBody": "This session does not exist or is not available to your account.",
       "backToAgents": "Back to digital employees",
-      "canonicalCardSupplement": "Agent supplemental notes",
+      "canonicalCardSupplement": "Supplemental notes",
       "fileSupport": "You can attach PDF, Word, Excel, and text files",
       "attachment": "Attachment",
       "attachFile": "Attach file",
@@ -2450,12 +2468,12 @@
         "remoteWork": "Remote tasks",
         "remoteWorkDesc": "Reply to, cancel, or recover files from this conversation’s remote tasks",
         "planMode": "Plan Mode",
-        "planModeDesc": "Ask the agent to plan before execution",
+        "planModeDesc": "Ask the digital employee to plan before execution",
         "planModeOnDesc": "Next message will request a plan first",
         "goalMode": "Goal mode",
         "goalModeDesc": "Start a session goal through the command surface",
         "scheduledTask": "Scheduled task",
-        "scheduledTaskDesc": "Draft a scheduled task request for this agent",
+        "scheduledTaskDesc": "Draft a scheduled task for this digital employee",
         "manageAccess": "Manage access",
         "useAccess": "Use access",
         "readAccess": "Read access",
@@ -2481,12 +2499,12 @@
         "contextUsageTitle": "{{percent}}% of this conversation context is in use.",
         "processing": "Processing...",
         "schedulePrefix": "Create a scheduled task: ",
-        "planPlaceholder": "Describe what the agent should plan first...",
+        "planPlaceholder": "Describe what the digital employee should plan first...",
         "goalPlaceholder": "Define the goal for this session...",
         "schedulePlaceholder": "Describe the schedule, trigger, and task...",
         "goalModeOnDesc": "Create a durable goal and start its first turn",
-        "localModelTitle": "Local Agent runtime",
-        "localPermissionDesc": "Access is governed by the connected Local Agent policy."
+        "localModelTitle": "Local digital employee runtime",
+        "localPermissionDesc": "Access is governed by the connected local digital employee policy."
       },
       "permission": {
         "unavailable": "Permission details could not be refreshed. Refresh the assignment.",
@@ -2518,7 +2536,6 @@
         "failed": "Failed to record feedback: {{message}}"
       },
       "thinking": "Thinking...",
-      "continuingRun": "Agent is continuing this run...",
       "runStartFailed": "Failed to start run",
       "branch": {
         "editPrompt": "Edit message and rerun from here",
@@ -2543,7 +2560,7 @@
         "toolCompleted": "Used tools: {{tools}}",
         "toolHistory": "Tool call history",
         "toolTitle": {
-          "loading": "Loading tools",
+          "loadingTools": "Loading tools",
           "readFile": "Read file",
           "writeFile": "Write file",
           "editFile": "Edit file",
@@ -2553,7 +2570,24 @@
           "fetchWebPage": "Fetch web page",
           "runCommand": "Run command",
           "editDocument": "Edit document",
-          "toolCall": "Tool call"
+          "toolCall": "Tool",
+          "searchFiles": "Search files",
+          "updateTasks": "Update tasks",
+          "workflowStep": "Workflow step",
+          "delegationStep": "Hand to another digital employee",
+          "subagentStep": "Subtask",
+          "scheduleStep": "Scheduled task",
+          "planStep": "Plan",
+          "permissionRequest": "Permission request",
+          "progressUpdate": "Progress",
+          "assistantUpdate": "Update",
+          "contextCompaction": "Tidy context",
+          "runtimeEvent": "Activity"
+        },
+        "aggregate": {
+          "files": "Read {{count}} files",
+          "searches": "Searched the web {{count}} times",
+          "commands": "Ran {{count}} commands"
         }
       },
       "artifacts": {
@@ -2575,9 +2609,9 @@
         "backToDelivery": "Back to delivery",
         "currentFile": "Current workspace file",
         "snapshotPreview": "Previewing saved session snapshot",
-        "legacyCurrentFilePreview": "Previewing current workspace file; no delivery snapshot exists",
-        "workspaceChanged": "Workspace file changed after delivery",
-        "missingNoSnapshot": "This file is no longer available in the workspace.",
+        "legacyCurrentFilePreview": "Previewing the current file; this deliverable has no saved snapshot",
+        "workspaceChanged": "The file changed after delivery",
+        "missingNoSnapshot": "This file is no longer in the file area.",
         "emptyPending": "This file is empty for now. Its content will appear here after the session permission is approved or the write finishes.",
         "downloadFailed": "Download failed: {{message}}",
         "openNamed": "Open {{name}}",
@@ -2602,15 +2636,15 @@
         "firstTaskDispatched": "Task dispatched. Updates and results return to this work.",
         "firstTaskRecovery": "Employee ready. The first task needs recovery; it has not been reported as started.",
         "firstTaskWaiting": "The task will start once the employee is ready.",
-        "blueprintPreviewTitle": "Agent Blueprint Preview",
+        "blueprintPreviewTitle": "Digital employee blueprint preview",
         "unnamedAgent": "Unnamed digital employee",
         "handoffTitle": "Creation request handed off",
-        "handoffFrom": "handed this creation request to HR Agent.",
-        "handoffGeneric": "This creation request has been handed to HR Agent.",
-        "handoffContinue": "Continue with HR Agent",
-        "handoffUnavailable": "HR Agent handoff could not be opened. Ask the Agent to retry.",
+        "handoffFrom": "This creation request was handed to the creation assistant.",
+        "handoffGeneric": "This creation request is with the creation assistant.",
+        "handoffContinue": "Continue in the creation assistant",
+        "handoffUnavailable": "The handoff could not be opened. Ask this digital employee to retry.",
         "createdTitle": "Digital Employee Created",
-        "agentName": "Agent",
+        "agentName": "Digital employee",
         "mission": "Mission",
         "firstMission": "First Mission",
         "readyNow": "Included capabilities",
@@ -2662,7 +2696,7 @@
         "requestChanges": "Request changes",
         "revisionPrompt": "What would you like to change?",
         "revisionPlaceholder": "Describe the outcome you want changed. You do not need to know field names.",
-        "revisionMessage": "Please revise this Agent blueprint: {{changes}}\nKeep the existing draft and return an updated preview. Do not create the employee yet.",
+        "revisionMessage": "Please revise this digital employee blueprint: {{changes}}\nKeep the current draft and return the updated preview; do not create the digital employee yet.",
         "submittingRevision": "Submitting…",
         "previewChanges": "Preview changes",
         "cancelChanges": "Cancel changes",
@@ -2671,7 +2705,7 @@
         "candidates": "Candidates",
         "risk": "Risk",
         "leafCalls": "Leaf calls",
-        "budgetTokens": "Budget tokens",
+        "budgetTokens": "Budget",
         "confirmationRequired": "Confirmation required",
         "recommended": "Recommended",
         "rawOutput": "Raw output",
@@ -2686,8 +2720,8 @@
         "selectAndPreview": "Select and preview"
       },
       "workLedger": {
-        "title": "Agent work ledger",
-        "taskTitle": "Agent tasks",
+        "title": "Work in progress",
+        "taskTitle": "Assigned task",
         "current": "Current",
         "next": "Next",
         "todos": "todos",
@@ -2741,8 +2775,7 @@
         "compactedNotice": "Context was compressed. The active working state was preserved.",
         "compactionDetails": "Show compression details",
         "compactionMeta": "Kept {{kept}} of {{original}} messages",
-        "toolGroupsActivated": "{{count}} runtime tool groups activated",
-        "permissionNeeded": "The agent needs permission to use {{tool}}."
+        "toolGroupsActivated": "{{count}} runtime tool groups activated"
       },
       "loadOlderMessages": "Load earlier messages",
       "gitline": {
@@ -2756,11 +2789,11 @@
       "groupDiscoveryUnavailable": "Shared group conversations are unavailable. Try refreshing.",
       "sourceAccess": "Source access",
       "sourceUnavailable": "Unavailable",
-      "stopRecorded": "Stop request recorded. Waiting for the run to settle.",
+      "stopRecorded": "Stop requested. Waiting for this run to finish.",
       "stopRejected": "The stop request was rejected. The run may still be active.",
       "stopUnconfirmed": "The stop request could not be confirmed. Check this work or try Stop again.",
       "groupSourcesUnavailable": "Some source content is unavailable to you. Request access or refresh this conversation.",
-      "inputRecorded": "Your input is recorded. Follow its application status in this work.",
+      "inputRecorded": "Got your message. It will join the current task.",
       "sessionBackfillIncomplete": "Latest activity is visible, but older session evidence is still recovering.",
       "sessionCreateFailed": "Failed to create session",
       "transport": {
@@ -2792,7 +2825,8 @@
         "title": "Company approval",
         "loadFailed": "Approval status could not load.",
         "waiting": "Waiting for the responsible approver."
-      }
+      },
+      "agentExpired": "This digital employee has expired and is off duty. Ask an administrator to extend its service."
     },
     "activityLog": {
       "title": "Activity Log",

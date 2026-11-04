@@ -99,8 +99,8 @@ export const DYNAMIC_KEY_RULES = [
   },
   {
     source: 'src/pages/agent-detail/RunDisclosureBlock.tsx',
-    expression: 'translated[0]',
-    reason: 'TOOL_TITLE_KEYS is the finite reviewed translation-key and fallback registry.',
+    expression: 'titleKeyFor(step.title)',
+    reason: 'titleKeyFor derives the finite toolTitle.* keys from the disclosure reducer presentation sentinels.',
   },
   {
     source: 'src/pages/agent-detail/TeamMemorySummaryCard.tsx',

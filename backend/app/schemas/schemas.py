@@ -45,6 +45,9 @@ class UserOut(BaseModel):
     avatar_url: str | None = None
     role: str
     tenant_id: uuid.UUID | None = None
+    # The member's own company name, for surfaces like the workspace label.
+    # Optional so admin-scoped serializers that never join the tenant stay valid.
+    tenant_name: str | None = None
     department_id: uuid.UUID | None = None
     title: str | None = None
     feishu_open_id: str | None = None

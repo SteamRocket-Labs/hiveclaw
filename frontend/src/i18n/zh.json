@@ -149,17 +149,17 @@
       "failure": {
         "deliveryUnknown": "这次请求没有确认完成。",
         "authOrPermission": "模型服务的身份验证或权限检查失败。请联系管理员检查 API Key 和模型访问权限，修复后再重试。",
-        "modelMissing": "当前 Agent 尚未配置模型。请在“权限与设置”中选择模型，或联系管理员配置后再重试。",
+        "modelMissing": "这个数字员工还没有配置模型，暂时无法执行任务。请联系管理员配置后再重试。",
         "quotaExhausted": "模型额度或余额不足，请联系管理员检查额度，或切换模型后重试。",
         "rateLimited": "模型服务当前繁忙，请稍后重试，或切换模型后再试。",
         "retryable": "模型服务暂时不可用，本次任务可以安全重试。",
         "unavailable": "模型服务未能完成本次任务，请检查配置后再试。"
       },
-      "permissionNeeded": "Agent 需要授权才能使用 {{tool}}。",
+      "permissionNeeded": "需要你确认：{{tool}}。",
       "thisTool": "该工具",
       "type": {
         "user_message": "用户消息",
-        "agent_message": "Agent 消息",
+        "agent_message": "回复",
         "reasoning": "推理",
         "tool_call": "工具调用",
         "tool_result": "工具结果",
@@ -167,9 +167,9 @@
         "approval_decision": "审批决定",
         "plan": "计划",
         "workflow_activity": "Workflow",
-        "subagent_activity": "Sub-agent",
-        "agent_team_activity": "Agent Team",
-        "peer_a2a_activity": "A2A 数字员工",
+        "subagent_activity": "子任务",
+        "agent_team_activity": "协作任务",
+        "peer_a2a_activity": "数字员工协作",
         "context_compaction": "上下文压缩",
         "artifact": "交付物",
         "boundary": "运行边界",
@@ -209,7 +209,7 @@
         "step": "步骤",
         "task": "任务",
         "label": "名称",
-        "agent": "Agent",
+        "agent": "数字员工",
         "child session": "子会话",
         "parent session": "父会话",
         "original messages": "原始消息数",
@@ -220,7 +220,8 @@
         "revision": "版本引用",
         "retry": "重试",
         "retry reason": "重试原因",
-        "event": "事件"
+        "event": "事件",
+        "name": "名称"
       },
       "value": {
         "success": "成功",
@@ -233,7 +234,8 @@
         "notRetryable": "不可重试"
       },
       "inspectTechnicalDetails": "查看技术详情",
-      "operatorOnly": "技术详情仅在运营视图中可用。"
+      "operatorOnly": "技术详情仅在运营视图中可用。",
+      "permissionNeededWithTarget": "需要你确认：{{tool}}“{{name}}”。"
     },
     "inspectorTitle": "会话上下文",
     "events": "事件",
@@ -441,7 +443,6 @@
     "permission": "权限",
     "governance": "治理",
     "activeProjection": "上下文投影",
-    "failedGuidance": "请查看下方失败步骤及处理说明。",
     "rewind": {
       "activeRunBlocked": "回退前请先停止当前轮次；仍可新建一个分支会话。",
       "sameSessionHere": "在当前会话回退到这里",
@@ -467,7 +468,28 @@
       "composerTargetValue": "Agent 团队成员"
     },
     "waitingGuidance": "请查看下方请求并选择下一步。",
-    "completed": "已完成"
+    "completed": "已完成",
+    "approvalAction": {
+      "createEmployee": "创建数字员工",
+      "sendEmail": "发送邮件",
+      "replyEmail": "回复邮件",
+      "sendMessage": "发送消息",
+      "sendFile": "发送文件",
+      "delegate": "交给其他数字员工",
+      "browser": "操作网页",
+      "plazaPost": "发布帖子",
+      "plazaComment": "评论帖子",
+      "feishuDoc": "编辑飞书文档",
+      "feishuSheet": "编辑飞书表格",
+      "feishuBase": "编辑飞书多维表格",
+      "feishuCalendar": "修改飞书日历",
+      "feishuTask": "修改飞书任务",
+      "feishuApproval": "发起飞书审批",
+      "generic": "一项对外操作",
+      "writeFile": "写入文件",
+      "editFile": "编辑文件",
+      "deleteFile": "删除文件"
+    }
   },
   "login": {
     "hero": {
@@ -542,11 +564,8 @@
     "automations": "自动化",
     "memoryKnowledge": "记忆与知识",
     "documentsResearch": "文档与研究",
-    "a2aTeam": "A2A / Team",
-    "localAgentChannel": "本地 Agent 通道",
     "controlPlane": "控制中台",
     "controlOverview": "总览",
-    "agentGovernance": "Agent 治理",
     "modelsBudget": "模型与预算",
     "capabilitiesTools": "能力与工具",
     "teamDelegation": "Team 与委派",
@@ -578,7 +597,6 @@
     "orgAdmin": "公司管理员",
     "member": "成员",
     "language": "语言",
-    "localAgents": "本地 Agent",
     "logout": "退出登录",
     "settings": "设置"
   },
@@ -2432,7 +2450,7 @@
       "sessionNotFound": "找不到此会话",
       "sessionNotFoundBody": "此会话不存在，或当前账号无法访问。",
       "backToAgents": "返回数字员工",
-      "canonicalCardSupplement": "Agent 补充说明",
+      "canonicalCardSupplement": "补充说明",
       "fileSupport": "可上传 PDF、Word、Excel、TXT 等文件",
       "attachment": "附件",
       "attachFile": "添加文件",
@@ -2450,12 +2468,12 @@
         "remoteWork": "远程任务",
         "remoteWorkDesc": "回复、取消或取回这个会话的远程任务文件",
         "planMode": "计划模式",
-        "planModeDesc": "让 agent 先给计划再执行",
+        "planModeDesc": "让数字员工先给计划再执行",
         "planModeOnDesc": "下一条消息会先请求计划",
         "goalMode": "目标模式",
         "goalModeDesc": "通过命令入口启动会话目标",
         "scheduledTask": "定时任务",
-        "scheduledTaskDesc": "为这个 agent 草拟定时任务请求",
+        "scheduledTaskDesc": "为这个数字员工草拟定时任务请求",
         "manageAccess": "完全访问",
         "useAccess": "使用权限",
         "readAccess": "只读权限",
@@ -2481,12 +2499,12 @@
         "contextUsageTitle": "当前会话已使用 {{percent}}% 的上下文。",
         "processing": "处理中...",
         "schedulePrefix": "创建一个定时任务：",
-        "planPlaceholder": "描述需要 agent 先规划的事情...",
+        "planPlaceholder": "描述需要数字员工先规划的事情...",
         "goalPlaceholder": "定义这个会话的目标...",
         "schedulePlaceholder": "描述定时计划、触发条件和任务...",
         "goalModeOnDesc": "创建持久目标并启动第一轮",
-        "localModelTitle": "本地 Agent 运行时",
-        "localPermissionDesc": "访问由已连接本地 Agent 的策略治理。"
+        "localModelTitle": "本地数字员工运行时",
+        "localPermissionDesc": "访问由已连接本地数字员工的策略治理。"
       },
       "permission": {
         "unavailable": "无法刷新权限详情，请刷新原任务。",
@@ -2518,7 +2536,6 @@
         "failed": "记录反馈失败：{{message}}"
       },
       "thinking": "思考中...",
-      "continuingRun": "Agent 正在继续执行...",
       "runStartFailed": "启动执行失败",
       "branch": {
         "editPrompt": "编辑这条消息并从这里重新执行",
@@ -2543,7 +2560,7 @@
         "toolCompleted": "已调用工具：{{tools}}",
         "toolHistory": "工具调用历史",
         "toolTitle": {
-          "loading": "加载工具",
+          "loadingTools": "加载工具",
           "readFile": "读取文件",
           "writeFile": "写入文件",
           "editFile": "编辑文件",
@@ -2553,7 +2570,24 @@
           "fetchWebPage": "读取网页",
           "runCommand": "运行命令",
           "editDocument": "编辑文档",
-          "toolCall": "调用工具"
+          "toolCall": "工具",
+          "searchFiles": "搜索文件",
+          "updateTasks": "更新任务",
+          "workflowStep": "工作流步骤",
+          "delegationStep": "交给其他数字员工",
+          "subagentStep": "子任务",
+          "scheduleStep": "定时任务",
+          "planStep": "计划",
+          "permissionRequest": "权限请求",
+          "progressUpdate": "进展",
+          "assistantUpdate": "更新",
+          "contextCompaction": "整理上下文",
+          "runtimeEvent": "运行状态"
+        },
+        "aggregate": {
+          "files": "读取 {{count}} 个文件",
+          "searches": "搜索网页 {{count}} 次",
+          "commands": "执行 {{count}} 条命令"
         }
       },
       "artifacts": {
@@ -2575,9 +2609,9 @@
         "backToDelivery": "返回交付快照",
         "currentFile": "当前工作区文件",
         "snapshotPreview": "正在预览会话保存快照",
-        "legacyCurrentFilePreview": "正在预览当前 workspace 文件；该交付物没有保存快照",
-        "workspaceChanged": "workspace 文件已在交付后变化",
-        "missingNoSnapshot": "这个文件已不在 workspace 中。",
+        "legacyCurrentFilePreview": "正在预览当前文件；该交付物没有保存快照",
+        "workspaceChanged": "文件已在交付后变化",
+        "missingNoSnapshot": "这个文件已不在文件区中。",
         "emptyPending": "文件当前还是空的。会话权限通过或写入完成后，内容会显示在这里。",
         "downloadFailed": "下载失败：{{message}}",
         "openNamed": "打开 {{name}}",
@@ -2602,15 +2636,15 @@
         "firstTaskDispatched": "任务已派发，进度和成果会返回当前工作。",
         "firstTaskRecovery": "员工已就绪，首任务需要恢复；尚未报告任务已经启动。",
         "firstTaskWaiting": "员工就绪后将启动这项任务。",
-        "blueprintPreviewTitle": "Agent 蓝图预览",
+        "blueprintPreviewTitle": "数字员工蓝图预览",
         "unnamedAgent": "未命名数字员工",
         "handoffTitle": "创建需求已转交",
-        "handoffFrom": "已把这项创建需求交给 HR Agent。",
-        "handoffGeneric": "这项创建需求已交给 HR Agent。",
-        "handoffContinue": "前往 HR Agent 继续创建",
-        "handoffUnavailable": "无法打开 HR Agent 交接，请让当前 Agent 重试。",
+        "handoffFrom": "已把这项创建需求交给创建助理。",
+        "handoffGeneric": "这项创建需求已交给创建助理。",
+        "handoffContinue": "前往创建助理继续创建",
+        "handoffUnavailable": "无法打开创建交接，请让当前数字员工重试。",
         "createdTitle": "数字员工已创建",
-        "agentName": "Agent",
+        "agentName": "数字员工",
         "mission": "使命",
         "firstMission": "首个任务",
         "readyNow": "已包含的能力",
@@ -2662,7 +2696,7 @@
         "requestChanges": "要求修改",
         "revisionPrompt": "你想修改什么？",
         "revisionPlaceholder": "直接描述希望调整的结果，不需要知道内部字段名。",
-        "revisionMessage": "请修改这个 Agent 蓝图：{{changes}}\n请保留现有草稿并返回更新后的预览，暂时不要创建数字员工。",
+        "revisionMessage": "请修改这个数字员工蓝图：{{changes}}\n请保留现有草稿并返回更新后的预览，暂时不要创建数字员工。",
         "submittingRevision": "正在提交…",
         "previewChanges": "预览修改",
         "cancelChanges": "取消修改",
@@ -2671,7 +2705,7 @@
         "candidates": "候选方案",
         "risk": "风险",
         "leafCalls": "Leaf 调用",
-        "budgetTokens": "预算 token",
+        "budgetTokens": "预算额度",
         "confirmationRequired": "需要确认",
         "recommended": "推荐",
         "rawOutput": "原始输出",
@@ -2686,8 +2720,8 @@
         "selectAndPreview": "选择并预览"
       },
       "workLedger": {
-        "title": "Agent 工作账本",
-        "taskTitle": "Agent 任务",
+        "title": "在办的事",
+        "taskTitle": "交办的任务",
         "current": "当前",
         "next": "下一步",
         "todos": "待办",
@@ -2741,8 +2775,7 @@
         "compactedNotice": "上下文已自动压缩，当前工作状态已保留。",
         "compactionDetails": "显示压缩详情",
         "compactionMeta": "保留 {{kept}} / {{original}} 条消息",
-        "toolGroupsActivated": "已激活 {{count}} 个运行时工具组",
-        "permissionNeeded": "Agent 需要权限来使用 {{tool}}。"
+        "toolGroupsActivated": "已激活 {{count}} 个运行时工具组"
       },
       "loadOlderMessages": "加载更早的消息",
       "gitline": {
@@ -2756,11 +2789,11 @@
       "groupDiscoveryUnavailable": "群会话暂不可用，请稍后刷新重试。",
       "sourceAccess": "来源访问",
       "sourceUnavailable": "暂不可见",
-      "stopRecorded": "停止请求已入账，正在等待本次运行结束。",
+      "stopRecorded": "已请求停止，等这次运行结束。",
       "stopRejected": "停止请求被拒绝，本次运行可能仍在继续。",
       "stopUnconfirmed": "暂时无法确认停止请求，请核对当前工作，或再次点击停止。",
       "groupSourcesUnavailable": "部分来源内容暂不可见。可申请来源权限，或刷新当前会话。",
-      "inputRecorded": "补充已入账，请在原工作查看应用状态。",
+      "inputRecorded": "已收到你的消息，会并入当前任务。",
       "sessionBackfillIncomplete": "最新活动已可见，较早的会话证据仍在恢复。",
       "sessionCreateFailed": "创建会话失败",
       "transport": {
@@ -2792,7 +2825,8 @@
         "title": "企业审批",
         "loadFailed": "暂时无法读取审批状态。",
         "waiting": "等待当前负责人审批。"
-      }
+      },
+      "agentExpired": "这个数字员工已到期下线。请联系管理员延长服务。"
     },
     "activityLog": {
       "title": "工作日志",

@@ -13,6 +13,7 @@ import {
 
 import type { ThreadItem, ThreadItemStatus, ThreadItemType } from '../../api/domains/threadItems.generated';
 import { runtimeFailurePresentation, type RuntimeFailurePresentation } from './runtimeFailurePresentation';
+import { approvalActionLabel } from './approvalActionPresentation';
 import './ThreadItemWorkbench.css';
 
 type Detail = { label: string; value: React.ReactNode };
@@ -136,6 +137,9 @@ function shouldCollapse(item: ThreadItem): boolean {
     'agent_team_activity',
     'peer_a2a_activity',
     'reasoning',
+    // The approval card speaks in user words on the surface; the exact tool
+    // name, expiry and impact stay one disclosure away for operators (B2).
+    'approval_request',
   ].includes(item.item_type);
 }
 
@@ -166,6 +170,23 @@ export interface ThreadItemRendererProps {
   onSelect?: (item: ThreadItem) => void;
   approvalActions?: React.ReactNode;
   actions?: React.ReactNode;
+}
+
+/**
+ * One Chinese (locale) sentence naming the action in the member's words,
+ * quoting the target (for example a digital employee's name) when the item's
+ * safe argument details carry it. Raw tool ids and raw JSON never surface.
+ */
+function approvalSentence(item: ThreadItem, t: TFunction): string {
+  const data = item.item_data as { tool_display_name?: string | null; tool_name?: string | null };
+  const action = approvalActionLabel(data.tool_display_name || data.tool_name, t);
+  const target = (item.user_action?.details || []).find(
+    (detail) => typeof detail?.value === 'string'
+      && ['name', 'title', 'recipient', 'target'].includes(String(detail?.label || '')),
+  );
+  return target
+    ? t('sessionWorkbench.threadItem.permissionNeededWithTarget', 'This needs your approval: {{tool}} “{{name}}”.', { tool: action, name: target.value })
+    : t('sessionWorkbench.threadItem.permissionNeeded', 'This needs your approval: {{tool}}.', { tool: action });
 }
 
 const USER_CONVERSATION_ITEM_TYPES = new Set<ThreadItemType>(['approval_request', 'warning', 'error', 'plan']);
@@ -205,13 +226,9 @@ export function ThreadItemRenderer({
     ? t('agent.chat.groupSourcesUnavailable', 'Some source content is unavailable to you. Request access or refresh this conversation.')
     : runtimeFailure
     ? translateRuntimeFailure(t, runtimeFailure)
-    : item.user_summary || (item.item_type === 'approval_request'
-      ? t(
-          'sessionWorkbench.threadItem.permissionNeeded',
-          'The agent needs permission to use {{tool}}.',
-          { tool: item.item_data.tool_display_name || item.item_data.tool_name || t('sessionWorkbench.threadItem.thisTool', 'this tool') },
-        )
-      : item.content);
+    : item.item_type === 'approval_request'
+    ? approvalSentence(item, t)
+    : item.user_summary || item.content;
   const detailBody = details.length > 0 && (
     <dl className="thread-item-details">
       {details.map((detail) => (

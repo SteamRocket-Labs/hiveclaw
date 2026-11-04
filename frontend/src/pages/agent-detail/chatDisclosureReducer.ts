@@ -62,13 +62,20 @@ export interface RunStepSnapshot {
   presentation?: RunStepPresentation;
 }
 
+/** Locale-neutral run aggregate: the renderer composes the sentence. */
+export interface RunAggregateSummary {
+  files: number;
+  searches: number;
+  commands: number;
+}
+
 export interface RunTimelineSnapshot {
   id: string;
   status: 'idle' | 'running' | 'blocked' | 'done' | 'failed' | 'cancelled' | 'interrupted';
   startedAt?: string;
   completedAt?: string;
   durationMs?: number;
-  summary?: string;
+  summary?: RunAggregateSummary;
   steps: RunStepSnapshot[];
   answerMessageId?: string;
 }
@@ -287,46 +294,27 @@ function basename(path: string): string {
 
 function summarizeFileTool(message: AgentChatMessage): string {
   const target = stringArg(message, ['path', 'file_path', 'target_path', 'source_path', 'name']);
-  return target ? compactText(basename(target), 120) : 'Workspace file operation';
+  return target ? compactText(basename(target), 120) : '';
 }
 
 function summarizeSearchTool(message: AgentChatMessage): string {
   const target = stringArg(message, ['query', 'url', 'domain']);
-  return target ? compactText(target, 120) : 'Search request';
+  return target ? compactText(target, 120) : '';
 }
 
 function summarizeCommandTool(message: AgentChatMessage): string {
   const command = stringArg(message, ['cmd', 'command']);
-  if (!command) return 'Command execution';
+  if (!command) return '';
   const head = command.split(/\s+/).filter(Boolean).slice(0, 3).join(' ');
-  return head ? compactText(`${head}${command.length > head.length ? ' ...' : ''}`, 120) : 'Command execution';
-}
-
-function summarizeToolCompletion(message: AgentChatMessage): string {
-  if (message.toolStatus !== 'done') return '';
-  const result = message.toolResult;
-  if (typeof result !== 'string') return '';
-  const text = result
-    .replace(/^[\s✅✓✔️☑️]+/u, '')
-    .replace(/\s+/g, ' ')
-    .trim();
-  if (!text) return '';
-  const name = (message.toolName || '').toLowerCase();
-  if (COMMAND_TOOLS.has(name)) return '';
-
-  const isFileTool = FILE_TOOL_NAMES.has(name);
-  if (isFileTool) {
-    const isOperationalReceipt =
-      /^(written|wrote|created|updated|edited|patched|deleted|saved|copied|moved|renamed|applied|validated)\b/i.test(text)
-      || /\bworkspace\/[^\s]+ \(\d+ chars\)/i.test(text);
-    return isOperationalReceipt ? compactText(text, 160) : '';
-  }
-  return '';
+  return head ? compactText(`${head}${command.length > head.length ? ' ...' : ''}`, 120) : '';
 }
 
 function summarizeToolMessage(message: AgentChatMessage): string {
   const name = (message.toolName || '').toLowerCase();
-  if (message.toolName === 'tool_search') return 'Checking available tools';
+  // Step summaries carry only the member's own material (file names, queries,
+  // the command line, model-authored labels). Tool receipts and internal
+  // phrasing stay collapsed in the step details (B2).
+  if (message.toolName === 'tool_search') return '';
   if (TASK_LEDGER_MUTATION_TOOLS.has(name)) {
     const taskLabel = stringArg(message, [
       'activeForm',
@@ -335,28 +323,21 @@ function summarizeToolMessage(message: AgentChatMessage): string {
       'title',
       'content',
     ]);
-    if (taskLabel) return compactText(taskLabel, 120);
-    const taskId = stringArg(message, ['task_id', 'taskId', 'id']);
-    return taskId ? `Task ${compactText(taskId, 100)}` : 'Task ledger updated';
+    return taskLabel ? compactText(taskLabel, 120) : '';
   }
-  if (message.toolMeta?.kind === 'user_clarification') {
-    const count = message.toolMeta.questions.length;
-    return count === 1 ? '1 question' : `${count} questions`;
-  }
+  if (message.toolMeta?.kind === 'user_clarification') return '';
   if (message.toolMeta?.kind === 'plan_proposal') {
     return message.toolMeta.summary || message.toolMeta.nextAction || '';
   }
   if (message.toolMeta?.kind === 'dynamic_workflow_proposal') {
     return message.toolMeta.goal || message.toolMeta.nextAction || '';
   }
-  const completionSummary = summarizeToolCompletion(message);
-  if (completionSummary) return completionSummary;
   if (COMMAND_TOOLS.has(name)) return summarizeCommandTool(message);
   if (FILE_TOOL_NAMES.has(name)) return summarizeFileTool(message);
   if (SEARCH_TOOL_PREFIXES.some((prefix) => name.startsWith(prefix))) return summarizeSearchTool(message);
   const path = stringArg(message, ['path', 'file_path', 'target_path', 'source_path']);
   if (path) return compactText(basename(path), 120);
-  return message.toolArgs && Object.keys(message.toolArgs).length > 0 ? 'Details available' : '';
+  return '';
 }
 
 function stepIdForMessage(message: AgentChatMessage, index: number): string {
@@ -365,14 +346,15 @@ function stepIdForMessage(message: AgentChatMessage, index: number): string {
 }
 
 function eventTitle(message: AgentChatMessage): string {
+  // Titles are presentation sentinels localized at render time (B2); event
+  // type suffixes and raw reasons never become user-facing title text.
   if (String(message.eventType || '').startsWith('runtime_action_')) {
-    const suffix = String(message.eventType).replace('runtime_action_', '');
-    return `Action ${suffix.charAt(0).toUpperCase()}${suffix.slice(1)}`;
+    return 'Runtime event';
   }
   if (message.eventType === 'child_session' && String(message.eventReason || '').startsWith('delegation_')) {
-    return 'A2A session';
+    return 'Delegation update';
   }
-  return message.eventTitle || message.eventType || 'Runtime event';
+  return message.eventTitle || 'Runtime event';
 }
 
 export function getDisclosureStepSummary(message: AgentChatMessage): string {
@@ -386,12 +368,9 @@ export function getDisclosureStepSummary(message: AgentChatMessage): string {
 
   if (message.role === 'event') {
     if (message.sessionPermissionRequest && message.eventStatus === 'session_permission_required') {
-      const tool =
-        message.sessionPermissionRequest.tool_display_name ||
-        message.sessionPermissionRequest.tool_name ||
-        message.eventToolName ||
-        'this tool';
-      return `Permission needed for ${tool}`;
+      // The dedicated approval card owns this copy; the step row itself stays
+      // a localized sentinel (B2).
+      return 'Permission request';
     }
     return compactText(message.content || message.eventReason || message.eventNextStep || '');
   }
@@ -435,12 +414,14 @@ function titleForToolMessage(message: AgentChatMessage): string {
   if (COMMAND_TOOLS.has(name)) return 'Run command';
   if (name === 'office_document_apply') return 'Edit document';
   if (name.includes('workflow')) return 'Workflow step';
-  if (A2A_TOOLS.has(name) || name.includes('a2a')) return 'A2A step';
+  if (A2A_TOOLS.has(name) || name.includes('a2a')) return 'Delegation step';
   if (SUBAGENT_TOOLS.has(name) || name.includes('subagent')) return 'Sub-agent step';
   if (name.includes('trigger') || name.includes('schedule')) return 'Schedule step';
   if (name === 'request_shell_escalation') return 'Permission request';
   if (name.includes('plan')) return 'Plan step';
-  return message.toolName || 'Tool call';
+  // An unrecognized tool is presented by its localized class, never by its
+  // raw snake_case id; the id stays available inside the step details.
+  return 'Tool call';
 }
 
 function kindForEventMessage(message: AgentChatMessage): RunStepKind {
@@ -748,22 +729,12 @@ export function isAssistantAnswer(message: AgentChatMessage): boolean {
   return message.role === 'assistant';
 }
 
-function formatCount(count: number, singular: string, plural: string): string {
-  return count === 1 ? singular : plural;
-}
-
-export function buildRunAggregateSummary(steps: RunStepSnapshot[]): string {
+export function buildRunAggregateSummary(steps: RunStepSnapshot[]): RunAggregateSummary | undefined {
   const hiddenProcessTools = steps.filter((step) => step.presentation === 'tool_history');
-  const fileCount = hiddenProcessTools.filter((step) => step.kind === 'file').length;
-  const searchCount = hiddenProcessTools.filter((step) => step.kind === 'search').length;
-  const commandCount = hiddenProcessTools.filter((step) => step.kind === 'command').length;
-  const parts: string[] = [];
-
-  if (fileCount > 0) parts.push(`Read ${fileCount} ${formatCount(fileCount, 'file', 'files')}`);
-  if (searchCount > 0) parts.push(`Searched web ${searchCount} ${formatCount(searchCount, 'time', 'times')}`);
-  if (commandCount > 0) parts.push(`Ran ${commandCount} ${formatCount(commandCount, 'command', 'commands')}`);
-
-  return parts.join(' · ');
+  const files = hiddenProcessTools.filter((step) => step.kind === 'file').length;
+  const searches = hiddenProcessTools.filter((step) => step.kind === 'search').length;
+  const commands = hiddenProcessTools.filter((step) => step.kind === 'command').length;
+  return files + searches + commands > 0 ? { files, searches, commands } : undefined;
 }
 
 function workflowEventKey(message: AgentChatMessage): string | null {
@@ -826,7 +797,7 @@ export function buildRunTimelineFromMessages(
     startedAt: firstTime != null ? new Date(firstTime).toISOString() : undefined,
     completedAt: completedAt != null ? new Date(completedAt).toISOString() : undefined,
     durationMs: firstTime != null && durationEnd != null ? Math.max(0, durationEnd - firstTime) : undefined,
-    summary: buildRunAggregateSummary(steps) || undefined,
+    summary: buildRunAggregateSummary(steps),
     steps,
     answerMessageId: answer
       ? answer.id || (answerIndex >= 0 ? `answer-${answerIndex}` : 'answer-external')

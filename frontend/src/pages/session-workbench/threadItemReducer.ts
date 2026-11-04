@@ -262,7 +262,9 @@ function legacyUserSummary(
   content: string,
 ): string {
   const toolName = text(data.tool_display_name || data.tool_name || data.name) || 'this tool';
-  if (itemType === 'approval_request') return `The agent needs permission to use ${toolName}.`;
+  // B2: the approval sentence is localized by the renderer (user words, no
+  // raw tool id); a legacy summary must not shadow it with English.
+  if (itemType === 'approval_request') return '';
   if (itemType === 'approval_decision') return 'Your decision was recorded.';
   if (itemType === 'tool_call') return `Using ${toolName}…`;
   if (itemType === 'tool_result') return `${toolName} finished.`;

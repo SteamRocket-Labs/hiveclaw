@@ -318,4 +318,30 @@ describe('Layout extracted sections', () => {
     expect(flyout).toContain('left: calc(var(--sidebar-width-collapsed)');
     expect(flyout).toContain('width: 232px;');
   });
+
+  it('labels the workspace with the member company name, not a generic placeholder (B2)', () => {
+    // A member never loads the company inventory; the name travels on the
+    // authenticated user. The label must be the company, not "My Company".
+    const markup = renderSidebar(<AppSidebar
+        {...baseProps}
+        user={{ id: 'user-1', role: 'member', display_name: '张三', tenant_id: 'tenant-1', tenant_name: 'rocky的实验室' } as never}
+        tenants={[]}
+        currentTenant="tenant-1"
+        agents={[]}
+      />,
+    );
+    expect(markup).toContain('rocky的实验室');
+    expect(markup).not.toContain('My Company');
+
+    // A platform admin without a stored selection keeps the honest prompt.
+    const adminMarkup = renderSidebar(<AppSidebar
+        {...baseProps}
+        user={{ id: 'user-2', role: 'platform_admin', display_name: 'Owner' }}
+        tenants={[]}
+        currentTenant=""
+        agents={[]}
+      />,
+    );
+    expect(adminMarkup).toContain('No company selected');
+  });
 });

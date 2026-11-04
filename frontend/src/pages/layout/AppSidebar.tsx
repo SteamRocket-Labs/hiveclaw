@@ -166,6 +166,10 @@ export default function AppSidebar({
   const activeTenants = tenants.filter((tenant) => isActiveCompany(tenant));
   const hasSelectedCompany = Boolean(currentTenant) && activeTenants.some((tenant) => tenant.id === currentTenant);
   const activeTenantName = activeTenants.find((tenant) => tenant.id === currentTenant)?.name
+    // Members never load the company inventory; their own company name rides
+    // on the authenticated user (B2): the label is the company, not a
+    // generic placeholder.
+    || (user as { tenant_name?: string } | null)?.tenant_name
     || (user?.role === 'platform_admin' && !currentTenant
       ? t('layout.noCompanySelected', 'No company selected')
       : t('layout.myCompany', 'My Company'));

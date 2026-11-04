@@ -18,6 +18,7 @@ import MarkdownRenderer from '../../components/MarkdownRenderer';
 import type {
   RunStepKind,
   RunStepPresentation,
+  RunAggregateSummary,
   RunStepSnapshot,
   RunTimelineSnapshot,
 } from './chatDisclosureReducer';
@@ -330,29 +331,48 @@ function RunCompactionBoundary({ step }: { step: RunStepSnapshot }) {
   );
 }
 
-const TOOL_TITLE_KEYS: Record<string, [string, string]> = {
-  Thinking: ['agent.chat.phase.thinking', 'Thinking'],
-  Working: ['agent.chat.disclosure.working', 'Working'],
-  'Waiting for input': ['agent.chat.disclosure.waiting', 'Waiting for input'],
-  'Loading tools': ['agent.chat.disclosure.toolTitle.loading', 'Loading tools'],
-  'Read file': ['agent.chat.disclosure.toolTitle.readFile', 'Read file'],
-  'Write file': ['agent.chat.disclosure.toolTitle.writeFile', 'Write file'],
-  'Edit file': ['agent.chat.disclosure.toolTitle.editFile', 'Edit file'],
-  'Delete file': ['agent.chat.disclosure.toolTitle.deleteFile', 'Delete file'],
-  'List files': ['agent.chat.disclosure.toolTitle.listFiles', 'List files'],
-  'Search web': ['agent.chat.disclosure.toolTitle.searchWeb', 'Search web'],
-  'Fetch web page': ['agent.chat.disclosure.toolTitle.fetchWebPage', 'Fetch web page'],
-  'Run command': ['agent.chat.disclosure.toolTitle.runCommand', 'Run command'],
-  'Edit document': ['agent.chat.disclosure.toolTitle.editDocument', 'Edit document'],
-  'Tool call': ['agent.chat.disclosure.toolTitle.toolCall', 'Tool call'],
+// Titles arrive as presentation sentinels (chatDisclosureReducer); their
+// locale text lives under agent.chat.disclosure.toolTitle.<camelCase(sentinel)>.
+// Cross-module sentinels keep an explicit key here.
+const TOOL_TITLE_KEY: Record<string, string> = {
+  Thinking: 'agent.chat.phase.thinking',
+  Working: 'agent.chat.disclosure.working',
+  'Waiting for input': 'agent.chat.disclosure.waiting',
+  'Delegation update': 'agent.chat.disclosure.toolTitle.delegationStep',
 };
+
+function titleKeyFor(sentinel: string): string {
+  return TOOL_TITLE_KEY[sentinel] ?? `agent.chat.disclosure.toolTitle.${sentinel
+    .split(/[^a-zA-Z0-9]+/)
+    .filter(Boolean)
+    .map((part, index) => (index ? part.charAt(0).toUpperCase() + part.slice(1) : part.toLowerCase()))
+    .join('')}`;
+}
 
 function localizedToolTitle(step: RunStepSnapshot, t: TFunction): string {
   if (step.kind === 'permission' && step.title === 'permission_resolved') {
     return t('sessionWorkbench.threadItem.type.approval_decision', 'Approval decision');
   }
-  const translated = TOOL_TITLE_KEYS[step.title];
-  return translated ? t(translated[0], translated[1]) : step.title;
+  // Unknown/backend-authored titles pass through untouched via the fallback.
+  return t(titleKeyFor(step.title), step.title);
+}
+
+/** Compose the locale sentence for the run's folded process aggregate. */
+function localizedAggregateSummary(
+  summary: RunAggregateSummary,
+  t: TFunction,
+): string {
+  const parts: string[] = [];
+  if (summary.files > 0) {
+    parts.push(t('agent.chat.disclosure.aggregate.files', 'Read {{count}} files', { count: summary.files }));
+  }
+  if (summary.searches > 0) {
+    parts.push(t('agent.chat.disclosure.aggregate.searches', 'Searched the web {{count}} times', { count: summary.searches }));
+  }
+  if (summary.commands > 0) {
+    parts.push(t('agent.chat.disclosure.aggregate.commands', 'Ran {{count}} commands', { count: summary.commands }));
+  }
+  return parts.join(' · ');
 }
 
 function toolStepLabel(step: RunStepSnapshot, t: TFunction): string {
@@ -502,7 +522,9 @@ export default function RunDisclosureBlock({
           {timeline.status === 'interrupted' ? (
             <span className="run-disclosure-summary">{interruptedHint}</span>
           ) : (
-            timeline.summary && <span className="run-disclosure-summary">{timeline.summary}</span>
+            timeline.summary && (
+              <span className="run-disclosure-summary">{localizedAggregateSummary(timeline.summary, t)}</span>
+            )
           )}
           <span className="run-disclosure-count">{stepCount}</span>
         </button>

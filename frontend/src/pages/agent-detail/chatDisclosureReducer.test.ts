@@ -270,7 +270,7 @@ describe('chatDisclosureReducer', () => {
       kind: 'file',
       title: 'Write file',
       status: 'done',
-      summary: 'Written to workspace/report.md (1234 chars)',
+      summary: 'report.md',
     });
     expect(timeline.steps[0].summary).not.toContain('RAW REPORT CONTENT');
     expect((timeline.steps[0].details as { rawResult?: unknown }).rawResult).toBe(
@@ -449,7 +449,7 @@ describe('chatDisclosureReducer', () => {
       },
     ]);
 
-    expect(timeline.summary).toBe('Read 2 files · Searched web 1 time');
+    expect(timeline.summary).toEqual({ files: 2, searches: 1, commands: 0 });
   });
 
   it('never counts Personal KB discovery/search reads as web search (DAY1-KNOWLEDGE-UI-TRUTH-001)', () => {
@@ -488,10 +488,11 @@ describe('chatDisclosureReducer', () => {
     ]);
 
     expect(timeline.summary).toBeUndefined();
-    const kbSearchStep = timeline.steps.find((step) => step.title === 'search_personal_kb');
+    // B2: the raw tool id is never the title; the step still carries the KB
+    // query it ran as its summary.
+    const kbSearchStep = timeline.steps.find((step) => step.summary === 'HIVE-PERSONAL-RUN1-QUARTZ-417');
     expect(kbSearchStep?.kind).toBe('tool');
-    // The step-level display still surfaces the KB query it ran.
-    expect(kbSearchStep?.summary).toBe('HIVE-PERSONAL-RUN1-QUARTZ-417');
+    expect(timeline.steps.map((step) => step.title)).not.toContain('search_personal_kb');
   });
 
   it('still counts a real web_search call next to tool discovery and Personal KB reads', () => {
@@ -519,7 +520,7 @@ describe('chatDisclosureReducer', () => {
       },
     ]);
 
-    expect(timeline.summary).toBe('Searched web 1 time');
+    expect(timeline.summary).toEqual({ files: 0, searches: 1, commands: 0 });
   });
 
   it('summarizes tool discovery without exposing raw select queries', () => {
@@ -536,7 +537,9 @@ describe('chatDisclosureReducer', () => {
     expect(timeline.steps[0]).toMatchObject({
       kind: 'tool',
       title: 'Loading tools',
-      summary: 'Checking available tools',
+      // B2: discovery steps carry no summary; the selector query stays inside
+      // the collapsed step details.
+      summary: '',
     });
     expect(timeline.steps[0].summary).not.toContain('select:start_workflow');
   });
@@ -629,17 +632,17 @@ describe('chatDisclosureReducer', () => {
       ['Read file', 'tool_history'],
       ['Search files', 'tool_history'],
       ['Search web', 'tool_history'],
-      ['load_skill', 'tool_history'],
-      ['ask_user_question', 'external'],
+      ['Tool call', 'tool_history'],
+      ['Tool call', 'external'],
       ['Write file', 'surface'],
       ['Run command', 'surface'],
-      ['call_mcp_tool', 'surface'],
-      ['A2A step', 'surface'],
+      ['Tool call', 'surface'],
+      ['Delegation step', 'surface'],
       ['Sub-agent step', 'surface'],
       ['Sub-agent step', 'surface'],
       ['Workflow step', 'surface'],
       ['Schedule step', 'surface'],
-      ['future_unknown_tool', 'surface'],
+      ['Tool call', 'surface'],
     ]);
   });
 
@@ -693,7 +696,7 @@ describe('chatDisclosureReducer', () => {
       }),
       expect.objectContaining({
         title: 'Update tasks',
-        summary: 'Task legacy-task',
+        summary: '',
         presentation: 'external',
       }),
     ]);
@@ -820,9 +823,9 @@ describe('chatDisclosureReducer', () => {
     ] as AgentChatMessage[]);
 
     expect(timeline.steps.map((step) => [step.kind, step.title])).toEqual([
-      ['a2a', 'A2A step'],
+      ['a2a', 'Delegation step'],
       ['subagent', 'Sub-agent step'],
-      ['a2a', 'A2A session'],
+      ['a2a', 'Delegation update'],
     ]);
   });
 
@@ -842,7 +845,7 @@ describe('chatDisclosureReducer', () => {
     expect(timeline.status).toBe('running');
     expect(timeline.steps[0]).toMatchObject({
       kind: 'a2a',
-      title: 'Action Started',
+      title: 'Runtime event',
       status: 'running',
       summary: '已委派给 Web3研究员，后台执行中。',
     });

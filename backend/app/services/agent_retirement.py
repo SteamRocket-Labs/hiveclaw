@@ -157,12 +157,15 @@ async def require_settled(db, agent):
 
 
 async def prepare(db, *, agent, actor):
-    """Called by an authenticated lifecycle manager before the deletion transaction.
+    """Deactivate an employee and withdraw its outward work ("停用").
 
-    Commit deactivation before acquiring protocol/message control locks. This
-    closes new execution without holding an Agent/connection row across the
-    canonical session-advisory -> RuntimeTask row order of returning workers.
-    No credential is retained for a retry after its connection was revoked.
+    G1 keeps this as the single deactivation step: it writes ``deactivated_at``,
+    turns triggers and schedules off, recalls outward work, and records audit.
+    Nothing after it deletes the employee or moves its files. Commit
+    deactivation before acquiring protocol/message control locks. This closes
+    new execution without holding an Agent/connection row across the canonical
+    session-advisory -> RuntimeTask row order of returning workers. No
+    credential is retained for a retry after its connection was revoked.
     """
     from app.services.remote_a2a_connections import disable_connection
     from app.services.remote_a2a_withdrawal import process
@@ -184,11 +187,6 @@ async def prepare(db, *, agent, actor):
     bridges = list(await db.scalars(select(LocalAgentBridgeConnection).where(
         LocalAgentBridgeConnection.tenant_id == agent.tenant_id, LocalAgentBridgeConnection.agent_id == agent.id,
         LocalAgentBridgeConnection.status == "active")))
-    if not remote and not local and connection is None and not bridges and not history_available(agent):
-        # Release the preparation row lock before the caller takes session
-        # advisories. There is no lifecycle state to commit on this path.
-        await db.commit()
-        return
     if agent.deactivated_at is None:
         agent.deactivated_at = datetime.now(timezone.utc)
         agent.deactivation_reason = PENDING_REASON
@@ -196,7 +194,11 @@ async def prepare(db, *, agent, actor):
             await db.execute(update(model).where(model.agent_id == agent.id, model.is_enabled.is_(True)).values(is_enabled=False))
         db.add(AuditLog(tenant_id=agent.tenant_id, agent_id=agent.id, user_id=actor.id,
             action="agent:retirement_requested", details={"new_execution": "disabled", "external_execution": "unconfirmed"}))
+    # Release the preparation row lock before taking protocol/message control
+    # locks; a clean employee still commits its deactivation here.
     await db.commit()
+    if not remote and not local and connection is None and not bridges:
+        return
     if connection is not None:
         if connection.state != "disabled":
             await disable_connection(db, agent_id=agent.id, actor=actor, expected_user_id=actor.id,

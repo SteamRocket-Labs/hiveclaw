@@ -119,7 +119,7 @@ describe('WorkspaceDigitalEmployeesSection', () => {
     auth.role = 'org_admin';
   });
 
-  it('renders the standalone admin-only digital employee list with guarded delete actions', () => {
+  it('renders the standalone admin-only digital employee list with guarded deactivate actions', () => {
     const markup = renderToStaticMarkup(<WorkspaceDigitalEmployeesSection selectedTenantId="tenant-1" />);
 
     expect(markup).toContain('Digital Employee Management');
@@ -127,9 +127,9 @@ describe('WorkspaceDigitalEmployeesSection', () => {
     expect(markup).toContain('Agent Owner');
     expect(markup).toContain('href="/agents/agent-1"');
     expect(markup).toContain('Change owner');
-    expect(markup).toContain('Delete employee');
+    expect(markup).toContain('Deactivate');
+    expect(markup).not.toContain('Delete');
     expect(markup).toContain('System protected');
-    expect(markup).not.toContain('Delete __system_hr__');
   });
 
   it('mounts the same selected-company employee management for a platform administrator (PDEC-013)', () => {
@@ -139,7 +139,7 @@ describe('WorkspaceDigitalEmployeesSection', () => {
 
     expect(markup).not.toContain('Only company administrators can manage digital employees here.');
     expect(markup).toContain('AI Product Manager');
-    expect(markup).toContain('Delete employee');
+    expect(markup).toContain('Deactivate');
     expect(markup).toContain('Change owner');
     expect(markup).toContain('System protected');
   });
@@ -151,6 +151,6 @@ describe('WorkspaceDigitalEmployeesSection', () => {
 
     expect(markup).toContain('Only company administrators can manage digital employees here.');
     expect(markup).not.toContain('AI Product Manager');
-    expect(markup).not.toContain('Delete employee');
+    expect(markup).not.toContain('Deactivate');
   });
 });

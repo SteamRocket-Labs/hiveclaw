@@ -9,7 +9,8 @@ def _source(module_name: str, function_name: str) -> str:
 
 
 def test_agent_mutations_register_ai_asset_projection() -> None:
-    for function_name in ("create_agent", "update_agent", "delete_agent"):
+    # G1: deactivation and restoration replaced deletion as the lifecycle moves.
+    for function_name in ("create_agent", "update_agent", "deactivate_agent", "restore_agent"):
         source = _source("app.api.agents", function_name)
         assert "register_projection" in source, function_name
         assert "project_agent" in source, function_name
@@ -30,7 +31,7 @@ def test_every_agent_constructor_path_registers_control_plane_asset() -> None:
 
 
 def test_desktop_agent_config_mutations_register_revisions() -> None:
-    for function_name in ("update_sub_agent", "delete_sub_agent"):
+    for function_name in ("update_sub_agent",):
         assert "register_agent_asset" in _source("app.api.desktop_agents", function_name)
     assert "register_agent_asset" in _source("app.api.agent_subagents", "set_evolution_mode")
 

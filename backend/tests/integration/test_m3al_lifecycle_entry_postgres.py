@@ -20,14 +20,12 @@ pg_container = retirement.pg_container
 remote_work = retirement.remote_work
 
 
-async def test_desktop_retirement_reuses_withdrawal_and_remains_retryable_after_unknown_execution(
+async def test_desktop_sub_agent_retires_through_the_main_deactivate_entry(
     remote_work, owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path,
 ):
-    from app.api import desktop_agents
     from app.services import agent_manager
 
     seed, api, session_id = remote_work
-    api._transport.app.include_router(desktop_agents.router)
     parent_id = uuid4()
     async with tenant_scoped_session(seed["tenant"], session_factory=owner_sessionmaker) as db:
         db.add(Agent(id=parent_id, tenant_id=seed["tenant"], creator_id=seed["owner"],
@@ -56,71 +54,27 @@ async def test_desktop_retirement_reuses_withdrawal_and_remains_retryable_after_
             return result
 
         monkeypatch.setattr(RemoteA2AEndpoint, "rpc", lose_cancel)
-        deleting = f"/desktop/agents/{seed['agent']}"
-        held = await api.delete(deleting)
+        deactivating = f"/agents/{seed['agent']}/deactivate"
+        held = await api.post(deactivating)
         assert held.status_code == 409 and held.json()["detail"]["code"] == "agent_retirement_pending", held.text
         assert directory.is_dir()
-        again = await api.delete(deleting)
+        again = await api.post(deactivating)
         assert again.status_code == 409 and again.json()["detail"]["code"] == "agent_retirement_pending", again.text
         ended = await api.post(path + f"/tasks/{task_id}/operations", json={
             **retirement.withdrawal.request_frame(seed, 1), "operation_id": str(uuid4()), "action": "abandon", "params": {}})
         assert ended.status_code == 200, ended.text
-        archive = agent_manager.agent_manager.archive_agent_files
-        archive_calls = []
-
-        async def archive_after_commit(agent_id):
-            async with tenant_scoped_session(seed["tenant"], session_factory=app_user_sessionmaker) as db:
-                assert (await db.get(Agent, agent_id)).deleted_at is not None
-            archive_calls.append(agent_id)
-            if len(archive_calls) == 1:
-                raise RuntimeError("maintained: desktop archival unavailable")
-            await archive(agent_id)
-
-        monkeypatch.setattr(agent_manager.agent_manager, "archive_agent_files", archive_after_commit)
-        removed = await api.delete(deleting)
-        assert removed.status_code == 503 and removed.json()["detail"]["code"] == "agent_cleanup_pending", removed.text
+        removed = await api.post(deactivating)
+        assert removed.status_code == 204, removed.text
+        # G1: a settled deactivation keeps the employee and its files.
         assert directory.is_dir()
-        assert (await api.delete(deleting)).status_code == 204
-        assert not directory.exists()
-        assert (await api.delete(deleting)).status_code == 204
+        assert (await api.post(deactivating)).status_code == 204
         async with tenant_scoped_session(seed["tenant"], session_factory=app_user_sessionmaker) as db:
             task = await db.get(RuntimeTask, UUID(task_id))
+            employee = await db.get(Agent, seed["agent"])
+            assert employee.deactivated_at is not None and employee.deleted_at is None
             assert task.root_user_id == seed["owner"] and task.metadata_json["remote_a2a"]["abandoned"]
             assert task.metadata_json["remote_a2a"]["error_code"] == "remote_a2a_response_lost"
         assert [r[3]["method"] for r in remote.requests if r[0] == "POST"] == ["SendMessage", "CancelTask"]
-
-
-async def test_platform_administrator_without_a_home_company_updates_the_selected_desktop_inventory(
-    remote_work, owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path,
-):
-    from app.api import desktop_agents
-    from app.core.security import create_access_token
-    from app.models.tenant import Tenant
-    from app.models.user import User
-    from app.services import agent_manager
-
-    seed, api, _session_id = remote_work
-    api._transport.app.include_router(desktop_agents.router)
-    manager_id, parent_id = uuid4(), uuid4()
-    async with owner_sessionmaker() as db:
-        db.add(User(id=manager_id, tenant_id=None, username="desktop-global-" + manager_id.hex,
-            email=f"{manager_id}@desktop.test", display_name="Global administrator", role="platform_admin",
-            is_active=True, password_hash="synthetic"))
-        db.add(Agent(id=parent_id, tenant_id=seed["tenant"], creator_id=seed["owner"],
-            owner_user_id=seed["owner"], name="Desktop selected-company parent"))
-        await db.flush()
-        (await db.get(Agent, seed["agent"])).parent_agent_id = parent_id
-        version = (await db.get(Tenant, seed["tenant"])).sync_version
-        await db.commit()
-    monkeypatch.setattr(agent_manager.settings, "AGENT_DATA_DIR", str(tmp_path))
-    headers = {"Authorization": "Bearer " + create_access_token(str(manager_id), "platform_admin", None),
-        "X-Tenant-Id": str(seed["tenant"])}
-    removed = await api.delete(f"/desktop/agents/{seed['agent']}", headers=headers)
-    assert removed.status_code == 204, removed.text
-    async with tenant_scoped_session(seed["tenant"], session_factory=app_user_sessionmaker) as db:
-        assert (await db.get(Tenant, seed["tenant"])).sync_version == version + 1
-        employee = await db.get(Agent, seed["agent"])
-        assert employee.deleted_at is not None and employee.owner_user_id == seed["owner"]
 
 
 async def test_hr_abandon_exposes_management_recovery_and_rolls_back_its_provisioning_fence(
@@ -180,7 +134,7 @@ async def test_hr_abandon_exposes_management_recovery_and_rolls_back_its_provisi
             "employee_id": str(seed["agent"]), "management_path": "/enterprise/digital-employees",
             "can_manage_retirement": True, "retry_after_retirement": True,
         }
-        retired = await api.delete(f"/agents/{seed['agent']}")
+        retired = await api.post(f"/agents/{seed['agent']}/deactivate")
         assert retired.status_code == 204, retired.text
         retried = await api.delete(deleting)
         assert retried.status_code == 200 and retried.json()["draft_status"] == "superseded", retried.text

@@ -2,7 +2,7 @@
  * Agents domain adapter — CRUD, lifecycle, metrics, permissions.
  */
 
-import { get, post, put, patch, del } from '../core';
+import { get, post, put, patch } from '../core';
 import type { Agent } from '../../types';
 
 export interface AgentCreateParams {
@@ -25,11 +25,7 @@ export interface AgentRetirementPending {
   tracking_version?: string;
 }
 
-export interface AgentCleanupPending {
-  id: string;
-  name: string;
-  deleted_at: string;
-}
+
 
 export interface AgentUpdateParams {
   name?: string;
@@ -177,9 +173,8 @@ export const agentApi = {
   }) => post<{ receipt_id: string; local_tracking: 'ended'; external_execution: 'unknown' }>(
     `/agents/${id}/retirement-tracking`, body,
   ),
-  listPendingCleanup: (tenantId?: string) => get<AgentCleanupPending[]>(
-    `/agents/cleanup-pending${tenantId ? `?tenant_id=${encodeURIComponent(tenantId)}` : ''}`,
-  ),
+  deactivate: (id: string) => post<void>(`/agents/${id}/deactivate`),
+  restore: (id: string) => post<void>(`/agents/${id}/restore`),
   list: (tenantId?: string, options?: { summary?: boolean }) => {
     const params = new URLSearchParams();
     if (tenantId) params.set('tenant_id', tenantId);
@@ -192,7 +187,6 @@ export const agentApi = {
   getChannelCapabilities: (id: string) => get<AgentChannelCapability[]>(`/agents/${id}/channel-capabilities`),
   create: (data: AgentCreateParams) => post<Agent>('/agents/', data),
   update: (id: string, data: AgentUpdateParams) => patch<Agent>(`/agents/${id}`, data),
-  remove: (id: string) => del(`/agents/${id}`),
   start: (id: string) => post<Agent>(`/agents/${id}/start`),
   stop: (id: string) => post<Agent>(`/agents/${id}/stop`),
   getMetrics: (id: string) => get<AgentMetrics>(`/agents/${id}/metrics`),

@@ -607,11 +607,13 @@ async def delete_tenant(
                 select(Agent).where(Agent.tenant_id == tenant_id).order_by(Agent.id).with_for_update(key_share=True)
             )
             tenant_agents = list(tenant_agents_result.scalars().all())
-            # Any non-deleted target-tenant Agent blocks retirement, not only
-            # ones owned by a retiring non-platform user: a platform-admin
-            # owner is rehomed and stays active, and would otherwise keep
-            # manage authority over a retired company's Agent.
-            blocking_agent_ids = sorted(str(agent.id) for agent in tenant_agents if agent.deleted_at is None)
+            # Any still-active target-tenant Agent blocks retirement, not
+            # only ones owned by a retiring non-platform user: a platform-
+            # admin owner is rehomed and stays active, and would otherwise
+            # keep manage authority over a retired company's Agent. G1:
+            # digital employees are never deleted, so the settled state
+            # retirement requires is that every bot be deactivated.
+            blocking_agent_ids = sorted(str(agent.id) for agent in tenant_agents if agent.deactivated_at is None)
             if blocking_agent_ids:
                 raise HTTPException(
                     status_code=status.HTTP_409_CONFLICT,

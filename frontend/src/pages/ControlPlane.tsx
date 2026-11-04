@@ -58,7 +58,7 @@ const CONTROL_PLANE_CARDS: ControlPlaneCard[] = [
     tab: 'digital_employees',
     to: '/enterprise/digital-employees',
     title: 'Digital Employees',
-    description: 'Company-wide employee inventory, lifecycle controls, and admin deletion.',
+    description: 'Company-wide employee inventory and lifecycle controls.',
     icon: <IconUsers size={18} stroke={1.6} />,
     group: 'workspace',
   },

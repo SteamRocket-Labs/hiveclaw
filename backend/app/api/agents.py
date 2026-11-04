@@ -49,7 +49,6 @@ from app.schemas.schemas import AgentCreate, AgentOut, AgentUpdate
 from app.services.agent_identity_lifecycle import (
     agent_lifecycle_active_clause,
     ensure_agent_identity,
-    soft_delete_agent,
 )
 from app.runtime.hooks import hook_registry
 from app.services.heartbeat_policy import apply_managed_heartbeat_fields, normalize_agent_heartbeat_output
@@ -319,45 +318,6 @@ def _operator_agent_list_shell_from_mapping(row: Mapping[str, object]) -> AgentO
         agent_type=str(row.get("agent_type") or "native"),
         agent_class=str(row.get("agent_class") or "internal_tenant"),
     )
-
-
-class AgentCleanupPendingOut(BaseModel):
-    id: uuid.UUID
-    name: str
-    deleted_at: datetime
-
-
-@router.get("/cleanup-pending", response_model=list[AgentCleanupPendingOut])
-async def list_pending_agent_cleanups(
-    tenant_id: uuid.UUID | None = None,
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-):
-    """Expose cleanup-only recovery, never normal access to deleted employees."""
-    if current_user.role not in ("org_admin", "platform_admin"):
-        raise HTTPException(status_code=403, detail="Only an admin can retry employee cleanup.")
-    target_tenant_id = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
-    from app.models.tenant import Tenant
-    from app.services.agent_manager import agent_manager
-
-    if await db.scalar(select(Tenant.id).where(Tenant.id == target_tenant_id, Tenant.is_active.is_(True))) is None:
-        raise HTTPException(status_code=404, detail="Company not found")
-    rows = (
-        await db.execute(
-            select(Agent.id, Agent.name, Agent.deleted_at)
-            .where(
-                Agent.tenant_id == target_tenant_id,
-                Agent.deleted_at.is_not(None),
-                Agent.agent_class != "internal_system",
-            )
-            .order_by(Agent.deleted_at, Agent.id)
-        )
-    ).all()
-    return [
-        AgentCleanupPendingOut(id=row.id, name=row.name, deleted_at=row.deleted_at)
-        for row in rows
-        if agent_manager.has_agent_files(row.id)
-    ]
 
 
 @router.get("/retirement-pending")
@@ -1961,140 +1921,118 @@ async def update_agent(
     return out
 
 
-@router.delete("/{agent_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_agent(
+@router.post("/{agent_id}/deactivate", status_code=status.HTTP_204_NO_CONTENT)
+async def deactivate_agent(
     agent_id: uuid.UUID,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Delete a digital employee (scoped administrators only, PDEC-013).
+    """停用 a digital employee (scoped administrators only, PDEC-013).
 
-    Employees cannot delete Agents even as owners; deletion is an
-    administrator-only lifecycle action for organization and scoped platform
-    administrators.
+    Deactivation is the only retirement step: it reuses
+    ``agent_retirement.prepare`` (writes ``deactivated_at``, turns triggers
+    and schedules off, recalls outward work, records audit) and stops there.
+    The employee, its files, memory and conversations are never deleted; a
+    later ``restore`` brings the employee back.
     """
     if current_user.role not in ("org_admin", "platform_admin"):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Agent is an enterprise asset; only an admin can delete it.",
+            detail="Agent is an enterprise asset; only an admin can deactivate it.",
         )
-    from app.core.permissions import load_deleted_agent_for_cleanup
-    from app.services.agent_identity_lifecycle import perform_pending_agent_cleanup
-    from app.services.runtime_terminal_settlement import (
-        RuntimeTaskLateAdmissionConflict,
-        RuntimeTaskSessionBindingConflict,
-    )
-
-    def _cleanup_pending_error() -> HTTPException:
-        # Truthful partial state in the existing 503 + typed-detail
-        # convention: the deletion itself is already durable — this error
-        # never implies a DB rollback — and re-issuing this same DELETE is
-        # the supported, cleanup-only retry.
-        return HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail={
-                "code": "agent_cleanup_pending",
-                "retryable": True,
-                "message": (
-                    "The digital employee was deleted, but its file archival is still "
-                    "pending. The deletion is committed and is NOT rolled back; retrying "
-                    "this delete later performs only the remaining cleanup."
-                ),
-            },
-        )
-
-    deleted_agent = await load_deleted_agent_for_cleanup(db, current_user, agent_id)
-    if deleted_agent is not None:
-        # The deletion already committed. The durable retry truth is the
-        # soft-deleted Agent row plus its still existing data directory
-        # (archival is idempotent), so this request IS the supported,
-        # idempotent cleanup-only retry. Every authority gate of this
-        # request (role, selected company, live tenant, tenant equality)
-        # re-ran inside ``load_deleted_agent_for_cleanup``; no deletion
-        # transaction, lifecycle, or audit effect repeats here.
-        outcome = await perform_pending_agent_cleanup(deleted_agent.tenant_id, deleted_agent.id)
-        if not outcome["archive_ok"]:
-            raise _cleanup_pending_error()
-        return None
-
     from app.core.permissions import check_agent_history_access
     from app.services.agent_retirement import prepare
 
     agent, _access = await check_agent_history_access(db, current_user, agent_id)
     await prepare(db, agent=agent, actor=current_user)
 
-    # The destructive file archival is deferred PAST the transaction commit:
-    # the durable retry truth is the soft-deleted Agent row plus its still
-    # existing data directory (archival is idempotent), so no marker is
-    # needed. Running the archival before
-    # ``soft_delete_agent`` left an un-rollbackable side effect in front of a
-    # transaction that can still raise a typed late-admission conflict, which
-    # previously produced a 500 with the Agent's files already archived while
-    # the Agent row and its tasks survived (CC6 B5). Container bookkeeping
-    # (container_id/port) is cleared inside ``soft_delete_agent`` itself.
+    agent.status = "stopped"
+    from app.services.ai_asset_adapters import project_agent
+    from app.services.ai_assets import register_projection
+
+    await register_projection(
+        db,
+        project_agent(agent),
+        change_source="revoke",
+        actor_user_id=current_user.id,
+        change_message="Agent deactivated",
+    )
     try:
-        await soft_delete_agent(db, agent, actor_id=current_user.id, reason="delete_agent")
+        from app.core.policy import write_audit_event
 
-        from app.services.ai_asset_adapters import project_agent
-        from app.services.ai_assets import register_projection
-
-        await register_projection(
+        await write_audit_event(
             db,
-            project_agent(agent),
-            change_source="revoke",
-            actor_user_id=current_user.id,
-            change_message="Agent soft-deleted",
+            event_type="agent.deactivated",
+            severity="warn",
+            actor_type="user",
+            actor_id=current_user.id,
+            tenant_id=agent.tenant_id,
+            action="deactivate_agent",
+            resource_type="agent",
+            resource_id=agent.id,
+            details={"name": agent.name},
         )
+    except Exception:
+        logger.warning("Audit write failed for agent.deactivated", exc_info=True)
+    await db.commit()
 
-        # Audit: agent deleted (before commit so we still have agent data)
-        try:
-            from app.core.policy import write_audit_event
 
-            await write_audit_event(
-                db,
-                event_type="agent.deleted",
-                severity="warn",
-                actor_type="user",
-                actor_id=current_user.id,
-                tenant_id=agent.tenant_id,
-                action="delete_agent",
-                resource_type="agent",
-                resource_id=agent.id,
-                details={"name": agent.name},
-            )
-        except Exception:
-            logger.warning("Audit write failed for agent.deleted", exc_info=True)
+@router.post("/{agent_id}/restore", status_code=status.HTTP_204_NO_CONTENT)
+async def restore_agent(
+    agent_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """恢复 a deactivated digital employee (scoped administrators only).
 
-        await db.commit()
-    except (RuntimeTaskLateAdmissionConflict, RuntimeTaskSessionBindingConflict) as exc:
-        # Truthful retryable conflict: the transaction rolled back cleanly
-        # (Agent intact, tasks still running, container bookkeeping intact,
-        # files untouched), and the client may simply retry the same request
-        # once the admission pressure passes. ``RuntimeTaskSessionBindingConflict``
-        # marks an impossible binding change under lock, so its payload says
-        # so instead of promising an identical retry will succeed.
-        await db.rollback()
-        binding_conflict = isinstance(exc, RuntimeTaskSessionBindingConflict)
+    Restore clears the deactivation and nothing else: triggers and schedules
+    stay off until their owner turns each one back on, and files, memory and
+    conversations were never touched.
+    """
+    if current_user.role not in ("org_admin", "platform_admin"):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Agent is an enterprise asset; only an admin can restore it.",
+        )
+    from app.core.permissions import check_agent_history_access
+
+    agent, _access = await check_agent_history_access(db, current_user, agent_id)
+    if agent.deactivated_at is None:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail={
-                "code": (
-                    "agent_delete_session_binding_conflict"
-                    if binding_conflict
-                    else "agent_delete_late_admission_conflict"
-                ),
-                "message": str(exc),
-                "retryable": not binding_conflict,
-            },
-        ) from exc
+            detail={"code": "agent_not_deactivated", "retryable": False},
+        )
 
-    cleanup = await perform_pending_agent_cleanup(agent.tenant_id, agent.id)
-    if not cleanup["archive_ok"]:
-        # Deletion itself committed; the durable retry truth (soft-deleted
-        # row + existing data directory) keeps the cleanup retryable through
-        # this same supported DELETE path, and the client must see the
-        # partial truth instead of a 204 success.
-        raise _cleanup_pending_error()
+    agent.deactivated_at = None
+    agent.deactivation_reason = None
+    from app.services.ai_asset_adapters import project_agent
+    from app.services.ai_assets import register_projection
+
+    await register_projection(
+        db,
+        project_agent(agent),
+        change_source="update",
+        actor_user_id=current_user.id,
+        change_message="Agent restored",
+    )
+    try:
+        from app.core.policy import write_audit_event
+
+        await write_audit_event(
+            db,
+            event_type="agent.restored",
+            severity="info",
+            actor_type="user",
+            actor_id=current_user.id,
+            tenant_id=agent.tenant_id,
+            action="restore_agent",
+            resource_type="agent",
+            resource_id=agent.id,
+            details={"name": agent.name},
+        )
+    except Exception:
+        logger.warning("Audit write failed for agent.restored", exc_info=True)
+    await db.commit()
 
 
 @router.post("/{agent_id}/start", response_model=AgentOut)

@@ -1,27 +1,18 @@
-"""Maintained regressions for typed batch-conflict recovery on Agent deletion.
+"""Maintained regressions for typed batch-conflict recovery on HR creation cleanup.
 
-Seventh correction (CC6 B5): a ``RuntimeTaskLateAdmissionConflict`` /
-``RuntimeTaskSessionBindingConflict`` raised by ``soft_delete_agent`` must
-surface as a truthful retryable 409 with the transaction rolled back and NO
-destructive cleanup consumed; the destructive file archival runs only after
-the commit, and a failed archival surfaces a truthful partial state whose
-supported retry is the SAME DELETE request (cleanup-only once the deletion
-committed). The HR abandon flow shares the shape, and the claim-time
-business-task quarantine settles its terminal boundary in its own
-advisory-first transaction.
-
-Eighth correction (CC7 F1/F2/F3): the cleanup-only retry must be reachable
-through the REAL authority gates (no stubbed ``check_agent_access``) via
-``load_deleted_agent_for_cleanup``, must never return success on a hidden
-archival failure, and the HR abandon route must map the typed batch
-conflicts and expose the same repeat-request cleanup retry.
+G1 removed the bot DELETE endpoint (digital employees are deactivated, never
+deleted), so its endpoint regressions went with it. What stays covered here:
+``perform_pending_agent_cleanup`` remains the recovery surface for an
+abandoned, unfinished HR-created employee, its file archival stays idempotent
+and deferred past the commit, and the HR abandon route keeps mapping typed
+batch conflicts to truthful retryable 409s with the same repeat-request
+cleanup retry. ``soft_delete_agent`` keeps its advisory-first batch order.
 """
 
 from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime
-from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -39,150 +30,6 @@ class _FakeDB:
 
     async def commit(self) -> None:
         self.calls.append("commit")
-
-
-def _endpoint_harness(monkeypatch, *, deleted_at, cleanup_outcome) -> tuple[list[str], _FakeDB]:
-    import app.api.agents as api
-    import app.core.permissions as permissions
-
-    effects: list[str] = []
-    agent = SimpleNamespace(
-        id=uuid.uuid4(),
-        tenant_id=uuid.uuid4(),
-        name="Probe Agent",
-        metadata_json={},
-        deleted_at=deleted_at,
-    )
-    actor = SimpleNamespace(id=uuid.uuid4(), role="org_admin")
-    db = _FakeDB()
-
-    async def access(*args, **kwargs):
-        return agent, None
-
-    async def cleanup_lookup(*args, **kwargs):
-        # Unit-seam stand-in for the real cleanup-only loader: it resolves
-        # exactly the already-deleted Agent and nothing else.
-        return agent if deleted_at is not None else None
-
-    async def soft_delete(*args, **kwargs):
-        effects.append("soft_delete")
-
-    async def perform(*args, **kwargs):
-        effects.append("perform_cleanup")
-        return cleanup_outcome
-
-    import app.core.policy as policy
-    import app.services.agent_identity_lifecycle as lifecycle
-    import app.services.ai_assets as ai_assets
-
-    async def projection(*args, **kwargs):
-        effects.append("register_projection")
-
-    async def audit(*args, **kwargs):
-        effects.append("audit")
-
-    monkeypatch.setattr(permissions, "load_deleted_agent_for_cleanup", cleanup_lookup)
-    monkeypatch.setattr(api, "check_agent_access", access)
-    monkeypatch.setattr(permissions, "check_agent_history_access", access)
-
-    async def no_external_retirement(*args, **kwargs):
-        pass
-
-    monkeypatch.setattr("app.services.agent_retirement.prepare", no_external_retirement)
-    monkeypatch.setattr(api, "soft_delete_agent", soft_delete)
-    monkeypatch.setattr(lifecycle, "perform_pending_agent_cleanup", perform)
-    monkeypatch.setattr(ai_assets, "register_projection", projection)
-    monkeypatch.setattr(policy, "write_audit_event", audit)
-    return effects, db, agent, actor
-
-
-async def test_late_admission_conflict_maps_to_retryable_409_without_cleanup(monkeypatch):
-    import app.api.agents as api
-    from app.services.runtime_terminal_settlement import RuntimeTaskLateAdmissionConflict
-
-    effects, db, agent, actor = _endpoint_harness(
-        monkeypatch, deleted_at=None, cleanup_outcome={"performed": True, "archive_ok": True, "marker_cleared": True}
-    )
-
-    async def conflict(*args, **kwargs):
-        raise RuntimeTaskLateAdmissionConflict("injected sustained admission pressure")
-
-    monkeypatch.setattr(api, "soft_delete_agent", conflict)
-    with pytest.raises(api.HTTPException) as exc_info:
-        await api.delete_agent(agent.id, current_user=actor, db=db)
-    assert exc_info.value.status_code == 409, exc_info.value.status_code
-    detail = exc_info.value.detail
-    assert detail["code"] == "agent_delete_late_admission_conflict", detail
-    assert detail["retryable"] is True, detail
-    assert "rollback" in db.calls and "commit" not in db.calls, db.calls
-    assert effects == [], f"destructive or external cleanup ran before the rollback: {effects}"
-
-
-async def test_session_binding_conflict_is_classified_not_promise_of_retry(monkeypatch):
-    import app.api.agents as api
-    from app.services.runtime_terminal_settlement import RuntimeTaskSessionBindingConflict
-
-    effects, db, agent, actor = _endpoint_harness(
-        monkeypatch, deleted_at=None, cleanup_outcome={"performed": True, "archive_ok": True, "marker_cleared": True}
-    )
-
-    async def conflict(*args, **kwargs):
-        raise RuntimeTaskSessionBindingConflict("injected impossible binding change")
-
-    monkeypatch.setattr(api, "soft_delete_agent", conflict)
-    with pytest.raises(api.HTTPException) as exc_info:
-        await api.delete_agent(agent.id, current_user=actor, db=db)
-    detail = exc_info.value.detail
-    assert detail["code"] == "agent_delete_session_binding_conflict", detail
-    assert detail["retryable"] is False, (
-        "an impossible binding change must not be reported with an identical-retry promise"
-    )
-    assert effects == [], effects
-
-
-async def test_cleanup_failure_after_commit_is_a_truthful_partial_state(monkeypatch):
-    """A committed deletion with failed archival must not return 204 success."""
-
-    import app.api.agents as api
-
-    effects, db, agent, actor = _endpoint_harness(
-        monkeypatch,
-        deleted_at=None,
-        cleanup_outcome={"performed": True, "archive_ok": False},
-    )
-    with pytest.raises(api.HTTPException) as exc_info:
-        await api.delete_agent(agent.id, current_user=actor, db=db)
-    assert exc_info.value.status_code == 503, exc_info.value.status_code
-    detail = exc_info.value.detail
-    assert detail["code"] == "agent_cleanup_pending", detail
-    assert detail["retryable"] is True, detail
-    assert "committed" in detail["message"] and "NOT rolled back" in detail["message"], detail
-    assert db.calls == ["commit"], db.calls
-    assert effects.index("soft_delete") < effects.index("perform_cleanup"), effects
-
-
-async def test_redelete_of_deleted_agent_is_the_supported_cleanup_retry(monkeypatch):
-    import app.api.agents as api
-
-    effects, db, agent, actor = _endpoint_harness(
-        monkeypatch, deleted_at=object(), cleanup_outcome={"performed": True, "archive_ok": True}
-    )
-    assert await api.delete_agent(agent.id, current_user=actor, db=db) is None
-    assert effects == ["perform_cleanup"], effects
-    assert db.calls == [], "the retry path must not re-run the deletion transaction"
-
-
-async def test_redelete_with_still_failing_cleanup_keeps_the_partial_state(monkeypatch):
-    import app.api.agents as api
-
-    effects, db, agent, actor = _endpoint_harness(
-        monkeypatch, deleted_at=object(), cleanup_outcome={"performed": True, "archive_ok": False}
-    )
-    with pytest.raises(api.HTTPException) as exc_info:
-        await api.delete_agent(agent.id, current_user=actor, db=db)
-    assert exc_info.value.status_code == 503, exc_info.value.status_code
-    assert exc_info.value.detail["code"] == "agent_cleanup_pending", exc_info.value.detail
-    assert effects == ["perform_cleanup"], effects
 
 
 async def test_real_pending_cleanup_marker_round_trip(owner_sessionmaker, monkeypatch):
@@ -436,133 +283,6 @@ async def _seed_admin_agent(owner_sessionmaker, *, role: str = "org_admin", shar
         )
         await db.commit()
     return tenant_id, agent_id, other_user_id
-
-
-async def test_redelete_of_deleted_agent_through_the_real_authority_gate(owner_sessionmaker, monkeypatch):
-    """CC7 F1: the cleanup-only retry is reachable with the REAL permission gates.
-
-    No stub for ``check_agent_access`` or the cleanup loader: a same-tenant
-    org administrator re-issuing DELETE for a committed soft-deleted Agent
-    must reach the cleanup-only branch; a foreign-tenant administrator must
-    get the ordinary 404 with ZERO cleanup calls; and a successful retry
-    must not duplicate any lifecycle or audit effect.
-    """
-
-    import app.api.agents as api
-    import app.services.agent_identity_lifecycle as lifecycle
-    from app.models.agent import Agent
-    from app.models.security_audit import SecurityAuditEvent
-    from app.models.user import User
-
-    tenant_id, agent_id, admin_id = await _seed_admin_agent(owner_sessionmaker)
-    async with owner_sessionmaker() as db:
-        agent = await db.get(Agent, agent_id)
-        agent.deleted_at = datetime.now(UTC)
-        await db.commit()
-
-    cleanup_calls: list[uuid.UUID] = []
-    original = lifecycle.perform_pending_agent_cleanup
-
-    async def _recording(tenant, aid):
-        cleanup_calls.append(aid)
-        return await original(tenant, aid)
-
-    monkeypatch.setattr(lifecycle, "perform_pending_agent_cleanup", _recording)
-    import app.services.agent_manager as agent_manager
-
-    async def _archive_ok(agent_uuid):
-        return None
-
-    monkeypatch.setattr(agent_manager.agent_manager, "archive_agent_files", _archive_ok)
-
-    async with owner_sessionmaker() as db:
-        admin = await db.get(User, admin_id)
-        assert await api.delete_agent(agent_id, current_user=admin, db=db) is None
-    assert cleanup_calls == [agent_id], cleanup_calls
-
-    async with owner_sessionmaker() as db:
-        audit_count = len(
-            (await db.execute(select(SecurityAuditEvent).where(SecurityAuditEvent.resource_id == agent_id)))
-            .scalars()
-            .all()
-        )
-    assert audit_count == 0, "the cleanup-only retry must not write new audit events"
-
-    # Same-request retry semantics: a second re-delete after success is a
-    # harmless no-op (nothing left to clean), still through the real gate.
-    async with owner_sessionmaker() as db:
-        admin = await db.get(User, admin_id)
-        assert await api.delete_agent(agent_id, current_user=admin, db=db) is None
-    assert len(cleanup_calls) == 2, cleanup_calls
-
-
-async def test_redelete_after_failed_archival_returns_partial_state_then_recovers(owner_sessionmaker, monkeypatch):
-    """Committed deletion + failed archival: 503 partial truth, then the same
-    request retries the cleanup only and succeeds."""
-
-    import app.api.agents as api
-    from app.models.agent import Agent
-    from app.models.user import User
-
-    tenant_id, agent_id, admin_id = await _seed_admin_agent(owner_sessionmaker)
-    async with owner_sessionmaker() as db:
-        agent = await db.get(Agent, agent_id)
-        agent.deleted_at = datetime.now(UTC)
-        await db.commit()
-
-    import app.services.agent_manager as agent_manager
-
-    calls: list[uuid.UUID] = []
-
-    async def _flaky(agent_uuid):
-        calls.append(agent_uuid)
-        if len(calls) == 1:
-            raise RuntimeError("maintained: archival unavailable")
-
-    monkeypatch.setattr(agent_manager.agent_manager, "archive_agent_files", _flaky)
-
-    async with owner_sessionmaker() as db:
-        admin = await db.get(User, admin_id)
-        with pytest.raises(api.HTTPException) as exc_info:
-            await api.delete_agent(agent_id, current_user=admin, db=db)
-    assert exc_info.value.status_code == 503, exc_info.value.status_code
-    assert exc_info.value.detail["code"] == "agent_cleanup_pending", exc_info.value.detail
-
-    async with owner_sessionmaker() as db:
-        admin = await db.get(User, admin_id)
-        assert await api.delete_agent(agent_id, current_user=admin, db=db) is None
-    assert len(calls) == 2, calls
-
-
-async def test_redelete_by_foreign_tenant_admin_is_a_clean_404(owner_sessionmaker, monkeypatch):
-    """Tenant isolation holds on the cleanup-only path: zero cleanup calls."""
-
-    import app.api.agents as api
-    import app.services.agent_identity_lifecycle as lifecycle
-    from app.models.user import User
-
-    tenant_id, agent_id, foreign_admin_id = await _seed_admin_agent(owner_sessionmaker, shared_tenant=False)
-    import app.services.agent_manager as agent_manager
-
-    async def _archive_spy(agent_uuid):
-        raise AssertionError("foreign-tenant cleanup must never run")
-
-    monkeypatch.setattr(agent_manager.agent_manager, "archive_agent_files", _archive_spy)
-    cleanup_calls: list[uuid.UUID] = []
-    original = lifecycle.perform_pending_agent_cleanup
-
-    async def _recording(tenant, aid):
-        cleanup_calls.append(aid)
-        return await original(tenant, aid)
-
-    monkeypatch.setattr(lifecycle, "perform_pending_agent_cleanup", _recording)
-
-    async with owner_sessionmaker() as db:
-        admin = await db.get(User, foreign_admin_id)
-        with pytest.raises(api.HTTPException) as exc_info:
-            await api.delete_agent(agent_id, current_user=admin, db=db)
-    assert exc_info.value.status_code == 404, exc_info.value.status_code
-    assert cleanup_calls == [], cleanup_calls
 
 
 async def _seed_hr_abandon_fixture(owner_sessionmaker):

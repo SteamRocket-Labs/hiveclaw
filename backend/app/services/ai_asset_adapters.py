@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
 from pathlib import Path
 import shutil
 from typing import Any
@@ -124,7 +123,14 @@ def project_agent(agent: Any) -> AIAssetProjection:
 
 
 def apply_agent_content(agent: Any, content: dict[str, Any]) -> None:
-    """Apply a validated Agent snapshot, including its reversible soft lifecycle."""
+    """Apply a validated Agent config snapshot; never its lifecycle.
+
+    G1: digital employees are deactivated and restored only through the
+    lifecycle endpoints, so a rollback to an old AI-asset revision can
+    neither revive nor delete (nor clear a deactivation on) an employee.
+    The snapshot's ``control.lifecycle_status`` is historical registration
+    state and is deliberately ignored here.
+    """
 
     _require_content_type(content, "agent")
     config = dict(content.get("config") or {})
@@ -135,23 +141,6 @@ def apply_agent_content(agent: Any, content: dict[str, Any]) -> None:
         if config_field in {"primary_model_id", "fallback_model_id"}:
             value = _uuid(value)
         setattr(agent, config_field, value)
-
-    lifecycle = str((content.get("control") or {}).get("lifecycle_status") or "active")
-    now = datetime.now(UTC)
-    if lifecycle == "active":
-        agent.deleted_at = None
-        agent.deactivated_at = None
-        agent.deactivation_reason = None
-    elif lifecycle == "deprecated":
-        agent.deleted_at = None
-        agent.deactivated_at = now
-        agent.deactivation_reason = "Restored from AI asset revision"
-    elif lifecycle == "deleted":
-        agent.deleted_at = now
-        agent.deactivated_at = now
-        agent.deactivation_reason = "Restored deleted state from AI asset revision"
-    else:
-        raise ValueError(f"unsupported Agent lifecycle rollback target: {lifecycle}")
 
 
 def project_skill(

@@ -88,8 +88,8 @@ describe('workbench unconfirmed execution', () => {
   });
 
   it('keeps internal reconciliation vocabulary out of the header copy in both shipped locales', () => {
-    expect((en.sessionWorkbench.status as Record<string, string>).needs_reconciliation).toBeUndefined();
-    expect((zh.sessionWorkbench.status as Record<string, string>).needs_reconciliation).toBeUndefined();
+    expect(en.sessionWorkbench).not.toHaveProperty('status.needs_reconciliation');
+    expect(zh.sessionWorkbench).not.toHaveProperty('status.needs_reconciliation');
     expect((en.sessionWorkbench as Record<string, unknown>).reconciliationGuidance).toBeUndefined();
     expect((zh.sessionWorkbench as Record<string, unknown>).reconciliationGuidance).toBeUndefined();
   });

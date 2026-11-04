@@ -217,7 +217,7 @@ describe('session workbench timeline model', () => {
     expect(trailingRun.timeline.status).toBe('interrupted');
     expect(trailingRun.timeline.completedAt).toBeUndefined();
     expect(trailingRun.timeline.durationMs).toBe(20_000);
-    expect(model.header.status).toBe('idle');
+    expect(model.header.status).toBe('failed');
   });
 
   it('renders a copied cancelled branch as interrupted instead of fabricating a current run', () => {
@@ -235,7 +235,7 @@ describe('session workbench timeline model', () => {
       runtimePhase: 'cancelled',
     });
 
-    expect(model.header.status).toBe('idle');
+    expect(model.header.status).toBe('cancelled');
     expect(model.cells.at(-1)).toMatchObject({
       kind: 'active_run',
       timeline: { status: 'interrupted' },
@@ -1145,7 +1145,7 @@ describe('session workbench timeline model', () => {
       activeRunStatus: 'running',
     });
 
-    expect(model.header.status).toBe('waiting');
+    expect(model.header.status).toBe('running');
     expect(model.cells.map((cell) => cell.kind)).toEqual(['user_turn', 'active_run']);
     const runCell = model.cells[1];
     expect(runCell.kind).toBe('active_run');

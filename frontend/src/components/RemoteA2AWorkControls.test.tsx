@@ -43,11 +43,11 @@ it('does not call a local pre-dispatch withdrawal a remote cancellation report',
   vi.mocked(remoteA2AApi.tasks).mockResolvedValue({ ...page(), connection: { ready: false, version: 2 }, items: [saved] });
   vi.mocked(remoteA2AApi.task).mockResolvedValue(saved);
   await mount();
-  expect(await screen.findByText(/Withdrawn before dispatch/)).toBeTruthy();
+  expect(await screen.findByText(/Stopped/)).toBeTruthy();
   expect(screen.queryByText(/Remote cancellation confirmed/)).toBeNull();
   fireEvent.click(screen.getByText('transport-task'));
   expect(await screen.findByLabelText('Saved remote receipt')).toBeTruthy();
-  expect(screen.getAllByText(/Withdrawn before dispatch/)).toHaveLength(2);
+  expect(screen.getAllByText(/Withdrawn before dispatch/)).toHaveLength(1);
   expect(screen.queryByText(/Remote cancellation confirmed/)).toBeNull();
 });
 

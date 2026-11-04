@@ -203,6 +203,8 @@ export interface CreateSessionRunResponse {
 }
 
 export interface SessionHumanInputReceipt {
+  admission_state?: string;
+  reason_code?: string | null;
   schema: 'hive.human_input_receipt';
   schema_version: 2;
   command_id: string;

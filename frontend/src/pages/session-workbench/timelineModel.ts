@@ -1,3 +1,4 @@
+import { runtimeStatusKey } from '../agent-detail/runtimeStatus';
 import type { SessionIndex } from '../../api/domains/chat';
 import type { SessionWorkbench } from '../../api/domains/ccParity';
 import {
@@ -1315,13 +1316,10 @@ function buildRuntimeConsoleModel(
 }
 
 function normalizeSessionWindowStatus(status: unknown): SessionWindowStatus {
-  const value = String(status || '').toLowerCase();
-  if (value === 'running' || value === 'waiting' || value === 'blocked' || value === 'completed' || value === 'failed' || value === 'cancelled') {
-    return value;
-  }
-  if (value === 'canceled') return 'cancelled';
-  if (value === 'idle' || value === '') return 'idle';
-  return 'unknown';
+  if (status === 'idle' || !status) return 'idle';
+  if (status === 'blocked') return 'blocked';
+  const display = runtimeStatusKey(status);
+  return display === 'done' ? 'completed' : display === 'stopped' ? 'cancelled' : display;
 }
 
 function sessionWindowTone(status: SessionWindowStatus): SessionWindowTone {
@@ -1689,9 +1687,14 @@ function getHeaderStatus(
   activeRunStatus?: string | null,
   runtimePhase?: string,
 ): SessionWorkbenchStatus {
-  if (isWaiting) return 'waiting';
+  const lastRun = [...cells].reverse().find((cell): cell is Extract<ThreadTimelineCell, { kind: 'active_run' }> => cell.kind === 'active_run');
+  if (lastRun?.timeline.status === 'blocked' && (activeRunStatus || isWaiting || isStreaming)) return 'waiting';
+  if (activeRunStatus) {
+    const status = runtimeStatusKey(activeRunStatus);
+    return status === 'done' ? 'complete' : status === 'stopped' ? 'cancelled' : status;
+  }
+  if (isWaiting) return 'running';
   if (isStreaming) return 'streaming';
-  if (activeRunStatus) return activeRunStatus === 'failed' ? 'failed' : 'running';
   for (let index = cells.length - 1; index >= 0; index -= 1) {
     const cell = cells[index];
     if (cell.kind === 'user_turn') break;
@@ -1705,14 +1708,12 @@ function getHeaderStatus(
             || cell.message.sessionItem.lifecycle === 'needs_reconciliation')))
     ) return 'failed';
   }
-  const lastRun = [...cells].reverse().find((cell): cell is Extract<ThreadTimelineCell, { kind: 'active_run' }> => cell.kind === 'active_run');
+  if (lastRun?.timeline.status === 'blocked') return 'waiting';
   if (lastRun?.timeline.status === 'failed') return 'failed';
   if (lastRun?.timeline.status === 'running') return 'running';
-  if (lastRun?.timeline.status === 'blocked') return 'waiting';
-  // An interrupted trailing run is not fabricated into complete: the header
-  // shows the idle session state and the run block carries the typed detail.
-  if (lastRun?.timeline.status === 'interrupted') return 'idle';
   if (runtimePhase === 'cancelled') return 'cancelled';
+  if (lastRun?.timeline.status === 'interrupted') return 'failed';
+  if (lastRun?.timeline.status === 'cancelled') return 'cancelled';
   if (cells.length > 0) return 'complete';
   return 'idle';
 }

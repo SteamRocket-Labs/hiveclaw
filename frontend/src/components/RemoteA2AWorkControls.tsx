@@ -1,3 +1,4 @@
+import { runtimeStatusLabel } from '../pages/agent-detail/runtimeStatus';
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
@@ -135,17 +136,7 @@ function Work({ agentId, sessionId, actorId, tenantId, open, onClose }: { agentI
       operation_id: crypto.randomUUID(), action, params } });
   }
   function status(task: RemoteA2ATask) {
-    if (task.connection_withdrawal?.status === 'not_started') return t('remoteA2A.notStartedCount', 'Withdrawn before dispatch');
-    if (task.status === 'suspended' && task.remote_state === 'TASK_STATE_INPUT_REQUIRED' && !task.error_code) return t('remoteWork.inputRequired', 'Remote reply needed');
-    if (task.status === 'suspended' && task.remote_state === 'TASK_STATE_AUTH_REQUIRED' && !task.error_code) return t('remoteWork.authRequired', 'Remote authorization required');
-    const labels: Record<string, string> = {
-      pending: t('remoteWork.queued', 'Queued'), running: t('remoteWork.contacting', 'Contacting remote endpoint'),
-      resumable: t('remoteWork.waiting', 'Remote task waiting'),
-      suspended: t('remoteWork.waiting', 'Remote task waiting'), completed: t('remoteWork.completed', 'Remote reports completion'),
-      failed: t('remoteWork.reportedFailure', 'Remote reports failure'), killed: t('remoteWork.cancelConfirmed', 'Remote cancellation confirmed'),
-      skipped: t('remoteWork.abandoned', 'Locally abandoned'), needs_reconciliation: t('remoteWork.unconfirmed', 'Remote state unconfirmed'),
-    };
-    return labels[task.status] || labels.needs_reconciliation;
+    return runtimeStatusLabel(task.connection_withdrawal?.status === 'not_started' ? 'cancelled' : task.status, t);
   }
   return <details className="card-pad-sm" open={open} hidden={!open} onToggle={(event) => {
     // Collapsing the on-demand panel removes it from the chat surface again.
@@ -179,6 +170,7 @@ function Work({ agentId, sessionId, actorId, tenantId, open, onClose }: { agentI
     {selected && <section aria-label={t('remoteWork.receipt', 'Saved remote receipt')}>
       <p>{status(selected)}</p>
       <p>{t('remoteWork.costUnknown', 'External cost: unknown. Internal action control: unverified.')}</p>
+      {selected.connection_withdrawal?.status === 'not_started' && <p>{t('remoteA2A.notStartedCount', 'Withdrawn before dispatch')}</p>}
       {selected.connection_withdrawal && <p role="status">{t('remoteA2A.withdrawalWorkBoundary', 'New execution for this work was withdrawn. Remote protocol reports do not verify internal side effects.')}
         {' '}{['unknown', 'pending', 'unavailable', 'waiting_remote_identity'].includes(selected.connection_withdrawal.status)
           && t('remoteA2A.withdrawalRecovery', 'Inspect the saved receipt in the original work or verify it with the remote service. Abandoning local tracking does not stop the remote host.')}</p>}

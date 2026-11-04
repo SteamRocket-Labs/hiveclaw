@@ -932,6 +932,11 @@ const ChatMessageItem = React.memo(function ChatMessageItem({
         ) : (
           <div style={{ whiteSpace: 'pre-wrap' }}>{msg.content}</div>
         )}
+        {msg.sendState && <div role="status" data-testid="message-send-status">
+          {msg.sendState === 'sending' ? t('agent.chat.sending', 'Sending…') : <>
+            {msg.sendError} <button type="button" onClick={msg.retrySend}>{t('common.retry', 'Retry')}</button>
+          </>}
+        </div>}
         {msg.role === 'user' && msg.inputAttachmentFailures?.map((file, index) => <div
           key={`${file.name}-${index}`} className="session-tui-file-chip" role="status"
         >

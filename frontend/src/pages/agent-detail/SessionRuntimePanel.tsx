@@ -1,3 +1,5 @@
+import { runtimeStatusLabel, userFacingRuntimeStatus } from './runtimeStatus';
+export { runtimeStatusKey, runtimeStatusLabel, userFacingRuntimeStatus } from './runtimeStatus';
 import React from 'react';
 import { useTranslation } from 'react-i18next';
 import { IconAlertTriangle, IconChevronLeft, IconChevronRight, IconFileText, IconLoader, IconX } from '@tabler/icons-react';
@@ -80,21 +82,6 @@ export function stringValue(value: unknown): string {
   return String(value);
 }
 
-export const RUNTIME_PHASE_LABEL_KEYS: Record<string, string> = {
-  queued: 'agent.chat.phase.queued',
-  resuming: 'agent.chat.phase.resuming',
-  starting: 'agent.chat.phase.starting',
-  thinking: 'agent.chat.phase.thinking',
-  responding: 'agent.chat.phase.responding',
-  tool_running: 'agent.chat.phase.tool_running',
-  hook_evaluating: 'agent.chat.phase.hook_evaluating',
-  compacting: 'agent.chat.phase.compacting',
-  awaiting_approval: 'agent.chat.phase.awaiting_approval',
-  awaiting_budget: 'agent.chat.phase.awaiting_budget',
-  summarizing: 'agent.chat.phase.summarizing',
-  continuation_gap: 'agent.chat.phase.continuation_gap',
-};
-
 export function formatElapsedSeconds(totalSeconds: number): string {
   const minutes = Math.floor(totalSeconds / 60);
   const seconds = totalSeconds % 60;
@@ -122,13 +109,12 @@ export function ActiveTailStatusLine({
     const timer = window.setInterval(() => setNowTick(Date.now()), 1000);
     return () => window.clearInterval(timer);
   }, []);
-  const labelKey = RUNTIME_PHASE_LABEL_KEYS[phase];
-  if (!labelKey) return null;
+  if (phase === 'idle') return null;
   const elapsedSeconds = Math.max(0, Math.floor((nowTick - (anchorRef.current ?? nowTick)) / 1000));
   return (
     <div className="session-tui-active-tail" data-testid="active-tail-status" data-phase={phase}>
       <span className="session-tui-active-tail-dot" />
-      <span className="session-tui-shimmer">{t(labelKey)}</span>
+      <span className="session-tui-shimmer">{runtimeStatusLabel(phase, t)}</span>
       {detail ? <span className="session-tui-active-tail-detail">{detail}</span> : null}
       <span className="session-tui-active-tail-elapsed">{formatElapsedSeconds(elapsedSeconds)}</span>
     </div>
@@ -201,7 +187,7 @@ export function runtimeItemDisplayStatus(item: RuntimeSectionItemModel, t?: Runt
   const format = (value: string) => (t ? runtimeStatusLabel(value, t) : userFacingRuntimeStatus(value));
   const safeStatus = format(status);
   const safeOutcome = outcome ? format(outcome) : '';
-  return safeOutcome && safeOutcome !== safeStatus ? `${safeStatus} · ${safeOutcome}` : safeStatus;
+  return closeStatus === 'failed' || status === 'idle' || status === 'ready' ? safeOutcome || safeStatus : safeStatus;
 }
 
 export function subagentWorkerRecoveryModel(worker: RuntimeSectionItemModel): {
@@ -229,75 +215,6 @@ export function runtimeItemDisplayLabel(item: RuntimeSectionItemModel, fallback:
 }
 
 export type RuntimeStatusTranslator = ReturnType<typeof useTranslation>['t'];
-
-// Canonical runtime-status vocabulary. Values are translation keys; the English
-// fallback keeps the safety property that a raw runtime value never renders.
-const RUNTIME_STATUS_KEYS: Record<string, string> = {
-  idle: 'ready',
-  ready: 'ready',
-  active: 'working',
-  queued: 'queued',
-  pending: 'queued',
-  running: 'working',
-  streaming: 'working',
-  resuming: 'resuming',
-  waiting: 'waiting',
-  waiting_user: 'waitingForYou',
-  awaiting_approval: 'waitingApproval',
-  waiting_budget_approval: 'waitingApproval',
-  completed: 'completed',
-  succeeded: 'completed',
-  done: 'completed',
-  success: 'completed',
-  failed: 'needsAttention',
-  error: 'needsAttention',
-  blocked: 'needsAttention',
-  provider_error: 'needsAttention',
-  quota_denied: 'needsAttention',
-  quota_unavailable: 'needsAttention',
-  not_admitted: 'skipped',
-  skipped: 'skipped',
-  suspended: 'paused',
-  killed: 'stopped',
-  cancelled: 'cancelled',
-  exhausted: 'paused',
-  hard_stopped: 'stopped',
-  needs_reconciliation: 'needsAdminReview',
-};
-
-const RUNTIME_STATUS_LABELS: Record<string, string> = {
-  ready: 'Ready',
-  queued: 'Queued',
-  working: 'Working',
-  resuming: 'Resuming',
-  waiting: 'Waiting',
-  waitingForYou: 'Waiting for you',
-  waitingApproval: 'Waiting for approval',
-  completed: 'Completed',
-  needsAttention: 'Needs attention',
-  skipped: 'Skipped',
-  paused: 'Paused',
-  stopped: 'Stopped',
-  cancelled: 'Cancelled',
-  needsAdminReview: 'Needs admin review',
-  unknown: 'Status unavailable',
-};
-
-// Exact machine-code mapping only: an unrecognized code is never guessed into
-// a semantic status by substring inference and never masquerades as Working.
-export function runtimeStatusKey(status: unknown): string {
-  const normalized = String(status || '').trim().toLowerCase();
-  return RUNTIME_STATUS_KEYS[normalized] || 'unknown';
-}
-
-export function userFacingRuntimeStatus(status: unknown): string {
-  return RUNTIME_STATUS_LABELS[runtimeStatusKey(status)];
-}
-
-export function runtimeStatusLabel(status: unknown, t: RuntimeStatusTranslator): string {
-  const key = runtimeStatusKey(status);
-  return t(`agent.runtimeStatus.${key}`, RUNTIME_STATUS_LABELS[key]);
-}
 
 export function SessionRuntimePanel({
   messages,
@@ -957,10 +874,7 @@ export function SessionRuntimePanel({
                   <span className="session-runtime-summary-dot" aria-hidden="true" />
                   <span>
                     <strong>
-                      {t(
-                        `sessionWorkbench.rightPanel.runtimeStates.${runtimeConsole.summary.state}`,
-                        userFacingRuntimeStatus(runtimeConsole.summary.state),
-                      )}
+                      {runtimeStatusLabel(runtimeConsole.summary.state, t)}
                     </strong>
                     <small>
                       {sessionWindow

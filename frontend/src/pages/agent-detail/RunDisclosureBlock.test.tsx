@@ -110,7 +110,7 @@ describe('RunDisclosureBlock', () => {
   it('collapses a completed run behind one turn-level disclosure', () => {
     const markup = renderToStaticMarkup(<RunDisclosureBlock timeline={baseTimeline} />);
 
-    expect(markup).toContain('Processed');
+    expect(markup).toContain('Done');
     expect(markup).toContain('aria-expanded="false"');
     expect(markup).not.toContain('read_file');
     expect(markup).not.toContain('AgentChatSection.tsx');
@@ -134,12 +134,12 @@ describe('RunDisclosureBlock', () => {
 
     const markup = renderToStaticMarkup(<RunDisclosureBlock timeline={timeline} />);
 
-    expect(markup).toContain('Interrupted');
+    expect(markup).toContain('Failed');
     expect(markup).toContain('send a new message to continue');
     // 1_200_000ms = 20m — the frozen authoritative duration renders once.
     expect(markup).toContain('20m');
     expect(markup).not.toContain('shimmer');
-    expect(markup).not.toContain('Working');
+    expect(markup).not.toContain('Running');
   });
 
   it('keeps a copied cancellation visible when the run has no displayable process steps', () => {
@@ -167,9 +167,9 @@ describe('RunDisclosureBlock', () => {
     }
 
     expect(markup).toContain('data-status="interrupted"');
-    expect(markup).toContain('Interrupted');
+    expect(markup).toContain('Failed');
     expect(markup).toContain('send a new message to continue');
-    expect(markup).not.toContain('Working');
+    expect(markup).not.toContain('Running');
     expect(markup).not.toContain('0 steps');
     expect(markup).not.toContain('run-disclosure-duration');
   });
@@ -201,7 +201,7 @@ describe('RunDisclosureBlock', () => {
       />,
     );
 
-    expect(markup).toContain('Processed');
+    expect(markup).toContain('Done');
     expect(markup).toContain('aria-expanded="false"');
     expect(markup).not.toContain('data-testid="run-disclosure-commentary"');
     expect(markup).not.toContain('The durable Session event is committed; I am validating the consumer now.');
@@ -320,7 +320,7 @@ describe('RunDisclosureBlock', () => {
       />,
     );
 
-    expect(markup).toContain('Processed');
+    expect(markup).toContain('Done');
     expect(markup).not.toContain('Private process detail');
     expect(markup).not.toContain('Run command');
     expect(markup).not.toContain('npm test');
@@ -341,7 +341,7 @@ describe('RunDisclosureBlock', () => {
     );
 
     expect(markup).toContain('session-tui-shimmer');
-    expect(markup).toContain('Working');
+    expect(markup).toContain('Running');
     expect(markup).toContain('aria-expanded="true"');
     expect(markup).toContain('Using read_file · path: frontend/src/pages/agent-detail/AgentChatSection.tsx');
     expect(markup).toContain('Tool call history');
@@ -413,7 +413,7 @@ describe('RunDisclosureBlock', () => {
     const timeline = { ...liveTimeline(), status: 'done' as const };
     const markup = renderToStaticMarkup(<RunDisclosureBlock timeline={timeline} />);
 
-    expect(markup).toContain('Processed');
+    expect(markup).toContain('Done');
     expect(markup).toContain('aria-expanded="false"');
     expect(markup).not.toContain('data-testid="run-disclosure-commentary"');
     expect(markup).not.toContain('I found the <strong>projection bug</strong>');

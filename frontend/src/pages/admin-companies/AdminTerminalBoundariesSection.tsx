@@ -1,3 +1,4 @@
+import { runtimeStatusLabel } from '../agent-detail/runtimeStatus';
 import React, { useEffect, useId, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -206,7 +207,7 @@ export default function AdminTerminalBoundariesSection({
     setRedriveReceipt(t(
       'admin.terminalBoundaries.redriveReceipt',
       'Boundary {{id}} requeued with status {{status}}. Requeued means it will be attempted again — not delivered and not business success.',
-      { id: result.id, status: result.status },
+      { id: result.id, status: runtimeStatusLabel(result.status, t) },
     ));
     setReasons((current) => {
       const next = { ...current };
@@ -278,7 +279,7 @@ export default function AdminTerminalBoundariesSection({
             disabled={busy}
           >
             {STATUS_FILTERS.map((status) => (
-              <option key={status} value={status}>{status}</option>
+              <option key={status} value={status}>{status ? runtimeStatusLabel(status, t) : t('common.all', 'All')}</option>
             ))}
           </select>
           <button type="button" className="btn-secondary" onClick={load} disabled={busy || !tenantId.trim()}>
@@ -324,7 +325,7 @@ export default function AdminTerminalBoundariesSection({
                     {t('admin.terminalBoundaries.sessionLabel', 'session')} {boundary.session_id || '-'}
                   </div>
                   <div className="admin-reconcile-sub-mono">
-                    {boundary.event_kind} · {boundary.terminal_status} · {t('admin.terminalBoundaries.attempts', 'attempts')} {boundary.attempt_count}
+                    {boundary.event_kind} · {runtimeStatusLabel(boundary.terminal_status, t)} · {t('admin.terminalBoundaries.attempts', 'attempts')} {boundary.attempt_count}
                   </div>
                 </div>
                 <div>
@@ -341,7 +342,7 @@ export default function AdminTerminalBoundariesSection({
                 </div>
                 <div>
                   <span className={`badge ${boundary.status === 'dead_letter' ? 'badge-danger' : 'badge-warning'}`}>
-                    {boundary.status}
+                    {runtimeStatusLabel(boundary.status, t)}
                   </span>
                 </div>
                 <div className="admin-reconcile-actions">

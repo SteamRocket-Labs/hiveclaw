@@ -22,8 +22,7 @@ export interface SessionRunControlsProps {
   canSend: boolean;
   running: boolean;
   composerMenuOpen: boolean;
-  /** Overrides the "+" button's disabled state: the menu stays reachable while
-   * message sending is paused when remote task operations remain available. */
+  /** Keeps "+" reachable while sending is paused if remote tasks remain operable. */
   plusButtonDisabled?: boolean;
   permissionMenuOpen: boolean;
   permissionMode: SessionPermissionMode;

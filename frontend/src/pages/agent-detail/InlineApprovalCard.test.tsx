@@ -1,7 +1,7 @@
 /** @vitest-environment jsdom */
 import React from 'react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, expect, it, vi } from 'vitest';
 import { StructuredToolResultBody } from './StructuredToolResult';
 import { normalizeToolCallResult } from './toolResultEnvelope';
@@ -10,7 +10,7 @@ import { isDedicatedToolCardMessage } from './chatDisclosureReducer';
 vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: (_key: string, fallback: string) => fallback }) }));
 const api = vi.hoisted(() => ({ getApproval: vi.fn(), resolveApproval: vi.fn() }));
 vi.mock('../../api/domains/chat', () => ({ chatApi: api }));
-afterEach(() => { cleanup(); vi.clearAllMocks(); });
+afterEach(() => { cleanup(); vi.clearAllMocks(); vi.useRealTimers(); });
 
 it('keeps company approval in the original work and reconciles a failed response before retry', async () => {
   const pending = { id: 'exact-ticket', status: 'pending', tool_name: 'delegate_to_agent',
@@ -51,4 +51,27 @@ it('shows the actual decision without offering authority to a requester who cann
   await screen.findByText('Waiting for the responsible approver.');
   expect(screen.queryByRole('button', { name: 'Approve' })).toBeNull();
   expect(api.resolveApproval).not.toHaveBeenCalled();
+});
+
+it('keeps a pending requester line polling and updates it when the decision lands', async () => {
+  // The requester's waiting line polls exactly as on the pre-trim baseline:
+  // company approvals resolve through their own notification path, so the line
+  // itself must observe the outcome (P3 keeps it a single plain line).
+  api.getApproval.mockResolvedValueOnce({ id: 'ticket', status: 'pending', execution_status: 'pending', can_resolve: false })
+    .mockResolvedValue({ id: 'ticket', status: 'approved', execution_status: 'queued', can_resolve: false });
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const normalized = normalizeToolCallResult('read_file', { status: 'approval_required', approval_id: 'ticket' });
+  // Fake timers must be live before the first fetch so the poll interval is
+  // scheduled on the mocked clock.
+  vi.useFakeTimers();
+  render(<QueryClientProvider client={client}><StructuredToolResultBody agentId="agent" sessionId="work" toolMeta={normalized.toolMeta} /></QueryClientProvider>);
+  await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+  expect(screen.getByText('Waiting for the responsible approver.')).toBeTruthy();
+  expect(api.getApproval).toHaveBeenCalledTimes(1);
+  await act(async () => { await vi.advanceTimersByTimeAsync(3_100); });
+  vi.useRealTimers();
+  expect(screen.getByText('Company approval')).toBeTruthy();
+  expect(screen.getByText('Approved')).toBeTruthy();
+  expect(api.getApproval.mock.calls.length).toBeGreaterThanOrEqual(2);
+  expect(screen.queryByText('Waiting for the responsible approver.')).toBeNull();
 });

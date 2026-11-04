@@ -21,9 +21,8 @@ function authFrame() {
   catch { return null; }
 }
 
-// Original-file actions live behind the attachment's own "…" menu: an
-// attachment is just an attachment (P3), and the uploader can still withdraw
-// their own original from there. No always-visible buttons return.
+// Original-file actions live behind the attachment's own "…" menu (P3); the
+// uploader can still withdraw their own original from there.
 export default function OriginalUploadAction(props: Props) {
   if (!props.viewerUserId || (props.original && props.original.ownerUserId !== props.viewerUserId)
     || (!props.original && !props.discover)) return null;
@@ -92,7 +91,10 @@ function OriginalForReader({ agentId, path, name, original }: Props) {
   if (!refId && !retry) return null;
   return <>
     {withdrawn && <span role="status">{t('agent.chat.artifacts.sourceWithdrawn', 'Original withdrawn. Select an authorized source to continue.')}</span>}
-    <span className="chat-artifact-menu">
+    <span className="chat-artifact-menu" onKeyDown={(event) => {
+      // Escape closes the menu, exactly like the composer "+" menu.
+      if (event.key === 'Escape') setMenuOpen(false);
+    }}>
       <button type="button" className="chat-artifact-action" data-testid="chat-artifact-original-menu"
         aria-expanded={menuOpen} disabled={busy}
         onClick={(event) => { event.stopPropagation(); setMenuOpen(!menuOpen); }}

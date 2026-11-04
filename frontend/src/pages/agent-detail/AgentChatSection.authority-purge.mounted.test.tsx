@@ -162,7 +162,12 @@ it('keeps selected project inputs and the same input identifier after an unconfi
   // jsdom does not toggle <details> from <summary> clicks; simulate a collapse.
   const remotePanel = screen.getByText('Remote A2A requests in this work').closest('details')!;
   await act(async () => { remotePanel.open = false; remotePanel.dispatchEvent(new Event('toggle')); });
-  await waitFor(() => expect(screen.queryByText('Remote A2A requests in this work')).toBeNull());
+  // Closing only hides the panel; the same mounted instance reopens from the
+  // menu, so an unconfirmed request keeps its exact identity.
+  await waitFor(() => expect(remotePanel.hidden).toBe(true));
+  fireEvent.click(screen.getByRole('button', { name: 'Open composer actions' }));
+  fireEvent.click(screen.getByRole('menuitem', { name: /Remote tasks/ }));
+  await waitFor(() => expect(remotePanel.hidden).toBe(false));
   fireEvent.click(screen.getByRole('button', { name: 'Open composer actions' }));
   fireEvent.click(screen.getByRole('menuitem', { name: /Project files/ }));
   await waitFor(() => expect(screen.getByRole('option', { name: 'Research' })).toBeTruthy());

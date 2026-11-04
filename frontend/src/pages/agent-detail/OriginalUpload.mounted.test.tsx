@@ -73,6 +73,14 @@ it.each([['other', 'owner'], ['owner', 'forged-owner']])('hides the private "…
   expect(screen.getByRole('button', { name: 'Download' })).toBeTruthy();
 });
 
+it('closes the "…" menu with Escape, matching the composer "+" menu', () => {
+  render(<ArtifactCards agentId="employee" viewerUserId="owner" artifacts={restoredInput()} onOpenArtifact={vi.fn()} />);
+  fireEvent.click(screen.getByRole('button', { name: 'More file actions' }));
+  expect(screen.getByRole('button', { name: 'Download original' })).toBeTruthy();
+  fireEvent.keyDown(screen.getByRole('button', { name: 'More file actions' }), { key: 'Escape' });
+  expect(screen.queryByRole('button', { name: 'Download original' })).toBeNull();
+});
+
 it.each([['other', 'owner'], ['owner', 'forged-owner'], ['owner', 'owner']])(
   'keeps ordinary download and open actions for viewer %s and actor %s without always-visible original buttons',
   (viewer, actor) => {

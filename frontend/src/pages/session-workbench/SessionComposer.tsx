@@ -119,9 +119,7 @@ export function SessionComposer({
     {
       key: 'project' as const,
       label: t('agent.chat.composer.projectContext', 'Project files'),
-      description: projectContextSelected
-        ? t('agent.chat.composer.projectContextSelectedDesc', 'Project files are attached to the next message')
-        : t('agent.chat.composer.projectContextDesc', 'Reference files from a project in the next message'),
+      description: t('agent.chat.composer.projectContextDesc', 'Reference files from a project in the next message'),
       icon: <IconFolder size={16} />,
       selected: projectContextSelected,
       disabled: disabled,
@@ -137,9 +135,8 @@ export function SessionComposer({
       disabled: disabled || running,
     },
     {
-      // Session permissions stay reachable while the badge is hidden on the
-      // agent's default mode (product definition P3): the "+" menu opens the
-      // same permission selection on demand.
+      // Session permissions stay reachable from "+" while the badge is hidden
+      // on the agent's default mode (product definition P3).
       key: 'permission' as const,
       label: t('agent.chat.composer.permissionEntry', 'Session permissions'),
       description: t('agent.chat.composer.permissionEntryDesc', 'View or change what this session may do without asking'),
@@ -149,13 +146,10 @@ export function SessionComposer({
     {
       key: 'remote' as const,
       label: t('agent.chat.composer.remoteWork', 'Remote tasks'),
-      description: remoteWorkOpen
-        ? t('agent.chat.composer.remoteWorkOpenDesc', 'Hide the remote task panel for this conversation')
-        : t('agent.chat.composer.remoteWorkDesc', 'Reply to, cancel, or recover files from this conversation’s remote tasks'),
+      description: t('agent.chat.composer.remoteWorkDesc', 'Reply to, cancel, or recover files from this conversation’s remote tasks'),
       icon: <IconWorld size={16} />,
       selected: remoteWorkOpen,
-      // Task recovery stays operable even while message sending is paused (for
-      // example a retirement-pending session settling its remote work).
+      // Task recovery stays operable while message sending is paused (retirement-pending).
       disabled: false,
     },
     {
@@ -177,8 +171,7 @@ export function SessionComposer({
     },
   ];
   const visibleActions = actions.filter((action) => (goalModeAvailable || action.key !== 'goal')
-    && (projectContextAvailable || action.key !== 'project')
-    && (remoteWorkAvailable || action.key !== 'remote'));
+    && (projectContextAvailable || action.key !== 'project') && (remoteWorkAvailable || action.key !== 'remote'));
 
   return (
     <div
@@ -221,6 +214,9 @@ export function SessionComposer({
                 setComposerMenuOpen(false);
                 if (action.key === 'permission') {
                   setPermissionMenuOpen(true);
+                  // The chosen menu item disappears; focus moves into the picker.
+                  setTimeout(() => document.getElementById('session-composer-permission-menu')
+                    ?.querySelector<HTMLButtonElement>('[role="radio"]')?.focus(), 0);
                   return;
                 }
                 onAction(action.key);

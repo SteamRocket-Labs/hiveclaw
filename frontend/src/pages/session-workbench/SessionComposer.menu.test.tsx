@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import React from 'react';
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, expect, it, vi } from 'vitest';
 
 vi.mock('react-i18next', () => ({
@@ -65,6 +65,14 @@ it('keeps the permission badge hidden in default mode while the "+" menu opens t
   expect(screen.getByTestId('session-composer-permission-mode-default').getAttribute('aria-checked')).toBe('true');
   fireEvent.click(screen.getByTestId('session-composer-permission-mode-auto'));
   expect(onPermissionModeChange).toHaveBeenCalledWith('auto');
+});
+
+it('moves focus into the permission picker when it opens from the "+" menu', async () => {
+  renderMenuComposer({});
+  fireEvent.click(screen.getByRole('button', { name: 'Open composer actions' }));
+  fireEvent.click(screen.getByRole('menuitem', { name: /Session permissions/ }));
+  // The chosen menu item disappears; focus must land in the picker, not body.
+  await waitFor(() => expect(document.activeElement?.getAttribute('role')).toBe('radio'));
 });
 
 it('offers remote tasks only where the conversation supports them and opens the panel on demand', () => {

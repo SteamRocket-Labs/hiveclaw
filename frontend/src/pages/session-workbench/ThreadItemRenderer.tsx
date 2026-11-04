@@ -223,27 +223,17 @@ export function ThreadItemRenderer({
     </dl>
   );
 
-  const resolvedPermissionAction = item.item_type === 'approval_decision' && item.event_type === 'permission_resolved'
-    ? item.item_data.action
-    : null;
-
-  if (resolvedPermissionAction !== null) {
-    // A settled permission decision collapses to one line (product definition P3):
-    // "✓ Allowed · this time" instead of a full decision card.
-    const actionLabel = resolvedPermissionAction === 'allow_once'
-      ? t('sessionWorkbench.threadItem.permissionDecision.allowOnce', 'Allowed · this time')
-      : resolvedPermissionAction === 'allow_session'
-        ? t('sessionWorkbench.threadItem.permissionDecision.allowSession', 'Allowed · for this session')
-        : t('sessionWorkbench.threadItem.permissionDecision.deny', 'Declined');
-    return (
-      <p
-        className="thread-item-resolved-line"
-        data-thread-item-type={item.item_type}
-        data-thread-item-status={item.item_status}
-      >
-        <IconCheck size={14} aria-hidden="true" /> {actionLabel}
-      </p>
-    );
+  if (item.item_type === 'approval_decision' && item.event_type === 'permission_resolved') {
+    // A settled permission decision collapses to one plain line (product
+    // definition P3) instead of a full decision card.
+    const action = item.item_data.action;
+    return <p>
+      <IconCheck size={14} aria-hidden="true" /> {action === 'allow_once'
+        ? t('sessionWorkbench.threadItem.permissionDecision.allowOnce', 'Allowed · this time')
+        : action === 'allow_session'
+          ? t('sessionWorkbench.threadItem.permissionDecision.allowSession', 'Allowed · for this session')
+          : t('sessionWorkbench.threadItem.permissionDecision.deny', 'Declined')}
+    </p>;
   }
 
   return (

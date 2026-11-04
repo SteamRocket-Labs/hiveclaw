@@ -11,9 +11,10 @@ function company(fallback: string) {
 
 // On-demand panel (opened from the composer "+" menu): users with an existing
 // remote task can still reply, cancel and recover files, but nothing remote
-// renders on the default chat surface (7.3 table, Remote A2A row).
-export default function RemoteA2AWorkControls({ agentId, sessionId, initialOpen = false, onClose }: {
-  agentId: string; sessionId: string; initialOpen?: boolean; onClose?: () => void;
+// renders on the default chat surface (7.3). `open` is caller-controlled so
+// closing only hides the mounted instance, keeping an unconfirmed request.
+export default function RemoteA2AWorkControls({ agentId, sessionId, open = false, onClose }: {
+  agentId: string; sessionId: string; open?: boolean; onClose?: () => void;
 }) {
   const user = useAuthStore((state) => state.user);
   const [generation, setGeneration] = useState(0);
@@ -28,13 +29,12 @@ export default function RemoteA2AWorkControls({ agentId, sessionId, initialOpen 
   if (!user || !tenantId) return null;
   return <Work key={`${agentId}:${sessionId}:${user.id}:${tenantId}:${generation}`}
     agentId={agentId} sessionId={sessionId} actorId={user.id} tenantId={tenantId}
-    initialOpen={initialOpen} onClose={onClose} />
+    open={open} onClose={onClose} />
 }
 
 type Pending = { taskId?: string; targetAgentId?: string; body: RemoteA2ATaskInput | RemoteA2ATaskOperation };
-function Work({ agentId, sessionId, actorId, tenantId, initialOpen, onClose }: { agentId: string; sessionId: string; actorId: string; tenantId: string; initialOpen?: boolean; onClose?: () => void }) {
+function Work({ agentId, sessionId, actorId, tenantId, open, onClose }: { agentId: string; sessionId: string; actorId: string; tenantId: string; open?: boolean; onClose?: () => void }) {
   const { t } = useTranslation();
-  const [open, setOpen] = useState(initialOpen);
   const [text, setText] = useState('');
   const [effects, setEffects] = useState(false);
   const [cost, setCost] = useState(false);
@@ -147,8 +147,7 @@ function Work({ agentId, sessionId, actorId, tenantId, initialOpen, onClose }: {
     };
     return labels[task.status] || labels.needs_reconciliation;
   }
-  return <details className="card-pad-sm" open={open} onToggle={(event) => {
-    setOpen(event.currentTarget.open);
+  return <details className="card-pad-sm" open={open} hidden={!open} onToggle={(event) => {
     // Collapsing the on-demand panel removes it from the chat surface again.
     if (!event.currentTarget.open) onClose?.();
   }}>

@@ -19,7 +19,7 @@ import AgentChatSection, {
   permissionOnceOnlyMessageKey,
   sessionAuthorizedInlineImageUrl,
 } from './AgentChatSection';
-import { sessionPermissionModeOptions } from './sessionComposerPresentation';
+import { sessionPermissionModeOptions } from './sessionComposerShortcuts';
 import { buildMessageFeedbackInput } from './messageFeedback';
 import {
   AssistantMessageBody,

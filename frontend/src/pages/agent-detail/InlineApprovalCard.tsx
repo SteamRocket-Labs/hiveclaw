@@ -19,9 +19,6 @@ export default function InlineApprovalCard({ agentId, sessionId, approvalId, aut
     refetchInterval: (current) => {
       const data = current.state.data;
       if (!data) return false;
-      // The requester only sees one waiting line and does not poll it forever;
-      // the conversation thread itself reports the outcome (P3).
-      if (data.status === 'pending' && !data.can_resolve) return false;
       return data.status === 'pending' || ['queued', 'executing'].includes(data.execution_status || '')
         || ['queued', 'continuing', 'retrying'].includes(data.execution_receipt?.continuation_status || '') ? 3_000 : false;
     },

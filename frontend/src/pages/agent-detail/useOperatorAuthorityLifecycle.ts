@@ -362,10 +362,9 @@ export function useOperatorAuthorityCacheLifecycle({
     setters.setBranchLineageLoading(false);
   }, [operatorAuthorityScope]);
 
-  // B5-fix2: a bot switch keeps the owning page mounted, so drop the previous
-  // bot's conversation during the render itself — no read may pair the new bot
-  // id with a foreign conversation, and no foreign draft may block selection.
-  if (activeSession && agentId && !sessionBelongsToAgent(activeSession, agentId)) setters.setActiveSession(null);
+  // B5-fix2: a bot switch keeps the page mounted; drop the previous conversation
+  // during render when the route id changed or it is not this bot's own.
+  if (activeSession && agentId && (refs.currentAgentId.current !== agentId || !sessionBelongsToAgent(activeSession, agentId))) setters.setActiveSession(null);
   React.useEffect(() => {
     refs.currentAgentId.current = agentId;
     refs.sessionMsgAbort.current?.abort();

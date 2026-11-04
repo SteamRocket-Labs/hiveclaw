@@ -236,21 +236,50 @@ async def redact_runtime_ingress_payload(
     agent_id: uuid.UUID | None,
     payload: Any,
     reply_target: dict[str, Any] | None = None,
+    source_channel: str | None = None,
 ) -> ExactSecretPayloadRedaction:
-    """Redact only exact authority-backed values before durable ingress."""
+    """Protect durable ingress, including the opt-in Web paste policy."""
+
+    pasted_count = 0
+    if source_channel == "web":
+        from app.services.privacy_layer import PrivacyLayer
+
+        pasted = PrivacyLayer.redact_pasted_credentials(payload)
+        payload = pasted.value
+        pasted_count = pasted.redacted_count
 
     if not isinstance(db, AsyncSession):
         # Production entry points are typed to AsyncSession. Lightweight unit
         # doubles cannot prove tenant pinning or credential-store authority,
         # so they exercise wiring with an injected redactor instead.
-        return ExactSecretPayloadRedaction(value=payload)
-    boundary = await load_runtime_ingress_secret_boundary(
-        db,
-        tenant_id=tenant_id,
-        agent_id=agent_id,
-        reply_target=reply_target,
-    )
-    return boundary.redact_payload_with_evidence(payload)
+        redaction = ExactSecretPayloadRedaction(value=payload)
+    else:
+        boundary = await load_runtime_ingress_secret_boundary(
+            db,
+            tenant_id=tenant_id,
+            agent_id=agent_id,
+            reply_target=reply_target,
+        )
+        redaction = boundary.redact_payload_with_evidence(payload)
+    if source_channel == "web" and (pasted_count or redaction.redacted_count):
+        notice = {
+            "zh": "我把一段密钥藏起来了，数字员工看不到原文。",
+            "en": "I hid a credential so your digital employee cannot see its original value.",
+        }
+        protected = redaction.value
+        if protected.get("content"):
+            protected["display_content"] = (
+                protected.get("display_content") or protected["content"]
+            ) + "\n\n" + notice["zh"]
+        else:
+            for part in protected.get("parts", []):
+                if part.get("type") == "text" and isinstance(part.get("text"), str):
+                    part["display_content"] = (
+                        part.get("display_content") or part["text"]
+                    ) + "\n\n" + notice["zh"]
+                    break
+        protected.setdefault("extra_metadata", {})["pasted_credential_notice"] = notice
+    return redaction
 
 
 def exact_secret_redaction_receipt(

@@ -6962,3 +6962,45 @@ async def test_dispatch_web_chat_run_registers_the_outcome_callback(monkeypatch)
         runtime._CANCEL_EVENTS.pop(run_key, None)
 
     assert run_key_holder["run_key"] == run_key
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("positive", [True, False], ids=["credentials", "ordinary_strings"])
+async def test_new_web_input_never_persists_pasted_credentials(monkeypatch, tmp_path, positive):
+    from unittest.mock import AsyncMock
+    import json
+    import app.services.web_chat_runtime as runtime
+    from app.models.runtime_task import RuntimeTask
+    from tests.services.pasted_secret_corpus import positive_cases, negative_cases
+
+    cases = list(positive_cases())
+    content = "\n".join(row[1] for row in (cases if positive else list(negative_cases())))
+    agent = SimpleNamespace(id=uuid4(), tenant_id=uuid4(), name="Agent")
+    user = SimpleNamespace(id=uuid4(), username="synthetic", display_name="Synthetic")
+    session = SimpleNamespace(
+        id=uuid4(), agent_id=agent.id, user_id=user.id, title="Session synthetic", source_channel="web",
+        last_message_at=None,
+    )
+    db = _FakeDB(active_run=None)
+    monkeypatch.setattr(runtime, "broadcast_web_chat_event", AsyncMock())
+    monkeypatch.setattr(runtime, "_lock_session_runtime_mutation", AsyncMock())
+    monkeypatch.setattr(runtime, "_find_active_run", AsyncMock(return_value=None))
+    monkeypatch.setattr("app.memory.t0.ledger.get_settings", lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)))
+    await runtime.start_web_chat_run(
+        db=db, agent=agent, user=user, session=session, content=content, display_content=content,
+        parts=[{"type": "text", "text": content}], extra_metadata={"copied_input": content},
+    )
+    task = next(row for row in db.added if isinstance(row, RuntimeTask))
+    persisted = json.dumps(
+        [{key: value for key, value in vars(row).items() if key != "_sa_instance_state"} for row in db.added],
+        default=str, ensure_ascii=False,
+    ) + session.title
+    if positive:
+        for kind, _text, secret in cases:
+            assert secret not in persisted, kind
+            assert json.dumps(secret, ensure_ascii=False)[1:-1] not in persisted, kind
+        assert "我把一段密钥藏起来了，数字员工看不到原文。" in persisted
+    else:
+        assert task.prompt == content
+        assert task.metadata_json["initial_user_message"]["content"] == content
+        assert task.metadata_json["copied_input"] == content

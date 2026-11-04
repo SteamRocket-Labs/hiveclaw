@@ -1,8 +1,9 @@
 """Typed privacy gate with exact credential authority and advisory candidates.
 
 Credential-looking prose is not a secret fact. Only an exact value supplied by
-``ExactSecretBoundary`` can produce a PL4 hard outcome; regex matches remain
-count-only review signals.
+``ExactSecretBoundary`` can produce a PL4 hard classification outcome; regex
+matches remain advisory there. Web ingress separately applies the owner's
+paste-redaction policy without rejecting the message.
 """
 
 from __future__ import annotations
@@ -124,12 +125,52 @@ class PrivacyLayer:
     # below applies the E.164 15-digit ceiling after formatting characters are removed.
     _PHONE_RE = re.compile(r"(?<![\w-])(?:\+?\d[\d\s().-]{7,}\d)(?![\w:-])")
     _CREDENTIAL_PATTERNS = (
-        re.compile(r"\b(?:api[_-]?key|secret|token|password|credential)\s*[:=]\s*[A-Za-z0-9_\-./+=]{12,}\b", re.I),
+        re.compile(
+            r"\b(?:api[_-]?key|(?:aws[ _-]?)?secret[ _-]?access[ _-]?key|"
+            r"(?:app|client)[ _-]?secret|secret|token|password|credential)"
+            r"[\"']?\s*(?:[:=]\s*|\n\s*)(?P<quote>[\"'])?"
+            r"(?!\[REDACTED_SECRET\])"
+            r"(?P<value>(?(quote)(?:\\.|[^\\\r\n])+?|[^\s\"'`,;&<>]{8,}))"
+            r"(?(quote)(?P=quote))", re.I,
+        ),
+        re.compile(r"\bpassword\s*[:=]\s*(?!\[REDACTED_SECRET\])(?P<value>[^\s\"'`,;&<>]+)", re.I),
         re.compile(r"\bsk-[A-Za-z0-9_\-]{20,}\b"),
         re.compile(r"\bgh[pousr]_[A-Za-z0-9_]{20,}\b"),
+        re.compile(r"\bgithub_pat_[A-Za-z0-9_]{22,}\b"),
         re.compile(r"\bxox[baprs]-[A-Za-z0-9-]{20,}\b"),
         re.compile(r"\bAKIA[0-9A-Z]{16}\b"),
+        re.compile(r"\bsk_(?:live|test)_[A-Za-z0-9]{20,}\b"),
+        re.compile(r"\bAIza[\w-]{35}(?![\w-])"),
+        re.compile(r"\beyJ[\w-]+\.[\w-]+\.[\w-]{16,}(?![\w-])"),
+        re.compile(r"-----BEGIN (?:RSA |EC |DSA |OPENSSH |ENCRYPTED )?PRIVATE KEY-----"
+                   r"[\s\S]+?-----END (?:RSA |EC |DSA |OPENSSH |ENCRYPTED )?PRIVATE KEY-----"),
     )
+
+    @classmethod
+    def redact_pasted_credentials(cls, payload):
+        """Apply the Web paste policy without changing privacy classification.
+
+        Candidates are not verified credentials. Their values live only in this
+        call so copies in display text, parts and metadata are hidden together.
+        """
+        def strings(value):
+            if isinstance(value, str):
+                yield value
+            elif isinstance(value, dict):
+                for key, item in value.items():
+                    yield from strings(key)
+                    yield from strings(item)
+            elif isinstance(value, (list, tuple)):
+                for item in value:
+                    yield from strings(item)
+
+        candidates = (
+            ("pasted-credential-candidate", match.groupdict().get("value") or match.group())
+            for text in strings(payload)
+            for pattern in cls._CREDENTIAL_PATTERNS
+            for match in pattern.finditer(text)
+        )
+        return ExactSecretBoundary.from_pairs(candidates).redact_payload_with_evidence(payload)
 
     def __init__(
         self,

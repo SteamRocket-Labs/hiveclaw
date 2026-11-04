@@ -190,6 +190,20 @@ async def revise_unbound_human_input(
         raise InputRevisionConflict(current_revision=row.revision)
     if not isinstance(content_parts, list):
         raise ValueError("content_parts must be an array")
+    from app.models.chat_session import ChatSession
+    from app.services.credential_boundary_loader import redact_runtime_ingress_payload
+
+    session = await db.get(ChatSession, row.session_id)
+    # Revision is a Web input even when the conversation originated in IM.
+    protected = await redact_runtime_ingress_payload(
+        db,
+        tenant_id=authority.tenant_id,
+        agent_id=authority.agent_id,
+        source_channel="web",
+        reply_target=session.delivery_target_json,
+        payload={"parts": content_parts},
+    )
+    content_parts = protected.value["parts"]
     from app.services.original_input_refs import bind_original_input_refs
 
     await bind_original_input_refs(db, authority=authority, command=_command, input_id=input_uuid, revision=int(row.revision) + 1, parts=content_parts)

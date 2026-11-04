@@ -1212,12 +1212,14 @@ async def _submit_active_session_input(
             tenant_id=agent.tenant_id,
             agent_id=agent.id,
             reply_target=getattr(session, "delivery_target_json", None),
+            source_channel=source_channel,
             payload={
                 "content": content,
                 "display_content": display_content,
                 "file_name": file_name,
                 "attachments": list(attachments or ()),
                 "parts": list(parts or ()),
+                "extra_metadata": dict(extra_metadata or {}),
             },
         )
     except RuntimeIngressSecretBoundaryUnavailable as exc:
@@ -1231,7 +1233,7 @@ async def _submit_active_session_input(
     file_name = str(protected["file_name"])
     attachments = list(protected["attachments"])
     parts = list(protected["parts"])
-    protected_extra_metadata = dict(extra_metadata or {})
+    protected_extra_metadata = dict(protected["extra_metadata"])
     redaction_receipt = exact_secret_redaction_receipt(
         redaction,
         phase="active_session_input",
@@ -2734,12 +2736,14 @@ async def start_web_chat_run(
             tenant_id=agent.tenant_id,
             agent_id=agent.id,
             reply_target=getattr(session, "delivery_target_json", None),
+            source_channel=(extra_metadata or {}).get("channel") or "web",
             payload={
                 "content": content,
                 "display_content": display_content,
                 "file_name": file_name,
                 "attachments": list(attachments or ()),
                 "parts": list(parts or ()),
+                "extra_metadata": dict(extra_metadata or {}),
             },
         )
     except RuntimeIngressSecretBoundaryUnavailable as exc:
@@ -2753,7 +2757,7 @@ async def start_web_chat_run(
     file_name = str(protected["file_name"])
     attachments = list(protected["attachments"])
     parts = list(protected["parts"])
-    protected_extra_metadata = dict(extra_metadata or {})
+    protected_extra_metadata = dict(protected["extra_metadata"])
     redaction_receipt = exact_secret_redaction_receipt(
         redaction,
         phase="web_chat_run",

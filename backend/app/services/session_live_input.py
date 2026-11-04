@@ -161,12 +161,21 @@ async def submit_live_human_input(
             tenant_id=agent.tenant_id,
             agent_id=agent.id,
             reply_target=getattr(session, "delivery_target_json", None),
+            source_channel=(
+                "web"
+                if source in {
+                    "web", "websocket_message", "session_input_api", "session_command_steer",
+                    "legacy_rest_create_session_run", "legacy_rest_start_session_run",
+                } or source.startswith("conversation_branch_")
+                else getattr(session, "source_channel", "web") or "web"
+            ),
             payload={
                 "content": content,
                 "display_content": display_content,
                 "file_name": file_name,
                 "attachments": list(attachments or ()),
                 "parts": list(parts or ()),
+                "extra_metadata": dict(runtime_metadata or {}),
             },
         )
     except RuntimeIngressSecretBoundaryUnavailable as exc:
@@ -181,7 +190,7 @@ async def submit_live_human_input(
     input_uuid = _input_id(input_id)
     clean_source = str(source or "runtime").strip() or "runtime"
     key = str(idempotency_key or f"{clean_source}:human-input:{input_uuid}")
-    runtime_metadata = {**dict(runtime_metadata or {}), "source": clean_source}
+    runtime_metadata = {**dict(protected["extra_metadata"]), "source": clean_source}
     redaction_receipt = exact_secret_redaction_receipt(
         redaction,
         phase="session_v2_human_input",

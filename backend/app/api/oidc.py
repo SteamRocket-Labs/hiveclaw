@@ -18,12 +18,14 @@ router = APIRouter(tags=["oidc"])
 class OIDCCallbackRequest(BaseModel):
     code: str
     redirect_uri: str
+    nonce: str | None = None
     tenant_id: str | None = None
 
 
 class OIDCBindRequest(BaseModel):
     code: str
     redirect_uri: str
+    nonce: str | None = None
 
 
 # ─── Public: get OIDC config for login page ────────────────────
@@ -124,13 +126,11 @@ async def oidc_callback(
             client_secret=cfg["client_secret"],
             code=data.code,
             redirect_uri=data.redirect_uri,
+            nonce=data.nonce,
         )
-    except Exception as e:
-        logger.opt(exception=True).error(f"OIDC code exchange failed: {e}")
+    except Exception:
+        logger.warning("OIDC code exchange failed")
         raise HTTPException(status_code=400, detail="OIDC authentication failed")
-
-    if not oidc_user.get("sub"):
-        raise HTTPException(status_code=400, detail="OIDC provider did not return a subject identifier")
 
     # Login or register
     auto_provision = cfg.get("auto_provision", True)
@@ -197,9 +197,10 @@ async def bind_oidc_account(
             client_secret=cfg["client_secret"],
             code=data.code,
             redirect_uri=data.redirect_uri,
+            nonce=data.nonce,
         )
-    except Exception as e:
-        logger.opt(exception=True).error(f"OIDC bind code exchange failed: {e}")
+    except Exception:
+        logger.warning("OIDC bind code exchange failed")
         raise HTTPException(status_code=400, detail="OIDC authentication failed")
 
     current_user.oidc_sub = oidc_user["sub"]

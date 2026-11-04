@@ -1624,3 +1624,13 @@ async def test_list_runtime_tasks_includes_executor_side_child_agent_linkage():
         "executor-side child agent linkage missing from workbench runtime task query"
     )
     assert "parent_agent_id" in where_clause
+
+
+@pytest.mark.parametrize("status,label", [
+    ("complete", "完成"), ("blocked", "等你决定"), ("paused", "已停止"), ("budget_limited", "已停止"), ("usage_limited", "已停止"),
+    ("waiting_for_child", "运行中"), ("waiting_for_workflow", "运行中"), ("waiting_for_permission", "等你决定"),
+    ("needs_reconciliation", "失败"), ("unknown", "失败"),
+])
+def test_written_session_statuses_use_shared_display_labels(status, label):
+    from app.services.runtime_display_status import runtime_display_status
+    assert runtime_display_status(status) == label

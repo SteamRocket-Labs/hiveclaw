@@ -498,7 +498,8 @@ def test_runtime_budget_delivery_reconciliation_is_admin_scoped_and_explicit():
 
 @pytest.mark.parametrize("status,label", [
     ("active", "运行中"), ("resuming", "运行中"), ("waiting_budget_approval", "等你决定"),
-    ("completed", "完成"), ("exhausted", "失败"), ("hard_stopped", "已停止"),
+    ("completed", "完成"), ("exhausted", "已停止"), ("hard_stopped", "已停止"),
+    ("summary_only", "运行中"), ("needs_reconciliation", "失败"),
     ("expired", "已停止"), ("cancelled", "已停止"), ("stopped", "已停止"), ("unknown", "失败"),
 ])
 def test_runtime_budget_display_uses_only_five_states(status, label):

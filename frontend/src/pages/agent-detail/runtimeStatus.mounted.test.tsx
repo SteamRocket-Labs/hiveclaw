@@ -14,7 +14,9 @@ it.each([
   ['pending', 'Running'], ['running', 'Running'], ['resumable', 'Running'], ['resuming', 'Running'],
   ['suspended', 'Waiting for you'], ['waiting_budget_approval', 'Waiting for you'],
   ['completed', 'Done'], ['failed', 'Failed'], ['skipped', 'Failed'], ['needs_reconciliation', 'Failed'],
-  ['killed', 'Stopped'],
+  ['killed', 'Stopped'], ['exhausted', 'Stopped'], ['summary_only', 'Running'],
+  ['paused', 'Stopped'], ['budget_limited', 'Stopped'], ['usage_limited', 'Stopped'], ['complete', 'Done'], ['blocked', 'Waiting for you'],
+  ['waiting_for_child', 'Running'], ['waiting_for_workflow', 'Running'], ['waiting_for_permission', 'Waiting for you'],
 ])('renders %s in the shared five-state presentation', (status, label) => {
   render(<ActiveTailStatusLine phase={status} />);
   expect(screen.getByText(label)).toBeTruthy();

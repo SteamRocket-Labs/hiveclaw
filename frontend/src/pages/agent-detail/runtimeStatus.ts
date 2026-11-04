@@ -1,10 +1,10 @@
 // Display only. Execution and recovery continue to use their original values.
 const groups = {
-  running: ['active', 'queued', 'pending', 'created', 'started', 'in_progress', 'running', 'streaming', 'resuming', 'resumable', 'starting', 'thinking', 'responding', 'tool_running', 'hook_evaluating', 'compacting', 'summarizing', 'continuation_gap', 'processing', 'retrying'],
-  waiting: ['waiting', 'waiting_user', 'waiting_for_user', 'awaiting_user_clarification', 'awaiting_permission', 'gate_waiting', 'waiting_for_gate', 'awaiting_approval', 'waiting_approval', 'waiting_budget_approval', 'awaiting_budget', 'suspended', 'blocked'],
+  running: ['active', 'queued', 'pending', 'created', 'started', 'in_progress', 'running', 'streaming', 'resuming', 'resumable', 'starting', 'thinking', 'responding', 'tool_running', 'hook_evaluating', 'compacting', 'summarizing', 'continuation_gap', 'processing', 'retrying', 'summary_only', 'waiting_for_child', 'waiting_for_workflow'],
+  waiting: ['waiting', 'waiting_user', 'waiting_for_user', 'awaiting_user_clarification', 'awaiting_permission', 'gate_waiting', 'waiting_for_gate', 'awaiting_approval', 'waiting_approval', 'waiting_budget_approval', 'awaiting_budget', 'suspended', 'blocked', 'waiting_for_permission'],
   done: ['idle', 'ready', 'complete', 'completed', 'succeeded', 'done', 'success', 'delivered', 'sent'],
-  failed: ['failed', 'error', 'provider_error', 'quota_denied', 'quota_unavailable', 'not_admitted', 'skipped', 'exhausted', 'needs_reconciliation', 'interrupted', 'dead_letter', 'denied', 'unavailable', 'unknown'],
-  stopped: ['stopped', 'killed', 'cancelled', 'canceled', 'hard_stopped', 'expired'],
+  failed: ['failed', 'error', 'provider_error', 'quota_denied', 'quota_unavailable', 'not_admitted', 'skipped', 'needs_reconciliation', 'interrupted', 'dead_letter', 'denied', 'unavailable', 'unknown'],
+  stopped: ['stopped', 'killed', 'cancelled', 'canceled', 'hard_stopped', 'expired', 'exhausted', 'paused', 'budget_limited', 'usage_limited'],
 };
 export type RuntimeDisplayStatus = keyof typeof groups;
 const labels = { running: 'Running', waiting: 'Waiting for you', done: 'Done', failed: 'Failed', stopped: 'Stopped' };

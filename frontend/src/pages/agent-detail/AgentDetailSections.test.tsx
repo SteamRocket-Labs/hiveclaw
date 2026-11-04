@@ -1294,6 +1294,10 @@ vi.mock('../../components/ChannelConfig', () => ({
 
 vi.mock('react-router-dom', () => ({
   useNavigate: () => vi.fn(),
+  useInRouterContext: () => false,
+  Link: ({ to, children, ...props }: { to: string; children: React.ReactNode } & Record<string, unknown>) => (
+    <a href={to} {...props}>{children}</a>
+  ),
 }));
 
 describe('AgentDetail extracted sections', () => {

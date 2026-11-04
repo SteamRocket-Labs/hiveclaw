@@ -134,7 +134,7 @@ describe('ControlPlane', () => {
 
     const markup = renderToStaticMarkup(<ControlPlane tab="users" />);
 
-    expect(markup).toContain('data-navigate="/enterprise/dashboard"');
+    expect(markup).toContain('data-navigate="/enterprise/users"');
     expect(markup).not.toContain('Enterprise section users');
   });
 

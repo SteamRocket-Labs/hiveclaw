@@ -50,6 +50,31 @@ export const WORKSPACE_SETTINGS_SECTIONS = WORKSPACE_SECTIONS.filter(
     section.tab !== 'dashboard' && section.tab !== 'knowledge',
 );
 
+// The company admin navigation shows five product areas (B4). Every other
+// section keeps its route and stays reachable by URL; the full section list
+// above remains the routing and access model.
+export type WorkspaceNavTab = Extract<WorkspaceSectionTab, 'users' | 'llm' | 'info' | 'approvals' | 'audit'>;
+
+export interface WorkspaceNavItem {
+  tab: WorkspaceNavTab;
+  to: string;
+  labelKey: string;
+  fallbackLabel: string;
+}
+
+const WORKSPACE_NAV_ITEMS: WorkspaceNavItem[] = [
+  { tab: 'users', to: '/enterprise/users', labelKey: 'enterprise.nav.membersAndLogin', fallbackLabel: 'Members & Login' },
+  { tab: 'llm', to: '/enterprise/llm', labelKey: 'enterprise.nav.modelsAndBudget', fallbackLabel: 'Models & Budget' },
+  { tab: 'info', to: '/enterprise/info', labelKey: 'enterprise.nav.companyConnections', fallbackLabel: 'Company Connections' },
+  { tab: 'approvals', to: '/enterprise/approvals', labelKey: 'enterprise.nav.approvalRules', fallbackLabel: 'Approval Rules' },
+  { tab: 'audit', to: '/enterprise/audit', labelKey: 'enterprise.nav.auditLog', fallbackLabel: 'Audit Log' },
+];
+
+export function workspaceNavItemsForRole(role: string | undefined): WorkspaceNavItem[] {
+  if (role !== 'org_admin' && role !== 'platform_admin') return [];
+  return WORKSPACE_NAV_ITEMS;
+}
+
 export function workspaceSectionsForRole(role: string | undefined): WorkspaceSection[] {
   // PDEC-013: both administrator roles operate the complete selected company's
   // workspace. A platform administrator's company context is the authenticated
@@ -64,7 +89,7 @@ export function canRoleAccessWorkspaceSection(role: string | undefined, tab: Wor
   return workspaceSectionsForRole(role).some((section) => section.tab === tab);
 }
 
-export const WORKSPACE_DEFAULT_PATH = WORKSPACE_SECTIONS[0].path;
+export const WORKSPACE_DEFAULT_PATH = '/enterprise/users';
 
 export const WORKSPACE_LEGACY_REDIRECTS = [
   { from: '/enterprise', to: WORKSPACE_DEFAULT_PATH },

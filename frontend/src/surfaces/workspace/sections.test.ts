@@ -4,12 +4,26 @@ import {
   WORKSPACE_DEFAULT_PATH,
   WORKSPACE_LEGACY_REDIRECTS,
   WORKSPACE_SECTIONS,
+  workspaceNavItemsForRole,
   workspaceSectionsForRole,
 } from './sections';
 
 describe('workspace section routing', () => {
-  it('uses the company workbench as the default workspace landing page', () => {
-    expect(WORKSPACE_DEFAULT_PATH).toBe('/enterprise/dashboard');
+  it('lands company admin on Members & Login instead of the dashboard (B4)', () => {
+    expect(WORKSPACE_DEFAULT_PATH).toBe('/enterprise/users');
+  });
+
+  it('shows the five product areas in the navigation for both administrator roles', () => {
+    const expectedPaths = [
+      '/enterprise/users',
+      '/enterprise/llm',
+      '/enterprise/info',
+      '/enterprise/approvals',
+      '/enterprise/audit',
+    ];
+    expect(workspaceNavItemsForRole('org_admin').map((item) => item.to)).toEqual(expectedPaths);
+    expect(workspaceNavItemsForRole('platform_admin').map((item) => item.to)).toEqual(expectedPaths);
+    expect(workspaceNavItemsForRole('member')).toEqual([]);
   });
 
   it('defines stable enterprise subroutes for the main workspace sections', () => {
@@ -35,7 +49,7 @@ describe('workspace section routing', () => {
 
   it('keeps legacy workspace entry points redirected to the new subroutes', () => {
     expect(WORKSPACE_LEGACY_REDIRECTS).toEqual([
-      { from: '/enterprise', to: '/enterprise/dashboard' },
+      { from: '/enterprise', to: '/enterprise/users' },
       { from: '/invitations', to: '/enterprise/invitations' },
       { from: '/enterprise/tools', to: '/enterprise/extensions' },
       { from: '/enterprise/skills', to: '/enterprise/extensions' },

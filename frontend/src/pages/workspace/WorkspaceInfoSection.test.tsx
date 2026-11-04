@@ -16,6 +16,7 @@ describe('WorkspaceInfoSection', () => {
       <WorkspaceInfoSection
         selectedTenantId="tenant-1"
         canManageCompanyContent
+        canEditCompanyIntro
         companyNameEditor={<div>Company Name Editor</div>}
         companyTimezoneEditor={<div>Company Timezone Editor</div>}
         companyIntro="Acme builds AI workflows."
@@ -37,11 +38,38 @@ describe('WorkspaceInfoSection', () => {
     expect(markup).toContain('Delete This Company');
   });
 
+  it('hides the intro editor from a platform administrator, who cannot read it server-side', () => {
+    const markup = renderToStaticMarkup(
+      <WorkspaceInfoSection
+        selectedTenantId="tenant-1"
+        canManageCompanyContent
+        canEditCompanyIntro={false}
+        companyNameEditor={<div>Company Name Editor</div>}
+        companyTimezoneEditor={<div>Company Timezone Editor</div>}
+        companyIntro=""
+        onCompanyIntroChange={() => {}}
+        onSaveCompanyIntro={() => {}}
+        companyIntroSaving={false}
+        companyIntroSaved={false}
+        legacyCompanyFilesCard={<div>Legacy shared files export</div>}
+        themeColorPicker={<div>Theme Color Picker</div>}
+        broadcastSection={<div>Broadcast Section</div>}
+        onDeleteCompany={() => {}}
+      />,
+    );
+
+    expect(markup).not.toContain('Company Intro');
+    expect(markup).toContain('Legacy shared files export');
+    expect(markup).toContain('Broadcast Section');
+    expect(markup).toContain('Delete This Company');
+  });
+
   it('keeps company business content out of the platform-admin default surface', () => {
     const markup = renderToStaticMarkup(
       <WorkspaceInfoSection
         selectedTenantId="tenant-1"
         canManageCompanyContent={false}
+        canEditCompanyIntro={false}
         companyNameEditor={<div>Company Name Editor</div>}
         companyTimezoneEditor={<div>Company Timezone Editor</div>}
         companyIntro="PRIVATE-COMPANY-BODY"

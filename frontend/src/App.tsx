@@ -207,7 +207,7 @@ export default function App() {
 
                     {/* ─── Workspace surface ─── */}
                     <Route path="/enterprise" element={<ProtectedRoute><WorkspaceGuard><WorkspaceLayout /></WorkspaceGuard></ProtectedRoute>}>
-                        <Route index element={<Navigate to="dashboard" replace />} />
+                        <Route index element={<Navigate to="users" replace />} />
                         <Route path="dashboard" element={<ControlPlane />} />
                         <Route path="knowledge" element={<ScopedAdminGuard><CompanyKnowledgeControlPlane /></ScopedAdminGuard>} />
                         {WORKSPACE_SETTINGS_SECTIONS.map((section) => (

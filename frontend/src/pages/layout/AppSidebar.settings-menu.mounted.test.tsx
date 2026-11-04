@@ -2,6 +2,7 @@
 
 import React from 'react';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const harness = vi.hoisted(() => ({
@@ -35,28 +36,21 @@ vi.mock('../../api/domains/agents', () => ({
   agentApi: { getHrAgent: harness.getHrAgent },
 }));
 
-vi.mock('../../api/domains/chat', () => ({
-  chatApi: {
-    createSession: vi.fn(),
-    listSessions: vi.fn().mockResolvedValue([]),
-    deleteSession: vi.fn().mockResolvedValue(undefined),
-  },
-}));
-
-vi.mock('../../api/domains/localBridge', () => ({
-  localBridgeApi: {
-    createAgentChannelSession: vi.fn(),
-    listAgentChannelSessions: vi.fn().mockResolvedValue([]),
-    deleteAgentChannelSession: vi.fn().mockResolvedValue(undefined),
-  },
+vi.mock('../../api/domains/assistant', () => ({
+  assistantApi: { get: vi.fn().mockResolvedValue({ agent: null, candidates: [] }) },
 }));
 
 import AppSidebar from './AppSidebar';
+
+const queryClient = new QueryClient({
+  defaultOptions: { queries: { retry: false, enabled: false } },
+});
 
 function SettingsHarness({ onCloseAccountMenu }: { onCloseAccountMenu: () => void }) {
   const [open, setOpen] = React.useState(false);
   const accountMenuRef = React.useRef<HTMLDivElement | null>(null);
   return (
+    <QueryClientProvider client={queryClient}>
     <AppSidebar
       user={{ id: 'user-1', role: 'org_admin', display_name: 'Example Owner' }}
       theme="light"
@@ -83,6 +77,7 @@ function SettingsHarness({ onCloseAccountMenu }: { onCloseAccountMenu: () => voi
       onLogout={vi.fn()}
       versionDisplay={null}
     />
+    </QueryClientProvider>
   );
 }
 

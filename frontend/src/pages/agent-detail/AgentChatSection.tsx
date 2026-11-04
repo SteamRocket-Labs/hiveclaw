@@ -2021,7 +2021,23 @@ function AgentChatSection({
         </aside>
       )}
       <div className="session-tui-center">
-        {operatorReadEnabled && <SessionWorkbenchHeader model={threadTimelineModel.header} />}
+        {operatorReadEnabled && (
+          <SessionWorkbenchHeader
+            model={threadTimelineModel.header}
+            history={effectiveAgentId && agent?.access_level !== 'operator' ? {
+              // 历史 (B3): the bot's own conversations live behind one header
+              // entry; the app sidebar no longer lists sessions. The merged
+              // mine+groups list can name a row twice — keep the first.
+              agentId: effectiveAgentId,
+              sessions: sessions.filter((session: any, index: number) => (
+                !session.is_draft
+                && sessions.findIndex((other: any) => String(other?.id) === String(session.id)) === index
+              )),
+              loading: sessionsLoading,
+              activeSessionId: activeSession?.id ? String(activeSession.id) : null,
+            } : undefined}
+          />
+        )}
         {activeSession?.operator_view && operatorReadEnabled && (
           <div className="session-operator-view" data-testid="session-operator-view" role="status">
             <strong>{t('agent.chat.operatorView', 'Operator View')}</strong>

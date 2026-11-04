@@ -1,68 +1,36 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react';
+import { useEffect, useRef, useState, type ReactNode, type RefObject } from 'react';
 import { NavLink, useLocation, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
+import { useQuery } from '@tanstack/react-query';
 import {
-  IconArrowUpRight,
   IconBell,
   IconBuilding,
-  IconCheckbox,
   IconChevronUp,
   IconChevronsLeft,
   IconChevronsRight,
-  IconChevronDown,
-  IconChevronRight,
   IconDatabase,
   IconDeviceDesktop,
-  IconFolder,
-  IconGitBranch,
-  IconHome,
   IconLogout,
   IconMoon,
   IconPlus,
   IconSettings,
-  IconSitemap,
   IconSun,
-  IconTrash,
   IconUser,
   IconWorld,
 } from '@tabler/icons-react';
-import { chatApi, type ChatSession } from '../../api/domains/chat';
+import { assistantApi } from '../../api/domains/assistant';
 import { agentApi, type HrAgentInfo } from '../../api/domains/agents';
 import { isActiveCompany } from '../../api/domains/admin';
-import { localBridgeApi, type LocalAgentChannelSession } from '../../api/domains/localBridge';
-import { isAdministratorRole, isManagedEmployeeAgent, isScopedBusinessAdminForAgent } from '../../roles';
-import { isA2ASession } from '../agent-detail/chatRuntime';
+import { isManagedEmployeeAgent } from '../../roles';
 import { buildNewSessionDraftNavigation } from '../agent-detail/newSessionNavigation';
-import { sessionBranchMode, sessionTitleForUser } from '../session-workbench/sessionTitlePresentation';
 
 const sidebarIcons = {
-  plus: <IconPlus size={16} stroke={1.5} />,
   user: <IconUser size={16} stroke={1.5} />,
   collapse: <IconChevronsLeft size={16} stroke={1.5} />,
   expand: <IconChevronsRight size={16} stroke={1.5} />,
 };
 
-type SidebarNavItem = {
-  to: string;
-  labelKey: string;
-  fallback: string;
-  icon: ReactNode;
-  end?: boolean;
-};
-
-const workspaceNavItems: SidebarNavItem[] = [
-  { to: '/home', labelKey: 'nav.home', fallback: 'Home', icon: <IconHome size={15} stroke={1.6} />, end: true },
-  { to: '/assistant', labelKey: 'nav.myAssistant', fallback: 'My Assistant', icon: <IconUser size={15} stroke={1.6} /> },
-  { to: '/plaza', labelKey: 'nav.plaza', fallback: 'Agent Circle', icon: <IconSitemap size={15} stroke={1.6} /> },
-  { to: '/automations', labelKey: 'nav.tasksAutomation', fallback: 'Automation', icon: <IconCheckbox size={15} stroke={1.6} /> },
-  { to: '/knowledge', labelKey: 'nav.knowledge', fallback: 'Knowledge', icon: <IconDatabase size={15} stroke={1.6} /> },
-  { to: '/projects', labelKey: 'projects.title', fallback: 'Projects', icon: <IconFolder size={15} stroke={1.6} /> },
-  { to: '/local-agents', labelKey: 'nav.bridge', fallback: 'Local connection', icon: <IconDeviceDesktop size={15} stroke={1.6} /> },
-];
-
 const isLocalAgentRuntimeType = (agent: any): boolean => agent?.agent_type === 'local_agent';
-const isLocalAgentType = (agent: any): boolean => agent?.agent_type === 'local_agent';
-const isOperatorOnlyAgent = (agent: any): boolean => agent?.access_level === 'operator';
 
 const getAgentBadgeStatus = (agent: any): string | null => {
   if (agent.status === 'error') return 'error';
@@ -88,21 +56,6 @@ const getAccountRoleLabel = (user: any, t: any): string => {
   return t('nav.member', 'Member');
 };
 
-function SidebarNavLink({ item }: { item: SidebarNavItem }) {
-  const { t } = useTranslation();
-  return (
-    <NavLink
-      to={item.to}
-      end={item.end}
-      className={({ isActive }) => `sidebar-item ${isActive ? 'active' : ''}`}
-      title={t(item.labelKey, item.fallback)}
-    >
-      <span className="sidebar-item-icon sidebar-item-icon-centered">{item.icon}</span>
-      <span className="sidebar-item-text">{t(item.labelKey, item.fallback)}</span>
-    </NavLink>
-  );
-}
-
 interface AppSidebarProps {
   user: any;
   theme: 'dark' | 'light';
@@ -125,7 +78,6 @@ interface AppSidebarProps {
   onOpenAccountSettings: () => void;
   onLogout: () => void;
   versionDisplay: ReactNode;
-  agentSessionsByAgentId?: Record<string, ChatSession[]>;
   hrAgent?: HrAgentInfo | null;
 }
 
@@ -136,7 +88,6 @@ export function isCompactSidebarViewport(width: number): boolean {
 }
 
 const ACTIVE_AGENT_RE = /^\/agents\/([^/?#]+)/;
-const ACTIVE_SESSION_PATH_RE = /^\/agents\/[^/?#]+\/sessions\/([^/?#]+)/;
 
 function getActiveAgentId(pathname: string): string | null {
   const match = pathname.match(ACTIVE_AGENT_RE);
@@ -146,133 +97,6 @@ function getActiveAgentId(pathname: string): string | null {
     return decodeURIComponent(value);
   } catch {
     return value;
-  }
-}
-
-function getActiveSessionId(pathname: string, search: string): string | null {
-  const params = new URLSearchParams(search);
-  const queryValue = params.get('session_id') || params.get('session');
-  if (queryValue) return queryValue;
-  const match = pathname.match(ACTIVE_SESSION_PATH_RE);
-  const value = match?.[1];
-  if (!value) return null;
-  try {
-    return decodeURIComponent(value);
-  } catch {
-    return value;
-  }
-}
-
-export function getSessionTag(session: ChatSession | any, t: any): string | null {
-  return getSessionTags(session, t)[0] || null;
-}
-
-const BRANCH_SESSION_MODES = new Set(['branch', 'fork', 'rewind', 'edit', 'insert_before', 'insert_after', 'reply', 'regenerate']);
-
-export function isBranchSession(session: ChatSession | any): boolean {
-  const mode = sessionBranchMode(session);
-  if (mode && BRANCH_SESSION_MODES.has(mode)) return true;
-  const id = session?.id == null ? '' : String(session.id);
-  const parentId = session?.parent_session_id == null ? '' : String(session.parent_session_id);
-  const rootId = session?.root_session_id == null ? '' : String(session.root_session_id);
-  if (parentId && parentId !== id && rootId && rootId !== id) return true;
-  return Boolean(parentId && parentId !== id && /\s+\(branch\)\s*$/i.test(String(session?.title || '')));
-}
-
-export function getSessionTags(session: ChatSession | any, t: any): string[] {
-  const tags: string[] = [];
-  const source = String(session.source_channel || session.thread_source || '').toLowerCase();
-  if (isA2ASession(session)) {
-    tags.push(t('nav.sessionA2aBadge', 'A2A'));
-  }
-  if (source === 'trigger' || source === 'schedule' || source === 'task' || session.runtime_task_id) {
-    tags.push(t('nav.sessionTaskBadge', 'Task'));
-  }
-  if (source === 'feishu' || source === 'slack' || source === 'dingtalk' || source === 'wecom' || source === 'wechat_personal' || source === 'telegram' || source === 'email') {
-    tags.push(t('nav.sessionImBadge', 'IM'));
-  }
-  if (source === 'local_bridge' || source === 'local_agent') tags.push(t('nav.localBadge', 'Local'));
-  if (isBranchSession(session)) tags.push(t('nav.sessionBranchBadge', 'Branch'));
-  return Array.from(new Set(tags));
-}
-
-export function displaySessionTitle(session: ChatSession | any, t: any): string {
-  const fallback = t('agent.chat.session', 'Session');
-  return sessionTitleForUser(session, fallback);
-}
-
-export type SidebarSessionFamily = {
-  root: ChatSession & Record<string, unknown>;
-  children: Array<ChatSession & Record<string, unknown>>;
-};
-
-export function buildSidebarSessionFamilies(sessions: Array<ChatSession | any>): SidebarSessionFamily[] {
-  const byId = new Map<string, ChatSession & Record<string, unknown>>();
-  sessions.forEach((session) => {
-    if (session?.id == null) return;
-    byId.set(String(session.id), session as ChatSession & Record<string, unknown>);
-  });
-
-  const childrenByRootId = new Map<string, Array<ChatSession & Record<string, unknown>>>();
-  const childIds = new Set<string>();
-  sessions.forEach((session) => {
-    if (!isBranchSession(session)) return;
-    const id = String(session.id);
-    const rootId = String(session.root_session_id || session.parent_session_id || '');
-    const parentId = String(session.parent_session_id || '');
-    const familyRootId = rootId && rootId !== id && byId.has(rootId)
-      ? rootId
-      : parentId && parentId !== id && byId.has(parentId)
-        ? parentId
-        : '';
-    if (!familyRootId) return;
-    const rows = childrenByRootId.get(familyRootId) || [];
-    rows.push(session as ChatSession & Record<string, unknown>);
-    childrenByRootId.set(familyRootId, rows);
-    childIds.add(id);
-  });
-
-  return sessions
-    .filter((session) => session?.id != null && !childIds.has(String(session.id)))
-    .map((session) => {
-      const id = String(session.id);
-      return {
-        root: session as ChatSession & Record<string, unknown>,
-        children: childrenByRootId.get(id) || [],
-      };
-    });
-}
-
-export function sidebarSessionFromLocalAgentChannelSession(
-  agentId: string,
-  session: LocalAgentChannelSession,
-): ChatSession & Record<string, unknown> {
-  const createdAt = session.created_at || session.last_message_at || session.updated_at || '';
-  const updatedAt = session.updated_at || session.last_message_at || session.created_at || createdAt;
-  const routeSessionId = session.chat_session_id || session.id;
-  return {
-    id: routeSessionId,
-    agent_id: agentId,
-    title: session.title || 'Local Agent Chat',
-    created_at: createdAt,
-    updated_at: updatedAt,
-    last_message_at: session.last_message_at || null,
-    chat_session_id: session.chat_session_id,
-    channel_session_id: session.id,
-    local_channel_session_id: session.id,
-    source_channel: session.source_channel || 'local_agent',
-    session_kind: session.session_kind || 'local_agent_channel',
-    thread_source: 'local_agent',
-  } as ChatSession & Record<string, unknown>;
-}
-
-function formatSessionTime(session: ChatSession | any, locale: string): string {
-  const raw = session.last_message_at || session.updated_at || session.created_at;
-  if (!raw) return '';
-  try {
-    return new Date(raw).toLocaleDateString(locale, { month: 'short', day: 'numeric' });
-  } catch {
-    return '';
   }
 }
 
@@ -298,35 +122,43 @@ export default function AppSidebar({
   onOpenAccountSettings,
   onLogout,
   versionDisplay,
-  agentSessionsByAgentId,
   hrAgent: providedHrAgent,
 }: AppSidebarProps) {
-  const { t, i18n } = useTranslation();
+  const { t } = useTranslation();
   const location = useLocation();
   const navigate = useNavigate();
   const activeAgentId = getActiveAgentId(location.pathname);
-  const activeSessionId = getActiveSessionId(location.pathname, location.search);
   const isCreateAgentRoute = location.pathname === '/agents/new';
   const [resolvedHrAgent, setResolvedHrAgent] = useState<HrAgentInfo | null>(providedHrAgent ?? null);
   const createAgentId = resolvedHrAgent?.id ? String(resolvedHrAgent.id) : null;
   const isCreateAgentActive = isCreateAgentRoute || (!!createAgentId && activeAgentId === createAgentId);
-  const [expandedAgentIds, setExpandedAgentIds] = useState<Set<string>>(() => {
-    const activeAgent = agents.find((agent) => String(agent.id) === String(activeAgentId || ''));
-    return new Set(activeAgentId && !isOperatorOnlyAgent(activeAgent) ? [activeAgentId] : []);
+
+  // The bot is the way in (B3): My Assistant's own binding decides which bot
+  // leads the list. The read shares the assistant cache the entry route uses,
+  // so it adds no request once that page has loaded.
+  const assistantBinding = useQuery({
+    queryKey: ['assistant', user?.id || '', currentTenant || user?.tenant_id || '', user?.role || ''],
+    queryFn: () => assistantApi.get(),
+    enabled: Boolean(user?.id) && Boolean(currentTenant || user?.tenant_id),
+    staleTime: 30_000,
+    retry: false,
   });
-  const [sessionsByAgentId, setSessionsByAgentId] = useState<Record<string, ChatSession[]>>(agentSessionsByAgentId || {});
-  const [sessionLoadingByAgentId, setSessionLoadingByAgentId] = useState<Record<string, boolean>>({});
-  const locale = i18n.language?.startsWith('zh') ? 'zh-CN' : 'en-US';
+  const assistantAgentId = assistantBinding.data?.agent?.id ? String(assistantBinding.data.agent.id) : null;
+
+  // 我的助理 first, then the rest by most recent activity. The HR creation
+  // Agent is the creation flow, not a workspace entry, so it stays out of the
+  // list (the "New digital employee" action below opens it).
   const sortedAgents = [...agents]
     .filter((agent) => !createAgentId || String(agent.id) !== createAgentId)
     .sort((a, b) => {
+      if (assistantAgentId) {
+        if (String(a.id) === assistantAgentId) return -1;
+        if (String(b.id) === assistantAgentId) return 1;
+      }
       const aTime = a.last_active_at ? new Date(a.last_active_at).getTime() : (a.created_at ? new Date(a.created_at).getTime() : 0);
       const bTime = b.last_active_at ? new Date(b.last_active_at).getTime() : (b.created_at ? new Date(b.created_at).getTime() : 0);
       return bTime - aTime;
     });
-  const getSidebarAgentById = (agentId: string) =>
-    sortedAgents.find((agent) => String(agent.id) === String(agentId))
-    || (createAgentId && String(createAgentId) === String(agentId) ? resolvedHrAgent : null);
 
   const canSeeControlPlane = user && ['platform_admin', 'org_admin'].includes(user.role);
   // Only active companies may ever be selected or shown as the current
@@ -337,10 +169,6 @@ export default function AppSidebar({
     || (user?.role === 'platform_admin' && !currentTenant
       ? t('layout.noCompanySelected', 'No company selected')
       : t('layout.myCompany', 'My Company'));
-  const effectiveSessionsByAgentId = useMemo(
-    () => ({ ...sessionsByAgentId, ...(agentSessionsByAgentId || {}) }),
-    [agentSessionsByAgentId, sessionsByAgentId],
-  );
 
   const settingsTriggerRef = useRef<HTMLButtonElement | null>(null);
   const onCloseAccountMenuRef = useRef(onCloseAccountMenu);
@@ -404,262 +232,6 @@ export default function AppSidebar({
     };
   }, [providedHrAgent, user, currentTenant]);
 
-  useEffect(() => {
-    if (!activeAgentId) return;
-    if (isOperatorOnlyAgent(getSidebarAgentById(activeAgentId))) {
-      setExpandedAgentIds((prev) => {
-        if (!prev.has(activeAgentId)) return prev;
-        const next = new Set(prev);
-        next.delete(activeAgentId);
-        return next;
-      });
-      return;
-    }
-    setExpandedAgentIds((prev) => {
-      if (prev.has(activeAgentId)) return prev;
-      const next = new Set(prev);
-      next.add(activeAgentId);
-      return next;
-    });
-  }, [activeAgentId]);
-
-  const loadAgentSessions = async (agentId: string, force = false) => {
-    if (isOperatorOnlyAgent(getSidebarAgentById(agentId))) return;
-    if (!force && (agentSessionsByAgentId?.[agentId] || sessionsByAgentId[agentId])) return;
-    if (sessionLoadingByAgentId[agentId]) return;
-    // The roster decides the truthful session scope (managed vs own). While it
-    // is still loading the row is unknown, so defer without caching instead of
-    // freezing the tree on the wrong scope.
-    if (!getSidebarAgentById(agentId) && agents.length === 0) return;
-    setSessionLoadingByAgentId((prev) => ({ ...prev, [agentId]: true }));
-    try {
-      const agent = getSidebarAgentById(agentId);
-      if (isLocalAgentType(agent)) {
-        const rows = await localBridgeApi.listAgentChannelSessions(agentId);
-        setSessionsByAgentId((prev) => ({
-          ...prev,
-          [agentId]: rows.map((session) => sidebarSessionFromLocalAgentChannelSession(agentId, session)),
-        }));
-        return;
-      }
-      // Scoped administrators load the selected company's managed Session
-      // inventory as themselves (server-audited, no operator reason);
-      // employees remain on their own sessions.
-      const rows = isScopedBusinessAdminForAgent(user, agent)
-        ? await chatApi.listSessions(agentId, 'all')
-        : await chatApi.listSessions(agentId, 'mine');
-      setSessionsByAgentId((prev) => ({
-        ...prev,
-        [agentId]: rows.filter((session: any) => session.source_channel !== 'heartbeat'),
-      }));
-    } catch {
-      setSessionsByAgentId((prev) => ({ ...prev, [agentId]: [] }));
-    } finally {
-      setSessionLoadingByAgentId((prev) => ({ ...prev, [agentId]: false }));
-    }
-  };
-
-  const replaceAgentSessions = (agentId: string, updater: (sessions: ChatSession[]) => ChatSession[]) => {
-    setSessionsByAgentId((prev) => ({
-      ...prev,
-      [agentId]: updater(prev[agentId] || []),
-    }));
-  };
-
-  const toggleAgentSessions = (agentId: string) => {
-    if (isOperatorOnlyAgent(getSidebarAgentById(agentId))) return;
-    setExpandedAgentIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(agentId)) next.delete(agentId);
-      else next.add(agentId);
-      return next;
-    });
-    void loadAgentSessions(agentId);
-  };
-
-  const handleCreateSession = async (agentId: string) => {
-    try {
-      const agent = getSidebarAgentById(agentId);
-      if (!isLocalAgentType(agent)) {
-        const request = buildNewSessionDraftNavigation(agentId);
-        navigate(request.to, { state: request.state });
-        return;
-      }
-      const session = sidebarSessionFromLocalAgentChannelSession(
-        agentId,
-        await localBridgeApi.createAgentChannelSession(agentId, {
-          title: t('agent.chat.newSession', 'New Conversation'),
-        }),
-      );
-      replaceAgentSessions(agentId, (rows) => [session, ...rows.filter((row) => String(row.id) !== String(session.id))]);
-      navigate(`/agents/${agentId}?session_id=${encodeURIComponent(String(session.id))}#chat`);
-    } catch (error) {
-      console.error('Failed to create chat session:', error);
-    }
-  };
-
-  const handleDeleteSession = async (agentId: string, session: ChatSession | any) => {
-    const sessionId = String(session.id);
-    const label = displaySessionTitle(session, t);
-    const ok = window.confirm(t('chat.deleteConfirmWithTitle', 'Delete "{{title}}" and all its messages? This cannot be undone.', { title: label }));
-    if (!ok) return;
-    try {
-      const agent = getSidebarAgentById(agentId);
-      if (isLocalAgentType(agent)) {
-        await localBridgeApi.deleteAgentChannelSession(agentId, String((session as any).channel_session_id || session.id));
-      } else {
-        await chatApi.deleteSession(agentId, sessionId);
-      }
-      const currentRows = effectiveSessionsByAgentId[agentId] || [];
-      const nextRows = currentRows.filter((row: any) => (
-        String(row.id) !== sessionId && String(row.chat_session_id || '') !== sessionId
-      ));
-      replaceAgentSessions(agentId, () => nextRows);
-      if (String(activeAgentId || '') === String(agentId) && String(activeSessionId || '') === sessionId) {
-        const next = nextRows[0];
-        if (next) navigate(`/agents/${agentId}?session_id=${encodeURIComponent(String(next.id))}#chat`);
-        else navigate(`/agents/${agentId}#chat`);
-      }
-    } catch (error) {
-      console.error('Failed to delete chat session:', error);
-    }
-  };
-
-  useEffect(() => {
-    if (!activeAgentId) return;
-    // A canonical Session id appears only after the draft's first atomic
-    // createSessionRun. Refresh then so the sidebar consumes that durable
-    // Session instead of retaining the previous list snapshot.
-    void loadAgentSessions(activeAgentId, Boolean(activeSessionId));
-    // Manual expansion calls the same loader without forcing a refresh.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeAgentId, activeSessionId, agents]);
-
-  const [expandedSessionFamilyIds, setExpandedSessionFamilyIds] = useState<Set<string>>(() => new Set());
-
-  const isActiveSidebarSession = (agentId: string, session: ChatSession | any): boolean => {
-    if (String(activeAgentId || '') !== String(agentId) || !activeSessionId) return false;
-    const activeId = String(activeSessionId);
-    return [session.id, session.chat_session_id]
-      .filter((candidate) => candidate != null && String(candidate).length > 0)
-      .some((candidate) => String(candidate) === activeId);
-  };
-
-  const toggleSessionFamily = (sessionId: string) => {
-    setExpandedSessionFamilyIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(sessionId)) next.delete(sessionId);
-      else next.add(sessionId);
-      return next;
-    });
-  };
-
-  const renderSessionTags = (session: ChatSession | any) => {
-    const tags = getSessionTags(session, t);
-    if (tags.length === 0) return null;
-    return (
-      <span className="sidebar-session-tags">
-        {tags.map((tag) => (
-          <span key={tag} className="sidebar-session-tag">{tag}</span>
-        ))}
-      </span>
-    );
-  };
-
-  const renderSessionRow = (
-    agentId: string,
-    session: ChatSession | any,
-    options: {
-      family?: SidebarSessionFamily;
-      child?: boolean;
-      open?: boolean;
-      activeChild?: boolean;
-    } = {},
-  ) => {
-    const title = displaySessionTitle(session, t);
-    const sessionId = String(session.id);
-    const isActiveSession = isActiveSidebarSession(agentId, session);
-    const children = options.family?.children || [];
-    const hasChildren = children.length > 0 && !options.child;
-    const rowClassName = [
-      'sidebar-session-row',
-      isActiveSession ? 'active' : '',
-      hasChildren ? 'has-children' : '',
-      options.child ? 'branch-child' : '',
-      options.activeChild ? 'has-active-branch' : '',
-    ].filter(Boolean).join(' ');
-    return (
-      <div key={sessionId} className={rowClassName}>
-        {hasChildren && (
-          <button
-            type="button"
-            className="sidebar-session-family-toggle"
-            aria-label={options.open ? t('nav.collapseBranchSessions', 'Collapse branches') : t('nav.expandBranchSessions', 'Expand branches')}
-            aria-expanded={options.open}
-            onClick={(event) => {
-              event.preventDefault();
-              event.stopPropagation();
-              toggleSessionFamily(sessionId);
-            }}
-          >
-            {options.open ? <IconChevronDown size={12} stroke={1.8} /> : <IconChevronRight size={12} stroke={1.8} />}
-          </button>
-        )}
-        <NavLink
-          to={`/agents/${agentId}?session_id=${encodeURIComponent(sessionId)}#chat`}
-          className={() => `sidebar-session-item ${isActiveSession ? 'active' : ''}`}
-          title={title}
-        >
-          <span className="sidebar-session-title">{title}</span>
-          {renderSessionTags(session)}
-          <span className="sidebar-session-meta">
-            {formatSessionTime(session, locale)}
-            {session.message_count ? ` · ${session.message_count}` : ''}
-          </span>
-        </NavLink>
-        {hasChildren && (
-          <span className="sidebar-session-branch-count" data-testid="sidebar-session-branch-count" title={t('nav.branchCount', '{{count}} branches', { count: children.length })}>
-            <IconGitBranch size={10} stroke={1.9} />
-            {children.length}
-          </span>
-        )}
-        {(!session.user_id || String(session.user_id) === String(user?.id || '')) && (
-          <button
-            type="button"
-            className="sidebar-session-action"
-            aria-label={`Delete session ${title}`}
-            title={t('common.delete', 'Delete')}
-            onClick={(event) => {
-              event.preventDefault();
-              event.stopPropagation();
-              void handleDeleteSession(agentId, session);
-            }}
-          >
-            <IconTrash size={12} stroke={1.8} />
-          </button>
-        )}
-      </div>
-    );
-  };
-
-  const renderSessionFamilies = (agentId: string, sessions: ChatSession[]) => buildSidebarSessionFamilies(sessions)
-    .slice(0, 8)
-    .map((family) => {
-      const rootId = String(family.root.id);
-      const activeChild = family.children.some((session) => isActiveSidebarSession(agentId, session));
-      const open = family.children.length > 0 && (expandedSessionFamilyIds.has(rootId) || activeChild);
-      return (
-        <div key={rootId} className="sidebar-session-family" data-testid={`sidebar-session-family-${rootId}`}>
-          {renderSessionRow(agentId, family.root, { family, open, activeChild })}
-          {open && (
-            <div className="sidebar-session-children" data-testid={`sidebar-session-children-${rootId}`}>
-              {family.children.map((child) => renderSessionRow(agentId, child, { child: true }))}
-            </div>
-          )}
-        </div>
-      );
-    });
-
   return (
     <nav className={`sidebar ${isSidebarCollapsed ? 'collapsed' : ''}`}>
       <div className="sidebar-top">
@@ -704,98 +276,33 @@ export default function AppSidebar({
       </div>
 
       <div className="sidebar-scrollable">
-        <div className="sidebar-section sidebar-nav-section sidebar-top-actions">
-          {workspaceNavItems.map((item) => (
-            <SidebarNavLink key={item.to} item={item} />
-          ))}
-        </div>
-
         <div className="sidebar-section sidebar-nav-section">
-          <NavLink to="/agents" className="sidebar-section-title sidebar-section-title-link sidebar-tree-heading">
-            <IconFolder size={14} stroke={1.7} />
-            <span>{t('nav.digitalEmployees', 'Digital Employees')}</span>
-          </NavLink>
           {sortedAgents.map((agent) => {
             const badge = getAgentBadgeStatus(agent);
             const sourceBadge = getAgentSourceBadge(agent, t, user);
             const avatarChar = ((Array.from(agent.name || '?')[0] as string) || '?').toUpperCase();
-            const isExpanded = expandedAgentIds.has(String(agent.id));
-            const agentSessions = effectiveSessionsByAgentId[String(agent.id)] || [];
-            const sessionsLoading = sessionLoadingByAgentId[String(agent.id)];
-            const isAgentRowActive = String(activeAgentId || '') === String(agent.id) && !activeSessionId;
-            const operatorOnly = isOperatorOnlyAgent(agent);
+            const isAgentRowActive = String(activeAgentId || '') === String(agent.id);
+            const operatorOnly = agent.access_level === 'operator';
             return (
-              <div key={agent.id} className="sidebar-agent-item">
-                <div className="sidebar-agent-row">
-                  {!operatorOnly && <button
-                    type="button"
-                    className="sidebar-agent-disclosure"
-                    aria-label={isExpanded ? t('nav.collapseAgentSessions', 'Collapse sessions') : t('nav.expandAgentSessions', 'Expand sessions')}
-                    aria-expanded={isExpanded}
-                    onClick={(event) => {
-                      event.preventDefault();
-                      event.stopPropagation();
-                      toggleAgentSessions(String(agent.id));
-                    }}
-                  >
-                    {isExpanded ? <IconChevronDown size={13} stroke={1.7} /> : <IconChevronRight size={13} stroke={1.7} />}
-                  </button>}
-                  <NavLink
-                    to={operatorOnly ? `/agents/${agent.id}?manage=true#chat` : `/agents/${agent.id}`}
-                    className={() => `sidebar-item sidebar-agent-link ${isAgentRowActive ? 'active' : ''}`}
-                    title={agent.name}
-                    aria-label={`Open ${agent.name}`}
-                  >
-                    <span className="sidebar-item-icon" style={{ position: 'relative' }}>
-                      <span className={`agent-avatar${isLocalAgentRuntimeType(agent) ? ' local-runtime' : ''}`}>{avatarChar}</span>
-                      {isLocalAgentRuntimeType(agent) && (
-                        <span className="agent-avatar-link" style={{ display: 'flex' }}>
-                          <IconDeviceDesktop size={10} stroke={2.5} />
-                        </span>
-                      )}
-                      {badge && <span className={`agent-avatar-badge ${badge}`} />}
-                    </span>
-                    <span className="sidebar-item-text">{agent.name}</span>
-                    {sourceBadge && !isSidebarCollapsed && <span className="sidebar-agent-source-badge">{sourceBadge}</span>}
-                  </NavLink>
-                  {!isSidebarCollapsed && (
-                    <span className="sidebar-agent-actions" aria-hidden={false}>
-                      {!operatorOnly && <button
-                        type="button"
-                        className="sidebar-agent-action"
-                        aria-label={`New conversation with ${agent.name}`}
-                        title={t('agent.chat.newSession', 'New Conversation')}
-                        onClick={(event) => {
-                          event.preventDefault();
-                          event.stopPropagation();
-                          void handleCreateSession(String(agent.id));
-                        }}
-                      >
-                        <IconPlus size={13} stroke={1.8} />
-                      </button>}
-                      <NavLink
-                        to={operatorOnly ? `/agents/${agent.id}?manage=true#chat` : `/agents/${agent.id}?manage=true#status`}
-                        className={() => 'sidebar-agent-action'}
-                        aria-label={`Open ${agent.name} details`}
-                        title={t('agent.details', 'Details')}
-                      >
-                        <IconArrowUpRight size={13} stroke={1.8} />
-                      </NavLink>
+              <NavLink
+                key={agent.id}
+                to={operatorOnly ? `/agents/${agent.id}?manage=true#chat` : `/agents/${agent.id}`}
+                className={() => `sidebar-item sidebar-agent-link ${isAgentRowActive ? 'active' : ''}`}
+                title={agent.name}
+                aria-label={`Open ${agent.name}`}
+              >
+                <span className="sidebar-item-icon" style={{ position: 'relative' }}>
+                  <span className={`agent-avatar${isLocalAgentRuntimeType(agent) ? ' local-runtime' : ''}`}>{avatarChar}</span>
+                  {isLocalAgentRuntimeType(agent) && (
+                    <span className="agent-avatar-link" style={{ display: 'flex' }}>
+                      <IconDeviceDesktop size={10} stroke={2.5} />
                     </span>
                   )}
-                </div>
-                {!operatorOnly && isExpanded && !isSidebarCollapsed && (
-                  <div className="sidebar-agent-sessions" data-testid={`sidebar-agent-sessions-${agent.id}`}>
-                    {sessionsLoading ? (
-                      <div className="sidebar-session-muted">{t('common.loading', 'Loading')}</div>
-                    ) : agentSessions.length === 0 ? (
-                      <div className="sidebar-session-muted">{t('agent.chat.noSessionsYet', 'No conversations yet.')}</div>
-                    ) : (
-                      renderSessionFamilies(String(agent.id), agentSessions)
-                    )}
-                  </div>
-                )}
-              </div>
+                  {badge && <span className={`agent-avatar-badge ${badge}`} />}
+                </span>
+                <span className="sidebar-item-text">{agent.name}</span>
+                {sourceBadge && !isSidebarCollapsed && <span className="sidebar-agent-source-badge">{sourceBadge}</span>}
+              </NavLink>
             );
           })}
           {agents.length === 0 && (
@@ -808,8 +315,10 @@ export default function AppSidebar({
                 className={`sidebar-item sidebar-create-agent-link ${isCreateAgentActive ? 'active' : ''}`}
                 title={t('nav.newDigitalEmployee', 'New digital employee')}
                 onClick={() => {
-                  if (createAgentId) void handleCreateSession(createAgentId);
-                  else navigate('/agents/new');
+                  if (createAgentId) {
+                    const request = buildNewSessionDraftNavigation(createAgentId);
+                    navigate(request.to, { state: request.state });
+                  } else navigate('/agents/new');
                 }}
               >
                 <span className="sidebar-item-icon sidebar-item-icon-centered">
@@ -839,8 +348,16 @@ export default function AppSidebar({
                   <IconUser size={15} stroke={1.5} />
                   <span>{isChinese ? '账户设置' : 'Account Settings'}</span>
                 </button>
+                <NavLink to="/knowledge" className="account-dropdown-item">
+                  <IconDatabase size={15} stroke={1.5} />
+                  <span>{t('nav.knowledge', 'Knowledge')}</span>
+                </NavLink>
+                <NavLink to="/local-agents" className="account-dropdown-item">
+                  <IconDeviceDesktop size={15} stroke={1.5} />
+                  <span>{t('nav.bridge', 'Local connection')}</span>
+                </NavLink>
                 {canSeeControlPlane && (
-                  <NavLink to="/enterprise/dashboard" className="account-dropdown-item">
+                  <NavLink to="/enterprise/users" className="account-dropdown-item">
                     <IconBuilding size={15} stroke={1.5} />
                     <span>{t('nav.enterprise', 'Company Admin')}</span>
                   </NavLink>

@@ -8,6 +8,7 @@ import WorkspaceStorageSection from './WorkspaceStorageSection';
 interface WorkspaceInfoSectionProps {
   selectedTenantId: string;
   canManageCompanyContent: boolean;
+  canEditCompanyIntro: boolean;
   companyNameEditor: ReactNode;
   companyTimezoneEditor: ReactNode;
   companyIntro: string;
@@ -24,6 +25,7 @@ interface WorkspaceInfoSectionProps {
 export default function WorkspaceInfoSection({
   selectedTenantId,
   canManageCompanyContent,
+  canEditCompanyIntro,
   companyNameEditor,
   companyTimezoneEditor,
   companyIntro,
@@ -47,27 +49,31 @@ export default function WorkspaceInfoSection({
 
       {canManageCompanyContent ? (
         <>
-          <h3 className="ws-info-heading">{t('enterprise.companyIntro.title', 'Company Intro')}</h3>
-          <p className="ws-info-desc">
-            {t('enterprise.companyIntro.description', 'Describe your company\'s mission, products, and culture. This information is included in every agent conversation as context.')}
-          </p>
-          <div className="card ws-info-card">
-            <textarea
-              className="form-input ws-info-textarea"
-              value={companyIntro}
-              onChange={(event) => onCompanyIntroChange(event.target.value)}
-              placeholder={`# Company Name\nHiveClaw\n\n# About\nAI agents for teams\nOpen Source · Multi-agent collaboration\n\nHive helps individuals and teams operate digital employees at company scale.`}
-            />
-            <div className="ws-info-actions">
-              <button className="btn btn-primary" onClick={onSaveCompanyIntro} disabled={companyIntroSaving}>
-                {companyIntroSaving ? t('common.loading') : t('common.save', 'Save')}
-              </button>
-              {companyIntroSaved ? <span className="ws-info-saved">✅ {t('enterprise.config.saved', 'Saved')}</span> : null}
-              <span className="ws-info-hint">
-                💡 {t('enterprise.companyIntro.hint', 'This content appears in every agent\'s system prompt')}
-              </span>
-            </div>
-          </div>
+          {canEditCompanyIntro && (
+            <>
+              <h3 className="ws-info-heading">{t('enterprise.companyIntro.title', 'Company Intro')}</h3>
+              <p className="ws-info-desc">
+                {t('enterprise.companyIntro.description', 'Describe your company\'s mission, products, and culture. This information is included in every agent conversation as context.')}
+              </p>
+              <div className="card ws-info-card">
+                <textarea
+                  className="form-input ws-info-textarea"
+                  value={companyIntro}
+                  onChange={(event) => onCompanyIntroChange(event.target.value)}
+                  placeholder={`# Company Name\nHiveClaw\n\n# About\nAI agents for teams\nOpen Source · Multi-agent collaboration\n\nHive helps individuals and teams operate digital employees at company scale.`}
+                />
+                <div className="ws-info-actions">
+                  <button className="btn btn-primary" onClick={onSaveCompanyIntro} disabled={companyIntroSaving}>
+                    {companyIntroSaving ? t('common.loading') : t('common.save', 'Save')}
+                  </button>
+                  {companyIntroSaved ? <span className="ws-info-saved">✅ {t('enterprise.config.saved', 'Saved')}</span> : null}
+                  <span className="ws-info-hint">
+                    💡 {t('enterprise.companyIntro.hint', 'This content appears in every agent\'s system prompt')}
+                  </span>
+                </div>
+              </div>
+            </>
+          )}
 
           {legacyCompanyFilesCard}
           <WorkspaceStorageSection key={selectedTenantId} selectedTenantId={selectedTenantId} />

@@ -1318,19 +1318,21 @@ def _terminal_boundary_lanes(worker_id: str):
 async def _terminal_boundary_lane_loop(*, worker_id: str, lane: str) -> None:
     drain, interval = _terminal_boundary_lanes(worker_id)[lane]
     state = _STATE.setdefault("lanes", {}).setdefault(lane, {"last_success_at": None, "last_error": None})
-    try:
-        while True:
-            try:
-                await drain()
-                state.update(last_success_at=_utcnow().isoformat(), last_error=None)
-            except Exception as exc:  # The durable claim remains retryable.
-                state["last_error"] = _STATE["last_error"] = f"{lane}_terminal_boundary:{type(exc).__name__}: {exc}"
-                logger.exception("[RuntimeTaskWorker] {} terminal boundary tick failed", lane)
-            await asyncio.sleep(interval)
-    finally:
-        if not asyncio.current_task().cancelling():
+    while True:
+        try:
+            await drain()
+            state.update(last_success_at=_utcnow().isoformat(), last_error=None, error_type=None)
+        except Exception as exc:  # The durable claim remains retryable.
+            state["last_error"] = _STATE["last_error"] = f"{lane}_terminal_boundary:{type(exc).__name__}: {exc}"
+            state["error_type"] = type(exc).__name__
+            logger.exception("[RuntimeTaskWorker] {} terminal boundary tick failed", lane)
+        except BaseException as exc:
+            if asyncio.current_task().cancelling():
+                raise
             state["last_error"] = _STATE["last_error"] = f"{lane}_terminal_boundary:unexpected_exit"
-            logger.error("[RuntimeTaskWorker] {} lane ended unexpectedly", lane)
+            state.update(unexpected_exit=True, error_type=type(exc).__name__)
+            logger.exception("[RuntimeTaskWorker] {} lane ended unexpectedly", lane)
+        await asyncio.sleep(interval)
 
 
 async def start_terminal_boundary_worker_loop(*, worker_id: str | None = None) -> None:
@@ -1411,4 +1413,8 @@ def _terminal_boundary_execution_snapshot() -> dict[str, Any]:
 
 
 def runtime_task_worker_snapshot() -> dict[str, Any]:
-    return {**_STATE, "terminal_boundary_execution": _terminal_boundary_execution_snapshot()}
+    return {**_STATE, "lanes": {lane: {
+        "last_success_at": state.get("last_success_at"), "unexpected_exit": state.get("unexpected_exit", False),
+        "last_error": state.get("error_type"),
+    } for lane, state in _STATE.get("lanes", {}).items()},
+        "terminal_boundary_execution": _terminal_boundary_execution_snapshot()}

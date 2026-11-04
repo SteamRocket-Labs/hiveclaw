@@ -44,6 +44,7 @@ async def test_worker_recovers_original_round_without_replaying_enterprise_execu
     monkeypatch.setattr(agent_tools, "_TOOL_RUNTIME_SERVICE", None)
     import app.services.runtime_task_worker as worker
     monkeypatch.setattr(worker, "_STATE", {})
+    monkeypatch.setattr(session_approval, "_enterprise_permission_after_id", None)
     calls = []
 
     async def no_wakeup(**kwargs):
@@ -292,7 +293,7 @@ async def test_worker_recovers_original_round_without_replaying_enterprise_execu
             db.add(SessionToolInvocation(**values))
             await db.commit()
         # Resume immediately before these adjacent ids; other tests retain tenant rows.
-        worker._STATE["enterprise_permission_after_id"] = uuid.UUID(int=decoy_id.int - 1)
+        session_approval._enterprise_permission_after_id = uuid.UUID(int=decoy_id.int - 1)
         recover = session_approval.recover_enterprise_permission_waits
 
         async def one_page(db):
@@ -304,7 +305,7 @@ async def test_worker_recovers_original_round_without_replaying_enterprise_execu
         == 0
     )
     if ticket_state == "paged":
-        assert worker._STATE["enterprise_permission_after_id"] == decoy_id
+        assert session_approval._enterprise_permission_after_id == decoy_id
         async with owner_sessionmaker() as db:
             assert (await db.get(SessionToolInvocation, invocation.id)).result_event_id is None
     assert (

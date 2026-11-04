@@ -1376,12 +1376,12 @@ async def test_enterprise_wait_recovery_advances_past_an_unrecoverable_page(monk
         pass
 
     monkeypatch.setattr("app.services.chat_transcript.lock_transcript_session", lock)
-    import app.services.runtime_task_worker as worker
-    monkeypatch.setattr(worker, "_STATE", {})
+    import app.services.session_approval as approval
+    monkeypatch.setattr(approval, "_enterprise_permission_after_id", None)
     for count in range(1, 4):
         assert await recover_enterprise_permission_waits(DB(), limit=1) == 0
         assert len(statements) == count
-    assert worker._STATE["enterprise_permission_after_id"] is None
+    assert approval._enterprise_permission_after_id is None
     assert ids[0] in statements[1].compile().params.values()
     assert ids[1] in statements[2].compile().params.values()
 
@@ -1439,7 +1439,7 @@ async def test_worker_lanes_keep_user_work_prompt_and_isolate_recovery(monkeypat
     running = asyncio.create_task(worker.start_terminal_boundary_worker_loop(worker_id="test"))
     try:
         await asyncio.wait_for(entered.wait(), 1)
-        assert all(calls[lane][0] < 0.05 for lane in prompt)
+        assert all(calls[lane][0] < 3 * table[lane][1] for lane in prompt)
         await asyncio.sleep(0.06)
         assert all(len(calls[lane]) >= 2 for lane in prompt)
         assert all(len(calls[lane]) == 1 for lane in recovery)
@@ -1462,11 +1462,11 @@ async def test_worker_lanes_keep_user_work_prompt_and_isolate_recovery(monkeypat
 
 @pytest.mark.asyncio
 async def test_enterprise_wait_recovery_resets_cursor_on_short_page(monkeypatch):
-    import app.services.runtime_task_worker as worker
+    import app.services.session_approval as approval
     from app.services.session_approval import recover_enterprise_permission_waits
 
     after_id, candidate_id = sorted([uuid4(), uuid4()])
-    monkeypatch.setattr(worker, "_STATE", {"enterprise_permission_after_id": after_id})
+    monkeypatch.setattr(approval, "_enterprise_permission_after_id", after_id)
 
     class DB:
         async def execute(self, statement):
@@ -1484,4 +1484,60 @@ async def test_enterprise_wait_recovery_resets_cursor_on_short_page(monkeypatch)
 
     monkeypatch.setattr("app.services.chat_transcript.lock_transcript_session", lock)
     assert await recover_enterprise_permission_waits(DB(), limit=2) == 0
-    assert worker._STATE["enterprise_permission_after_id"] is None
+    assert approval._enterprise_permission_after_id is None
+
+
+@pytest.mark.asyncio
+async def test_cancelled_lane_restarts_without_stopping_other_lanes(monkeypatch):
+    import asyncio
+    import app.services.runtime_task_worker as worker
+
+    calls = {"cancelled": 0, "healthy": 0}
+    restarted = asyncio.Event()
+
+    async def cancelled():
+        calls["cancelled"] += 1
+        if calls["cancelled"] == 1:
+            raise asyncio.CancelledError("private cancellation detail")
+        restarted.set()
+
+    async def healthy():
+        calls["healthy"] += 1
+
+    monkeypatch.setattr(worker, "_STATE", {})
+    monkeypatch.setattr(worker, "_terminal_boundary_lanes", lambda _: {
+        "cancelled": (cancelled, 0.05), "healthy": (healthy, 0.01),
+    })
+    running = asyncio.create_task(worker.start_terminal_boundary_worker_loop(worker_id="test"))
+    try:
+        await asyncio.wait_for(restarted.wait(), 1)
+        assert calls["cancelled"] >= 2
+        assert calls["healthy"] >= 2
+        state = worker.runtime_task_worker_snapshot()["lanes"]["cancelled"]
+        assert state["unexpected_exit"] is True
+        assert state["last_success_at"] is not None
+        assert not running.done()
+    finally:
+        running.cancel()
+        await asyncio.gather(running, return_exceptions=True)
+    stopped_calls = dict(calls)
+    await asyncio.sleep(0.06)
+    assert calls == stopped_calls
+    assert worker._STATE["terminal_boundary_worker_running"] is False
+
+
+def test_lane_snapshot_exposes_error_class_without_private_state(monkeypatch):
+    import app.services.runtime_task_worker as worker
+    import app.services.session_approval as approval
+
+    monkeypatch.setattr(approval, "_enterprise_permission_after_id", uuid4())
+    monkeypatch.setattr(worker, "_STATE", {"last_error": "unchanged", "lanes": {"web": {
+        "last_success_at": "timestamp", "last_error": "RuntimeError: private detail",
+        "error_type": "RuntimeError", "unexpected_exit": True,
+    }}})
+    snapshot = worker.runtime_task_worker_snapshot()
+    assert "enterprise_permission_after_id" not in snapshot
+    assert snapshot["last_error"] == "unchanged"
+    assert snapshot["lanes"] == {"web": {
+        "last_success_at": "timestamp", "last_error": "RuntimeError", "unexpected_exit": True,
+    }}

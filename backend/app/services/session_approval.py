@@ -13,6 +13,7 @@ from app.services.approval_ticket import ApprovalTicketError, restore_approval_e
 from app.services.enterprise_approval_visibility import is_visible_enterprise_approval
 
 logger = logging.getLogger(__name__)
+_enterprise_permission_after_id: uuid.UUID | None = None
 
 
 async def load_session_approval(db, *, session, approval_id, for_update=False):
@@ -209,10 +210,10 @@ async def recover_enterprise_permission_waits(db, *, limit=500):
     )
     from app.services.session_tool_runtime import complete_tool_invocation
 
-    from app.services.runtime_task_worker import _STATE
+    global _enterprise_permission_after_id
 
     recovered = 0
-    after_id = _STATE.get("enterprise_permission_after_id")
+    after_id = _enterprise_permission_after_id
     candidates = (await db.execute(select(SessionToolInvocation.id, SessionToolInvocation.session_id).join(
         ApprovalRequest, (ApprovalRequest.id == SessionToolInvocation.permission_item_id)
         & (ApprovalRequest.tenant_id == SessionToolInvocation.tenant_id),
@@ -223,7 +224,7 @@ async def recover_enterprise_permission_waits(db, *, limit=500):
         SessionToolInvocation.effect_state == "prepared_not_started", SessionToolInvocation.result_event_id.is_(None),
         *([SessionToolInvocation.id > after_id] if after_id is not None else []),
     ).order_by(SessionToolInvocation.id).limit(max(1, int(limit))))).all()
-    _STATE["enterprise_permission_after_id"] = (
+    _enterprise_permission_after_id = (
         candidates[-1][0] if len(candidates) == max(1, int(limit)) else None
     )
     for invocation_id, session_id in candidates:

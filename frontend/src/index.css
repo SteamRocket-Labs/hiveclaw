@@ -2632,6 +2632,28 @@
   color: var(--text-primary);
 }
 
+/* The attachment's own "…" menu: original-file actions stay secondary. */
+.chat-artifact-menu {
+  position: relative;
+  display: inline-flex;
+}
+
+.chat-artifact-menu-body {
+  position: absolute;
+  right: 0;
+  top: 100%;
+  z-index: 30;
+  display: grid;
+  gap: 6px;
+  justify-items: start;
+  min-width: 220px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  background: var(--bg-primary);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.12);
+}
+
 /* ── Markdown content — 全站唯一 markdown 密度基线 ──── */
 
 .md-content {

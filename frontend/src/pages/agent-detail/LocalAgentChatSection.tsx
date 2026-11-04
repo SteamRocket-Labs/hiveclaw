@@ -571,6 +571,11 @@ export default function LocalAgentChatSection({ agentId, agent, agentPermissions
       setTimeout(() => textAreaRef.current?.focus(), 0);
       return;
     }
+    if (action === 'permission' || action === 'remote') {
+      // Permission selection is handled inside the composer; local agents have
+      // no remote tasks. Neither action reaches this callback in practice.
+      return;
+    }
     setInput(composerShortcutText(action));
     setTimeout(() => textAreaRef.current?.focus(), 0);
   };

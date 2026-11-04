@@ -9,9 +9,11 @@ export function runtimeFailurePresentation(
   deliveryState?: unknown,
 ): RuntimeFailurePresentation {
   if (deliveryState === 'unknown') {
+    // Unknown delivery with retryable=false must not promise a retry: keep
+    // only the "not confirmed finished" meaning in plain words.
     return {
       kind: 'delivery_unknown',
-      fallback: 'The request did not finish. You can retry it.',
+      fallback: 'This request did not confirm it finished.',
     };
   }
   if (failureCode === 'auth_or_permission') {

@@ -10,6 +10,7 @@ import { showAppToast } from '../../components/AppDialogs';
 import type { ChatArtifactPart } from './chatRuntime';
 import AgentWorkspaceSection from './AgentWorkspaceSection';
 import ArtifactContinuation, { type ArtifactContinuationContext } from './ArtifactContinuation';
+import OriginalUploadAction from './OriginalUploadAction';
 import type { FileEditorState } from '../../components/FileBrowser';
 import './ArtifactContinuation.css';
 
@@ -482,6 +483,8 @@ export function ArtifactCards({
                 <IconDownload size={12} />
                 {t('agent.chat.artifacts.download', 'Download')}
               </button>
+              <OriginalUploadAction agentId={downloadAgentId || agentId} path={artifact.path} name={artifact.name}
+                original={artifact.originalUpload} viewerUserId={viewerUserId} discover={artifact.source === 'human_input'} />
             </span>
           </div>
         );

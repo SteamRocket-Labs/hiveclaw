@@ -23,14 +23,12 @@ export function ProjectContextPicker({ scope, disabled, selection, onSelect, ope
   const generation = useRef(0);
   const selected = useRef('');
   useEffect(() => () => { generation.current += 1; }, []);
-  const loadedOnce = useRef(false);
   useEffect(() => {
-    if (controlledOpen && !loadedOnce.current && projects.length === 0 && !busy) {
-      loadedOnce.current = true;
-      void list();
-    }
-    // Controlled mode opens from the composer "+" menu, so the list loads when
-    // the panel first opens instead of via the retired standalone button.
+    // Controlled mode opens from the composer "+" menu: load whenever the
+    // panel is open and no list is held yet. A StrictMode double-invoke that
+    // discards the first load therefore restarts it here instead of leaving
+    // the picker permanently disabled (no load-once latch).
+    if (controlledOpen && projects.length === 0 && !busy) void list();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [controlledOpen]);
   const list = async (offset = 0) => {

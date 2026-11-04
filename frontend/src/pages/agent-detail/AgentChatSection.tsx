@@ -29,13 +29,15 @@ import PlanCard from './PlanCard';
 import RunDisclosureBlock from './RunDisclosureBlock';
 import SlashCommandMenu from './SlashCommandMenu';
 import ChatWorkLedgerDock from './ChatWorkLedgerDock';
+import { useRemoteWorkDisclosure } from './useRemoteWorkDisclosure';
+import { getComposerIntentLabel, getSessionPermissionModeLabel, sessionPermissionModeOptions, sessionPermissionModeVisible } from './sessionComposerPresentation';
 import { SessionTransportStatus } from './SessionTransportStatus';
 import type { ChatTransportPhase } from './chatTransportRecovery';
 import { SessionWorkbenchHeader } from '../session-workbench/SessionWorkbenchChrome';
 import { sessionTitleForUser } from '../session-workbench/sessionTitlePresentation';
 import { shouldRenderThreadItemInConversation, ThreadItemRenderer } from '../session-workbench/ThreadItemRenderer';
 import { normalizeThreadItemPayload } from '../session-workbench/threadItemReducer';
-import { SessionComposer } from '../session-workbench/SessionComposer';
+import { SessionComposer, type ComposerActionKey } from '../session-workbench/SessionComposer';
 import { ProjectContextPicker, type SelectedProjectContext } from '../session-workbench/ProjectContextPicker';
 import { SessionGoalPanel } from '../session-workbench/SessionGoalPanel';
 import {
@@ -47,7 +49,6 @@ import {
   useResponsiveRuntimePanel,
   useThreadItemRuntimeController,
 } from '../session-workbench/threadItemRuntimeController';
-import { defaultSessionPermissionModeFromAgent } from './agentDetailPolicy';
 import type { ThreadItem } from '../../api/domains/threadItems.generated';
 import {
   buildSessionRightPanelModel,
@@ -109,6 +110,7 @@ import {
   isUserFacingDeliveryArtifact,
 } from './ArtifactSurface';
 import { useArtifactPreview } from './useArtifactPreview';
+import { useApprovalResolutionRefresh } from './useApprovalResolutionRefresh';
 import type { SessionMessageOptions } from './ArtifactContinuation';
 import {
   ActiveTailStatusLine,
@@ -144,56 +146,12 @@ type AttachedFile = {
   imageUrl?: string;
 };
 
-type ComposerActionKey = 'upload' | 'plan' | 'goal' | 'schedule' | 'project';
 export type SessionPermissionMode = 'auto' | 'default' | 'bypassPermissions';
 const EMPTY_CHAT_MESSAGES: AgentChatMessage[] = [];
 
 function isForbiddenOperatorResponse(error: unknown): boolean {
   if (!error || typeof error !== 'object') return false;
   return Number((error as { status?: unknown }).status) === 403;
-}
-
-const SESSION_PERMISSION_MODE_OPTIONS: Array<{
-  value: SessionPermissionMode;
-  label: string;
-  description: string;
-}> = [
-  {
-    value: 'default',
-    label: 'Ask first',
-    description: 'Ask before sensitive session actions',
-  },
-  {
-    value: 'auto',
-    label: 'Approve for me',
-    description: 'Approve low-risk actions and ask for risky ones',
-  },
-  {
-    value: 'bypassPermissions',
-    label: 'Full access',
-    description: 'Bypass session prompts, still obey enterprise rules',
-  },
-];
-
-export const sessionPermissionModeOptions = () => SESSION_PERMISSION_MODE_OPTIONS;
-
-function getSessionPermissionModeLabel(
-  mode: SessionPermissionMode,
-  t: (key: string, fallback: string) => string,
-): string {
-  if (mode === 'default') return t('agent.chat.composer.permissionMode.default', 'Ask first');
-  if (mode === 'bypassPermissions') return t('agent.chat.composer.permissionMode.bypassPermissions', 'Full access');
-  return t('agent.chat.composer.permissionMode.auto', 'Approve for me');
-}
-
-function getComposerIntentLabel(
-  planModeRequested: boolean,
-  goalModeRequested: boolean,
-  t: (key: string, fallback: string) => string,
-): string | null {
-  if (goalModeRequested) return t('agent.chat.composer.goalModeActive', 'Goal mode');
-  if (planModeRequested) return t('agent.chat.composer.planModeActive', 'Plan Mode');
-  return null;
 }
 
 type ConversationBranchMode =
@@ -1139,6 +1097,9 @@ function AgentChatSection({
   const visibleHistoryMsgs = operatorReadEnabled && historyMessagesSessionId === activeSessionId ? historyMsgs : EMPTY_CHAT_MESSAGES;
   const visibleChatMessages = operatorReadEnabled && chatMessagesSessionId === activeSessionId ? chatMessages : EMPTY_CHAT_MESSAGES;
   const visibleTimeline = isReadOnlySession ? visibleHistoryMsgs : visibleChatMessages;
+  // An approval decided elsewhere refreshes a requester's waiting line through
+  // the existing approval-completed session event (no new polling).
+  useApprovalResolutionRefresh(effectiveAgentId, activeSession?.id, visibleTimeline);
   const normalizedActiveRunStatus = String(activeRunStatus || '').trim().toLowerCase();
   const unfinishedRunStatus = ['created', 'pending', 'queued', 'running', 'started', 'in_progress', 'resuming',
     'waiting', 'waiting_user', 'suspended', 'resumable'].includes(normalizedActiveRunStatus);
@@ -1212,9 +1173,9 @@ function AgentChatSection({
     ? t('agentCreate.hrAgentName', 'HR Agent')
     : agent?.name || '';
   const permissionModeLabel = getSessionPermissionModeLabel(sessionPermissionMode, t);
-  const permissionModeVisible = sessionPermissionMode !== defaultSessionPermissionModeFromAgent(agent)
-    || planModeRequested || goalModeRequested;
+  const permissionModeVisible = sessionPermissionModeVisible(agent, sessionPermissionMode, planModeRequested, goalModeRequested);
   const projectContextAvailable = !operatorView && !isDraftSession && activeSession?.audience_kind !== 'group' && Boolean(currentUser?.id && activeSessionId);
+  const remoteWork = useRemoteWorkDisclosure({ identity: childAuthorityIdentity, operatorView, effectiveAgentId, activeSession, isDraftSession, canUseComposer, agent, currentUser });
   const composerIntentLabel = getComposerIntentLabel(planModeRequested, goalModeRequested, t);
   const modelBadgeLabel = composerRuntime.modelLabel || t('agent.chat.composer.currentModel', 'Current model');
   const modelBadgeTitle = [modelBadgeLabel, runtimeUsageTitle].filter(Boolean).join(' · ');
@@ -1244,9 +1205,10 @@ function AgentChatSection({
         focusChatInput();
         return;
       }
-      if (action === 'project') { setProjectPickerOpen(true); focusChatInput(); }
+      if (action === 'project') { setProjectPickerOpen(true); focusChatInput(); return; }
+      if (action === 'remote') { remoteWork.requestOpen(); focusChatInput(); }
     },
-    [fileInputRef, focusChatInput, onSetChatInput, onToggleGoalMode, onTogglePlanMode],
+    [fileInputRef, focusChatInput, onSetChatInput, onToggleGoalMode, onTogglePlanMode, remoteWork.requestOpen],
   );
 
   const sendFromComposer = React.useCallback(async () => {
@@ -2327,6 +2289,7 @@ function AgentChatSection({
                   onSelect={selection => { setProjectContext({ scope: childAuthorityIdentity, selection }); setProjectSendError(''); }} />
               )}
               {projectSendError && <p role="alert">{projectSendError}</p>}
+              {remoteWork.element}
               <SessionComposer
                 value={chatInput}
                 inputRef={chatInputRef}
@@ -2340,6 +2303,8 @@ function AgentChatSection({
                 permissionOptions={sessionPermissionModeOptions()}
                 projectContextAvailable={projectContextAvailable}
                 projectContextSelected={Boolean(selectedProjectContext)}
+                remoteWorkAvailable={remoteWork.available}
+                remoteWorkOpen={remoteWork.open}
                 modelLabel={modelBadgeLabel}
                 modelTitle={modelBadgeTitle}
                 runtimeUsageLabel={runtimeUsageLabel}

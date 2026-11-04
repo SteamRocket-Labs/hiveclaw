@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { useState } from 'react';
+import React, { useState } from 'react';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, expect, it, vi } from 'vitest';
 import { ProjectContextPicker, type SelectedProjectContext } from './ProjectContextPicker';
@@ -17,6 +17,19 @@ function Mounted() {
   return <><ProjectContextPicker scope={{ userId: 'user', tenantId: 'company' }} disabled={false}
     selection={selection} onSelect={setSelection} /><output>{JSON.stringify(selection)}</output></>;
 }
+
+it('loads a controlled panel opened from the composer "+" menu under StrictMode', async () => {
+  // The app entry mounts everything inside <React.StrictMode>; the first
+  // effect's load is discarded by the simulated cleanup, so the second run
+  // must restart it instead of trusting a load-once latch.
+  vi.spyOn(projectsApi, 'list').mockResolvedValue({ projects: [project], next_offset: null });
+  const { container } = render(<React.StrictMode>
+    <ProjectContextPicker scope={{ userId: 'user', tenantId: 'company' }} disabled={false}
+      selection={null} onSelect={vi.fn()} open onClose={() => undefined} />
+  </React.StrictMode>);
+  await screen.findByRole('option', { name: 'Research' });
+  expect(container.querySelector('fieldset')?.matches(':disabled')).toBe(false);
+});
 
 it('retains explicit selections across pagination and never auto-selects new project entries', async () => {
   vi.spyOn(projectsApi, 'list').mockResolvedValue({ projects: [project], next_offset: null });

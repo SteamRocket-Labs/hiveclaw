@@ -18,8 +18,8 @@ import AgentChatSection, {
   isInlineToolCardMessage,
   permissionOnceOnlyMessageKey,
   sessionAuthorizedInlineImageUrl,
-  sessionPermissionModeOptions,
 } from './AgentChatSection';
+import { sessionPermissionModeOptions } from './sessionComposerPresentation';
 import { buildMessageFeedbackInput } from './messageFeedback';
 import {
   AssistantMessageBody,

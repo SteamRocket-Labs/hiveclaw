@@ -597,9 +597,9 @@ describe('canonical runtime_failure consumption (DAY1-PROVIDER-402-TERMINAL-CONS
       expect(message?.threadItem?.metadata?.delivery_state).toBe('unknown');
       expect(message?.threadItem?.item_data).toMatchObject({ code: 'unknown', retryable: false });
       expect(message?.threadItem?.user_summary).toBe(
-        'The request did not finish. You can retry it.',
+        'This request did not confirm it finished.',
       );
-      expect(message?.content).not.toMatch(/PRIVATE_PROVIDER_ERROR/);
+      expect(message?.content).not.toMatch(/retry|PRIVATE_PROVIDER_ERROR/);
     }
   });
 

@@ -31,12 +31,17 @@ def test_agent_handbooks_share_one_exact_north_star_decision_order() -> None:
     claude = (REPO_ROOT / "CLAUDE.md").read_text(encoding="utf-8")
 
     assert "[AGENTS.md](AGENTS.md)" in claude
+    # Anchors of the owner-approved 2026-11 contract (docs/product-definition-2026-11.md).
     for required in (
-        "Agent capability is foundational",
-        "capability-preserving determinism",
-        "selected model's effective capability envelope",
+        "Claude Code-grade assistant",
+        "**the user asks, the agent does the work, the user gets a result they can\nkeep editing**",
+        "Agent capability comes first",
+        "exactly one of five user-visible states",
+        "### Governance floor",
+        "### Frozen for this release",
         "complete **authorized evidence availability**",
-        "Input, Authority, Execution, Evidence, Recovery,\nConsumption, and Acceptance",
+        "Establish the\nframe once per turn",
+        "Judge a change by what the user can now see it do",
         "Historical baselines",
     ):
         assert required in agents

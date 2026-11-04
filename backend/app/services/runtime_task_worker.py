@@ -321,7 +321,7 @@ async def drain_runtime_notification_outbox_once(*, worker_id: str) -> dict[str,
     for key in ("claimed", "delivered", "retried", "deferred", "dead_lettered"):
         state_key = f"outbox_{key}"
         _STATE[state_key] = int(_STATE.get(state_key) or 0) + int(counts.get(key) or 0)
-    if str(_STATE.get("last_error") or "").startswith("outbox:"):
+    if str(_STATE.get("last_error") or "").startswith("runtime-notification_terminal_boundary:"):
         _STATE["last_error"] = None
     return counts
 
@@ -1291,35 +1291,60 @@ async def _execute_claimed_business_task(runtime_task_id: UUID) -> None:
             )
 
 
+def _terminal_boundary_lanes(worker_id: str):
+    poll = max(0.05, float(_settings().RUNTIME_TASK_CLAIM_POLL_SECONDS))
+    return {
+        "web": (lambda: drain_web_terminal_boundary_outbox_once(worker_id=worker_id), poll),
+        "session-events": (lambda: drain_session_event_outbox_once(worker_id=worker_id), poll),
+        "channel-delivery": (lambda: drain_channel_delivery_outbox_once(worker_id=worker_id), poll),
+        "budget-transition": (lambda: drain_budget_transition_outbox_once(worker_id=worker_id), poll),
+        "runtime-notification": (lambda: drain_runtime_notification_outbox_once(worker_id=worker_id), poll),
+        "turn-replacement": (lambda: recover_turn_replacement_sagas_once(worker_id=worker_id), poll),
+        "input-dispatch": (lambda: recover_session_input_dispatches_once(worker_id=worker_id), poll),
+        "terminal-input": (lambda: recover_terminal_target_session_inputs_once(worker_id=worker_id), poll),
+        "control-input": (lambda: recover_session_control_inputs_once(worker_id=worker_id), poll),
+        "stale-admission": (lambda: recover_stale_session_input_admissions_once(worker_id=worker_id), 20.0),
+        "model-round": (lambda: recover_session_model_rounds_once(worker_id=worker_id), 20.0),
+        "terminal-outcome": (lambda: recover_session_terminal_outcomes_once(worker_id=worker_id), 20.0),
+        "permission-expiry": (lambda: expire_session_permission_requests_once(worker_id=worker_id), 20.0),
+        "hr-draft": (lambda: reconcile_hr_creation_drafts_once(), 20.0),
+        "business-task": (lambda: reconcile_stale_business_tasks_once(), 20.0),
+        "team-fanout": (lambda: recover_team_fanout_admissions_once(worker_id=worker_id), 20.0),
+        **{f"direct-{kind}": (lambda kind=kind: drain_direct_terminal_boundary_outbox_once(
+            worker_id=worker_id, task_type=kind), poll) for kind in DIRECT_INVOCATION_TASK_TYPES},
+    }
+
+
 async def _terminal_boundary_lane_loop(*, worker_id: str, lane: str) -> None:
-    drain = drain_web_terminal_boundary_outbox_once if lane == "web" else drain_direct_terminal_boundary_outbox_once
-    poll_seconds = max(0.05, float(_settings().RUNTIME_TASK_CLAIM_POLL_SECONDS))
+    drain, interval = _terminal_boundary_lanes(worker_id)[lane]
+    state = _STATE.setdefault("lanes", {}).setdefault(lane, {"last_success_at": None, "last_error": None})
     while True:
         try:
-            if lane.startswith("direct-"):
-                await drain(worker_id=worker_id, task_type=lane.removeprefix("direct-"))
-            else:
-                await drain(worker_id=worker_id)
-        except Exception as exc:  # noqa: BLE001 - the durable claim remains retryable.
-            _STATE["last_error"] = f"{lane}_terminal_boundary:{type(exc).__name__}: {exc}"
+            await drain()
+            state.update(last_success_at=_utcnow().isoformat(), last_error=None, error_type=None)
+        except Exception as exc:  # The durable claim remains retryable.
+            state["last_error"] = _STATE["last_error"] = f"{lane}_terminal_boundary:{type(exc).__name__}: {exc}"
+            state["error_type"] = type(exc).__name__
             logger.exception("[RuntimeTaskWorker] {} terminal boundary tick failed", lane)
-        await asyncio.sleep(poll_seconds)
+        except BaseException as exc:
+            if asyncio.current_task().cancelling():
+                raise
+            state["last_error"] = _STATE["last_error"] = f"{lane}_terminal_boundary:unexpected_exit"
+            state.update(unexpected_exit=True, error_type=type(exc).__name__)
+            logger.exception("[RuntimeTaskWorker] {} lane ended unexpectedly", lane)
+        await asyncio.sleep(interval)
 
 
 async def start_terminal_boundary_worker_loop(*, worker_id: str | None = None) -> None:
-    """Run required terminal consumers independently from new task claims."""
-
+    """Run user-facing consumers promptly and crash recovery independently."""
     exact_worker_id = worker_id or _worker_id()
-    lane_tasks = [
-        asyncio.create_task(
-            _terminal_boundary_lane_loop(worker_id=exact_worker_id, lane=lane),
-            name=f"runtime-terminal-boundary-{lane}",
-        )
-        for lane in ("web", *(f"direct-{task_type}" for task_type in DIRECT_INVOCATION_TASK_TYPES))
-    ]
+    lane_tasks = [asyncio.create_task(
+        _terminal_boundary_lane_loop(worker_id=exact_worker_id, lane=lane),
+        name=f"runtime-terminal-boundary-{lane}",
+    ) for lane in _terminal_boundary_lanes(exact_worker_id)]
     _STATE["terminal_boundary_worker_running"] = True
     try:
-        await asyncio.gather(*lane_tasks)
+        await asyncio.gather(*lane_tasks, return_exceptions=True)
     finally:
         _STATE["terminal_boundary_worker_running"] = False
         for task in lane_tasks:
@@ -1342,88 +1367,13 @@ async def start_runtime_task_worker_loop() -> None:
     logger.info("[RuntimeTaskWorker] started worker_id={}", worker_id)
     try:
         while True:
-            try:
-                await drain_session_event_outbox_once(worker_id=worker_id)
-            except Exception as exc:  # noqa: BLE001 - task claiming must continue after publisher failure.
-                _STATE["last_error"] = f"session_event_outbox:{type(exc).__name__}: {exc}"
-                logger.exception("[RuntimeTaskWorker] Session event outbox tick failed")
-            try:
-                await recover_session_control_inputs_once(worker_id=worker_id)
-            except Exception as exc:  # noqa: BLE001 - normal task claiming must continue.
-                _STATE["last_error"] = f"session_control_recovery:{type(exc).__name__}: {exc}"
-                logger.exception("[RuntimeTaskWorker] Session control recovery tick failed")
-            try:
-                await expire_session_permission_requests_once(worker_id=worker_id)
-            except Exception as exc:  # noqa: BLE001 - normal task claiming must continue.
-                _STATE["last_error"] = f"session_permission_expiry:{type(exc).__name__}: {exc}"
-                logger.exception("[RuntimeTaskWorker] Session permission expiry tick failed")
-            try:
-                await recover_stale_session_input_admissions_once(worker_id=worker_id)
-            except Exception as exc:  # noqa: BLE001 - normal task claiming must continue.
-                _STATE["last_error"] = f"input_admission_recovery:{type(exc).__name__}: {exc}"
-                logger.exception("[RuntimeTaskWorker] input admission recovery tick failed")
-            try:
-                await recover_turn_replacement_sagas_once(worker_id=worker_id)
-            except Exception as exc:  # noqa: BLE001 - normal task claiming must continue.
-                _STATE["last_error"] = f"turn_replacement_recovery:{type(exc).__name__}: {exc}"
-                logger.exception("[RuntimeTaskWorker] turn replacement recovery tick failed")
-            try:
-                await recover_session_model_rounds_once(worker_id=worker_id)
-            except Exception as exc:  # noqa: BLE001 - normal task claiming must continue.
-                _STATE["last_error"] = f"session_model_round_recovery:{type(exc).__name__}: {exc}"
-                logger.exception("[RuntimeTaskWorker] Session V2 model round recovery tick failed")
-            try:
-                await recover_session_terminal_outcomes_once(worker_id=worker_id)
-            except Exception as exc:  # noqa: BLE001 - normal task claiming must continue.
-                _STATE["last_error"] = f"session_terminal_recovery:{type(exc).__name__}: {exc}"
-                logger.exception("[RuntimeTaskWorker] Session V2 terminal recovery tick failed")
-            try:
-                await recover_session_input_dispatches_once(worker_id=worker_id)
-            except Exception as exc:  # noqa: BLE001 - normal task claiming must continue.
-                _STATE["last_error"] = f"session_input_dispatch:{type(exc).__name__}: {exc}"
-                logger.exception("[RuntimeTaskWorker] Session V2 input dispatch tick failed")
-            try:
-                await recover_terminal_target_session_inputs_once(worker_id=worker_id)
-            except Exception as exc:  # noqa: BLE001 - normal task claiming must continue.
-                _STATE["last_error"] = f"session_input_terminal_rollover:{type(exc).__name__}: {exc}"
-                logger.exception("[RuntimeTaskWorker] Session V2 terminal steer rollover tick failed")
-            try:
-                await reconcile_hr_creation_drafts_once()
-            except Exception as exc:  # noqa: BLE001 - normal task claiming must continue.
-                _STATE["last_error"] = f"hr_reconcile:{type(exc).__name__}: {exc}"
-                logger.exception("[RuntimeTaskWorker] HR draft reconciliation tick failed")
-            try:
-                await reconcile_stale_business_tasks_once()
-            except Exception as exc:  # noqa: BLE001 - normal task claiming must continue.
-                _STATE["last_error"] = f"business_task_reconcile:{type(exc).__name__}: {exc}"
-                logger.exception("[RuntimeTaskWorker] BusinessTask reconciliation tick failed")
-            try:
-                await drain_budget_transition_outbox_once(worker_id=worker_id)
-            except Exception as exc:  # noqa: BLE001 - task claiming must continue after one delivery failure.
-                _STATE["last_error"] = f"budget_outbox:{type(exc).__name__}: {exc}"
-                logger.exception("[RuntimeTaskWorker] budget transition outbox tick failed")
-            try:
-                await drain_channel_delivery_outbox_once(worker_id=worker_id)
-            except Exception as exc:  # noqa: BLE001 - task claiming must continue after one delivery failure.
-                _STATE["last_error"] = f"channel_outbox:{type(exc).__name__}: {exc}"
-                logger.exception("[RuntimeTaskWorker] channel delivery outbox tick failed")
-            try:
-                await drain_runtime_notification_outbox_once(worker_id=worker_id)
-            except Exception as exc:  # noqa: BLE001 - task claiming must continue after one outbox failure.
-                _STATE["last_error"] = f"outbox:{type(exc).__name__}: {exc}"
-                logger.exception("[RuntimeTaskWorker] completion outbox tick failed")
-            try:
-                await recover_team_fanout_admissions_once(worker_id=worker_id)
-            except Exception as exc:  # noqa: BLE001 - normal task claiming must continue.
-                _STATE["last_error"] = f"team_fanout_recovery:{type(exc).__name__}: {exc}"
-                logger.exception("[RuntimeTaskWorker] Team fanout recovery tick failed")
+            event = _wakeup_event()
+            event.clear()
             try:
                 await claim_and_dispatch_once(worker_id=worker_id)
             except Exception as exc:  # noqa: BLE001 - worker loop must survive one bad claim.
                 _STATE["last_error"] = f"{type(exc).__name__}: {exc}"
                 logger.exception("[RuntimeTaskWorker] claim/dispatch tick failed")
-            event = _wakeup_event()
-            event.clear()
             try:
                 await asyncio.wait_for(event.wait(), timeout=float(settings.RUNTIME_TASK_CLAIM_POLL_SECONDS))
             except asyncio.TimeoutError:
@@ -1437,15 +1387,13 @@ async def start_runtime_task_worker_loop() -> None:
 
 def _terminal_boundary_execution_snapshot() -> dict[str, Any]:
     """Observe native wait locations without reading arguments or frame locals."""
-    lanes = ("web", "direct", *(f"direct-{task_type}" for task_type in DIRECT_INVOCATION_TASK_TYPES))
-    names = {f"runtime-terminal-boundary-{lane}{suffix}" for lane in lanes for suffix in ("", "-tenant")}
     try:
         tasks = asyncio.all_tasks()
     except RuntimeError:
         return {"status": "unavailable", "reason_code": "event_loop_unavailable", "tasks": []}
     observations = []
     for task in sorted(tasks, key=lambda row: row.get_name()):
-        if task.get_name() not in names:
+        if not task.get_name().startswith("runtime-terminal-boundary-"):
             continue
         current, seen, frames = task.get_coro(), set(), []
         cycle = False
@@ -1465,4 +1413,8 @@ def _terminal_boundary_execution_snapshot() -> dict[str, Any]:
 
 
 def runtime_task_worker_snapshot() -> dict[str, Any]:
-    return {**_STATE, "terminal_boundary_execution": _terminal_boundary_execution_snapshot()}
+    return {**_STATE, "lanes": {lane: {
+        "last_success_at": state.get("last_success_at"), "unexpected_exit": state.get("unexpected_exit", False),
+        "last_error": state.get("error_type"),
+    } for lane, state in _STATE.get("lanes", {}).items()},
+        "terminal_boundary_execution": _terminal_boundary_execution_snapshot()}

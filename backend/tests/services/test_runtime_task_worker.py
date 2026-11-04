@@ -1179,7 +1179,7 @@ async def test_runtime_worker_drains_completion_outbox_and_records_counts(monkey
     before_delivered = int(worker._STATE.get("outbox_delivered") or 0)
     before_retried = int(worker._STATE.get("outbox_retried") or 0)
     previous_error = worker._STATE.get("last_error")
-    worker._STATE["last_error"] = "outbox:ConfigurationLimitExceededError: temporary file limit exceeded"
+    worker._STATE["last_error"] = "runtime-notification_terminal_boundary:ConfigurationLimitExceededError: temporary file limit exceeded"
 
     try:
         result = await worker.drain_runtime_notification_outbox_once(worker_id="runtime-worker")
@@ -1245,8 +1245,7 @@ async def test_runtime_worker_consumes_team_fanout_recovery_and_records_counts(m
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("slow_lane", ["_runtime_maintenance_loop", "start_terminal_boundary_worker_loop"])
-async def test_runtime_worker_claims_without_waiting_and_preserves_concurrent_wakeup(monkeypatch, slow_lane):
+async def test_runtime_worker_claims_without_waiting_and_preserves_concurrent_wakeup(monkeypatch):
     import asyncio
     import app.services.runtime_task_worker as worker
 
@@ -1275,16 +1274,14 @@ async def test_runtime_worker_claims_without_waiting_and_preserves_concurrent_wa
     ))
     monkeypatch.setattr(worker, "_wakeup_event", lambda: wakeup)
     monkeypatch.setattr(worker, "_redis_wakeup_listener", blocked)
-    monkeypatch.setattr(worker, "_runtime_maintenance_loop", blocked)
-    monkeypatch.setattr(worker, "start_terminal_boundary_worker_loop", blocked)
-    monkeypatch.setattr(worker, slow_lane, slow)
+    monkeypatch.setattr(worker, "start_terminal_boundary_worker_loop", slow)
     monkeypatch.setattr(worker, "claim_and_dispatch_once", claim)
     with pytest.raises(asyncio.CancelledError):
         await asyncio.wait_for(worker.start_runtime_task_worker_loop(), timeout=1)
     assert calls == ["claim", "claim"]
 
 
-@pytest.mark.parametrize("lane", ["web", "direct"])
+@pytest.mark.parametrize("lane", ["web", "direct-delegation"])
 async def test_terminal_lane_snapshot_locates_wait_without_disclosing_runtime_inputs(monkeypatch, lane):
     import asyncio
     import json
@@ -1379,7 +1376,112 @@ async def test_enterprise_wait_recovery_advances_past_an_unrecoverable_page(monk
         pass
 
     monkeypatch.setattr("app.services.chat_transcript.lock_transcript_session", lock)
-    assert await recover_enterprise_permission_waits(DB(), limit=1) == 0
-    assert len(statements) == 3
+    import app.services.runtime_task_worker as worker
+    monkeypatch.setattr(worker, "_STATE", {})
+    for count in range(1, 4):
+        assert await recover_enterprise_permission_waits(DB(), limit=1) == 0
+        assert len(statements) == count
+    assert worker._STATE["enterprise_permission_after_id"] is None
     assert ids[0] in statements[1].compile().params.values()
     assert ids[1] in statements[2].compile().params.values()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["raise", "hang", "cancel"])
+async def test_worker_lanes_keep_user_work_prompt_and_isolate_recovery(monkeypatch, failure):
+    import asyncio
+    import app.services.runtime_task_worker as worker
+
+    prompt = {
+        "web": "drain_web_terminal_boundary_outbox_once",
+        "session-events": "drain_session_event_outbox_once",
+        "channel-delivery": "drain_channel_delivery_outbox_once",
+        "budget-transition": "drain_budget_transition_outbox_once",
+        "runtime-notification": "drain_runtime_notification_outbox_once",
+        "turn-replacement": "recover_turn_replacement_sagas_once",
+        "input-dispatch": "recover_session_input_dispatches_once",
+        "terminal-input": "recover_terminal_target_session_inputs_once",
+        "control-input": "recover_session_control_inputs_once",
+    }
+    recovery = {
+        "stale-admission": "recover_stale_session_input_admissions_once",
+        "model-round": "recover_session_model_rounds_once",
+        "terminal-outcome": "recover_session_terminal_outcomes_once",
+        "permission-expiry": "expire_session_permission_requests_once",
+        "hr-draft": "reconcile_hr_creation_drafts_once",
+        "business-task": "reconcile_stale_business_tasks_once",
+        "team-fanout": "recover_team_fanout_admissions_once",
+    }
+    calls, entered = {}, asyncio.Event()
+    loop = asyncio.get_running_loop()
+    started = loop.time()
+
+    def stub(lane):
+        async def sweep(**_kwargs):
+            calls.setdefault(lane, []).append(loop.time() - started)
+            if set(calls) == set(prompt) | set(recovery) | {"direct"}:
+                entered.set()
+            if lane == "stale-admission":
+                if failure == "raise":
+                    raise RuntimeError("synthetic recovery failure")
+                if failure == "cancel":
+                    raise asyncio.CancelledError
+                await asyncio.Event().wait()
+        return sweep
+
+    monkeypatch.setattr(worker, "_STATE", {})
+    monkeypatch.setattr(worker, "_settings", lambda: SimpleNamespace(RUNTIME_TASK_CLAIM_POLL_SECONDS=0.05))
+    for lane, name in {**prompt, **recovery, "direct": "drain_direct_terminal_boundary_outbox_once"}.items():
+        monkeypatch.setattr(worker, name, stub(lane))
+    table = worker._terminal_boundary_lanes("test")
+    assert all(table[lane][1] == 0.05 for lane in prompt)
+    assert all(table[lane][1] == 20 for lane in recovery)
+    running = asyncio.create_task(worker.start_terminal_boundary_worker_loop(worker_id="test"))
+    try:
+        await asyncio.wait_for(entered.wait(), 1)
+        assert all(calls[lane][0] < 0.05 for lane in prompt)
+        await asyncio.sleep(0.06)
+        assert all(len(calls[lane]) >= 2 for lane in prompt)
+        assert all(len(calls[lane]) == 1 for lane in recovery)
+        states = worker._STATE["lanes"]
+        assert all(states[lane]["last_success_at"] for lane in table if lane != "stale-admission")
+        if failure != "hang":
+            assert "stale-admission_terminal_boundary:" in states["stale-admission"]["last_error"]
+        if failure == "cancel":
+            assert states["stale-admission"]["last_error"].endswith("unexpected_exit")
+        names = {row["name"] for row in worker._terminal_boundary_execution_snapshot()["tasks"]}
+        expected = {f"runtime-terminal-boundary-{lane}" for lane in table}
+        if failure == "cancel":
+            expected.remove("runtime-terminal-boundary-stale-admission")
+        assert expected <= names
+        assert not running.done()
+    finally:
+        running.cancel()
+        await asyncio.gather(running, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_enterprise_wait_recovery_resets_cursor_on_short_page(monkeypatch):
+    import app.services.runtime_task_worker as worker
+    from app.services.session_approval import recover_enterprise_permission_waits
+
+    after_id, candidate_id = sorted([uuid4(), uuid4()])
+    monkeypatch.setattr(worker, "_STATE", {"enterprise_permission_after_id": after_id})
+
+    class DB:
+        async def execute(self, statement):
+            assert after_id in statement.compile().params.values()
+            return SimpleNamespace(all=lambda: [(candidate_id, uuid4())])
+
+        async def scalar(self, _statement):
+            return None
+
+        async def rollback(self):
+            pass
+
+    async def lock(*_args, **_kwargs):
+        pass
+
+    monkeypatch.setattr("app.services.chat_transcript.lock_transcript_session", lock)
+    assert await recover_enterprise_permission_waits(DB(), limit=2) == 0
+    assert worker._STATE["enterprise_permission_after_id"] is None

@@ -155,7 +155,7 @@ def test_shared_terminal_settlement_boundary_settles_root_and_controls() -> None
 
 
 def test_existing_runtime_worker_periodically_recovers_session_controls() -> None:
-    tick_calls = _called_names("app/services/runtime_task_worker.py", "_runtime_maintenance_loop")
+    tick_calls = _called_names("app/services/runtime_task_worker.py", "_terminal_boundary_lanes")
     sweep_calls = _called_names("app/services/runtime_task_worker.py", "recover_session_control_inputs_once")
     assert "recover_session_control_inputs_once" in tick_calls
     assert "recover_stale_cancel_control_inputs_once" in sweep_calls
@@ -163,7 +163,7 @@ def test_existing_runtime_worker_periodically_recovers_session_controls() -> Non
 
 
 def test_existing_runtime_worker_periodically_expires_session_permissions() -> None:
-    tick_calls = _called_names("app/services/runtime_task_worker.py", "_runtime_maintenance_loop")
+    tick_calls = _called_names("app/services/runtime_task_worker.py", "_terminal_boundary_lanes")
     sweep_calls = _called_names("app/services/runtime_task_worker.py", "expire_session_permission_requests_once")
 
     assert "expire_session_permission_requests_once" in tick_calls
@@ -172,7 +172,7 @@ def test_existing_runtime_worker_periodically_expires_session_permissions() -> N
 
 
 def test_existing_runtime_worker_recovers_sealed_rounds_and_terminal_outcomes() -> None:
-    tick_calls = _called_names("app/services/runtime_task_worker.py", "_runtime_maintenance_loop")
+    tick_calls = _called_names("app/services/runtime_task_worker.py", "_terminal_boundary_lanes")
     round_sweep_calls = _called_names(
         "app/services/runtime_task_worker.py",
         "recover_session_model_rounds_once",
@@ -193,7 +193,7 @@ def test_existing_runtime_worker_recovers_sealed_rounds_and_terminal_outcomes() 
 
 
 def test_existing_runtime_worker_owns_turn_replacement_saga_progress() -> None:
-    tick_calls = _called_names("app/services/runtime_task_worker.py", "_runtime_maintenance_loop")
+    tick_calls = _called_names("app/services/runtime_task_worker.py", "_terminal_boundary_lanes")
     sweep_calls = _called_names("app/services/runtime_task_worker.py", "recover_turn_replacement_sagas_once")
     starter_calls = _called_names("app/services/session_turn_replacement.py", "_start_replacement_runtime")
     ingress_calls = _called_names("app/api/chat_sessions.py", "_submit_session_human_input")
@@ -224,14 +224,13 @@ def test_existing_runtime_worker_owns_turn_replacement_saga_progress() -> None:
 
 
 def test_existing_runtime_worker_publishes_canonical_session_event_outbox() -> None:
-    tick_calls = _called_names("app/services/runtime_task_worker.py", "_runtime_maintenance_loop")
+    tick_calls = _called_names("app/services/runtime_task_worker.py", "_terminal_boundary_lanes")
     drain_calls = _called_names("app/services/runtime_task_worker.py", "drain_session_event_outbox_once")
     publisher_calls = _called_names("app/services/session_event_outbox.py", "drain_once")
     redis_calls = _called_names("app/services/web_chat_stream_bus.py", "publish_canonical_session_event")
     consumer_calls = _called_names("app/services/web_chat_stream_bus.py", "_listen_web_chat_stream_once")
 
-    lane_source = (BACKEND / "app/services/runtime_task_worker.py").read_text()
-    assert '"session-events": drain_session_event_outbox_once' in lane_source
+    assert "drain_session_event_outbox_once" in tick_calls
     assert "drain_once" in drain_calls
     assert "publish_callback" in publisher_calls
     assert "publish_canonical_session_event" in (BACKEND / "app" / "services" / "session_event_outbox.py").read_text(
@@ -242,7 +241,7 @@ def test_existing_runtime_worker_publishes_canonical_session_event_outbox() -> N
 
 
 def test_existing_runtime_worker_recovers_stale_current_revision_admissions() -> None:
-    tick_calls = _called_names("app/services/runtime_task_worker.py", "_runtime_maintenance_loop")
+    tick_calls = _called_names("app/services/runtime_task_worker.py", "_terminal_boundary_lanes")
     sweep_calls = _called_names("app/services/runtime_task_worker.py", "recover_stale_session_input_admissions_once")
     hook_evidence_calls = _called_names("app/runtime/hooks.py", "_persist_hook_boundary_evidence")
 
@@ -279,7 +278,7 @@ def test_explicit_session_input_endpoint_has_one_canonical_live_adapter() -> Non
 
 
 def test_runtime_worker_owns_post_admission_input_dispatch() -> None:
-    tick_calls = _called_names("app/services/runtime_task_worker.py", "_runtime_maintenance_loop")
+    tick_calls = _called_names("app/services/runtime_task_worker.py", "_terminal_boundary_lanes")
     sweep_calls = _called_names("app/services/runtime_task_worker.py", "recover_session_input_dispatches_once")
     rollover_sweep_calls = _called_names(
         "app/services/runtime_task_worker.py",

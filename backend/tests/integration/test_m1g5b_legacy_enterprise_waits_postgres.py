@@ -21,7 +21,7 @@ pytestmark = pytest.mark.usefixtures("migrated_pg_url")
 
 
 @pytest.mark.parametrize(
-    "ticket_state", ["pending", "succeeded", "needs_reconciliation", "mixed_local", "uncertain_sibling", "bad_binding"]
+    "ticket_state", ["pending", "succeeded", "needs_reconciliation", "mixed_local", "uncertain_sibling", "bad_binding", "paged"]
 )
 async def test_worker_recovers_original_round_without_replaying_enterprise_execution(
     owner_sessionmaker,
@@ -42,6 +42,8 @@ async def test_worker_recovers_original_round_without_replaying_enterprise_execu
     for module in ["app.database", "app.tools.resolver", "app.tools.governance_resolver"]:
         monkeypatch.setattr(f"{module}.async_session", app_user_sessionmaker)
     monkeypatch.setattr(agent_tools, "_TOOL_RUNTIME_SERVICE", None)
+    import app.services.runtime_task_worker as worker
+    monkeypatch.setattr(worker, "_STATE", {})
     calls = []
 
     async def no_wakeup(**kwargs):
@@ -280,10 +282,31 @@ async def test_worker_recovers_original_round_without_replaying_enterprise_execu
     async with owner_sessionmaker() as db:
         before = await db.get(ApprovalRequest, approval_id)
         consumed_at, receipt = before.consumed_at, dict(before.execution_receipt or {})
+    if ticket_state == "paged":
+        async with owner_sessionmaker() as db:
+            original = await db.get(SessionToolInvocation, invocation.id)
+            values = {column.name: getattr(original, column.name) for column in SessionToolInvocation.__table__.columns}
+            decoy_id = uuid.UUID(int=original.id.int - 1)
+            values.update(id=decoy_id, provider_request_id=f"decoy-{run_id}",
+                provider_tool_use_id="wrong-ticket-call", effect_idempotency_key=f"decoy-{run_id}")
+            db.add(SessionToolInvocation(**values))
+            await db.commit()
+        # Resume immediately before these adjacent ids; other tests retain tenant rows.
+        worker._STATE["enterprise_permission_after_id"] = uuid.UUID(int=decoy_id.int - 1)
+        recover = session_approval.recover_enterprise_permission_waits
+
+        async def one_page(db):
+            return await recover(db, limit=1)
+
+        monkeypatch.setattr(session_approval, "recover_enterprise_permission_waits", one_page)
     assert (
         await expire_session_permission_requests_once(worker_id="legacy-recover", session_factory=app_user_sessionmaker)
         == 0
     )
+    if ticket_state == "paged":
+        assert worker._STATE["enterprise_permission_after_id"] == decoy_id
+        async with owner_sessionmaker() as db:
+            assert (await db.get(SessionToolInvocation, invocation.id)).result_event_id is None
     assert (
         await expire_session_permission_requests_once(worker_id="legacy-recover", session_factory=app_user_sessionmaker)
         == 0

@@ -1308,7 +1308,7 @@ async def allocate_session_sequence_range(
 
     if count <= 0:
         raise ValueError("event group cannot be empty")
-    if locked_session is None:
+    if locked_session is None or locked_session.id != session_id:
         await _lock_sequence_authority(db, session_id=session_id)
     # The advisory serializes all cursor writers, including the old MAX+1 writer.
     # Read the session, cursor and legacy high-water mark in one round trip.

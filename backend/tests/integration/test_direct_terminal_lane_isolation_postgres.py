@@ -136,6 +136,20 @@ async def test_trigger_lane_cannot_hold_delegation_delivery(
     monkeypatch.setattr(worker, "drain_web_terminal_boundary_outbox_once", web)
     monkeypatch.setattr(worker, "DirectInvocationTerminalBoundaryProcessor", Processor)
     monkeypatch.setattr(worker, "RuntimeTerminalBoundaryOutboxService", ObservedService)
+    async def idle(**_kwargs):
+        return 0
+
+    for name in (
+        "drain_session_event_outbox_once", "drain_channel_delivery_outbox_once",
+        "drain_budget_transition_outbox_once", "drain_runtime_notification_outbox_once",
+        "recover_turn_replacement_sagas_once", "recover_session_input_dispatches_once",
+        "recover_terminal_target_session_inputs_once", "recover_session_control_inputs_once",
+        "recover_stale_session_input_admissions_once", "recover_session_model_rounds_once",
+        "recover_session_terminal_outcomes_once", "expire_session_permission_requests_once",
+        "reconcile_hr_creation_drafts_once", "reconcile_stale_business_tasks_once",
+        "recover_team_fanout_admissions_once",
+    ):
+        monkeypatch.setattr(worker, name, idle)
     running = asyncio.create_task(worker.start_terminal_boundary_worker_loop(worker_id="lane-isolation"))
     try:
         await asyncio.wait_for(blocked.wait(), 5)

@@ -121,6 +121,7 @@ async def test_oidc_callback_pins_explicit_tenant_before_login_or_register():
             oidc_api.OIDCCallbackRequest(
                 code="code",
                 redirect_uri="https://app.example.com/callback",
+                nonce="login-nonce",
                 tenant_id=str(tenant_id),
             ),
             db=db,
@@ -186,6 +187,7 @@ async def test_oidc_callback_fails_closed_when_security_audit_is_unavailable():
                 oidc_api.OIDCCallbackRequest(
                     code="code",
                     redirect_uri="https://app.example.com/callback",
+                    nonce="login-nonce",
                     tenant_id=str(tenant_id),
                 ),
                 db=db,

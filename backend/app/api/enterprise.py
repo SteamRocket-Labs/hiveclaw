@@ -1381,6 +1381,8 @@ async def update_oidc_config(
             raise HTTPException(status_code=400, detail="Invalid OIDC issuer: missing authorization_endpoint")
     except httpx.HTTPError as e:
         raise HTTPException(status_code=400, detail=f"Cannot reach OIDC issuer: {e}")
+    except ValueError:
+        raise HTTPException(status_code=400, detail="OIDC discovery issuer does not match configured issuer")
 
     from app.models.tenant_setting import TenantSetting
 

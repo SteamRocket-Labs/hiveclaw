@@ -32,6 +32,8 @@ async def discover_oidc(issuer_url: str) -> dict:
         resp = await client.get(well_known)
         resp.raise_for_status()
         metadata = resp.json()
+        if metadata.get("issuer") != issuer_url:
+            raise ValueError("OIDC discovery issuer does not match configured issuer")
 
     _discovery_cache[issuer_url] = (metadata, time.time())
     return metadata
@@ -97,22 +99,25 @@ async def exchange_code(
         # Verify and decode id_token using JWKS from the IdP
         if not id_token_raw:
             raise ValueError("OIDC id_token is required")
-        from authlib.jose import JsonWebKey, jwt as authlib_jwt
+        from authlib.jose import JsonWebKey, JsonWebToken
         from authlib.oidc.core import CodeIDToken
 
         jwks_resp = await client.get(metadata["jwks_uri"])
         jwks_resp.raise_for_status()
         keys = JsonWebKey.import_key_set(jwks_resp.json())
-        claims = authlib_jwt.decode(
+        claims = JsonWebToken([
+            "RS256", "RS384", "RS512", "PS256", "PS384", "PS512",
+            "ES256", "ES384", "ES512", "EdDSA",
+        ]).decode(
             id_token_raw, keys, claims_cls=CodeIDToken,
             claims_options={
                 "iss": {"essential": True, "value": metadata["issuer"]},
                 "aud": {"essential": True, "value": client_id},
-                "sub": {"essential": True, "validate": lambda claims, value: isinstance(value, str)},
+                "sub": {"essential": True},
             },
             claims_params={"nonce": nonce, "client_id": client_id},
         )
-        claims.validate()
+        claims.validate(leeway=60)
 
         # Fetch userinfo if endpoint available
         userinfo = {}
@@ -169,31 +174,11 @@ async def login_or_register(
         )
         return user, token
 
-    # Try to match by email (tenant-scoped)
-    email = oidc_user.get("email", "")
-    if email:
-        result = await db.execute(select(User).where(User.email == email, User.tenant_id == tenant_id))
-        user = result.scalar_one_or_none()
-        if user:
-            if not user.is_active:
-                raise ValueError("User account is inactive")
-            # Bind OIDC identity to existing user
-            user.oidc_sub = sub
-            user.oidc_issuer = issuer
-            if oidc_user.get("picture") and not user.avatar_url:
-                user.avatar_url = oidc_user["picture"]
-            await db.flush()
-            token = create_access_token(
-                str(user.id),
-                user.role,
-                tenant_id=str(user.tenant_id) if user.tenant_id else None,
-            )
-            return user, token
-
     if not auto_provision:
         raise ValueError("User not found and auto-provisioning is disabled")
 
     # Create new user
+    email = oidc_user.get("email", "")
     name = oidc_user.get("name", "")
     username = email.split("@")[0] if email else f"oidc_{sub[:8]}"
     if not email:

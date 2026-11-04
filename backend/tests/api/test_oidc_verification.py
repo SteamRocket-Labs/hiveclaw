@@ -12,10 +12,13 @@ import pytest
 from authlib.jose import JsonWebKey, jwt
 from fastapi import FastAPI
 from loguru import logger
+from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
 from app.api.oidc import router
 from app.core.security import get_current_user
 from app.database import get_db
+from app.models.participant import Participant
+from app.models.user import User
 from app.services import oidc_service
 from tests.api.test_auth_login import _fake_user
 from tests.api.test_oidc_rls import _FakeDB
@@ -48,6 +51,8 @@ def provider(monkeypatch, signing_keys):
         },
         userinfo={"sub": "verified-subject", "name": "Profile Name", "picture": "https://idp.test/avatar"},
         key=signing_keys[0],
+        algorithm="RS256",
+        jwks={"keys": [signing_keys[0].as_dict(is_private=False)]},
         tamper=False,
         missing_token=False,
         token_error=False,
@@ -60,12 +65,12 @@ def provider(monkeypatch, signing_keys):
         if request.url.path == "/.well-known/openid-configuration":
             return httpx.Response(200, json=provider.metadata)
         if request.url.path == "/jwks":
-            return httpx.Response(200, json={"keys": [signing_keys[0].as_dict(is_private=False)]})
+            return httpx.Response(200, json=provider.jwks)
         if request.url.path == "/token":
             assert request.method == "POST"
             if provider.token_error:
                 raise RuntimeError("sensitive-provider-code-and-secret")
-            provider.token = jwt.encode({"alg": "RS256"}, provider.claims, provider.key).decode()
+            provider.token = jwt.encode({"alg": provider.algorithm}, provider.claims, provider.key).decode()
             if provider.tamper:
                 parts = provider.token.split(".")
                 parts[1] = base64.urlsafe_b64encode(
@@ -90,16 +95,22 @@ def provider(monkeypatch, signing_keys):
     oidc_service._discovery_cache.clear()
 
 
-async def call_route(monkeypatch, route, nonce=NONCE):
-    tenant_id = uuid4()
-    user = _fake_user(tenant_id=tenant_id)
-    user.oidc_sub = "verified-subject" if route == "callback" else None
-    user.oidc_issuer = None
+async def call_route(monkeypatch, route, nonce=NONCE, *, db=None, user=None, tenant_id=None):
+    tenant_id = tenant_id or uuid4()
+    if user is None:
+        user = _fake_user(tenant_id=tenant_id)
+        user.oidc_sub = "verified-subject" if route == "callback" else None
+        user.oidc_issuer = None
     setting = SimpleNamespace(value={
         "issuer_url": ISSUER, "client_id": CLIENT_ID, "client_secret": "fake-client-secret",
     })
-    db = _FakeDB([setting, user])
-    db.flush = AsyncMock()
+    if db is None:
+        db = _FakeDB([setting, user])
+        db.flush = AsyncMock()
+    else:
+        # SQLite exercises real uniqueness constraints; PostgreSQL RLS has its own suite.
+        monkeypatch.setattr("app.api.oidc.pin_rls_tenant_context", AsyncMock())
+        monkeypatch.setattr(oidc_service, "get_tenant_oidc_config", AsyncMock(return_value=setting.value))
     audit = AsyncMock()
     monkeypatch.setattr("app.core.policy.write_audit_event", audit)
     app = FastAPI()
@@ -110,7 +121,7 @@ async def call_route(monkeypatch, route, nonce=NONCE):
     if nonce is not None:
         body["nonce"] = nonce
     # Use the base client class so the provider mock cannot intercept the app request.
-    async with AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://app.test") as client:
+    async with AsyncClient(transport=httpx.ASGITransport(app=app, raise_app_exceptions=False), base_url="http://app.test") as client:
         response = await client.post(f"/api/auth/oidc/{route}", json=body)
     return response, db, user, audit
 
@@ -121,6 +132,7 @@ async def call_route(monkeypatch, route, nonce=NONCE):
     "missing_token_nonce", "wrong_nonce", "missing_request_nonce", "empty_request_nonce",
     "userinfo_subject", "missing_id_token", "missing_exp", "missing_sub",
     "multi_aud_missing_azp", "multi_aud_wrong_azp", "provider_error",
+    "empty_sub", "symmetric_key", "discovery_issuer",
 ])
 async def test_rejects_invalid_login(monkeypatch, provider, signing_keys, route, case):
     nonce = NONCE
@@ -132,10 +144,11 @@ async def test_rejects_invalid_login(monkeypatch, provider, signing_keys, route,
         provider.key = signing_keys[1]
     elif case == "wrong_aud":
         provider.claims["aud"] = "another-client"
+        provider.claims["azp"] = CLIENT_ID
     elif case == "wrong_iss":
         provider.claims["iss"] = "https://another-idp.test"
     elif case == "expired":
-        provider.claims["exp"] = int(time.time()) - 60
+        provider.claims["exp"] = int(time.time()) - 120
     elif case == "missing_token_nonce":
         del provider.claims["nonce"]
     elif case == "wrong_nonce":
@@ -152,6 +165,14 @@ async def test_rejects_invalid_login(monkeypatch, provider, signing_keys, route,
         del provider.claims["exp"]
     elif case == "missing_sub":
         del provider.claims["sub"]
+    elif case == "empty_sub":
+        provider.claims["sub"] = ""
+    elif case == "symmetric_key":
+        provider.algorithm = "HS256"
+        provider.key = JsonWebKey.generate_key("oct", 256, is_private=True)
+        provider.jwks = {"keys": [provider.key.as_dict(is_private=True)]}
+    elif case == "discovery_issuer":
+        provider.metadata["issuer"] = provider.claims["iss"] = "https://another-idp.test"
     elif case.startswith("multi_aud"):
         provider.claims["aud"] = [CLIENT_ID, "other-client"]
         if case == "multi_aud_wrong_azp":
@@ -172,6 +193,10 @@ async def test_rejects_invalid_login(monkeypatch, provider, signing_keys, route,
     assert not db.committed
     assert user.oidc_sub == ("verified-subject" if route == "callback" else None)
     assert messages
+    if case in {"no_jwks", "discovery_issuer"}:
+        assert "/token" not in provider.requests
+    if case == "provider_error":
+        assert "RuntimeError" in "\n".join(messages)
     log = "\n".join(messages)
     assert all(sensitive not in log for sensitive in [
         provider.token, "fake-authorization-code", "fake-client-secret",
@@ -201,3 +226,82 @@ async def test_valid_token_signs_in_with_verified_subject(monkeypatch, provider,
     assert user.oidc_issuer == ISSUER
     assert set(provider.requests) == {"/.well-known/openid-configuration", "/token", "/jwks", "/userinfo"}
     db.flush.assert_awaited_once()
+
+
+@pytest.mark.parametrize("route", ["callback", "bind"])
+@pytest.mark.parametrize("clock_skew", ["expired_recently", "issued_in_future"])
+async def test_accepts_sixty_seconds_clock_skew(monkeypatch, provider, route, clock_skew):
+    provider.claims["exp" if clock_skew == "expired_recently" else "iat"] = int(time.time()) + (
+        -30 if clock_skew == "expired_recently" else 30
+    )
+    response, *_ = await call_route(monkeypatch, route)
+    assert response.status_code == 200
+
+
+async def test_malformed_tenant_is_plain_refusal(monkeypatch, provider):
+    response, db, _, audit = await call_route(monkeypatch, "callback", tenant_id="not-a-uuid")
+    assert response.status_code == 400
+    assert response.json() == {"detail": "Invalid tenant ID"}
+    assert not provider.requests
+    db.flush.assert_not_awaited()
+    audit.assert_not_awaited()
+
+
+@pytest.fixture
+async def account_db():
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as connection:
+        await connection.run_sync(User.__table__.create)
+        await connection.run_sync(Participant.__table__.create)
+    try:
+        async with AsyncSession(engine, expire_on_commit=False) as db:
+            yield db
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.parametrize("collision", ["email_same_tenant", "email_other_tenant", "sub_other_tenant", "bind_sub"])
+async def test_account_conflicts_are_plain_refusals(monkeypatch, provider, account_db, collision):
+    tenant_id = uuid4()
+    victim = User(**vars(_fake_user(
+        email=provider.claims["email"],
+        tenant_id=uuid4() if collision.endswith("other_tenant") else tenant_id,
+    )))
+    victim.role = "platform_admin"
+    victim.oidc_sub = "verified-subject" if "sub" in collision else "original-subject"
+    victim.oidc_issuer = ISSUER
+    actor = User(**vars(_fake_user(username="bob", email="bob@example.com", tenant_id=tenant_id)))
+    account_db.add_all([victim, actor])
+    await account_db.commit()
+    victim_id, actor_id, original_sub = victim.id, actor.id, victim.oidc_sub
+    if "sub" in collision:
+        provider.claims["email"] = "new@example.com"
+    # Even a provider's verified-email claim must not link an existing account.
+    provider.claims["email_verified"] = True
+    route = "bind" if collision == "bind_sub" else "callback"
+    response, _, _, audit = await call_route(
+        monkeypatch, route, db=account_db, user=actor, tenant_id=tenant_id,
+    )
+    assert response.status_code in {400, 403, 409}
+    assert set(response.json()) == {"detail"}
+    assert "token" not in response.json()
+    audit.assert_not_awaited()
+    await account_db.rollback()
+    victim = await account_db.get(User, victim_id)
+    actor = await account_db.get(User, actor_id)
+    assert victim.oidc_sub == original_sub
+    assert victim.role == "platform_admin"
+    assert actor.oidc_sub is None
+
+
+@pytest.mark.parametrize("route", ["callback", "bind"])
+async def test_new_account_or_authenticated_binding_succeeds(monkeypatch, provider, account_db, route):
+    tenant_id = uuid4()
+    actor = User(**vars(_fake_user(email=provider.claims["email"], tenant_id=tenant_id)))
+    if route == "bind":
+        account_db.add(actor)
+        await account_db.commit()
+    response, *_ = await call_route(monkeypatch, route, db=account_db, user=actor, tenant_id=tenant_id)
+    assert response.status_code == 200
+    result = response.json()["user"] if route == "callback" else response.json()
+    assert result["oidc_sub"] == "verified-subject"

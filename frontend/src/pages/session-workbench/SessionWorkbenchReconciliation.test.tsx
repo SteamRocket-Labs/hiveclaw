@@ -39,7 +39,6 @@ describe('workbench unconfirmed execution', () => {
     const before = JSON.stringify(messages);
     const header = model(messages, phase).header;
     expect(header.status).toBe('failed');
-    expect(header.requiresReconciliation).toBe(true);
     const markup = renderToStaticMarkup(<SessionWorkbenchHeader model={header} />);
     // The header no longer has a dedicated unconfirmed-outcome chip: the five
     // user-visible states only, so an unconfirmed run surfaces as failed.
@@ -52,9 +51,10 @@ describe('workbench unconfirmed execution', () => {
   });
 
   it('preserves an explicit current runtime reconciliation status without a transcript boundary', () => {
-    const header = model([prompt], 'failed', 'needs_reconciliation').header;
+    // thinking phase: if the explicit reconciliation status were ignored, the
+    // live phase would show running — the input alone does not decide this.
+    const header = model([prompt], 'thinking', 'needs_reconciliation').header;
     expect(header.status).toBe('failed');
-    expect(header.requiresReconciliation).toBe(true);
   });
 
   it('does not carry an earlier unknown outcome into a new accepted user turn', () => {
@@ -67,14 +67,25 @@ describe('workbench unconfirmed execution', () => {
   });
 
   it('does not let an earlier completed run hide the current run requiring reconciliation', () => {
-    const header = model([prompt, runEvent('completed')], 'failed', 'needs_reconciliation', 'run-2').header;
+    // thinking phase: if the current run's reconciliation status lost to the
+    // earlier completed boundary, the header would show running instead.
+    const header = model([prompt, runEvent('completed')], 'thinking', 'needs_reconciliation', 'run-2').header;
     expect(header.status).toBe('failed');
-    expect(header.requiresReconciliation).toBe(true);
   });
 
   it('recognizes compact and canonical UUIDs as the same current run', () => {
-    expect(model([prompt, runEvent('needs_reconciliation', 1, '123e4567-e89b-12d3-a456-426614174000')],
-      'failed', 'failed', '123e4567e89b12d3a456426614174000').header.requiresReconciliation).toBe(true);
+    const canonical = '123e4567-e89b-12d3-a456-426614174000';
+    const compact = '123e4567e89b12d3a456426614174000';
+    // Same run in its two spellings: the needs_reconciliation boundary is the
+    // current run, so the header shows the reconciled failed state rather than
+    // the live thinking/running presentation. If compact/canonical matching
+    // broke, the boundary would be treated as another run and this fails.
+    expect(model([prompt, runEvent('needs_reconciliation', 1, canonical)],
+      'thinking', 'running', compact).header.status).toBe('failed');
+    // Control — a genuinely different run id is not taken over: the earlier
+    // unknown outcome yields to the current running presentation.
+    expect(model([prompt, runEvent('needs_reconciliation', 1, canonical)],
+      'thinking', 'running', '99999999-e89b-12d3-a456-426614174000').header.status).toBe('running');
   });
 
   it('keeps a later canonical resolution and a known failure distinct', () => {

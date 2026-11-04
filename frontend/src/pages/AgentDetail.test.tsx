@@ -159,6 +159,30 @@ describe('AgentDetail realtime refresh contract', () => {
     );
   });
 
+  it('never sends a new-conversation placeholder as the session title (B5 review)', async () => {
+    const source = await readSource('./AgentDetail.tsx');
+
+    // The server auto-names a conversation from its first message only when the
+    // created session has an empty or "Session "-prefixed title, so neither the
+    // 新对话 placeholder nor any draft title may reach a creation payload.
+    expect(source).not.toContain('newSessionTitle');
+    expect(source).not.toContain('title: activeSession.title');
+    expect(source).toContain('const created = await chatApi.createSession(id);');
+    expect(source).toContain('const response = await chatApi.createSessionRun(id, input);');
+  });
+
+  it('treats an empty session list as confirmed only when every list read succeeded (B5 review)', async () => {
+    const source = await readSource('./AgentDetail.tsx');
+    const fnStart = source.indexOf('const fetchMySessions');
+    expect(fnStart).toBeGreaterThan(-1);
+    const fn = source.slice(fnStart, source.indexOf('const fetchAllSessions', fnStart));
+
+    // mine=[] + a failed groups read is "unreadable", not "no sessions": the
+    // auto-新对话 draft must not open over a user's real shared-group
+    // conversation; the empty state with its manual 新对话 stays.
+    expect(fn).toContain("if (!data.length && groups.status === 'rejected') return null;");
+  });
+
   it('consumes each typed new-conversation request once before creating its draft', async () => {
     const source = await readSource('./AgentDetail.tsx');
     const effectStart = source.indexOf('if (!newSessionDraftRequest || !id) return;');

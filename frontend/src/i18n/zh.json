@@ -882,8 +882,6 @@
     "eyebrow": "企业运行控制台",
     "title": "控制中台",
     "subtitle": "面向公司规模治理数字员工：人员、模型、工具、记忆、委派、审批、审计和本地运行时通道。",
-    "sectionEyebrow": "控制中台",
-    "backToOverview": "返回公司后台",
     "operatingAreas": "运行区域",
     "operatingAreasDesc": "每张卡片都打开已经实现的工作区 section 或用户级运行时页面。旧后台能力不会被藏在 legacy 导航后面。",
     "metrics": {
@@ -2416,6 +2414,7 @@
       "mySessions": "我的对话",
       "allUsers": "所有用户",
       "newSession": "新建对话",
+      "newSessionTitle": "新对话",
       "startingNewSession": "正在开始新对话…",
       "noSessionsYet": "还没有对话。",
       "clickToStart": "开始一段新对话吧。",

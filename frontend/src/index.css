@@ -1400,7 +1400,37 @@
   border-radius: var(--radius-md);
   background: transparent;
   cursor: pointer;
-  transition: transform 140ms cubic-bezier(0.25, 1, 0.5, 1);
+  /* B5: rail nodes stay hidden until the person points at the rail or tabs
+     into it — the same reveal pattern as per-message actions. Hidden nodes
+     are not hit targets either (an invisible button must not scroll or switch
+     sessions); keyboard focus (focus-within) keeps rewind reachable. */
+  opacity: 0;
+  pointer-events: none;
+  transition:
+    transform 140ms cubic-bezier(0.25, 1, 0.5, 1),
+    opacity 120ms ease;
+}
+
+.session-gitline:hover .session-gitline-node,
+.session-gitline:focus-within .session-gitline-node,
+.session-gitline:hover .session-gitline-branch-node,
+.session-gitline:focus-within .session-gitline-branch-node,
+.session-gitline:hover .session-gitline-branch-cluster,
+.session-gitline:focus-within .session-gitline-branch-cluster {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+/* Touch devices have no hover to reveal the rail with: the first tap on the
+   rail reveals its nodes and must not act (hidden nodes are un-hittable, so
+   the tap lands on the rail itself); a second tap acts on a visible node. */
+@media (hover: none) {
+  .session-gitline.is-touch-revealed .session-gitline-node,
+  .session-gitline.is-touch-revealed .session-gitline-branch-node,
+  .session-gitline.is-touch-revealed .session-gitline-branch-cluster {
+    opacity: 1;
+    pointer-events: auto;
+  }
 }
 
 .session-gitline-node::after,
@@ -1584,11 +1614,16 @@
   font-weight: 700;
   line-height: 1;
   cursor: pointer;
+  /* Hides with the other rail nodes (B5 review: the +N cluster was the one
+     node left always-visible) and is no hit target while hidden. */
+  opacity: 0;
+  pointer-events: none;
   transition:
     border-color 140ms cubic-bezier(0.25, 1, 0.5, 1),
     background 140ms cubic-bezier(0.25, 1, 0.5, 1),
     color 140ms cubic-bezier(0.25, 1, 0.5, 1),
-    transform 140ms cubic-bezier(0.25, 1, 0.5, 1);
+    transform 140ms cubic-bezier(0.25, 1, 0.5, 1),
+    opacity 120ms ease;
 }
 
 .session-gitline-branch-cluster:hover,

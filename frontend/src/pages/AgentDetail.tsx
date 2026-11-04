@@ -303,7 +303,6 @@ function AgentDetailInner() {
     const [activeSession, setActiveSession] = useState<any | null>(null);
     const [branchLineage, setBranchLineage] = useState<BranchLineageItem[]>([]);
     const [branchLineageLoading, setBranchLineageLoading] = useState(false);
-    const [chatScope, setChatScope] = useState<'mine' | 'all'>('mine');
     const [allUserFilter, setAllUserFilter] = useState<string>('');  // filter by username in All Users
     const [historyMsgs, setHistoryMsgs] = useState<AgentChatMessage[]>([]);
     const historyMessagesRef = useRef<AgentChatMessage[]>([]);
@@ -647,10 +646,14 @@ function AgentDetailInner() {
                 });
             }
             if (!silent && currentAgentIdRef.current === agentId) setSessionsLoading(false);
+            // B5 review: a failed groups read is not a confirmed-empty bot — report
+            // unreadable so the manual 新对话 stays instead of an auto-draft.
+            if (!data.length && groups.status === 'rejected') return null;
             return data;
-        } catch { }
-        if (!silent && currentAgentIdRef.current === agentId) setSessionsLoading(false);
-        return [];
+        } catch {
+            if (!silent && currentAgentIdRef.current === agentId) setSessionsLoading(false);
+            return null; // null = unreadable; [] = read and genuinely empty
+        }
     };
 
     const fetchAllSessions = createSessionInventoryLoader({
@@ -1247,7 +1250,7 @@ function AgentDetailInner() {
         if (!id || !activeSession?.id) return null;
         if (!isDraftHumanChatSession(activeSession)) return activeSession;
         const draftId = String(activeSession.id);
-        const created = await chatApi.createSession(id, activeSession.title || undefined);
+        const created = await chatApi.createSession(id);
         return replaceDraftActiveSession(draftId, created);
     };
 
@@ -1258,10 +1261,7 @@ function AgentDetailInner() {
             return { session: activeSession as ChatSession, run };
         }
         const draftId = String(activeSession.id);
-        const response = await chatApi.createSessionRun(id, {
-            title: activeSession.title || undefined,
-            ...input,
-        });
+        const response = await chatApi.createSessionRun(id, input);
         const created = replaceDraftActiveSession(draftId, response.session);
         return { session: created, run: response.run };
     };
@@ -1612,7 +1612,6 @@ function AgentDetailInner() {
             setBranchLineage,
             setBranchLineageLoading,
             setChatMessagesSessionId,
-            setChatScope,
             setHistoryMessagesSessionId,
             setIsStreaming,
             setIsWaiting,
@@ -1666,6 +1665,9 @@ function AgentDetailInner() {
                 return;
             }
             if (data && data.length > 0) selectSession(data[0]);
+            // B5: a confirmed-empty bot opens a fresh conversation (never for managed/local channels).
+            else if (data && !data.length && !operatorSessionBrowserMode
+                && (agent as any)?.agent_type !== 'local_agent') void createNewSession();
         });
     }, [canLoadAgentScopedData, id, token, activeTab, requestedSessionId, operatorSessionBrowserMode, isOperatorOnly]);
 
@@ -2538,7 +2540,7 @@ function AgentDetailInner() {
     const statusKey = agentStatusKey(agent);
     const isSystemHrRaw = (agent as any).agent_class === 'internal_system';
     const isSystemHr = isSystemHrRaw && !isManageMode;
-    const sessionWorkbenchMode = Boolean(routeSessionId) || isSessionWorkbenchRoute(activeTab, location.search);
+    const sessionWorkbenchMode = Boolean(routeSessionId) || (!isOperatorOnly && isSessionWorkbenchRoute(activeTab, location.search));
     const pendingSessionLookup = visibleActiveSession?.is_pending_session_lookup === true;
 
     // HR system agent: force chat-only mode
@@ -2561,7 +2563,7 @@ function AgentDetailInner() {
                     {t('workspace.digitalEmployees.retirementPending', 'New execution is disabled. External work is still unconfirmed; review it in its original work before retrying retirement. Files are retained. Ending local tracking does not confirm that the external runner stopped.')}
                 </div>}
 
-                {!sessionWorkbenchMode && (
+                {(!sessionWorkbenchMode || isSystemHr) && (
                     <AgentDetailHeader
                         agent={agent}
                         agentId={id!}
@@ -2569,7 +2571,6 @@ function AgentDetailInner() {
                         isOperatorOnly={isOperatorOnly}
                         isSystemHr={isSystemHr}
                         onError={(message) => showToast(message, 'error')}
-                        onSelectChat={() => selectDetailTab('chat')}
                         statusKey={statusKey}
                     />
                 )}
@@ -2696,8 +2697,6 @@ function AgentDetailInner() {
                             isAdmin={isSystemHr ? false : Boolean((canOperatorInspect && normalizedOperatorReason) || scopedAdminSessionAccess)}
                             operatorReason={normalizedOperatorReason}
                             onOperatorAuthorityDenied={denyOperatorAuthority}
-                            chatScope={chatScope}
-                            onSetChatScope={setChatScope}
                             onLoadAllSessions={fetchAllSessions}
                             onCreateNewSession={createNewSession}
                             sessionsLoading={sessionsLoading}

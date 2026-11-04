@@ -360,7 +360,6 @@ export function useOperatorAuthorityCacheLifecycle({
     setters.setAllSessionsLoading(false);
     setters.setBranchLineage([]);
     setters.setBranchLineageLoading(false);
-    setters.setChatScope('mine');
   }, [operatorAuthorityScope]);
 
   React.useEffect(() => {
@@ -404,7 +403,6 @@ export function useOperatorAuthorityCacheLifecycle({
     refs.pendingUserMessages.current = {};
     refs.runtimeActivityAt.current = {};
     setters.setActiveRunStateBySession({});
-    setters.setChatScope('mine');
     setters.setAgentExpired(false);
     setters.setSessionAccessError(null);
     refs.settingsInit.current = false;

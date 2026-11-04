@@ -7,7 +7,6 @@ import { describe, expect, it, vi } from 'vitest';
 
 import type { LocalAgentChannelEvent } from '../../api/domains/localBridge';
 import LocalAgentChatSection, {
-  localAgentRuntimeResumeHealth,
   localAgentArtifactDownloadUrl,
   localAgentChannelEventsToChatMessages,
 } from './LocalAgentChatSection';
@@ -172,45 +171,6 @@ describe('LocalAgentChatSection local-channel projection', () => {
     });
   });
 
-  it('derives runtime health from Hive Connect presence instead of browser live-channel state', () => {
-    expect(
-      localAgentRuntimeResumeHealth(
-        [
-          {
-            id: 'conn-1',
-            tenant_id: 'tenant-1',
-            user_id: 'user-1',
-            device_name: 'MacBook.local',
-            client_kind: 'hive-connect',
-            status: 'active',
-            presence_status: 'offline',
-            scopes: [],
-          },
-        ],
-        false,
-      ),
-    ).toBe('offline');
-
-    expect(localAgentRuntimeResumeHealth(undefined, true)).toBe('unknown');
-
-    expect(
-      localAgentRuntimeResumeHealth(
-        [
-          {
-            id: 'conn-2',
-            tenant_id: 'tenant-1',
-            user_id: 'user-1',
-            device_name: 'MacBook.local',
-            client_kind: 'hive-connect',
-            status: 'active',
-            presence_status: 'online',
-            scopes: [],
-          },
-        ],
-        false,
-      ),
-    ).toBe('online');
-  });
 
   it('renders the local agent composer with the same Codex-style control surface as ordinary chat sessions', () => {
     const queryClient = new QueryClient({

@@ -323,6 +323,10 @@ export function SessionGitLine({
   const density = getSessionGitLineDensity(checkpoints.length + branchRows.length);
   const densityClass = `is-${density}`;
   const [expandedBranchAnchorId, setExpandedBranchAnchorId] = React.useState<string | null>(null);
+  // Touch reveal (B5 review): without hover, the first tap on the rail reveals
+  // its nodes and must not act — hidden nodes are un-hittable (pointer-events:
+  // none), so that tap lands here; a second tap acts on a visible node.
+  const [touchRevealed, setTouchRevealed] = React.useState(false);
   const [hoverPreview, setHoverPreview] = React.useState<{
     label: string;
     meta: string[];
@@ -435,8 +439,9 @@ export function SessionGitLine({
       data-axis-session-id={axisSessionId || undefined}
       data-active-session-id={activeSessionId || undefined}
       data-density={density}
-      className={`session-gitline ${densityClass}`}
+      className={`session-gitline ${densityClass}${touchRevealed ? ' is-touch-revealed' : ''}`}
       aria-label={navigationLabel}
+      onClick={() => setTouchRevealed(true)}
     >
       <div className="session-gitline-track" data-testid="session-gitline-checkpoints">
         {checkpoints.map((checkpoint, index) => {

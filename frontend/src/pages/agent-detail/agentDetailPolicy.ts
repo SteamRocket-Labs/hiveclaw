@@ -10,8 +10,10 @@ export const AGENT_DETAIL_TABS = ['status', 'aware', 'knowledge', 'evolution', '
 export type AgentDetailTab = typeof AGENT_DETAIL_TABS[number];
 
 export function isSessionWorkbenchRoute(activeTab: string, search: string): boolean {
-    const params = new URLSearchParams(search);
-    return activeTab === 'chat' && params.has('session_id') && !params.has('manage');
+  // B5: the bot is the way in — its chat tab IS the conversation workbench.
+  // Management keeps the explicit `?manage=true` form (and every hash tab).
+  const params = new URLSearchParams(search);
+  return activeTab === 'chat' && !params.has('manage');
 }
 
 export function getAgentDetailHashTab(hash: string | undefined, validTabs: readonly string[]): string | null {

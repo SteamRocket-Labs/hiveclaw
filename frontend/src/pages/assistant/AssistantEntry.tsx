@@ -95,7 +95,9 @@ function ScopedAssistantEntry({ scope }: { scope: Scope }) {
       return <Navigate to={payload.entry.path} replace />;
     }
     if (payload.state === 'active' && payload.agent?.id) {
-      return <Navigate to={`/agents/${payload.agent.id}`} replace />;
+      // No conversation bound yet: open the bot's conversation (a fresh one
+      // opens there), not its management page (B5).
+      return <Navigate to={`/agents/${payload.agent.id}#chat`} replace />;
     }
   }
 

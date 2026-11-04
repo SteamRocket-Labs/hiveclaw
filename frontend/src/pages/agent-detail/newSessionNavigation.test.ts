@@ -38,7 +38,6 @@ describe('new Session draft navigation', () => {
       agentId: 'agent-1',
       userId: 'user-1',
       permissionMode: 'auto',
-      now: new Date('2026-08-29T12:34:00Z'),
       requestId: 'request-1',
     });
 
@@ -54,5 +53,9 @@ describe('new Session draft navigation', () => {
       read_only: false,
       permission_mode: 'auto',
     });
+    // B5 review: the draft stays untitled so its creation sends no placeholder
+    // title and the server's first-message auto-naming still runs. 新对话/
+    // New conversation is a display fallback, never a stored title.
+    expect(draft.title ?? '').toBe('');
   });
 });

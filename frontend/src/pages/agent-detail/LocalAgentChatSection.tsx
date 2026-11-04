@@ -41,18 +41,6 @@ function routeSessionIdFromSearch(search: string): string | null {
   return params.get('session_id') || params.get('session') || null;
 }
 
-export function localAgentRuntimeResumeHealth(
-  connections: LocalBridgeConnection[] | null | undefined,
-  loadingOrUnavailable = false,
-): 'online' | 'offline' | 'unknown' {
-  if (loadingOrUnavailable || !connections) return 'unknown';
-  const activeConnections = connections.filter((connection) => connection.status === 'active');
-  if (activeConnections.some(isOnlineConnection)) return 'online';
-  if (activeConnections.length === 0) return 'offline';
-  if (activeConnections.some((connection) => connectionPresenceStatus(connection) === 'unknown')) return 'unknown';
-  return 'offline';
-}
-
 function localAgentEventText(event: LocalAgentChannelEvent): string {
   const payload = event.payload || {};
   const candidates = [
@@ -377,7 +365,6 @@ export default function LocalAgentChatSection({ agentId, agent, agentPermissions
 
   const activeSession: LocalAgentChannelSession | null = (routeSessionId ? routeSessionQuery.data : defaultSessionQuery.data) ?? null;
   const channelSessionId = activeSession?.id || null;
-  const displaySessionId = activeSession?.chat_session_id || activeSession?.id || null;
 
   const timelineQuery = useQuery({
     queryKey: ['local-agent-detail-channel-timeline', channelSessionId],
@@ -474,25 +461,17 @@ export default function LocalAgentChatSection({ agentId, agent, agentPermissions
   const messages = useMemo(() => localAgentChannelEventsToChatMessages(channelEvents), [channelEvents]);
 
   const headerModel: SessionWorkbenchHeaderModel = {
-    sessionId: displaySessionId,
     title: activeSession?.title || agent?.name || t('localAgents.localAgentChat', 'Local Agent Chat'),
     status: sending ? 'running' : 'idle',
     modelLabel: t('nav.localBadge', 'Local'),
-    providerLabel: 'Hive Connect',
-    resumeHealth: localAgentRuntimeResumeHealth(
-      connectionsQuery.data?.connections,
-      connectionsQuery.isLoading || connectionsQuery.isError,
-    ),
-    permissionMode: null,
-    governanceLabel: null,
-    activeProjection: null,
-    checkpointCount: 0,
-    branchDepth: 0,
-    compactionCount: 0,
-    contextWindowStatusLabel: null,
-    contextWindowTitle: null,
-    activeRunStatus: sending ? 'sending' : null,
   };
+  // B5 review: a local-runtime bot's conversation is its default screen, so its
+  // managers need the same 设置 entry other bots get. The gate is the bot's
+  // existing action_capabilities.can_manage — independent of any session read,
+  // so it renders even when the default session lookup fails or there are none.
+  const manageHref = agent?.action_capabilities?.can_manage === true
+    ? `/agents/${agentId}?manage=true#settings`
+    : null;
 
   const handleFileChange = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const files = event.target.files ? Array.from(event.target.files) : [];
@@ -585,7 +564,7 @@ export default function LocalAgentChatSection({ agentId, agent, agentPermissions
       data-testid="local-agent-chat-section"
       className="session-chat-workbench session-only local-chat-root"
     >
-      <SessionWorkbenchHeader model={headerModel} />
+      <SessionWorkbenchHeader model={headerModel} manageHref={manageHref} />
       <div className="local-chat-history">
         {loading ? (
           <div className="local-chat-loading">

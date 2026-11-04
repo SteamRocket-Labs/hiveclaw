@@ -126,8 +126,8 @@ describe('AppSidebar bot-list authority (B3: the bot is the way in)', () => {
     await waitFor(() => {
       const links = screen.getAllByRole('link').map((link) => link.getAttribute('href'));
       const botLinks = links.filter((href) => href && /^\/agents\//.test(href));
-      expect(botLinks[0]).toBe('/agents/agent-assistant');
-      expect(botLinks).toContain('/agents/agent-1');
+      expect(botLinks[0]).toBe('/agents/agent-assistant#chat');
+      expect(botLinks).toContain('/agents/agent-1#chat');
     });
   });
 

@@ -907,8 +907,6 @@
     "eyebrow": "Enterprise operating console",
     "title": "Control Plane",
     "subtitle": "Company-scale governance for digital employees: people, models, tools, memory, delegation, approvals, audit, and local runtime channels.",
-    "sectionEyebrow": "Control Plane",
-    "backToOverview": "Back to overview",
     "operatingAreas": "Operating areas",
     "operatingAreasDesc": "Every card opens an implemented workspace section or user-scoped runtime page. No old admin capability is hidden behind legacy navigation.",
     "metrics": {
@@ -2416,6 +2414,7 @@
       "mySessions": "My Conversations",
       "allUsers": "All Users",
       "newSession": "New Conversation",
+      "newSessionTitle": "New conversation",
       "startingNewSession": "Starting a new conversation…",
       "noSessionsYet": "No conversations yet.",
       "clickToStart": "Start a new conversation to get going.",

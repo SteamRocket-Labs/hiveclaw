@@ -264,7 +264,7 @@ describe('ThreadItemRenderer', () => {
     // B2: the surface sentence is localized and names the action in user
     // words; the tool id never appears and the details sit behind the
     // collapsed disclosure.
-    expect(markup).toContain('This needs your approval: write a file.');
+    expect(markup).toContain('This needs your approval: Write file.');
     expect(markup).toContain('reports/final.md');
     expect(markup).toContain('可撤销或只读操作');
     expect(markup).toContain('Allow once');

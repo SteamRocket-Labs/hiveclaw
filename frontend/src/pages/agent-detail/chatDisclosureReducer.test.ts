@@ -638,8 +638,8 @@ describe('chatDisclosureReducer', () => {
       ['Run command', 'surface'],
       ['Tool call', 'surface'],
       ['Delegation step', 'surface'],
-      ['Sub-agent step', 'surface'],
-      ['Sub-agent step', 'surface'],
+      ['Subagent step', 'surface'],
+      ['Subagent step', 'surface'],
       ['Workflow step', 'surface'],
       ['Schedule step', 'surface'],
       ['Tool call', 'surface'],
@@ -824,7 +824,7 @@ describe('chatDisclosureReducer', () => {
 
     expect(timeline.steps.map((step) => [step.kind, step.title])).toEqual([
       ['a2a', 'Delegation step'],
-      ['subagent', 'Sub-agent step'],
+      ['subagent', 'Subagent step'],
       ['a2a', 'Delegation update'],
     ]);
   });

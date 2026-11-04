@@ -2259,6 +2259,11 @@
   font-size: var(--text-row);
   font-weight: 500;
   color: var(--text-primary);
+  /* Narrow viewports keep the file name visible: it truncates with an
+     ellipsis (full name on the title attribute) instead of collapsing
+     while the hover actions reserve their space (B2 r2). */
+  flex: 0 1 auto;
+  min-width: 72px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

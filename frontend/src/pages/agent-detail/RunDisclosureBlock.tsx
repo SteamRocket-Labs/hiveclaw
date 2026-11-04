@@ -252,12 +252,9 @@ function RunStepDetails({ step }: { step: RunStepSnapshot }) {
 function RunStepRow({ step }: { step: RunStepSnapshot }) {
   const { t } = useTranslation();
   const running = step.status === 'running';
-  const exec = asExecDetails(step.details, step.kind);
-  const [expanded, setExpanded] = React.useState(
-    (Boolean(exec) && (running || step.status === 'failed'))
-      || step.blocking === true
-      || (step.visibility === 'visible' && step.status !== 'done'),
-  );
+  // Commands, arguments and output wait behind this toggle: the default layer
+  // shows the localized action and its state only (B2 r2).
+  const [expanded, setExpanded] = React.useState(false);
   const hasDetails = step.details != null;
   return (
     <div
@@ -353,8 +350,20 @@ function localizedToolTitle(step: RunStepSnapshot, t: TFunction): string {
   if (step.kind === 'permission' && step.title === 'permission_resolved') {
     return t('sessionWorkbench.threadItem.type.approval_decision', 'Approval decision');
   }
+  // A step whose tool has approval-card words localizes through the same key
+  // (B2 r2): the action reads identically on card and timeline.
+  if (step.titleKey) return t(step.titleKey, step.title);
   // Unknown/backend-authored titles pass through untouched via the fallback.
   return t(titleKeyFor(step.title), step.title);
+}
+
+/**
+ * A row that names nothing is not a row (B2 r2): generic-class titles with no
+ * summary add no information. The step still counts in the "{{count}} steps"
+ * total; its specifics stay reachable where the timeline exposes them.
+ */
+function isNamelessStep(step: RunStepSnapshot): boolean {
+  return (step.title === 'Tool call' || step.title === 'Runtime event') && !step.summary && !step.titleKey;
 }
 
 /** Compose the locale sentence for the run's folded process aggregate. */
@@ -424,9 +433,12 @@ function ToolHistoryItem({ step }: { step: RunStepSnapshot }) {
 
 function ToolActivityGroup({ steps }: { steps: RunStepSnapshot[] }) {
   const { t } = useTranslation();
+  const named = steps.filter((step) => !isNamelessStep(step));
+  // A group whose every row names nothing folds entirely into the step count.
+  if (named.length === 0) return null;
   const status = toolGroupStatus(steps);
-  const currentStep = [...steps].reverse().find((step) => step.status === 'running') || steps[steps.length - 1];
-  const completedActions = Array.from(new Set(steps.map((step) => localizedToolTitle(step, t)))).join(' · ');
+  const currentStep = [...named].reverse().find((step) => step.status === 'running') || named[named.length - 1];
+  const completedActions = Array.from(new Set(named.map((step) => localizedToolTitle(step, t)))).join(' · ');
   const label = status === 'running'
     ? t('agent.chat.disclosure.toolRunning', 'Using {{tool}}', { tool: toolStepLabel(currentStep, t) })
     : t('agent.chat.disclosure.toolCompleted', 'Used tools: {{tools}}', { tools: completedActions });
@@ -444,7 +456,7 @@ function ToolActivityGroup({ steps }: { steps: RunStepSnapshot[] }) {
         role="list"
         aria-label={t('agent.chat.disclosure.toolHistory', 'Tool call history')}
       >
-        {steps.map((step) => <ToolHistoryItem key={step.id} step={step} />)}
+        {steps.filter((step) => !isNamelessStep(step)).map((step) => <ToolHistoryItem key={step.id} step={step} />)}
       </div>
     </details>
   );
@@ -503,7 +515,8 @@ export default function RunDisclosureBlock({
   }
   const stepCount = t('agent.chat.disclosure.stepCount', '{{count}} steps', { count: visibleSteps.length });
   const live = timeline.status === 'running' || timeline.status === 'blocked';
-  const renderItems = groupRunSteps(visibleSteps);
+  // Nameless generic steps fold into the count; named work renders (B2 r2).
+  const renderItems = groupRunSteps(visibleSteps.filter((step) => !isNamelessStep(step)));
 
   return (
     <div data-testid="run-disclosure-block" data-status={timeline.status} className="run-disclosure">

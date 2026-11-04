@@ -103,6 +103,11 @@ export const DYNAMIC_KEY_RULES = [
     reason: 'titleKeyFor derives the finite toolTitle.* keys from the disclosure reducer presentation sentinels.',
   },
   {
+    source: 'src/pages/agent-detail/RunDisclosureBlock.tsx',
+    expression: 'step.titleKey',
+    reason: 'The disclosure reducer pairs known tools with the finite approvalAction/toolTitle keys and a reviewed fallback (B2 r2).',
+  },
+  {
     source: 'src/pages/agent-detail/TeamMemorySummaryCard.tsx',
     expression: 'titleKey',
     reason: 'The section discriminator is finite and owns paired Team Memory title keys.',

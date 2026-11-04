@@ -118,9 +118,9 @@ function detailsFor(item: ThreadItem, t: (key: string, fallback: string) => stri
       ];
     case 'warning':
     case 'error':
-      return [
-        { label: 'retry', value: item.item_data.retryable ? t('sessionWorkbench.threadItem.value.retryable', 'retryable') : t('sessionWorkbench.threadItem.value.notRetryable', 'not retryable') },
-      ];
+      // Retryability is not a member-facing label pair: the retry action
+      // itself (when retry is possible) is composed by the chat surface (B2 r2).
+      return [];
     case 'event':
       return [];
     default:
@@ -200,6 +200,9 @@ export function shouldRenderThreadItemInConversation(item: ThreadItem, operatorV
   // (product definition P3): when the model truly cannot answer within its
   // authorized evidence, it says so itself. Operators still see the raw item.
   if (item.event_type === 'source_access_notice') return false;
+  // Run-phase boundary changes are internal state, not timeline cards: the
+  // approval card and the run status already own what the member sees (B2 r2).
+  if (item.item_type === 'boundary') return false;
   if (item.item_type === 'approval_decision' && item.event_type === 'permission_resolved') return true;
   if (USER_CONVERSATION_ITEM_TYPES.has(item.item_type)) return true;
   return Boolean(item.user_action && item.user_action.kind !== 'open_artifact');

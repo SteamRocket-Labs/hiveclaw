@@ -229,9 +229,7 @@
         "sessionAllowed": "session allowed",
         "oneAction": "one action",
         "destructive": "destructive",
-        "reversible": "reversible or read-only",
-        "retryable": "retryable",
-        "notRetryable": "not retryable"
+        "reversible": "reversible or read-only"
       },
       "inspectTechnicalDetails": "Inspect technical details",
       "operatorOnly": "Technical details are available only in Operator View.",
@@ -479,16 +477,19 @@
       "browser": "operate a web page",
       "plazaPost": "publish a post",
       "plazaComment": "comment on a post",
-      "feishuDoc": "edit a Feishu document",
-      "feishuSheet": "edit a Feishu spreadsheet",
-      "feishuBase": "edit a Feishu bitable",
-      "feishuCalendar": "change a Feishu calendar",
-      "feishuTask": "change a Feishu task",
-      "feishuApproval": "submit a Feishu approval",
-      "generic": "an externally visible action",
-      "writeFile": "write a file",
-      "editFile": "edit a file",
-      "deleteFile": "delete a file"
+      "feishuDoc": "use Feishu documents",
+      "feishuSheet": "use Feishu spreadsheets",
+      "feishuBase": "use Feishu Base",
+      "feishuCalendar": "use Feishu calendars",
+      "feishuTask": "use Feishu tasks",
+      "feishuApproval": "use Feishu approvals",
+      "feishuDocCreate": "create a Feishu document",
+      "feishuDocDelete": "delete a Feishu document",
+      "feishuDocShare": "share a Feishu document",
+      "feishuBaseDelete": "delete a Feishu Base record",
+      "feishuCalendarDelete": "delete a Feishu calendar event",
+      "feishuApprovalCreate": "submit a Feishu approval",
+      "generic": "an externally visible action"
     }
   },
   "login": {
@@ -2579,9 +2580,6 @@
           "scheduleStep": "Scheduled task",
           "planStep": "Plan",
           "permissionRequest": "Permission request",
-          "progressUpdate": "Progress",
-          "assistantUpdate": "Update",
-          "contextCompaction": "Tidy context",
           "runtimeEvent": "Activity"
         },
         "aggregate": {

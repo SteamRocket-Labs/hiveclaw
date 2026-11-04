@@ -333,15 +333,29 @@ describe('Layout extracted sections', () => {
     expect(markup).toContain('rocky的实验室');
     expect(markup).not.toContain('My Company');
 
-    // A platform admin without a stored selection keeps the honest prompt.
+    // A platform admin without a stored selection keeps the honest prompt —
+    // even when their own company name rides on the authenticated user
+    // (B2 r2): the admin's no-selection state wins over tenant_name.
     const adminMarkup = renderSidebar(<AppSidebar
         {...baseProps}
-        user={{ id: 'user-2', role: 'platform_admin', display_name: 'Owner' }}
+        user={{ id: 'user-2', role: 'platform_admin', display_name: 'Owner', tenant_id: 'tenant-1', tenant_name: 'OwnerCorp' } as never}
         tenants={[]}
         currentTenant=""
         agents={[]}
       />,
     );
     expect(adminMarkup).toContain('No company selected');
+    expect(adminMarkup).not.toContain('OwnerCorp');
+
+    // An admin with an active selection still shows that company.
+    const adminSelected = renderSidebar(<AppSidebar
+        {...baseProps}
+        user={{ id: 'user-2', role: 'platform_admin', display_name: 'Owner', tenant_id: 'tenant-1', tenant_name: 'OwnerCorp' } as never}
+        tenants={[{ id: 'tenant-1', name: 'Company A' }]}
+        currentTenant="tenant-1"
+        agents={[]}
+      />,
+    );
+    expect(adminSelected).toContain('Company A');
   });
 });

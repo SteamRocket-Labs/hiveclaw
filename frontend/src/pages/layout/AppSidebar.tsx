@@ -166,13 +166,13 @@ export default function AppSidebar({
   const activeTenants = tenants.filter((tenant) => isActiveCompany(tenant));
   const hasSelectedCompany = Boolean(currentTenant) && activeTenants.some((tenant) => tenant.id === currentTenant);
   const activeTenantName = activeTenants.find((tenant) => tenant.id === currentTenant)?.name
-    // Members never load the company inventory; their own company name rides
-    // on the authenticated user (B2): the label is the company, not a
-    // generic placeholder.
-    || (user as { tenant_name?: string } | null)?.tenant_name
+    // A platform admin with no company selected keeps that honest state: it
+    // wins over the admin's own tenant_name (B2 r2). tenant_name is the label
+    // only for the member's own company (members never load the inventory).
     || (user?.role === 'platform_admin' && !currentTenant
       ? t('layout.noCompanySelected', 'No company selected')
-      : t('layout.myCompany', 'My Company'));
+      : (user as { tenant_name?: string } | null)?.tenant_name
+        || t('layout.myCompany', 'My Company'));
 
   const settingsTriggerRef = useRef<HTMLButtonElement | null>(null);
   const onCloseAccountMenuRef = useRef(onCloseAccountMenu);

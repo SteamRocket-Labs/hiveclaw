@@ -454,7 +454,7 @@ export function ArtifactCards({
               onClick={openArtifact}
             >
               <IconFileText size={14} className="chat-artifact-icon" />
-              <span className="chat-artifact-name">{artifact.name}</span>
+              <span className="chat-artifact-name" title={artifact.name}>{artifact.name}</span>
               <span className="chat-artifact-meta">
                 {[artifact.previewKind, size].filter(Boolean).join(' · ')}
               </span>

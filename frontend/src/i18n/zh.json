@@ -229,9 +229,7 @@
         "sessionAllowed": "本会话允许",
         "oneAction": "仅本次操作",
         "destructive": "破坏性操作",
-        "reversible": "可逆或只读",
-        "retryable": "可重试",
-        "notRetryable": "不可重试"
+        "reversible": "可逆或只读"
       },
       "inspectTechnicalDetails": "查看技术详情",
       "operatorOnly": "技术详情仅在运营视图中可用。",
@@ -479,16 +477,19 @@
       "browser": "操作网页",
       "plazaPost": "发布帖子",
       "plazaComment": "评论帖子",
-      "feishuDoc": "编辑飞书文档",
-      "feishuSheet": "编辑飞书表格",
-      "feishuBase": "编辑飞书多维表格",
-      "feishuCalendar": "修改飞书日历",
-      "feishuTask": "修改飞书任务",
-      "feishuApproval": "发起飞书审批",
-      "generic": "一项对外操作",
-      "writeFile": "写入文件",
-      "editFile": "编辑文件",
-      "deleteFile": "删除文件"
+      "feishuDoc": "使用“飞书文档”相关操作",
+      "feishuSheet": "使用“飞书表格”相关操作",
+      "feishuBase": "使用“飞书多维表格”相关操作",
+      "feishuCalendar": "使用“飞书日历”相关操作",
+      "feishuTask": "使用“飞书任务”相关操作",
+      "feishuApproval": "使用“飞书审批”相关操作",
+      "feishuDocCreate": "新建飞书文档",
+      "feishuDocDelete": "删除飞书文档",
+      "feishuDocShare": "分享飞书文档",
+      "feishuBaseDelete": "删除飞书多维表格记录",
+      "feishuCalendarDelete": "删除飞书日历日程",
+      "feishuApprovalCreate": "发起飞书审批",
+      "generic": "一项对外操作"
     }
   },
   "login": {
@@ -2579,9 +2580,6 @@
           "scheduleStep": "定时任务",
           "planStep": "计划",
           "permissionRequest": "权限请求",
-          "progressUpdate": "进展",
-          "assistantUpdate": "更新",
-          "contextCompaction": "整理上下文",
           "runtimeEvent": "运行状态"
         },
         "aggregate": {

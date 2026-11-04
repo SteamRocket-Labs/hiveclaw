@@ -12,11 +12,16 @@ export default function SessionPermissionActions({
   permissionRequest,
   onResolveSessionPermission,
   readOnly = false,
+  showArgumentDetails = true,
   t,
 }: {
   permissionRequest: SessionPermissionRequest;
   onResolveSessionPermission?: (request: SessionPermissionRequest, action: 'allow_once' | 'allow_session' | 'deny') => void | Promise<unknown>;
   readOnly?: boolean;
+  /** False on the approval card, whose own 详情 disclosure is the single
+   * details affordance there (B2 r2); standalone permission rows keep the
+   * requester's "inspect the exact proposal" disclosure. */
+  showArgumentDetails?: boolean;
   t: (key: string, fallback: string) => string;
 }) {
   const [pending, setPending] = React.useState(false);
@@ -40,7 +45,7 @@ export default function SessionPermissionActions({
     && permissionRequest.confirmation_kind !== 'destructive_once';
   return (
     <>
-      {permissionRequest.arguments && (
+      {showArgumentDetails && permissionRequest.arguments && (
         <details style={{ marginTop: '10px', fontSize: '12px' }}>
           <summary>{t('agent.chat.permission.actionDetails', 'Action details')}</summary>
           <pre

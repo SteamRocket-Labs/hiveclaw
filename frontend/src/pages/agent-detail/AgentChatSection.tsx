@@ -1349,6 +1349,7 @@ function AgentChatSection({
           permissionRequest={permissionRequest}
           readOnly={activeSession?.audience_kind === 'group' && permissionRequest.requested_by_user_id !== currentUser?.id}
           onResolveSessionPermission={onResolveSessionPermission}
+          showArgumentDetails={false}
           t={t}
         />
       ) : null;

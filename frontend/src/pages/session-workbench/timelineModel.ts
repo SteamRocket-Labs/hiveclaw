@@ -1477,8 +1477,10 @@ function messageId(message: AgentChatMessage, fallback: string): string {
 }
 
 function getSessionTitle(activeSession?: Record<string, unknown> | null): string {
-  // B5: an untitled conversation reads as 新对话/New conversation, not "Untitled session".
-  return sessionTitleForUser(activeSession, 'New conversation');
+  // B5: an untitled conversation reads as 新对话/New conversation, not "Untitled
+  // session". The localized placeholder is display-only and lives in the header
+  // chrome (this model is locale-free); '' means "show the placeholder there".
+  return sessionTitleForUser(activeSession, '');
 }
 
 function getSessionId(activeSession?: Record<string, unknown> | null): string | null {

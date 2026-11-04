@@ -646,6 +646,9 @@ function AgentDetailInner() {
                 });
             }
             if (!silent && currentAgentIdRef.current === agentId) setSessionsLoading(false);
+            // B5 review: a failed groups read is not a confirmed-empty bot — report
+            // unreadable so the manual 新对话 stays instead of an auto-draft.
+            if (!data.length && groups.status === 'rejected') return null;
             return data;
         } catch {
             if (!silent && currentAgentIdRef.current === agentId) setSessionsLoading(false);
@@ -1214,7 +1217,6 @@ function AgentDetailInner() {
             agentId: id,
             userId: currentUser?.id ? String(currentUser.id) : undefined,
             permissionMode: defaultSessionPermissionModeFromAgent(agent),
-            title: t('agent.chat.newSessionTitle', 'New conversation'),
         });
         const params = new URLSearchParams(location.search);
         params.delete('session_id');
@@ -1248,7 +1250,7 @@ function AgentDetailInner() {
         if (!id || !activeSession?.id) return null;
         if (!isDraftHumanChatSession(activeSession)) return activeSession;
         const draftId = String(activeSession.id);
-        const created = await chatApi.createSession(id, activeSession.title || undefined);
+        const created = await chatApi.createSession(id);
         return replaceDraftActiveSession(draftId, created);
     };
 
@@ -1259,10 +1261,7 @@ function AgentDetailInner() {
             return { session: activeSession as ChatSession, run };
         }
         const draftId = String(activeSession.id);
-        const response = await chatApi.createSessionRun(id, {
-            title: activeSession.title || undefined,
-            ...input,
-        });
+        const response = await chatApi.createSessionRun(id, input);
         const created = replaceDraftActiveSession(draftId, response.session);
         return { session: created, run: response.run };
     };

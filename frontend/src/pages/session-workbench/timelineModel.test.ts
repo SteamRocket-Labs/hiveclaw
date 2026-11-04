@@ -35,6 +35,24 @@ describe('session workbench timeline model', () => {
     }).header.title).toBe('Quarterly research brief');
   });
 
+  it('leaves an untitled conversation titleless so the chrome shows the localized placeholder', () => {
+    // B5 review: 新对话/New conversation is display-only. An empty title (a
+    // fresh draft) must stay empty here — the localized placeholder lives in
+    // the header chrome, and an empty/absent server title keeps auto-naming.
+    expect(buildThreadTimeline({
+      messages: [],
+      activeSession: { id: 'session-1', title: '' },
+      isWaiting: false,
+      isStreaming: false,
+    }).header.title).toBe('');
+    expect(buildThreadTimeline({
+      messages: [],
+      activeSession: null,
+      isWaiting: false,
+      isStreaming: false,
+    }).header.title).toBe('');
+  });
+
   it('restores the user-observed run duration from the accepted prompt through the final answer', () => {
     const messages: AgentChatMessage[] = [
       {

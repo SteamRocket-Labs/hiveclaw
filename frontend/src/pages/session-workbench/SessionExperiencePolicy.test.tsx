@@ -71,6 +71,35 @@ describe('session experience information policy', () => {
     expect(markup).not.toContain('waiting_user');
   });
 
+  it('shows no run status for a conversation that has not run yet (B5 review)', () => {
+    // An untouched draft maps to idle; idle is not one of the five user-visible
+    // run states, so the header shows the localized placeholder title and no
+    // status chip (it used to read ● Done/完成). The five-state mapping for
+    // conversations with runs is unchanged — see the control below.
+    const fresh: SessionWorkbenchHeaderModel = { title: '', status: 'idle', modelLabel: null };
+    const markup = renderToStaticMarkup(
+      <MemoryRouter><SessionWorkbenchHeader model={fresh} /></MemoryRouter>,
+    );
+    expect(markup).toContain('New conversation');
+    expect(markup).not.toContain('swb-header-status');
+    expect(markup).not.toContain('>Done<');
+
+    // A local-runtime conversation that is not sending shows its Local badge
+    // without a run status.
+    const localIdle: SessionWorkbenchHeaderModel = { title: 'Desk assistant', status: 'idle', modelLabel: 'Local' };
+    const localMarkup = renderToStaticMarkup(
+      <MemoryRouter><SessionWorkbenchHeader model={localIdle} /></MemoryRouter>,
+    );
+    expect(localMarkup).toContain('Local');
+    expect(localMarkup).not.toContain('>Done<');
+
+    // Control: a conversation with a completed run keeps its five-state label.
+    const complete: SessionWorkbenchHeaderModel = { title: 'Report', status: 'complete', modelLabel: null };
+    expect(renderToStaticMarkup(
+      <MemoryRouter><SessionWorkbenchHeader model={complete} /></MemoryRouter>,
+    )).toContain('>Done<');
+  });
+
   it('builds runtime row copy from semantic role, outcome, summary, and metrics only', () => {
     const item = {
       id: '00000000-0000-4000-8000-000000000002',

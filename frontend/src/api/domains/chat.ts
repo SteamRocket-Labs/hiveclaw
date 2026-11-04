@@ -194,6 +194,8 @@ export interface StartSessionRunInput {
 }
 
 export interface CreateSessionRunInput extends StartSessionRunInput {
+  /** A real title (e.g. a team task's name). Omit for conversations the server
+   * auto-names from their first message — a placeholder title blocks that. */
   title?: string;
 }
 

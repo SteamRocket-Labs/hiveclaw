@@ -465,6 +465,13 @@ export default function LocalAgentChatSection({ agentId, agent, agentPermissions
     status: sending ? 'running' : 'idle',
     modelLabel: t('nav.localBadge', 'Local'),
   };
+  // B5 review: a local-runtime bot's conversation is its default screen, so its
+  // managers need the same 设置 entry other bots get. The gate is the bot's
+  // existing action_capabilities.can_manage — independent of any session read,
+  // so it renders even when the default session lookup fails or there are none.
+  const manageHref = agent?.action_capabilities?.can_manage === true
+    ? `/agents/${agentId}?manage=true#settings`
+    : null;
 
   const handleFileChange = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const files = event.target.files ? Array.from(event.target.files) : [];
@@ -557,7 +564,7 @@ export default function LocalAgentChatSection({ agentId, agent, agentPermissions
       data-testid="local-agent-chat-section"
       className="session-chat-workbench session-only local-chat-root"
     >
-      <SessionWorkbenchHeader model={headerModel} />
+      <SessionWorkbenchHeader model={headerModel} manageHref={manageHref} />
       <div className="local-chat-history">
         {loading ? (
           <div className="local-chat-loading">

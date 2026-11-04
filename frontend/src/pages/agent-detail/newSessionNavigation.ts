@@ -17,10 +17,7 @@ export interface CreateDraftChatSessionInput {
   agentId: string;
   userId?: string;
   permissionMode: string;
-  now?: Date;
   requestId?: string;
-  /** Display title; defaults to a timestamped Session label. */
-  title?: string;
 }
 
 function recordValue(value: unknown): Record<string, unknown> {
@@ -52,22 +49,22 @@ export function createDraftChatSession({
   agentId,
   userId,
   permissionMode,
-  now = new Date(),
   requestId = createRequestId(),
-  title,
 }: CreateDraftChatSessionInput) {
-  const pad = (value: number) => String(value).padStart(2, '0');
   const draftId = `draft:${requestId}`;
+  const now = new Date().toISOString();
   return {
     id: draftId,
     draft_client_id: draftId,
     is_draft: true,
     agent_id: agentId,
     user_id: userId,
-    title: title
-      || `Session ${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}`,
-    created_at: now.toISOString(),
-    updated_at: now.toISOString(),
+    // B5 review: the draft stays untitled so its server-side creation sends no
+    // placeholder title and the existing first-message auto-naming still runs.
+    // 新对话/New conversation is a display fallback, not a stored title.
+    title: '',
+    created_at: now,
+    updated_at: now,
     source_channel: 'web',
     session_kind: 'human_chat',
     actor_type: 'user',

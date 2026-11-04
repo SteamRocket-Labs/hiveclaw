@@ -128,36 +128,49 @@ function SessionHistoryMenu({ agentId, sessions, loading, activeSessionId }: Ses
   );
 }
 
-export function SessionWorkbenchHeader({ model, history }: {
+export function SessionWorkbenchHeader({ model, history, manageHref }: {
   model: SessionWorkbenchHeaderModel;
   /** When provided, the header offers this bot's conversations and a fresh one. */
   history?: SessionHistoryMenuProps;
+  /** Management entry (B5 review): set only for people who can manage this
+   * bot. Local-runtime conversations pass it directly — they have no history
+   * menu, but their managers still need the way in. */
+  manageHref?: string | null;
 }) {
   const { t } = useTranslation();
   // The header shows only the five user-visible states (running, waiting for
   // you, done, failed, stopped). Unconfirmed-outcome sessions surface through
   // their underlying status, not a dedicated chip (product definition P3).
+  // A conversation with no run yet (idle) shows no run status at all.
+  const showRunStatus = model.status !== 'idle';
   const statusLabel = runtimeStatusLabel(model.status, t);
   const guidance = model.status === 'waiting'
     ? t('sessionWorkbench.waitingGuidance', 'Review the request below and choose the next action.')
     : model.status === 'failed'
       ? t('sessionWorkbench.failedGuidance', 'Review the failed step below and its recovery instructions.')
       : null;
+  const managementHref = manageHref ?? history?.manageHref ?? null;
   return (
     <div data-testid="session-workbench-header" className="swb-header">
       <div className="swb-header-title-row">
-        <h2 className="swb-header-title">{model.title}</h2>
+        <h2 className="swb-header-title">{model.title || t('agent.chat.newSessionTitle', 'New conversation')}</h2>
         {history && <SessionHistoryMenuWithRouter {...history} />}
-        {history?.manageHref && (
-          <Link className="swb-history-trigger" to={history.manageHref}>
+        {managementHref && (
+          <Link className="swb-history-trigger" to={managementHref}>
             {t('nav.settings', 'Settings')}
           </Link>
         )}
-        <span className="swb-header-status">
-          <span className="swb-status-dot" style={{ background: statusColor(model.status) }} />
-          <span>{statusLabel}</span>
-          {model.modelLabel && <span>· {model.modelLabel}</span>}
-        </span>
+        {(showRunStatus || model.modelLabel) && (
+          <span className="swb-header-status">
+            {showRunStatus && (
+              <>
+                <span className="swb-status-dot" style={{ background: statusColor(model.status) }} />
+                <span>{statusLabel}</span>
+              </>
+            )}
+            {model.modelLabel && <span>{showRunStatus ? `· ${model.modelLabel}` : model.modelLabel}</span>}
+          </span>
+        )}
       </div>
       {guidance && <div className="swb-header-guidance" role="status">{guidance}</div>}
     </div>

@@ -5,7 +5,7 @@ import { ApiError } from '../../api/core';
 import { activityApi } from '../../api/domains/activity';
 import { agentApi } from '../../api/domains/agents';
 import { chatApi } from '../../api/domains/chat';
-import { filterSessionsForAgent } from './chatRuntime';
+import { filterSessionsForAgent, sessionBelongsToAgent } from './chatRuntime';
 import { isScopedBusinessAdminForAgent } from '../../roles';
 import { useAuthStore } from '../../stores';
 
@@ -362,18 +362,17 @@ export function useOperatorAuthorityCacheLifecycle({
     setters.setBranchLineageLoading(false);
   }, [operatorAuthorityScope]);
 
+  // B5-fix2: a bot switch keeps the page mounted; drop the previous conversation
+  // during render when the route id changed or it is not this bot's own.
+  if (activeSession && agentId && (refs.currentAgentId.current !== agentId || !sessionBelongsToAgent(activeSession, agentId))) setters.setActiveSession(null);
   React.useEffect(() => {
     refs.currentAgentId.current = agentId;
-  }, [agentId]);
-
-  React.useEffect(() => {
     refs.sessionMsgAbort.current?.abort();
     refs.sessionLoadSeq.current += 1;
     refs.sessionTranscriptLoad.current = null;
     refs.activeSessionId.current = null;
     refs.activeOperatorAuthorityScope.current = null;
     refs.allSessionsAuthorityScope.current = null;
-    setters.setActiveSession(null);
     setters.setSessions([]);
     setters.setAllSessions([]);
     setters.setAllSessionsLoading(false);

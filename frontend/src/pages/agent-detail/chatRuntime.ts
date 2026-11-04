@@ -50,6 +50,9 @@ export type RuntimeEventType =
   | 'memory_context_unavailable';
 
 export interface AgentChatMessage {
+  sendState?: 'sending' | 'failed';
+  sendError?: string;
+  retrySend?: () => void;
   role: 'user' | 'assistant' | 'tool_call' | 'event';
   content: string;
   fileName?: string;
@@ -783,7 +786,7 @@ function hasMatchingDurableUserMessage(messages: AgentChatMessage[], pending: Pe
   ))) return true;
   const pendingContent = normalizedUserContent(pending.message);
   if (!pendingContent) return false;
-  return messages.some((message) => (
+  return messages.slice(pending.anchorMessageCount).some((message) => (
     message.role === 'user'
     && normalizedUserContent(message) === pendingContent
     && (!pending.message.fileName || pending.message.fileName === message.fileName)
@@ -796,7 +799,7 @@ export function mergePendingUserMessages(
 ): { messages: AgentChatMessage[]; pending: PendingUserMessage[] } {
   if (pending.length === 0) return { messages, pending };
 
-  const remaining = pending.filter((item) => !hasMatchingDurableUserMessage(messages, item));
+  const remaining = pending.filter((item) => item.message.sendState || !hasMatchingDurableUserMessage(messages, item));
   if (remaining.length === 0) return { messages, pending: [] };
 
   const merged = [...messages];
@@ -805,7 +808,7 @@ export function mergePendingUserMessages(
     const pendingId = String(item.message.id || '').trim();
     const placeholderIndex = pendingId
       ? merged.findIndex((message) => (
-        userMessageHasIdentity(message, pendingId) && !hasMaterialUserDisplay(message)
+        userMessageHasIdentity(message, pendingId) && (item.message.sendState || !hasMaterialUserDisplay(message))
       ))
       : -1;
     if (placeholderIndex >= 0) {

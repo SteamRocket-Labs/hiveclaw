@@ -2236,3 +2236,20 @@ describe('reconcileSessionTranscriptSafely', () => {
     }
   });
 });
+
+
+it('does not mistake an earlier identical prompt for the newly accepted input', () => {
+  const result = mergePendingUserMessages([{ id: 'older-input', role: 'user', content: 'hello' }],
+    [{ message: { id: 'new-input', role: 'user', content: 'hello' }, anchorMessageCount: 1 }]);
+  expect(result.messages.map(message => message.id)).toEqual(['older-input', 'new-input']);
+  expect(result.pending).toHaveLength(1);
+});
+
+it.each(['sending', 'failed'] as const)('preserves %s and retry on a matching durable input until the request is settled', sendState => {
+  const retrySend = () => {};
+  const result = mergePendingUserMessages([{ id: 'input', role: 'user', content: 'hello' }],
+    [{ message: { id: 'input', role: 'user', content: 'hello', sendState, retrySend }, anchorMessageCount: 0 }]);
+  expect(result.messages).toHaveLength(1);
+  expect(result.messages[0]).toMatchObject({ sendState, retrySend });
+  expect(result.pending).toHaveLength(1);
+});

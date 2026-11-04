@@ -1,3 +1,4 @@
+import type { UploadedChatFile } from '../../api/domains/chat';
 import type { AgentChatMessage } from './chatRuntime';
 
 const IMAGE_EXTS = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp'];
@@ -72,4 +73,48 @@ export function parseUserAttachment(msg: AgentChatMessage, agentId?: string): Ag
         }
     }
     return parsed;
+}
+
+export function formatComposerAttachments(userMsg: string, attachedFiles: Array<{
+    name: string; text: string; path?: string; imageUrl?: string; originalAttachment?: UploadedChatFile['original_attachment'];
+    conversion?: { markdownPath?: string; metadataPath?: string };
+}>, supportsVision: boolean) {
+    let contentForLLM = userMsg;
+    let displayFiles = '';
+    if (attachedFiles.length > 0) {
+        let filesPrompt = '';
+        let filesDisplay = '';
+
+        attachedFiles.forEach(file => {
+            filesDisplay += `[📎 ${file.name}] `;
+            if (file.imageUrl && supportsVision) {
+                filesPrompt += `[image_data:${file.imageUrl}]\n`;
+            } else if (file.imageUrl) {
+                filesPrompt += `[图片文件已上传: ${file.name}，保存在 ${file.path || ''}]\n`;
+            } else {
+                const wsPath = file.path || '';
+                const codePath = wsPath.replace(/^workspace\//, '');
+                const fileLoc = wsPath ? `\nFile location: ${wsPath} (for read_file/read_document tools)\nIn execute_code, use relative path: "${codePath}" (working directory is workspace/)\n` : '';
+                const conversionLoc = file.conversion?.markdownPath
+                    ? `Markdown artifact (preferred): ${file.conversion.markdownPath}\nConversion metadata: ${file.conversion.metadataPath || ''}\n`
+                    : '';
+                filesPrompt += `[File: ${file.name}]${fileLoc}${conversionLoc}\n${file.text}\n\n`;
+            }
+        });
+
+        if (supportsVision && attachedFiles.some(f => f.imageUrl)) {
+            contentForLLM = userMsg ? `${filesPrompt}\n${userMsg}` : `${filesPrompt}\n请分析这些文件`;
+        } else {
+            contentForLLM = userMsg ? `${filesPrompt}\nQuestion: ${userMsg}` : `Please analyze these files:\n\n${filesPrompt}`;
+        }
+
+        displayFiles = filesDisplay.trim();
+        userMsg = userMsg ? `${displayFiles}\n${userMsg}` : displayFiles;
+    }
+    return { userMsg, contentForLLM, fileName: attachedFiles.map(file => file.name).join(', '),
+        attachmentPayload: attachedFiles.map(file => ({
+            original_attachment: file.originalAttachment || undefined, name: file.name, path: file.path,
+            is_image: Boolean(file.imageUrl), has_image_data: Boolean(file.imageUrl), conversion: file.conversion || null,
+        })),
+    };
 }

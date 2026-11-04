@@ -177,11 +177,11 @@
         "event": "运行事件"
       },
       "status": {
-        "running": "运行中",
         "waiting_user": "等待审批",
         "succeeded": "已完成",
         "failed": "失败",
-        "cancelled": "已取消"
+        "cancelled": "已取消",
+        "running": "运行中"
       },
       "field": {
         "sender": "发送者",
@@ -268,7 +268,6 @@
     "completionWakeInbox": "完成唤醒",
     "pending": "待处理",
     "running": "运行中",
-    "completed": "已完成",
     "failed": "失败",
     "noCompletionWakes": "还没有后台完成回报",
     "disableHook": "停用",
@@ -373,12 +372,6 @@
         "workflow": "Workflow",
         "activity": "Activity"
       },
-      "runtimeStates": {
-        "idle": "空闲",
-        "running": "运行中",
-        "waiting": "等待中",
-        "blocked": "受阻"
-      },
       "runningCount": "{{count}} 个运行中",
       "waitingCount": "{{count}} 个等待中",
       "totalCount": "共 {{count}} 个",
@@ -444,15 +437,6 @@
       "noStepDetails": "暂无更多详情",
       "rejectGate": "拒绝"
     },
-    "status": {
-      "cancelled": "已停止",
-      "idle": "空闲",
-      "running": "运行中",
-      "waiting": "等待输入",
-      "streaming": "输出中",
-      "complete": "完成",
-      "failed": "失败"
-    },
     "permission": "权限",
     "governance": "治理",
     "activeProjection": "上下文投影",
@@ -481,7 +465,8 @@
       "composerTarget": "输入目标",
       "composerTargetValue": "Agent 团队成员"
     },
-    "waitingGuidance": "请查看下方请求并选择下一步。"
+    "waitingGuidance": "请查看下方请求并选择下一步。",
+    "completed": "已完成"
   },
   "login": {
     "hero": {
@@ -1367,21 +1352,11 @@
       "workspaceUnavailable": "操作员工作区检查不可用。"
     },
     "runtimeStatus": {
-      "ready": "就绪",
-      "queued": "排队中",
-      "working": "运行中",
-      "resuming": "恢复中",
-      "waiting": "等待中",
-      "waitingForYou": "等待你的输入",
-      "waitingApproval": "等待审批",
-      "completed": "已完成",
-      "needsAttention": "需要处理",
-      "skipped": "已跳过",
-      "paused": "已暂停",
-      "stopped": "已停止",
-      "cancelled": "已取消",
-      "needsAdminReview": "需要管理员处理",
-      "unknown": "状态不可用"
+      "running": "运行中",
+      "waiting": "等你决定",
+      "done": "完成",
+      "failed": "失败",
+      "stopped": "已停止"
     },
     "status": {
       "running": "工作中",
@@ -2402,6 +2377,11 @@
       }
     },
     "chat": {
+      "sending": "发送中…",
+      "sendCancelled": "未发送：发送已取消。",
+      "sendUnconfirmed": "暂时无法确认这条消息是否已保存。",
+      "sendRefused": "未发送：暂时无法接受这条消息。",
+      "sendFailed": "消息未发送，请重试。",
       "mySessions": "我的对话",
       "allUsers": "所有用户",
       "newSession": "新建对话",
@@ -2522,8 +2502,6 @@
       },
       "disclosure": {
         "processing": "处理中",
-        "processed": "已处理",
-        "interrupted": "已中断",
         "interruptedHint": "该回合没有留下完成记录；发送新消息即可继续。",
         "showCompleteOutput": "查看完整输出",
         "waiting": "等待输入",
@@ -2546,9 +2524,7 @@
           "runCommand": "运行命令",
           "editDocument": "编辑文档",
           "toolCall": "调用工具"
-        },
-        "needsAttention": "需要处理",
-        "stopped": "已停止"
+        }
       },
       "artifacts": {
         "open": "打开",
@@ -2719,18 +2695,7 @@
         "hint": "选择命令后继续输入自然语言参数"
       },
       "phase": {
-        "queued": "排队中",
-        "resuming": "恢复运行中",
-        "starting": "启动中",
-        "thinking": "思考中",
-        "responding": "撰写回复中",
-        "tool_running": "执行工具中",
-        "hook_evaluating": "策略核验中",
-        "compacting": "压缩上下文中",
-        "awaiting_approval": "等待审批",
-        "awaiting_budget": "预算受限",
-        "summarizing": "撰写收尾总结中",
-        "continuation_gap": "准备下一步"
+        "thinking": "思考中"
       },
       "runtime": {
         "model": "模型",
@@ -5554,12 +5519,6 @@
     "statusActive": "已上线",
     "statusDeprecated": "已弃用",
     "statusRevoked": "已吊销",
-    "runCompleted": "已完成",
-    "runFailed": "失败",
-    "runRunning": "运行中",
-    "runSuspended": "已挂起",
-    "runKilled": "已终止",
-    "runPending": "待运行",
     "visibilityAgent": "仅此员工",
     "visibilityTenant": "全公司",
     "visibilityOrg": "组织",
@@ -5613,11 +5572,6 @@
     "request": "申请增额",
     "previous": "上一页运行",
     "more": "更多运行",
-    "waiting": "等待预算审批",
-    "running": "运行中",
-    "resuming": "恢复中",
-    "completed": "已完成",
-    "attention": "需要关注",
     "approve": "批准申请额度",
     "reject": "拒绝申请并停止等待中的工作",
     "approveMinimum": "仅批准当前工作所需额度",
@@ -5988,22 +5942,12 @@
     "effects": "我授权这个明确的远程请求，并接受其内部效果控制尚未验证。",
     "cost": "我接受此请求的外部费用未知；这里不提供硬性费用上限。",
     "start": "发送新的远程请求",
-    "unconfirmed": "远程状态未确认",
     "receipt": "已保存的远程回执",
     "costUnknown": "外部费用：未知。内部动作控制：尚未验证。",
     "refresh": "查询远程任务",
     "reply": "回复此远程任务",
     "cancel": "请求远程取消",
     "abandon": "仅在本地放弃；远程效果仍未确认",
-    "inputRequired": "需要回复远程任务",
-    "authRequired": "远程端需要授权",
-    "queued": "已排队",
-    "contacting": "正在联系远程端点",
-    "waiting": "远程任务等待中",
-    "completed": "远程端报告完成",
-    "reportedFailure": "远程端报告失败",
-    "cancelConfirmed": "已确认远程取消",
-    "abandoned": "已在本地放弃",
     "recoverFiles": "从已保存回复恢复文件",
     "filesRecovered": "已回到本工作的文件：{{count}}。为保留现有文件另存的副本：{{conflicts}}。暂不可用的部分：{{unavailable}}。"
   },

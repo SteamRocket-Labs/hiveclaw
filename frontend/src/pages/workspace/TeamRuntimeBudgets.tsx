@@ -1,3 +1,4 @@
+import { runtimeStatusLabel } from '../agent-detail/runtimeStatus';
 import { useRef, useState } from 'react';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
@@ -21,13 +22,6 @@ export default function TeamRuntimeBudgets({ teamId, tenantId }: { teamId: strin
     runtimeBudgetApi.withdrawIncrease(teamId, runId, id), onSuccess: (_result, { runId }) => {
       commands.current.delete(runId); setError(false); void query.refetch();
     }, onError: () => { setError(true); void query.refetch(); } });
-  function statusLabel(value: string) {
-    if (value === 'waiting_budget_approval') return t('teamBudgets.waiting', 'Waiting for budget approval');
-    if (value === 'active') return t('teamBudgets.running', 'Running');
-    if (value === 'resuming') return t('teamBudgets.resuming', 'Resuming');
-    if (value === 'completed') return t('teamBudgets.completed', 'Completed');
-    return t('teamBudgets.attention', 'Needs attention');
-  }
   function submit(run: TeamBudgetRun, form: HTMLFormElement) {
     const fields = new FormData(form);
     const limits = Object.fromEntries(Object.keys(labels).filter((field) => String(fields.get(field) || '').trim())
@@ -55,7 +49,7 @@ export default function TeamRuntimeBudgets({ teamId, tenantId }: { teamId: strin
     </div>}
     {query.isLoading && <p>{t('common.loading', 'Loading...')}</p>}
     {!query.isError && query.data?.runs.map((run) => <div key={run.id} className="card card-pad-sm">
-      <strong>{run.agent_name}</strong> · {statusLabel(run.status)}
+      <strong>{run.agent_name}</strong> · {runtimeStatusLabel(run.status, t)}
       <dl>{Object.entries(run.limits).map(([field, value]) => {
         const usage = run.usage[field.slice(4)];
         return <div key={field}><dt>{labels[field as BudgetLimitName]}</dt><dd>

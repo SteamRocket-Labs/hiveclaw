@@ -1,3 +1,4 @@
+import { runtimeStatusLabel } from './runtimeStatus';
 import React from 'react';
 import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
@@ -458,17 +459,7 @@ export default function RunDisclosureBlock({
     }
   }, [opensForAttention, timeline.id, timeline.status]);
 
-  const title = running
-    ? t('agent.chat.disclosure.working', 'Working')
-    : timeline.status === 'blocked'
-      ? t('agent.chat.disclosure.waiting', 'Waiting for input')
-      : timeline.status === 'failed'
-        ? t('agent.chat.disclosure.needsAttention', 'Needs attention')
-        : timeline.status === 'cancelled'
-          ? t('agent.chat.disclosure.stopped', 'Stopped')
-          : timeline.status === 'interrupted'
-            ? t('agent.chat.disclosure.interrupted', 'Interrupted')
-            : t('agent.chat.disclosure.processed', 'Processed');
+  const title = runtimeStatusLabel(timeline.status, t);
   const interruptedHint = t(
     'agent.chat.disclosure.interruptedHint',
     'This turn has no completion record; send a new message to continue.',

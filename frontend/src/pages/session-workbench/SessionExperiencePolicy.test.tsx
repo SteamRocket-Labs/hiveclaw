@@ -15,11 +15,11 @@ vi.mock('react-i18next', () => ({
 }));
 
 describe('session experience information policy', () => {
-  it('keeps execution resume distinct from transport reconnection in both locales', () => {
-    expect(en.agent.chat.phase.resuming).toBe('Resuming work');
-    expect(zh.agent.chat.phase.resuming).toBe('恢复运行中');
-    expect(en.agent.chat.phase.resuming).not.toBe(en.agent.chat.transport.reconnecting);
-    expect(zh.agent.chat.phase.resuming).not.toBe(zh.agent.chat.transport.reconnecting);
+  it('keeps exactly five runtime labels and removes recovery phase labels in both locales', () => {
+    expect(Object.values(en.agent.runtimeStatus)).toEqual(['Running', 'Waiting for you', 'Done', 'Failed', 'Stopped']);
+    expect(Object.values(zh.agent.runtimeStatus)).toEqual(['运行中', '等你决定', '完成', '失败', '已停止']);
+    expect(en.agent.chat.phase).not.toHaveProperty('resuming');
+    expect(zh.agent.chat.phase).not.toHaveProperty('resuming');
   });
 
   it('keeps the ordinary session header semantic and hides runtime mechanics', () => {
@@ -44,7 +44,7 @@ describe('session experience information policy', () => {
     const markup = renderToStaticMarkup(<SessionWorkbenchHeader model={model} />);
 
     expect(markup).toContain('Quarterly research');
-    expect(markup).toContain('waiting');
+    expect(markup).toContain('Waiting for you');
     expect(markup).toContain('GPT Test');
     expect(markup).toContain('Review the request below');
     expect(markup).not.toContain('00000000');
@@ -86,7 +86,7 @@ describe('session experience information policy', () => {
     } satisfies RuntimeSectionItemModel;
 
     expect(runtimeItemDisplayMeta(item)).toBe('Market analyst · Compared the three vendors. · 2m · 1.2K tokens · 3 tools');
-    expect(runtimeItemDisplayStatus(item)).toBe('Ready · Completed');
+    expect(runtimeItemDisplayStatus(item)).toBe('Done');
     expect(runtimeItemDisplayMeta(item)).not.toContain(item.id);
     expect(runtimeItemDisplayMeta(item)).not.toContain(item.childSessionId!);
     expect(runtimeItemDisplayMeta(item)).not.toContain('team_member');
@@ -165,6 +165,6 @@ describe('session experience information policy', () => {
       raw: { close_status: 'failed', close_failure: 'Provider timeout' },
     } satisfies RuntimeSectionItemModel;
 
-    expect(runtimeItemDisplayStatus(item)).toBe('Working · Needs attention');
+    expect(runtimeItemDisplayStatus(item)).toBe('Failed');
   });
 });

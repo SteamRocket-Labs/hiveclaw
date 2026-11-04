@@ -106,35 +106,35 @@ describe('buildSessionCommandStatusControl', () => {
 describe('runtimeStatusLabel', () => {
   it('renders through the translator so non-English locales get localized labels', () => {
     const t = ((key: string, fallback?: string) => `zh:${fallback ?? key}`) as unknown as Parameters<typeof runtimeStatusLabel>[1];
-    expect(runtimeStatusLabel('idle', t)).toBe('zh:Ready');
-    expect(runtimeStatusLabel('waiting_budget_approval', t)).toBe('zh:Waiting for approval');
-    expect(runtimeStatusLabel('needs_reconciliation', t)).toBe('zh:Needs admin review');
+    expect(runtimeStatusLabel('idle', t)).toBe('zh:Done');
+    expect(runtimeStatusLabel('waiting_budget_approval', t)).toBe('zh:Waiting for you');
+    expect(runtimeStatusLabel('needs_reconciliation', t)).toBe('zh:Failed');
   });
 });
 
 describe('userFacingRuntimeStatus', () => {
   it('maps known machine codes exactly and never falls back to raw runtime values', () => {
-    expect(userFacingRuntimeStatus('waiting_budget_approval')).toBe('Waiting for approval');
-    expect(userFacingRuntimeStatus('blocked')).toBe('Needs attention');
-    expect(userFacingRuntimeStatus('not_admitted')).toBe('Skipped');
-    expect(userFacingRuntimeStatus('ready')).toBe('Ready');
-    expect(userFacingRuntimeStatus('quota_denied')).toBe('Needs attention');
-    expect(userFacingRuntimeStatus('quota_unavailable')).toBe('Needs attention');
+    expect(userFacingRuntimeStatus('waiting_budget_approval')).toBe('Waiting for you');
+    expect(userFacingRuntimeStatus('blocked')).toBe('Waiting for you');
+    expect(userFacingRuntimeStatus('not_admitted')).toBe('Failed');
+    expect(userFacingRuntimeStatus('ready')).toBe('Done');
+    expect(userFacingRuntimeStatus('quota_denied')).toBe('Failed');
+    expect(userFacingRuntimeStatus('quota_unavailable')).toBe('Failed');
   });
 
-  it('renders unknown states as a neutral unavailable label without substring inference', () => {
+  it('renders unknown states as failed display without claiming success without substring inference', () => {
     // Model-agency boundary: an unrecognized machine state must not be
     // guessed into a semantic status (old behavior: any code containing
     // 'fail'/'done'/'stop'... was coerced, and the default masqueraded as
-    // Working). Benign/unknown codes render one honest neutral label.
-    expect(userFacingRuntimeStatus('provider_stream_half_closed_internal')).toBe('Status unavailable');
-    expect(userFacingRuntimeStatus('narrative_with_the_word_done_inside')).toBe('Status unavailable');
-    expect(userFacingRuntimeStatus('detailing_a_failure_story')).toBe('Status unavailable');
-    expect(userFacingRuntimeStatus('')).toBe('Status unavailable');
+    // Working). Unknown codes surface failure without claiming execution success.
+    expect(userFacingRuntimeStatus('provider_stream_half_closed_internal')).toBe('Failed');
+    expect(userFacingRuntimeStatus('narrative_with_the_word_done_inside')).toBe('Failed');
+    expect(userFacingRuntimeStatus('detailing_a_failure_story')).toBe('Failed');
+    expect(userFacingRuntimeStatus('')).toBe('Failed');
 
     const t = ((key: string, fallback?: string) => fallback ?? key) as unknown as Parameters<typeof runtimeStatusLabel>[1];
     const unknownLabel = runtimeStatusLabel('provider_stream_half_closed_internal', t);
-    expect(unknownLabel).toBe('Status unavailable');
+    expect(unknownLabel).toBe('Failed');
     expect(unknownLabel).not.toContain('provider_stream');
   });
 });
@@ -2028,7 +2028,7 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).toContain('session-tui-message-row session-tui-message-row-assistant');
     expect(markup).toContain('session-tui-message-bubble');
     expect(markup).toContain('data-testid="run-disclosure-block"');
-    expect(markup).toContain('Processed');
+    expect(markup).toContain('Done');
     expect(markup).toContain('Checkpoint trail updated.');
     expect(markup).not.toContain('Thinking');
     expect(markup).not.toContain('I checked the current branch state.');
@@ -3947,7 +3947,7 @@ describe('AgentDetail extracted sections', () => {
       />,
     );
 
-    expect(markup).toContain('Processed');
+    expect(markup).toContain('Done');
     expect(markup).not.toContain('Read file');
     expect(markup).not.toContain('report.md');
     expect(markup).toContain('aria-expanded="false"');
@@ -4031,7 +4031,7 @@ describe('AgentDetail extracted sections', () => {
       />,
     );
 
-    expect(markup).toContain('Processed');
+    expect(markup).toContain('Done');
     expect(markup).not.toContain('Edit document');
     expect(markup).not.toContain('proposal.docx');
     expect(markup).not.toContain('{&quot;ok&quot;: true}');
@@ -4139,7 +4139,7 @@ describe('AgentDetail extracted sections', () => {
     );
 
     expect(markup.match(/data-testid="run-disclosure-block"/g)?.length).toBe(1);
-    expect(markup).toContain('Processed');
+    expect(markup).toContain('Done');
     expect(markup).toContain('最终答案已经完成。');
     expect(markup).not.toContain('Thinking');
     expect(markup).not.toContain('Inspect code before answering.');
@@ -6045,7 +6045,7 @@ describe('AgentDetail extracted sections', () => {
     );
 
     expect(markup).toContain('data-testid="active-run-cell"');
-    expect(markup).toContain('Working');
+    expect(markup).toContain('Running');
     expect(markup).toContain('Thinking');
     expect(markup).not.toContain('Active run:');
     expect(markup).not.toContain('continuing this turn');
@@ -7568,11 +7568,12 @@ describe('ActiveTailStatusLine (§3 seam 2)', () => {
     expect(markup).toContain('session-tui-active-tail-elapsed');
   });
 
-  it('renders nothing for unknown phases (forward compatibility)', () => {
+  it('shows failure for unknown phases without exposing the raw value', () => {
     const markup = renderToStaticMarkup(
       <ActiveTailStatusLine phase="warp_speed" detail={null} startedAt={null} />,
     );
-    expect(markup).toBe('');
+    expect(markup).toContain('Failed');
+    expect(markup).not.toContain('>warp_speed<');
   });
 
   it('marks parked phases so the dot renders as a warning, not a spinner', () => {

@@ -1,4 +1,4 @@
-import { parseUserAttachment } from './agent-detail/chatAttachments';
+import { parseUserAttachment, formatComposerAttachments } from './agent-detail/chatAttachments';
 import type { SessionMessageOptions } from './agent-detail/ArtifactContinuation';
 import React, { useState, useEffect, useRef, lazy, Suspense } from 'react';
 import { useParams, useLocation, useNavigate } from 'react-router-dom';
@@ -1324,6 +1324,7 @@ function AgentDetailInner() {
     const [chatInput, setChatInput] = useState('');
     const [planModeRequested, setPlanModeRequested] = useState(false);
     const [goalModeRequested, setGoalModeRequested] = useState(false);
+    const composerSendInFlight = useRef(false);
     const goalStartRequestRef = useRef<{ fingerprint: string; requestId: string } | null>(null);
     const [sessionPermissionMode, setSessionPermissionMode] = useState<SessionPermissionMode>(DEFAULT_SESSION_PERMISSION_MODE);
     const [fullAccessPromptOpen, setFullAccessPromptOpen] = useState(false);
@@ -1838,9 +1839,10 @@ function AgentDetailInner() {
         }
     }, [activeSession?.id, activeTab]);
 
-    const sendChatMsg = async (options?: SessionMessageOptions) => {
-        if (!id || !activeSession?.id) return;
-        if (options?.expectedSessionId && String(activeSession.id) !== options.expectedSessionId) return false;
+    const sendChatMsg = async (options?: SessionMessageOptions, retryMessageId?: string, retrySession?: ChatSession) => {
+        let sendSession = retrySession || activeSession;
+        if (!id || !sendSession?.id) return;
+        if (options?.expectedSessionId && String(sendSession.id) !== options.expectedSessionId) return false;
         const expectedSubject = `${readinessScopeKey}:${currentUser?.role || ''}`;
         const stillOriginalSubject = () => {
             const subject = useAuthStore.getState().user;
@@ -1848,25 +1850,15 @@ function AgentDetailInner() {
         };
         if (options?.parts?.length && !stillOriginalSubject()) return false;
         if (!chatInput.trim() && attachedFiles.length === 0) return;
-        let userMsg = chatInput.trim();
-        const goalObjective = userMsg;
-        let contentForLLM = userMsg;
-        let displayFiles = '';
-        const attachmentPayload = attachedFiles.map((file) => ({
-            original_attachment: file.originalAttachment || undefined,
-            name: file.name,
-            path: file.path,
-            is_image: Boolean(file.imageUrl),
-            has_image_data: Boolean(file.imageUrl),
-            conversion: file.conversion || null,
-        }));
+        const goalObjective = chatInput.trim();
+        const { userMsg, contentForLLM, attachmentPayload, fileName } = formatComposerAttachments(goalObjective, attachedFiles, supportsVision);
 
         if (attachedFiles.length === 0 && !goalModeRequested) {
             let parsedSlashCommand: ReturnType<typeof parseSlashCommandInput> = null;
             try {
                 parsedSlashCommand = parseSlashCommandInput(userMsg);
             } catch (err) {
-                setChatMessagesSessionId(String(activeSession.id));
+                setChatMessagesSessionId(String(sendSession.id));
                 setChatMessagesAfterQueued(prev => [
                     ...prev,
                     parseChatMsg({ role: 'user', content: userMsg, timestamp: new Date().toISOString() }),
@@ -1876,7 +1868,6 @@ function AgentDetailInner() {
                         eventType: 'runtime_action_failed', eventStatus: 'command_invalid',
                     }),
                 ]);
-                setChatInput('');
                 return;
             }
 
@@ -1886,7 +1877,7 @@ function AgentDetailInner() {
                     commandSession = await ensureDurableActiveSession();
                 } catch (err: any) {
                     const msg = err?.message || t('agent.chat.sessionCreateFailed', 'Failed to create session');
-                    setChatMessagesSessionId(String(activeSession.id));
+                    setChatMessagesSessionId(String(sendSession.id));
                     setChatMessagesAfterQueued(prev => [...prev, parseChatMsg({ role: 'event', content: msg, eventType: 'runtime_action_failed', eventStatus: 'session_create_failed' })]);
                     return;
                 }
@@ -1906,7 +1897,6 @@ function AgentDetailInner() {
                     content: userMsg,
                     timestamp: new Date().toISOString(),
                 })]);
-                setChatInput('');
 
                 let commandStartedRun = false;
                 try {
@@ -1917,6 +1907,7 @@ function AgentDetailInner() {
                     const actionResult = commandResultRecord(response);
                     if (getSessionCommandUiAction(response)) {
                         await handleSessionCommandUiAction(response, commandSessionId);
+                        setChatInput('');
                         setChatMessagesAfterQueuedForSession(
                             commandSessionId,
                             prev => prev.filter(message => message.id !== commandMessageId),
@@ -1932,12 +1923,14 @@ function AgentDetailInner() {
                             plan_mode_requested: actionResult.plan_mode_requested === true,
                             permission_mode: sessionPermissionMode,
                         });
+                        setChatInput('');
                         commandStartedRun = true;
                         setPlanModeRequested(false);
                         applySubmittedRun(activeRuntimeKey, run);
                         invalidateSessionRuntimeQueries(id, commandSessionId);
                         return;
                     }
+                    setChatInput('');
                     if (actionResult?.action === 'open_tab') {
                         const tab = typeof actionResult.tab === 'string' ? actionResult.tab : '';
                         if (tab) selectDetailTab(tab);
@@ -1965,41 +1958,30 @@ function AgentDetailInner() {
                 return;
             }
         }
-
-        if (attachedFiles.length > 0) {
-            let filesPrompt = '';
-            let filesDisplay = '';
-            
-            attachedFiles.forEach(file => {
-                filesDisplay += `[📎 ${file.name}] `;
-                if (file.imageUrl && supportsVision) {
-                    filesPrompt += `[image_data:${file.imageUrl}]\n`;
-                } else if (file.imageUrl) {
-                    filesPrompt += `[图片文件已上传: ${file.name}，保存在 ${file.path || ''}]\n`;
-                } else {
-                    const wsPath = file.path || '';
-                    const codePath = wsPath.replace(/^workspace\//, '');
-                    const fileLoc = wsPath ? `\nFile location: ${wsPath} (for read_file/read_document tools)\nIn execute_code, use relative path: "${codePath}" (working directory is workspace/)\n` : '';
-                    const conversionLoc = file.conversion?.markdownPath
-                        ? `Markdown artifact (preferred): ${file.conversion.markdownPath}\nConversion metadata: ${file.conversion.metadataPath || ''}\n`
-                        : '';
-                    filesPrompt += `[File: ${file.name}]${fileLoc}${conversionLoc}\n${file.text}\n\n`;
-                }
-            });
-
-            if (supportsVision && attachedFiles.some(f => f.imageUrl)) {
-                contentForLLM = userMsg ? `${filesPrompt}\n${userMsg}` : `${filesPrompt}\n请分析这些文件`;
-            } else {
-                contentForLLM = userMsg ? `${filesPrompt}\nQuestion: ${userMsg}` : `Please analyze these files:\n\n${filesPrompt}`;
+        if (!goalModeRequested && composerSendInFlight.current) return false;
+        if (!goalModeRequested) composerSendInFlight.current = true;
+        let acceptedInputId = options?.inputId || globalThis.crypto.randomUUID();
+        let sendSessionId = String(sendSession.id);
+        let sendKey = buildSessionRuntimeKey(id, sendSessionId);
+        let refused = false;
+        const updateSend = (patch: Partial<AgentChatMessage>) => {
+            pendingUserMessagesRef.current[sendKey] = (pendingUserMessagesRef.current[sendKey] || []).map(item =>
+                item.message.id === acceptedInputId ? { ...item, message: { ...item.message, ...patch } } : item);
+            setChatMessagesAfterQueuedForSession(sendSessionId, prev => prev.map(message =>
+                message.id === acceptedInputId ? { ...message, ...patch } : message));
+        };
+        if (!goalModeRequested) {
+            if (retryMessageId) {
+                pendingUserMessagesRef.current[sendKey] = (pendingUserMessagesRef.current[sendKey] || []).filter(item => item.message.id !== retryMessageId);
+                setChatMessagesAfterQueuedForSession(sendSessionId, prev => prev.filter(message => message.id !== retryMessageId));
             }
-            
-            displayFiles = filesDisplay.trim();
-            userMsg = userMsg ? `${displayFiles}\n${userMsg}` : displayFiles;
+            setChatMessagesSessionId(sendSessionId);
+            appendOptimisticUserMessage(sendKey, sendSessionId, {
+                role: 'user', id: acceptedInputId, content: userMsg, fileName,
+                imageUrl: attachedFiles.length === 1 ? attachedFiles[0].imageUrl : undefined,
+                timestamp: new Date().toISOString(), sendState: 'sending',
+            });
         }
-
-        const fileName = attachedFiles.map(f => f.name).join(', ');
-        let completedGoalRequestId: string | null = null;
-        let acceptedInputId: string = options?.inputId || globalThis.crypto.randomUUID();
         try {
             let started: { session: ChatSession; run: SessionStartResponse } | null;
             if (goalModeRequested) {
@@ -2029,11 +2011,10 @@ function AgentDetailInner() {
                 });
                 const run = goal.run as SessionRun | null | undefined;
                 if (!run?.run_id) throw new Error(t('agent.chat.goalStartFailed', 'The goal was created but its first turn did not start.'));
-                completedGoalRequestId = goalRequestId;
                 acceptedInputId = goalRequestId;
                 started = { session: goalSession as ChatSession, run };
             } else {
-                started = await startRunForActiveSession({
+                const input = {
                     content: contentForLLM,
                     display_content: userMsg,
                     file_name: fileName,
@@ -2043,19 +2024,37 @@ function AgentDetailInner() {
                     permission_mode: sessionPermissionMode,
                     input_id: acceptedInputId,
                     idempotency_key: `session-input:${acceptedInputId}`,
-                });
+                };
+                started = retrySession
+                    ? { session: retrySession, run: await chatApi.startSessionRun(id, String(retrySession.id), input) }
+                    : await startRunForActiveSession(input);
             }
             if (!started?.session?.id) return;
-            if (options?.expectedSessionId && (activeSessionIdRef.current !== options.expectedSessionId || !stillOriginalSubject())) return true;
+            sendSession = started.session;
+            const nextSessionId = String(started.session.id);
+            if (nextSessionId !== sendSessionId) {
+                const nextKey = buildSessionRuntimeKey(id, nextSessionId);
+                pendingUserMessagesRef.current[nextKey] = pendingUserMessagesRef.current[sendKey] || [];
+                delete pendingUserMessagesRef.current[sendKey];
+                sendSessionId = nextSessionId;
+                sendKey = nextKey;
+                setChatMessagesAfterQueuedForSession(sendSessionId, prev => mergePendingForSession(sendKey, prev));
+            }
+            if (!goalModeRequested && 'admission_state' in started.run) {
+                refused = ['rejected', 'cancelled', 'needs_reconciliation'].includes(started.run.admission_state || '');
+                if (refused) throw new Error(started.run.admission_state === 'cancelled'
+                    ? t('agent.chat.sendCancelled', 'Not sent: sending was cancelled.')
+                    : started.run.admission_state === 'needs_reconciliation'
+                        ? t('agent.chat.sendUnconfirmed', 'Could not confirm whether this message was saved.')
+                        : t('agent.chat.sendRefused', 'Not sent: this message could not be accepted.'));
+            }
+            updateSend({ sendState: undefined, sendError: undefined, retrySend: undefined });
+            if (activeSessionIdRef.current !== sendSessionId || !stillOriginalSubject()) return true;
             const runSessionId = String(started.session.id);
             const activeRuntimeKey = buildSessionRuntimeKey(id, runSessionId);
-            if (!activeRunStateRef.current[activeRuntimeKey]?.runId) {
-                syncActivePhase('queued');
-                setSessionPhase(activeRuntimeKey, 'queued');
-            }
             setTransportNotice(null);
             setChatMessagesSessionId(runSessionId);
-            appendOptimisticUserMessage(activeRuntimeKey, runSessionId, {
+            if (goalModeRequested) appendOptimisticUserMessage(activeRuntimeKey, runSessionId, {
                 role: 'user',
                 id: acceptedInputId,
                 content: userMsg,
@@ -2063,22 +2062,27 @@ function AgentDetailInner() {
                 imageUrl: attachedFiles.length === 1 ? attachedFiles[0].imageUrl : undefined,
                 timestamp: new Date().toISOString(),
             });
-            setChatInput('');
-            setAttachedFiles([]);
+            setChatInput(current => current === chatInput ? '' : current);
+            setAttachedFiles(current => current === attachedFiles ? [] : current);
             setPlanModeRequested(false);
             setGoalModeRequested(false);
             applySubmittedRun(activeRuntimeKey, started.run);
             invalidateSessionRuntimeQueries(id, runSessionId);
             return true;
-            if (completedGoalRequestId && goalStartRequestRef.current?.requestId === completedGoalRequestId) {
-                goalStartRequestRef.current = null;
-            }
         } catch (err: any) {
             setIsWaiting(false);
             setIsStreaming(false);
             const msg = err?.message || t('agent.chat.runStartFailed', 'Failed to start run');
-            setChatMessagesSessionId(String(activeSession.id));
-            setChatMessagesAfterQueued(prev => [...prev, parseChatMsg({ role: 'event', content: msg, eventType: 'runtime_action_failed', eventStatus: 'run_start_failed' })]);
+            if (goalModeRequested) {
+                setChatMessagesAfterQueued(prev => [...prev, parseChatMsg({ role: 'event', content: msg, eventType: 'runtime_action_failed', eventStatus: 'run_start_failed' })]);
+            } else {
+                // An uncertain refusal can rarely duplicate; re-read the thread before retry in a future upgrade.
+                updateSend({ sendState: 'failed', sendError: refused ? msg : t('agent.chat.sendFailed', 'Message not sent. Try again.'),
+                    retrySend: () => { if (activeSessionIdRef.current === sendSessionId && stillOriginalSubject()) void sendChatMsg({ ...options, inputId: refused ? globalThis.crypto.randomUUID() : acceptedInputId }, acceptedInputId, isDraftHumanChatSession(sendSession) ? undefined : sendSession); } });
+            }
+            return false;
+        } finally {
+            if (!goalModeRequested) composerSendInFlight.current = false;
         }
     };
 

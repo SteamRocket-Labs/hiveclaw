@@ -373,12 +373,6 @@
         "workflow": "Workflow",
         "activity": "Activity"
       },
-      "runtimeStates": {
-        "idle": "idle",
-        "running": "running",
-        "waiting": "waiting",
-        "blocked": "blocked"
-      },
       "runningCount": "{{count}} running",
       "waitingCount": "{{count}} waiting",
       "totalCount": "{{count}} total",
@@ -443,15 +437,6 @@
       "noLeafDetails": "No additional details",
       "noStepDetails": "No additional details",
       "rejectGate": "Reject"
-    },
-    "status": {
-      "cancelled": "cancelled",
-      "idle": "idle",
-      "running": "running",
-      "waiting": "waiting",
-      "streaming": "streaming",
-      "complete": "complete",
-      "failed": "failed"
     },
     "permission": "permission",
     "governance": "governance",
@@ -650,10 +635,10 @@
       "shared": "Company shared",
       "managed": "Managed",
       "recommended": "Recommended",
-      "running": "Running",
-      "attention": "Needs attention",
       "coordinator": "Coordinator",
-      "local": "Local runtime"
+      "local": "Local runtime",
+      "running": "Running",
+      "attention": "Needs attention"
     },
     "metrics": {
       "total": "Total",
@@ -853,14 +838,14 @@
       "running": "Running",
       "failed": "Needs attention",
       "missingModel": "Model not configured",
-      "completed": "Completed",
       "active": "Active",
       "expired": "Expired",
       "maxFires": "Run limit reached",
       "backoff": "Cooling down",
       "noRecentAttempt": "No recent run",
       "needsReconciliation": "Needs admin review",
-      "unknown": "Status unavailable"
+      "unknown": "Status unavailable",
+      "completed": "Completed"
     },
     "plans": {
       "title": "Plan Review",
@@ -898,13 +883,13 @@
     "pending": "Pending",
     "approved": "Approved",
     "rejected": "Rejected",
-    "queued": "Queued",
     "executing": "Executing",
     "succeeded": "Succeeded",
     "failed": "Failed",
     "needs_reconciliation": "Needs admin attention",
     "needs_reapproval": "Needs reapproval",
-    "unknown": "Status unavailable"
+    "unknown": "Status unavailable",
+    "queued": "Queued"
   },
   "approvalRequest": {
     "reviewer": "Team reviewer",
@@ -1367,21 +1352,11 @@
       "workspaceUnavailable": "Operator workspace inspection is unavailable."
     },
     "runtimeStatus": {
-      "ready": "Ready",
-      "queued": "Queued",
-      "working": "Working",
-      "resuming": "Resuming",
-      "waiting": "Waiting",
-      "waitingForYou": "Waiting for you",
-      "waitingApproval": "Waiting for approval",
-      "completed": "Completed",
-      "needsAttention": "Needs attention",
-      "skipped": "Skipped",
-      "paused": "Paused",
-      "stopped": "Stopped",
-      "cancelled": "Cancelled",
-      "needsAdminReview": "Needs admin review",
-      "unknown": "Status unavailable"
+      "running": "Running",
+      "waiting": "Waiting for you",
+      "done": "Done",
+      "failed": "Failed",
+      "stopped": "Stopped"
     },
     "status": {
       "running": "Working",
@@ -2402,6 +2377,11 @@
       }
     },
     "chat": {
+      "sending": "Sending…",
+      "sendCancelled": "Not sent: sending was cancelled.",
+      "sendUnconfirmed": "Could not confirm whether this message was saved.",
+      "sendRefused": "Not sent: this message could not be accepted.",
+      "sendFailed": "Message not sent. Try again.",
       "mySessions": "My Conversations",
       "allUsers": "All Users",
       "newSession": "New Conversation",
@@ -2522,8 +2502,6 @@
       },
       "disclosure": {
         "processing": "Processing",
-        "processed": "Processed",
-        "interrupted": "Interrupted",
         "interruptedHint": "This turn has no completion record; send a new message to continue.",
         "showCompleteOutput": "Show complete output",
         "waiting": "Waiting for input",
@@ -2546,9 +2524,7 @@
           "runCommand": "Run command",
           "editDocument": "Edit document",
           "toolCall": "Tool call"
-        },
-        "needsAttention": "Needs attention",
-        "stopped": "Stopped"
+        }
       },
       "artifacts": {
         "open": "Open",
@@ -2719,18 +2695,7 @@
         "hint": "Pick one, then type natural args"
       },
       "phase": {
-        "queued": "Queued",
-        "resuming": "Resuming work",
-        "starting": "Starting",
-        "thinking": "Thinking",
-        "responding": "Writing response",
-        "tool_running": "Running tools",
-        "hook_evaluating": "Checking policy hooks",
-        "compacting": "Compacting context",
-        "awaiting_approval": "Waiting for approval",
-        "awaiting_budget": "Budget limited",
-        "summarizing": "Writing the final summary",
-        "continuation_gap": "Preparing the next step"
+        "thinking": "Thinking"
       },
       "runtime": {
         "model": "Model",
@@ -5554,12 +5519,6 @@
     "statusActive": "Active",
     "statusDeprecated": "Deprecated",
     "statusRevoked": "Revoked",
-    "runCompleted": "Completed",
-    "runFailed": "Failed",
-    "runRunning": "Running",
-    "runSuspended": "Suspended",
-    "runKilled": "Killed",
-    "runPending": "Pending",
     "visibilityAgent": "This employee only",
     "visibilityTenant": "Company-wide",
     "visibilityOrg": "Organization",
@@ -5613,11 +5572,6 @@
     "request": "Request an increase",
     "previous": "Previous runs",
     "more": "More runs",
-    "waiting": "Waiting for budget approval",
-    "running": "Running",
-    "resuming": "Resuming",
-    "completed": "Completed",
-    "attention": "Needs attention",
     "approve": "Approve requested increase",
     "reject": "Reject request and stop waiting work",
     "approveMinimum": "Approve only the required capacity",
@@ -5976,16 +5930,6 @@
     "observationBoundary": "These limits cover automatic status requests. A request already in progress may finish later. Remote charges remain unknown.",
     "observe": "Start automatic checks",
     "pauseObservation": "Pause automatic checks",
-    "inputRequired": "Remote reply needed",
-    "authRequired": "Remote authorization required",
-    "queued": "Queued",
-    "contacting": "Contacting remote endpoint",
-    "waiting": "Remote task waiting",
-    "completed": "Remote reports completion",
-    "reportedFailure": "Remote reports failure",
-    "cancelConfirmed": "Remote cancellation confirmed",
-    "abandoned": "Locally abandoned",
-    "unconfirmed": "Remote state unconfirmed",
     "title": "Remote A2A requests in this work",
     "boundary": "Send an explicit request through this employee’s configured remote endpoint. Its internal actions cannot be intercepted here; external charges remain unknown. The employee’s selected native model is unchanged.",
     "failed": "The request was denied or saved state is unavailable. Check access, connection and work identity.",

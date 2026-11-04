@@ -163,7 +163,7 @@ def test_user_workbench_projection_removes_operator_only_ledgers_and_raw_task_ev
             "id": "task-1",
             "task_type": "subagent",
             "status": "running",
-            "user_status": "正在处理",
+            "user_status": "运行中",
             "result_summary": "Researching",
         }
     ]

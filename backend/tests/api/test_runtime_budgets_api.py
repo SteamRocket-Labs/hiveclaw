@@ -4,6 +4,8 @@ from datetime import UTC, datetime
 from types import SimpleNamespace
 from uuid import uuid4
 
+import pytest
+
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -451,7 +453,7 @@ def test_runtime_budget_decisions_require_approval_episode_id():
 def test_runtime_budget_waiting_status_has_user_semantics():
     from app.api.runtime_budgets import _user_next_action, _user_reason, _user_status
 
-    assert _user_status("waiting_budget_approval") == "等待批准"
+    assert _user_status("waiting_budget_approval") == "等你决定"
     assert (
         _user_reason("waiting_budget_approval", "runtime_budget_approval_required:subagents")
         == "运行额度已达上限，正在等待管理员批准"
@@ -492,3 +494,13 @@ def test_runtime_budget_delivery_reconciliation_is_admin_scoped_and_explicit():
         "action": "mark_delivered",
         "reason": "provider console confirms delivery",
     }
+
+
+@pytest.mark.parametrize("status,label", [
+    ("active", "运行中"), ("resuming", "运行中"), ("waiting_budget_approval", "等你决定"),
+    ("completed", "完成"), ("exhausted", "失败"), ("hard_stopped", "已停止"),
+    ("expired", "已停止"), ("cancelled", "已停止"), ("stopped", "已停止"), ("unknown", "失败"),
+])
+def test_runtime_budget_display_uses_only_five_states(status, label):
+    from app.api.runtime_budgets import _user_status
+    assert _user_status(status) == label

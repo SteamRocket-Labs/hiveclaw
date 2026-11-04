@@ -404,20 +404,13 @@ async def telegram_webhook(
         logger.warning("[Telegram] Webhook called but bot_token is empty for agent %s", agent_id)
         return Response(status_code=403)
 
-    # Verify webhook secret (if header present — absent means pre-upgrade webhook)
+    # Only authenticated internal replay bypasses transport verification.
     received_secret = request.headers.get("x-telegram-bot-api-secret-token")
-    if replay_event_id is not None:
-        pass
-    elif received_secret is not None:
+    if replay_event_id is None:
         expected_secret = _compute_webhook_secret(bot_token)
-        if not hmac.compare_digest(expected_secret, received_secret):
-            logger.warning("[Telegram] Webhook secret mismatch for agent %s", agent_id)
+        if received_secret is None or not hmac.compare_digest(expected_secret, received_secret):
+            logger.warning("[Telegram] Webhook secret missing or mismatched for agent %s", agent_id)
             return Response(status_code=403)
-    else:
-        logger.warning(
-            "[Telegram] Webhook without secret_token for agent %s — re-save Telegram config to enable verification",
-            agent_id,
-        )
 
     update_id = body.get("update_id", 0)
 

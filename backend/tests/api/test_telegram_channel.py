@@ -293,8 +293,8 @@ class TestTelegramWebhook:
         assert result == {"ok": True}
 
     @pytest.mark.asyncio
-    async def test_missing_secret_header_warns_but_allows(self, monkeypatch):
-        """Pre-upgrade webhooks (no secret header) should still work with warning."""
+    async def test_missing_secret_header_returns_403(self, monkeypatch):
+        """Unsigned legacy webhook requests must be rejected."""
         from app.api.telegram import telegram_webhook
 
         monkeypatch.setenv("SECRET_KEY", "test-secret")
@@ -306,8 +306,7 @@ class TestTelegramWebhook:
 
         db = _FakeDB(config=config)
         result = await telegram_webhook(config.agent_id, request, db)
-        # Should succeed (no message body → ok)
-        assert result == {"ok": True}
+        assert result.status_code == 403
 
     @pytest.mark.asyncio
     async def test_actionable_update_is_committed_to_durable_inbox(self, monkeypatch):
@@ -326,7 +325,9 @@ class TestTelegramWebhook:
                 },
             }
         ).encode()
-        request = _build_request(body)
+        from app.api.telegram import _compute_webhook_secret
+
+        request = _build_request(body, {"X-Telegram-Bot-Api-Secret-Token": _compute_webhook_secret(config.app_secret)})
         captured = {}
 
         async def fake_accept(_db, **kwargs):
@@ -362,7 +363,9 @@ class TestBotMessageFiltering:
                 },
             }
         ).encode()
-        request = _build_request(body)
+        from app.api.telegram import _compute_webhook_secret
+
+        request = _build_request(body, {"X-Telegram-Bot-Api-Secret-Token": _compute_webhook_secret(config.app_secret)})
 
         db = _FakeDB(config=config)
         result = await telegram_webhook(config.agent_id, request, db)
@@ -388,7 +391,9 @@ class TestBotMessageFiltering:
                 },
             }
         ).encode()
-        request = _build_request(body)
+        from app.api.telegram import _compute_webhook_secret
+
+        request = _build_request(body, {"X-Telegram-Bot-Api-Secret-Token": _compute_webhook_secret(config.app_secret)})
 
         captured = {}
 

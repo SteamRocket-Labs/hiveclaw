@@ -90,7 +90,7 @@ async def test_slack_ack_happens_after_durable_accept_without_running_agent(monk
         id=uuid4(),
         tenant_id=uuid4(),
         agent_id=agent_id,
-        encrypt_key="",
+        encrypt_key="test-signing-secret",
         channel_type="slack",
     )
     captured = await _capture_accept(monkeypatch)
@@ -100,7 +100,13 @@ async def test_slack_ack_happens_after_durable_accept_without_running_agent(monk
         "event": {"type": "message", "user": "U1", "channel": "C1", "text": "hello"},
     }
 
-    result = await slack.slack_event_webhook(agent_id, _request(body), _DB(config))
+    import hashlib
+    import hmac
+
+    ts = str(int(time.time()))
+    signature = "v0=" + hmac.new(config.encrypt_key.encode(), f"v0:{ts}:{json.dumps(body)}".encode(), hashlib.sha256).hexdigest()
+    request = _request(body, [(b"x-slack-request-timestamp", ts.encode()), (b"x-slack-signature", signature.encode())])
+    result = await slack.slack_event_webhook(agent_id, request, _DB(config))
 
     assert result == {"ok": True}
     assert captured["provider_event_id"] == "Ev-1"

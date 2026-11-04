@@ -194,8 +194,8 @@ async def slack_event_webhook(
 
     # Verify Slack signature
     signing_secret = config.encrypt_key or ""
-    if signing_secret and replay_event_id is None:
-        if not _verify_slack_signature(signing_secret, body_bytes, dict(request.headers)):
+    if replay_event_id is None:
+        if not signing_secret or not _verify_slack_signature(signing_secret, body_bytes, dict(request.headers)):
             return Response(status_code=401)
 
     import json

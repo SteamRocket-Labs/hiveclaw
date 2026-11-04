@@ -291,3 +291,28 @@ async def test_handle_set_trigger_fails_closed_without_runtime_requester(monkeyp
     )
 
     assert "auth_or_permission" in result
+
+
+@pytest.mark.parametrize("base", ["", "https://instance.example/"])
+async def test_webhook_url_uses_configured_public_address(monkeypatch, base):
+    import app.services.agent_tool_domains.triggers as domain
+    from app.models.trigger import AgentTrigger
+    from unittest.mock import AsyncMock
+
+    session = _FakeScopedSession([_Result(SimpleNamespace(max_triggers=None)), _Result(0), _Result(None)])
+    monkeypatch.setattr(domain, "tenant_scoped_session", lambda *a, **k: session)
+    monkeypatch.setattr(domain, "resolve_tenant_for_agent", AsyncMock(return_value=None))
+    monkeypatch.setattr(domain, "_capture_reply_context", lambda: None)
+    monkeypatch.setattr("app.services.audit_logger.write_audit_log", AsyncMock())
+    monkeypatch.setenv("PUBLIC_BASE_URL", base)
+    # Exercise the existing resolver's DB fallback without using a real database.
+    monkeypatch.setattr("app.database.async_session", lambda: _FakeScopedSession([_Result(None)]))
+    result = await domain._handle_set_trigger(uuid4(), {
+        "name": "incoming", "type": "webhook", "config": {}, "max_fires": 1, "reason": "Handle incoming event."
+    }, user_id=uuid4())
+    if base:
+        stored = next(item for item in session.added if isinstance(item, AgentTrigger))
+        assert f"https://instance.example/api/webhooks/t/{stored.config['token']}" in result
+    else:
+        assert "public address is not configured" in result
+        assert "http://" not in result and "https://" not in result

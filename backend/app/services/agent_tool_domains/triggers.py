@@ -686,12 +686,14 @@ async def _handle_set_trigger(
         except Exception as e:
             logger.debug("Suppressed: %s", e)
         if ttype == "webhook":
-            from app.config import get_settings
+            from app.api.telegram import _resolve_public_base_url
 
-            settings = get_settings()
-            base = getattr(settings, "PUBLIC_URL", "") or ""
+            base = await _resolve_public_base_url()
             if not base:
-                base = "https://try.hive.ai"  # fallback
+                return (
+                    f"Webhook trigger '{name}' created, but the instance's public address is not configured. "
+                    "Configure PUBLIC_BASE_URL before using this webhook."
+                )
             webhook_url = f"{base.rstrip('/')}/api/webhooks/t/{config['token']}"
             return f"✅ Webhook trigger '{name}' created.\n\nWebhook URL: {webhook_url}\n\nTell the user to configure this URL in their external service (e.g. GitHub, Grafana). When the service sends a POST to this URL, you will be woken up with the payload as context."
 

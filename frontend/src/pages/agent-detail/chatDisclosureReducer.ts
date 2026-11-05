@@ -1,5 +1,4 @@
 import { isStreamingAssistantMessage, type AgentChatMessage } from './chatRuntime';
-import { approvalActionFor } from '../session-workbench/approvalActionPresentation';
 
 export type RunStepKind =
   | 'reasoning'
@@ -51,9 +50,6 @@ export interface RunStepSnapshot {
   toolCallId?: string | null;
   kind: RunStepKind;
   title: string;
-  /** Locale key that overrides the camelized title sentinel when the title
-   * carries a user-facing action phrase (approval-card words, B2 r2). */
-  titleKey?: string;
   subtitle?: string;
   status: RunStepStatus;
   startedAt?: string;
@@ -422,13 +418,6 @@ function titleForToolMessage(message: AgentChatMessage): string {
   return 'Tool call';
 }
 
-/** Known externally-visible tools take the approval card's own words for
- * their step title (B2 r2): one action, one vocabulary. */
-function titleKeyForToolMessage(message: AgentChatMessage): string | undefined {
-  const known = approvalActionFor(message.toolName);
-  return known?.key;
-}
-
 function kindForEventMessage(message: AgentChatMessage): RunStepKind {
   if (message.eventType === 'session_compact' || message.eventType === 'context_compaction') return 'compaction';
   if (
@@ -668,7 +657,6 @@ function buildStep(message: AgentChatMessage, index: number, allowLiveRunning: b
       toolCallId: message.toolMeta?.kind === 'runtime_step' ? message.toolMeta.toolCallId : undefined,
       kind: kindForToolMessage(message),
       title: titleForToolMessage(message),
-      titleKey: titleKeyForToolMessage(message),
       status,
       startedAt: message.timestamp,
       completedAt: status === 'done' || status === 'blocked' ? message.timestamp : undefined,
@@ -760,6 +748,25 @@ function workflowEventKey(message: AgentChatMessage): string | null {
   return null;
 }
 
+/** The runtime's receipt for a call it aborted because the member's approval
+ * released a re-issue instead (`approved_tool_execution_not_released`). */
+function isApprovedExecutionAbort(message: AgentChatMessage): boolean {
+  if (message.role !== 'tool_call') return false;
+  for (const value of [message.toolRawResult, message.toolResult]) {
+    if (!value) continue;
+    try {
+      const parsed = typeof value === 'string' ? JSON.parse(value) : value;
+      if (parsed && typeof parsed === 'object'
+        && (parsed as Record<string, unknown>).reason_code === 'approved_tool_execution_not_released') {
+        return true;
+      }
+    } catch {
+      // Not the abort receipt's shape.
+    }
+  }
+  return false;
+}
+
 export function buildRunTimelineFromMessages(
   messages: AgentChatMessage[],
   options: TimelineBuildOptions = {},
@@ -771,6 +778,12 @@ export function buildRunTimelineFromMessages(
     if (key) latestWorkflowEvents.set(key, message);
   }
   const steps = messages
+    // One approved action, one row (B2 r3): the aborted invocation is
+    // bookkeeping of the same action the resumed turn re-issues.
+    .filter((message, index) => !(
+      isApprovedExecutionAbort(message)
+      && messages.slice(index + 1).some((later) => later.role === 'tool_call' && later.toolName === message.toolName)
+    ))
     .map((message, index) => {
       const step = buildStep(message, index, allowLiveRunning);
       const key = workflowEventKey(message);

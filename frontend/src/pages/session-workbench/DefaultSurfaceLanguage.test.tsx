@@ -6,6 +6,7 @@
  */
 import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
+import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 
 import zhMessages from '../../i18n/zh.json';
@@ -261,6 +262,49 @@ describe('default screen language (B2)', () => {
     expect(sessionTitleForUser({ id: 's6', title: '整理季度报告' }, '新对话')).toBe('整理季度报告');
   });
 
+  it('recovers every runtime-JSON title shape from its truncated prefix, never as raw JSON (B2 r3)', () => {
+    const truncate = (value: string): string => Array.from(value).slice(0, 40).join('');
+    const sentence = '总结最近的季度销售数据，并给出下一季度的行动建议、风险提示和对应的负责人安排';
+
+    // A `text`-first encoding (a text part without display_content and with
+    // no file name of its own sorts `text` first).
+    const textFirst = truncate(`[{"text":"${sentence}`);
+    expect(textFirst.startsWith('[{"text":"')).toBe(true);
+    expect(Array.from(textFirst)).toHaveLength(40);
+    expect(sessionTitleForUser({ id: 't1', title: textFirst }, '新对话'))
+      .toBe(Array.from(sentence).slice(0, 30).join(''));
+
+    // A `file_name`-first encoding: the member's text never fit in the
+    // prefix; the file name carries the title.
+    const fileNameFirst = truncate(`[{"file_name":"sales.csv","text":"[File: sales.csv]\\nFile location: workspace/uploads/sales.csv\\n\\nQuestion: ${sentence}`);
+    expect(fileNameFirst.startsWith('[{"file_name":"')).toBe(true);
+    expect(sessionTitleForUser({ id: 't2', title: fileNameFirst }, '新对话')).toBe('📎 sales.csv');
+
+    // Attachment-first: no text part is reached at all, the attachment's
+    // name is the title.
+    const attachmentFirst = truncate(sortedJson([{ type: 'attachment_ref', attachment: { name: 'sales.csv', path: 'workspace/uploads/sales.csv' } }, E2E_TEXT_PART]));
+    expect(attachmentFirst.startsWith('[{"attachment"')).toBe(true);
+    expect(sessionTitleForUser({ id: 't3', title: attachmentFirst }, '新对话')).toBe('📎 sales.csv');
+
+    // A cut trailing escape (`\u4e` of 中) ends the value instead of
+    // corrupting it.
+    const cutEscape = '[{"display_content":"[📎 销售记录.xlsx]\\n第四季度汇总\\u4e';
+    expect(sessionTitleForUser({ id: 't4', title: cutEscape }, '新对话')).toBe('第四季度汇总');
+
+    // A runtime-JSON shape with nothing recoverable shows the plain default
+    // title — never the raw JSON.
+    const nothingRecoverable = truncate(sortedJson([{ type: 'attachment_ref', attachment: { path: 'workspace/uploads/sales.csv' } }]));
+    expect(nothingRecoverable.startsWith('[{')).toBe(true);
+    expect(sessionTitleForUser({ id: 't5', title: nothingRecoverable }, '新对话')).toBe('新对话');
+    // And no JSON shape ever leaks through as the title.
+    for (const shape of [textFirst, fileNameFirst, attachmentFirst, cutEscape, nothingRecoverable]) {
+      const recovered = sessionTitleForUser({ id: `x-${shape.slice(0, 8)}`, title: shape }, '新对话');
+      expect(recovered.startsWith('[{')).toBe(false);
+      expect(recovered).not.toContain('"');
+      expect(recovered).not.toContain('display_content');
+    }
+  });
+
   it('names the exact approval action; a delete or share is never called an edit', () => {
     const approvalFor = (toolName: string): string => {
       const item: ThreadItem = {
@@ -312,6 +356,86 @@ describe('default screen language (B2)', () => {
     expect(unknown).not.toContain('编辑飞书文档');
     expect(unknown).not.toContain('删除飞书文档');
     expect(findInternalWords(approvalFor('feishu_doc_delete'))).toEqual([]);
+  });
+
+  it('puts the whole proposal inside the approval card\'s single disclosure (B2 r3)', () => {
+    // The approver must be able to see the recipients and body before
+    // allowing a send_email: the card keeps exactly one disclosure and its
+    // body carries the full arguments (what the old 操作详情 showed), not
+    // just the whitelisted summary fields.
+    const emailArguments = {
+      to: 'boss@example.com',
+      subject: 'Q3 复盘',
+      body: '各位好，附件是 Q3 复盘材料，请查收。',
+    };
+    const item: ThreadItem = {
+      schema: 'hive.thread_item.v1',
+      schema_version: 1,
+      id: 'item-approval-email',
+      sequence: 4,
+      thread_id: 's1',
+      session_id: 's1',
+      item_type: 'approval_request',
+      item_status: 'waiting_user',
+      actor_type: 'user',
+      event_type: 'permission',
+      role: 'system',
+      visibility_scope: 'direct_user',
+      listed_surface: 'chat',
+      content: '',
+      parts: [],
+      metadata: {},
+      item_data: {
+        permission_request_id: 'permission-9',
+        tool_name: 'send_email',
+        arguments: emailArguments,
+        expires_at: '2026-11-04T20:06:21Z',
+        destructive: false,
+      },
+      user_action: {
+        kind: 'resolve_approval',
+        label: '确认后继续',
+        expires_at: '2026-11-04T20:06:21Z',
+        impact: '可撤销或只读操作',
+        details: [{ label: 'subject', value: 'Q3 复盘' }],
+      },
+      audience: 'user',
+    } as unknown as ThreadItem;
+    const markup = renderToStaticMarkup(
+      <ThreadItemRenderer
+        item={item}
+        approvalArguments={emailArguments}
+        approvalActions={(
+          <SessionPermissionActions
+            permissionRequest={{
+              permission_request_id: 'permission-9',
+              session_id: 's1',
+              tool_name: 'send_email',
+              arguments: emailArguments,
+              allow_session_allowed: true,
+              created_at: '2026-11-04T12:00:00Z',
+            } as never}
+            showArgumentDetails={false}
+            t={zhT as never}
+          />
+        )}
+      />,
+    );
+    // Still exactly one disclosure on the card.
+    expect(markup.match(/<details\b/g) || []).toHaveLength(1);
+    // Closed, the member's visible surface shows the request but none of the
+    // proposal's content: recipients, subject and body wait behind the open.
+    const closed = visibleSurface(markup);
+    expect(closed).toContain('需要你确认');
+    expect(closed).not.toContain('boss@example.com');
+    expect(closed).not.toContain('Q3 复盘');
+    expect(closed).not.toContain('请查收');
+    // Opened (the disclosure's body), the full proposal is there.
+    const body = decodeEntities(markup.replace(/^[\s\S]*?<details\b[^>]*>/, '').replace(/<\/details>[\s\S]*$/, ''));
+    expect(body).toContain('"to"');
+    expect(body).toContain('boss@example.com');
+    expect(body).toContain('Q3 复盘');
+    expect(body).toContain('请查收');
   });
 
   it('renders one disclosure on the approval card, not two', () => {
@@ -415,19 +539,29 @@ describe('default screen language (B2)', () => {
     expect(findInternalWords(text)).toEqual([]);
   });
 
-  it('keeps the original tool name inside the opened step details for operators', () => {
+  it('keeps every step reachable in the opened details, with its original tool name and result (B2 r3)', () => {
+    // Nameless steps (no user-words action, no summary) fold off the default
+    // layer, but opening the run history must still surface every one of
+    // them, identified by its original tool name, with its result reachable.
     const messages: AgentChatMessage[] = [
-      { role: 'tool_call', content: '', id: 't1', toolName: 'call_mcp_tool', toolArgs: { path: 'notes.md' }, toolStatus: 'done', toolResult: 'ok', timestamp: '2026-11-04T12:00:01Z' },
+      { role: 'tool_call', content: '', id: 't1', toolName: 'read_context_resource', toolArgs: { ref: 'index' }, toolStatus: 'done', toolResult: 'INDEX CONTENT 42', timestamp: '2026-11-04T12:00:01Z' },
+      { role: 'tool_call', content: '', id: 't2', toolName: 'call_mcp_tool', toolArgs: { tool_name: 'weather' }, toolStatus: 'done', toolResult: 'MCP RESULT ok', timestamp: '2026-11-04T12:00:02Z' },
     ];
     const timeline = buildRunTimelineFromMessages(messages, { turnStartedAt: '2026-11-04T12:00:00Z' });
-    const markup = renderToStaticMarkup(<RunDisclosureBlock timeline={timeline} />);
-    // Off the default surface…
-    expect(visibleSurface(markup)).not.toContain('call_mcp_tool');
-    // …but the step's collapsible details (what an operator opens) keep the
-    // original tool id next to args, result and meta.
-    const step = timeline.steps.find((candidate) => candidate.kind === 'tool');
-    expect(step).toBeTruthy();
-    expect(JSON.stringify(step?.details)).toContain('"toolName":"call_mcp_tool"');
+    render(<RunDisclosureBlock timeline={timeline} />);
+    // The run finished: its disclosure starts folded. Open it like a user.
+    fireEvent.click(document.querySelector('button.run-disclosure-header')!);
+    // The folded nameless steps live behind the quiet "…" group: open it.
+    const group = screen.getByTestId('run-disclosure-tool-group') as HTMLDetailsElement;
+    group.open = true;
+    // Every step is there, identified by its original tool name.
+    expect(screen.getByText('read_context_resource')).toBeTruthy();
+    expect(screen.getByText('call_mcp_tool')).toBeTruthy();
+    // The row's own details keep args and result next to the tool id.
+    fireEvent.click(screen.getByRole('button', { name: /call_mcp_tool/ }));
+    expect(document.body.textContent).toContain('MCP RESULT ok');
+    expect(document.body.textContent).toContain('weather');
+    cleanup();
   });
 
   it('keeps internal run-phase boundary cards off the default timeline', () => {

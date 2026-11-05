@@ -15,6 +15,7 @@ import {
 } from '@tabler/icons-react';
 
 import MarkdownRenderer from '../../components/MarkdownRenderer';
+import { approvalActionFor } from '../session-workbench/approvalActionPresentation';
 import type {
   RunStepKind,
   RunStepPresentation,
@@ -346,24 +347,37 @@ function titleKeyFor(sentinel: string): string {
     .join('')}`;
 }
 
+/** The original tool id kept in the step's details (operators' evidence). */
+function toolNameOf(step: RunStepSnapshot): string | null {
+  const details = step.details;
+  if (!details || typeof details !== 'object' || Array.isArray(details)) return null;
+  const toolName = (details as { toolName?: unknown }).toolName;
+  return typeof toolName === 'string' && toolName.trim() ? toolName : null;
+}
+
 function localizedToolTitle(step: RunStepSnapshot, t: TFunction): string {
   if (step.kind === 'permission' && step.title === 'permission_resolved') {
     return t('sessionWorkbench.threadItem.type.approval_decision', 'Approval decision');
   }
   // A step whose tool has approval-card words localizes through the same key
   // (B2 r2): the action reads identically on card and timeline.
-  if (step.titleKey) return t(step.titleKey, step.title);
+  const action = approvalActionFor(toolNameOf(step));
+  if (action) return t(action.key, action.fallback);
   // Unknown/backend-authored titles pass through untouched via the fallback.
   return t(titleKeyFor(step.title), step.title);
 }
 
 /**
- * A row that names nothing is not a row (B2 r2): generic-class titles with no
- * summary add no information. The step still counts in the "{{count}} steps"
- * total; its specifics stay reachable where the timeline exposes them.
+ * A row that names nothing is not a row on the default layer (B2 r2): a
+ * generic-class title with no summary and no known action adds no
+ * information. The step still counts in the "{{count}} steps" total and
+ * stays reachable in the opened tool history under its original tool name
+ * (B2 r3) — this predicate is the single display decision.
  */
 function isNamelessStep(step: RunStepSnapshot): boolean {
-  return (step.title === 'Tool call' || step.title === 'Runtime event') && !step.summary && !step.titleKey;
+  return (step.title === 'Tool call' || step.title === 'Runtime event')
+    && !step.summary
+    && !approvalActionFor(toolNameOf(step));
 }
 
 /** Compose the locale sentence for the run's folded process aggregate. */
@@ -397,66 +411,95 @@ function toolGroupStatus(steps: RunStepSnapshot[]): RunStepSnapshot['status'] {
   return 'done';
 }
 
+/** The opened history identifies a step by its original tool name when the
+ * default layer had no user-words name for it (B2 r3). */
+function historyRowTitle(step: RunStepSnapshot, t: TFunction): string {
+  if (isNamelessStep(step)) return toolNameOf(step) || localizedToolTitle(step, t);
+  return localizedToolTitle(step, t);
+}
+
 function ToolHistoryItem({ step }: { step: RunStepSnapshot }) {
   const { t } = useTranslation();
-  const exec = asExecDetails(step.details);
+  const [expanded, setExpanded] = React.useState(false);
+  const exec = asExecDetails(step.details, step.kind);
+  const hasDetails = step.details != null;
   const row = (
     <>
       <span className={step.status === 'running' ? 'run-step-icon is-running' : 'run-step-icon'}>
         <StepIcon kind={step.kind} running={step.status === 'running'} />
       </span>
-      <span className="run-tool-history-title">{localizedToolTitle(step, t)}</span>
+      <span className="run-tool-history-title">{historyRowTitle(step, t)}</span>
       {step.summary && <span className="run-tool-history-summary">{step.summary}</span>}
     </>
   );
 
-  if (!exec) {
+  if (exec) {
     return (
-      <div className="run-tool-history-item" role="listitem" data-status={step.status}>
-        {row}
+      <div className="run-tool-history-item has-exec" role="listitem" data-status={step.status}>
+        <details className="run-tool-history-exec" open={step.status === 'running' || step.status === 'failed'}>
+          <summary className="run-tool-history-exec-summary">
+            {row}
+            <IconChevronRight className="run-tool-history-exec-chevron" size={12} stroke={2.2} aria-hidden="true" />
+          </summary>
+          <ExecOutput exec={exec} />
+        </details>
       </div>
     );
   }
 
+  // Non-command rows stay inspectable too: args, result and meta open behind
+  // the row's own toggle (B2 r3).
   return (
-    <div className="run-tool-history-item has-exec" role="listitem" data-status={step.status}>
-      <details className="run-tool-history-exec" open={step.status === 'running' || step.status === 'failed'}>
-        <summary className="run-tool-history-exec-summary">
-          {row}
-          <IconChevronRight className="run-tool-history-exec-chevron" size={12} stroke={2.2} aria-hidden="true" />
-        </summary>
-        <ExecOutput exec={exec} />
-      </details>
+    <div className="run-tool-history-item" role="listitem" data-status={step.status}>
+      <button
+        type="button"
+        aria-expanded={hasDetails ? expanded : undefined}
+        disabled={!hasDetails}
+        onClick={() => setExpanded((value) => !value)}
+        className={hasDetails ? 'run-tool-history-toggle has-details' : 'run-tool-history-toggle'}
+      >
+        {row}
+      </button>
+      {expanded && <RunStepDetails step={step} />}
     </div>
   );
 }
 
 function ToolActivityGroup({ steps }: { steps: RunStepSnapshot[] }) {
   const { t } = useTranslation();
+  // The one display decision (isNamelessStep) decides the label: the summary
+  // names the work the member can recognize. A group whose every step names
+  // nothing keeps no label of its own — its "…" affordance carries nothing
+  // on the default layer, and opening it lists every step under its original
+  // tool name (B2 r3); the "{{count}} steps" header already counts them.
   const named = steps.filter((step) => !isNamelessStep(step));
-  // A group whose every row names nothing folds entirely into the step count.
-  if (named.length === 0) return null;
   const status = toolGroupStatus(steps);
-  const currentStep = [...named].reverse().find((step) => step.status === 'running') || named[named.length - 1];
-  const completedActions = Array.from(new Set(named.map((step) => localizedToolTitle(step, t)))).join(' · ');
-  const label = status === 'running'
-    ? t('agent.chat.disclosure.toolRunning', 'Using {{tool}}', { tool: toolStepLabel(currentStep, t) })
-    : t('agent.chat.disclosure.toolCompleted', 'Used tools: {{tools}}', { tools: completedActions });
+  const currentStep = [...steps].reverse().find((step) => step.status === 'running') || steps[steps.length - 1];
+  const label = named.length === 0
+    ? '…'
+    : status === 'running'
+      ? t('agent.chat.disclosure.toolRunning', 'Using {{tool}}', { tool: toolStepLabel(
+        [...named].reverse().find((step) => step.status === 'running') || named[named.length - 1], t,
+      ) })
+      : t('agent.chat.disclosure.toolCompleted', 'Used tools: {{tools}}', {
+        tools: Array.from(new Set(named.map((step) => localizedToolTitle(step, t)))).join(' · '),
+      });
+  const historyLabel = t('agent.chat.disclosure.toolHistory', 'Tool call history');
   return (
     <details data-testid="run-disclosure-tool-group" data-status={status} className="run-tool-group">
-      <summary data-testid="run-disclosure-tool-group-toggle" className="run-tool-group-toggle">
+      <summary
+        data-testid="run-disclosure-tool-group-toggle"
+        className="run-tool-group-toggle"
+        aria-label={historyLabel}
+      >
         <span className={status === 'running' ? 'run-step-icon is-running' : 'run-step-icon'}>
           <StepIcon kind={currentStep.kind} running={status === 'running'} />
         </span>
         <span className="run-tool-group-label">{label}</span>
         <IconChevronRight className="run-tool-group-chevron" size={13} stroke={2.2} aria-hidden="true" />
       </summary>
-      <div
-        className="run-tool-history"
-        role="list"
-        aria-label={t('agent.chat.disclosure.toolHistory', 'Tool call history')}
-      >
-        {steps.filter((step) => !isNamelessStep(step)).map((step) => <ToolHistoryItem key={step.id} step={step} />)}
+      <div className="run-tool-history" role="list" aria-label={historyLabel}>
+        {steps.map((step) => <ToolHistoryItem key={step.id} step={step} />)}
       </div>
     </details>
   );
@@ -515,8 +558,12 @@ export default function RunDisclosureBlock({
   }
   const stepCount = t('agent.chat.disclosure.stepCount', '{{count}} steps', { count: visibleSteps.length });
   const live = timeline.status === 'running' || timeline.status === 'blocked';
-  // Nameless generic steps fold into the count; named work renders (B2 r2).
-  const renderItems = groupRunSteps(visibleSteps.filter((step) => !isNamelessStep(step)));
+  // Nameless steps fold into the count and into the tool history instead of
+  // owning rows: nothing that names nothing renders on the default layer,
+  // and every step stays reachable once the history opens (B2 r3).
+  const renderItems = groupRunSteps(visibleSteps.map((step) => (
+    isNamelessStep(step) ? { ...step, presentation: 'tool_history' as const } : step
+  )));
 
   return (
     <div data-testid="run-disclosure-block" data-status={timeline.status} className="run-disclosure">

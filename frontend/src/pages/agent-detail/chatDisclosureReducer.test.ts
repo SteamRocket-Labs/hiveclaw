@@ -979,3 +979,37 @@ describe('chatDisclosureReducer', () => {
     ]);
   });
 });
+
+describe('one approved action, one row (B2 r3)', () => {
+  it('folds the approval-aborted call into its re-issued successor', () => {
+    // After a member allows a call, the runtime aborts the original
+    // invocation (`approved_tool_execution_not_released`) and the resumed
+    // turn re-issues the same tool. The aborted attempt is bookkeeping of
+    // the same action, not a second one (r2-zh-05 showed two rows).
+    const messages: AgentChatMessage[] = [
+      { role: 'tool_call', content: '', id: 't-aborted', toolName: 'create_employee_from_request',
+        toolArgs: { name: '周报助手' }, toolStatus: 'done',
+        toolResult: '', toolRawResult: '{"invocation_id":"05c0","provider_tool_use_id":"call_create","reason_code":"approved_tool_execution_not_released","schema":"hive.tool_permission_execution_abort.v1","status":"aborted"}',
+        timestamp: '2026-11-04T12:00:02Z' },
+      { role: 'tool_call', content: '', id: 't-reissued', toolName: 'create_employee_from_request',
+        toolArgs: { name: '周报助手' }, toolStatus: 'running',
+        toolResult: '', timestamp: '2026-11-04T12:00:04Z' },
+    ];
+    const timeline = buildRunTimelineFromMessages(messages, { turnStartedAt: '2026-11-04T12:00:01Z', activeRun: true });
+    const createSteps = timeline.steps.filter(
+      (step) => step.details && typeof step.details === 'object'
+        && (step.details as { toolName?: unknown }).toolName === 'create_employee_from_request',
+    );
+    expect(createSteps).toHaveLength(1);
+    expect(createSteps[0].status).toBe('running');
+    // An ordinary second call to the same tool stays its own step.
+    const distinct = buildRunTimelineFromMessages([
+      { role: 'tool_call', content: '', id: 'a', toolName: 'read_file', toolArgs: { path: 'a.csv' }, toolStatus: 'done', toolResult: 'A', timestamp: '2026-11-04T12:00:01Z' },
+      { role: 'tool_call', content: '', id: 'b', toolName: 'read_file', toolArgs: { path: 'b.csv' }, toolStatus: 'done', toolResult: 'B', timestamp: '2026-11-04T12:00:02Z' },
+    ]);
+    expect(distinct.steps.filter((step) => step.kind === 'file')).toHaveLength(2);
+    // An abort with no successor (nothing re-issued) keeps its row.
+    const orphan = buildRunTimelineFromMessages([messages[0]], { turnStartedAt: '2026-11-04T12:00:01Z' });
+    expect(orphan.steps).toHaveLength(1);
+  });
+});

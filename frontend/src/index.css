@@ -2585,6 +2585,28 @@
   padding: 5px 0 2px 26px;
 }
 
+.run-tool-history-toggle {
+  display: grid;
+  grid-template-columns: 18px auto minmax(0, 1fr);
+  gap: 6px;
+  align-items: start;
+  min-width: 0;
+  padding: 0;
+  border: none;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+}
+
+.run-tool-history-toggle:disabled {
+  cursor: default;
+}
+
+.run-tool-history-toggle:not(:disabled) {
+  cursor: pointer;
+}
+
 .run-tool-history-item {
   display: grid;
   grid-template-columns: 18px auto minmax(0, 1fr);

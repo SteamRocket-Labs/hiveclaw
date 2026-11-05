@@ -43,83 +43,40 @@ export function stripAttachmentMarkers(value: string): string {
   return cleaned || (fileName ? `📎 ${fileName}` : '');
 }
 
-const JSON_ESCAPES: Record<string, string> = {
-  '"': '"', '\\': '\\', '/': '/', b: '\b', f: '\f', n: '\n', r: '\r', t: '\t',
-};
-
-/** Decode a possibly-truncated JSON string body: a cut escape (`\`, partial
- * `\uXX`) ends the value instead of corrupting it. */
-function decodePartialJsonString(escaped: string): string {
-  let out = '';
-  for (let i = 0; i < escaped.length; i += 1) {
-    const char = escaped[i];
-    if (char !== '\\') {
-      out += char;
-      continue;
-    }
-    const next = escaped[i + 1];
-    if (next === undefined) break;
-    if (next === 'u') {
-      const hex = escaped.slice(i + 2, i + 6);
-      if (!/^[0-9a-fA-F]{4}$/.test(hex)) break;
-      out += String.fromCodePoint(parseInt(hex, 16));
-      i += 5;
-      continue;
-    }
-    const mapped = JSON_ESCAPES[next];
-    if (mapped === undefined) break;
-    out += mapped;
-    i += 1;
+/** Decode the escaped body of a possibly-truncated JSON string: a cut
+ * trailing escape (`\`, partial `\uXX`) ends the value; `JSON.parse` decodes
+ * the complete escapes that remain. */
+function decodeJsonStringBody(escaped: string): string {
+  let body = escaped;
+  const cutEscape = /(?:\\u[0-9a-fA-F]{0,3}|\\)$/;
+  if (cutEscape.test(body)) body = body.slice(0, body.lastIndexOf('\\'));
+  try {
+    return JSON.parse(`"${body}"`) as string;
+  } catch {
+    return body;
   }
-  return out;
-}
-
-/** Truncated production prefixes never parse: read the first
- * `display_content` string straight out of the stored prefix, with the
- * attachment's `name` as the file-name fallback. */
-function recoverFromJsonPrefix(trimmed: string): string | null {
-  const display = trimmed.match(/"display_content":"((?:[^"\\]|\\.)*)/);
-  if (display) {
-    const cleaned = stripAttachmentMarkers(decodePartialJsonString(display[1]));
-    if (cleaned) return cleaned;
-  }
-  const name = trimmed.match(/"name":"((?:[^"\\]|\\.)*)/);
-  if (name) {
-    const fileName = decodePartialJsonString(name[1]).trim();
-    if (fileName) return `📎 ${fileName}`;
-  }
-  return null;
 }
 
 /**
  * Sessions titled before B2 stored the runtime's JSON encoding of the input
  * parts (`[{"display_content":…`) — and only its first 40 characters, so the
- * stored title is usually a truncated JSON prefix (keys sorted:
- * `display_content` first). Recovery is display-only: read the member's
- * display text out of the stored prefix — full or truncated — with the
- * attachment file name as fallback. Never return raw JSON.
+ * stored title is a truncated JSON prefix. One rule reads it back: the first
+ * `display_content`/`text` string is the member's words (an attachment
+ * marker line inside it is the chip's job), the first `file_name`/`name`
+ * string stands in as `📎 <name>`, and a prefix with nothing recoverable
+ * yields '' so the caller shows the plain default. Never raw JSON.
  */
-function recoverJsonArrayTitle(rawTitle: string): string | null {
+function recoverRuntimeJsonTitle(rawTitle: string): string {
   const trimmed = rawTitle.trim();
-  if (!trimmed.startsWith('[{') && !trimmed.startsWith('{"')) return null;
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(trimmed);
-  } catch {
-    return recoverFromJsonPrefix(trimmed);
+  if (!trimmed.startsWith('[{"') && !trimmed.startsWith('{"')) return '';
+  const match = trimmed.match(/"(?:display_content|text|file_name|name)":"((?:[^"\\]|\\.)*)/);
+  if (!match) return '';
+  const value = decodeJsonStringBody(match[1]);
+  if (match[0].startsWith('"display_content"') || match[0].startsWith('"text"')) {
+    return stripAttachmentMarkers(value);
   }
-  const parts = Array.isArray(parsed) ? parsed : [parsed];
-  for (const part of parts) {
-    if (!part || typeof part !== 'object' || Array.isArray(part)) continue;
-    const record = part as Record<string, unknown>;
-    if (record.type && record.type !== 'text') continue;
-    const display = typeof record.display_content === 'string'
-      ? record.display_content
-      : typeof record.text === 'string' && parts.length === 1 ? record.text : '';
-    const cleaned = stripAttachmentMarkers(display);
-    if (cleaned) return cleaned;
-  }
-  return recoverFromJsonPrefix(trimmed);
+  const fileName = value.trim();
+  return fileName ? `📎 ${fileName}` : '';
 }
 
 function recordValue(value: unknown): Record<string, unknown> {
@@ -158,16 +115,22 @@ export function sessionTitleForUser(
   const source = recordValue(session);
   const rawTitle = String(source.title || source.name || '').trim() || fallback;
   if (!hasSessionBranchIdentity(source)) {
-    // Current titles carry the composer's leading attachment markers; the
-    // title is the member's sentence, with the file name as fallback (B2 r2).
-    const recovered = recoverJsonArrayTitle(rawTitle) ?? stripAttachmentMarkers(rawTitle);
-    return recovered || rawTitle;
+    // A runtime-JSON title recovers its member text or falls to the plain
+    // default — the raw JSON encoding is never a title (B2 r3). Current
+    // titles carry the composer's leading attachment markers; the title is
+    // the member's sentence, with the file name as fallback (B2 r2).
+    if (rawTitle.startsWith('[{"') || rawTitle.startsWith('{"')) {
+      return recoverRuntimeJsonTitle(rawTitle) || fallback;
+    }
+    return stripAttachmentMarkers(rawTitle) || rawTitle;
   }
 
   let title = rawTitle;
   while (LEGACY_BRANCH_TITLE_SUFFIX.test(title)) {
     title = title.replace(LEGACY_BRANCH_TITLE_SUFFIX, '').trim();
   }
-  title = recoverJsonArrayTitle(title) ?? stripAttachmentMarkers(title);
-  return title || fallback;
+  if (title.startsWith('[{"') || title.startsWith('{"')) {
+    return recoverRuntimeJsonTitle(title) || fallback;
+  }
+  return stripAttachmentMarkers(title) || fallback;
 }

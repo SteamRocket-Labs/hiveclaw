@@ -4223,8 +4223,9 @@ describe('AgentDetail extracted sections', () => {
 
     expect(markup).toContain('Approval required');
     // B2: the surface sentence names the action in user words; the raw tool
-    // id only rides inside the collapsed details disclosure.
-    expect(markup).toContain('This needs your approval: send an email.');
+    // id only rides inside the collapsed details disclosure. B2 r3: the
+    // action phrase reads in sentence case everywhere it renders.
+    expect(markup).toContain('This needs your approval: Send an email.');
     expect(markup.replace(/<details[\s\S]*?<\/details>/g, '')).not.toContain('send_email');
     expect(markup).not.toContain('Tool &#x27;send_email&#x27; requires session permission');
     expect(markup).not.toContain('communication.email.send');

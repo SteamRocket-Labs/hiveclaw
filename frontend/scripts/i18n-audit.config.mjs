@@ -104,8 +104,8 @@ export const DYNAMIC_KEY_RULES = [
   },
   {
     source: 'src/pages/agent-detail/RunDisclosureBlock.tsx',
-    expression: 'step.titleKey',
-    reason: 'The disclosure reducer pairs known tools with the finite approvalAction/toolTitle keys and a reviewed fallback (B2 r2).',
+    expression: 'action.key',
+    reason: 'The approval-action table pairs exact tool ids with the finite sessionWorkbench.approvalAction.*/toolTitle.* keys and reviewed fallbacks (B2 r3).',
   },
   {
     source: 'src/pages/agent-detail/TeamMemorySummaryCard.tsx',

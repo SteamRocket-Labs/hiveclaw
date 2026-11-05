@@ -73,3 +73,19 @@ it('preserves old file questions and existing authorized previews', () => {
   expect(parseUserAttachment({ role: 'user', content: '[file:first.pdf] [file:second.pdf]' }, 'employee'))
     .toMatchObject({ fileName: 'first.pdf', content: '[file:second.pdf]' });
 });
+
+it('keeps a typed [📎 …] line as the member\'s own words when no file is attached (B2 r3)', () => {
+  // A member may literally type the marker line. Without attachment
+  // metadata there is no chip to hand the file to, so both lines stay.
+  const typed = parseUserAttachment({ role: 'user', content: '[📎 example.csv]\n这是我输入的原话' }, 'employee');
+  expect(typed.fileName).toBeUndefined();
+  expect(typed.content).toBe('[📎 example.csv]\n这是我输入的原话');
+
+  // With the optimistic attachment metadata the marker is the chip's job:
+  // the bubble keeps the sentence only (B2 r2).
+  const withFile = parseUserAttachment(
+    { role: 'user', content: '[📎 example.csv]\n这是我输入的原话', fileName: 'example.csv' },
+    'employee',
+  );
+  expect(withFile.content).toBe('这是我输入的原话');
+});

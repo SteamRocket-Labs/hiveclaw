@@ -473,7 +473,6 @@
       "replyEmail": "回复邮件",
       "sendMessage": "发送消息",
       "sendFile": "发送文件",
-      "delegate": "交给其他数字员工",
       "browser": "操作网页",
       "plazaPost": "发布帖子",
       "plazaComment": "评论帖子",
@@ -2554,6 +2553,8 @@
         "showCompleteOutput": "查看完整输出",
         "waiting": "等待输入",
         "stepCount": "{{count}} 个步骤",
+        "stepCount_one": "{{count}} 个步骤",
+        "stepCount_other": "{{count}} 个步骤",
         "working": "处理中",
         "contextCompacting": "正在自动压缩上下文",
         "contextCompacted": "上下文已自动压缩",
@@ -2584,14 +2585,22 @@
         },
         "aggregate": {
           "files": "读取 {{count}} 个文件",
+          "files_one": "读取 {{count}} 个文件",
+          "files_other": "读取 {{count}} 个文件",
           "searches": "搜索网页 {{count}} 次",
-          "commands": "执行 {{count}} 条命令"
+          "searches_one": "搜索网页 {{count}} 次",
+          "searches_other": "搜索网页 {{count}} 次",
+          "commands": "执行 {{count}} 条命令",
+          "commands_one": "执行 {{count}} 条命令",
+          "commands_other": "执行 {{count}} 条命令"
         }
       },
       "artifacts": {
         "open": "打开",
         "download": "下载",
         "count": "{{count}} 个文件",
+        "count_one": "{{count}} 个文件",
+        "count_other": "{{count}} 个文件",
         "preview": "预览",
         "openInNewTab": "新窗口打开",
         "previewFailed": "预览失败",

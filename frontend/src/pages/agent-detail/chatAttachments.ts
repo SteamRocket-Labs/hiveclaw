@@ -72,8 +72,10 @@ export function parseUserAttachment(msg: AgentChatMessage, agentId?: string): Ag
         parsed.originalWorkspacePath = attachmentPath;
     }
     // Composer display markers (`[📎 …]`, optimistic sends) are the chip's
-    // job: the bubble keeps the sentence only (B2 r2).
-    if (/^\[📎\s*[^\]]+\]/.test(parsed.content)) {
+    // job: the bubble keeps the sentence only (B2 r2). A member may also
+    // type the marker line as their own words — it is stripped only when the
+    // message actually carries attachment metadata (B2 r3).
+    if (parsed.fileName && /^\[📎\s*[^\]]+\]/.test(parsed.content)) {
         parsed.content = dropLeadingAttachmentMarkers(parsed.content).text;
     }
     if (parsed.fileName && !parsed.imageUrl && agentId) {

@@ -1344,10 +1344,15 @@ function AgentChatSection({
       });
       if (!item) return null;
       if (!shouldRenderThreadItemInConversation(item, Boolean(activeSession?.operator_view))) return null;
+      // In a group conversation only the requester sees the proposal and the
+      // resolve actions; everyone else waits for their decision.
+      const permissionReadOnly = activeSession?.audience_kind === 'group'
+        && permissionRequest != null
+        && permissionRequest.requested_by_user_id !== currentUser?.id;
       const permissionActions = canMutateSession && permissionRequest && msg.eventStatus === 'session_permission_required' ? (
         <SessionPermissionActions
           permissionRequest={permissionRequest}
-          readOnly={activeSession?.audience_kind === 'group' && permissionRequest.requested_by_user_id !== currentUser?.id}
+          readOnly={permissionReadOnly}
           onResolveSessionPermission={onResolveSessionPermission}
           showArgumentDetails={false}
           t={t}
@@ -1383,6 +1388,9 @@ function AgentChatSection({
             selected={selectedThreadItemId === item.id}
             onSelect={item.audience === 'operator' && activeSession?.operator_view ? selectThreadItem : undefined}
             approvalActions={permissionActions}
+            approvalArguments={item.item_type === 'approval_request' && !permissionReadOnly
+              ? permissionRequest?.arguments
+              : undefined}
             actions={recoveryActions}
           />
         </div>

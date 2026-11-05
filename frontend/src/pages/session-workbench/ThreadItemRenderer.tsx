@@ -169,6 +169,11 @@ export interface ThreadItemRendererProps {
   selected?: boolean;
   onSelect?: (item: ThreadItem) => void;
   approvalActions?: React.ReactNode;
+  /** The full permission-request arguments. The approver must be able to
+   * read the whole proposal (recipients, subject, body) before deciding:
+   * they render inside the card's single 详情 disclosure (B2 r3), with the
+   * same requester access rule the resolve actions use. */
+  approvalArguments?: unknown;
   actions?: React.ReactNode;
 }
 
@@ -213,6 +218,7 @@ export function ThreadItemRenderer({
   selected = false,
   onSelect,
   approvalActions,
+  approvalArguments,
   actions,
 }: ThreadItemRendererProps) {
   const { t } = useTranslation();
@@ -241,6 +247,14 @@ export function ThreadItemRenderer({
         </React.Fragment>
       ))}
     </dl>
+  );
+  // The whole proposal (the old 操作详情) lives inside the card's single
+  // disclosure: the whitelisted summary alone is not a proposal (B2 r3).
+  const argumentsBody = item.item_type === 'approval_request' && approvalArguments != null && (
+    <pre
+      className="thread-item-arguments"
+      aria-label={t('agent.chat.permission.actionDetails', 'Action details')}
+    >{JSON.stringify(approvalArguments, null, 2)}</pre>
   );
 
   if (item.item_type === 'approval_decision' && item.event_type === 'permission_resolved') {
@@ -284,13 +298,14 @@ export function ThreadItemRenderer({
         ) : null}
       </header>
       {visibleContent && <div className="thread-item-content">{visibleContent}</div>}
-      {detailBody && (shouldCollapse(item) ? (
+      {(detailBody || argumentsBody) && (shouldCollapse(item) ? (
         <details className="thread-item-disclosure">
           <summary>
             <IconChevronRight size={13} aria-hidden="true" />
             {t('sessionWorkbench.threadItem.details', 'Details')}
           </summary>
           {detailBody}
+          {argumentsBody}
         </details>
       ) : detailBody)}
       {item.item_type === 'approval_request' && approvalActions && (

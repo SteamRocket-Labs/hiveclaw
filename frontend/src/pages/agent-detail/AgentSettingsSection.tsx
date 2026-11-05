@@ -500,6 +500,7 @@ export default function AgentSettingsSection({
       <CommandEnvironment agentId={agentId} />
       <div className="agent-settings-header">
         <h3 className="agent-settings-title">{t('agent.settings.title')}</h3>
+        <a className="btn btn-secondary" href="/assistant?settings=true">{t('assistant.chooseAnother')}</a>
         <div className="agent-settings-header-actions">
           {settingsSaved && <span className="agent-settings-status is-success">{t('agent.settings.saved', 'Saved')}</span>}
           {settingsError && (

@@ -2,6 +2,21 @@
 
 import { useSyncExternalStore } from 'react';
 
+/** Shared by the sidebar and the landing fallback. Keep their ordering identical. */
+export function sortSidebarAgents<T extends { id: string; created_at?: string; last_active_at?: string | null }>(
+  agents: T[], assistantAgentId?: string | null,
+): T[] {
+  return [...agents].sort((a, b) => {
+    if (assistantAgentId) {
+      if (String(a.id) === assistantAgentId) return -1;
+      if (String(b.id) === assistantAgentId) return 1;
+    }
+    const aTime = a.last_active_at ? new Date(a.last_active_at).getTime() : (a.created_at ? new Date(a.created_at).getTime() : 0);
+    const bTime = b.last_active_at ? new Date(b.last_active_at).getTime() : (b.created_at ? new Date(b.created_at).getTime() : 0);
+    return bTime - aTime;
+  });
+}
+
 function subscribeCompany(onChange: () => void) {
   const changed = (event: StorageEvent) => {
     if (event.key === 'current_tenant_id' || event.key === null) onChange();

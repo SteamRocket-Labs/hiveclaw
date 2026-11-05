@@ -122,6 +122,7 @@ describe('AssistantPanel recovery', () => {
     expect(screen.getByRole('status').textContent).not.toContain('assistant.notReady');
     expect(screen.getByRole('status').textContent).not.toContain('assistant.workerUnavailable');
     expect(markup.container.querySelector('input[type="radio"]:checked')).toBeNull();
+    expect(screen.getByRole('link', { name: 'assistant.continue' }).getAttribute('href')).toBe('/agents/agent-1#chat');
     // The quick-links nav block is gone from the fallback panel (P3).
     expect(screen.queryByRole('link', { name: 'assistant.team' })).toBeNull();
     expect(screen.queryByRole('link', { name: 'assistant.messages' })).toBeNull();
@@ -140,7 +141,7 @@ describe('AssistantEntry synthetic transport', () => {
     });
   });
 
-  it('keeps setup on the page and navigates only for a real session (synthetic transport)', async () => {
+  it('keeps the explicit settings picker on the page without provisioning (synthetic transport)', async () => {
     const calls: string[] = [];
     vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
       calls.push(`${init?.method || 'GET'} ${url}`);
@@ -149,10 +150,10 @@ describe('AssistantEntry synthetic transport', () => {
     }));
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     render(
-      <MemoryRouter initialEntries={['/']}>
+      <MemoryRouter initialEntries={['/assistant?settings=true']}>
         <QueryClientProvider client={client}>
           <Routes>
-            <Route path="/" element={<AssistantEntry mode="entry" />} />
+            <Route path="/assistant" element={<AssistantEntry mode="assistant" />} />
             <Route path="/agents/:id/sessions/:sessionId" element={<LocationProbe />} />
           </Routes>
         </QueryClientProvider>
@@ -164,7 +165,7 @@ describe('AssistantEntry synthetic transport', () => {
     expect(screen.queryByTestId('location')).toBeNull();
   });
 
-  it('opens the current session returned by GET and does not create one (synthetic transport)', async () => {
+  it('opens the bound bot through B5 without creating a new assistant (synthetic transport)', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify(binding({
       state: 'active',
       agent: {
@@ -180,13 +181,13 @@ describe('AssistantEntry synthetic transport', () => {
         <QueryClientProvider client={client}>
           <Routes>
             <Route path="/" element={<AssistantEntry mode="entry" />} />
-            <Route path="/agents/:id/sessions/:sessionId" element={<LocationProbe />} />
+            <Route path="/agents/:id" element={<LocationProbe />} />
           </Routes>
         </QueryClientProvider>
       </MemoryRouter>,
     );
 
-    await waitFor(() => expect(screen.getByTestId('location').textContent).toBe('/agents/agent-1/sessions/session-1'));
+    await waitFor(() => expect(screen.getByTestId('location').textContent).toBe('/agents/agent-1'));
   });
 
   it('shows a refused opening without losing the recovery controls', async () => {
@@ -194,7 +195,7 @@ describe('AssistantEntry synthetic transport', () => {
       init?.method === 'POST' ? { detail: { message: 'Workspace could not be prepared' } } : binding(),
     ), { status: init?.method === 'POST' ? 503 : 200, headers: { 'content-type': 'application/json' } })));
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-    render(<MemoryRouter><QueryClientProvider client={client}><AssistantEntry mode="assistant" /></QueryClientProvider></MemoryRouter>);
+    render(<MemoryRouter initialEntries={['/assistant?settings=true']}><QueryClientProvider client={client}><AssistantEntry mode="assistant" /></QueryClientProvider></MemoryRouter>);
     await screen.findByText('assistant.empty');
     fireEvent.click(screen.getByRole('button', { name: 'assistant.open' }));
     expect((await screen.findByRole('alert')).textContent).toContain('Workspace could not be prepared');
@@ -213,7 +214,7 @@ describe('AssistantEntry synthetic transport', () => {
       })), { status: 200, headers: { 'content-type': 'application/json' } });
     }));
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-    render(<MemoryRouter><QueryClientProvider client={client}><AssistantEntry mode="assistant" /></QueryClientProvider></MemoryRouter>);
+    render(<MemoryRouter initialEntries={['/assistant?settings=true']}><QueryClientProvider client={client}><AssistantEntry mode="assistant" /></QueryClientProvider></MemoryRouter>);
     await screen.findByText('tenant-1 private employee');
     act(() => {
       localStorage.setItem('current_tenant_id', 'tenant-2');
@@ -232,7 +233,7 @@ describe('AssistantEntry synthetic transport', () => {
         { status: 200, headers: { 'content-type': 'application/json' } });
     }));
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-    render(<MemoryRouter><QueryClientProvider client={client}><AssistantEntry mode="assistant" /></QueryClientProvider></MemoryRouter>);
+    render(<MemoryRouter initialEntries={['/assistant?settings=true']}><QueryClientProvider client={client}><AssistantEntry mode="assistant" /></QueryClientProvider></MemoryRouter>);
     await screen.findByText('assistant.pending');
     fireEvent.click(screen.getByRole('button', { name: 'assistant.retry' }));
     await waitFor(() => expect(requests.some((request) => request.startsWith('POST /api/assistant/open'))).toBe(true));
@@ -264,13 +265,13 @@ describe('AssistantEntry synthetic transport', () => {
     await waitFor(() => expect(screen.getByTestId('location').textContent).toBe('/agents/agent-1'));
   });
 
-  it('keeps an unresolvable assistant on the minimal panel without a first-work form', async () => {
+  it('shows the admin sentence when neither assistant nor sidebar bots can load', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify(workingBinding()), { status: 503, headers: { 'content-type': 'application/json' } })));
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     render(<MemoryRouter><QueryClientProvider client={client}><AssistantEntry mode="assistant" /></QueryClientProvider></MemoryRouter>);
-    expect(await screen.findByText('assistant.unavailable')).toBeTruthy();
+    expect(await screen.findByText('assistant.setupByAdmin')).toBeTruthy();
     expect(screen.queryByLabelText('assistant.firstWork')).toBeNull();
-    expect(screen.getByRole('button', { name: 'assistant.retry' })).toHaveProperty('disabled', false);
+    expect(screen.queryByRole('button')).toBeNull();
   });
 
 });

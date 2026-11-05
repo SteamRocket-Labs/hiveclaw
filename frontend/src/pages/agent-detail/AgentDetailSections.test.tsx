@@ -3474,6 +3474,7 @@ describe('AgentDetail extracted sections', () => {
 
     expect(markup).toContain('Access Permissions');
     expect(markup).toContain('Default Access Level');
+    expect(markup).toContain('href="/assistant?settings=true"');
     expect(markup).toMatch(/name="perm_scope"/);
     expect(markup).not.toContain('data-testid="agent-operator-grants"');
     expect(markup).not.toContain('Delete Agent');

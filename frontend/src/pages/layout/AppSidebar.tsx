@@ -23,6 +23,7 @@ import { agentApi, type HrAgentInfo } from '../../api/domains/agents';
 import { isActiveCompany } from '../../api/domains/admin';
 import { isManagedEmployeeAgent } from '../../roles';
 import { buildNewSessionDraftNavigation } from '../agent-detail/newSessionNavigation';
+import { sortSidebarAgents } from '../assistant/assistantScope';
 
 const sidebarIcons = {
   user: <IconUser size={16} stroke={1.5} />,
@@ -148,17 +149,9 @@ export default function AppSidebar({
   // 我的助理 first, then the rest by most recent activity. The HR creation
   // Agent is the creation flow, not a workspace entry, so it stays out of the
   // list (the "New digital employee" action below opens it).
-  const sortedAgents = [...agents]
-    .filter((agent) => !createAgentId || String(agent.id) !== createAgentId)
-    .sort((a, b) => {
-      if (assistantAgentId) {
-        if (String(a.id) === assistantAgentId) return -1;
-        if (String(b.id) === assistantAgentId) return 1;
-      }
-      const aTime = a.last_active_at ? new Date(a.last_active_at).getTime() : (a.created_at ? new Date(a.created_at).getTime() : 0);
-      const bTime = b.last_active_at ? new Date(b.last_active_at).getTime() : (b.created_at ? new Date(b.created_at).getTime() : 0);
-      return bTime - aTime;
-    });
+  const sortedAgents = sortSidebarAgents(
+    agents.filter((agent) => !createAgentId || String(agent.id) !== createAgentId), assistantAgentId,
+  );
 
   const canSeeControlPlane = user && ['platform_admin', 'org_admin'].includes(user.role);
   // Only active companies may ever be selected or shown as the current

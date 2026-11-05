@@ -180,7 +180,7 @@ async def test_web_paste_redaction_is_idempotent_across_ingress_and_dispatch():
     from app.services.credential_boundary_loader import redact_runtime_ingress_payload
 
     arguments = {"tenant_id": uuid4(), "agent_id": uuid4(), "source_channel": "web"}
-    first = await redact_runtime_ingress_payload(object(), payload={"content": 'password="Synthetic passphrase!"'}, **arguments)
+    first = await redact_runtime_ingress_payload(object(), payload={"content": 'password="SyntheticPassphrase9!"'}, **arguments)
     second = await redact_runtime_ingress_payload(object(), payload=first.value, **arguments)
     assert first.value == second.value
     assert first.value["extra_metadata"]["pasted_credential_notice"] is True

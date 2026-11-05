@@ -146,18 +146,18 @@ async def test_system_and_im_sources_have_no_second_paste_pass(owner_sessionmake
             assert not task.metadata_json.get("pasted_credential_notice")
 
 
-async def test_mailbox_source_override_has_no_second_paste_pass(owner_sessionmaker):
+async def test_metadata_source_cannot_bypass_server_web_policy(owner_sessionmaker):
     ids = await _seed_session(owner_sessionmaker)
     async with owner_sessionmaker() as db:
         agent, user, session = await principals(db, ids)
         receipt = await submit_live_human_input(db=db, agent=agent, user=user, session=session, content=KEY, source="web", runtime_metadata={"source": "agent_session_mailbox"})
         row = await db.get(SessionTurnInput, UUID(receipt["input_id"]))
-        assert row.content_parts_json[0]["text"] == KEY
-        assert not receipt.get("pasted_credential_notice")
+        assert_no_fragments(row.content_parts_json, KEY)
+        assert receipt["pasted_credential_notice"] is True
         if (receipt.get("run") or {}).get("run_id"):
             task = await db.get(RuntimeTask, UUID(receipt["run"]["run_id"]))
-            assert task.prompt == KEY
-            assert not task.metadata_json.get("pasted_credential_notice")
+            assert_no_fragments(task.prompt, KEY)
+            assert task.metadata_json["pasted_credential_notice"] is True
 
 
 async def test_revision_retains_flag_without_adding_notice_text(owner_sessionmaker):

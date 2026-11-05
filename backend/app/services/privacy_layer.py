@@ -124,50 +124,67 @@ class PrivacyLayer:
     # hyphen of a UUID or end before the separator of a clock/identifier. Digit-count validation
     # below applies the E.164 15-digit ceiling after formatting characters are removed.
     _PHONE_RE = re.compile(r"(?<![\w-])(?:\+?\d[\d\s().-]{7,}\d)(?![\w:-])")
+    _ASCII_LEFT = r"(?<![A-Za-z0-9_])"
+    _ASCII_RIGHT = r"(?![A-Za-z0-9_./+=-])"
+    _VALUE = r"(?P<quote>[\"'])?(?P<value>(?(quote)[^\r\n]*?|[^\s\"'<>\u0080-\U0010ffff]+))(?(quote)(?P=quote))"
     _CREDENTIAL_PATTERNS = (
         re.compile(
-            r"\b(?P<label>api[ _-]?key|(?:aws[ _-]?)?secret[ _-]?access[ _-]?key|"
-            r"(?:app|client)[ _-]?secret|(?:access|refresh|api|auth|bot)_token|"
-            r"[A-Za-z][A-Za-z0-9_]*_(?:API_KEY|PASSWORD|SECRET)|secret|password|credential|密码)"
-            r"[\"']?[ \t]*(?:[:=：][ \t]*|是[ \t]+)(?P<quote>[\"'])?"
-            r"(?P<value>(?(quote)(?:\\.|[^\\\r\n])+?|[A-Za-z0-9_+/.!@#$%^*?~=\-]{8,}))"
-            r"(?(quote)(?P=quote)|(?![\w.\[(-]))", re.I,
+            _ASCII_LEFT + r"(?P<label>(?i:api[ _-]?key|(?:aws[ _-]?)?secret[ _-]?access[ _-]?key|"
+            r"(?:app|client)[ _-]?secret|(?:access|refresh|api|auth|bot)_token|secret|password|credential)|密码)"
+            r"(?:[\"']|\*\*)?[ \t]*(?:[:=：][ \t]*|是[ \t]*)" + _VALUE,
         ),
-        re.compile(r"\b(?P<label>App[ _]?Secret|client_secret|Secret[ _]access[ _]key)"
-                   r"[ \t]*\r?\n[ \t]*(?P<value>[A-Za-z0-9_+/=\-]{8,})(?![\w.\[(-])", re.I),
-        re.compile(r"\b(?P<label>Authorization):[ \t]*Bearer[ \t]+(?P<value>[A-Za-z0-9._~+/=\-]{8,})", re.I),
-        re.compile(r"\bpostgres(?:ql)?://[^\s:/@]+:(?P<value>[^\s@]+)@", re.I),
-        re.compile(r"\bAKIA[0-9A-Z]{16}[ \t]*,[ \t]*(?P<value>[A-Za-z0-9/+=]{40})(?![\w/+=])"),
-        re.compile(r"https://(?:open\.feishu\.cn|open\.larksuite\.com)/open-apis/bot/v2/hook/(?P<value>[\w-]{16,})"),
-        re.compile(r"https://oapi\.dingtalk\.com/robot/send\?access_token=(?P<value>[\w-]{16,})"),
+        re.compile(_ASCII_LEFT + r"(?P<label>(?:[A-Z][A-Z0-9_]*_(?:API_KEY|PASSWORD|SECRET|SECRET_KEY|TOKEN|PRIVATE_KEY)|SECRET_KEY))"
+                   r"[\"']?[ \t]*[:=][ \t]*" + _VALUE),
+        re.compile(_ASCII_LEFT + r"(?P<label>App[ _]?Secret|client_secret|Secret[ _]access[ _]key)"
+                   r"[ \t]*\r?\n[ \t]*(?P<value>[A-Za-z0-9_+/=\-]{8,})" + _ASCII_RIGHT, re.I),
+        re.compile(_ASCII_LEFT + r"(?P<label>(?i:Authorization)):[ \t]*(?i:Bearer)[ \t]+(?P<value>[^\s\"'<>\u0080-\U0010ffff]+)"),
+        re.compile(_ASCII_LEFT + r"(?P<label>postgres(?:ql)?|mysql|redis)://[^\s:/@]*:(?P<value>[^\s/]+)@[^\s/@]+", re.I),
+        re.compile(_ASCII_LEFT + r"AKIA[0-9A-Z]{16}[ \t]*,[ \t]*(?P<value>[A-Za-z0-9/+=]{40})" + _ASCII_RIGHT),
+        re.compile(r"https://(?:open\.feishu\.cn|open\.larksuite\.com)/open-apis/bot/v2/hook/(?P<value>[A-Za-z0-9_-]{16,})"),
+        re.compile(r"https://oapi\.dingtalk\.com/robot/send\?access_token=(?P<value>[A-Za-z0-9_-]{16,})"),
         re.compile(r"https://hooks\.slack\.com/services/(?P<value>[A-Za-z0-9_/-]{20,})"),
-        re.compile(r"\bsk-[A-Za-z0-9_\-]{20,}\b"),
-        re.compile(r"\bgh[pousr]_[A-Za-z0-9_]{20,}\b"),
-        re.compile(r"\bgithub_pat_[A-Za-z0-9_]{22,}\b"),
-        re.compile(r"\bxox[baprs]-[A-Za-z0-9-]{20,}\b"),
-        re.compile(r"\bAKIA[0-9A-Z]{16}\b"),
-        re.compile(r"\bLTAI[A-Za-z0-9]{16,}\b"),
-        re.compile(r"\bAKID[A-Za-z0-9]{16,}\b"),
-        re.compile(r"\bglpat-[A-Za-z0-9_-]{20,}\b"),
-        re.compile(r"\bhf_[A-Za-z0-9]{20,}\b"),
-        re.compile(r"\bsk_(?:live|test)_[A-Za-z0-9]{20,}\b"),
-        re.compile(r"\bAIza[\w-]{35}(?![\w-])"),
-        re.compile(r"\beyJ[\w-]+\.[\w-]+\.[\w-]{16,}(?![\w-])"),
-        re.compile(r"-----BEGIN (?:RSA |EC |DSA |OPENSSH |ENCRYPTED )?PRIVATE KEY-----"
-                   r"[\s\S]+?-----END (?:RSA |EC |DSA |OPENSSH |ENCRYPTED )?PRIVATE KEY-----"),
+        *(re.compile(r"(?<![A-Za-z0-9_])" + pattern + r"(?![A-Za-z0-9_./+=-])") for pattern in (
+            r"sk-[A-Za-z0-9_\-]{20,}", r"gh[pousr]_[A-Za-z0-9_]{20,}",
+            r"github_pat_[A-Za-z0-9_]{22,}", r"xox[baprs]-[A-Za-z0-9-]{20,}",
+            r"AKIA[0-9A-Z]{16}", r"LTAI[A-Za-z0-9]{16,}", r"AKID[A-Za-z0-9]{16,}",
+            r"glpat-[A-Za-z0-9_-]{20,}", r"hf_[A-Za-z0-9]{20,}",
+            r"sk_(?:live|test)_[A-Za-z0-9]{20,}", r"AIza[A-Za-z0-9_-]{35}",
+            r"eyJ[A-Za-z0-9_+/=-]+\.[A-Za-z0-9_+/=-]+\.[A-Za-z0-9_+/=-]{16,}",
+        )),
+        re.compile(r"-----BEGIN (?P<key_type>(?:RSA |EC |DSA |OPENSSH |ENCRYPTED )?PRIVATE KEY|PGP PRIVATE KEY BLOCK)-----"
+                   r"[\s\S]+?(?:-----END (?P=key_type)-----|\Z)"),
     )
+    _STRUCTURAL_FIELDS = frozenset({
+        "id", "type", "kind", "mode", "permission_mode", "idempotency_key",
+        "source", "channel", "status", "cron", "cron_expr", "interval", "at",
+        # Typed attachment/project references and digests are validated by their consumers.
+        "path", "schema", "sha256", "content_sha256",
+    })
+
+    @classmethod
+    def _structural_field(cls, field) -> bool:
+        return isinstance(field, str) and (field in cls._STRUCTURAL_FIELDS or field.endswith("_id"))
+
+    @classmethod
+    def has_member_text(cls, payload, field=None) -> bool:
+        if isinstance(payload, str):
+            return bool(payload) and not cls._structural_field(field)
+        if isinstance(payload, dict):
+            return any(cls.has_member_text(value, key) for key, value in payload.items())
+        if isinstance(payload, (list, tuple)):
+            return any(cls.has_member_text(value, field) for value in payload)
+        return False
 
     @classmethod
     def redact_pasted_credentials(cls, payload):
-        """Replace only matched spans in authored fields, never structural data."""
+        """Replace matched spans in every member string leaf except structure."""
         from app.services.exact_secret_boundary import ExactSecretPayloadRedaction
 
         count = 0
-        text_fields = {"content", "text", "display_content", "title", "name", "objective", "goal_objective", "prompt", "instruction", "reason", "input", "context", "creation_brief", "last_continuation_prompt", "copied_input"}
 
         def walk(value, field=None):
             nonlocal count
-            if isinstance(value, str) and field in text_fields:
+            if isinstance(value, str) and not cls._structural_field(field):
                 spans = cls._credential_spans(value)
                 count += len(spans)
                 for start, end in reversed(spans):
@@ -176,7 +193,7 @@ class PrivacyLayer:
             if isinstance(value, dict):
                 return {key: walk(item, key) for key, item in value.items()}
             if isinstance(value, (list, tuple)):
-                return [walk(item) for item in value]
+                return [walk(item, field) for item in value]
             return value
 
         return ExactSecretPayloadRedaction(value=walk(payload), redacted_count=count)
@@ -188,15 +205,22 @@ class PrivacyLayer:
             for match in pattern.finditer(text):
                 groups = match.groupdict()
                 value = groups.get("value") or match.group()
-                if groups.get("label") and not (
-                    len(value) >= 8 and (
-                        (groups.get("quote") and " " in value)
-                        or (re.search(r"[A-Za-z]", value) and re.search(r"\d", value))
-                        or re.match(r"(?:sk-|gh[pousr]_|github_pat_|xox[baprs]-|glpat-|hf_|LTAI|AKID|AKIA|AIza)", value)
-                    )
-                ):
-                    continue
-                spans.append(match.span("value") if groups.get("value") else match.span())
+                start, end = match.span("value") if groups.get("value") else match.span()
+                if groups.get("label"):
+                    if not groups.get("quote") and value[-1:] in ".,;:)":
+                        value = value[:-1]
+                        end -= 1
+                    # Identifiers, templates and sentences are ordinary code/text.
+                    if (len(value) < 8 or not value.isascii() or any(ch.isspace() for ch in value)
+                        or "${" in value or value == "[REDACTED_SECRET]"
+                        or re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)+", value)
+                        or re.fullmatch(r"[A-Za-z][A-Za-z0-9]*(?:[_-][A-Za-z0-9]+)+", value)
+                        or re.fullmatch(r"v?\d+(?:\.\d+)+[A-Za-z0-9.-]*", value)):
+                        continue
+                    classes = sum(bool(re.search(pattern, value)) for pattern in (r"[a-z]", r"[A-Z]", r"[0-9]", r"[^A-Za-z0-9]"))
+                    if not (re.search(r"[A-Za-z]", value) and (classes >= 3 or len(value) >= 16 or (groups["label"] == "密码" and re.search(r"[0-9]", value)))):
+                        continue
+                spans.append((start, end))
         merged = []
         for start, end in sorted(spans):
             if merged and start < merged[-1][1]:

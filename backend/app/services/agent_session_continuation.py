@@ -811,6 +811,7 @@ async def continue_agent_session_from_mailbox(
         }
 
     run = await start_web_chat_run(
+        source_channel=source_channel,
         db=db,
         agent=agent,
         user=user,

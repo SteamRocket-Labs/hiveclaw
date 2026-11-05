@@ -361,6 +361,9 @@ async def continue_session_goal(
         payload={"prompt": prompt, "goal_objective": goal.objective},
     )
     prompt = protected.value["prompt"]
+    notice_metadata = dict(protected.value.get("extra_metadata") or {})
+    metadata.pop("pasted_credential_notice", None)
+    metadata.update(notice_metadata)
 
     continuation_index = int(goal.continuation_count or 0)
     continuation_input_id = goal_continuation_run_id(goal.id, continuation_index)
@@ -383,6 +386,7 @@ async def continue_session_goal(
         input_id=continuation_input_id,
         idempotency_key=f"session-goal:{goal.id}:continuation:{continuation_index}",
         extra_runtime_metadata={
+            **notice_metadata,
             "goal_id": str(goal.id),
             "goal_objective": protected.value["goal_objective"],
             "continuation_count_before": continuation_index,

@@ -384,6 +384,7 @@ async def _start_input_runtime(
         append_user_message=False,
         run_id=run_id,
         runtime_task_type=runtime_task_type,
+        source_channel=None,  # Already redacted at ingress; apply only the exact-secret boundary.
         budget_interactive=budget_interactive,
         parts=list(row.content_parts_json or []),
         extra_metadata={

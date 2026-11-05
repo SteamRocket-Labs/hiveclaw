@@ -25,6 +25,7 @@ _PASTE_POLICY_EXEMPT_SOURCES = frozenset({
     "plan_mode_handoff", "runtime_result_integration", "hr_agent_handoff",
     "trigger_reflection", "system_plan_run", "loop_same_session",
     "goal_continuation", "agent_session_mailbox",
+    "discord", "microsoft_teams", "wechat_personal", "a2a", "task_notification",
 })
 
 
@@ -249,12 +250,13 @@ async def redact_runtime_ingress_payload(
 ) -> ExactSecretPayloadRedaction:
     """Protect durable ingress, including the opt-in Web paste policy."""
 
-    metadata_source = (payload.get("extra_metadata") or {}).get("source") if isinstance(payload, dict) else None
-    web_paste = source_channel == "web" and source not in _PASTE_POLICY_EXEMPT_SOURCES and metadata_source not in _PASTE_POLICY_EXEMPT_SOURCES
+    from app.services.privacy_layer import PrivacyLayer
+
+    if not PrivacyLayer.has_member_text(payload):
+        return ExactSecretPayloadRedaction(value=payload)
+    web_paste = source_channel == "web" and source not in _PASTE_POLICY_EXEMPT_SOURCES
     pasted_count = 0
     if web_paste:
-        from app.services.privacy_layer import PrivacyLayer
-
         pasted = PrivacyLayer.redact_pasted_credentials(payload)
         payload = pasted.value
         pasted_count = pasted.redacted_count
@@ -272,7 +274,7 @@ async def redact_runtime_ingress_payload(
             reply_target=reply_target,
         )
         redaction = boundary.redact_payload_with_evidence(payload)
-    if web_paste and (pasted_count or redaction.redacted_count):
+    if web_paste and (pasted_count or redaction.redacted_count) and isinstance(redaction.value, dict):
         redaction.value.setdefault("extra_metadata", {})["pasted_credential_notice"] = True
     return redaction
 

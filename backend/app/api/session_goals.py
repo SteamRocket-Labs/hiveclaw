@@ -150,7 +150,7 @@ async def _append_goal_transition_event(
         source="session_goal",
         materialize_chat_message=False,
         metadata={
-            **({"pasted_credential_notice": True} if (goal.metadata_json or {}).get("pasted_credential_notice") else {}),
+            **({"pasted_credential_notice": True} if action == "started" and (goal.metadata_json or {}).get("pasted_credential_notice") else {}),
             "goal_id": str(goal.id),
             "action": action,
             "status": goal.status,

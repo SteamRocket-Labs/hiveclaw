@@ -199,6 +199,8 @@ async def revise_unbound_human_input(
     from app.services.credential_boundary_loader import redact_runtime_ingress_payload
 
     session = await db.get(ChatSession, row.session_id)
+    from app.services.session_live_input import shape_human_input_parts
+
     # Revision is a Web input even when the conversation originated in IM.
     protected = await redact_runtime_ingress_payload(
         db,
@@ -206,14 +208,10 @@ async def revise_unbound_human_input(
         agent_id=authority.agent_id,
         source_channel="web",
         reply_target=session.delivery_target_json,
-        payload={"parts": content_parts},
+        payload={"parts": shape_human_input_parts(content_parts)},
     )
-    content_parts = protected.value["parts"]
-    if (protected.value.get("extra_metadata") or {}).get("pasted_credential_notice") is True:
-        for part in content_parts:
-            if part.get("type") == "text":
-                part["metadata"] = {**dict(part.get("metadata") or {}), "pasted_credential_notice": True}
-                break
+    content_parts = shape_human_input_parts(protected.value["parts"],
+        pasted_credential_notice=(protected.value.get("extra_metadata") or {}).get("pasted_credential_notice") is True)
     from app.services.original_input_refs import bind_original_input_refs
 
     await bind_original_input_refs(db, authority=authority, command=_command, input_id=input_uuid, revision=int(row.revision) + 1, parts=content_parts)

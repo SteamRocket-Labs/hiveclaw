@@ -35,7 +35,7 @@ from app.services.agent_tools import execute_tool
 from app.services.chat_message_parts import build_session_native_event
 from app.services.session_workspace_snapshot import finalize_workspace_restore
 from app.services.chat_transcript import append_session_event
-from app.services.credential_boundary_loader import redact_runtime_ingress_payload
+from app.services.credential_boundary_loader import RuntimeIngressSecretBoundaryUnavailable, redact_runtime_ingress_payload
 from app.services.coding_pack_manifest import CODING_PACK_COMMAND_NAMES, coding_pack_command_manifest
 from app.services.command_registry import build_default_command_registry
 from app.services.command_registry import CommandDefinition
@@ -360,6 +360,8 @@ async def _execute_goal_command(
             if status_value not in {"active", "paused", "blocked", "usage_limited", "budget_limited"}:
                 raise HTTPException(status_code=400, detail="Unsupported goal status for update")
             goal.status = status_value
+        metadata.pop("pasted_credential_notice", None)
+        metadata.update(notice_metadata)
         goal.metadata_json = metadata
         await db.flush()
         await _append_command_session_event(
@@ -371,6 +373,7 @@ async def _execute_goal_command(
             status=goal.status,
             message=f"Goal updated: {goal.objective}",
             metadata={
+                **notice_metadata,
                 "goal_id": str(goal.id),
                 "objective": goal.objective,
                 "command": command_name,
@@ -535,7 +538,6 @@ async def _execute_schedule_command(
     config: dict[str, Any] = {
         "trigger_class": "scheduled_job",
         "legacy_surface": "command_surface",
-        **notice_metadata,
         "command": command_name,
         "created_by": str(user.id),
     }
@@ -842,7 +844,6 @@ async def _execute_loop_command(
     stored_minutes: float | int = int(minutes) if float(minutes).is_integer() else minutes
     config: dict[str, Any] = {
         "minutes": stored_minutes,
-        **notice_metadata,
         "trigger_class": "scheduled_job",
         "delivery": "same_session",
         "source_session_id": str(session.id),
@@ -1431,10 +1432,13 @@ async def execute_agent_command(
     _enforce_command_origin_safety(command, body.origin)
     _enforce_web_user_command_surface(command, command_name, body.origin)
     # Caller-supplied origin and arguments do not select the ingress policy.
-    protected = await redact_runtime_ingress_payload(
-        db, tenant_id=getattr(agent, "tenant_id", None), agent_id=agent.id, source_channel="web",
-        payload={"arguments": body.arguments},
-    )
+    try:
+        protected = await redact_runtime_ingress_payload(
+            db, tenant_id=getattr(agent, "tenant_id", None), agent_id=agent.id, source_channel="web",
+            payload={"arguments": body.arguments},
+        )
+    except RuntimeIngressSecretBoundaryUnavailable as exc:
+        raise HTTPException(status_code=503, detail="Credential protection boundary is temporarily unavailable") from exc
     body = body.model_copy(update={"arguments": protected.value["arguments"]})
     pasted_credential_notice = (protected.value.get("extra_metadata") or {}).get("pasted_credential_notice") is True
     mcp_action = str(body.arguments.get("action") or "") if command.name == "mcp" else ""
@@ -1482,7 +1486,8 @@ async def execute_agent_command(
         arguments=body.arguments,
     )
     if product_result is not None:
-        return {"ok": True, "command": command.name, "result": product_result}
+        return {"ok": True, "command": command.name, "result": product_result,
+                **({"pasted_credential_notice": True} if pasted_credential_notice else {})}
 
     if command.name in SESSION_COMMAND_NAMES:
         result = await execute_session_command(
@@ -1662,4 +1667,5 @@ async def execute_agent_command(
             parsed = result
     else:
         parsed = result
-    return {"ok": True, "command": command.name, "result": parsed}
+    return {"ok": True, "command": command.name, "result": parsed,
+            **({"pasted_credential_notice": True} if pasted_credential_notice else {})}

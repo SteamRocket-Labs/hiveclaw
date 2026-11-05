@@ -50,6 +50,7 @@ export type RuntimeEventType =
   | 'memory_context_unavailable';
 
 export interface AgentChatMessage {
+  pastedCredentialNotice?: boolean;
   sendState?: 'sending' | 'failed';
   sendError?: string;
   retrySend?: () => void;
@@ -816,7 +817,7 @@ export function mergePendingUserMessages(
       merged[placeholderIndex] = {
         ...item.message,
         ...durablePlaceholder,
-        content: item.message.content,
+        content: hasMaterialUserDisplay(durablePlaceholder) ? durablePlaceholder.content : item.message.content,
         fileName: item.message.fileName || durablePlaceholder.fileName,
         imageUrl: item.message.imageUrl || durablePlaceholder.imageUrl,
       };
@@ -1337,6 +1338,8 @@ export function applyTranscriptEvent(
         {
           role: 'user',
           content: displayContent,
+          pastedCredentialNotice: typeof event.metadata?.pasted_credential_notice === 'boolean'
+            ? event.metadata.pasted_credential_notice : undefined,
           timestamp,
           threadItem: threadItem || undefined,
           ...identity,
@@ -1900,6 +1903,8 @@ export function normalizeStoredChatMessage(payload: any): AgentChatMessage {
   return {
     role: payload?.role === 'assistant' ? 'assistant' : 'user',
     content: payload?.content || '',
+    pastedCredentialNotice: typeof payload?.metadata?.pasted_credential_notice === 'boolean'
+      ? payload.metadata.pasted_credential_notice : undefined,
     artifacts: artifacts.length > 0 ? artifacts : undefined,
     thinking: payload?.thinking || extractThinkingFromParts(payload?.parts),
 	    timestamp: payload?.created_at || payload?.timestamp,

@@ -2426,6 +2426,8 @@
       }
     },
     "chat": {
+      "hiddenCredential": "已隐藏的密钥",
+      "pastedCredentialNotice": "已隐藏你粘贴的密钥，不会保存，也不会发给模型。",
       "sending": "发送中…",
       "sendCancelled": "未发送：发送已取消。",
       "sendUnconfirmed": "暂时无法确认这条消息是否已保存。",

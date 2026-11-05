@@ -3,6 +3,8 @@ import { useTranslation } from 'react-i18next';
 import { IconPlayerPause, IconPlayerPlay, IconTargetArrow, IconX } from '@tabler/icons-react';
 
 import { ccParityApi, type SessionGoal } from '../../api/domains/ccParity';
+import type { AgentChatMessage } from '../agent-detail/chatRuntime';
+import { PastedCredentialNotice, PastedCredentialText } from './PastedCredentialNotice';
 import './SessionGoalPanel.css';
 
 function compactDuration(seconds: number): string {
@@ -42,12 +44,14 @@ export function SessionGoalPanel({
   agentId,
   sessionId,
   goals,
+  messages = [],
   onChanged,
   readOnly = false,
 }: {
   agentId: string;
   sessionId: string;
   goals: SessionGoal[];
+  messages?: AgentChatMessage[];
   onChanged?: (goal: SessionGoal) => void | Promise<unknown>;
   readOnly?: boolean;
 }) {
@@ -84,14 +88,18 @@ export function SessionGoalPanel({
         <strong>{t('sessionGoal.title', 'Goal')}</strong>
       </div>
       {visibleGoals.map((goal) => {
+        const objectiveEvent = [...messages].reverse().find(message => message.eventType === 'goal'
+          && message.eventGoalId === goal.id && ['started', 'updated'].includes(message.eventAction || ''));
+        const pastedCredentialNotice = objectiveEvent?.pastedCredentialNotice === true;
         const facts = goalProgressFacts(goal);
         const controls = goal.controls || { can_pause: false, can_resume: false, can_stop: false };
         return (
           <article key={goal.id} className="session-goal-card" data-goal-status={goal.status}>
             <div className="session-goal-card-title">
-              <span>{goal.objective}</span>
+              <span>{pastedCredentialNotice ? <PastedCredentialText content={goal.objective} /> : goal.objective}</span>
               <small>{t(`sessionGoal.status.${goal.status}`, goalStatusLabel(goal.status))}</small>
             </div>
+            {pastedCredentialNotice && <PastedCredentialNotice />}
             {facts.length > 0 && (
               <div className="session-goal-facts">
                 {facts.map((fact) => <span key={fact}>{fact}</span>)}

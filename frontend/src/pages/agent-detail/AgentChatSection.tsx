@@ -40,7 +40,7 @@ import { shouldRenderThreadItemInConversation, ThreadItemRenderer } from '../ses
 import { normalizeThreadItemPayload } from '../session-workbench/threadItemReducer';
 import { SessionComposer, type ComposerActionKey } from '../session-workbench/SessionComposer';
 import { ProjectContextPicker, type SelectedProjectContext } from '../session-workbench/ProjectContextPicker';
-import { SessionGoalPanel } from '../session-workbench/SessionGoalPanel';
+import { MemberMessageBody } from '../session-workbench/PastedCredentialNotice';
 import {
   SessionAgentTeamCloseControl,
   SessionAgentTeamMemberControls,
@@ -937,7 +937,7 @@ const ChatMessageItem = React.memo(function ChatMessageItem({
             supplementalLabel={t('agent.chat.canonicalCardSupplement', 'Agent supplemental notes')}
           />
         ) : (
-          <div style={{ whiteSpace: 'pre-wrap' }}>{msg.content}</div>
+          <MemberMessageBody message={msg} />
         )}
         {msg.sendState && <div role="status" data-testid="message-send-status">
           {msg.sendState === 'sending' ? t('agent.chat.sending', 'Sending…') : <>

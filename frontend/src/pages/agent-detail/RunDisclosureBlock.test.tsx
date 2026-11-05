@@ -4,6 +4,32 @@ import { describe, expect, it, vi } from 'vitest';
 
 import RunDisclosureBlock from './RunDisclosureBlock';
 import type { RunStepSnapshot, RunTimelineSnapshot } from './chatDisclosureReducer';
+import { buildRunTimelineFromMessages } from './chatDisclosureReducer';
+import { normalizeStoredChatMessage } from './chatRuntime';
+
+it.each(['goal_start', 'goal_update'])('marks the member objective in the server %s step summary', command => {
+  const content = 'Goal: Use [REDACTED_SECRET] safely';
+  const message = normalizeStoredChatMessage({ role: 'system', event_type: 'goal', content,
+    metadata: { command, goal_id: 'goal-1', pasted_credential_notice: true } });
+  const timeline = buildRunTimelineFromMessages([message,
+    { role: 'event', eventType: 'runtime_action_progress', eventStatus: 'running', content: 'Working' }], { activeRun: true });
+  const markup = renderToStaticMarkup(<RunDisclosureBlock timeline={timeline} />);
+  expect(markup).toContain('Hidden key');
+  expect(markup).toContain('The key you pasted was hidden. It will not be saved or sent to the model.');
+  expect(markup).not.toContain('[REDACTED_SECRET]');
+  expect(message.content).toBe(content);
+});
+
+it('keeps an unflagged goal step summary unchanged', () => {
+  const content = 'Goal: Literal [REDACTED_SECRET]';
+  const message = normalizeStoredChatMessage({ role: 'system', event_type: 'goal', content,
+    metadata: { command: 'goal_start', goal_id: 'goal-1' } });
+  const timeline = buildRunTimelineFromMessages([message,
+    { role: 'event', eventType: 'runtime_action_progress', eventStatus: 'running', content: 'Working' }], { activeRun: true });
+  const markup = renderToStaticMarkup(<RunDisclosureBlock timeline={timeline} />);
+  expect(markup).toContain(content);
+  expect(markup).not.toContain('pasted-credential-notice');
+});
 
 // A turn owns one disclosure: live work starts open, while completed work
 // collapses behind its processed summary and can be reopened by the user.

@@ -851,6 +851,7 @@ export function SessionRuntimePanel({
             agentId={agentId}
             sessionId={sessionId}
             goals={sessionWorkbench.goals}
+            messages={messages}
             onChanged={readOnly ? undefined : onGoalChanged}
             readOnly={readOnly}
           />

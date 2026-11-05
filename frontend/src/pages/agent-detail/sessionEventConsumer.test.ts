@@ -78,6 +78,20 @@ function replay(events: SessionEventV2[]): SessionEventStore {
 }
 
 describe('canonical Session event consumer', () => {
+  it.each([true, false])('keeps the server text-part paste flag through live and reload: %s', pasted_credential_notice => {
+    const input = { ...event(1, 'completed'), ordinal: undefined, item_id: 'input-paste', item_kind: 'human_input',
+      kind: 'human_input.accepted', lifecycle: 'accepted', payload_schema: 'hive.session.payload.human_input.accepted.v2',
+      actor: { type: 'user', id: 'user-1' },
+      scope: { level: 'session', session_id: 'session-1', thread_id: 'session-1' },
+      payload: { content_parts: [{ type: 'text', text: 'Use [REDACTED_SECRET]', metadata: { pasted_credential_notice } }] },
+    } as SessionEventV2;
+    const store = replay([input]);
+    for (const snapshot of [store, JSON.parse(JSON.stringify(store))]) {
+      expect(projectSessionEventStoreToMessages(snapshot)[0]).toMatchObject({
+        role: 'user', content: 'Use [REDACTED_SECRET]', pastedCredentialNotice: pasted_credential_notice,
+      });
+    }
+  });
   it('retains held protocol state while showing source notices only for content', () => {
     const payload = { source_access_receipt: { schema: 'hive.source_access_receipt.v1', status: 'denied',
       code: 'content_source_access_denied', retryable: false } };

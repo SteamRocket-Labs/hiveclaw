@@ -16,6 +16,7 @@ import {
 
 import MarkdownRenderer from '../../components/MarkdownRenderer';
 import { approvalActionFor } from '../session-workbench/approvalActionPresentation';
+import { PastedCredentialNotice, PastedCredentialText } from '../session-workbench/PastedCredentialNotice';
 import type {
   RunStepKind,
   RunStepPresentation,
@@ -280,8 +281,10 @@ function RunStepRow({ step }: { step: RunStepSnapshot }) {
             <span className="run-step-caret" />
           )}
           <span className="run-step-title">{localizedToolTitle(step, t)}</span>
-          {step.summary && <span className="run-step-summary">{step.summary}</span>}
+          {step.summary && <span className="run-step-summary">{step.pastedCredentialNotice
+            ? <PastedCredentialText content={step.summary} /> : step.summary}</span>}
         </button>
+        {step.pastedCredentialNotice && <PastedCredentialNotice />}
         {expanded && <RunStepDetails step={step} />}
       </div>
     </div>

@@ -29,6 +29,11 @@ class _Result:
     def scalar_one_or_none(self):
         return self._value
 
+    def scalar_one(self):
+        if self._value is None:
+            return 1  # UPDATE ... RETURNING shape (sync-version bump)
+        return self._value
+
     def all(self):
         return self._values
 
@@ -164,9 +169,15 @@ async def test_restore_returns_the_employee_to_the_runnable_idle_state(monkeypat
     async def fake_register(_db, _projection, **_kwargs):
         return None
 
+    from app.services import agent_retirement
+
+    async def settled(_db, _agent):
+        return [], []
+
     monkeypatch.setattr("app.core.permissions.check_agent_history_access", fake_history_access)
     monkeypatch.setattr("app.core.policy.write_audit_event", fake_audit)
     monkeypatch.setattr("app.services.ai_assets.register_projection", fake_register)
+    monkeypatch.setattr(agent_retirement, "external_work", settled)
 
     await agents_api.restore_agent(agent_id=agent.id, current_user=admin, db=_FakeDB())
 
@@ -314,6 +325,7 @@ async def test_task_executor_refusal_for_deactivation_reads_the_plain_word(monke
 
     assert outcome.error_code == "agent_lifecycle_blocked"
     assert outcome.summary == "Digital employee is deactivated.", outcome.summary
+    assert outcome.retryable is False, "deactivation is a state, not an outage"
     assert logs == ["已停用"], logs
 
 
@@ -426,8 +438,8 @@ async def test_group_participant_removes_the_conversation_from_their_own_list(mo
     async def fake_agent_access(_db, _user, _agent_id):
         return SimpleNamespace(id=agent_id, tenant_id=tenant_id), "use"
 
-    monkeypatch.setattr("app.api.chat_sessions.check_agent_access", fake_agent_access)
-    db = _FakeDB(results=[_Result(session)])
+    monkeypatch.setattr("app.api.chat_sessions.check_agent_history_access", fake_agent_access)
+    db = _FakeDB(results=[_Result(session), _Result(session)])
 
     await chat_sessions_api.delete_session(
         agent_id=agent_id, session_id=session.id, current_user=participant, db=db)
@@ -460,8 +472,8 @@ async def test_outsider_cannot_remove_someone_elses_conversation(monkeypatch) ->
     async def fake_agent_access(_db, _user, _agent_id):
         return SimpleNamespace(id=agent_id, tenant_id=tenant_id), "manage"
 
-    monkeypatch.setattr("app.api.chat_sessions.check_agent_access", fake_agent_access)
-    db = _FakeDB(results=[_Result(session)])
+    monkeypatch.setattr("app.api.chat_sessions.check_agent_history_access", fake_agent_access)
+    db = _FakeDB(results=[_Result(session), _Result(session)])
 
     with pytest.raises(HTTPException) as exc_info:
         await chat_sessions_api.delete_session(
@@ -495,9 +507,10 @@ async def test_removal_refuses_while_work_is_unsettled(monkeypatch) -> None:
     async def fake_agent_access(_db, _user, _agent_id):
         return SimpleNamespace(id=agent_id, tenant_id=tenant_id), "use"
 
-    monkeypatch.setattr("app.api.chat_sessions.check_agent_access", fake_agent_access)
-    # One unfinished RuntimeTask still anchors this conversation.
-    db = _FakeDB(results=[_Result(session)])
+    monkeypatch.setattr("app.api.chat_sessions.check_agent_history_access", fake_agent_access)
+    # One unfinished RuntimeTask still anchors this conversation. The session
+    # is queued twice: the route's initial lookup and its in-lock re-select.
+    db = _FakeDB(results=[_Result(session), _Result(session)])
 
     async def unfinished_task(_stmt):
         return uuid4()

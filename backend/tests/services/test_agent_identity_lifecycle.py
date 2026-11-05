@@ -256,20 +256,14 @@ async def test_ensure_agent_identity_can_use_audited_rls_bypass(monkeypatch) -> 
 
 
 @pytest.mark.asyncio
-async def test_soft_delete_agent_preserves_identity_and_disables_execution_entrypoints(monkeypatch) -> None:
+async def test_terminate_agent_runtime_tasks_settles_native_work_without_deleting(monkeypatch) -> None:
+    """G1: deactivation's runtime settlement kills the employee's unfinished
+    native tasks (remote A2A excluded — that work is the recall's to settle)
+    and never writes lifecycle fields or touches files."""
     from app.services import runtime_terminal_settlement
-    from app.services.agent_identity_lifecycle import soft_delete_agent
+    from app.services.agent_identity_lifecycle import terminate_agent_runtime_tasks
 
-    agent = SimpleNamespace(
-        id=uuid4(),
-        status="idle",
-        deleted_at=None,
-        deactivated_at=None,
-        deactivation_reason=None,
-        container_id="container-123",
-        container_port=18888,
-        participant_id=uuid4(),
-    )
+    agent = SimpleNamespace(id=uuid4(), status="stopped", deleted_at=None, deactivated_at=object())
     runtime_task = SimpleNamespace(
         id=uuid4(),
         status="running",
@@ -295,21 +289,17 @@ async def test_soft_delete_agent_preserves_identity_and_disables_execution_entry
 
     monkeypatch.setattr("app.services.agent_retirement.require_settled", no_external_work)
 
-    await soft_delete_agent(db, agent, actor_id=uuid4(), reason="owner offboarded")
+    await terminate_agent_runtime_tasks(
+        db, agent, actor_id=uuid4(), reason="agent_deactivated",
+        terminal_source="api.agents:deactivate_agent",
+    )
 
-    assert agent.deleted_at is not None
-    assert agent.deactivated_at == agent.deleted_at
-    assert agent.deactivation_reason == "owner offboarded"
-    assert agent.status == "stopped"
-    assert agent.container_id is None
-    assert agent.container_port is None
-    assert agent.participant_id is not None
     sql = "\n".join(db.statements)
-    assert "UPDATE agent_triggers SET is_enabled" in sql
-    assert "UPDATE agent_schedules SET is_enabled" in sql
-    assert "FROM runtime_tasks" in sql
-    assert "status IN" in sql
-    assert external_checks == [(db, agent), (db, agent)]
+    # Remote A2A tasks are excluded from the kill statement: their unknown
+    # outcome belongs to the recall flow, never to a native stop receipt.
+    assert "FROM runtime_tasks" in sql and "status IN" in sql
+    assert "metadata_json" in sql
+    assert external_checks == [(db, agent)]
     assert runtime_task.status == "killed"
     assert runtime_task.claim_version == 5
     assert runtime_task.claimed_by is None
@@ -319,8 +309,8 @@ async def test_soft_delete_agent_preserves_identity_and_disables_execution_entry
             db,
             runtime_task,
             {
-                "terminal_source": "agent_identity_lifecycle:soft_delete_agent",
-                "root_reason_code": "owner offboarded",
+                "terminal_source": "api.agents:deactivate_agent",
+                "root_reason_code": "agent_deactivated",
             },
         )
     ]

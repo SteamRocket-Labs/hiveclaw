@@ -3,8 +3,9 @@
 This module owns the durable link between an Agent row, its current owner,
 immutable creation/delegation provenance, and its Participant identity.
 Creation paths should call ``ensure_agent_identity``
-before the first flush; delete paths should call ``soft_delete_agent`` instead
-of deleting agent/participant rows.
+before the first flush. Digital employees are never deleted (G1): retirement
+is a deactivation, and ``terminate_agent_runtime_tasks`` settles the work a
+deactivated employee still has running.
 """
 
 from __future__ import annotations
@@ -15,7 +16,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import and_, inspect as sqlalchemy_inspect, or_, select, update
+from sqlalchemy import and_, func, inspect as sqlalchemy_inspect, or_, select, update
 from sqlalchemy.exc import NoInspectionAvailable
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -243,11 +244,19 @@ async def terminate_agent_runtime_tasks(
     )
 
     await guard_remote_admission(db, agent_ids=[agent.id], retiring=True)
+    # Remote A2A work is the recall flow's to settle (``prepare`` withdrew it
+    # or refused); this settlement never converts a remote task's unknown
+    # outcome into a native stop receipt.
+    from app.services.remote_a2a_tasks import SCHEMA as REMOTE_A2A_SCHEMA
+
     runtime_tasks = await lock_runtime_task_batch_with_session_authority(
         db,
         statement=select(RuntimeTask).where(
             RuntimeTask.parent_agent_id == agent.id,
             RuntimeTask.status.in_(_ACTIVE_RUNTIME_TASK_STATUSES),
+            # coalesce: a task without a schema key is native by definition,
+            # and SQL NULL != 'x' would otherwise silently drop it.
+            func.coalesce(RuntimeTask.metadata_json["schema"].as_string(), "") != REMOTE_A2A_SCHEMA,
         ),
     )
     # Recheck after canonical batch locking: a late external admission must
@@ -270,85 +279,3 @@ async def terminate_agent_runtime_tasks(
     await db.flush()
 
 
-async def soft_delete_agent(
-    db: AsyncSession,
-    agent: Agent,
-    *,
-    actor_id: uuid.UUID,
-    reason: str = "agent_deleted",
-) -> None:
-    """Soft-delete an agent while preserving audit/chat/participant history."""
-    from app.services.agent_retirement import guard_remote_admission, require_settled
-
-    await guard_remote_admission(db, agent_ids=[agent.id], retiring=True)
-    await require_settled(db, agent)
-    now = datetime.now(timezone.utc)
-    agent.deleted_at = agent.deleted_at or now
-    agent.deactivated_at = agent.deactivated_at or agent.deleted_at
-    agent.deactivation_reason = reason
-    agent.status = "stopped"
-    agent.container_id = None
-    agent.container_port = None
-
-    await db.execute(
-        update(AgentTrigger)
-        .where(AgentTrigger.agent_id == agent.id, AgentTrigger.is_enabled.is_(True))
-        .values(is_enabled=False)
-    )
-    await db.execute(
-        update(AgentSchedule)
-        .where(AgentSchedule.agent_id == agent.id, AgentSchedule.is_enabled.is_(True))
-        .values(is_enabled=False)
-    )
-    await terminate_agent_runtime_tasks(
-        db,
-        agent,
-        actor_id=actor_id,
-        reason=reason,
-        terminal_source="agent_identity_lifecycle:soft_delete_agent",
-    )
-
-
-async def perform_pending_agent_cleanup(
-    tenant_id: uuid.UUID,
-    agent_id: uuid.UUID,
-) -> dict[str, Any]:
-    """Run (or retry) the destructive file cleanup a soft-deleted Agent owes.
-
-    Must be called AFTER the soft-delete transaction committed. The durable
-    truth of "cleanup still owed" needs no marker: the Agent row is
-    soft-deleted and its data directory still exists (``archive_agent_files``
-    is idempotent — an already-archived or absent directory is a no-op), so a
-    failed archival is retried simply by re-issuing the supported DELETE (or
-    HR abandon) request for the already-deleted Agent. Returns a truthful
-    outcome dict (``performed`` / ``archive_ok``).
-    """
-
-    from app.services.agent_manager import agent_manager
-
-    outcome: dict[str, Any] = {"performed": False, "archive_ok": None}
-    from app.database import async_session, tenant_scoped_session
-
-    async with tenant_scoped_session(
-        tenant_id,
-        session_factory=async_session,
-        require_tenant=True,
-        source="agent_cleanup_pending",
-    ) as db:
-        agent = (
-            await db.execute(
-                select(Agent)
-                .where(Agent.id == agent_id, Agent.tenant_id == tenant_id)
-                .with_for_update(key_share=True)
-                .execution_options(populate_existing=True)
-            )
-        ).scalar_one_or_none()
-        if agent is None or agent.deleted_at is None:
-            return outcome
-        outcome["performed"] = True
-    try:
-        await agent_manager.archive_agent_files(agent_id)
-        outcome["archive_ok"] = True
-    except Exception:
-        outcome["archive_ok"] = False
-    return outcome

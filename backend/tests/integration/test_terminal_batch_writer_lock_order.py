@@ -5,10 +5,11 @@ batch caller that takes the RuntimeTask row locks FIRST sits on the
 row → advisory side of the global order and deadlocks against any
 advisory-first writer of the same session (an in-flight transcript append,
 or an advisory-first ordinary UPDATE).  These regressions drive the REAL
-batch callers — ``soft_delete_agent`` and root-user offboarding's
-``revoke_user_authority`` — interleaved with both opponent kinds at the
-caller's genuine first advisory acquisition, and require committed intended
-outcomes on both sides (never merely the absence of a deadlock string).
+batch callers — deactivation's ``terminate_agent_runtime_tasks`` and
+root-user offboarding's ``revoke_user_authority`` — interleaved with both
+opponent kinds at the caller's genuine first advisory acquisition, and
+require committed intended outcomes on both sides (never merely the absence
+of a deadlock string).
 """
 
 from __future__ import annotations
@@ -96,7 +97,7 @@ async def _plain_update_opponent(seed: dict, owner_sessionmaker, original_lock) 
     return "ok:plain_update"
 
 
-async def _run_soft_delete_vs_opponent(owner_sessionmaker, monkeypatch, tmp_path, *, opponent) -> dict:
+async def _run_terminate_vs_opponent(owner_sessionmaker, monkeypatch, tmp_path, *, opponent) -> dict:
     from tests.integration.test_web_chat_worker_restart_kernel_recovery import _patch_runtime_seams, _seed_run
 
     seed = await _seed_run(owner_sessionmaker, tmp_path)
@@ -111,13 +112,14 @@ async def _run_soft_delete_vs_opponent(owner_sessionmaker, monkeypatch, tmp_path
 
     async def caller() -> None:
         from app.models.agent import Agent
-        from app.services.agent_identity_lifecycle import soft_delete_agent
+        from app.services.agent_identity_lifecycle import terminate_agent_runtime_tasks
 
         caller_task_box["task"] = asyncio.current_task()
         try:
             async with owner_sessionmaker() as db:
                 agent = await db.get(Agent, seed["agent_id"])
-                await soft_delete_agent(db, agent, actor_id=seed["user_id"])
+                await terminate_agent_runtime_tasks(db, agent, actor_id=seed["user_id"],
+                    reason="agent_deactivated", terminal_source="api.agents:deactivate_agent")
                 await db.commit()
             log["caller"] = "committed"
         except Exception as exc:  # noqa: BLE001 - the point of the regression
@@ -221,14 +223,14 @@ async def _assert_async(log: dict, owner_sessionmaker, expected_status: str, *, 
     assert str(metadata.get("terminal_execution_fence_ref") or "").startswith("runtime-task-terminal:")
 
 
-async def test_soft_delete_agent_vs_transcript_append(owner_sessionmaker, monkeypatch, tmp_path) -> None:
-    log = await _run_soft_delete_vs_opponent(owner_sessionmaker, monkeypatch, tmp_path, opponent="append")
+async def test_terminate_runtime_tasks_vs_transcript_append(owner_sessionmaker, monkeypatch, tmp_path) -> None:
+    log = await _run_terminate_vs_opponent(owner_sessionmaker, monkeypatch, tmp_path, opponent="append")
     print(f"BATCH-LOCK soft-delete/append {log['caller']} | {log['opponent']}")
     await _assert_async(log, owner_sessionmaker, "killed", opponent="append")
 
 
-async def test_soft_delete_agent_vs_advisory_first_plain_update(owner_sessionmaker, monkeypatch, tmp_path) -> None:
-    log = await _run_soft_delete_vs_opponent(owner_sessionmaker, monkeypatch, tmp_path, opponent="plain_update")
+async def test_terminate_runtime_tasks_vs_advisory_first_plain_update(owner_sessionmaker, monkeypatch, tmp_path) -> None:
+    log = await _run_terminate_vs_opponent(owner_sessionmaker, monkeypatch, tmp_path, opponent="plain_update")
     print(f"BATCH-LOCK soft-delete/plain-update {log['caller']} | {log['opponent']}")
     await _assert_async(log, owner_sessionmaker, "killed", opponent="plain_update")
 
@@ -326,7 +328,7 @@ async def test_task_admitted_between_prescan_and_batch_is_settled_under_its_advi
     import app.services.chat_transcript as chat_transcript
     from app.models.agent import Agent
     from app.models.runtime_task import RuntimeTask
-    from app.services.agent_identity_lifecycle import soft_delete_agent
+    from app.services.agent_identity_lifecycle import terminate_agent_runtime_tasks
 
     seed = await _seed_run(owner_sessionmaker, tmp_path)
     _patch_runtime_seams(monkeypatch, seed, owner_sessionmaker)
@@ -398,7 +400,8 @@ async def test_task_admitted_between_prescan_and_batch_is_settled_under_its_advi
         try:
             async with owner_sessionmaker() as db:
                 agent = await db.get(Agent, seed["agent_id"])
-                await soft_delete_agent(db, agent, actor_id=seed["user_id"])
+                await terminate_agent_runtime_tasks(db, agent, actor_id=seed["user_id"],
+                    reason="agent_deactivated", terminal_source="api.agents:deactivate_agent")
                 await db.commit()
             log["caller"] = "committed"
         except Exception as exc:  # noqa: BLE001

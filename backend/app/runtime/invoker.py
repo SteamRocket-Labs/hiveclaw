@@ -592,6 +592,17 @@ async def _resolve_runtime_config(agent_id: uuid.UUID | None) -> RuntimeConfig:
             lifecycle_reason = get_agent_lifecycle_block_reason(agent)
             if lifecycle_reason:
                 logger.warning("[Invoker] Agent %s is not active (%s) — fail-closed", agent_id, lifecycle_reason)
+                if lifecycle_reason == "deactivated":
+                    # The one plain word the member sees for a deactivated
+                    # employee (G1) — not a tenant-resolution failure and not
+                    # retryable.
+                    from app.core.permissions import DEACTIVATED_REFUSAL_DETAIL
+
+                    return RuntimeConfig(
+                        tenant_id=agent.tenant_id,
+                        max_tool_rounds=agent.max_tool_rounds or 200,
+                        lifecycle_refusal=DEACTIVATED_REFUSAL_DETAIL,
+                    )
                 return RuntimeConfig(
                     tenant_id=agent.tenant_id,
                     max_tool_rounds=agent.max_tool_rounds or 200,

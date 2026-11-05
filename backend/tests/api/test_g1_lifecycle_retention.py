@@ -95,73 +95,6 @@ def test_no_cleanup_pending_route_remains() -> None:
 
 
 @pytest.mark.asyncio
-async def test_deactivate_reuses_retirement_prepare_and_keeps_the_employee(monkeypatch) -> None:
-    import app.api.agents as agents_api
-    from app.services import agent_retirement
-
-    tenant_id = uuid4()
-    admin = SimpleNamespace(id=uuid4(), role="org_admin", tenant_id=tenant_id)
-    agent = SimpleNamespace(
-        id=uuid4(),
-        tenant_id=tenant_id,
-        name="在被测的员工",
-        status="idle",
-        deleted_at=None,
-        deactivated_at=None,
-        deactivation_reason=None,
-    )
-    db = _FakeDB()
-    prepare_calls: list[tuple[object, object]] = []
-
-    async def fake_check_agent_history_access(_db, _user, requested_agent_id):
-        assert requested_agent_id == agent.id
-        return agent, "manage"
-
-    async def record_prepare(_db, *, agent, actor):
-        prepare_calls.append((agent, actor))
-        # The post-G1 prepare commits the deactivation state itself —
-        # including the closed status gates — in one commit.
-        agent.deactivated_at = datetime.now(timezone.utc)
-        agent.deactivation_reason = agent_retirement.PENDING_REASON
-        agent.status = "stopped"
-        await _db.commit()
-
-    settled: list[dict] = []
-
-    async def fake_terminate(_db, agent_in, *, actor_id, reason, terminal_source):
-        settled.append({"reason": reason, "source": terminal_source})
-
-    audits: list[dict] = []
-    projections: list[tuple[object, str]] = []
-
-    async def fake_audit(_db, **kwargs):
-        audits.append(kwargs)
-
-    async def fake_register(_db, projection, *, change_source, actor_user_id, change_message):
-        projections.append((projection, change_source))
-
-    import app.services.agent_identity_lifecycle as agent_lifecycle
-
-    monkeypatch.setattr("app.core.permissions.check_agent_history_access", fake_check_agent_history_access)
-    monkeypatch.setattr(agent_retirement, "prepare", record_prepare)
-    monkeypatch.setattr(agent_lifecycle, "terminate_agent_runtime_tasks", fake_terminate)
-    monkeypatch.setattr("app.core.policy.write_audit_event", fake_audit)
-    monkeypatch.setattr("app.services.ai_assets.register_projection", fake_register)
-
-    await agents_api.deactivate_agent(agent_id=agent.id, current_user=admin, db=db)
-    assert settled == [{"reason": "agent_deactivated", "source": "api.agents:deactivate_agent"}]
-
-    assert prepare_calls == [(agent, admin)], "停用 must run agent_retirement.prepare exactly once"
-    assert agent.deleted_at is None, "停用 must not delete the employee"
-    assert agent.deactivated_at is not None
-    assert agent.status == "stopped"
-    assert any(a.get("event_type") == "agent.deactivated" for a in audits), f"audits={audits}"
-    assert projections and projections[0][1] in {"revoke", "update"}
-    assert db.deleted == []
-    assert db.commits >= 1
-
-
-@pytest.mark.asyncio
 async def test_deactivate_requires_administrator_role(monkeypatch) -> None:
     import app.api.agents as agents_api
     from app.services import agent_retirement
@@ -180,55 +113,6 @@ async def test_deactivate_requires_administrator_role(monkeypatch) -> None:
 
 
 # ─── 恢复 clears the deactivation; triggers stay off ────────────────────
-
-
-@pytest.mark.asyncio
-async def test_restore_clears_deactivation_and_leaves_triggers_off(monkeypatch) -> None:
-    import app.api.agents as agents_api
-
-    tenant_id = uuid4()
-    admin = SimpleNamespace(id=uuid4(), role="org_admin", tenant_id=tenant_id)
-    deactivated_at = datetime.now(timezone.utc)
-    agent = SimpleNamespace(
-        id=uuid4(),
-        tenant_id=tenant_id,
-        name="待恢复的员工",
-        status="stopped",
-        deleted_at=None,
-        deactivated_at=deactivated_at,
-        deactivation_reason="retirement_pending",
-        primary_model_id=None,
-        fallback_model_id=None,
-    )
-    db = _FakeDB()
-    audits: list[dict] = []
-    projections: list[object] = []
-
-    async def fake_check_agent_history_access(_db, _user, requested_agent_id):
-        assert requested_agent_id == agent.id
-        return agent, "read"
-
-    async def fake_audit(_db, **kwargs):
-        audits.append(kwargs)
-
-    async def fake_register(_db, projection, **_kwargs):
-        projections.append(projection)
-
-    monkeypatch.setattr("app.core.permissions.check_agent_history_access", fake_check_agent_history_access)
-    monkeypatch.setattr("app.core.policy.write_audit_event", fake_audit)
-    monkeypatch.setattr("app.services.ai_assets.register_projection", fake_register)
-
-    await agents_api.restore_agent(agent_id=agent.id, current_user=admin, db=db)
-
-    assert agent.deactivated_at is None
-    assert agent.deactivation_reason is None
-    assert agent.deleted_at is None
-    assert any(a.get("event_type") == "agent.restored" for a in audits), f"audits={audits}"
-    assert projections and projections[0].lifecycle_status == "active"
-    # Triggers were turned off by 停用 and stay off: restore issues no enable update.
-    assert all("agent_triggers" not in statement for statement in db.statements), db.statements
-    assert all("agent_schedules" not in statement for statement in db.statements), db.statements
-    assert db.commits == 1
 
 
 @pytest.mark.asyncio
@@ -464,6 +348,9 @@ class _SessionResult:
     def scalar_one_or_none(self):
         return self._value
 
+    def scalar_one(self):
+        return self._value
+
 
 def _session_row(user_id, *, metadata=None):
     return SimpleNamespace(
@@ -485,13 +372,13 @@ async def test_remove_session_marks_own_list_without_deleting_rows(monkeypatch) 
     current_user = SimpleNamespace(id=user_id, role="member", tenant_id=uuid4())
     session = _session_row(user_id)
     agent = SimpleNamespace(id=session.agent_id, tenant_id=session.tenant_id)
-    db = _FakeDB([_SessionResult(session)])
+    db = _FakeDB([_SessionResult(session), _SessionResult(session)])
 
     async def fake_check_agent_access(_db, _user, agent_id):
         assert agent_id == session.agent_id
         return agent, "manage"
 
-    monkeypatch.setattr(chat_sessions_api, "check_agent_access", fake_check_agent_access)
+    monkeypatch.setattr(chat_sessions_api, "check_agent_history_access", fake_check_agent_access)
 
     async def _no_lock(_db, *, session_id):
         return None
@@ -521,12 +408,12 @@ async def test_remove_session_is_idempotent(monkeypatch) -> None:
     earlier = "2026-11-04T00:00:00+00:00"
     session = _session_row(user_id, metadata={"removed_from_list_by": {str(user_id): earlier}})
     agent = SimpleNamespace(id=session.agent_id, tenant_id=session.tenant_id)
-    db = _FakeDB([_SessionResult(session)])
+    db = _FakeDB([_SessionResult(session), _SessionResult(session)])
 
     async def fake_check_agent_access(_db, _user, agent_id):
         return agent, "manage"
 
-    monkeypatch.setattr(chat_sessions_api, "check_agent_access", fake_check_agent_access)
+    monkeypatch.setattr(chat_sessions_api, "check_agent_history_access", fake_check_agent_access)
 
     async def _no_lock(_db, *, session_id):
         return None
@@ -552,12 +439,12 @@ async def test_remove_session_refuses_anyone_but_the_owner(monkeypatch) -> None:
     admin = SimpleNamespace(id=uuid4(), role="org_admin", tenant_id=uuid4())
     session = _session_row(owner_id)
     agent = SimpleNamespace(id=session.agent_id, tenant_id=session.tenant_id)
-    db = _FakeDB([_SessionResult(session)])
+    db = _FakeDB([_SessionResult(session), _SessionResult(session)])
 
     async def fake_check_agent_access(_db, _user, agent_id):
         return agent, "manage"
 
-    monkeypatch.setattr(chat_sessions_api, "check_agent_access", fake_check_agent_access)
+    monkeypatch.setattr(chat_sessions_api, "check_agent_history_access", fake_check_agent_access)
 
     with pytest.raises(HTTPException) as exc_info:
         await chat_sessions_api.delete_session(

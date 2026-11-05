@@ -1947,13 +1947,19 @@ async def get_session_lineage(
         .order_by(ChatSession.created_at.asc())
     )
     sessions = result.scalars().all()
+    def _branch_metadata(item):
+        # The own-list removal marker is private list state, not lineage:
+        # readers of the branch map never see who removed what when.
+        metadata = dict(item.transcript_metadata_json or {})
+        metadata.pop("removed_from_list_by", None)
+        return metadata
     return [
         {
             "id": str(item.id),
             "parent_session_id": str(item.parent_session_id) if item.parent_session_id else None,
             "root_session_id": str(item.root_session_id) if item.root_session_id else None,
             "title": item.title,
-            "branch": item.transcript_metadata_json or {},
+            "branch": _branch_metadata(item),
             "created_at": item.created_at.isoformat() if item.created_at else None,
         }
         for item in sessions
@@ -2800,7 +2806,10 @@ async def delete_session(
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
 
-    await check_agent_access(db, current_user, agent_id)
+    # History access, not the active lane: the owner can still remove a
+    # conversation from their own list while its employee is deactivated
+    # (the list keeps showing it); new execution stays refused elsewhere.
+    await check_agent_history_access(db, current_user, agent_id)
     # Anyone who already sees this conversation in one of their lists may
     # remove it from their own list: the session's own user, or a member of
     # a shared group conversation. An administrator cannot remove it from
@@ -2830,7 +2839,19 @@ async def delete_session(
     from app.services.chat_transcript import lock_transcript_session
     from app.services.session_tool_runtime import list_unresolved_tool_effects
 
+    # The marker is a read-modify-write of transcript_metadata_json, which
+    # ~15 runtime writers also rewrite whole. Take the session's transcript
+    # advisory lock first, then re-select the row FOR UPDATE — the same order
+    # the removed guarded deletion used — so neither side's write is lost.
     await lock_transcript_session(db, session_id=session_id)
+    session = (
+        await db.execute(
+            select(ChatSession)
+            .where(ChatSession.id == session_id, ChatSession.agent_id == agent_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+    ).scalar_one()
     session_keys = (str(session_id), session_id.hex)
     active = await db.scalar(select(RuntimeTask.id).where(
         RuntimeTask.tenant_id == session.tenant_id,

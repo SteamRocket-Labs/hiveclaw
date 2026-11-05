@@ -1211,6 +1211,13 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
 
         runtime_config = await _maybe_await(self._deps.resolve_runtime_config(request.agent_id))
         span_recorder.runtime_config = runtime_config
+        # A lifecycle refusal (已停用) is the member's plain answer, shown
+        # verbatim — never wrapped in retry/contact-admin machinery.
+        if getattr(runtime_config, "lifecycle_refusal", None):
+            return _build_error_result(
+                runtime_config.lifecycle_refusal,
+                terminal_reason=TerminalReason.LIFECYCLE_REFUSED,
+            )
         # P0-1b: invoker fallback paths set tenant_resolution_error instead
         # of silently returning tenant_id=None. Abort before any tool runs;
         # governance (P0-1a) is the second line of defence if a caller

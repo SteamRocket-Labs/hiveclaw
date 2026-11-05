@@ -4668,7 +4668,9 @@
       "ownerCandidatesFailed": "加载可选 Owner 失败。",
       "noOwnerCandidates": "没有其他符合条件的有效公司成员。",
       "systemProtected": "系统保护",
-      "noEmployees": "未找到数字员工。"
+      "noEmployees": "未找到数字员工。",
+      "retryDeactivateButton": "重试停用",
+      "restoreWorkPending": "对外工作尚未确认，请先核对，再恢复。"
     },
     "quotas": {
       "tokenQuotas": "用量配额",

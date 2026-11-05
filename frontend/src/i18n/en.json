@@ -4668,7 +4668,9 @@
       "ownerCandidatesFailed": "Failed to load eligible owners.",
       "noOwnerCandidates": "No other active company member is eligible.",
       "systemProtected": "System protected",
-      "noEmployees": "No digital employees found."
+      "noEmployees": "No digital employees found.",
+      "retryDeactivateButton": "Retry deactivation",
+      "restoreWorkPending": "Outward work is not yet confirmed. Review the recall, then restore."
     },
     "quotas": {
       "tokenQuotas": "Usage Quotas",

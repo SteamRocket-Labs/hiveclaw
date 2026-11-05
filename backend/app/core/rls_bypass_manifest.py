@@ -831,7 +831,7 @@ def fingerprint_rls_bypass_scopes(app_root: Path) -> str:
 # authentication, query predicates and authority checks retain their boundaries.
 # Telegram webhook operator: one read-only cross-tenant inventory scope;
 # inactive or missing known companies are excluded before HTTP registration.
-RLS_BYPASS_SCOPES_SHA256 = "1eaad19b8f734b0aebccab8b462fc88441212b7a130ad86c653301f0a80e6ed8"
+RLS_BYPASS_SCOPES_SHA256 = "63426eb14a325d2a79e488ca77ccc3d87ecf40430b27fb9de83f53e34cb85a93"
 
 
 def scan_rls_bypass_callsites(app_root: Path) -> list[RLSBypassCallsite]:
@@ -888,6 +888,15 @@ def _grant(
 
 
 RLS_BYPASS_ALLOWLIST = (
+    _grant(
+        # OIDC global account uniqueness (main 64c01175, slice S2, reviewed
+        # three times): subject + case-insensitive email conflict check must
+        # see rows hidden by the tenant pin. Read-only, one User.id probe.
+        "app/services/oidc_service.py",
+        "login_or_register",
+        "'OIDC account uniqueness check'",
+        ("select:User.id",),
+    ),
     _grant(
         "app/services/runtime_user_identity.py",
         "load_runtime_user",

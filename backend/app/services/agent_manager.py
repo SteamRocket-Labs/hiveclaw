@@ -428,19 +428,8 @@ class AgentManager:
         return True
 
     def has_agent_files(self, agent_id: uuid.UUID) -> bool:
-        """Read the same directory archived by the cleanup operation."""
+        """Read the employee's live data directory (never moved, G1)."""
         return self._agent_dir(agent_id).exists()
-
-    async def archive_agent_files(self, agent_id: uuid.UUID) -> None:
-        """Archive (move) agent files to a backup location."""
-        agent_dir = self._agent_dir(agent_id)
-        if agent_dir.exists():
-            archive_dir = Path(settings.AGENT_DATA_DIR) / "_archived"
-            archive_dir.mkdir(parents=True, exist_ok=True)
-            timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-            dest = archive_dir / f"{agent_id}_{timestamp}"
-            shutil.move(str(agent_dir), str(dest))
-            logger.info(f"Archived agent files to {dest}")
 
     def get_container_status(self, agent: Agent) -> dict:
         """Return runtime status without the retired container backend."""

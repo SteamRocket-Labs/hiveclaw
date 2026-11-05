@@ -87,7 +87,9 @@ export default function WorkspaceDigitalEmployeesSection({ selectedTenantId }: W
         },
         onError: (error: any) => {
             showAppToast(
-                error?.message || t('workspace.digitalEmployees.employeeRestoreFailed', 'Failed to restore digital employee.'),
+                error?.data?.code === 'agent_restore_work_pending'
+                    ? t('workspace.digitalEmployees.restoreWorkPending', 'Outward work is not yet confirmed. Review the recall, then restore.')
+                    : error?.message || t('workspace.digitalEmployees.employeeRestoreFailed', 'Failed to restore digital employee.'),
                 'error',
             );
         },
@@ -236,12 +238,17 @@ export default function WorkspaceDigitalEmployeesSection({ selectedTenantId }: W
                     <h4>{t('workspace.digitalEmployees.deactivatedTitle', 'Deactivated digital employees')}</h4>
                     <p>{t('workspace.digitalEmployees.deactivatedDesc', 'Deactivated employees keep their files, memory and conversations. Unconfirmed external work stays listed for review; ending local tracking does not confirm that the external runner stopped.')}</p>
                     <ul>{pendingRetirements.map((employee) => <li key={employee.id}>
-                        {employee.name}
+                        <Link to={`/agents/${employee.id}`} className="ws-employees-deactivated-link">{employee.name}</Link>
                         {' '}
                         {!!employee.remote_work_count && t('workspace.digitalEmployees.unconfirmedRemoteWork', '{{count}} unconfirmed external task(s)', { count: employee.remote_work_count })}
                         {' '}
                         {!!employee.local_work_count && t('workspace.digitalEmployees.unconfirmedLocalWork', '{{count}} unconfirmed delegation(s)', { count: employee.local_work_count })}
                         {' '}
+                        {(!!employee.remote_work_count || !!employee.local_work_count) && <button type="button"
+                            className="btn btn-secondary" disabled={deactivateAgentMutation.isPending}
+                            onClick={() => deactivateAgentMutation.mutate(employee.id)}>
+                            {t('workspace.digitalEmployees.retryDeactivateButton', 'Retry deactivation')}
+                        </button>}
                         <button type="button" className="btn btn-secondary" disabled={restoreAgentMutation.isPending}
                             onClick={() => restoreAgentMutation.mutate(employee.id)}>
                             {t('workspace.digitalEmployees.restoreEmployeeButton', 'Restore')}

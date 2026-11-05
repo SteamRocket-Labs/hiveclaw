@@ -99,9 +99,32 @@ vi.mock('@tanstack/react-query', () => ({
         error: null,
       };
     }
+    if (String(queryKey[0]) === 'agent-retirement-pending') {
+      return {
+        data: [
+          {
+            id: 'deactivated-1',
+            name: 'Pending Recall Employee',
+            remote_work_count: 1,
+            local_work_count: 0,
+            inactive_requester_work_count: 0,
+          },
+          {
+            id: 'deactivated-2',
+            name: 'Settled Employee',
+            remote_work_count: 0,
+            local_work_count: 0,
+            inactive_requester_work_count: 0,
+          },
+        ],
+        isLoading: false,
+        error: null,
+      };
+    }
     return { data: [], isLoading: false, error: null };
   },
   useMutation: () => ({
+    mutate: vi.fn(),
     mutateAsync: vi.fn(),
     isPending: false,
   }),
@@ -137,6 +160,18 @@ describe('WorkspaceDigitalEmployeesSection', () => {
 
     expect(markup).toContain('review and deactivate tenant digital employees');
     expect(markup).not.toContain('review and remove');
+  });
+
+  it('offers retry deactivation only for deactivated rows with unconfirmed outward work, and links to the employee page', () => {
+    const markup = renderToStaticMarkup(<WorkspaceDigitalEmployeesSection selectedTenantId="tenant-1" />);
+
+    expect(markup).toContain('Pending Recall Employee');
+    expect(markup).toContain('Settled Employee');
+    expect(markup).toContain('Retry deactivation');
+    expect(markup).toContain('href="/agents/deactivated-1"');
+    expect(markup).toContain('href="/agents/deactivated-2"');
+    const settled = markup.split('Settled Employee')[1].split('</li>')[0];
+    expect(settled).not.toContain('Retry deactivation');
   });
 
   it('states the committed deactivation first in the retirement-pending copy', async () => {

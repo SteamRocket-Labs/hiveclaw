@@ -1944,13 +1944,25 @@ async def deactivate_agent(
     from app.services.agent_retirement import prepare
 
     agent, _access = await check_agent_history_access(db, current_user, agent_id)
-    await prepare(db, agent=agent, actor=current_user)
+    pending_error: HTTPException | None = None
+    try:
+        await prepare(db, agent=agent, actor=current_user)
+    except HTTPException as exc:
+        detail = exc.detail if isinstance(exc.detail, dict) else {}
+        if exc.status_code != 409 or detail.get("code") != "agent_retirement_pending":
+            raise
+        # The deactivation itself has committed inside ``prepare``; the
+        # outward recall is still unconfirmed. This endpoint's bookkeeping
+        # still happens — projection, audit, sync version — so the committed
+        # state is visible everywhere, then the typed pending state surfaces.
+        pending_error = exc
 
     # ``prepare`` has committed the deactivation (``deactivated_at`` and
     # ``status = "stopped"`` in one commit, triggers off, outward work
     # recalled). Work still running on the employee's own web turns is
     # withdrawn here with the same termination settlement a delete used —
-    # no ``deleted_at``, no file move.
+    # no ``deleted_at``, no file move. Never while recall is pending: that
+    # work belongs to the recall's own disposition.
     from app.services.agent_identity_lifecycle import terminate_agent_runtime_tasks
     from app.services.runtime_terminal_settlement import (
         RuntimeTaskLateAdmissionConflict,
@@ -1958,13 +1970,14 @@ async def deactivate_agent(
     )
 
     try:
-        await terminate_agent_runtime_tasks(
-            db,
-            agent,
-            actor_id=current_user.id,
-            reason="agent_deactivated",
-            terminal_source="api.agents:deactivate_agent",
-        )
+        if pending_error is None:
+            await terminate_agent_runtime_tasks(
+                db,
+                agent,
+                actor_id=current_user.id,
+                reason="agent_deactivated",
+                terminal_source="api.agents:deactivate_agent",
+            )
         from app.services.ai_asset_adapters import project_agent
         from app.services.ai_assets import register_projection
 
@@ -1988,10 +2001,13 @@ async def deactivate_agent(
                 action="deactivate_agent",
                 resource_type="agent",
                 resource_id=agent.id,
-                details={"name": agent.name},
+                details={"name": agent.name, "recall_pending": pending_error is not None},
             )
         except Exception:
             logger.warning("Audit write failed for agent.deactivated", exc_info=True)
+        from app.services.sync_service import bump_sync_version
+
+        await bump_sync_version(db, agent.tenant_id)
         await db.commit()
     except (RuntimeTaskLateAdmissionConflict, RuntimeTaskSessionBindingConflict) as exc:
         # Truthful retryable conflict, mirroring the retired delete route: the
@@ -2013,6 +2029,8 @@ async def deactivate_agent(
                 "retryable": not binding_conflict,
             },
         ) from exc
+    if pending_error is not None:
+        raise pending_error
 
 
 @router.post("/{agent_id}/restore", status_code=status.HTTP_204_NO_CONTENT)
@@ -2040,6 +2058,26 @@ async def restore_agent(
             status_code=status.HTTP_409_CONFLICT,
             detail={"code": "agent_not_deactivated", "retryable": False},
         )
+
+    # A restore while the deactivation's outward recall is still unconfirmed
+    # would strand that recall (its tracking and withdrawal receipts bind to
+    # the deactivated state), so restore waits for a settled recall.
+    from app.services.agent_retirement import require_settled
+
+    try:
+        await require_settled(db, agent)
+    except HTTPException as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": "agent_restore_work_pending",
+                "retryable": True,
+                "message": (
+                    "Outward work is not yet confirmed. Review the recall on the "
+                    "digital-employees page, then restore."
+                ),
+            },
+        ) from exc
 
     agent.deactivated_at = None
     agent.deactivation_reason = None
@@ -2073,6 +2111,9 @@ async def restore_agent(
         )
     except Exception:
         logger.warning("Audit write failed for agent.restored", exc_info=True)
+    from app.services.sync_service import bump_sync_version
+
+    await bump_sync_version(db, agent.tenant_id)
     await db.commit()
 
 

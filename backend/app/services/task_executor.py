@@ -502,7 +502,9 @@ async def execute_task(
                 status=TaskExecutionStatus.BLOCKED,
                 summary="Digital employee is deactivated." if deactivated else f"Digital employee cannot execute: {lifecycle_reason}.",
                 error_code="agent_lifecycle_blocked",
-                retryable=True,
+                # Deactivation is a state, not an outage: retrying without a
+                # restore cannot change the answer.
+                retryable=not deactivated,
             )
 
         if not agent.primary_model_id and not agent.fallback_model_id:

@@ -1,7 +1,6 @@
 """Alternate lifecycle entries preserve real external work and expose recovery."""
 
 from uuid import UUID, uuid4
-from copy import deepcopy
 from datetime import datetime, timezone
 
 from app.database import tenant_scoped_session
@@ -108,35 +107,54 @@ async def test_hr_abandon_exposes_management_recovery_and_rolls_back_its_provisi
         db.add(provisioning)
         await db.flush()
         draft.provisioning_task_id = provisioning.id
-        provisioning_id, original_metadata = provisioning.id, deepcopy(provisioning.metadata_json)
+        provisioning_id = provisioning.id
         await db.commit()
     monkeypatch.setattr(agent_manager.settings, "AGENT_DATA_DIR", str(tmp_path))
     directory = tmp_path / str(seed["agent"])
     directory.mkdir()
     with retirement.withdrawal.remote_server() as remote:
         path = await retirement.remote_tasks.configure(seed, api, remote)
-        remote.reply = lambda request: ({"id": "hr-retirement", "status": {"state": "TASK_STATE_CANCELED"}}
-            if request["method"] == "CancelTask" else {"task": {"id": "hr-retirement", "status": {"state": "TASK_STATE_WORKING"}}})
+        # The remote worker never stops, so the abandon's deactivation commits
+        # but its recall cannot settle: the typed pending state with the
+        # governed management path comes back and nothing is deleted.
+        remote.reply = lambda request: {"id": "hr-retirement", "status": {"state": "TASK_STATE_WORKING"}} \
+            if request["method"] == "CancelTask" else {"task": {"id": "hr-retirement", "status": {"state": "TASK_STATE_WORKING"}}}
         created = await api.post(path + "/tasks", json=retirement.remote_tasks.command(seed, session_id))
         assert created.status_code == 201, created.text
         await retirement.remote_tasks.execute(seed, created.json()["id"], app_user_sessionmaker)
         deleting = f"/agents/{hr_id}/hr-creation-drafts/{draft_id}"
         held = await api.delete(deleting)
-        assert held.status_code == 409 and held.json()["detail"]["code"] == "agent_retirement_required", held.text
+        assert held.status_code == 409 and held.json()["detail"]["code"] == "agent_retirement_pending", held.text
         assert directory.is_dir()
         async with tenant_scoped_session(seed["tenant"], session_factory=app_user_sessionmaker) as db:
             job = await db.get(RuntimeTask, provisioning_id)
             draft = await db.get(HrCreationDraft, draft_id)
             employee = await db.get(Agent, seed["agent"])
-            assert job.status == "pending" and job.claim_version == 4 and job.metadata_json == original_metadata
-            assert draft.status == "failed" and employee.deleted_at is employee.deactivated_at is None
+            # prepare's commit carries the fence and the deactivation; the
+            # draft itself rolls back and stays abandonable.
+            assert job.status == "killed" and job.claim_version == 4
+            assert draft.status == "failed" and draft.provisioning_task_id == provisioning_id
+            assert employee.deactivated_at is not None and employee.status == "stopped"
+            assert employee.deleted_at is None
         assert held.json()["detail"]["recovery"] == {
             "employee_id": str(seed["agent"]), "management_path": "/enterprise/digital-employees",
             "can_manage_retirement": True, "retry_after_retirement": True,
         }
-        retired = await api.post(f"/agents/{seed['agent']}/deactivate")
-        assert retired.status_code == 204, retired.text
+        # Once the remote settles its cancel, the retried abandon completes:
+        # the employee stays deactivated — never deleted, files never moved.
+        remote.reply = lambda request: ({"id": "hr-retirement", "status": {"state": "TASK_STATE_CANCELED"}}
+            if request["method"] == "CancelTask" else {"task": {"id": "hr-retirement", "status": {"state": "TASK_STATE_WORKING"}}})
         retried = await api.delete(deleting)
         assert retried.status_code == 200 and retried.json()["draft_status"] == "superseded", retried.text
-        assert not directory.exists()
-        assert [r[3]["method"] for r in remote.requests if r[0] == "POST"] == ["SendMessage", "CancelTask"]
+        assert directory.is_dir()
+        async with tenant_scoped_session(seed["tenant"], session_factory=app_user_sessionmaker) as db:
+            draft = await db.get(HrCreationDraft, draft_id)
+            employee = await db.get(Agent, seed["agent"])
+            assert draft.status == "superseded"
+            assert employee.deactivated_at is not None and employee.deleted_at is None
+        # No cleanup-only branch remains: a repeat abandon is an invalid status.
+        repeat = await api.delete(deleting)
+        assert repeat.status_code == 409 and repeat.json()["detail"]["error"] == "invalid_status", repeat.text
+        assert directory.is_dir()
+        methods = [r[3]["method"] for r in remote.requests if r[0] == "POST"]
+        assert "SendMessage" in methods and "CancelTask" in methods

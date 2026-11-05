@@ -3571,6 +3571,40 @@ async def test_resolve_runtime_config_success_does_not_set_tenant_error(monkeypa
 
 @pytest.mark.real_runtime_config
 @pytest.mark.asyncio
+async def test_resolve_runtime_config_deactivated_agent_sets_plain_lifecycle_refusal(monkeypatch):
+    """G1 r3: a deactivated employee refuses with the one plain word 已停用,
+    never dressed up as a tenant-resolution failure."""
+    from app.runtime import invoker
+
+    fake_agent = SimpleNamespace(
+        id=uuid4(),
+        tenant_id=uuid4(),
+        max_tool_rounds=42,
+        execution_mode="standard",
+        deleted_at=None,
+        deactivated_at=object(),  # any non-None value blocks
+        owner_user_id=uuid4(),
+        owner_is_active=True,
+    )
+
+    async def _fake_resolve_tenant_for_agent(_agent_id, **_kwargs):
+        return fake_agent.tenant_id
+
+    monkeypatch.setattr(invoker, "resolve_tenant_for_agent", _fake_resolve_tenant_for_agent)
+    monkeypatch.setattr(
+        invoker,
+        "tenant_scoped_session",
+        lambda *a, **k: _FakeAsyncSessionCM(_FakeDB(fake_agent, True)),
+    )
+
+    cfg = await invoker._resolve_runtime_config(fake_agent.id)
+
+    assert cfg.lifecycle_refusal == "已停用", cfg.lifecycle_refusal
+    assert cfg.tenant_resolution_error is None
+
+
+@pytest.mark.real_runtime_config
+@pytest.mark.asyncio
 async def test_invoke_agent_aborts_when_tenant_resolution_fails(monkeypatch):
     """End-to-end: invoke_agent with an unresolvable agent_id must abort
     before any tool runs. Verifies kernel.engine reads the sentinel and

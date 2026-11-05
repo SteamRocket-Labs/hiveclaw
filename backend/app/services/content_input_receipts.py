@@ -1805,6 +1805,8 @@ async def authorize_workspace_execution_inputs(request):
     async with tenant_scoped_session(tenant_id) as db:
         for path in sorted(paths):
             receipt = await latest_workspace_receipt(db, tenant_id, context.agent_id, path)
+            if receipt is None and path not in scope.full_control_paths:
+                continue
             reads.append(WorkspaceInputRead(path=path, receipt_id=receipt.id if receipt else None,
                 revision=receipt.revision if receipt else 0, content_sha256=receipt.content_sha256 if receipt else "",
                 dependencies_hash=_sha256(receipt.dependencies_json if receipt else [])))
@@ -1853,6 +1855,8 @@ async def authorize_workspace_receipt_read(request):
             if isinstance(scope, WorkspaceAuthorityScope) and scope.can_read(path):
                 async with tenant_scoped_session(uuid.UUID(str(context.tenant_id))) as db:
                     receipt = await latest_workspace_receipt(db, uuid.UUID(str(context.tenant_id)), context.agent_id, path)
+                    if receipt is None and path not in scope.full_control_paths:
+                        return None
                     observed = WorkspaceInputRead(path=path, receipt_id=receipt.id if receipt else None,
                         revision=receipt.revision if receipt else 0, content_sha256=receipt.content_sha256 if receipt else "",
                         dependencies_hash=_sha256(receipt.dependencies_json if receipt else []))

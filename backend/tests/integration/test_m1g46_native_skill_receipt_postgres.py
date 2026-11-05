@@ -970,7 +970,8 @@ async def test_scoped_native_writer_binds_complete_control_input_once(
             async with owner_sessionmaker() as writer:
                 (await writer.get(KnowledgeGrant, grant.id)).revoked_at = datetime.now(timezone.utc)
                 await writer.commit()
-            assert (await n.client.get(f"/agents/{n.agent}/files/content", params={"path": n.path})).status_code == 403
+            working_copy = await n.client.get(f"/agents/{n.agent}/files/content", params={"path": n.path})
+            assert working_copy.status_code == 200 and working_copy.json()["content"] == arguments["content"]
             for endpoint in ("/content", "/download"):
                 response = await n.client.get(url + endpoint)
                 assert response.status_code == 403 and arguments["content"] not in response.text, response.text

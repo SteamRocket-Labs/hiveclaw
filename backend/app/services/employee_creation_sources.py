@@ -577,6 +577,7 @@ async def _owned_context_source(db, *, dependency, agent_id, tenant_id, session_
             load_native_read_denial_evidence,
             load_skill_input_evidence,
             load_workspace_execution_input_evidence,
+            load_workspace_input_evidence,
         )
         from app.services.session_model_inputs import (
             _context_resource_dependency,
@@ -776,8 +777,9 @@ async def _owned_context_source(db, *, dependency, agent_id, tenant_id, session_
             call.tool_name in {"list_files", "fs_list", "glob_search"} and "native_directory_read_receipt" in metadata
         )
         denial = call.tool_name in {"read_file", "read_document", "fs_read", "exit_plan_mode"}
+        working_copy = denial and "workspace_input_receipt" in metadata
         key = (
-            "native_read_denial_receipt"
+            "workspace_input_receipt" if working_copy else "native_read_denial_receipt"
             if denial
             else "native_directory_read_receipt"
             if directory
@@ -789,7 +791,7 @@ async def _owned_context_source(db, *, dependency, agent_id, tenant_id, session_
         if not isinstance(pointer, dict) or pointer.get("status") != "verified":
             return False
         loader = (
-            load_native_read_denial_evidence
+            load_workspace_input_evidence if working_copy else load_native_read_denial_evidence
             if denial
             else load_native_directory_read_evidence
             if directory
@@ -810,8 +812,9 @@ async def _owned_context_source(db, *, dependency, agent_id, tenant_id, session_
             )
         except (ContentInputReceiptError, ValueError, TypeError):
             return False
-        # Publish mechanical control observations, never private ledger/file/Skill bodies.
-        return bound == pointer and not bound.get("sources") and not bound.get("unbound")
+        # Owned working copies without upstream sources and bound control observations can continue.
+        return (bound == pointer and not bound.get("sources") and not bound.get("unbound")
+            and (not working_copy or bound.get("content_input_receipt_id") is None))
     return False
 
 

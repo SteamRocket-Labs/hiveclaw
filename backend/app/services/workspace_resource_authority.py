@@ -453,6 +453,7 @@ class WorkspaceAuthorityScope:
     operator_view: bool
     authority_source: str
     known_paths: frozenset[str] = frozenset()
+    full_control_paths: frozenset[str] = frozenset()
     action_permissions: frozenset[tuple[str, str]] = frozenset()
     collection_actions: frozenset[str] = frozenset()
     input_reads: tuple[WorkspaceInputRead, ...] = ()
@@ -1036,6 +1037,7 @@ async def load_workspace_authority_scope(
         authority_source=(collection_decision.authority_source if operator_view else
             next(iter(authority_sources)) if len(authority_sources) == 1 else "resource_scope"),
         known_paths=frozenset(manifest.path for manifest in manifests),
+        full_control_paths=frozenset(full_control_paths),
         action_permissions=frozenset(action_permissions),
         collection_actions=frozenset(_WORKSPACE_EFFECT_ACTIONS) if collection_decision and collection_decision.full_control else frozenset(),
         learning_roots=learning_roots,

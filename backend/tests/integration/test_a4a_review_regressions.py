@@ -387,3 +387,21 @@ async def test_unreceipted_input_keeps_delegated_approval_and_sandbox_artifact_u
         assert artifact is not None, 'OWN_INPUT_BLOCKS_SANDBOX_ARTIFACT'
         opened = await n.client.get(f'/agents/{n.agent}/files/artifacts/{artifact.id}/content')
         assert opened.status_code == 200 and 'OWN_SOURCE_BODY' in opened.text, opened.text
+
+
+@pytest.mark.parametrize('tool', ['read_file', 'grep_search'])
+async def test_granted_unreceipted_file_does_not_become_owned_handoff_input(
+    native_workspace, owner_sessionmaker, tool,  # noqa: F811
+):
+    from app.core.resource_authority import workspace_resource_id
+    from app.models.security_audit import ResourcePermission
+    n = native_workspace
+    n.target.write_text('FOREIGN_SOURCE_BODY')
+    async with owner_sessionmaker() as db:
+        db.add(ResourcePermission(tenant_id=n.tenant, principal_type='user', principal_id=n.user,
+            resource_type='workspace_file', resource_id=workspace_resource_id(n.agent, n.path),
+            actions=['read'], conditions={}))
+        await db.commit()
+        result, _sources, complete, _invocation = await _read_with_inventory(n, db, tool=tool, path=n.path)
+        assert 'FOREIGN_SOURCE_BODY' in str(result), result
+        assert not complete, 'A read grant must not turn an unreceipted foreign file into owned context'

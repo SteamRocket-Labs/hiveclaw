@@ -166,7 +166,10 @@ def authorized_execution_workspace(canonical_workspace: Path, authority_scope):
             if not source.is_file():
                 continue
             read = authority_scope.input_read(allowed_path)
-            _copy_workspace_resource(canonical_workspace, isolated, allowed_path, input_read=read)
+            if read is None:
+                _copy_workspace_resource(canonical_workspace, isolated, allowed_path)
+            else:
+                _copy_workspace_resource(canonical_workspace, isolated, allowed_path, input_read=read)
             copied_inputs[allowed_path] = {"path": allowed_path,
                 "sha256": read.observed_sha256 if read is not None else None}
         before = _workspace_file_state(isolated_work)

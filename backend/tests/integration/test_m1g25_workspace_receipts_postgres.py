@@ -50,7 +50,7 @@ async def test_browser_cannot_supply_receipt_authority(native_workspace, field):
     assert not (n.root / "workspace/new.txt").exists()
 
 
-async def test_unreceipted_legacy_file_cannot_be_resigned_by_ordinary_save(native_workspace, app_user_sessionmaker):  # noqa: F811
+async def test_explicit_write_grant_allows_saving_an_unreceipted_working_copy(native_workspace, app_user_sessionmaker):  # noqa: F811
     from app.models.security_audit import ResourcePermission
     from app.core.resource_authority import workspace_resource_id
 
@@ -64,12 +64,13 @@ async def test_unreceipted_legacy_file_cannot_be_resigned_by_ordinary_save(nativ
     before = n.target.read_bytes()
     response = await n.client.put(f"/agents/{n.agent}/files/content", params={"path": n.path},
         json={"content": "Unverified replacement", "expected_current_hash": hashlib.sha256(before).hexdigest()})
-    assert response.status_code == 409, response.text
-    assert response.json()["detail"]["code"] == "workspace_content_unverified"
-    assert n.target.read_bytes() == before
+    assert response.status_code == 200, response.text
+    assert n.target.read_text() == "Unverified replacement"
     async with app_user_sessionmaker() as db:
         await pin_rls_tenant_context(db, n.tenant)
-        assert not await receipts(db, n, n.path)
+        rows = await receipts(db, n, n.path)
+        assert len(rows) == 1 and rows[0].content_sha256 == hashlib.sha256(n.target.read_bytes()).hexdigest()
+        assert rows[0].dependencies_json == []
 
 
 async def test_replacement_retains_trusted_source_union_and_rechecks_revocation(
@@ -110,8 +111,15 @@ async def test_replacement_retains_trusted_source_union_and_rechecks_revocation(
     for method in ("get", "put"):
         response = await n.client.request(method, url, params={"path": path},
             **({"json": {"content": "Cannot drop restrictions"}} if method == "put" else {}))
-        assert response.status_code == 403, response.text
-        assert content not in response.text
+        assert response.status_code == 200, response.text
+        if method == "get":
+            assert response.json()["content"] == content
+        else:
+            content = "Cannot drop restrictions"
+    async with app_user_sessionmaker() as db:
+        await pin_rls_tenant_context(db, n.tenant)
+        rows = await receipts(db, n, path)
+        assert rows[-1].dependencies_json == [dependency]
     history = await n.client.get(f"/agents/{n.agent}/files/versions", params={"path": path})
     assert history.status_code == 200, history.text
     version = next(item for item in history.json()["versions"] if item["content_hash"] == hashlib.sha256(b"Derived result").hexdigest())
@@ -124,7 +132,7 @@ async def test_replacement_retains_trusted_source_union_and_rechecks_revocation(
 
 
 @pytest.mark.parametrize("use_expected_hash", [False, True])
-async def test_out_of_band_bytes_cannot_receive_a_fresh_receipt(native_workspace, app_user_sessionmaker, use_expected_hash):  # noqa: F811
+async def test_current_working_copy_can_be_saved_but_expected_hash_conflicts_stay_local(native_workspace, app_user_sessionmaker, use_expected_hash):  # noqa: F811
     from app.models.workspace_resource import WorkspaceResourceManifest
 
     n = native_workspace
@@ -134,20 +142,21 @@ async def test_out_of_band_bytes_cannot_receive_a_fresh_receipt(native_workspace
     (n.root / path).write_text("Unverified external rewrite")
     response = await n.client.put(url, params={"path": path}, json={"content": "Do not resign",
             **({"expected_current_hash": hashlib.sha256(b"Verified original").hexdigest()} if use_expected_hash else {})})
-    assert response.status_code == 409, response.text
-    assert (n.root / path).read_text() == "Unverified external rewrite"
+    assert response.status_code == (409 if use_expected_hash else 200), response.text
+    assert (n.root / path).read_text() == ("Unverified external rewrite" if use_expected_hash else "Do not resign")
+    if use_expected_hash:
+        assert response.json()["detail"]["code"] == "workspace_content_conflict"
     async with app_user_sessionmaker() as db:
         await pin_rls_tenant_context(db, n.tenant)
-        assert len(await receipts(db, n, path)) == 1
+        assert len(await receipts(db, n, path)) == (1 if use_expected_hash else 2)
         manifest = await db.scalar(select(WorkspaceResourceManifest).where(
             WorkspaceResourceManifest.agent_id == n.agent, WorkspaceResourceManifest.path == path))
-        assert manifest.authority_state == "quarantined"
+        assert manifest.authority_state == "owned"
 
 
 @pytest.mark.parametrize("phase", ["before_save", "after_save"])
 async def test_late_external_rewrite_is_preserved_and_quarantined(native_workspace, app_user_sessionmaker, monkeypatch, phase):  # noqa: F811
     from app.api import files
-    import app.services.content_input_receipts as service
     from app.models.workspace_resource import WorkspaceResourceManifest
 
     n = native_workspace
@@ -156,26 +165,21 @@ async def test_late_external_rewrite_is_preserved_and_quarantined(native_workspa
     assert (await n.client.put(url, params={"path": path}, json={"content": "Original"})).status_code == 200
     target = n.root / path
     marker = "External rewrite during source validation"
-    if phase == "before_save":
-        validate = service.validate_browser_workspace_receipt
+    hash_file = files._workspace_content_hash
+    calls = 0
 
-        async def rewrite_after_validation(*args, **kwargs):
-            await validate(*args, **kwargs)
+    def rewrite_at_hash_boundary(*args):
+        nonlocal calls
+        calls += 1
+        if phase == "before_save" and calls == 1:
+            digest = hash_file(*args)
             target.write_text(marker)
+            return digest
+        if phase == "after_save" and calls == 2:
+            target.write_text(marker)
+        return hash_file(*args)
 
-        monkeypatch.setattr(service, "validate_browser_workspace_receipt", rewrite_after_validation)
-    else:
-        hash_file = files._workspace_content_hash
-        calls = 0
-
-        def rewrite_before_post_hash(*args):
-            nonlocal calls
-            calls += 1
-            if calls == 2:
-                target.write_text(marker)
-            return hash_file(*args)
-
-        monkeypatch.setattr(files, "_workspace_content_hash", rewrite_before_post_hash)
+    monkeypatch.setattr(files, "_workspace_content_hash", rewrite_at_hash_boundary)
     response = await n.client.put(url, params={"path": path}, json={"content": "Attempted save"})
     assert response.status_code == (409 if phase == "before_save" else 503), response.text
     assert target.read_text() == marker
@@ -187,7 +191,7 @@ async def test_late_external_rewrite_is_preserved_and_quarantined(native_workspa
         assert manifest.authority_state == "quarantined"
 
 
-async def test_failed_receipt_commit_keeps_possible_effect_unknown_and_unreadable(native_workspace, monkeypatch):  # noqa: F811
+async def test_failed_receipt_commit_reports_unknown_and_keeps_owner_working_copy_readable(native_workspace, monkeypatch):  # noqa: F811
     n = native_workspace
     path = "workspace/failed-receipt.txt"
     url = f"/agents/{n.agent}/files/content"
@@ -202,7 +206,7 @@ async def test_failed_receipt_commit_keeps_possible_effect_unknown_and_unreadabl
     assert response.json()["detail"]["retryable"] is False
     assert (n.root / path).read_text() == "Possibly saved body"
     read = await n.client.get(url, params={"path": path})
-    assert read.status_code == 409 and "Possibly saved body" not in read.text
+    assert read.status_code == 200 and read.json()["content"] == "Possibly saved body"
 
 
 async def test_human_saved_versions_remain_reopenable_and_restorable(native_workspace):  # noqa: F811

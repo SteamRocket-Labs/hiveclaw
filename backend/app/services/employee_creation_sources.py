@@ -777,7 +777,7 @@ async def _owned_context_source(db, *, dependency, agent_id, tenant_id, session_
             call.tool_name in {"list_files", "fs_list", "glob_search"} and "native_directory_read_receipt" in metadata
         )
         denial = call.tool_name in {"read_file", "read_document", "fs_read", "exit_plan_mode"}
-        working_copy = denial and "workspace_input_receipt" in metadata
+        working_copy = denial and "workspace_input_receipt" in metadata and "native_read_denial_receipt" not in metadata
         key = (
             "workspace_input_receipt" if working_copy else "native_read_denial_receipt"
             if denial

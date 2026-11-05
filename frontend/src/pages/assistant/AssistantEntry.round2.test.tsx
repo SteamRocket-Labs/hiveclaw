@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import React from 'react';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -10,6 +10,7 @@ import AgentSettingsSection from '../agent-detail/AgentSettingsSection';
 import AgentDetailHeader from '../agent-detail/AgentDetailHeader';
 import AgentChatSection from '../agent-detail/AgentChatSection';
 import { useAuthStore } from '../../stores';
+import { agentApi } from '../../api/domains/agents';
 import en from '../../i18n/en.json';
 import zh from '../../i18n/zh.json';
 
@@ -111,6 +112,28 @@ describe('NM round 2 landing regressions', () => {
     expect(screen.queryByTestId('destination')).toBeNull();
   });
 
+  it.each(['503', 'network'])('opens again when retrying a failed assistant open: %s', async (failure) => {
+    transport();
+    const fetcher = vi.mocked(fetch);
+    const successful = fetcher.getMockImplementation()!;
+    let failOpening = true;
+    fetcher.mockImplementation(async (...args) => {
+      if (args[0] === '/api/assistant/open' && failOpening) {
+        if (failure === 'network') throw new TypeError('Failed to fetch');
+        return response({}, 503);
+      }
+      return successful(...args);
+    });
+    mount();
+    expect(await screen.findByText('暂时无法连接助理，请重试。')).toBeTruthy();
+    expect(screen.queryByTestId('destination')).toBeNull();
+    expect(writes()).toHaveLength(1);
+    failOpening = false;
+    fireEvent.click(screen.getByRole('button', { name: '重试' }));
+    await waitFor(() => expect(screen.getByTestId('destination').textContent).toBe('/agents/own#chat'));
+    expect(writes()).toHaveLength(2);
+  });
+
   it('opens the incomplete assistant when its agent is in the sidebar list', async () => {
     transport(unbound, { ...own, state: 'provision_incomplete', entry: unbound.entry }, [...bots, own.agent]);
     mount();
@@ -120,6 +143,31 @@ describe('NM round 2 landing regressions', () => {
     transport(unbound, { ...own, state: 'provision_incomplete', entry: unbound.entry });
     mount();
     await waitFor(() => expect(screen.getByTestId('destination').textContent).toBe('/agents/recent#chat'));
+  });
+  it('waits for the refreshed sidebar list before opening a newly created incomplete assistant', async () => {
+    const refreshed = deferred<Response>();
+    const client = new QueryClient();
+    client.setQueryData(['agents', 'company'], bots);
+    transport(unbound, { ...own, state: 'provision_incomplete', entry: unbound.entry });
+    const original = vi.mocked(fetch).getMockImplementation()!;
+    vi.mocked(fetch).mockImplementation((...args) => String(args[0]).startsWith('/api/agents/')
+      ? refreshed.promise : original(...args));
+    function Sidebar() {
+      const { data: agents = [] } = useQuery({
+        queryKey: ['agents', 'company'], queryFn: () => agentApi.list('company'), staleTime: 30_000,
+      });
+      return <AppSidebar {...sidebarProps} agents={agents} />;
+    }
+    render(<QueryClientProvider client={client}><MemoryRouter>
+      <Sidebar />
+      <Routes><Route path="/" element={<AssistantEntry mode="entry" />} />
+        <Route path="/agents/:id" element={<Location />} /></Routes>
+    </MemoryRouter></QueryClientProvider>);
+    await waitFor(() => expect(client.isFetching({ queryKey: ['agents', 'company'] })).toBe(1));
+    expect(screen.queryByTestId('destination')).toBeNull();
+    await act(async () => { refreshed.resolve(response([...bots, own.agent])); await refreshed.promise; });
+    await waitFor(() => expect(screen.getByTestId('destination').textContent).toBe('/agents/own#chat'));
+    expect(document.querySelector('.sidebar-agent-link')?.getAttribute('href')).toBe('/agents/own#chat');
   });
   it('opens once per page load and scope across landing remounts', async () => {
     transport(unbound, { ...unbound, state: 'model_unconfigured' });

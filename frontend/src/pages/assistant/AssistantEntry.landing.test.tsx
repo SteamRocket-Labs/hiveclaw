@@ -75,14 +75,22 @@ describe('member conversation landing', () => {
     expect(vi.mocked(fetch).mock.calls.some(([url]) => url === '/api/assistant/open')).toBe(false);
   });
 
-  it.each(['model_unconfigured', 'model_forbidden', 'http_failure'])(
+  it.each(['model_unconfigured', 'model_forbidden'])(
     'opens the first sidebar bot through B5 when provisioning returns %s', async (state) => {
-      transport({ ...unbound, state }, bots, unbound, state === 'http_failure' ? 503 : 200);
+      transport({ ...unbound, state });
       mount();
       await waitFor(() => expect(screen.getByTestId('destination').textContent).toBe('/agents/recent#chat'));
       expect(screen.queryByRole('radio')).toBeNull();
     },
   );
+
+  it('keeps a failed assistant open on the page with retry', async () => {
+    transport({}, bots, unbound, 503);
+    mount();
+    expect(await screen.findByText('assistant.connectionFailed')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'assistant.retry' })).toBeTruthy();
+    expect(screen.queryByTestId('destination')).toBeNull();
+  });
 
   it('opens an assistant still preparing when the sidebar contains its agent', async () => {
     transport({ ...own, state: 'provision_incomplete', entry: unbound.entry }, [...bots, own.agent]);

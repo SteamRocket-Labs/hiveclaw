@@ -21,7 +21,7 @@ function currentScope() {
 
 type Scope = ReturnType<typeof currentScope>;
 
-// One automatic attempt per page/client and scope, including cancelled attempts.
+// Deduplicate automatic opens across remounts; cancelled attempts stay recorded.
 const automaticOpens = new WeakMap<QueryClient, Set<string>>();
 
 function echo(scope: Scope): AssistantScopeEcho {
@@ -74,9 +74,8 @@ function ScopedAssistantEntry({ scope }: { scope: Scope }) {
         try {
           result = await assistantApi.open(echo(scope), { signal });
         } catch (error) {
-          if (signal.aborted) throw error;
-          // A successful read followed by a failed opening may use the sidebar.
-          return result;
+          if (!signal.aborted) attempted.delete(scopeKey);
+          throw error;
         }
         signal.throwIfAborted();
         if (!stillCurrent(scope, result)) throw new ApiError(409, 'scope changed', { state: 'scope_changed' });
@@ -138,7 +137,8 @@ function ScopedAssistantEntry({ scope }: { scope: Scope }) {
       <p role="status">{t('assistant.connectionFailed')}</p>
       <button className="btn btn-secondary" onClick={() => { void query.refetch(); }}>{t('assistant.retry')}</button>
     </div>;
-    const first = sortSidebarAgents(fallback.data || [], payload?.agent?.id)[0];
+    const first = fallback.isSuccess && !fallback.isFetching
+      ? sortSidebarAgents(fallback.data, payload?.agent?.id)[0] : null;
     if (query.isSuccess && !query.isFetching && stillCurrent(scope) && first) return <Navigate to={sidebarAgentLink(first)} replace />;
     return <p className="assistant-entry" role="status">{t(query.isPending || query.isFetching || fallback.isFetching
       ? 'assistant.loading' : 'assistant.setupByAdmin')}</p>;

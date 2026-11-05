@@ -33,7 +33,7 @@ import RemoteA2AWorkControls from '../../components/RemoteA2AWorkControls';
 import { composerShortcutText, getComposerIntentLabel, getSessionPermissionModeLabel, sessionPermissionModeOptions, sessionPermissionModeVisible } from './sessionComposerShortcuts';
 import { SessionTransportStatus } from './SessionTransportStatus';
 import type { ChatTransportPhase } from './chatTransportRecovery';
-import { SessionWorkbenchHeader } from '../session-workbench/SessionWorkbenchChrome';
+import { SessionWorkbenchHeader, settledRunHidesNotice } from '../session-workbench/SessionWorkbenchChrome';
 import { sessionTitleForUser } from '../session-workbench/sessionTitlePresentation';
 import { shouldRenderThreadItemInConversation, ThreadItemRenderer } from '../session-workbench/ThreadItemRenderer';
 import { normalizeThreadItemPayload } from '../session-workbench/threadItemReducer';
@@ -143,6 +143,14 @@ type AttachedFile = {
   path?: string;
   imageUrl?: string;
 };
+
+const TRANSPORT_BANNER_STYLE = {
+  padding: '7px 16px',
+  borderTop: '1px solid rgba(245,158,11,0.3)',
+  background: 'rgba(245,158,11,0.08)',
+  fontSize: '12px',
+  color: 'rgb(180,100,0)',
+} as const;
 
 export type SessionPermissionMode = 'auto' | 'default' | 'bypassPermissions';
 const EMPTY_CHAT_MESSAGES: AgentChatMessage[] = [];
@@ -1336,11 +1344,17 @@ function AgentChatSection({
       });
       if (!item) return null;
       if (!shouldRenderThreadItemInConversation(item, Boolean(activeSession?.operator_view))) return null;
+      // In a group conversation only the requester sees the proposal and the
+      // resolve actions; everyone else waits for their decision.
+      const permissionReadOnly = activeSession?.audience_kind === 'group'
+        && permissionRequest != null
+        && permissionRequest.requested_by_user_id !== currentUser?.id;
       const permissionActions = canMutateSession && permissionRequest && msg.eventStatus === 'session_permission_required' ? (
         <SessionPermissionActions
           permissionRequest={permissionRequest}
-          readOnly={activeSession?.audience_kind === 'group' && permissionRequest.requested_by_user_id !== currentUser?.id}
+          readOnly={permissionReadOnly}
           onResolveSessionPermission={onResolveSessionPermission}
+          showArgumentDetails={false}
           t={t}
         />
       ) : null;
@@ -1374,6 +1388,9 @@ function AgentChatSection({
             selected={selectedThreadItemId === item.id}
             onSelect={item.audience === 'operator' && activeSession?.operator_view ? selectThreadItem : undefined}
             approvalActions={permissionActions}
+            approvalArguments={item.item_type === 'approval_request' && !permissionReadOnly
+              ? permissionRequest?.arguments
+              : undefined}
             actions={recoveryActions}
           />
         </div>
@@ -2207,36 +2224,17 @@ function AgentChatSection({
               </button>
             )}
             {agentExpired ? (
-              <div
-                role="alert"
-                style={{
-                  padding: '7px 16px',
-                  borderTop: '1px solid rgba(245,158,11,0.3)',
-                  background: 'rgba(245,158,11,0.08)',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '8px',
-                  fontSize: '12px',
-                  color: 'rgb(180,100,0)',
-                }}
-              >
-                <span>u23f8</span>
-                <span>
-                  This Agent has <strong>expired</strong> and is off duty. Contact your admin to extend its service.
-                </span>
+              <div role="alert" style={TRANSPORT_BANNER_STYLE}>
+                ⏸ {t('agent.chat.agentExpired', 'This digital employee has expired and is off duty. Ask an administrator to extend its service.')}
               </div>
-            ) : transportNotice ? (
-              <div
-                role="status"
-                aria-live="polite"
-                style={{
-                  padding: '7px 16px',
-                  borderTop: '1px solid rgba(245,158,11,0.25)',
-                  background: 'rgba(245,158,11,0.08)',
-                  fontSize: '12px',
-                  color: 'rgb(180,100,0)',
-                }}
-              >
+            ) : transportNotice && !settledRunHidesNotice(
+              transportNotice,
+              // The five-state header model is the settled truth: once the
+              // run reads 已停止 (or finished), the stop-pending notice is stale.
+              threadTimelineModel?.header.status ?? activeRunStatus,
+              t('agent.chat.stopRecorded', 'Stop request recorded. Waiting for the run to settle.'),
+            ) ? (
+              <div role="status" aria-live="polite" style={TRANSPORT_BANNER_STYLE}>
                 {transportNotice}
               </div>
             ) : !isDraftSession ? (

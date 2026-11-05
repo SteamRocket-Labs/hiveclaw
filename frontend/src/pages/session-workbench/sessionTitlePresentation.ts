@@ -12,6 +12,73 @@ const BRANCH_MODES = new Set([
 
 const LEGACY_BRANCH_TITLE_SUFFIX = /\s+\((?:branch|fork|edit|insert|reply|regenerate|btw|clear)\)\s*$/i;
 
+const ATTACHMENT_MARKER_RE = /^\[📎\s*([^\]]+)\]\s*/;
+
+export type AttachmentMarkerStripping = {
+  /** The text after the leading `[📎 file]` markers, whitespace trimmed. */
+  text: string;
+  /** The last marker's file name, when a marker was present. */
+  fileName: string;
+};
+
+/** Drop leading `[📎 file]` markers (the chip already shows the file) while
+ * preserving the rest of the text. */
+export function dropLeadingAttachmentMarkers(value: string): AttachmentMarkerStripping {
+  let cleaned = String(value || '');
+  let fileName = '';
+  for (;;) {
+    const marker = cleaned.match(ATTACHMENT_MARKER_RE);
+    if (!marker) break;
+    fileName = marker[1].trim();
+    cleaned = cleaned.slice(marker[0].length);
+  }
+  return { text: cleaned.trim(), fileName };
+}
+
+/** Title projection of the marker strip: the member's sentence on one line,
+ * with the file name standing in when no sentence survived (B2 r2). */
+export function stripAttachmentMarkers(value: string): string {
+  const { text, fileName } = dropLeadingAttachmentMarkers(value);
+  const cleaned = text.replace(/\s+/g, ' ').trim();
+  return cleaned || (fileName ? `📎 ${fileName}` : '');
+}
+
+/** Decode the escaped body of a possibly-truncated JSON string: a cut
+ * trailing escape (`\`, partial `\uXX`) ends the value; `JSON.parse` decodes
+ * the complete escapes that remain. */
+function decodeJsonStringBody(escaped: string): string {
+  let body = escaped;
+  const cutEscape = /(?:\\u[0-9a-fA-F]{0,3}|\\)$/;
+  if (cutEscape.test(body)) body = body.slice(0, body.lastIndexOf('\\'));
+  try {
+    return JSON.parse(`"${body}"`) as string;
+  } catch {
+    return body;
+  }
+}
+
+/**
+ * Sessions titled before B2 stored the runtime's JSON encoding of the input
+ * parts (`[{"display_content":…`) — and only its first 40 characters, so the
+ * stored title is a truncated JSON prefix. One rule reads it back: the first
+ * `display_content`/`text` string is the member's words (an attachment
+ * marker line inside it is the chip's job), the first `file_name`/`name`
+ * string stands in as `📎 <name>`, and a prefix with nothing recoverable
+ * yields '' so the caller shows the plain default. Never raw JSON.
+ */
+function recoverRuntimeJsonTitle(rawTitle: string): string {
+  const trimmed = rawTitle.trim();
+  if (!trimmed.startsWith('[{"') && !trimmed.startsWith('{"')) return '';
+  const match = trimmed.match(/"(?:display_content|text|file_name|name)":"((?:[^"\\]|\\.)*)/);
+  if (!match) return '';
+  const value = decodeJsonStringBody(match[1]);
+  if (match[0].startsWith('"display_content"') || match[0].startsWith('"text"')) {
+    return stripAttachmentMarkers(value);
+  }
+  const fileName = value.trim();
+  return fileName ? `📎 ${fileName}` : '';
+}
+
 function recordValue(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' && !Array.isArray(value)
     ? value as Record<string, unknown>
@@ -47,11 +114,23 @@ export function sessionTitleForUser(
 ): string {
   const source = recordValue(session);
   const rawTitle = String(source.title || source.name || '').trim() || fallback;
-  if (!hasSessionBranchIdentity(source)) return rawTitle;
+  if (!hasSessionBranchIdentity(source)) {
+    // A runtime-JSON title recovers its member text or falls to the plain
+    // default — the raw JSON encoding is never a title (B2 r3). Current
+    // titles carry the composer's leading attachment markers; the title is
+    // the member's sentence, with the file name as fallback (B2 r2).
+    if (rawTitle.startsWith('[{"') || rawTitle.startsWith('{"')) {
+      return recoverRuntimeJsonTitle(rawTitle) || fallback;
+    }
+    return stripAttachmentMarkers(rawTitle) || rawTitle;
+  }
 
   let title = rawTitle;
   while (LEGACY_BRANCH_TITLE_SUFFIX.test(title)) {
     title = title.replace(LEGACY_BRANCH_TITLE_SUFFIX, '').trim();
   }
-  return title || fallback;
+  if (title.startsWith('[{"') || title.startsWith('{"')) {
+    return recoverRuntimeJsonTitle(title) || fallback;
+  }
+  return stripAttachmentMarkers(title) || fallback;
 }

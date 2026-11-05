@@ -693,6 +693,7 @@ _USER_ARGUMENT_KEYS = {
     "query",
     "url",
     "title",
+    "name",
 }
 _SENSITIVE_ARGUMENT_MARKERS = (
     "secret",

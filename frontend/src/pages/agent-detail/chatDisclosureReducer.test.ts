@@ -270,7 +270,7 @@ describe('chatDisclosureReducer', () => {
       kind: 'file',
       title: 'Write file',
       status: 'done',
-      summary: 'Written to workspace/report.md (1234 chars)',
+      summary: 'report.md',
     });
     expect(timeline.steps[0].summary).not.toContain('RAW REPORT CONTENT');
     expect((timeline.steps[0].details as { rawResult?: unknown }).rawResult).toBe(
@@ -449,7 +449,7 @@ describe('chatDisclosureReducer', () => {
       },
     ]);
 
-    expect(timeline.summary).toBe('Read 2 files · Searched web 1 time');
+    expect(timeline.summary).toEqual({ files: 2, searches: 1, commands: 0 });
   });
 
   it('never counts Personal KB discovery/search reads as web search (DAY1-KNOWLEDGE-UI-TRUTH-001)', () => {
@@ -488,10 +488,11 @@ describe('chatDisclosureReducer', () => {
     ]);
 
     expect(timeline.summary).toBeUndefined();
-    const kbSearchStep = timeline.steps.find((step) => step.title === 'search_personal_kb');
+    // B2: the raw tool id is never the title; the step still carries the KB
+    // query it ran as its summary.
+    const kbSearchStep = timeline.steps.find((step) => step.summary === 'HIVE-PERSONAL-RUN1-QUARTZ-417');
     expect(kbSearchStep?.kind).toBe('tool');
-    // The step-level display still surfaces the KB query it ran.
-    expect(kbSearchStep?.summary).toBe('HIVE-PERSONAL-RUN1-QUARTZ-417');
+    expect(timeline.steps.map((step) => step.title)).not.toContain('search_personal_kb');
   });
 
   it('still counts a real web_search call next to tool discovery and Personal KB reads', () => {
@@ -519,7 +520,7 @@ describe('chatDisclosureReducer', () => {
       },
     ]);
 
-    expect(timeline.summary).toBe('Searched web 1 time');
+    expect(timeline.summary).toEqual({ files: 0, searches: 1, commands: 0 });
   });
 
   it('summarizes tool discovery without exposing raw select queries', () => {
@@ -536,7 +537,9 @@ describe('chatDisclosureReducer', () => {
     expect(timeline.steps[0]).toMatchObject({
       kind: 'tool',
       title: 'Loading tools',
-      summary: 'Checking available tools',
+      // B2: discovery steps carry no summary; the selector query stays inside
+      // the collapsed step details.
+      summary: '',
     });
     expect(timeline.steps[0].summary).not.toContain('select:start_workflow');
   });
@@ -629,17 +632,17 @@ describe('chatDisclosureReducer', () => {
       ['Read file', 'tool_history'],
       ['Search files', 'tool_history'],
       ['Search web', 'tool_history'],
-      ['load_skill', 'tool_history'],
-      ['ask_user_question', 'external'],
+      ['Tool call', 'tool_history'],
+      ['Tool call', 'external'],
       ['Write file', 'surface'],
       ['Run command', 'surface'],
-      ['call_mcp_tool', 'surface'],
-      ['A2A step', 'surface'],
-      ['Sub-agent step', 'surface'],
-      ['Sub-agent step', 'surface'],
+      ['Tool call', 'surface'],
+      ['Delegation step', 'surface'],
+      ['Subagent step', 'surface'],
+      ['Subagent step', 'surface'],
       ['Workflow step', 'surface'],
       ['Schedule step', 'surface'],
-      ['future_unknown_tool', 'surface'],
+      ['Tool call', 'surface'],
     ]);
   });
 
@@ -693,7 +696,7 @@ describe('chatDisclosureReducer', () => {
       }),
       expect.objectContaining({
         title: 'Update tasks',
-        summary: 'Task legacy-task',
+        summary: '',
         presentation: 'external',
       }),
     ]);
@@ -820,9 +823,9 @@ describe('chatDisclosureReducer', () => {
     ] as AgentChatMessage[]);
 
     expect(timeline.steps.map((step) => [step.kind, step.title])).toEqual([
-      ['a2a', 'A2A step'],
-      ['subagent', 'Sub-agent step'],
-      ['a2a', 'A2A session'],
+      ['a2a', 'Delegation step'],
+      ['subagent', 'Subagent step'],
+      ['a2a', 'Delegation update'],
     ]);
   });
 
@@ -842,7 +845,7 @@ describe('chatDisclosureReducer', () => {
     expect(timeline.status).toBe('running');
     expect(timeline.steps[0]).toMatchObject({
       kind: 'a2a',
-      title: 'Action Started',
+      title: 'Runtime event',
       status: 'running',
       summary: '已委派给 Web3研究员，后台执行中。',
     });
@@ -974,5 +977,39 @@ describe('chatDisclosureReducer', () => {
       'subagent',
       'background_agent',
     ]);
+  });
+});
+
+describe('one approved action, one row (B2 r3)', () => {
+  it('folds the approval-aborted call into its re-issued successor', () => {
+    // After a member allows a call, the runtime aborts the original
+    // invocation (`approved_tool_execution_not_released`) and the resumed
+    // turn re-issues the same tool. The aborted attempt is bookkeeping of
+    // the same action, not a second one (r2-zh-05 showed two rows).
+    const messages: AgentChatMessage[] = [
+      { role: 'tool_call', content: '', id: 't-aborted', toolName: 'create_employee_from_request',
+        toolArgs: { name: '周报助手' }, toolStatus: 'done',
+        toolResult: '', toolRawResult: '{"invocation_id":"05c0","provider_tool_use_id":"call_create","reason_code":"approved_tool_execution_not_released","schema":"hive.tool_permission_execution_abort.v1","status":"aborted"}',
+        timestamp: '2026-11-04T12:00:02Z' },
+      { role: 'tool_call', content: '', id: 't-reissued', toolName: 'create_employee_from_request',
+        toolArgs: { name: '周报助手' }, toolStatus: 'running',
+        toolResult: '', timestamp: '2026-11-04T12:00:04Z' },
+    ];
+    const timeline = buildRunTimelineFromMessages(messages, { turnStartedAt: '2026-11-04T12:00:01Z', activeRun: true });
+    const createSteps = timeline.steps.filter(
+      (step) => step.details && typeof step.details === 'object'
+        && (step.details as { toolName?: unknown }).toolName === 'create_employee_from_request',
+    );
+    expect(createSteps).toHaveLength(1);
+    expect(createSteps[0].status).toBe('running');
+    // An ordinary second call to the same tool stays its own step.
+    const distinct = buildRunTimelineFromMessages([
+      { role: 'tool_call', content: '', id: 'a', toolName: 'read_file', toolArgs: { path: 'a.csv' }, toolStatus: 'done', toolResult: 'A', timestamp: '2026-11-04T12:00:01Z' },
+      { role: 'tool_call', content: '', id: 'b', toolName: 'read_file', toolArgs: { path: 'b.csv' }, toolStatus: 'done', toolResult: 'B', timestamp: '2026-11-04T12:00:02Z' },
+    ]);
+    expect(distinct.steps.filter((step) => step.kind === 'file')).toHaveLength(2);
+    // An abort with no successor (nothing re-issued) keeps its row.
+    const orphan = buildRunTimelineFromMessages([messages[0]], { turnStartedAt: '2026-11-04T12:00:01Z' });
+    expect(orphan.steps).toHaveLength(1);
   });
 });

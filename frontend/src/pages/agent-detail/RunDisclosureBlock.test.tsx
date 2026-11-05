@@ -351,22 +351,39 @@ describe('RunDisclosureBlock', () => {
 
   it('renders command details with a preview, complete recoverable output, and an exit code badge', () => {
     const longOutput = Array.from({ length: 20 }, (_, index) => `line-${index + 1}`).join('\n');
+    const commandStep = {
+      id: 'cmd-1',
+      kind: 'command' as const,
+      title: 'Run command',
+      status: 'failed' as const,
+      summary: '',
+      details: { command: 'pytest tests/', output: longOutput, exit_code: 1, duration_ms: 2300 },
+      visibility: 'collapsed' as const,
+    };
+    // B2 r2: a surfaced failed command opens collapsed — the command line and
+    // output wait behind the step's own toggle.
+    const collapsed = renderToStaticMarkup(
+      <RunDisclosureBlock
+        timeline={{
+          ...baseTimeline,
+          status: 'failed',
+          steps: [{ ...commandStep, presentation: 'surface' }],
+        }}
+      />,
+    );
+    expect(collapsed).toContain('Run command');
+    expect(collapsed).not.toContain('$ pytest tests/');
+    expect(collapsed).not.toContain('line-1');
+
+    // The exec view itself keeps its preview, recoverable full output, and
+    // exit badge wherever it is shown: in the opened tool history a failed
+    // command's details remain expanded for inspection.
     const markup = renderToStaticMarkup(
       <RunDisclosureBlock
         timeline={{
           ...baseTimeline,
           status: 'running',
-          steps: [
-            {
-              id: 'cmd-1',
-              kind: 'command',
-              title: 'pytest tests/',
-              status: 'failed',
-              summary: '',
-              details: { command: 'pytest tests/', output: longOutput, exit_code: 1, duration_ms: 2300 },
-              visibility: 'collapsed',
-            },
-          ],
+          steps: [{ ...commandStep, presentation: 'tool_history' }],
         }}
       />,
     );

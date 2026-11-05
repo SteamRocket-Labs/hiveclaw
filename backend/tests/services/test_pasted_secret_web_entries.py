@@ -87,13 +87,17 @@ async def test_web_goal_protects_objective_and_continuation_copies(owner_session
 
 
 @pytest.mark.parametrize("channel", ["web", "feishu"])
-@pytest.mark.parametrize("command,args", [
-    ("loop", {"input": "5m " + KEY}),
-    ("goal", {"objective": KEY}),
-    ("schedule", {"name": "R2 schedule", "instruction": KEY, "cron_expr": "0 * * * *"}),
-    ("once", {"name": "R2 once", "instruction": KEY, "at": "2030-01-01T00:00:00Z"}),
+@pytest.mark.parametrize("command,args,origin", [
+    ("loop", {"input": "5m " + KEY}, "web"),
+    ("loop", {"input": "5m " + KEY, "extra_metadata": {"source": "agent_session_mailbox", "permission_mode": "plan", "minutes": 123}}, "web"),
+    ("goal", {"objective": KEY}, "web"),
+    ("schedule", {"name": "R2 schedule", "instruction": KEY, "cron_expr": "0 * * * *"}, "web"),
+    ("once", {"name": "R2 once", "instruction": KEY, "at": "2030-01-01T00:00:00Z"}, "web"),
+    ("loop", {"input": "5m " + KEY}, "agent"),
+    ("schedule", {"instruction": KEY}, "web"),
+    ("once", {"instruction": KEY}, "web"),
 ])
-async def test_web_commands_protect_every_early_sink(owner_sessionmaker, monkeypatch, channel, command, args):
+async def test_web_commands_protect_every_early_sink(owner_sessionmaker, monkeypatch, channel, command, args, origin):
     import app.api.commands as api
     ids = await _seed_session(owner_sessionmaker)
     async with owner_sessionmaker() as db:
@@ -104,9 +108,15 @@ async def test_web_commands_protect_every_early_sink(owner_sessionmaker, monkeyp
             return {"fired": True}
         monkeypatch.setattr(api, "enforce_plan_gate", gate)
         monkeypatch.setattr(api, "_fire_loop_trigger_now", fire)
-        result = await api.execute_agent_command(agent.id, command, api.ExecuteCommandIn(arguments=args, session_id=str(session.id)), user, db)
-        assert_no_fragments(await stored_rows(db, session.id, agent.id), KEY)
+        result = await api.execute_agent_command(agent.id, command, api.ExecuteCommandIn(arguments=args, session_id=str(session.id), origin=origin), user, db)
+        rows = await stored_rows(db, session.id, agent.id)
+        assert_no_fragments(rows, KEY)
         assert_no_fragments(result, KEY)
+        if command == "loop":
+            assert rows["agent_triggers"][0]["config"]["minutes"] == 5
+            assert "source" not in rows["agent_triggers"][0]["config"]
+        if command in {"schedule", "once"} and "name" not in args:
+            assert result["result"]["pasted_credential_notice"] is True
 
 
 @pytest.mark.parametrize("source", [None, "agent_team_member_run", "session_goal", "future_web_entry"])

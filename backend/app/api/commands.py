@@ -296,7 +296,9 @@ async def _execute_goal_command(
     command_name: str,
     session_id: str | None,
     arguments: dict[str, Any],
+    pasted_credential_notice: bool = False,
 ) -> dict[str, Any]:
+    notice_metadata = {"pasted_credential_notice": True} if pasted_credential_notice else {}
     if command_name == "goal_start":
         session = await _load_chat_session(db, agent_id=agent.id, session_id=session_id)
         objective = str(arguments.get("objective") or arguments.get("prompt") or "").strip()
@@ -312,7 +314,7 @@ async def _execute_goal_command(
             max_continuation_turns=arguments.get("max_continuation_turns"),
             time_budget_seconds=arguments.get("time_budget_seconds"),
             metadata_json={
-                **dict(arguments.get("extra_metadata") or {}),
+                **notice_metadata,
                 "source": "command",
                 "command": "goal_start",
                 "session_id": str(session.id),
@@ -329,7 +331,7 @@ async def _execute_goal_command(
             status=goal.status,
             message=f"Goal started: {objective}",
             metadata={
-                **dict(arguments.get("extra_metadata") or {}),
+                **notice_metadata,
                 "goal_id": str(goal.id),
                 "objective": objective,
                 "command": command_name,
@@ -486,7 +488,9 @@ async def _execute_schedule_command(
     session_id: str | None,
     arguments: dict[str, Any],
     access_level: str = "use",
+    pasted_credential_notice: bool = False,
 ) -> dict[str, Any]:
+    notice_metadata = {"pasted_credential_notice": True} if pasted_credential_notice else {}
     if command_name not in _SCHEDULE_COMMANDS:
         raise HTTPException(status_code=501, detail=f"Unsupported schedule command {command_name!r}")
     if access_level != "manage":
@@ -531,7 +535,7 @@ async def _execute_schedule_command(
     config: dict[str, Any] = {
         "trigger_class": "scheduled_job",
         "legacy_surface": "command_surface",
-        **dict(arguments.get("extra_metadata") or {}),
+        **notice_metadata,
         "command": command_name,
         "created_by": str(user.id),
     }
@@ -648,7 +652,7 @@ async def _execute_schedule_command(
         status="created",
         message=f"{'Schedule' if event_type == 'schedule' else 'One-time task'} created: {name}",
         metadata={
-            **dict(arguments.get("extra_metadata") or {}),
+            **notice_metadata,
             "schedule_id": str(trigger.id) if event_type == "schedule" else None,
             "once_id": str(trigger.id) if event_type == "once" else None,
             "name": name,
@@ -723,6 +727,7 @@ async def _execute_loop_self_pace(
     user: User,
     session_id: str | None,
     prompt: str,
+    pasted_credential_notice: bool = False,
 ) -> dict[str, Any]:
     """B2 dynamic /loop: no interval → the model paces itself.
 
@@ -750,7 +755,8 @@ async def _execute_loop_self_pace(
         display_content=f"/loop {prompt}",
         runtime_task_type=WEB_CHAT_TURN_TASK_TYPE,
         budget_interactive=False,
-        extra_metadata={"source": "loop_self_pace_kickoff", "command": "loop"},
+        extra_metadata={"source": "loop_self_pace_kickoff", "command": "loop",
+            **({"pasted_credential_notice": True} if pasted_credential_notice else {})},
     )
     return {
         "ok": True,
@@ -801,13 +807,16 @@ async def _execute_loop_command(
     session_id: str | None,
     arguments: dict[str, Any],
     access_level: str = "use",
+    pasted_credential_notice: bool = False,
 ) -> dict[str, Any]:
+    notice_metadata = {"pasted_credential_notice": True} if pasted_credential_notice else {}
     if access_level != "manage":
         raise HTTPException(status_code=403, detail="Manage access is required to start a loop")
 
     interval_token, prompt, explicit = _parse_loop_args(arguments)
     if interval_token is None:
-        return await _execute_loop_self_pace(db=db, agent=agent, user=user, session_id=session_id, prompt=prompt)
+        return await _execute_loop_self_pace(db=db, agent=agent, user=user, session_id=session_id, prompt=prompt,
+            pasted_credential_notice=pasted_credential_notice)
     minutes, interval_error = _parse_loop_interval(interval_token)
     if minutes is None:
         # An explicit bad interval is a validation error; a natural leading token
@@ -817,7 +826,8 @@ async def _execute_loop_command(
             return {"ok": False, "command": "loop", "status": "invalid_interval", "message": interval_error}
         natural_prompt = " ".join(part for part in (interval_token, prompt) if part).strip()
         return await _execute_loop_self_pace(
-            db=db, agent=agent, user=user, session_id=session_id, prompt=natural_prompt
+            db=db, agent=agent, user=user, session_id=session_id, prompt=natural_prompt,
+            pasted_credential_notice=pasted_credential_notice,
         )
     if not prompt:
         return {
@@ -832,7 +842,7 @@ async def _execute_loop_command(
     stored_minutes: float | int = int(minutes) if float(minutes).is_integer() else minutes
     config: dict[str, Any] = {
         "minutes": stored_minutes,
-        **dict(arguments.get("extra_metadata") or {}),
+        **notice_metadata,
         "trigger_class": "scheduled_job",
         "delivery": "same_session",
         "source_session_id": str(session.id),
@@ -900,7 +910,7 @@ async def _execute_loop_command(
         status="created",
         message=f"Loop started every {interval_token}: {prompt}",
         metadata={
-            **dict(arguments.get("extra_metadata") or {}),
+            **notice_metadata,
             "loop_id": str(trigger.id),
             "trigger_id": str(trigger.id),
             "interval_minutes": float(minutes),
@@ -1420,12 +1430,13 @@ async def execute_agent_command(
             raise HTTPException(status_code=404, detail="Command not found") from exc
     _enforce_command_origin_safety(command, body.origin)
     _enforce_web_user_command_surface(command, command_name, body.origin)
-    if body.origin == "web":
-        protected = await redact_runtime_ingress_payload(
-            db, tenant_id=getattr(agent, "tenant_id", None), agent_id=agent.id, source_channel="web",
-            payload=body.arguments,
-        )
-        body = body.model_copy(update={"arguments": protected.value})
+    # Caller-supplied origin and arguments do not select the ingress policy.
+    protected = await redact_runtime_ingress_payload(
+        db, tenant_id=getattr(agent, "tenant_id", None), agent_id=agent.id, source_channel="web",
+        payload={"arguments": body.arguments},
+    )
+    body = body.model_copy(update={"arguments": protected.value["arguments"]})
+    pasted_credential_notice = (protected.value.get("extra_metadata") or {}).get("pasted_credential_notice") is True
     mcp_action = str(body.arguments.get("action") or "") if command.name == "mcp" else ""
     if (
         command.name in _RUN_PRODUCING_COMMANDS
@@ -1537,6 +1548,7 @@ async def execute_agent_command(
             command_name=command.name,
             session_id=body.session_id,
             arguments=body.arguments,
+            pasted_credential_notice=pasted_credential_notice,
         )
         await db.commit()
         return {"ok": True, "command": command.name, "result": result}
@@ -1553,7 +1565,10 @@ async def execute_agent_command(
         return {"ok": True, "command": command.name, "result": result}
     if command.name in _SCHEDULE_COMMANDS:
         if body.origin == "web" and not _schedule_has_structured_required_args(command.name, body.arguments):
-            return {"ok": True, "command": command.name, "result": _schedule_chat_prompt(command.name, body.arguments)}
+            draft = _schedule_chat_prompt(command.name, body.arguments)
+            if pasted_credential_notice:
+                draft["pasted_credential_notice"] = True
+            return {"ok": True, "command": command.name, "result": draft}
         result = await _execute_schedule_command(
             db=db,
             agent=agent,
@@ -1562,6 +1577,7 @@ async def execute_agent_command(
             session_id=body.session_id,
             arguments=body.arguments,
             access_level=access_level,
+            pasted_credential_notice=pasted_credential_notice,
         )
         await db.commit()
         return {"ok": True, "command": command.name, "result": result}
@@ -1573,6 +1589,7 @@ async def execute_agent_command(
             session_id=body.session_id,
             arguments=body.arguments,
             access_level=access_level,
+            pasted_credential_notice=pasted_credential_notice,
         )
         if result.pop("fire_immediately", False) and result.get("id"):
             # Persist the trigger before firing so the daemon path can load it.

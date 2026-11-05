@@ -545,6 +545,7 @@
     "title": "My Assistant",
     "loading": "Loading your assistant",
     "setupByAdmin": "Ask your company admin to set up an assistant.",
+    "connectionFailed": "Could not reach your assistant. Please try again.",
     "empty": "My Assistant is not set up yet",
     "open": "Open My Assistant",
     "select": "Use the selected employee",

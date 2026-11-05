@@ -1,4 +1,5 @@
 import React from 'react';
+import { Link } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 
@@ -10,6 +11,8 @@ import { triggerApi } from '../../api/domains/triggers';
 import AgentActionPolicyCard from './AgentActionPolicyCard';
 import './AgentSettingsSection.css';
 import CommandEnvironment from '../../components/CommandEnvironment';
+import { useAuthStore } from '../../stores';
+import { useAssistantAgentId } from '../assistant/assistantScope';
 
 type AgentSettingsForm = {
   primary_model_id: string;
@@ -178,6 +181,8 @@ export default function AgentSettingsSection({
   onReviewPatrolPlan,
 }: AgentSettingsSectionProps) {
   const { t, i18n } = useTranslation();
+  const user = useAuthStore((state) => state.user);
+  const assistantAgentId = useAssistantAgentId(user);
   const queryClient = useQueryClient();
   const { data: triggerData = [], isLoading: patrolLoading } = useQuery({
     queryKey: ['triggers', agentId],
@@ -500,7 +505,7 @@ export default function AgentSettingsSection({
       <CommandEnvironment agentId={agentId} />
       <div className="agent-settings-header">
         <h3 className="agent-settings-title">{t('agent.settings.title')}</h3>
-        <a className="btn btn-secondary" href="/assistant?settings=true">{t('assistant.chooseAnother')}</a>
+        {agentId === assistantAgentId && <Link className="btn btn-secondary" to="/assistant?settings=true">{t('assistant.chooseAnother')}</Link>}
         <div className="agent-settings-header-actions">
           {settingsSaved && <span className="agent-settings-status is-success">{t('agent.settings.saved', 'Saved')}</span>}
           {settingsError && (

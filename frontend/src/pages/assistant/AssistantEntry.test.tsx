@@ -265,13 +265,13 @@ describe('AssistantEntry synthetic transport', () => {
     await waitFor(() => expect(screen.getByTestId('location').textContent).toBe('/agents/agent-1'));
   });
 
-  it('shows the admin sentence when neither assistant nor sidebar bots can load', async () => {
+  it('keeps a failed assistant read recoverable without opening a different employee', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify(workingBinding()), { status: 503, headers: { 'content-type': 'application/json' } })));
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     render(<MemoryRouter><QueryClientProvider client={client}><AssistantEntry mode="assistant" /></QueryClientProvider></MemoryRouter>);
-    expect(await screen.findByText('assistant.setupByAdmin')).toBeTruthy();
+    expect(await screen.findByText('assistant.connectionFailed')).toBeTruthy();
     expect(screen.queryByLabelText('assistant.firstWork')).toBeNull();
-    expect(screen.queryByRole('button')).toBeNull();
+    expect(screen.getByRole('button', { name: 'assistant.retry' })).toBeTruthy();
   });
 
 });

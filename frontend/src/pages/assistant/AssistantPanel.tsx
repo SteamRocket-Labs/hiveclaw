@@ -16,14 +16,45 @@ interface AssistantPanelProps {
 }
 
 function stateText(state: string, t: (key: string) => string): string {
-  const keys: Record<string, string> = {
-    unbound: 'empty', model_unconfigured: 'modelMissing', model_forbidden: 'modelForbidden',
-    provision_incomplete: 'pending', employee_deleted: 'deleted', employee_inactive: 'inactive',
-    transferred: 'transferred', inaccessible: 'inaccessible', ineligible: 'inaccessible', denied: 'denied',
-    cross_company: 'crossCompany', worker_unavailable: 'workerUnavailable', worker_unknown: 'workerUnknown',
-    active: 'bound', company_required: 'companyRequired', scope_changed: 'scopeChanged', legacy_unresolved: 'legacyUnresolved',
-  };
-  return t(`assistant.${keys[state] || 'unavailable'}`);
+  switch (state) {
+    case 'unbound':
+      return t('assistant.empty');
+    case 'model_unconfigured':
+      return t('assistant.modelMissing');
+    case 'model_forbidden':
+      return t('assistant.modelForbidden');
+    case 'provision_incomplete':
+      return t('assistant.pending');
+    case 'employee_deleted':
+      return t('assistant.deleted');
+    case 'employee_inactive':
+      return t('assistant.inactive');
+    case 'transferred':
+      return t('assistant.transferred');
+    case 'inaccessible':
+    case 'ineligible':
+      return t('assistant.inaccessible');
+    case 'denied':
+      return t('assistant.denied');
+    case 'cross_company':
+      return t('assistant.crossCompany');
+    case 'worker_unavailable':
+      return t('assistant.workerUnavailable');
+    case 'worker_unknown':
+      return t('assistant.workerUnknown');
+    case 'active':
+      return t('assistant.bound');
+    case 'model_unavailable':
+      return t('assistant.unavailable');
+    case 'company_required':
+      return t('assistant.companyRequired');
+    case 'scope_changed':
+      return t('assistant.scopeChanged');
+    case 'legacy_unresolved':
+      return t('assistant.legacyUnresolved');
+    default:
+      return t('assistant.unavailable');
+  }
 }
 
 /** Explicit assistant settings; never shown on the conversation landing. */

@@ -75,7 +75,7 @@ describe('member conversation landing', () => {
     expect(vi.mocked(fetch).mock.calls.some(([url]) => url === '/api/assistant/open')).toBe(false);
   });
 
-  it.each(['model_unconfigured', 'model_forbidden', 'provision_incomplete', 'http_failure'])(
+  it.each(['model_unconfigured', 'model_forbidden', 'http_failure'])(
     'opens the first sidebar bot through B5 when provisioning returns %s', async (state) => {
       transport({ ...unbound, state }, bots, unbound, state === 'http_failure' ? 503 : 200);
       mount();
@@ -83,6 +83,12 @@ describe('member conversation landing', () => {
       expect(screen.queryByRole('radio')).toBeNull();
     },
   );
+
+  it('opens an assistant still preparing when the sidebar contains its agent', async () => {
+    transport({ ...own, state: 'provision_incomplete', entry: unbound.entry }, [...bots, own.agent]);
+    mount();
+    await waitFor(() => expect(screen.getByTestId('destination').textContent).toBe('/agents/own#chat'));
+  });
 
   it('shows one admin sentence with no setup controls when there is no available bot', async () => {
     transport({ ...unbound, state: 'model_unconfigured' }, []);

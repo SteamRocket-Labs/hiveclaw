@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode, type RefObject } from 'react';
 import { NavLink, useLocation, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { useQuery } from '@tanstack/react-query';
 import {
   IconBell,
   IconBuilding,
@@ -18,12 +17,11 @@ import {
   IconUser,
   IconWorld,
 } from '@tabler/icons-react';
-import { assistantApi } from '../../api/domains/assistant';
 import { agentApi, type HrAgentInfo } from '../../api/domains/agents';
 import { isActiveCompany } from '../../api/domains/admin';
 import { isManagedEmployeeAgent } from '../../roles';
 import { buildNewSessionDraftNavigation } from '../agent-detail/newSessionNavigation';
-import { sortSidebarAgents } from '../assistant/assistantScope';
+import { sidebarAgentLink, sortSidebarAgents, useAssistantAgentId } from '../assistant/assistantScope';
 
 const sidebarIcons = {
   user: <IconUser size={16} stroke={1.5} />,
@@ -137,14 +135,7 @@ export default function AppSidebar({
   // The bot is the way in (B3): My Assistant's own binding decides which bot
   // leads the list. The read shares the assistant cache the entry route uses,
   // so it adds no request once that page has loaded.
-  const assistantBinding = useQuery({
-    queryKey: ['assistant', user?.id || '', currentTenant || user?.tenant_id || '', user?.role || ''],
-    queryFn: () => assistantApi.get(),
-    enabled: Boolean(user?.id) && Boolean(currentTenant || user?.tenant_id),
-    staleTime: 30_000,
-    retry: false,
-  });
-  const assistantAgentId = assistantBinding.data?.agent?.id ? String(assistantBinding.data.agent.id) : null;
+  const assistantAgentId = useAssistantAgentId(user, currentTenant || (user?.role === 'platform_admin' ? '' : user?.tenant_id) || '');
 
   // 我的助理 first, then the rest by most recent activity. The HR creation
   // Agent is the creation flow, not a workspace entry, so it stays out of the
@@ -277,23 +268,21 @@ export default function AppSidebar({
           {sortedAgents.map((agent) => {
             const badge = getAgentBadgeStatus(agent);
             const sourceBadge = getAgentSourceBadge(agent, t, user);
-            const avatarChar = ((Array.from(agent.name || '?')[0] as string) || '?').toUpperCase();
+            const name = String(agent.id) === assistantAgentId ? t('assistant.title') : agent.name;
+            const avatarChar = ((Array.from(name || '?')[0] as string) || '?').toUpperCase();
             const isAgentRowActive = String(activeAgentId || '') === String(agent.id);
-            const operatorOnly = agent.access_level === 'operator';
             // B5: opening a bot opens its conversation (#chat is the workbench),
             // or a fresh one when it has none. Operator-only bots keep their
             // managed entry; local-runtime bots keep the management landing
             // (their channel does not use chat sessions).
-            const botEntry = operatorOnly
-              ? `/agents/${agent.id}?manage=true#chat`
-              : isLocalAgentRuntimeType(agent) ? `/agents/${agent.id}` : `/agents/${agent.id}#chat`;
+            const botEntry = sidebarAgentLink(agent);
             return (
               <NavLink
                 key={agent.id}
                 to={botEntry}
                 className={() => `sidebar-item sidebar-agent-link ${isAgentRowActive ? 'active' : ''}`}
-                title={agent.name}
-                aria-label={`Open ${agent.name}`}
+                title={name}
+                aria-label={`Open ${name}`}
               >
                 <span className="sidebar-item-icon" style={{ position: 'relative' }}>
                   <span className={`agent-avatar${isLocalAgentRuntimeType(agent) ? ' local-runtime' : ''}`}>{avatarChar}</span>
@@ -304,7 +293,7 @@ export default function AppSidebar({
                   )}
                   {badge && <span className={`agent-avatar-badge ${badge}`} />}
                 </span>
-                <span className="sidebar-item-text">{agent.name}</span>
+                <span className="sidebar-item-text">{name}</span>
                 {sourceBadge && !isSidebarCollapsed && <span className="sidebar-agent-source-badge">{sourceBadge}</span>}
               </NavLink>
             );

@@ -1,4 +1,5 @@
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useRef, useState } from 'react';
+import { useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query';
 import { Navigate, useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { ApiError } from '../../api/core';
@@ -6,19 +7,22 @@ import { assistantApi, type AssistantBinding, type AssistantScopeEcho } from '..
 import { agentApi } from '../../api/domains/agents';
 import { useAuthStore } from '../../stores';
 import AssistantPanel from './AssistantPanel';
-import { assistantScopeStillCurrent, entryShouldNavigate, sortSidebarAgents, useAssistantTenant } from './assistantScope';
+import { assistantScopeStillCurrent, entryShouldNavigate, sidebarAgentLink, sortSidebarAgents, useAssistantTenant } from './assistantScope';
 import './assistant.css';
 
 function currentScope() {
   const user = useAuthStore.getState().user;
   return {
     userId: user?.id ?? null,
-    tenantId: localStorage.getItem('current_tenant_id') || user?.tenant_id || null,
+    tenantId: localStorage.getItem('current_tenant_id') || (user?.role === 'platform_admin' ? null : user?.tenant_id) || null,
     role: user?.role ?? null,
   };
 }
 
 type Scope = ReturnType<typeof currentScope>;
+
+// One automatic attempt per page/client and scope, including cancelled attempts.
+const automaticOpens = new WeakMap<QueryClient, Set<string>>();
 
 function echo(scope: Scope): AssistantScopeEcho {
   return { expected_user_id: scope.userId || undefined, expected_tenant_id: scope.tenantId || undefined };
@@ -38,7 +42,7 @@ function stillCurrent(started: Scope, payload?: AssistantBinding) {
 
 export default function AssistantEntry({ mode }: { mode: 'entry' | 'assistant' }) {
   const user = useAuthStore((state) => state.user);
-  const tenantId = useAssistantTenant(user?.tenant_id ?? null);
+  const tenantId = useAssistantTenant(user?.role === 'platform_admin' ? null : user?.tenant_id ?? null);
   const scope = { userId: user?.id ?? null, tenantId: tenantId || null, role: user?.role ?? null };
   void mode;
   return <ScopedAssistantEntry key={`${scope.userId}|${scope.tenantId}|${scope.role}`} scope={scope} />;
@@ -49,17 +53,36 @@ function ScopedAssistantEntry({ scope }: { scope: Scope }) {
   const [params] = useSearchParams();
   const settings = params.get('settings') === 'true';
   const queryClient = useQueryClient();
+  const [pending, setPending] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const actionLock = useRef(false);
   const bindingKey = ['assistant', scope.userId || '', scope.tenantId || '', scope.role || ''];
   // Entry owns automatic provisioning; the sidebar's read must not win query deduplication.
   const queryKey = ['assistant-entry', ...bindingKey.slice(1), settings];
   const query = useQuery({
     queryKey,
-    queryFn: async () => {
-      let result = await assistantApi.get(echo(scope));
+    queryFn: async ({ signal }) => {
+      let result = await assistantApi.get(echo(scope), { signal });
+      signal.throwIfAborted();
       if (!stillCurrent(scope, result)) throw new ApiError(409, 'scope changed', { state: 'scope_changed' });
-      if (!settings && ['unbound', 'provision_incomplete'].includes(result.state)) {
-        result = await assistantApi.open(echo(scope));
+      const attempted = automaticOpens.get(queryClient) || new Set<string>();
+      automaticOpens.set(queryClient, attempted);
+      const scopeKey = JSON.stringify(bindingKey);
+      if (!settings && ['member', 'org_admin'].includes(scope.role || '')
+        && ['unbound', 'provision_incomplete'].includes(result.state) && !attempted.has(scopeKey)) {
+        attempted.add(scopeKey);
+        try {
+          result = await assistantApi.open(echo(scope), { signal });
+        } catch (error) {
+          if (signal.aborted) throw error;
+          // A successful read followed by a failed opening may use the sidebar.
+          return result;
+        }
+        signal.throwIfAborted();
         if (!stillCurrent(scope, result)) throw new ApiError(409, 'scope changed', { state: 'scope_changed' });
+        // Drop a sidebar GET started before this write before publishing the binding.
+        await queryClient.cancelQueries({ queryKey: bindingKey, exact: true });
+        signal.throwIfAborted();
         if (result.created) void queryClient.invalidateQueries({ queryKey: ['agents', scope.tenantId] });
       }
       queryClient.setQueryData(bindingKey, result);
@@ -69,25 +92,38 @@ function ScopedAssistantEntry({ scope }: { scope: Scope }) {
     retry: false,
   });
   const payload = query.data && stillCurrent(scope, query.data) ? query.data : null;
+  const errorState = query.error instanceof ApiError
+    ? String((query.error.data as { state?: string } | null)?.state || 'unavailable')
+    : query.error ? 'unavailable' : null;
   const hasConversation = payload && (entryShouldNavigate(payload.entry) || (payload.state === 'active' && payload.agent?.id));
   const fallback = useQuery({
     queryKey: ['agents', scope.tenantId || ''],
     queryFn: () => agentApi.list(scope.tenantId || undefined),
-    enabled: !settings && !query.isPending && !query.isFetching && !hasConversation && Boolean(scope.userId && scope.tenantId),
+    enabled: !settings && query.isSuccess && !query.isFetching && !hasConversation && Boolean(scope.userId && scope.tenantId),
     staleTime: 30_000,
     retry: false,
   });
 
-  const saveBinding = useMutation({
-    mutationFn: (operation: () => Promise<AssistantBinding>) => operation(),
-    onSuccess: (next) => {
+  async function saveBinding(operation: () => Promise<AssistantBinding>) {
+    if (actionLock.current) return;
+    actionLock.current = true;
+    setPending(true);
+    setActionError(null);
+    try {
+      const next = await operation();
       if (!stillCurrent(scope, next)) return;
       queryClient.setQueryData(queryKey, next);
       queryClient.setQueryData(bindingKey, next);
-    },
-  });
+      if (next.rejection) setActionError(t('assistant.inaccessible'));
+    } catch (error) {
+      if (stillCurrent(scope)) setActionError(error instanceof Error ? error.message : t('assistant.actionFailed'));
+    } finally {
+      actionLock.current = false;
+      setPending(false);
+    }
+  }
 
-  if (!query.isFetching && payload) {
+  if (query.isSuccess && !query.isFetching && payload) {
     // B5 resolves the latest conversation for every bot, including empty drafts.
     if ((!settings || payload.applied) && hasConversation && payload.agent?.id) {
       return <Navigate to={`/agents/${payload.agent.id}#chat`} replace />;
@@ -95,9 +131,15 @@ function ScopedAssistantEntry({ scope }: { scope: Scope }) {
   }
 
   if (!settings) {
-    const first = sortSidebarAgents(fallback.data || [], payload?.agent?.id)
-      .find((agent) => agent.id !== payload?.agent?.id);
-    if (!query.isFetching && stillCurrent(scope) && first) return <Navigate to={`/agents/${first.id}#chat`} replace />;
+    if (!scope.tenantId || errorState === 'company_required' || payload?.state === 'company_required') {
+      return <p className="assistant-entry" role="status">{t('assistant.companyRequired')}</p>;
+    }
+    if (query.isError) return <div className="assistant-entry">
+      <p role="status">{t('assistant.connectionFailed')}</p>
+      <button className="btn btn-secondary" onClick={() => { void query.refetch(); }}>{t('assistant.retry')}</button>
+    </div>;
+    const first = sortSidebarAgents(fallback.data || [], payload?.agent?.id)[0];
+    if (query.isSuccess && !query.isFetching && stillCurrent(scope) && first) return <Navigate to={sidebarAgentLink(first)} replace />;
     return <p className="assistant-entry" role="status">{t(query.isPending || query.isFetching || fallback.isFetching
       ? 'assistant.loading' : 'assistant.setupByAdmin')}</p>;
   }
@@ -105,17 +147,16 @@ function ScopedAssistantEntry({ scope }: { scope: Scope }) {
   return <AssistantPanel
     payload={payload}
     loading={query.isLoading}
-    errorState={query.error instanceof ApiError ? String((query.error.data as { state?: string })?.state || 'unavailable')
-      : query.error ? 'unavailable' : null}
-    actionError={saveBinding.error?.message || (saveBinding.data?.rejection ? t('assistant.inaccessible') : null)}
-    busy={saveBinding.isPending}
-    onOpen={(replace) => saveBinding.mutate(() => assistantApi.open({ ...echo(scope), replace_unavailable: replace }))}
-    onSelect={(agentId) => saveBinding.mutate(() => assistantApi.select({ ...echo(scope), agent_id: agentId }))}
+    errorState={errorState}
+    actionError={actionError}
+    busy={pending}
+    onOpen={(replace) => { void saveBinding(() => assistantApi.open({ ...echo(scope), replace_unavailable: replace })); }}
+    onSelect={(agentId) => { void saveBinding(() => assistantApi.select({ ...echo(scope), agent_id: agentId })); }}
     onRetry={() => {
       if (payload?.state === 'provision_incomplete') {
-        saveBinding.mutate(() => assistantApi.open(echo(scope)));
+        void saveBinding(() => assistantApi.open(echo(scope)));
       } else {
-        saveBinding.reset();
+        setActionError(null);
         void query.refetch();
       }
     }}

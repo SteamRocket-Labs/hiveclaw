@@ -519,6 +519,8 @@
     "actionFailed": "操作未完成，请重试。",
     "title": "我的助理",
     "loading": "正在读取助理",
+    "setupByAdmin": "请联系公司管理员设置助理。",
+    "connectionFailed": "暂时无法连接助理，请重试。",
     "empty": "还没有开通我的助理",
     "open": "开通我的助理",
     "select": "使用所选员工",

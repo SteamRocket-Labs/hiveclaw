@@ -22,6 +22,7 @@ import MarkdownRenderer from '../../components/MarkdownRenderer';
 import AuthenticatedImage from '../../components/AuthenticatedImage';
 import ThinkingDisclosure from './ThinkingDisclosure';
 import type { AgentPermissions } from '../../api/domains/agents';
+import { useAssistantAgentId } from '../assistant/assistantScope';
 import AskUserQuestionCard from './AskUserQuestionCard';
 import PlanModeRequestCard from './PlanModeRequestCard';
 import CopyMessageButton from './CopyMessageButton';
@@ -1053,6 +1054,7 @@ function AgentChatSection({
   sessionOnly = false,
 }: AgentChatSectionProps) {
   const { t } = useTranslation();
+  const assistantAgentId = useAssistantAgentId(currentUser);
   const activeSession = sessionTransitionPending ? null : selectedActiveSession;
   const runtimeSummary = sessionTransitionPending ? null : selectedRuntimeSummary;
   const isWaiting = sessionTransitionPending ? false : selectedIsWaiting;
@@ -1176,7 +1178,7 @@ function AgentChatSection({
     : '';
   const agentDisplayName = (agent as any)?.agent_class === 'internal_system' || agent?.name === '__system_hr__'
     ? t('agentCreate.hrAgentName', 'HR Agent')
-    : agent?.name || '';
+    : effectiveAgentId === assistantAgentId ? t('assistant.title') : agent?.name || '';
   const permissionModeLabel = getSessionPermissionModeLabel(sessionPermissionMode, t);
   const permissionModeVisible = sessionPermissionModeVisible(agent, sessionPermissionMode, planModeRequested, goalModeRequested);
   const projectContextAvailable = !operatorView && !isDraftSession && activeSession?.audience_kind !== 'group' && Boolean(currentUser?.id && activeSessionId);

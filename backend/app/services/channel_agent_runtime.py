@@ -650,6 +650,7 @@ async def call_agent_llm(
                 content=user_text,
                 attachments=attachments,
                 source=session_channel or session_source or "channel",
+                source_channel=session_channel or "channel",
                 input_id=canonical_ingress_id,
                 idempotency_key=(
                     f"channel:{str(session_channel or session_source or 'channel').strip().lower()}"

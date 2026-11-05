@@ -273,6 +273,11 @@ async def login(data: UserLogin, db: AsyncSession = Depends(get_db)):
     user_role = user.role
     user_tenant_id = user.tenant_id
     user_out = UserOut.model_validate(user)
+    tenant_name = getattr(tenant, "name", None) if tenant is not None else None
+    if tenant_name:
+        # The member's own company name rides on the profile so workspace
+        # labels can show it without any extra request.
+        user_out = user_out.model_copy(update={"tenant_name": tenant_name})
     needs_setup = user_tenant_id is None
     needs_password_change = bool(getattr(user, "must_change_password", False))
     token = create_access_token(str(user_id), user_role, tenant_id=str(user_tenant_id) if user_tenant_id else None)
@@ -307,10 +312,26 @@ async def login(data: UserLogin, db: AsyncSession = Depends(get_db)):
     )
 
 
+async def _user_out_with_tenant(db: AsyncSession, current_user) -> UserOut:
+    """UserOut carrying the member's own company name for workspace labels."""
+    user_out = UserOut.model_validate(current_user)
+    if current_user.tenant_id is None:
+        return user_out
+    from app.models.tenant import Tenant
+
+    tenant = await db.get(Tenant, current_user.tenant_id)
+    if tenant is not None and getattr(tenant, "name", None):
+        user_out = user_out.model_copy(update={"tenant_name": tenant.name})
+    return user_out
+
+
 @router.get("/me", response_model=UserOut)
-async def get_me(current_user: User = Depends(get_current_user)):
+async def get_me(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
     """Get current user profile."""
-    return UserOut.model_validate(current_user)
+    return await _user_out_with_tenant(db, current_user)
 
 
 @router.patch("/me", response_model=UserOut)
@@ -331,7 +352,7 @@ async def update_me(
     for field, value in update_data.items():
         setattr(current_user, field, value)
     await db.flush()
-    return UserOut.model_validate(current_user)
+    return await _user_out_with_tenant(db, current_user)
 
 
 @router.put("/me/password")

@@ -20,6 +20,15 @@ class RuntimeIngressSecretBoundaryUnavailable(RuntimeError):
     """The authoritative credential inventory could not be loaded."""
 
 
+_PASTE_POLICY_EXEMPT_SOURCES = frozenset({
+    "feishu", "lark", "dingtalk", "wecom", "slack", "telegram", "channel",
+    "plan_mode_handoff", "runtime_result_integration", "hr_agent_handoff",
+    "trigger_reflection", "system_plan_run", "loop_same_session",
+    "goal_continuation", "agent_session_mailbox",
+    "discord", "microsoft_teams", "wechat_personal", "a2a", "task_notification",
+})
+
+
 async def load_exact_secret_boundary(
     db: AsyncSession,
     *,
@@ -236,21 +245,38 @@ async def redact_runtime_ingress_payload(
     agent_id: uuid.UUID | None,
     payload: Any,
     reply_target: dict[str, Any] | None = None,
+    source_channel: str | None = None,
+    source: str | None = None,
 ) -> ExactSecretPayloadRedaction:
-    """Redact only exact authority-backed values before durable ingress."""
+    """Protect durable ingress, including the opt-in Web paste policy."""
+
+    from app.services.privacy_layer import PrivacyLayer
+
+    if not PrivacyLayer.has_member_text(payload):
+        return ExactSecretPayloadRedaction(value=payload)
+    web_paste = source_channel == "web" and source not in _PASTE_POLICY_EXEMPT_SOURCES
+    pasted_count = 0
+    if web_paste:
+        pasted = PrivacyLayer.redact_pasted_credentials(payload)
+        payload = pasted.value
+        pasted_count = pasted.redacted_count
 
     if not isinstance(db, AsyncSession):
         # Production entry points are typed to AsyncSession. Lightweight unit
         # doubles cannot prove tenant pinning or credential-store authority,
         # so they exercise wiring with an injected redactor instead.
-        return ExactSecretPayloadRedaction(value=payload)
-    boundary = await load_runtime_ingress_secret_boundary(
-        db,
-        tenant_id=tenant_id,
-        agent_id=agent_id,
-        reply_target=reply_target,
-    )
-    return boundary.redact_payload_with_evidence(payload)
+        redaction = ExactSecretPayloadRedaction(value=payload)
+    else:
+        boundary = await load_runtime_ingress_secret_boundary(
+            db,
+            tenant_id=tenant_id,
+            agent_id=agent_id,
+            reply_target=reply_target,
+        )
+        redaction = boundary.redact_payload_with_evidence(payload)
+    if web_paste and (pasted_count or redaction.redacted_count) and isinstance(redaction.value, dict):
+        redaction.value.setdefault("extra_metadata", {})["pasted_credential_notice"] = True
+    return redaction
 
 
 def exact_secret_redaction_receipt(

@@ -26,6 +26,21 @@ function historyTime(session: Record<string, unknown>, locale: string): string {
   }
 }
 
+/**
+ * A stop-acknowledgement notice describes a run that is still settling. Once
+ * the run itself has reached its terminal state (已停止 and friends), the
+ * notice is stale and must not linger above the composer (B2). Other notices
+ * are untouched.
+ */
+export function settledRunHidesNotice(
+  notice: string | null | undefined,
+  runStatus: string | null | undefined,
+  stopNoticeText: string,
+): boolean {
+  if (!notice || notice !== stopNoticeText) return false;
+  return ['cancelled', 'canceled', 'stopped', 'failed', 'complete', 'completed'].includes(String(runStatus || ''));
+}
+
 export interface SessionHistoryMenuProps {
   /** The bot whose conversations these are; also the new-conversation target. */
   agentId: string;
@@ -142,13 +157,13 @@ export function SessionWorkbenchHeader({ model, history, manageHref }: {
   // you, done, failed, stopped). Unconfirmed-outcome sessions surface through
   // their underlying status, not a dedicated chip (product definition P3).
   // A conversation with no run yet (idle) shows no run status at all.
+  // Failed runs show no "see below" line: the failure card speaks for itself
+  // and a member must never be promised steps that are not there (B2).
   const showRunStatus = model.status !== 'idle';
   const statusLabel = runtimeStatusLabel(model.status, t);
   const guidance = model.status === 'waiting'
     ? t('sessionWorkbench.waitingGuidance', 'Review the request below and choose the next action.')
-    : model.status === 'failed'
-      ? t('sessionWorkbench.failedGuidance', 'Review the failed step below and its recovery instructions.')
-      : null;
+    : null;
   const managementHref = manageHref ?? history?.manageHref ?? null;
   return (
     <div data-testid="session-workbench-header" className="swb-header">

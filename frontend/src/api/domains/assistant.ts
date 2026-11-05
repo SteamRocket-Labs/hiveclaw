@@ -3,6 +3,7 @@
  */
 
 import { get, post } from '../core';
+import type { RequestOptions } from '../core/request';
 
 export interface AssistantScopeEcho {
   expected_user_id?: string;
@@ -68,8 +69,8 @@ function scopeQuery(scope?: AssistantScopeEcho): string {
 }
 
 export const assistantApi = {
-  get: (scope?: AssistantScopeEcho) => get<AssistantBinding>(`/assistant${scopeQuery(scope)}`),
-  open: (body: AssistantScopeEcho & { idempotency_key?: string; replace_unavailable?: boolean }) =>
-    post<AssistantBinding>('/assistant/open', body),
+  get: (scope?: AssistantScopeEcho, options?: RequestOptions) => get<AssistantBinding>(`/assistant${scopeQuery(scope)}`, options),
+  open: (body: AssistantScopeEcho & { idempotency_key?: string; replace_unavailable?: boolean }, options?: RequestOptions) =>
+    post<AssistantBinding>('/assistant/open', body, options),
   select: (body: AssistantScopeEcho & { agent_id: string }) => post<AssistantBinding>('/assistant/select', body),
 };

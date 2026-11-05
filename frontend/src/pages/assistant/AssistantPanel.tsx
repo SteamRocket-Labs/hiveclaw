@@ -57,11 +57,7 @@ function stateText(state: string, t: (key: string) => string): string {
   }
 }
 
-/**
- * Minimal fallback shown only when no assistant conversation can be opened
- * (first run, or the bound assistant is unavailable). Diagnostics live in
- * settings/admin surfaces, not on this panel (product definition P3).
- */
+/** Explicit assistant settings; never shown on the conversation landing. */
 export default function AssistantPanel({
   payload,
   loading,
@@ -128,7 +124,7 @@ export default function AssistantPanel({
           {t('assistant.retry')}
         </button>
         {payload?.entry.kind === 'session' || payload?.entry.kind === 'employee' ? (
-          <Link className="btn btn-secondary" to={payload.entry.path}>{t('assistant.continue')}</Link>
+          <Link className="btn btn-secondary" to={`/agents/${payload.entry.agent_id}#chat`}>{t('assistant.continue')}</Link>
         ) : null}
       </div>
     </section>

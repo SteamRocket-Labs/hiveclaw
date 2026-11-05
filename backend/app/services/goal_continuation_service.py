@@ -354,6 +354,14 @@ async def continue_session_goal(
         prompt = f"{objective_updated_prompt(_prompt_state(goal, now=now))}\n\n{prompt}"
         metadata["objective_updated_pending"] = False
 
+    from app.services.credential_boundary_loader import redact_runtime_ingress_payload
+
+    protected = await redact_runtime_ingress_payload(
+        db, tenant_id=agent.tenant_id, agent_id=agent.id, source_channel="web",
+        payload={"prompt": prompt, "goal_objective": goal.objective},
+    )
+    prompt = protected.value["prompt"]
+
     continuation_index = int(goal.continuation_count or 0)
     continuation_input_id = goal_continuation_run_id(goal.id, continuation_index)
     # The ingress commits internally: persist the count, decision, and input
@@ -376,7 +384,7 @@ async def continue_session_goal(
         idempotency_key=f"session-goal:{goal.id}:continuation:{continuation_index}",
         extra_runtime_metadata={
             "goal_id": str(goal.id),
-            "goal_objective": goal.objective,
+            "goal_objective": protected.value["goal_objective"],
             "continuation_count_before": continuation_index,
         },
     )

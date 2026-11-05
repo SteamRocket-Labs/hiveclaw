@@ -20,6 +20,14 @@ class RuntimeIngressSecretBoundaryUnavailable(RuntimeError):
     """The authoritative credential inventory could not be loaded."""
 
 
+_PASTE_POLICY_EXEMPT_SOURCES = frozenset({
+    "feishu", "lark", "dingtalk", "wecom", "slack", "telegram", "channel",
+    "plan_mode_handoff", "runtime_result_integration", "hr_agent_handoff",
+    "trigger_reflection", "system_plan_run", "loop_same_session",
+    "goal_continuation", "agent_session_mailbox",
+})
+
+
 async def load_exact_secret_boundary(
     db: AsyncSession,
     *,
@@ -237,11 +245,14 @@ async def redact_runtime_ingress_payload(
     payload: Any,
     reply_target: dict[str, Any] | None = None,
     source_channel: str | None = None,
+    source: str | None = None,
 ) -> ExactSecretPayloadRedaction:
     """Protect durable ingress, including the opt-in Web paste policy."""
 
+    metadata_source = (payload.get("extra_metadata") or {}).get("source") if isinstance(payload, dict) else None
+    web_paste = source_channel == "web" and source not in _PASTE_POLICY_EXEMPT_SOURCES and metadata_source not in _PASTE_POLICY_EXEMPT_SOURCES
     pasted_count = 0
-    if source_channel == "web":
+    if web_paste:
         from app.services.privacy_layer import PrivacyLayer
 
         pasted = PrivacyLayer.redact_pasted_credentials(payload)
@@ -261,24 +272,8 @@ async def redact_runtime_ingress_payload(
             reply_target=reply_target,
         )
         redaction = boundary.redact_payload_with_evidence(payload)
-    if source_channel == "web" and (pasted_count or redaction.redacted_count):
-        notice = {
-            "zh": "我把一段密钥藏起来了，数字员工看不到原文。",
-            "en": "I hid a credential so your digital employee cannot see its original value.",
-        }
-        protected = redaction.value
-        if protected.get("content"):
-            protected["display_content"] = (
-                protected.get("display_content") or protected["content"]
-            ) + "\n\n" + notice["zh"]
-        else:
-            for part in protected.get("parts", []):
-                if part.get("type") == "text" and isinstance(part.get("text"), str):
-                    part["display_content"] = (
-                        part.get("display_content") or part["text"]
-                    ) + "\n\n" + notice["zh"]
-                    break
-        protected.setdefault("extra_metadata", {})["pasted_credential_notice"] = notice
+    if web_paste and (pasted_count or redaction.redacted_count):
+        redaction.value.setdefault("extra_metadata", {})["pasted_credential_notice"] = True
     return redaction
 
 

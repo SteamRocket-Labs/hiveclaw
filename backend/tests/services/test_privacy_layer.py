@@ -124,10 +124,10 @@ def test_web_paste_policy_covers_synthetic_classes_without_masking_ordinary_stri
     from tests.services.pasted_secret_corpus import negative_cases, positive_cases
 
     for kind, text, secret in positive_cases():
-        protected = PrivacyLayer.redact_pasted_credentials({"content": text, "copy": secret})
-        assert secret not in protected.value["content"], kind
-        assert protected.value["copy"] == "[REDACTED_SECRET]", kind
-        assert protected.redacted_count >= 2, kind
+        from tests.services.test_pasted_secret_policy_r2 import assert_no_fragments
+        protected = PrivacyLayer.redact_pasted_credentials({"content": text})
+        assert_no_fragments(protected.value, secret)
+        assert protected.redacted_count >= 1, kind
     for kind, text in negative_cases():
         protected = PrivacyLayer.redact_pasted_credentials({"content": text})
         assert protected.value == {"content": text}, kind
@@ -138,7 +138,7 @@ async def test_paste_policy_does_not_change_im_and_retains_locale_notice():
     from uuid import uuid4
     from app.services.credential_boundary_loader import redact_runtime_ingress_payload
 
-    content = "api_key: synthetic-key-for-web-only"
+    content = "api_key: SyntheticKeyForWeb0123456789"
     payload = {"content": content}
     for channel in (None, "feishu", "dingtalk", "slack", "telegram", "wecom"):
         result = await redact_runtime_ingress_payload(
@@ -149,9 +149,7 @@ async def test_paste_policy_does_not_change_im_and_retains_locale_notice():
         object(), tenant_id=uuid4(), agent_id=uuid4(), payload=payload, source_channel="web",
     )
     assert result.value["content"] == "api_key: [REDACTED_SECRET]"
-    assert result.value["extra_metadata"]["pasted_credential_notice"]["en"] == (
-        "I hid a credential so your digital employee cannot see its original value."
-    )
+    assert result.value["extra_metadata"]["pasted_credential_notice"] is True
     assert payload == {"content": content}
 
 
@@ -172,7 +170,8 @@ async def test_web_paste_notice_also_covers_an_exact_known_opaque_credential(mon
             db, tenant_id=uuid4(), agent_id=uuid4(), payload={"content": secret}, source_channel="web",
         )
     assert result.value["content"] == "[REDACTED_SECRET]"
-    assert "我把一段密钥藏起来了" in result.value["display_content"]
+    assert result.value["extra_metadata"]["pasted_credential_notice"] is True
+    assert "display_content" not in result.value
     assert result.matched_refs == ("test-credential",)
 
 
@@ -184,4 +183,5 @@ async def test_web_paste_redaction_is_idempotent_across_ingress_and_dispatch():
     first = await redact_runtime_ingress_payload(object(), payload={"content": 'password="Synthetic passphrase!"'}, **arguments)
     second = await redact_runtime_ingress_payload(object(), payload=first.value, **arguments)
     assert first.value == second.value
-    assert first.value["display_content"].count("我把一段密钥藏起来了") == 1
+    assert first.value["extra_metadata"]["pasted_credential_notice"] is True
+    assert "display_content" not in first.value

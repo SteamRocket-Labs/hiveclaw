@@ -1341,12 +1341,17 @@ async def create_session(
 
     now = datetime.now(tz.utc)
     new_id = uuid.uuid4()
+    from app.services.credential_boundary_loader import redact_runtime_ingress_payload
+
+    protected_title = await redact_runtime_ingress_payload(
+        db, tenant_id=getattr(agent, "tenant_id", getattr(current_user, "tenant_id", None)), agent_id=agent_id, source_channel="web", payload={"title": body.title},
+    )
     session = ChatSession(
         id=new_id,
         agent_id=agent_id,
         tenant_id=getattr(agent, "tenant_id", getattr(current_user, "tenant_id", None)),
         user_id=current_user.id,
-        title=body.title or f"Session {now.strftime('%m-%d %H:%M')}",
+        title=protected_title.value["title"] or f"Session {now.strftime('%m-%d %H:%M')}",
         created_at=now,
         source_channel="web",
         session_kind="human_chat",
@@ -1396,7 +1401,12 @@ async def rename_session(
         require_writable=True,
     )
 
-    session.title = body.title
+    from app.services.credential_boundary_loader import redact_runtime_ingress_payload
+
+    protected_title = await redact_runtime_ingress_payload(
+        db, tenant_id=session.tenant_id, agent_id=agent_id, source_channel="web", payload={"title": body.title},
+    )
+    session.title = protected_title.value["title"]
     await db.commit()
     return {"id": str(session.id), "title": session.title}
 
@@ -1633,9 +1643,14 @@ async def create_session_run(
         or session.audience_kind not in {None, "private"}):
         raise HTTPException(409, detail={"code": "first_input_session_conflict"})
     if session is None:
+        from app.services.credential_boundary_loader import redact_runtime_ingress_payload
+
+        protected_title = await redact_runtime_ingress_payload(
+            db, tenant_id=tenant_id, agent_id=agent_id, source_channel="web", payload={"title": body.title},
+        )
         session = ChatSession(
             id=session_id, agent_id=agent_id, tenant_id=tenant_id, user_id=current_user.id,
-            title=body.title or f"Session {now.strftime('%m-%d %H:%M')}", created_at=now,
+            title=protected_title.value["title"] or f"Session {now.strftime('%m-%d %H:%M')}", created_at=now,
             source_channel="web", session_kind="human_chat", actor_type="user", runtime_source="web_chat",
             visibility_scope="direct_user", listed_surface="chat",
         )

@@ -50,7 +50,8 @@ async def test_web_paste_is_protected_before_every_durable_copy(owner_sessionmak
             for kind, _, secret in cases:
                 assert secret not in persisted, kind
                 assert json.dumps(secret, ensure_ascii=False)[1:-1] not in persisted, kind
-            assert "我把一段密钥藏起来了，数字员工看不到原文。" in persisted
+            assert '"pasted_credential_notice": true' in persisted
+            assert "我把一段密钥藏起来了" not in persisted
         else:
             inputs = await db.execute(text("SELECT content_parts_json FROM session_turn_inputs WHERE session_id=:session"), {"session": session_id})
             assert any(part.get("text") == content for parts in inputs.scalars() for part in parts)

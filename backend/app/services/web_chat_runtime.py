@@ -1213,6 +1213,7 @@ async def _submit_active_session_input(
             agent_id=agent.id,
             reply_target=getattr(session, "delivery_target_json", None),
             source_channel=source_channel,
+            source=source_channel,
             payload={
                 "content": content,
                 "display_content": display_content,
@@ -2737,6 +2738,7 @@ async def start_web_chat_run(
             agent_id=agent.id,
             reply_target=getattr(session, "delivery_target_json", None),
             source_channel=(extra_metadata or {}).get("channel") or "web",
+            source=(extra_metadata or {}).get("source"),
             payload={
                 "content": content,
                 "display_content": display_content,

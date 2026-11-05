@@ -6999,7 +6999,8 @@ async def test_new_web_input_never_persists_pasted_credentials(monkeypatch, tmp_
         for kind, _text, secret in cases:
             assert secret not in persisted, kind
             assert json.dumps(secret, ensure_ascii=False)[1:-1] not in persisted, kind
-        assert "我把一段密钥藏起来了，数字员工看不到原文。" in persisted
+        assert '"pasted_credential_notice": true' in persisted
+        assert "我把一段密钥藏起来了" not in persisted
     else:
         assert task.prompt == content
         assert task.metadata_json["initial_user_message"]["content"] == content

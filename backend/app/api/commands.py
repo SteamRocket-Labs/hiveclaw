@@ -35,6 +35,7 @@ from app.services.agent_tools import execute_tool
 from app.services.chat_message_parts import build_session_native_event
 from app.services.session_workspace_snapshot import finalize_workspace_restore
 from app.services.chat_transcript import append_session_event
+from app.services.credential_boundary_loader import redact_runtime_ingress_payload
 from app.services.coding_pack_manifest import CODING_PACK_COMMAND_NAMES, coding_pack_command_manifest
 from app.services.command_registry import build_default_command_registry
 from app.services.command_registry import CommandDefinition
@@ -311,6 +312,7 @@ async def _execute_goal_command(
             max_continuation_turns=arguments.get("max_continuation_turns"),
             time_budget_seconds=arguments.get("time_budget_seconds"),
             metadata_json={
+                **dict(arguments.get("extra_metadata") or {}),
                 "source": "command",
                 "command": "goal_start",
                 "session_id": str(session.id),
@@ -327,6 +329,7 @@ async def _execute_goal_command(
             status=goal.status,
             message=f"Goal started: {objective}",
             metadata={
+                **dict(arguments.get("extra_metadata") or {}),
                 "goal_id": str(goal.id),
                 "objective": objective,
                 "command": command_name,
@@ -528,6 +531,7 @@ async def _execute_schedule_command(
     config: dict[str, Any] = {
         "trigger_class": "scheduled_job",
         "legacy_surface": "command_surface",
+        **dict(arguments.get("extra_metadata") or {}),
         "command": command_name,
         "created_by": str(user.id),
     }
@@ -644,6 +648,7 @@ async def _execute_schedule_command(
         status="created",
         message=f"{'Schedule' if event_type == 'schedule' else 'One-time task'} created: {name}",
         metadata={
+            **dict(arguments.get("extra_metadata") or {}),
             "schedule_id": str(trigger.id) if event_type == "schedule" else None,
             "once_id": str(trigger.id) if event_type == "once" else None,
             "name": name,
@@ -827,6 +832,7 @@ async def _execute_loop_command(
     stored_minutes: float | int = int(minutes) if float(minutes).is_integer() else minutes
     config: dict[str, Any] = {
         "minutes": stored_minutes,
+        **dict(arguments.get("extra_metadata") or {}),
         "trigger_class": "scheduled_job",
         "delivery": "same_session",
         "source_session_id": str(session.id),
@@ -894,6 +900,7 @@ async def _execute_loop_command(
         status="created",
         message=f"Loop started every {interval_token}: {prompt}",
         metadata={
+            **dict(arguments.get("extra_metadata") or {}),
             "loop_id": str(trigger.id),
             "trigger_id": str(trigger.id),
             "interval_minutes": float(minutes),
@@ -1413,6 +1420,12 @@ async def execute_agent_command(
             raise HTTPException(status_code=404, detail="Command not found") from exc
     _enforce_command_origin_safety(command, body.origin)
     _enforce_web_user_command_surface(command, command_name, body.origin)
+    if body.origin == "web":
+        protected = await redact_runtime_ingress_payload(
+            db, tenant_id=getattr(agent, "tenant_id", None), agent_id=agent.id, source_channel="web",
+            payload=body.arguments,
+        )
+        body = body.model_copy(update={"arguments": protected.value})
     mcp_action = str(body.arguments.get("action") or "") if command.name == "mcp" else ""
     if (
         command.name in _RUN_PRODUCING_COMMANDS

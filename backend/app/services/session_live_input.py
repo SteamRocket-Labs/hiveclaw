@@ -161,14 +161,8 @@ async def submit_live_human_input(
             tenant_id=agent.tenant_id,
             agent_id=agent.id,
             reply_target=getattr(session, "delivery_target_json", None),
-            source_channel=(
-                "web"
-                if source in {
-                    "web", "websocket_message", "session_input_api", "session_command_steer",
-                    "legacy_rest_create_session_run", "legacy_rest_start_session_run",
-                } or source.startswith("conversation_branch_")
-                else getattr(session, "source_channel", "web") or "web"
-            ),
+            source_channel="web",
+            source=source,
             payload={
                 "content": content,
                 "display_content": display_content,
@@ -190,7 +184,8 @@ async def submit_live_human_input(
     input_uuid = _input_id(input_id)
     clean_source = str(source or "runtime").strip() or "runtime"
     key = str(idempotency_key or f"{clean_source}:human-input:{input_uuid}")
-    runtime_metadata = {**dict(protected["extra_metadata"]), "source": clean_source}
+    runtime_metadata = dict(protected["extra_metadata"])
+    runtime_metadata.setdefault("source", clean_source)
     redaction_receipt = exact_secret_redaction_receipt(
         redaction,
         phase="session_v2_human_input",
@@ -207,6 +202,11 @@ async def submit_live_human_input(
         file_name=file_name,
         role=role,
     )
+    if runtime_metadata.get("pasted_credential_notice") is True:
+        for part in content_parts:
+            if part.get("type") == "text":
+                part["metadata"] = {**dict(part.get("metadata") or {}), "pasted_credential_notice": True}
+                break
     from app.services.team_task_context import validate_selection as validate_team_task_selection
     from app.services.content_input_receipts import ContentInputReceiptError
 
@@ -643,6 +643,10 @@ def _human_input_payload(
         "replayed": accepted.replayed,
         "run": run,
         "dispatch": dict(dispatch_receipt or {}),
+        "pasted_credential_notice": any(
+            (part.get("metadata") or {}).get("pasted_credential_notice") is True
+            for part in getattr(row, "content_parts_json", ()) or []
+        ),
     }
 
 

@@ -126,19 +126,30 @@ class PrivacyLayer:
     _PHONE_RE = re.compile(r"(?<![\w-])(?:\+?\d[\d\s().-]{7,}\d)(?![\w:-])")
     _CREDENTIAL_PATTERNS = (
         re.compile(
-            r"\b(?:api[_-]?key|(?:aws[ _-]?)?secret[ _-]?access[ _-]?key|"
-            r"(?:app|client)[ _-]?secret|secret|token|password|credential)"
-            r"[\"']?\s*(?:[:=]\s*|\n\s*)(?P<quote>[\"'])?"
-            r"(?!\[REDACTED_SECRET\])"
-            r"(?P<value>(?(quote)(?:\\.|[^\\\r\n])+?|[^\s\"'`,;&<>]{8,}))"
-            r"(?(quote)(?P=quote))", re.I,
+            r"\b(?P<label>api[ _-]?key|(?:aws[ _-]?)?secret[ _-]?access[ _-]?key|"
+            r"(?:app|client)[ _-]?secret|(?:access|refresh|api|auth|bot)_token|"
+            r"[A-Za-z][A-Za-z0-9_]*_(?:API_KEY|PASSWORD|SECRET)|secret|password|credential|密码)"
+            r"[\"']?[ \t]*(?:[:=：][ \t]*|是[ \t]+)(?P<quote>[\"'])?"
+            r"(?P<value>(?(quote)(?:\\.|[^\\\r\n])+?|[A-Za-z0-9_+/.!@#$%^*?~=\-]{8,}))"
+            r"(?(quote)(?P=quote)|(?![\w.\[(-]))", re.I,
         ),
-        re.compile(r"\bpassword\s*[:=]\s*(?!\[REDACTED_SECRET\])(?P<value>[^\s\"'`,;&<>]+)", re.I),
+        re.compile(r"\b(?P<label>App[ _]?Secret|client_secret|Secret[ _]access[ _]key)"
+                   r"[ \t]*\r?\n[ \t]*(?P<value>[A-Za-z0-9_+/=\-]{8,})(?![\w.\[(-])", re.I),
+        re.compile(r"\b(?P<label>Authorization):[ \t]*Bearer[ \t]+(?P<value>[A-Za-z0-9._~+/=\-]{8,})", re.I),
+        re.compile(r"\bpostgres(?:ql)?://[^\s:/@]+:(?P<value>[^\s@]+)@", re.I),
+        re.compile(r"\bAKIA[0-9A-Z]{16}[ \t]*,[ \t]*(?P<value>[A-Za-z0-9/+=]{40})(?![\w/+=])"),
+        re.compile(r"https://(?:open\.feishu\.cn|open\.larksuite\.com)/open-apis/bot/v2/hook/(?P<value>[\w-]{16,})"),
+        re.compile(r"https://oapi\.dingtalk\.com/robot/send\?access_token=(?P<value>[\w-]{16,})"),
+        re.compile(r"https://hooks\.slack\.com/services/(?P<value>[A-Za-z0-9_/-]{20,})"),
         re.compile(r"\bsk-[A-Za-z0-9_\-]{20,}\b"),
         re.compile(r"\bgh[pousr]_[A-Za-z0-9_]{20,}\b"),
         re.compile(r"\bgithub_pat_[A-Za-z0-9_]{22,}\b"),
         re.compile(r"\bxox[baprs]-[A-Za-z0-9-]{20,}\b"),
         re.compile(r"\bAKIA[0-9A-Z]{16}\b"),
+        re.compile(r"\bLTAI[A-Za-z0-9]{16,}\b"),
+        re.compile(r"\bAKID[A-Za-z0-9]{16,}\b"),
+        re.compile(r"\bglpat-[A-Za-z0-9_-]{20,}\b"),
+        re.compile(r"\bhf_[A-Za-z0-9]{20,}\b"),
         re.compile(r"\bsk_(?:live|test)_[A-Za-z0-9]{20,}\b"),
         re.compile(r"\bAIza[\w-]{35}(?![\w-])"),
         re.compile(r"\beyJ[\w-]+\.[\w-]+\.[\w-]{16,}(?![\w-])"),
@@ -148,29 +159,51 @@ class PrivacyLayer:
 
     @classmethod
     def redact_pasted_credentials(cls, payload):
-        """Apply the Web paste policy without changing privacy classification.
+        """Replace only matched spans in authored fields, never structural data."""
+        from app.services.exact_secret_boundary import ExactSecretPayloadRedaction
 
-        Candidates are not verified credentials. Their values live only in this
-        call so copies in display text, parts and metadata are hidden together.
-        """
-        def strings(value):
-            if isinstance(value, str):
-                yield value
-            elif isinstance(value, dict):
-                for key, item in value.items():
-                    yield from strings(key)
-                    yield from strings(item)
-            elif isinstance(value, (list, tuple)):
-                for item in value:
-                    yield from strings(item)
+        count = 0
+        text_fields = {"content", "text", "display_content", "title", "name", "objective", "goal_objective", "prompt", "instruction", "reason", "input", "context", "creation_brief", "last_continuation_prompt", "copied_input"}
 
-        candidates = (
-            ("pasted-credential-candidate", match.groupdict().get("value") or match.group())
-            for text in strings(payload)
-            for pattern in cls._CREDENTIAL_PATTERNS
-            for match in pattern.finditer(text)
-        )
-        return ExactSecretBoundary.from_pairs(candidates).redact_payload_with_evidence(payload)
+        def walk(value, field=None):
+            nonlocal count
+            if isinstance(value, str) and field in text_fields:
+                spans = cls._credential_spans(value)
+                count += len(spans)
+                for start, end in reversed(spans):
+                    value = value[:start] + "[REDACTED_SECRET]" + value[end:]
+                return value
+            if isinstance(value, dict):
+                return {key: walk(item, key) for key, item in value.items()}
+            if isinstance(value, (list, tuple)):
+                return [walk(item) for item in value]
+            return value
+
+        return ExactSecretPayloadRedaction(value=walk(payload), redacted_count=count)
+
+    @classmethod
+    def _credential_spans(cls, text: str) -> list[tuple[int, int]]:
+        spans = []
+        for pattern in cls._CREDENTIAL_PATTERNS:
+            for match in pattern.finditer(text):
+                groups = match.groupdict()
+                value = groups.get("value") or match.group()
+                if groups.get("label") and not (
+                    len(value) >= 8 and (
+                        (groups.get("quote") and " " in value)
+                        or (re.search(r"[A-Za-z]", value) and re.search(r"\d", value))
+                        or re.match(r"(?:sk-|gh[pousr]_|github_pat_|xox[baprs]-|glpat-|hf_|LTAI|AKID|AKIA|AIza)", value)
+                    )
+                ):
+                    continue
+                spans.append(match.span("value") if groups.get("value") else match.span())
+        merged = []
+        for start, end in sorted(spans):
+            if merged and start < merged[-1][1]:
+                merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+            else:
+                merged.append((start, end))
+        return merged
 
     def __init__(
         self,
@@ -225,18 +258,7 @@ class PrivacyLayer:
         )
 
     def _credential_candidate_count(self, text: str) -> int:
-        spans: list[tuple[int, int]] = []
-        for pattern in self._CREDENTIAL_PATTERNS:
-            spans.extend((match.start(), match.end()) for match in pattern.finditer(text))
-        spans.sort()
-        merged: list[tuple[int, int]] = []
-        for start, end in spans:
-            if merged and start < merged[-1][1]:
-                previous_start, previous_end = merged[-1]
-                merged[-1] = (previous_start, max(previous_end, end))
-            else:
-                merged.append((start, end))
-        return len(merged)
+        return len(self._credential_spans(text))
 
     def _replace_matches(
         self,

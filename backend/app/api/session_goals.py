@@ -20,6 +20,7 @@ from app.models.agent_session_goal import AgentSessionGoal
 from app.models.chat_session import ChatSession
 from app.models.user import User
 from app.services.chat_transcript import append_session_event
+from app.services.credential_boundary_loader import redact_runtime_ingress_payload
 from app.services.goal_continuation_service import continue_session_goal
 from app.services.session_goal_projection import build_session_goal_projection
 from app.services.session_live_input import submit_live_cancel_input, submit_live_human_input
@@ -149,6 +150,7 @@ async def _append_goal_transition_event(
         source="session_goal",
         materialize_chat_message=False,
         metadata={
+            **({"pasted_credential_notice": True} if action == "started" and (goal.metadata_json or {}).get("pasted_credential_notice") else {}),
             "goal_id": str(goal.id),
             "action": action,
             "status": goal.status,
@@ -198,6 +200,11 @@ async def start_session_goal(
         require_execution=bool(body.start_immediately),
     )
     agent = decision.agent
+    protected = await redact_runtime_ingress_payload(
+        db, tenant_id=agent.tenant_id, agent_id=agent.id, source_channel="web",
+        payload=body.model_dump(),
+    )
+    body = body.model_copy(update={key: value for key, value in protected.value.items() if key in type(body).model_fields})
     goal, created = await _create_or_load_goal(
         db=db,
         agent=agent,
@@ -206,6 +213,8 @@ async def start_session_goal(
         body=body,
     )
     if created:
+        if protected.value.get("extra_metadata"):
+            goal.metadata_json = {**dict(goal.metadata_json or {}), **protected.value["extra_metadata"]}
         await _append_goal_transition_event(
             db=db,
             agent=agent,
@@ -275,6 +284,7 @@ async def start_session_goal(
                 parts=list(body.parts),
                 allow_project_selection=True,
                 runtime_metadata={
+                    **dict(protected.value.get("extra_metadata") or {}),
                     "runtime_task_type": "web_chat_turn",
                     "budget_interactive": False,
                     "goal_id": str(goal.id),

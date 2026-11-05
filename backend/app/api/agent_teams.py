@@ -731,6 +731,15 @@ async def message_agent_team_member(
         raise HTTPException(status_code=409, detail="Agent team member is closed")
     session = await _load_member_session_or_404(db, agent_id=agent_id, member=member)
 
+    from app.services.credential_boundary_loader import RuntimeIngressSecretBoundaryUnavailable, redact_runtime_ingress_payload
+
+    try:
+        protected = await redact_runtime_ingress_payload(db, tenant_id=agent.tenant_id,
+            agent_id=agent.id, source_channel="web",
+            payload={"message": body.message, "display_content": body.display_content})
+    except RuntimeIngressSecretBoundaryUnavailable as exc:
+        raise HTTPException(status_code=503, detail="Credential protection boundary is temporarily unavailable") from exc
+    notice = (protected.value.get("extra_metadata") or {}).get("pasted_credential_notice") is True
     payload = await message_agent_team_members_runtime(
         db=db,
         agent=agent,
@@ -738,13 +747,14 @@ async def message_agent_team_member(
         team=team,
         members=[member],
         member_sessions=[session],
-        message=body.message,
-        display_content=body.display_content,
+        message=protected.value["message"],
+        display_content=protected.value["display_content"],
         interrupt_requested=body.interrupt,
         source="agent_teams_api",
+        pasted_credential_notice=notice,
     )
     result = payload["results"][0] if payload.get("results") else {}
-    return {**_member_payload(member), **result, "team_message": payload}
+    return {**_member_payload(member), **result, "team_message": payload, **({"pasted_credential_notice": True} if notice else {})}
 
 
 @router.post("/{team_id}/close")

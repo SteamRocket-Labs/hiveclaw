@@ -36,6 +36,28 @@ from app.services.session_v2_persistence import (
 from app.services.session_tool_runtime import assert_session_tool_effects_settled
 
 
+def shape_human_input_parts(parts, *, pasted_credential_notice=False) -> list[dict[str, Any]]:
+    """Keep supported input fields; only the server can attach the paste notice."""
+    fields = {"type", "text", "display_content", "file_name", "role", "attachment",
+              "project_id", "entry_ids", "team_task_source"}
+    attachment_fields = {"name", "path", "size", "mime_type", "is_image", "has_image_data",
+                         "conversion", "original_attachment"}
+    result = []
+    for part in parts:
+        if not isinstance(part, dict):
+            continue
+        item = {key: value for key, value in part.items() if key in fields}
+        if isinstance(item.get("attachment"), dict):
+            item["attachment"] = {key: value for key, value in item["attachment"].items() if key in attachment_fields}
+        result.append(item)
+    if pasted_credential_notice:
+        for item in result:
+            if item.get("type") == "text":
+                item["metadata"] = {"pasted_credential_notice": True}
+                break
+    return result
+
+
 def content_parts_from_live_ingress(
     *,
     content: str,
@@ -45,7 +67,7 @@ def content_parts_from_live_ingress(
     file_name: str = "",
     role: str = "user",
 ) -> list[dict[str, Any]]:
-    """Preserve every ingress byte/reference without semantic pruning."""
+    """Preserve supported text and attachment references exactly as typed."""
 
     normalized_role = str(role or "user").strip().lower()
     if normalized_role not in {"user", "system"}:
@@ -67,7 +89,7 @@ def content_parts_from_live_ingress(
             result.append({"type": "attachment_ref", "attachment": dict(attachment)})
     if not result:
         raise ValueError("content_parts must not be empty")
-    return result
+    return shape_human_input_parts(result)
 
 
 def _runtime_content(content_parts: list[dict[str, Any]]) -> str:
@@ -127,6 +149,7 @@ async def submit_live_human_input(
     session: ChatSession,
     content: str,
     source: str,
+    source_channel: str = "web",
     input_id: uuid.UUID | str | None = None,
     idempotency_key: str | None = None,
     requested_kind: str = "auto",
@@ -161,12 +184,15 @@ async def submit_live_human_input(
             tenant_id=agent.tenant_id,
             agent_id=agent.id,
             reply_target=getattr(session, "delivery_target_json", None),
+            source_channel=source_channel,
+            source=source,
             payload={
                 "content": content,
                 "display_content": display_content,
                 "file_name": file_name,
                 "attachments": list(attachments or ()),
-                "parts": list(parts or ()),
+                "parts": shape_human_input_parts(parts or ()),
+                "extra_metadata": dict(runtime_metadata or {}),
             },
         )
     except RuntimeIngressSecretBoundaryUnavailable as exc:
@@ -181,7 +207,8 @@ async def submit_live_human_input(
     input_uuid = _input_id(input_id)
     clean_source = str(source or "runtime").strip() or "runtime"
     key = str(idempotency_key or f"{clean_source}:human-input:{input_uuid}")
-    runtime_metadata = {**dict(runtime_metadata or {}), "source": clean_source}
+    runtime_metadata = dict(protected["extra_metadata"])
+    runtime_metadata["source"] = clean_source
     redaction_receipt = exact_secret_redaction_receipt(
         redaction,
         phase="session_v2_human_input",
@@ -198,6 +225,8 @@ async def submit_live_human_input(
         file_name=file_name,
         role=role,
     )
+    content_parts = shape_human_input_parts(content_parts,
+        pasted_credential_notice=runtime_metadata.get("pasted_credential_notice") is True)
     from app.services.team_task_context import validate_selection as validate_team_task_selection
     from app.services.content_input_receipts import ContentInputReceiptError
 
@@ -634,6 +663,10 @@ def _human_input_payload(
         "replayed": accepted.replayed,
         "run": run,
         "dispatch": dict(dispatch_receipt or {}),
+        "pasted_credential_notice": any(
+            (part.get("metadata") or {}).get("pasted_credential_notice") is True
+            for part in getattr(row, "content_parts_json", ()) or []
+        ),
     }
 
 

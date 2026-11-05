@@ -525,15 +525,24 @@ async def create_current_user_local_agent_channel_message(
     _session, host_owner_user_id = await channel_service.get_channel_session_for_actor(
         db, session_id=session_id, actor_user_id=current_user.id, access_user=current_user, action="message"
     )
+    from app.services.credential_boundary_loader import RuntimeIngressSecretBoundaryUnavailable, redact_runtime_ingress_payload
+
+    try:
+        protected = await redact_runtime_ingress_payload(db, tenant_id=current_user.tenant_id,
+            agent_id=_session.get("agent_id"), source_channel="web",
+            payload={"content": body.content, "attachments": body.attachments,
+                     "extra_metadata": {key: value for key, value in body.metadata.items() if key != "pasted_credential_notice"}})
+    except RuntimeIngressSecretBoundaryUnavailable as exc:
+        raise HTTPException(status_code=503, detail="Credential protection boundary is temporarily unavailable") from exc
     payload = await channel_service.enqueue_channel_message(
         db,
         session_id=session_id,
         owner_user_id=host_owner_user_id,
         sender_user_id=current_user.id,
         sender_agent_id=None,
-        content=body.content,
-        attachments=body.attachments,
-        metadata={**body.metadata, "source": "local_agents_page"},
+        content=protected.value["content"],
+        attachments=protected.value["attachments"],
+        metadata={**protected.value["extra_metadata"], "source": "local_agents_page"},
         idempotency_key=body.idempotency_key,
     )
     if _runner_dispatch_allowed(payload):

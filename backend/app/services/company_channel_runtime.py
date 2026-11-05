@@ -137,7 +137,7 @@ async def process_company_message(db, item, body):
         conversation_id=str(session.id), source_ingress_event_id=item.id))
     await db.flush()
     receipt = await submit_live_human_input(db=db, agent=agent, user=actor, session=session,
-        content=str(body.get('user_text') or ''), attachments=attachments, source=item.provider, input_id=item.id,
+        content=str(body.get('user_text') or ''), attachments=attachments, source=item.provider, source_channel=item.provider, input_id=item.id,
         idempotency_key=f'channel:{item.provider}:ingress:{item.id}',
         runtime_metadata={'source': item.provider, 'channel': item.provider,
             'channel_ingress_event_id': str(item.id), 'budget_interactive': False})

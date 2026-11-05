@@ -438,6 +438,15 @@ async def create_conversation_branch(
     contract_overrides = _session_contract_overrides(source_session, mode_text)
     branch_session_id = deterministic_branch_id or uuid.uuid4()
     tenant_id = getattr(agent, "tenant_id", getattr(source_session, "tenant_id", None))
+    from app.services.credential_boundary_loader import RuntimeIngressSecretBoundaryUnavailable, redact_runtime_ingress_payload
+
+    try:
+        protected_title = await redact_runtime_ingress_payload(
+            db, tenant_id=tenant_id, agent_id=agent.id, source_channel="web", payload={"title": title},
+        )
+    except RuntimeIngressSecretBoundaryUnavailable as exc:
+        raise HTTPException(status_code=503, detail="Credential protection boundary is temporarily unavailable") from exc
+    title = protected_title.value["title"]
     target_workspace_uri = f"session://{branch_session_id}/workspace"
     from app.runtime.hooks import HookEvent, emit_hook
 

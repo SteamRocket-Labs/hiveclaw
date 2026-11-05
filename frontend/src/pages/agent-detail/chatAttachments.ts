@@ -1,5 +1,6 @@
 import type { UploadedChatFile } from '../../api/domains/chat';
 import type { AgentChatMessage } from './chatRuntime';
+import { dropLeadingAttachmentMarkers } from '../session-workbench/sessionTitlePresentation';
 
 const IMAGE_EXTS = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp'];
 
@@ -33,9 +34,13 @@ export function parseUserAttachment(msg: AgentChatMessage, agentId?: string): Ag
                 && inputAttachments.length + inputAttachmentFailures.length === records.filter(part => part.type === 'attachment_ref').length;
             return { ...msg, fileName: undefined, imageUrl: undefined, inputAttachments,
                 inputAttachmentFailures: inputAttachmentFailures.length ? inputAttachmentFailures : undefined,
-                content: plain ? records.filter(part => part.type === 'text')
-                .map(part => sharedGoal && typeof part.display_content === 'string' ? part.display_content
-                    : typeof part.text === 'string' ? part.text : typeof part.content === 'string' ? part.content : '').join('\n') : msg.content };
+                // The bubble shows the member's own words: a text part's
+                // display_content when it exists, never the model-facing
+                // prompt that lives in `text` (B2). Leading `[📎 …]` markers
+                // are the chip's job — the file is shown once (B2 r2).
+                content: plain ? dropLeadingAttachmentMarkers(records.filter(part => part.type === 'text')
+                .map(part => typeof part.display_content === 'string' ? part.display_content
+                    : typeof part.text === 'string' ? part.text : typeof part.content === 'string' ? part.content : '').join('\n')).text : msg.content };
         }
     }
     let parsed = { ...msg };
@@ -65,6 +70,13 @@ export function parseUserAttachment(msg: AgentChatMessage, agentId?: string): Ag
     // If file is an image and no imageUrl yet, build download URL for preview
     if (attachmentPath?.startsWith('workspace/') && !attachmentPath.split('/').includes('..')) {
         parsed.originalWorkspacePath = attachmentPath;
+    }
+    // Composer display markers (`[📎 …]`, optimistic sends) are the chip's
+    // job: the bubble keeps the sentence only (B2 r2). A member may also
+    // type the marker line as their own words — it is stripped only when the
+    // message actually carries attachment metadata (B2 r3).
+    if (parsed.fileName && /^\[📎\s*[^\]]+\]/.test(parsed.content)) {
+        parsed.content = dropLeadingAttachmentMarkers(parsed.content).text;
     }
     if (parsed.fileName && !parsed.imageUrl && agentId) {
         const ext = parsed.fileName.split('.').pop()?.toLowerCase() || '';

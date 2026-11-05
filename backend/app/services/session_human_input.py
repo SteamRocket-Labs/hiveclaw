@@ -80,6 +80,7 @@ class InputMailboxReceipt:
     rolled_over_to_turn_id: str | None = None
     reason_code: str | None = None
     replayed: bool = False
+    pasted_credential_notice: bool = False
 
 
 def _sha256(value: Any) -> str:
@@ -125,6 +126,10 @@ def _receipt(row: SessionTurnInput, *, reason_code: str | None = None, replayed:
         rolled_over_to_turn_id=row.rolled_over_to_turn_id,
         reason_code=reason_code,
         replayed=replayed,
+        pasted_credential_notice=any(
+            (part.get("metadata") or {}).get("pasted_credential_notice") is True
+            for part in row.content_parts_json or []
+        ),
     )
 
 
@@ -190,13 +195,29 @@ async def revise_unbound_human_input(
         raise InputRevisionConflict(current_revision=row.revision)
     if not isinstance(content_parts, list):
         raise ValueError("content_parts must be an array")
+    from app.models.chat_session import ChatSession
+    from app.services.credential_boundary_loader import redact_runtime_ingress_payload
+
+    session = await db.get(ChatSession, row.session_id)
+    from app.services.session_live_input import shape_human_input_parts
+
+    # Revision is a Web input even when the conversation originated in IM.
+    protected = await redact_runtime_ingress_payload(
+        db,
+        tenant_id=authority.tenant_id,
+        agent_id=authority.agent_id,
+        source_channel="web",
+        reply_target=session.delivery_target_json,
+        payload={"parts": shape_human_input_parts(content_parts)},
+    )
+    content_parts = shape_human_input_parts(protected.value["parts"],
+        pasted_credential_notice=(protected.value.get("extra_metadata") or {}).get("pasted_credential_notice") is True)
     from app.services.original_input_refs import bind_original_input_refs
 
     await bind_original_input_refs(db, authority=authority, command=_command, input_id=input_uuid, revision=int(row.revision) + 1, parts=content_parts)
-    from app.models.chat_session import ChatSession
     from app.services.team_task_context import validate_selection as validate_team_task_selection
 
-    await validate_team_task_selection(db, session=await db.get(ChatSession, row.session_id), user=user,
+    await validate_team_task_selection(db, session=session, user=user,
         parts=content_parts, allowed=allow_project_selection)
     from app.services.project_context import ORIGIN_KEY, references, selection_origin, validate_selection
     from app.services.content_input_receipts import ContentInputReceiptError
@@ -209,9 +230,7 @@ async def revise_unbound_human_input(
     if project_refs:
         if not allow_project_selection or user is None:
             raise ContentInputReceiptError("project_selection_origin_denied", "Project references require authenticated human selection.", 403)
-        from app.models.chat_session import ChatSession
-
-        await validate_selection(db, session=await db.get(ChatSession, row.session_id), user=user, parts=content_parts)
+        await validate_selection(db, session=session, user=user, parts=content_parts)
         project_origin = selection_origin(agent_id=authority.agent_id, session_id=row.session_id, user_id=user.id)
     if row.intent == "answer_request" and row.request_item_id is not None:
         from app.services.session_user_question import load_answer_question, validate_configuration_answer

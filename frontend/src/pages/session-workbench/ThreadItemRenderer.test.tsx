@@ -17,7 +17,10 @@ vi.mock('react-i18next', () => ({
         return '这次请求没有确认完成。';
       }
       const value = typeof fallback === 'string' ? fallback : String(options?.defaultValue || _key);
-      return value.replace('{{status}}', String(options?.status || '')).replace('{{count}}', String(options?.count || ''));
+      return Object.entries(options || {}).reduce(
+        (text, [name, replacement]) => text.replace(new RegExp(`{{\\s*${name}\\s*}}`, 'g'), String(replacement)),
+        value.replace('{{status}}', String(options?.status || '')).replace('{{count}}', String(options?.count || '')),
+      );
     },
   }),
 }));
@@ -258,12 +261,16 @@ describe('ThreadItemRenderer', () => {
       <ThreadItemRenderer item={approval} onSelect={() => undefined} approvalActions={<button>Allow once</button>} />,
     );
 
-    expect(markup).toContain('需要你的确认：Write final report');
+    // B2: the surface sentence is localized and names the action in user
+    // words; the tool id never appears and the details sit behind the
+    // collapsed disclosure.
+    expect(markup).toContain('This needs your approval: Write file.');
     expect(markup).toContain('reports/final.md');
     expect(markup).toContain('可撤销或只读操作');
     expect(markup).toContain('Allow once');
     expect(markup).not.toContain('permission-7');
     expect(markup).not.toContain('controlled_write');
+    expect(markup).not.toContain('write_file');
     expect(markup).not.toContain('data-testid="thread-item-technical-details"');
   });
 

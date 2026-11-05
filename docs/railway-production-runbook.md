@@ -115,3 +115,33 @@ claims.
 If any service fails or remains stale, stop the acceptance claim. Preserve the
 deployment evidence, diagnose the concrete service, and obtain authority before a
 rollback, resubmission with changed source, or production data operation.
+
+## Roll back
+
+A rollback is the same upload with an earlier commit. `railway redeploy` only
+repeats the newest deployment, so it cannot return to an earlier source.
+
+1. Check for migrations between the target and the deployed commit:
+   `git diff --name-only <target> <deployed> -- backend/alembic`. If anything is
+   listed, stop: old code against a newer schema needs a reviewed downgrade or a
+   compatibility check owned by the schema owner, not a service upload.
+2. Compute the expected source identity of the target from its archive, without
+   starting the application:
+
+   ```bash
+   tmp_root=$(mktemp -d /tmp/hiveclaw-railway-upload.XXXXXX)
+   git archive --format=tar <target> backend | tar -xf - -C "$tmp_root"
+   python3 -I -c 'import importlib.util,json,sys;from pathlib import Path;r=Path(sys.argv[1]);s=importlib.util.spec_from_file_location("bi",r/"app"/"build_identity.py");m=importlib.util.module_from_spec(s);s.loader.exec_module(m);print(json.dumps(m.source_build_identity(r),sort_keys=True))' "$tmp_root/backend"
+   ```
+
+3. Upload all three services as in "Submit the exact committed source", with
+   `git archive <target>` instead of `HEAD`, and wait for `SUCCESS` on each.
+4. Verify: `components.build_identity.sha256` and `file_count` from
+   `/api/health` equal step 2; `backend-api` reports the same identity through
+   `railway ssh --service backend-api -- "cd /app && python -c 'import json;from app.build_identity import current_build_identity;print(json.dumps(current_build_identity(),sort_keys=True))'"`;
+   the frontend `index-*.js` asset name differs from the one served before.
+5. Remove the upload directories once provenance is recorded.
+
+Rehearsed 2026-11-04: deployed commit → previous release → deployed commit, with
+no migration in range; each step reached `SUCCESS` on all three services within
+about two minutes and every identity check matched.

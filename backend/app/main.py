@@ -957,17 +957,21 @@ app.include_router(metrics_router)
 
 
 # Health check — unversioned (infrastructure)
+
+
 @app.get("/api/health", response_model=HealthResponse, tags=["health"])
 async def health_check():
-    """Health check endpoint."""
+    """Health check endpoint.
+
+    Unauthenticated: the body publishes only what its consumers read — overall
+    ``status``/``version`` plus ``build_identity`` and ``process_role.role``.
+    ``status`` still derives from every component snapshot internally; the
+    snapshots themselves (which can carry exception text) stay in server logs.
+    """
     from app.build_identity import current_build_identity
-    from app.database import snapshot_db_pool, snapshot_postgres_text_contract
-    from app.services.daemon_liveness import daemon_health_status, daemon_liveness_snapshot
-    from app.services.event_loop_monitor import event_loop_lag_monitor
+    from app.database import snapshot_db_pool
+    from app.services.daemon_liveness import daemon_health_status
     from app.services.rls_runtime_guard import latest_runtime_rls_role_health
-    from app.services.runtime_control_bus import runtime_control_bus_snapshot
-    from app.services.runtime_task_worker import runtime_task_worker_snapshot
-    from app.services.web_chat_stream_bus import web_chat_stream_forwarder_snapshot
 
     db_pool = snapshot_db_pool()
     rls_runtime_role = latest_runtime_rls_role_health()
@@ -1006,15 +1010,6 @@ async def health_check():
         version=settings.APP_VERSION,
         components={
             "build_identity": build_identity,
-            "daemons": daemon_liveness_snapshot(),
-            "rls_runtime_role": rls_runtime_role,
-            "code_execution_sandbox_probe": sandbox_probe,
             "process_role": {"role": _process_role()},
-            "runtime_control_bus": runtime_control_bus_snapshot(),
-            "runtime_task_worker": runtime_task_worker_snapshot(),
-            "web_chat_stream_forwarder": web_chat_stream_forwarder_snapshot(),
-            "db_pool": db_pool,
-            "postgres_text_contract": snapshot_postgres_text_contract(),
-            "event_loop": event_loop_lag_monitor.snapshot(),
         },
     )

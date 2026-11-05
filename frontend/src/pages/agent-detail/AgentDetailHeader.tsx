@@ -6,6 +6,8 @@ import { useNavigate } from 'react-router-dom';
 import { agentApi } from '../../api/domains/agents';
 import { AGENT_TAB_LABELS, AGENT_WORKBENCH_AREAS, isLocalAgentRuntimeType, type AgentDetailTab } from './agentDetailPolicy';
 import EmployeeRoleEditor from '../../components/EmployeeRoleEditor';
+import { useAuthStore } from '../../stores';
+import { useAssistantAgentId } from '../assistant/assistantScope';
 
 interface AgentDetailHeaderProps {
   agent: any;
@@ -43,6 +45,9 @@ export default function AgentDetailHeader({
   statusKey,
 }: AgentDetailHeaderProps) {
   const { t, i18n } = useTranslation();
+  const user = useAuthStore((state) => state.user);
+  const assistantAgentId = useAssistantAgentId(user);
+  const name = agentId === assistantAgentId ? t('assistant.title') : agent.name;
   const queryClient = useQueryClient();
   const [editingRole, setEditingRole] = React.useState(false);
   const [editingName, setEditingName] = React.useState(false);
@@ -99,7 +104,7 @@ export default function AgentDetailHeader({
     <div className="page-header">
       <div className="agent-detail-header-main">
         <div className="agent-detail-avatar">
-          {(Array.from(agent.name || 'A')[0] as string || 'A').toUpperCase()}
+          {(Array.from(name || 'A')[0] as string || 'A').toUpperCase()}
         </div>
         <div className="agent-detail-header-text">
           {canManage && editingName ? (
@@ -135,7 +140,7 @@ export default function AgentDetailHeader({
                 setEditingName(true);
               }}
             >
-              {agent.name}
+              {name}
             </h1>
           )}
           <p className="page-subtitle agent-detail-status-line">

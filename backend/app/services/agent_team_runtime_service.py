@@ -1304,6 +1304,7 @@ async def message_agent_team_members_runtime(
     member_sessions: list[ChatSession],
     message: str,
     display_content: str = "",
+    pasted_credential_notice: bool = False,
     interrupt_requested: bool = False,
     source: str = "agent_team",
     budget_run_id: uuid.UUID | str | None = None,
@@ -1473,6 +1474,7 @@ async def message_agent_team_members_runtime(
                 parent_session_id=team.parent_session_id,
                 runtime_task_type="team_member",
                 extra_metadata={
+                    **({"pasted_credential_notice": True} if pasted_credential_notice else {}),
                     "budget_run_id": str(budget_uuid) if budget_uuid else None,
                     "root_runtime_task_id": str(root_id),
                     "team_operation_id": operation,

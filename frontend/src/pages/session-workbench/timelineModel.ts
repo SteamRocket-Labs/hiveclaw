@@ -1850,7 +1850,7 @@ function buildCells(messages: AgentChatMessage[]): ThreadTimelineCell[] {
     if (!runCell) return false;
     runCell.sourceMessages.push({ message, index });
     runCell.timeline.steps.push(...buildRunTimelineFromMessages([message]).steps);
-    runCell.timeline.summary = buildRunAggregateSummary(runCell.timeline.steps) || undefined;
+    runCell.timeline.summary = buildRunAggregateSummary(runCell.timeline.steps);
     return true;
   };
 

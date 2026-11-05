@@ -330,7 +330,7 @@ async def _create_trigger_runtime_task(
             # An independent fire owns a fresh durable work root from admission.
             # The same reserved identity becomes its Reflection Session later.
             batch_root_session_id = _trigger_child_run_id(task_id, effect="reflection_session", discriminator="")
-        if tenant_id is not None:
+        if tenant_id is not None and bool(metadata.get("preflight_allowed", True)):
             reservation_service = RuntimeBudgetService()
             budget_lookup = RuntimeBudgetPolicyLookup(
                 tenant_id=tenant_id,
@@ -382,22 +382,21 @@ async def _create_trigger_runtime_task(
                     },
                 )
             )
-            if bool(metadata.get("preflight_allowed", True)):
-                budget_reservation_key = f"trigger:{task_id}:start"
-                admission_decision = await ExecutionAdmission(reservation_service).admit(
-                    RuntimeBudgetReservation(
-                        budget_run_id=budget_run.id,
-                        reservation_key=budget_reservation_key,
-                        background_tasks=1,
-                        reason="trigger_start",
-                        runtime_task_id=uuid.UUID(task_id),
-                        metadata={
-                            "work_type": "trigger",
-                            "agent_id": str(agent_id),
-                            "trigger_ids": [str(value) for value in trigger_id_values],
-                        },
-                    )
+            budget_reservation_key = f"trigger:{task_id}:start"
+            admission_decision = await ExecutionAdmission(reservation_service).admit(
+                RuntimeBudgetReservation(
+                    budget_run_id=budget_run.id,
+                    reservation_key=budget_reservation_key,
+                    background_tasks=1,
+                    reason="trigger_start",
+                    runtime_task_id=uuid.UUID(task_id),
+                    metadata={
+                        "work_type": "trigger",
+                        "agent_id": str(agent_id),
+                        "trigger_ids": [str(value) for value in trigger_id_values],
+                    },
                 )
+            )
         metadata.update(
             {
                 "runtime_task_id": task_id,
@@ -1169,6 +1168,9 @@ async def _evaluate_trigger(trigger: AgentTrigger, now: datetime) -> bool:
             at = datetime.fromisoformat(at_str)
             if at.tzinfo is None:
                 at = at.replace(tzinfo=timezone.utc)
+            # Retry daily unless the owner scheduled a later, unconsumed time.
+            if trigger.last_fired_at and at <= trigger.last_fired_at:
+                at = trigger.last_fired_at + timedelta(days=1)
             return now >= at and trigger.fire_count == 0
         except Exception:
             return False

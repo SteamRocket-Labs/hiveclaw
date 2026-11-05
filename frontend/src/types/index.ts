@@ -8,6 +8,8 @@ export interface User {
     avatar_url?: string;
     role: 'platform_admin' | 'org_admin' | 'member';
     tenant_id?: string;
+    /** The member's own company name (surfaces like the workspace label). */
+    tenant_name?: string;
     department_id?: string;
     title?: string;
     feishu_user_id?: string;

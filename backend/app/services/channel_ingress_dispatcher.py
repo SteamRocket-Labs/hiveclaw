@@ -188,6 +188,7 @@ async def _resume_materialized_user_message(
         content="" if replay_parts is not None else message.content,
         parts=replay_parts,
         source=source,
+        source_channel=item.provider,
         input_id=item.id,
         idempotency_key=f"channel:{item.provider}:ingress:{item.id}",
         runtime_metadata=metadata,

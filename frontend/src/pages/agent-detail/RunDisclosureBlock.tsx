@@ -15,9 +15,11 @@ import {
 } from '@tabler/icons-react';
 
 import MarkdownRenderer from '../../components/MarkdownRenderer';
+import { approvalActionFor } from '../session-workbench/approvalActionPresentation';
 import type {
   RunStepKind,
   RunStepPresentation,
+  RunAggregateSummary,
   RunStepSnapshot,
   RunTimelineSnapshot,
 } from './chatDisclosureReducer';
@@ -251,12 +253,9 @@ function RunStepDetails({ step }: { step: RunStepSnapshot }) {
 function RunStepRow({ step }: { step: RunStepSnapshot }) {
   const { t } = useTranslation();
   const running = step.status === 'running';
-  const exec = asExecDetails(step.details, step.kind);
-  const [expanded, setExpanded] = React.useState(
-    (Boolean(exec) && (running || step.status === 'failed'))
-      || step.blocking === true
-      || (step.visibility === 'visible' && step.status !== 'done'),
-  );
+  // Commands, arguments and output wait behind this toggle: the default layer
+  // shows the localized action and its state only (B2 r2).
+  const [expanded, setExpanded] = React.useState(false);
   const hasDetails = step.details != null;
   return (
     <div
@@ -330,29 +329,73 @@ function RunCompactionBoundary({ step }: { step: RunStepSnapshot }) {
   );
 }
 
-const TOOL_TITLE_KEYS: Record<string, [string, string]> = {
-  Thinking: ['agent.chat.phase.thinking', 'Thinking'],
-  Working: ['agent.chat.disclosure.working', 'Working'],
-  'Waiting for input': ['agent.chat.disclosure.waiting', 'Waiting for input'],
-  'Loading tools': ['agent.chat.disclosure.toolTitle.loading', 'Loading tools'],
-  'Read file': ['agent.chat.disclosure.toolTitle.readFile', 'Read file'],
-  'Write file': ['agent.chat.disclosure.toolTitle.writeFile', 'Write file'],
-  'Edit file': ['agent.chat.disclosure.toolTitle.editFile', 'Edit file'],
-  'Delete file': ['agent.chat.disclosure.toolTitle.deleteFile', 'Delete file'],
-  'List files': ['agent.chat.disclosure.toolTitle.listFiles', 'List files'],
-  'Search web': ['agent.chat.disclosure.toolTitle.searchWeb', 'Search web'],
-  'Fetch web page': ['agent.chat.disclosure.toolTitle.fetchWebPage', 'Fetch web page'],
-  'Run command': ['agent.chat.disclosure.toolTitle.runCommand', 'Run command'],
-  'Edit document': ['agent.chat.disclosure.toolTitle.editDocument', 'Edit document'],
-  'Tool call': ['agent.chat.disclosure.toolTitle.toolCall', 'Tool call'],
+// Titles arrive as presentation sentinels (chatDisclosureReducer); their
+// locale text lives under agent.chat.disclosure.toolTitle.<camelCase(sentinel)>.
+// Cross-module sentinels keep an explicit key here.
+const TOOL_TITLE_KEY: Record<string, string> = {
+  Thinking: 'agent.chat.phase.thinking',
+  Working: 'agent.chat.disclosure.working',
+  'Waiting for input': 'agent.chat.disclosure.waiting',
+  'Delegation update': 'agent.chat.disclosure.toolTitle.delegationStep',
 };
+
+function titleKeyFor(sentinel: string): string {
+  return TOOL_TITLE_KEY[sentinel] ?? `agent.chat.disclosure.toolTitle.${sentinel
+    .split(/[^a-zA-Z0-9]+/)
+    .filter(Boolean)
+    .map((part, index) => (index ? part.charAt(0).toUpperCase() + part.slice(1) : part.toLowerCase()))
+    .join('')}`;
+}
+
+/** The original tool id kept in the step's details (operators' evidence). */
+function toolNameOf(step: RunStepSnapshot): string | null {
+  const details = step.details;
+  if (!details || typeof details !== 'object' || Array.isArray(details)) return null;
+  const toolName = (details as { toolName?: unknown }).toolName;
+  return typeof toolName === 'string' && toolName.trim() ? toolName : null;
+}
 
 function localizedToolTitle(step: RunStepSnapshot, t: TFunction): string {
   if (step.kind === 'permission' && step.title === 'permission_resolved') {
     return t('sessionWorkbench.threadItem.type.approval_decision', 'Approval decision');
   }
-  const translated = TOOL_TITLE_KEYS[step.title];
-  return translated ? t(translated[0], translated[1]) : step.title;
+  // A step whose tool has approval-card words localizes through the same key
+  // (B2 r2): the action reads identically on card and timeline.
+  const action = approvalActionFor(toolNameOf(step));
+  if (action) return t(action.key, action.fallback);
+  // Unknown/backend-authored titles pass through untouched via the fallback.
+  return t(titleKeyFor(step.title), step.title);
+}
+
+/**
+ * A row that names nothing is not a row on the default layer (B2 r2): a
+ * generic-class title with no summary and no known action adds no
+ * information. The step still counts in the "{{count}} steps" total and
+ * stays reachable in the opened tool history under its original tool name
+ * (B2 r3) — this predicate is the single display decision.
+ */
+function isNamelessStep(step: RunStepSnapshot): boolean {
+  return (step.title === 'Tool call' || step.title === 'Runtime event')
+    && !step.summary
+    && !approvalActionFor(toolNameOf(step));
+}
+
+/** Compose the locale sentence for the run's folded process aggregate. */
+function localizedAggregateSummary(
+  summary: RunAggregateSummary,
+  t: TFunction,
+): string {
+  const parts: string[] = [];
+  if (summary.files > 0) {
+    parts.push(t('agent.chat.disclosure.aggregate.files', 'Read {{count}} files', { count: summary.files }));
+  }
+  if (summary.searches > 0) {
+    parts.push(t('agent.chat.disclosure.aggregate.searches', 'Searched the web {{count}} times', { count: summary.searches }));
+  }
+  if (summary.commands > 0) {
+    parts.push(t('agent.chat.disclosure.aggregate.commands', 'Ran {{count}} commands', { count: summary.commands }));
+  }
+  return parts.join(' · ');
 }
 
 function toolStepLabel(step: RunStepSnapshot, t: TFunction): string {
@@ -368,62 +411,94 @@ function toolGroupStatus(steps: RunStepSnapshot[]): RunStepSnapshot['status'] {
   return 'done';
 }
 
+/** The opened history identifies a step by its original tool name when the
+ * default layer had no user-words name for it (B2 r3). */
+function historyRowTitle(step: RunStepSnapshot, t: TFunction): string {
+  if (isNamelessStep(step)) return toolNameOf(step) || localizedToolTitle(step, t);
+  return localizedToolTitle(step, t);
+}
+
 function ToolHistoryItem({ step }: { step: RunStepSnapshot }) {
   const { t } = useTranslation();
-  const exec = asExecDetails(step.details);
+  const [expanded, setExpanded] = React.useState(false);
+  const exec = asExecDetails(step.details, step.kind);
+  const hasDetails = step.details != null;
   const row = (
     <>
       <span className={step.status === 'running' ? 'run-step-icon is-running' : 'run-step-icon'}>
         <StepIcon kind={step.kind} running={step.status === 'running'} />
       </span>
-      <span className="run-tool-history-title">{localizedToolTitle(step, t)}</span>
+      <span className="run-tool-history-title">{historyRowTitle(step, t)}</span>
       {step.summary && <span className="run-tool-history-summary">{step.summary}</span>}
     </>
   );
 
-  if (!exec) {
+  if (exec) {
     return (
-      <div className="run-tool-history-item" role="listitem" data-status={step.status}>
-        {row}
+      <div className="run-tool-history-item has-exec" role="listitem" data-status={step.status}>
+        <details className="run-tool-history-exec" open={step.status === 'running' || step.status === 'failed'}>
+          <summary className="run-tool-history-exec-summary">
+            {row}
+            <IconChevronRight className="run-tool-history-exec-chevron" size={12} stroke={2.2} aria-hidden="true" />
+          </summary>
+          <ExecOutput exec={exec} />
+        </details>
       </div>
     );
   }
 
+  // Non-command rows stay inspectable too: args, result and meta open behind
+  // the row's own toggle (B2 r3).
   return (
-    <div className="run-tool-history-item has-exec" role="listitem" data-status={step.status}>
-      <details className="run-tool-history-exec" open={step.status === 'running' || step.status === 'failed'}>
-        <summary className="run-tool-history-exec-summary">
-          {row}
-          <IconChevronRight className="run-tool-history-exec-chevron" size={12} stroke={2.2} aria-hidden="true" />
-        </summary>
-        <ExecOutput exec={exec} />
-      </details>
+    <div className="run-tool-history-item" role="listitem" data-status={step.status}>
+      <button
+        type="button"
+        aria-expanded={hasDetails ? expanded : undefined}
+        disabled={!hasDetails}
+        onClick={() => setExpanded((value) => !value)}
+        className={hasDetails ? 'run-tool-history-toggle has-details' : 'run-tool-history-toggle'}
+      >
+        {row}
+      </button>
+      {expanded && <RunStepDetails step={step} />}
     </div>
   );
 }
 
 function ToolActivityGroup({ steps }: { steps: RunStepSnapshot[] }) {
   const { t } = useTranslation();
+  // The one display decision (isNamelessStep) decides the label: the summary
+  // names the work the member can recognize. A group whose every step names
+  // nothing keeps no label of its own — its "…" affordance carries nothing
+  // on the default layer, and opening it lists every step under its original
+  // tool name (B2 r3); the "{{count}} steps" header already counts them.
+  const named = steps.filter((step) => !isNamelessStep(step));
   const status = toolGroupStatus(steps);
   const currentStep = [...steps].reverse().find((step) => step.status === 'running') || steps[steps.length - 1];
-  const completedActions = Array.from(new Set(steps.map((step) => localizedToolTitle(step, t)))).join(' · ');
-  const label = status === 'running'
-    ? t('agent.chat.disclosure.toolRunning', 'Using {{tool}}', { tool: toolStepLabel(currentStep, t) })
-    : t('agent.chat.disclosure.toolCompleted', 'Used tools: {{tools}}', { tools: completedActions });
+  const label = named.length === 0
+    ? '…'
+    : status === 'running'
+      ? t('agent.chat.disclosure.toolRunning', 'Using {{tool}}', { tool: toolStepLabel(
+        [...named].reverse().find((step) => step.status === 'running') || named[named.length - 1], t,
+      ) })
+      : t('agent.chat.disclosure.toolCompleted', 'Used tools: {{tools}}', {
+        tools: Array.from(new Set(named.map((step) => localizedToolTitle(step, t)))).join(' · '),
+      });
+  const historyLabel = t('agent.chat.disclosure.toolHistory', 'Tool call history');
   return (
     <details data-testid="run-disclosure-tool-group" data-status={status} className="run-tool-group">
-      <summary data-testid="run-disclosure-tool-group-toggle" className="run-tool-group-toggle">
+      <summary
+        data-testid="run-disclosure-tool-group-toggle"
+        className="run-tool-group-toggle"
+        aria-label={historyLabel}
+      >
         <span className={status === 'running' ? 'run-step-icon is-running' : 'run-step-icon'}>
           <StepIcon kind={currentStep.kind} running={status === 'running'} />
         </span>
         <span className="run-tool-group-label">{label}</span>
         <IconChevronRight className="run-tool-group-chevron" size={13} stroke={2.2} aria-hidden="true" />
       </summary>
-      <div
-        className="run-tool-history"
-        role="list"
-        aria-label={t('agent.chat.disclosure.toolHistory', 'Tool call history')}
-      >
+      <div className="run-tool-history" role="list" aria-label={historyLabel}>
         {steps.map((step) => <ToolHistoryItem key={step.id} step={step} />)}
       </div>
     </details>
@@ -483,7 +558,12 @@ export default function RunDisclosureBlock({
   }
   const stepCount = t('agent.chat.disclosure.stepCount', '{{count}} steps', { count: visibleSteps.length });
   const live = timeline.status === 'running' || timeline.status === 'blocked';
-  const renderItems = groupRunSteps(visibleSteps);
+  // Nameless steps fold into the count and into the tool history instead of
+  // owning rows: nothing that names nothing renders on the default layer,
+  // and every step stays reachable once the history opens (B2 r3).
+  const renderItems = groupRunSteps(visibleSteps.map((step) => (
+    isNamelessStep(step) ? { ...step, presentation: 'tool_history' as const } : step
+  )));
 
   return (
     <div data-testid="run-disclosure-block" data-status={timeline.status} className="run-disclosure">
@@ -502,7 +582,9 @@ export default function RunDisclosureBlock({
           {timeline.status === 'interrupted' ? (
             <span className="run-disclosure-summary">{interruptedHint}</span>
           ) : (
-            timeline.summary && <span className="run-disclosure-summary">{timeline.summary}</span>
+            timeline.summary && (
+              <span className="run-disclosure-summary">{localizedAggregateSummary(timeline.summary, t)}</span>
+            )
           )}
           <span className="run-disclosure-count">{stepCount}</span>
         </button>

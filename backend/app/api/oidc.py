@@ -5,6 +5,7 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException
 from loguru import logger
 from pydantic import BaseModel
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import get_current_user
@@ -18,12 +19,14 @@ router = APIRouter(tags=["oidc"])
 class OIDCCallbackRequest(BaseModel):
     code: str
     redirect_uri: str
+    nonce: str | None = None
     tenant_id: str | None = None
 
 
 class OIDCBindRequest(BaseModel):
     code: str
     redirect_uri: str
+    nonce: str | None = None
 
 
 # ─── Public: get OIDC config for login page ────────────────────
@@ -71,7 +74,7 @@ async def get_oidc_config(
         metadata = await discover_oidc(cfg["issuer_url"])
         auth_endpoint = metadata.get("authorization_endpoint", "")
     except Exception as e:
-        logger.warning(f"OIDC discovery failed for {cfg['issuer_url']}: {e}")
+        logger.warning("OIDC discovery failed: {}", type(e).__name__)
         return {"configured": False, "error": "Discovery failed"}
 
     return {
@@ -95,12 +98,15 @@ async def oidc_callback(
 ):
     """Handle OIDC callback — exchange code for tokens, login or register user."""
     from app.models.tenant import Tenant
-    from app.services.oidc_service import exchange_code, get_tenant_oidc_config, login_or_register
+    from app.services.oidc_service import OIDCAccountConflict, exchange_code, get_tenant_oidc_config, login_or_register
     from sqlalchemy import select
 
     # Resolve tenant
     if data.tenant_id:
-        tenant_uuid = uuid.UUID(data.tenant_id)
+        try:
+            tenant_uuid = uuid.UUID(data.tenant_id)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid tenant ID")
     else:
         # Default tenant
         result = await db.execute(select(Tenant).where(Tenant.slug == "default"))
@@ -124,18 +130,20 @@ async def oidc_callback(
             client_secret=cfg["client_secret"],
             code=data.code,
             redirect_uri=data.redirect_uri,
+            nonce=data.nonce,
         )
     except Exception as e:
-        logger.opt(exception=True).error(f"OIDC code exchange failed: {e}")
+        logger.warning("OIDC code exchange failed: {}", type(e).__name__)
         raise HTTPException(status_code=400, detail="OIDC authentication failed")
-
-    if not oidc_user.get("sub"):
-        raise HTTPException(status_code=400, detail="OIDC provider did not return a subject identifier")
 
     # Login or register
     auto_provision = cfg.get("auto_provision", True)
     try:
         user, token = await login_or_register(db, oidc_user, tenant_uuid, auto_provision)
+    except (OIDCAccountConflict, IntegrityError):
+        await db.rollback()
+        logger.warning("OIDC account conflict")
+        raise HTTPException(status_code=409, detail="OIDC account conflicts with an existing account")
     except ValueError as e:
         raise HTTPException(status_code=403, detail=str(e))
 
@@ -197,13 +205,19 @@ async def bind_oidc_account(
             client_secret=cfg["client_secret"],
             code=data.code,
             redirect_uri=data.redirect_uri,
+            nonce=data.nonce,
         )
     except Exception as e:
-        logger.opt(exception=True).error(f"OIDC bind code exchange failed: {e}")
+        logger.warning("OIDC bind code exchange failed: {}", type(e).__name__)
         raise HTTPException(status_code=400, detail="OIDC authentication failed")
 
     current_user.oidc_sub = oidc_user["sub"]
     current_user.oidc_issuer = oidc_user["issuer"]
-    await db.flush()
+    try:
+        await db.flush()
+    except IntegrityError:
+        await db.rollback()
+        logger.warning("OIDC account conflict")
+        raise HTTPException(status_code=409, detail="OIDC account conflicts with an existing account")
 
     return UserOut.model_validate(current_user)

@@ -3474,6 +3474,7 @@ describe('AgentDetail extracted sections', () => {
 
     expect(markup).toContain('Access Permissions');
     expect(markup).toContain('Default Access Level');
+    expect(markup).not.toContain('href="/assistant?settings=true"');
     expect(markup).toMatch(/name="perm_scope"/);
     expect(markup).not.toContain('data-testid="agent-operator-grants"');
     expect(markup).not.toContain('Delete Agent');
@@ -4222,8 +4223,11 @@ describe('AgentDetail extracted sections', () => {
     );
 
     expect(markup).toContain('Approval required');
-    expect(markup).toContain('send_email');
-    expect(markup).toContain('The agent needs permission to use send_email.');
+    // B2: the surface sentence names the action in user words; the raw tool
+    // id only rides inside the collapsed details disclosure. B2 r3: the
+    // action phrase reads in sentence case everywhere it renders.
+    expect(markup).toContain('This needs your approval: Send an email.');
+    expect(markup.replace(/<details[\s\S]*?<\/details>/g, '')).not.toContain('send_email');
     expect(markup).not.toContain('Tool &#x27;send_email&#x27; requires session permission');
     expect(markup).not.toContain('communication.email.send');
     if (reader === 'other') {

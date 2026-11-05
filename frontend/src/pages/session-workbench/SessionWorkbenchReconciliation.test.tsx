@@ -42,8 +42,10 @@ describe('workbench unconfirmed execution', () => {
     const markup = renderToStaticMarkup(<SessionWorkbenchHeader model={header} />);
     // The header no longer has a dedicated unconfirmed-outcome chip: the five
     // user-visible states only, so an unconfirmed run surfaces as failed.
-    expect(markup).toContain('failed');
-    expect(markup).toContain('Review the failed step');
+    // B2: the failed state no longer prints a "see the failed step below"
+    // line — nothing below is guaranteed — only the state itself.
+    expect(markup).toContain('Failed');
+    expect(markup).not.toContain('Review the failed step');
     expect(markup).not.toContain('unconfirmed');
     expect(markup).not.toContain('Needs reconciliation');
     expect(markup).not.toContain('<button');

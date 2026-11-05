@@ -13,6 +13,7 @@ import {
 
 import type { ThreadItem, ThreadItemStatus, ThreadItemType } from '../../api/domains/threadItems.generated';
 import { runtimeFailurePresentation, type RuntimeFailurePresentation } from './runtimeFailurePresentation';
+import { approvalActionLabel } from './approvalActionPresentation';
 import './ThreadItemWorkbench.css';
 
 type Detail = { label: string; value: React.ReactNode };
@@ -117,9 +118,9 @@ function detailsFor(item: ThreadItem, t: (key: string, fallback: string) => stri
       ];
     case 'warning':
     case 'error':
-      return [
-        { label: 'retry', value: item.item_data.retryable ? t('sessionWorkbench.threadItem.value.retryable', 'retryable') : t('sessionWorkbench.threadItem.value.notRetryable', 'not retryable') },
-      ];
+      // Retryability is not a member-facing label pair: the retry action
+      // itself (when retry is possible) is composed by the chat surface (B2 r2).
+      return [];
     case 'event':
       return [];
     default:
@@ -136,6 +137,9 @@ function shouldCollapse(item: ThreadItem): boolean {
     'agent_team_activity',
     'peer_a2a_activity',
     'reasoning',
+    // The approval card speaks in user words on the surface; the exact tool
+    // name, expiry and impact stay one disclosure away for operators (B2).
+    'approval_request',
   ].includes(item.item_type);
 }
 
@@ -165,7 +169,29 @@ export interface ThreadItemRendererProps {
   selected?: boolean;
   onSelect?: (item: ThreadItem) => void;
   approvalActions?: React.ReactNode;
+  /** The full permission-request arguments. The approver must be able to
+   * read the whole proposal (recipients, subject, body) before deciding:
+   * they render inside the card's single 详情 disclosure (B2 r3), with the
+   * same requester access rule the resolve actions use. */
+  approvalArguments?: unknown;
   actions?: React.ReactNode;
+}
+
+/**
+ * One Chinese (locale) sentence naming the action in the member's words,
+ * quoting the target (for example a digital employee's name) when the item's
+ * safe argument details carry it. Raw tool ids and raw JSON never surface.
+ */
+function approvalSentence(item: ThreadItem, t: TFunction): string {
+  const data = item.item_data as { tool_display_name?: string | null; tool_name?: string | null };
+  const action = approvalActionLabel(data.tool_display_name || data.tool_name, t);
+  const target = (item.user_action?.details || []).find(
+    (detail) => typeof detail?.value === 'string'
+      && ['name', 'title', 'recipient', 'target'].includes(String(detail?.label || '')),
+  );
+  return target
+    ? t('sessionWorkbench.threadItem.permissionNeededWithTarget', 'This needs your approval: {{tool}} “{{name}}”.', { tool: action, name: target.value })
+    : t('sessionWorkbench.threadItem.permissionNeeded', 'This needs your approval: {{tool}}.', { tool: action });
 }
 
 const USER_CONVERSATION_ITEM_TYPES = new Set<ThreadItemType>(['approval_request', 'warning', 'error', 'plan']);
@@ -179,6 +205,9 @@ export function shouldRenderThreadItemInConversation(item: ThreadItem, operatorV
   // (product definition P3): when the model truly cannot answer within its
   // authorized evidence, it says so itself. Operators still see the raw item.
   if (item.event_type === 'source_access_notice') return false;
+  // Run-phase boundary changes are internal state, not timeline cards: the
+  // approval card and the run status already own what the member sees (B2 r2).
+  if (item.item_type === 'boundary') return false;
   if (item.item_type === 'approval_decision' && item.event_type === 'permission_resolved') return true;
   if (USER_CONVERSATION_ITEM_TYPES.has(item.item_type)) return true;
   return Boolean(item.user_action && item.user_action.kind !== 'open_artifact');
@@ -189,6 +218,7 @@ export function ThreadItemRenderer({
   selected = false,
   onSelect,
   approvalActions,
+  approvalArguments,
   actions,
 }: ThreadItemRendererProps) {
   const { t } = useTranslation();
@@ -205,13 +235,9 @@ export function ThreadItemRenderer({
     ? t('agent.chat.groupSourcesUnavailable', 'Some source content is unavailable to you. Request access or refresh this conversation.')
     : runtimeFailure
     ? translateRuntimeFailure(t, runtimeFailure)
-    : item.user_summary || (item.item_type === 'approval_request'
-      ? t(
-          'sessionWorkbench.threadItem.permissionNeeded',
-          'The agent needs permission to use {{tool}}.',
-          { tool: item.item_data.tool_display_name || item.item_data.tool_name || t('sessionWorkbench.threadItem.thisTool', 'this tool') },
-        )
-      : item.content);
+    : item.item_type === 'approval_request'
+    ? approvalSentence(item, t)
+    : item.user_summary || item.content;
   const detailBody = details.length > 0 && (
     <dl className="thread-item-details">
       {details.map((detail) => (
@@ -221,6 +247,14 @@ export function ThreadItemRenderer({
         </React.Fragment>
       ))}
     </dl>
+  );
+  // The whole proposal (the old 操作详情) lives inside the card's single
+  // disclosure: the whitelisted summary alone is not a proposal (B2 r3).
+  const argumentsBody = item.item_type === 'approval_request' && approvalArguments != null && (
+    <pre
+      className="thread-item-arguments"
+      aria-label={t('agent.chat.permission.actionDetails', 'Action details')}
+    >{JSON.stringify(approvalArguments, null, 2)}</pre>
   );
 
   if (item.item_type === 'approval_decision' && item.event_type === 'permission_resolved') {
@@ -264,13 +298,14 @@ export function ThreadItemRenderer({
         ) : null}
       </header>
       {visibleContent && <div className="thread-item-content">{visibleContent}</div>}
-      {detailBody && (shouldCollapse(item) ? (
+      {(detailBody || argumentsBody) && (shouldCollapse(item) ? (
         <details className="thread-item-disclosure">
           <summary>
             <IconChevronRight size={13} aria-hidden="true" />
             {t('sessionWorkbench.threadItem.details', 'Details')}
           </summary>
           {detailBody}
+          {argumentsBody}
         </details>
       ) : detailBody)}
       {item.item_type === 'approval_request' && approvalActions && (

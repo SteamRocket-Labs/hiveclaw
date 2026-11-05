@@ -1203,7 +1203,7 @@ async def _submit_active_session_input(
         exact_secret_redaction_receipt,
         redact_runtime_ingress_payload,
     )
-    from app.services.session_live_input import submit_live_human_input
+    from app.services.session_live_input import shape_human_input_parts, submit_live_human_input
     from app.services.session_v2_persistence import _is_a2a_delegation_child_session
 
     try:
@@ -1212,12 +1212,15 @@ async def _submit_active_session_input(
             tenant_id=agent.tenant_id,
             agent_id=agent.id,
             reply_target=getattr(session, "delivery_target_json", None),
+            source_channel=source_channel,
+            source=source_channel,
             payload={
                 "content": content,
                 "display_content": display_content,
                 "file_name": file_name,
                 "attachments": list(attachments or ()),
-                "parts": list(parts or ()),
+                "parts": shape_human_input_parts(parts or ()),
+                "extra_metadata": dict(extra_metadata or {}),
             },
         )
     except RuntimeIngressSecretBoundaryUnavailable as exc:
@@ -1231,7 +1234,7 @@ async def _submit_active_session_input(
     file_name = str(protected["file_name"])
     attachments = list(protected["attachments"])
     parts = list(protected["parts"])
-    protected_extra_metadata = dict(extra_metadata or {})
+    protected_extra_metadata = dict(protected["extra_metadata"])
     redaction_receipt = exact_secret_redaction_receipt(
         redaction,
         phase="active_session_input",
@@ -1256,6 +1259,7 @@ async def _submit_active_session_input(
         session=session,
         content=content,
         source=source_channel,
+        source_channel=source_channel,
         input_id=input_id,
         idempotency_key=stable_key or f"{source_channel}:active-input:{input_id}",
         requested_kind="steer_current_turn",
@@ -2710,6 +2714,7 @@ async def start_web_chat_run(
     parts: list[dict[str, Any]] | None = None,
     append_user_message: bool = True,
     runtime_task_type: str = WEB_CHAT_TURN_TASK_TYPE,
+    source_channel: str | None = "web",
     run_id: uuid.UUID | None = None,
     budget_interactive: bool = True,
     root_item_intent: RuntimeRootIntentSpec | None = None,
@@ -2728,18 +2733,23 @@ async def start_web_chat_run(
         redact_runtime_ingress_payload,
     )
 
+    from app.services.session_live_input import shape_human_input_parts
+
     try:
         redaction = await redact_runtime_ingress_payload(
             db,
             tenant_id=agent.tenant_id,
             agent_id=agent.id,
             reply_target=getattr(session, "delivery_target_json", None),
+            source_channel=source_channel,
+            source=source_channel,
             payload={
                 "content": content,
                 "display_content": display_content,
                 "file_name": file_name,
                 "attachments": list(attachments or ()),
-                "parts": list(parts or ()),
+                "parts": shape_human_input_parts(parts or ()),
+                "extra_metadata": dict(extra_metadata or {}),
             },
         )
     except RuntimeIngressSecretBoundaryUnavailable as exc:
@@ -2753,7 +2763,7 @@ async def start_web_chat_run(
     file_name = str(protected["file_name"])
     attachments = list(protected["attachments"])
     parts = list(protected["parts"])
-    protected_extra_metadata = dict(extra_metadata or {})
+    protected_extra_metadata = dict(protected["extra_metadata"])
     redaction_receipt = exact_secret_redaction_receipt(
         redaction,
         phase="web_chat_run",

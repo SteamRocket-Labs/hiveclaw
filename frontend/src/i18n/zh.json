@@ -32,6 +32,9 @@
     "validRequest": "请填写集成名称并选择未来的到期时间。",
     "unavailable": "员工或负责人暂不可用"
   },
+  "session": {
+    "agent_deactivated": "已停用"
+  },
   "companyMessaging": {
     "fileUnavailable": "文件未能获取。请在原会话重新上传，或请管理员检查连接。",
     "historyConflict": "此发送账号存在历史绑定，请管理员核对连接；此前的私有工作仍属于原持有人。",
@@ -4639,7 +4642,7 @@
       "restoreEmployeeButton": "恢复",
       "employeeRestored": "数字员工已恢复。定时任务保持关闭，由负责人逐个重新打开。",
       "employeeRestoreFailed": "恢复数字员工失败。",
-      "retirementPending": "新的执行已停用。外部工作尚未确认，请在原工作中核对后重试停用。文件仍保留；结束本地跟踪不代表外部运行器已停止。",
+      "retirementPending": "已停用，对外工作尚未确认。请在原工作中核对；结束本地跟踪不代表外部运行器已停止。文件仍保留。",
       "retirementLoadFailed": "未能加载待完成的退役。",
       "endInactiveTracking": "结束已停用请求人的任务跟踪",
       "endInactiveTrackingConfirm": "确定结束 {{name}} 的 {{count}} 个原请求人已停用、执行仍未确认的请求的本地跟踪？外部执行仍然未知。系统会记录由你作出的管理决定，不移交私人工作或凭据。核对结果后，请另行重试退役。",

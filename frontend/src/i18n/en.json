@@ -32,6 +32,9 @@
     "validRequest": "Enter an integration name and a future expiry time.",
     "unavailable": "Employee or owner unavailable"
   },
+  "session": {
+    "agent_deactivated": "Deactivated"
+  },
   "companyMessaging": {
     "fileUnavailable": "The file could not be retrieved. Upload it again in the original conversation, or ask an administrator to check the connection.",
     "historyConflict": "This sender account has prior channel ownership. Contact your administrator to review the connection; earlier private work remains with its original owner.",
@@ -4639,7 +4642,7 @@
       "restoreEmployeeButton": "Restore",
       "employeeRestored": "Digital employee restored. Scheduled tasks stay off until their owner turns each one back on.",
       "employeeRestoreFailed": "Failed to restore digital employee.",
-      "retirementPending": "New execution is disabled. External work is still unconfirmed; review it in its original work before retrying retirement. Files are retained. Ending local tracking does not confirm that the external runner stopped.",
+      "retirementPending": "Deactivated; external work is not yet confirmed. Review it in its original work; ending local tracking does not confirm that the external runner stopped. Files are retained.",
       "retirementLoadFailed": "Pending retirement could not be loaded.",
       "endInactiveTracking": "End tracking for inactive requesters",
       "endInactiveTrackingConfirm": "End local tracking of {{count}} unresolved requests for {{name}} whose original requesters are inactive? External execution remains unknown. This records your management decision without transferring private work or credentials. Retry retirement separately after reviewing the result.",

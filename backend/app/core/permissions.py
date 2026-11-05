@@ -101,7 +101,11 @@ async def _load_agent_for_user(
     if lifecycle_reason and not (retirement_history and history_available(agent)):
         raise HTTPException(
             status_code=status.HTTP_410_GONE,
-            detail=f"Agent is not active: {lifecycle_reason}",
+            # A deactivation refusal shows the member the one plain word they
+            # need (已停用); every other lifecycle reason keeps its detail.
+            detail=DEACTIVATED_REFUSAL_DETAIL
+            if lifecycle_reason == "deactivated"
+            else f"Agent is not active: {lifecycle_reason}",
         )
 
     # Agents are tenant-owned resources. A legacy/corrupt tenant-less Agent
@@ -120,6 +124,11 @@ async def _load_agent_for_user(
 
 
 SCOPED_BUSINESS_ADMIN_AUTHORITY_SOURCE = "scoped_business_admin"
+
+# The single member-facing word for "this digital employee is deactivated".
+# Surfaces that map a deactivation refusal to copy reuse this exact detail so
+# every exit shows the same plain reason (G1).
+DEACTIVATED_REFUSAL_DETAIL = "已停用"
 
 
 def is_scoped_business_admin(user, *, resource_tenant_id) -> bool:

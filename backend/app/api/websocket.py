@@ -10,6 +10,7 @@ from loguru import logger
 from sqlalchemy import select
 
 from app.core.permissions import (
+    DEACTIVATED_REFUSAL_DETAIL,
     authorize_loaded_session_access,
     check_agent_access,
     is_agent_expired,
@@ -18,6 +19,17 @@ from app.core.permissions import (
 from app.core.security import decode_access_token
 from app.database import tenant_scoped_session
 from app.kernel.contracts import ExecutionIdentityRef
+
+
+def _agent_access_refusal_code(error: HTTPException) -> str:
+    """A deactivation refusal surfaces the plain 已停用 notice (G1).
+
+    ``agent_deactivated`` maps to the localized ``session.agent_deactivated``
+    copy; every other refusal keeps the generic forbidden exit.
+    """
+    if error.status_code == 410 and str(error.detail) == DEACTIVATED_REFUSAL_DETAIL:
+        return "agent_deactivated"
+    return "session_forbidden"
 from app.models.audit import ChatMessage
 from app.models.llm import LLMModel
 from app.models.user import User
@@ -301,7 +313,7 @@ async def websocket_chat(
             except HTTPException as error:
                 if error.status_code >= 500:
                     raise SessionSubscriptionError("event_store_retryable", retryable=True) from error
-                raise SessionSubscriptionError("session_forbidden") from error
+                raise SessionSubscriptionError(_agent_access_refusal_code(error)) from error
             if is_agent_expired(agent):
                 raise SessionSubscriptionError("session_forbidden")
             active_session = await db.scalar(
@@ -589,8 +601,8 @@ async def websocket_chat(
                         continue
                     try:
                         await require_agent_execution_access(run_db, fresh_user, agent_id)
-                    except HTTPException:
-                        await send_control_error("session_forbidden", retryable=False)
+                    except HTTPException as error:
+                        await send_control_error(_agent_access_refusal_code(error), retryable=False)
                         continue
                     receipt = await submit_live_human_input(
                         db=run_db,

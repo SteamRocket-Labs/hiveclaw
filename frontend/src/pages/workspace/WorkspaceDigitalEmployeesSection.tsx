@@ -72,7 +72,7 @@ export default function WorkspaceDigitalEmployeesSection({ selectedTenantId }: W
         onError: (error: any) => {
             showAppToast(
                 error?.data?.code === 'agent_retirement_pending'
-                    ? t('workspace.digitalEmployees.retirementPending', 'New execution is disabled. External work is still unconfirmed; review it in its original work before retrying retirement. Files are retained. Ending local tracking does not confirm that the external runner stopped.')
+                    ? t('workspace.digitalEmployees.retirementPending', 'Deactivated; external work is not yet confirmed. Review it in its original work; ending local tracking does not confirm that the external runner stopped. Files are retained.')
                     : error?.message || t('workspace.digitalEmployees.employeeDeactivateFailed', 'Failed to deactivate digital employee.'),
                 'error',
             );
@@ -218,7 +218,7 @@ export default function WorkspaceDigitalEmployeesSection({ selectedTenantId }: W
                             {t('workspace.digitalEmployees.title', 'Digital Employee Management')}
                         </h3>
                         <p className="ws-employees-desc">
-                            {t('workspace.digitalEmployees.description', 'Company admins can review and remove tenant digital employees from this governed backend surface.')}
+                            {t('workspace.digitalEmployees.description', 'Company admins can review and deactivate tenant digital employees from this governed backend surface.')}
                         </p>
                     </div>
                     <Link className="btn btn-primary ws-employees-create" to="/agents/new">

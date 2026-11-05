@@ -132,6 +132,22 @@ describe('WorkspaceDigitalEmployeesSection', () => {
     expect(markup).toContain('System protected');
   });
 
+  it('describes the governed surface as review and deactivate, never review and remove', () => {
+    const markup = renderToStaticMarkup(<WorkspaceDigitalEmployeesSection selectedTenantId="tenant-1" />);
+
+    expect(markup).toContain('review and deactivate tenant digital employees');
+    expect(markup).not.toContain('review and remove');
+  });
+
+  it('states the committed deactivation first in the retirement-pending copy', async () => {
+    const en = (await import('../../i18n/en.json')).default;
+    const zh = (await import('../../i18n/zh.json')).default;
+    // A committed deactivation with unsettled outward work must not read like
+    // a failed, retry-looking retirement (G1 round 2 review).
+    expect(en.workspace.digitalEmployees.retirementPending.startsWith('Deactivated')).toBe(true);
+    expect(zh.workspace.digitalEmployees.retirementPending.startsWith('已停用')).toBe(true);
+  });
+
   it('mounts the same selected-company employee management for a platform administrator (PDEC-013)', () => {
     auth.role = 'platform_admin';
 

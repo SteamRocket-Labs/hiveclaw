@@ -190,6 +190,11 @@ async def prepare(db, *, agent, actor):
     if agent.deactivated_at is None:
         agent.deactivated_at = datetime.now(timezone.utc)
         agent.deactivation_reason = PENDING_REASON
+        # ``stopped`` rides in the same commit as ``deactivated_at``: the
+        # status gates (triggers, bot-to-bot messaging, delegation) must not
+        # stay open when the deactivation has committed — including when the
+        # withdrawal below later reports unsettled outward work (409).
+        agent.status = "stopped"
         for model in (AgentTrigger, AgentSchedule):
             await db.execute(update(model).where(model.agent_id == agent.id, model.is_enabled.is_(True)).values(is_enabled=False))
         db.add(AuditLog(tenant_id=agent.tenant_id, agent_id=agent.id, user_id=actor.id,

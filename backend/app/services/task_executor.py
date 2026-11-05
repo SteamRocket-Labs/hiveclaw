@@ -488,14 +488,19 @@ async def execute_task(
             )
         lifecycle_reason = get_agent_lifecycle_block_reason(agent)
         if lifecycle_reason:
+            from app.core.permissions import DEACTIVATED_REFUSAL_DETAIL
+
+            # Deactivation refuses with the one plain word 已停用 (G1);
+            # every other lifecycle reason keeps its exact reason.
+            deactivated = lifecycle_reason == "deactivated"
             await _log_error(
                 task_id,
-                f"数字员工当前不可执行：{lifecycle_reason}",
+                DEACTIVATED_REFUSAL_DETAIL if deactivated else f"数字员工当前不可执行：{lifecycle_reason}",
                 tenant_id=tenant_id,
             )
             return TaskExecutionOutcome(
                 status=TaskExecutionStatus.BLOCKED,
-                summary=f"Digital employee cannot execute: {lifecycle_reason}.",
+                summary="Digital employee is deactivated." if deactivated else f"Digital employee cannot execute: {lifecycle_reason}.",
                 error_code="agent_lifecycle_blocked",
                 retryable=True,
             )

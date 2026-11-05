@@ -2470,6 +2470,7 @@ async def resolve_session_permission(
         session_id=session_id,
         current_user=current_user,
         action="respond_tool_permission",
+        require_execution=True,
     )
     from app.services.session_permission_runtime import resolve_session_tool_permission
     from app.services.permission_execution import PermissionExecutionUnavailable
@@ -2800,11 +2801,50 @@ async def delete_session(
         raise HTTPException(status_code=404, detail="Session not found")
 
     await check_agent_access(db, current_user, agent_id)
+    # Anyone who already sees this conversation in one of their lists may
+    # remove it from their own list: the session's own user, or a member of
+    # a shared group conversation. An administrator cannot remove it from
+    # someone else's list.
     if session.user_id is None or session.user_id != current_user.id:
-        raise HTTPException(
-            status_code=403,
-            detail="A conversation can only be removed from its owner's own list.",
-        )
+        if getattr(session, "audience_kind", None) != "group":
+            raise HTTPException(
+                status_code=403,
+                detail="A conversation can only be removed from a list you can see.",
+            )
+        from app.services.shared_group_authority import require_current_group_member
+
+        try:
+            await require_current_group_member(db, session=session, user=current_user)
+        except HTTPException as exc:
+            if exc.status_code != 403:
+                raise
+            raise HTTPException(
+                status_code=403,
+                detail="A conversation can only be removed from a list you can see.",
+            ) from exc
+
+    # Unsettled work keeps the conversation in the list (as before G1): while
+    # a tool permission waits or its effect is executing, the member must not
+    # lose sight of the pending approval. Nothing is deleted either way.
+    from app.models.runtime_task import RuntimeTask, SEALED_RUNTIME_TASK_STATUSES
+    from app.services.chat_transcript import lock_transcript_session
+    from app.services.session_tool_runtime import list_unresolved_tool_effects
+
+    await lock_transcript_session(db, session_id=session_id)
+    session_keys = (str(session_id), session_id.hex)
+    active = await db.scalar(select(RuntimeTask.id).where(
+        RuntimeTask.tenant_id == session.tenant_id,
+        RuntimeTask.status.not_in(SEALED_RUNTIME_TASK_STATUSES),
+        or_(RuntimeTask.parent_session_id.in_(session_keys), RuntimeTask.child_session_id.in_(session_keys),
+            RuntimeTask.root_session_id.in_(session_keys)),
+    ).limit(1))
+    if active is not None or await list_unresolved_tool_effects(db, tenant_id=session.tenant_id,
+            session_id=session_id, terminal_tasks_only=False, limit=1):
+        await db.rollback()
+        raise HTTPException(status_code=409, detail={
+            "code": "session_work_unsettled", "recovery_action": "resolve_session_work",
+            "message": "This conversation still has unfinished work. Resolve or cancel that work before removing it.",
+        })
 
     if not _removed_from_own_list(session, current_user.id):
         metadata = dict(session.transcript_metadata_json or {})

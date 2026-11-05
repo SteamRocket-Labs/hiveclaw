@@ -365,14 +365,22 @@ async def test_actual_native_worker_consumes_original_with_complete_sources_and_
             assert len(failures) == 1 and failures[0]["sources"] == []
     if first_failure is False and provider[0] == "filesystem":
         from app.api import chat_sessions
+        from app.models.chat_session import ChatSession
 
         client._transport.app.include_router(chat_sessions.router)
+        # G1: the owner's DELETE removes the conversation from their own list
+        # only. The pins keep their exact pre-removal state — the guarded
+        # session deletion that wrote the session_retirement proof is gone
+        # with physical deletion, and nothing else may touch the pins.
         deleted = await client.delete(f"/agents/{seed['agent_id']}/sessions/{seed['session_id']}", headers={
             "Authorization": "Bearer " + create_access_token(str(seed["user_id"]), "member", str(seed["tenant_id"]))})
         assert deleted.status_code == 204, deleted.text
         async with app_user_sessionmaker() as db:
             await pin_rls_tenant_context(db, seed["tenant_id"])
+            session = await db.get(ChatSession, seed["session_id"])
+            assert session is not None
+            assert str(seed["user_id"]) in ((session.transcript_metadata_json or {}).get("removed_from_list_by") or {})
             closed = (await db.scalars(select(StorageBlobRef).where(StorageBlobRef.tenant_id == seed["tenant_id"],
                 StorageBlobRef.owner_type.in_(("session_input", "session_tool_read"))))).all()
             assert {pin.owner_type for pin in closed} == {"session_input", "session_tool_read"}
-            assert all(pin.metadata_json.get("session_retirement", {}).get("schema") == "hive.original_session_retirement.v1" for pin in closed)
+            assert all("session_retirement" not in pin.metadata_json for pin in closed)

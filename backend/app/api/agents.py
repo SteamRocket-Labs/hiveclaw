@@ -1946,35 +1946,73 @@ async def deactivate_agent(
     agent, _access = await check_agent_history_access(db, current_user, agent_id)
     await prepare(db, agent=agent, actor=current_user)
 
-    agent.status = "stopped"
-    from app.services.ai_asset_adapters import project_agent
-    from app.services.ai_assets import register_projection
-
-    await register_projection(
-        db,
-        project_agent(agent),
-        change_source="revoke",
-        actor_user_id=current_user.id,
-        change_message="Agent deactivated",
+    # ``prepare`` has committed the deactivation (``deactivated_at`` and
+    # ``status = "stopped"`` in one commit, triggers off, outward work
+    # recalled). Work still running on the employee's own web turns is
+    # withdrawn here with the same termination settlement a delete used —
+    # no ``deleted_at``, no file move.
+    from app.services.agent_identity_lifecycle import terminate_agent_runtime_tasks
+    from app.services.runtime_terminal_settlement import (
+        RuntimeTaskLateAdmissionConflict,
+        RuntimeTaskSessionBindingConflict,
     )
-    try:
-        from app.core.policy import write_audit_event
 
-        await write_audit_event(
+    try:
+        await terminate_agent_runtime_tasks(
             db,
-            event_type="agent.deactivated",
-            severity="warn",
-            actor_type="user",
+            agent,
             actor_id=current_user.id,
-            tenant_id=agent.tenant_id,
-            action="deactivate_agent",
-            resource_type="agent",
-            resource_id=agent.id,
-            details={"name": agent.name},
+            reason="agent_deactivated",
+            terminal_source="api.agents:deactivate_agent",
         )
-    except Exception:
-        logger.warning("Audit write failed for agent.deactivated", exc_info=True)
-    await db.commit()
+        from app.services.ai_asset_adapters import project_agent
+        from app.services.ai_assets import register_projection
+
+        await register_projection(
+            db,
+            project_agent(agent),
+            change_source="revoke",
+            actor_user_id=current_user.id,
+            change_message="Agent deactivated",
+        )
+        try:
+            from app.core.policy import write_audit_event
+
+            await write_audit_event(
+                db,
+                event_type="agent.deactivated",
+                severity="warn",
+                actor_type="user",
+                actor_id=current_user.id,
+                tenant_id=agent.tenant_id,
+                action="deactivate_agent",
+                resource_type="agent",
+                resource_id=agent.id,
+                details={"name": agent.name},
+            )
+        except Exception:
+            logger.warning("Audit write failed for agent.deactivated", exc_info=True)
+        await db.commit()
+    except (RuntimeTaskLateAdmissionConflict, RuntimeTaskSessionBindingConflict) as exc:
+        # Truthful retryable conflict, mirroring the retired delete route: the
+        # transaction rolled back cleanly — the deactivation itself already
+        # committed inside ``prepare`` and stays; the running tasks were not
+        # settled — and the client retries the same request once the
+        # admission pressure passes.
+        await db.rollback()
+        binding_conflict = isinstance(exc, RuntimeTaskSessionBindingConflict)
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": (
+                    "agent_deactivate_session_binding_conflict"
+                    if binding_conflict
+                    else "agent_deactivate_late_admission_conflict"
+                ),
+                "message": str(exc),
+                "retryable": not binding_conflict,
+            },
+        ) from exc
 
 
 @router.post("/{agent_id}/restore", status_code=status.HTTP_204_NO_CONTENT)
@@ -2005,6 +2043,9 @@ async def restore_agent(
 
     agent.deactivated_at = None
     agent.deactivation_reason = None
+    # Back to the runnable idle value ``start_container`` uses; triggers and
+    # remote connections stay off until their owners turn each back on.
+    agent.status = "idle"
     from app.services.ai_asset_adapters import project_agent
     from app.services.ai_assets import register_projection
 

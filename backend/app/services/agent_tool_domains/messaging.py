@@ -13,6 +13,7 @@ from app.core.execution_context import A2AToolAuthorityFrame, ExecutionPrincipal
 from app.database import tenant_scoped_session
 from app.services.a2a_collaboration_policy import resolve_a2a_collaboration_policy
 from app.services.a2a_outcome import A2AOutcome, A2AOperation
+from app.services.agent_identity_lifecycle import get_agent_lifecycle_block_reason
 from app.services.tenant_resolver import resolve_tenant_for_agent
 from app.tools.result_envelope import render_tool_error
 
@@ -274,6 +275,14 @@ async def _resolve_target_agent_runtime(
                 None,
                 None,
                 (f"❌ No agent found matching '{agent_name}'. Available: {', '.join(names) if names else 'none'}"),
+            )
+
+        if get_agent_lifecycle_block_reason(target) == "deactivated":
+            return (
+                source_agent,
+                target,
+                None,
+                (f"⚠️ {target.name} 已停用。"),
             )
 
         if target.status in ("expired", "stopped", "archived"):
@@ -1189,6 +1198,14 @@ async def _send_message_to_agent_outcome(
                     "consult",
                     error_code="target_agent_not_found",
                     message=f"No agent found matching '{agent_name}'. Available: {', '.join(names) if names else 'none'}",
+                )
+
+            if get_agent_lifecycle_block_reason(target) == "deactivated":
+                return _a2a_failure(
+                    "consult",
+                    error_code="target_agent_unavailable",
+                    message=f"{target.name} 已停用。",
+                    retryable=True,
                 )
 
             if target.status in ("expired", "stopped", "archived"):

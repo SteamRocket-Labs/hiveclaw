@@ -34,6 +34,9 @@ class _FakeDB:
     async def flush(self):
         return None
 
+    async def scalar(self, _stmt):
+        return None
+
     def add(self, value):
         self.added.append(value)
 
@@ -116,10 +119,17 @@ async def test_deactivate_reuses_retirement_prepare_and_keeps_the_employee(monke
 
     async def record_prepare(_db, *, agent, actor):
         prepare_calls.append((agent, actor))
-        # The post-G1 prepare commits the deactivation state itself.
+        # The post-G1 prepare commits the deactivation state itself —
+        # including the closed status gates — in one commit.
         agent.deactivated_at = datetime.now(timezone.utc)
         agent.deactivation_reason = agent_retirement.PENDING_REASON
+        agent.status = "stopped"
         await _db.commit()
+
+    settled: list[dict] = []
+
+    async def fake_terminate(_db, agent_in, *, actor_id, reason, terminal_source):
+        settled.append({"reason": reason, "source": terminal_source})
 
     audits: list[dict] = []
     projections: list[tuple[object, str]] = []
@@ -130,12 +140,16 @@ async def test_deactivate_reuses_retirement_prepare_and_keeps_the_employee(monke
     async def fake_register(_db, projection, *, change_source, actor_user_id, change_message):
         projections.append((projection, change_source))
 
+    import app.services.agent_identity_lifecycle as agent_lifecycle
+
     monkeypatch.setattr("app.core.permissions.check_agent_history_access", fake_check_agent_history_access)
     monkeypatch.setattr(agent_retirement, "prepare", record_prepare)
+    monkeypatch.setattr(agent_lifecycle, "terminate_agent_runtime_tasks", fake_terminate)
     monkeypatch.setattr("app.core.policy.write_audit_event", fake_audit)
     monkeypatch.setattr("app.services.ai_assets.register_projection", fake_register)
 
     await agents_api.deactivate_agent(agent_id=agent.id, current_user=admin, db=db)
+    assert settled == [{"reason": "agent_deactivated", "source": "api.agents:deactivate_agent"}]
 
     assert prepare_calls == [(agent, admin)], "停用 must run agent_retirement.prepare exactly once"
     assert agent.deleted_at is None, "停用 must not delete the employee"
@@ -479,6 +493,15 @@ async def test_remove_session_marks_own_list_without_deleting_rows(monkeypatch) 
 
     monkeypatch.setattr(chat_sessions_api, "check_agent_access", fake_check_agent_access)
 
+    async def _no_lock(_db, *, session_id):
+        return None
+
+    async def _no_effects(_db, **_kwargs):
+        return []
+
+    monkeypatch.setattr("app.services.chat_transcript.lock_transcript_session", _no_lock)
+    monkeypatch.setattr("app.services.session_tool_runtime.list_unresolved_tool_effects", _no_effects)
+
     await chat_sessions_api.delete_session(
         agent_id=session.agent_id, session_id=session.id, current_user=current_user, db=db
     )
@@ -504,6 +527,15 @@ async def test_remove_session_is_idempotent(monkeypatch) -> None:
         return agent, "manage"
 
     monkeypatch.setattr(chat_sessions_api, "check_agent_access", fake_check_agent_access)
+
+    async def _no_lock(_db, *, session_id):
+        return None
+
+    async def _no_effects(_db, **_kwargs):
+        return []
+
+    monkeypatch.setattr("app.services.chat_transcript.lock_transcript_session", _no_lock)
+    monkeypatch.setattr("app.services.session_tool_runtime.list_unresolved_tool_effects", _no_effects)
 
     await chat_sessions_api.delete_session(
         agent_id=session.agent_id, session_id=session.id, current_user=current_user, db=db

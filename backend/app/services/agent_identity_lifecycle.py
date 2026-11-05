@@ -204,6 +204,72 @@ async def ensure_agent_identity(
     return participant.id
 
 
+async def terminate_agent_runtime_tasks(
+    db: AsyncSession,
+    agent: Agent,
+    *,
+    actor_id: uuid.UUID,
+    reason: str,
+    terminal_source: str,
+) -> None:
+    """Settle an employee's unfinished parent RuntimeTasks; delete nothing.
+
+    Shared by soft deletion and G1 deactivation: work still running when the
+    employee leaves the active roster is withdrawn with the same termination
+    settlement — no ``deleted_at``, no file move.
+
+    Canonical advisory-first batch order: the shared terminal settlement
+    acquires each task's session advisory, so THIS caller must already hold
+    every affected session advisory BEFORE taking the RuntimeTask row locks
+    below — locking the rows first would be the row → advisory side of the
+    global order and deadlocks against any concurrent advisory-first writer
+    of the same session (in-flight transcript append, Stop fence, canonical
+    web-chat terminal writer). Sorted multi-session acquisition keeps two
+    batch writers from cycling among themselves.
+
+    Canonical advisory → row batch order with late-admission closure: the
+    helper holds every affected session advisory before the first row lock
+    and, when a task is admitted between its prescan and the FOR UPDATE
+    batch, rolls back to a savepoint and rescans so the newcomer's session
+    advisory is acquired BEFORE its row. The previous trailing
+    ``late_session_ids`` acquisition took advisories while rows were
+    already held — a real row → advisory edge (demonstrated deadlock by the
+    CC5 late-admission probe) — and is gone.
+    """
+    from app.services.agent_retirement import guard_remote_admission, require_settled
+    from app.services.runtime_terminal_settlement import (
+        lock_runtime_task_batch_with_session_authority,
+        settle_and_enqueue_runtime_task_terminal,
+    )
+
+    await guard_remote_admission(db, agent_ids=[agent.id], retiring=True)
+    runtime_tasks = await lock_runtime_task_batch_with_session_authority(
+        db,
+        statement=select(RuntimeTask).where(
+            RuntimeTask.parent_agent_id == agent.id,
+            RuntimeTask.status.in_(_ACTIVE_RUNTIME_TASK_STATUSES),
+        ),
+    )
+    # Recheck after canonical batch locking: a late external admission must
+    # never be converted into a native stop receipt or lose its HTTP fence.
+    await require_settled(db, agent)
+    now = datetime.now(timezone.utc)
+    for task in runtime_tasks:
+        task.status = "killed"
+        task.completed_at = now
+        task.result_summary = f"Agent stopped by {actor_id}: {reason}"
+        task.claim_version = int(task.claim_version or 0) + 1
+        task.claimed_by = None
+        task.claim_expires_at = None
+        await settle_and_enqueue_runtime_task_terminal(
+            db,
+            task,
+            terminal_source=terminal_source,
+            root_reason_code=reason,
+        )
+    await db.flush()
+
+
 async def soft_delete_agent(
     db: AsyncSession,
     agent: Agent,
@@ -234,51 +300,13 @@ async def soft_delete_agent(
         .where(AgentSchedule.agent_id == agent.id, AgentSchedule.is_enabled.is_(True))
         .values(is_enabled=False)
     )
-    # Canonical advisory-first batch order: the shared terminal settlement
-    # acquires each task's session advisory, so THIS caller must already hold
-    # every affected session advisory BEFORE taking the RuntimeTask row locks
-    # below — locking the rows first would be the row → advisory side of the
-    # global order and deadlocks against any concurrent advisory-first writer
-    # of the same session (in-flight transcript append, Stop fence, canonical
-    # web-chat terminal writer). Sorted multi-session acquisition keeps two
-    # batch writers from cycling among themselves.
-    from app.services.runtime_terminal_settlement import (
-        lock_runtime_task_batch_with_session_authority,
-        settle_and_enqueue_runtime_task_terminal,
-    )
-
-    # Canonical advisory → row batch order with late-admission closure: the
-    # helper holds every affected session advisory before the first row lock
-    # and, when a task is admitted between its prescan and the FOR UPDATE
-    # batch, rolls back to a savepoint and rescans so the newcomer's session
-    # advisory is acquired BEFORE its row. The previous trailing
-    # ``late_session_ids`` acquisition took advisories while rows were
-    # already held — a real row → advisory edge (demonstrated deadlock by the
-    # CC5 late-admission probe) — and is gone.
-    runtime_tasks = await lock_runtime_task_batch_with_session_authority(
+    await terminate_agent_runtime_tasks(
         db,
-        statement=select(RuntimeTask).where(
-            RuntimeTask.parent_agent_id == agent.id,
-            RuntimeTask.status.in_(_ACTIVE_RUNTIME_TASK_STATUSES),
-        ),
+        agent,
+        actor_id=actor_id,
+        reason=reason,
+        terminal_source="agent_identity_lifecycle:soft_delete_agent",
     )
-    # Recheck after canonical batch locking: a late external admission must
-    # never be converted into a native stop receipt or lose its HTTP fence.
-    await require_settled(db, agent)
-    for task in runtime_tasks:
-        task.status = "killed"
-        task.completed_at = now
-        task.result_summary = f"Agent soft-deleted by {actor_id}: {reason}"
-        task.claim_version = int(task.claim_version or 0) + 1
-        task.claimed_by = None
-        task.claim_expires_at = None
-        await settle_and_enqueue_runtime_task_terminal(
-            db,
-            task,
-            terminal_source="agent_identity_lifecycle:soft_delete_agent",
-            root_reason_code=reason,
-        )
-    await db.flush()
 
 
 async def perform_pending_agent_cleanup(

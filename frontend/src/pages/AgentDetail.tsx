@@ -2730,7 +2730,9 @@ function AgentDetailInner() {
                             agentPermissions={permData ?? null}
                             transportNotice={transportNotice === 'agent.chat.groupSourcesUnavailable'
                                 ? t('agent.chat.groupSourcesUnavailable', 'Some source content is unavailable to you. Request access or refresh this conversation.')
-                                : transportNotice || (groupDiscoveryUnavailable
+                                : transportNotice === 'session.agent_deactivated'
+                                    ? t('session.agent_deactivated', 'Deactivated')
+                                    : transportNotice || (groupDiscoveryUnavailable
                                     ? t('agent.chat.groupDiscoveryUnavailable', 'Shared group conversations are unavailable. Try refreshing.') : null)}
                             isWaiting={isWaiting}
                             runtimePhase={activePhase}

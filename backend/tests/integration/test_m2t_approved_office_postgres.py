@@ -1,7 +1,7 @@
 """A real approved office job returns evidence to the original requester work."""
 
 import json
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import httpx
 import pytest
@@ -33,6 +33,7 @@ async def test_approved_office_job_is_consumed_in_original_private_work(
     from app.models.guard_policy import GuardPolicy
     from app.models.tenant_channel_config import TenantChannelConfig
     from app.models.runtime_task import RuntimeTask
+    from app.models.runtime_result import RuntimeResultIntegrationPage, RuntimeResultObject
     from app.models.user import User
     from app.runtime import invoker
     from app.services.approval_execution_runtime import execute_claimed_approval_execution
@@ -40,6 +41,8 @@ async def test_approved_office_job_is_consumed_in_original_private_work(
     from app.services.runtime_task_claim_service import RuntimeTaskClaimService
     from app.services.runtime_task_fence import run_claimed_runtime_task
     from app.services.feishu_read_receipts import load_approved_feishu_result
+    from app.services.content_input_receipts import ContentInputReceiptError
+    from app.services.runtime_result_sources import validate_runtime_return_dependency
     from app.services.runtime_terminal_boundary_outbox import RuntimeTerminalBoundaryOutboxService
     from app.services.web_chat_runtime import execute_web_chat_run
 
@@ -164,6 +167,12 @@ async def test_approved_office_job_is_consumed_in_original_private_work(
                     ChatTranscriptEvent.event_type == "runtime_action_blocked"))
                 assert blocked is not None and blocked.metadata_json["status"] == "needs_reconciliation"
                 assert blocked.metadata_json["result_ref"] == result_ref and DOCUMENT_URL not in blocked.content
+                notice = await db.scalar(select(ChatTranscriptEvent).where(
+                    ChatTranscriptEvent.causation_id == page.id,
+                    ChatTranscriptEvent.event_type == "agent_task_notification"))
+                for content in (blocked.content, notice.content):
+                    assert "ready" not in content.lower() and "success" not in content.lower()
+                    assert "needs_reconciliation" not in content
                 assert await db.scalar(select(ChatTranscriptEvent.id).where(
                     ChatTranscriptEvent.session_id == seed["session_id"],
                     ChatTranscriptEvent.event_type == "runtime_action_completed")) is None
@@ -185,6 +194,15 @@ async def test_approved_office_job_is_consumed_in_original_private_work(
             if outcome == "unknown":
                 assert proof is None, "an uncertain effect has no confirmed result proof"
             else:
+                stored_page = await db.get(RuntimeResultIntegrationPage, page.id)
+                user = await db.get(User, seed["user_id"])
+                dependency = {"source_kind": "runtime_result_page", "source_id": str(page.id),
+                    "source_version": stored_page.manifest_sha256}
+                result = await db.get(RuntimeResultObject, UUID(result_ref.split("/")[2]))
+                result_dependency = {"source_kind": "runtime_result",
+                    "source_id": f"{seed['agent_id']}\n{seed['session_id']}\n{result.id}", "source_version": result.sha256}
+                await validate_runtime_return_dependency(db, seed["tenant_id"], dependency, user=user, runtime_request=None)
+                await validate_runtime_return_dependency(db, seed["tenant_id"], result_dependency, user=user, runtime_request=None)
                 assert proof is not None and proof["requester_id"] == str(seed["user_id"])
                 assert proof["connection"]["id"] == str(seed["config_id"])
             if failure:
@@ -209,6 +227,10 @@ async def test_approved_office_job_is_consumed_in_original_private_work(
             config.is_active = False
             await db.flush()
             assert await load_approved_feishu_result(db, approval=ticket) is None
+            if outcome != "unknown":
+                await validate_runtime_return_dependency(db, seed["tenant_id"], dependency, user=user, runtime_request=None)
+                with pytest.raises(ContentInputReceiptError, match="original company approval result"):
+                    await validate_runtime_return_dependency(db, seed["tenant_id"], result_dependency, user=user, runtime_request=None)
             await db.rollback()
         if outcome == "revoked":
             async with owner_sessionmaker() as db:
@@ -243,7 +265,6 @@ async def test_approved_office_job_is_consumed_in_original_private_work(
         if outcome == "unknown":
             assert "needs_reconciliation" in returned and DOCUMENT_URL not in returned
             assert "Verify its outcome before retrying" in returned
-            assert "ready" not in answer and "success" not in answer
         elif outcome == "revoked":
             assert "source_unavailable" in returned and DOCUMENT_URL not in returned
         else:

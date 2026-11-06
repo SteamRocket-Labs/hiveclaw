@@ -8,6 +8,7 @@ new durable turn; terminal sessions reject the continuation and record it.
 from __future__ import annotations
 
 from html import escape
+import logging
 import uuid
 from typing import Any
 
@@ -36,6 +37,7 @@ from app.services.web_chat_runtime import (
 )
 
 _TERMINAL_SESSION_STATES = {"completed", "failed", "killed", "closed", "skipped", "cancelled"}
+logger = logging.getLogger(__name__)
 _TASK_RUNTIME_ACTION_STATUS_MAP = {
     "completed": "runtime_action_completed",
     "done": "runtime_action_completed",
@@ -414,12 +416,13 @@ def _build_result_runtime_action_payload(item: dict[str, Any]) -> dict[str, Any]
         return None
     status = _text(item.get("terminal_status")).lower() or "completed"
     source_run_id = _text(item.get("source_run_id"))
-    child_name = _text(item.get("child_agent_name")) or task_type
     size_bytes = max(0, int(item.get("result_size_bytes") or 0))
     payload: dict[str, Any] = {
         "type": _TASK_RUNTIME_ACTION_STATUS_MAP.get(status, "runtime_action_progress"),
         "status": status,
-        "message": f"{child_name} {status}: durable result ready ({size_bytes} bytes).",
+        "message": {"completed": "已完成", "done": "已完成", "failed": "执行失败", "error": "执行失败",
+            "killed": "已停止", "cancelled": "已停止", "needs_reconciliation": "需要人工核查",
+            "blocked": "需要处理", "suspended": "需要处理"}.get(status, "需要处理"),
         "action_kind": _task_notification_runtime_action_kind(task_type, source_kind),
         "notification_source": source_kind,
         "runtime_task_id": source_run_id or None,
@@ -484,6 +487,7 @@ async def _approval_page_origins(db, session, page_id):
 
 async def _continue_web_approval_result(db, *, agent, user, session, page_id, submit_input, run_id):
     from app.models.runtime_task import SEALED_RUNTIME_TASK_STATUSES
+    from app.services.runtime_notification_outbox import CompletionDeliveryDeferred
     from app.services.session_permission_runtime import _queue_same_run_continuation, _source_result
     from app.services.runtime_terminal_settlement import (
         lock_runtime_task_with_session_authority, settle_and_enqueue_runtime_task_terminal,
@@ -498,6 +502,8 @@ async def _continue_web_approval_result(db, *, agent, user, session, page_id, su
         if run.status == "completed" and run.result_summary == "awaiting_company_approval" and user.is_active:
             return None
         run_id = run.id
+        if run.status in {"running", "pending", "resumable"}:
+            raise CompletionDeliveryDeferred("approval_origin_active")
         source = await _source_result(db, invocation)
         if run.status != "suspended" or run.result_summary != "awaiting_company_approval":
             reason = "origin_run_not_suspended"
@@ -514,10 +520,22 @@ async def _continue_web_approval_result(db, *, agent, user, session, page_id, su
                     session_id=session.id, invocation=invocation, source_result=source)
                 if run.status in SEALED_RUNTIME_TASK_STATUSES:
                     reason = "origin_run_not_suspended"
+    except CompletionDeliveryDeferred:
+        raise
     except Exception as exc:
         await db.rollback()
+        logger.exception("Company approval origin continuation failed")
+        from app.services.approval_ticket import ApprovalTicketError
+        from fastapi import HTTPException
+
         detail = getattr(exc, "detail", None)
-        reason = getattr(exc, "code", None) or (detail.get("code") if isinstance(detail, dict) else None) or str(exc)
+        reason = getattr(exc, "code", None) or (detail.get("code") if isinstance(detail, dict) else None) or "origin_run_resume_failed"
+        if isinstance(exc, ApprovalTicketError):
+            reason = "approval_origin_unavailable"
+        elif isinstance(exc, RuntimeError) and exc.args == ("human_input_secret_boundary_unavailable",):
+            reason = "human_input_secret_boundary_unavailable"
+        elif isinstance(exc, HTTPException) and exc.status_code == 403 and reason == "origin_run_resume_failed":
+            reason = "agent_execute_denied"
     if reason:
         run = await lock_runtime_task_with_session_authority(db, task_id=run_id)
         if run is not None and run.status == "suspended":
@@ -528,6 +546,18 @@ async def _continue_web_approval_result(db, *, agent, user, session, page_id, su
                 terminal_source="company_approval_return", root_reason_code=reason)
     return {"continuation_status": "needs_reconciliation" if reason else "delivered",
         **({"continuation_reason": reason} if reason else {})}
+
+
+def _approval_continuation_display_content(reason):
+    return {
+        "requester_inactive": "这个账号已停用，没有做任何更改。",
+        "agent_execute_denied": "你无权访问这位数字员工。",
+        "user_prompt_submit_blocked": "这次输入被规则阻止，未继续执行。",
+        "user_prompt_submit_prevented": "这次输入被规则阻止，未继续执行。",
+        "admission_refused": "这次输入未被接受，未继续执行。",
+        "approval_return_admission_refused": "这次输入未被接受，未继续执行。",
+        "active_turn_conflict_after_admission": "当前对话正在处理其他输入，请稍后重试。",
+    }.get(reason, "审批结果已保留，本次对话未继续。" if reason else "审批结果已返回。")
 
 
 async def continue_parent_session_with_result_page(
@@ -559,6 +589,7 @@ async def continue_parent_session_with_result_page(
     metadata = {
         "runtime_result_integration_page": True,
         "integration_page_id": str(integration_page_id),
+        "completion_outbox_id": str(integration_page_id),
         "integration_epoch": int(manifest.get("integration_epoch") or 0),
         "manifest_sha256": str(manifest.get("manifest_sha256") or ""),
         "root_runtime_task_id": manifest.get("root_runtime_task_id"),
@@ -620,7 +651,7 @@ async def continue_parent_session_with_result_page(
         returned = await _continue_web_approval_result(db, agent=agent, user=user, session=session,
             page_id=integration_page_id, submit_input=submit_input, run_id=_uuid_or_none(manifest.get("root_runtime_task_id")))
         if returned is not None:
-            display_content = "审批结果已保留，本次对话未继续。" if returned.get("continuation_reason") else "审批结果已返回。"
+            display_content = _approval_continuation_display_content(returned.get("continuation_reason"))
             metadata.update(returned, message=display_content, display_content=display_content)
             resume_parent = False
             continuation_denial = None

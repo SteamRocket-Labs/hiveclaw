@@ -593,6 +593,7 @@ async def _finalize_model_response(
     if _source_permission_allowed:
         await _flush_buffered_chunks()
     if (logical_round_index < max_rounds
+        and provider_request_id
         and (last_model_result_receipt or {}).get("provider_request_id") == provider_request_id
         and (last_model_result_receipt or {}).get("continuation", {}).get("verdict") == "continue"):
         # A message can arrive after the provider's input snapshot. The sealed

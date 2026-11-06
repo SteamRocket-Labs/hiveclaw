@@ -120,7 +120,7 @@ export default function AgentApprovalsSection({ agentId }: AgentApprovalsSection
           </div>
           {continuation && (
             <div className={`agent-approvals-continuation is-${continuation.tone}`}>
-              {t(`approvalContinuation.${continuation.status}`, continuation.label)}
+              {t(continuation.translationKey || `approvalContinuation.${continuation.status}`, continuation.label)}
             </div>
           )}
         </div>;

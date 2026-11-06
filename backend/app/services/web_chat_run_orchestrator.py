@@ -316,6 +316,7 @@ async def _configure_runtime_session(state: _WebChatRunState) -> None:
     context.channel = str(state.metadata.get("channel") or context.channel or "web")
     context.metadata["tenant_id"] = str(state.agent.tenant_id) if state.agent.tenant_id else None
     context.metadata["runtime_task_id"] = state.run_uuid.hex
+    context.metadata["source_channel"] = getattr(state.session, "source_channel", None)
     if state.system_plan_mode is not None:
         context.plan_mode = state.system_plan_mode
         context.metadata["plan_mode"] = state.system_plan_mode.to_metadata()

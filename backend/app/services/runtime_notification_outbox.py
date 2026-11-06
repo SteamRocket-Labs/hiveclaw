@@ -774,6 +774,7 @@ async def _set_approval_continuation_status(
         receipt["continuation_reason"] = error
     else:
         receipt.pop("continuation_error", None)
+        receipt.pop("continuation_reason", None)
     approval.execution_receipt = receipt
 
 
@@ -2077,13 +2078,12 @@ class RuntimeNotificationOutboxService:
                     worker_id=worker_id,
                     receipt=dict(receipt or {}),
                 )
-            except CompletionDeliveryDeferred as exc:
-                counts["deferred"] += await self._mark_page_deferred(
-                    page=page,
-                    worker_id=worker_id,
-                    reason=str(exc),
-                )
             except Exception as exc:
+                if isinstance(exc, CompletionDeliveryDeferred) and str(exc) != "approval_origin_active":
+                    counts["deferred"] += await self._mark_page_deferred(
+                        page=page, worker_id=worker_id, reason=str(exc))
+                    continue
+                # An origin that never suspends uses the existing bounded retry/recovery path.
                 outcome, affected = await self._mark_page_failed(
                     page=page,
                     worker_id=worker_id,

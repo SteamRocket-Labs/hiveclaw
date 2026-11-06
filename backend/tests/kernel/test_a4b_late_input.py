@@ -11,6 +11,7 @@ from tests.kernel.test_engine import _FakeClient
 @pytest.mark.asyncio
 @pytest.mark.parametrize(("case", "max_rounds", "expected_calls"), [
     ("current", 2, 2), ("stale", 2, 1), ("last", 1, 1), ("delegation_no_late", 2, 1),
+    ("both_missing", 2, 1), ("both_empty", 2, 1),
 ])
 async def test_sealed_late_input_keeps_the_real_answer_and_lane_behavior(case, max_rounds, expected_calls):
     from app.kernel import AgentKernel, InvocationRequest, KernelDependencies, RuntimeConfig
@@ -25,6 +26,8 @@ async def test_sealed_late_input_keeps_the_real_answer_and_lane_behavior(case, m
         return [{"role": "user", "content": "Late note."}] if index == 2 else []
 
     async def prepare(**kwargs):
+        if case in {"both_missing", "both_empty"}:
+            return None if case == "both_missing" else ""
         return f"provider:{kwargs['round_index']}"
 
     async def commit(**kwargs):

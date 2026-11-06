@@ -5,6 +5,7 @@ export type ApprovalExecutionLike = {
   execution_kind?: string | null;
   execution_receipt?: {
     continuation_status?: string | null;
+    continuation_reason?: string | null;
   } | null;
 };
 
@@ -17,6 +18,7 @@ export type ApprovalExecutionPresentation = {
 
 export type ApprovalContinuationPresentation = {
   status: string;
+  translationKey?: string;
   label: string;
   tone: 'warning' | 'success' | 'error';
 };
@@ -78,5 +80,18 @@ export function approvalContinuationPresentation(
   approval: ApprovalExecutionLike,
 ): ApprovalContinuationPresentation | null {
   const status = String(approval.execution_receipt?.continuation_status || '').trim().toLowerCase();
-  return CONTINUATION_PRESENTATIONS[status] || null;
+  const presentation = CONTINUATION_PRESENTATIONS[status];
+  const reason = approval.execution_receipt?.continuation_reason || '';
+  const reasons: Record<string, string> = {
+    requester_inactive: 'This account is inactive. No changes were made.',
+    agent_execute_denied: 'You do not have access to this employee.',
+    user_prompt_submit_blocked: 'This input was blocked by a rule. Work did not continue.',
+    user_prompt_submit_prevented: 'This input was blocked by a rule. Work did not continue.',
+    admission_refused: 'This input was not accepted. Work did not continue.',
+    approval_return_admission_refused: 'This input was not accepted. Work did not continue.',
+    active_turn_conflict_after_admission: 'This conversation is processing another input. Try again later.',
+  };
+  return presentation && status === 'needs_reconciliation' && reasons[reason]
+    ? { ...presentation, label: reasons[reason], translationKey: `approvalContinuation.reasons.${reason}` }
+    : presentation || null;
 }

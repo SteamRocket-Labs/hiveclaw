@@ -3,6 +3,10 @@ import React from 'react';
 import StreamingMarkdown from '../../components/StreamingMarkdown';
 import type { AgentChatMessage } from './chatRuntime';
 
+export function assistantReplyForDisplay(content: string): string {
+  return content.replace(/^\s*DELIVERABLE:[^\r\n]*(?:\r?\n|$)/gm, '');
+}
+
 export function shouldCollapseAssistantSupplement(messages: AgentChatMessage[], index: number): boolean {
   const message = messages[index];
   if (message?.role !== 'assistant' || !message.content.trim()) return false;
@@ -27,6 +31,7 @@ export function AssistantMessageBody({
   supplemental: boolean;
   supplementalLabel: string;
 }) {
+  content = assistantReplyForDisplay(content);
   if (!supplemental) return <StreamingMarkdown content={content} streaming={streaming} />;
 
   return (

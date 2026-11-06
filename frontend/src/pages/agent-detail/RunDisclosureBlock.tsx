@@ -15,6 +15,7 @@ import {
 } from '@tabler/icons-react';
 
 import MarkdownRenderer from '../../components/MarkdownRenderer';
+import { assistantReplyForDisplay } from './CanonicalCardAssistantSupplement';
 import { approvalActionFor } from '../session-workbench/approvalActionPresentation';
 import { PastedCredentialText } from '../session-workbench/PastedCredentialNotice';
 import type {
@@ -295,7 +296,7 @@ function proseText(step: RunStepSnapshot): string {
 }
 
 function RunProse({ step }: { step: RunStepSnapshot }) {
-  const content = proseText(step);
+  const content = assistantReplyForDisplay(proseText(step));
   if (!content) return null;
   return (
     <article

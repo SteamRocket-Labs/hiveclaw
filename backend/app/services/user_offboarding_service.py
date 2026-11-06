@@ -17,10 +17,14 @@ from app.core.permissions import agent_owned_by_clause
 from app.models.agent import Agent, AgentPermission
 from app.models.audit import ApprovalRequest, AuditLog
 from app.models.channel_config import ChannelConfig
+from app.models.custom_api_account import CustomApiAccount, CustomApiAccountGrant
+from app.models.email_account import EmailAccount, EmailAccountGrant
+from app.models.mcp_server import MCPAccountGrant, MCPServer
 from app.models.external_principal import ExternalPrincipal
 from app.models.knowledge import KnowledgeGrant
 from app.models.local_agent_channel import LocalAgentChannel, LocalAgentChannelSession, LocalAgentChannelWsTicket
 from app.models.local_bridge import LocalAgentBridgeConnection, LocalAgentBridgePairingSession
+from app.models.machine_credential import MachineCredential
 from app.models.refresh_token import RefreshToken
 from app.models.runtime_task import RuntimeTask
 from app.models.security_audit import ResourcePermission
@@ -396,6 +400,38 @@ async def revoke_user_authority(
             .values(revoked_at=now, revoked_by_user_id=actor_user.id)
         )
     )
+    for account_model in (EmailAccount, CustomApiAccount):
+        await db.execute(
+            update(account_model)
+            .where(account_model.tenant_id == tenant_id, account_model.owner_user_id == target_user_id)
+            .values(config={}, version=account_model.version + 1)
+        )
+    await db.execute(
+        update(MCPServer)
+        .where(MCPServer.tenant_id == tenant_id, MCPServer.owner_user_id == target_user_id)
+        .values(config_json={}, auth_status="none", status="needs_auth")
+    )
+    for account_model, grant_model in (
+        (EmailAccount, EmailAccountGrant),
+        (CustomApiAccount, CustomApiAccountGrant),
+        (MCPServer, MCPAccountGrant),
+    ):
+        owned_accounts = select(account_model.id).where(
+            account_model.tenant_id == tenant_id, account_model.owner_user_id == target_user_id,
+        )
+        await db.execute(
+            update(grant_model).where(
+                grant_model.tenant_id == tenant_id,
+                grant_model.enabled.is_(True),
+                (grant_model.requester_user_id == target_user_id) | grant_model.account_id.in_(owned_accounts),
+            ).values(enabled=False, version=grant_model.version + 1)
+        )
+    await db.execute(
+        update(MachineCredential)
+        .where(MachineCredential.tenant_id == tenant_id, MachineCredential.owner_user_id == target_user_id,
+               MachineCredential.status == "active")
+        .values(status="revoked", revoked_at=now)
+    )
     refresh_tokens = _rowcount(
         await db.execute(
             update(RefreshToken)
@@ -599,6 +635,10 @@ async def offboard_loaded_user(
             "quarantined_trigger_ids": [str(value) for value in quarantined_trigger_ids],
         }
         db.add(audit)
+    from app.services.offboarding_notice import transfer_knowledge_and_notify
+
+    await transfer_knowledge_and_notify(db, target_user=target_user, successor=successor, agents=agents,
+        revocations=revocations, handover_audits=handover_audits)
     was_active = bool(target_user.is_active)
     target_user.is_active = False
     db.add(

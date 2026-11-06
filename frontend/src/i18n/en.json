@@ -4535,6 +4535,26 @@
     },
     "deleteCompanyConfirm": "Are you sure you want to delete this company and ALL its data? This cannot be undone."
   },
+  "handover": {
+    "bots": "Digital employees",
+    "knowledge": "Knowledge",
+    "work": "Unfinished work",
+    "triggers": "Automations to review",
+    "triggersPaused": "These automations are off. Review each before enabling it.",
+    "noResult": "No saved result is available yet.",
+    "reviewFirst": "This work was interrupted. Review the known results and confirm the next step before continuing.",
+    "reason": "Your decision and reason",
+    "confirmSafe": "Confirm a safe next step",
+    "closeWork": "Finish without repeating",
+    "reviewed": "Decision saved. Continue from the known results in a conversation.",
+    "closed": "Finished without repeating any action.",
+    "reclaim": "Take over and configure",
+    "keepOff": "Keep off",
+    "configureNext": "Taken over and kept off. Review the settings before enabling.",
+    "keptOff": "Taken over and kept off.",
+    "settings": "Open automation settings",
+    "unavailable": "The handover notice could not be read. Open it again to retry."
+  },
   "notifications": {
     "title": "Notifications",
     "markAllRead": "Mark all read",

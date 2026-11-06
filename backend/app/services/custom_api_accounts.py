@@ -48,6 +48,8 @@ def account_public(account, tool, grant=None):
 
 async def active_user(db, user_id, tenant_id):
     user = await db.get(User, user_id, populate_existing=True) if user_id else None
+    if user and not user.is_active:
+        raise HTTPException(403, "个人 API 凭据已吊销")
     if not user or not user.is_active or not (user.tenant_id == tenant_id or user.role == "platform_admin"):
         raise HTTPException(403, "Current API account identity is unavailable")
     return user

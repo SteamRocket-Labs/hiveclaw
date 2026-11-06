@@ -1,7 +1,7 @@
 """Command ownership for one exclusively held, applied session permission."""
 
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from fastapi import HTTPException
 
@@ -24,6 +24,7 @@ class PermissionCommandBinding:
     permission_request_id: uuid.UUID
     tool_call_id: str
     lease: PermissionExecutionLease
+    _command_authorized: bool = field(default=False, init=False, repr=False, compare=False)
 
     def receipt(self):
         return {"kind": "session_permission", "permission_request_id": str(self.permission_request_id),
@@ -60,6 +61,7 @@ class PermissionCommandBinding:
                 or task is None or not self.owns_terminal_task(task)
                 or session is None or scope.runtime_request is None
                 or frame is None or frame.tool_call_id != self.tool_call_id
+                or scope.runtime_request.context.tool_call_id != self.tool_call_id
                 or invocation is None or invocation.permission_item_id != self.permission_request_id
                 or invocation.permission_item_id != self.lease.permission_request_id
                 or invocation.effect_state != "effect_started" or invocation.result_event_id is not None
@@ -79,7 +81,11 @@ class PermissionCommandBinding:
                 else "environment_source_authority_revoked", 503 if unavailable else 403) from exc
 
     async def authorize(self, db, scope):
-        return await self._validate(db, scope, before_command=True)
+        actor = await self._validate(db, scope, before_command=True)
+        if self._command_authorized:
+            raise EnvironmentError("environment_source_authority_revoked", 403)
+        object.__setattr__(self, "_command_authorized", True)
+        return actor
 
     async def revalidate(self, db, scope):
         return await self._validate(db, scope, before_command=False)

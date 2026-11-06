@@ -646,7 +646,9 @@ it('replaces the optimistic /goal command with the existing live goal projection
   expect(mocks.chatProps.chatMessages.some((m: any) => m.content.includes('sk-proj-'))).toBe(false);
 });
 
-it.each([true, false])('reconciles a goal-mode paste by receipt input identity, live before HTTP: %s', async liveBeforeResponse => {
+it.each([
+  [false, true], [false, false], [true, true], [true, false],
+])('reconciles a goal-mode paste by receipt input identity, replay: %s, live before HTTP: %s', async (replayed, liveBeforeResponse) => {
   const request = deferred<any>();
   vi.spyOn(ccParityApi, 'startGoal').mockReturnValue(request.promise);
   await composeOrdinaryMessage('Use sk-proj-abcdefghijklmnopqrstuvwxyz1234567890ABCD');
@@ -663,7 +665,7 @@ it.each([true, false])('reconciles a goal-mode paste by receipt input identity, 
     occurred_at: '2026-11-05T00:00:00Z', persisted_at: '2026-11-05T00:00:00Z' });
   if (liveBeforeResponse) await act(async () => { receive(); });
   await act(async () => {
-    request.resolve({ id: 'goal-1', input: { input_id: 'goal-human-input' }, run: { run_id: 'goal-run', status: 'pending' } });
+    request.resolve({ id: 'goal-1', input: { input_id: 'goal-human-input' }, run: { run_id: 'goal-run', status: 'pending', replayed } });
     await sending;
   });
   if (!liveBeforeResponse) await act(async () => { receive(); });

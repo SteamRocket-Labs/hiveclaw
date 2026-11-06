@@ -1582,6 +1582,42 @@ async def test_goals_api_replays_same_request_without_duplicate_event_or_run(mon
 
 
 @pytest.mark.asyncio
+async def test_goals_api_replay_returns_the_first_input_id(monkeypatch):
+    import app.api.session_goals as goals_api
+    from app.models.agent_session_goal import AgentSessionGoal
+
+    agent = SimpleNamespace(id=uuid4(), tenant_id=uuid4())
+    session = SimpleNamespace(id=uuid4())
+    user = SimpleNamespace(id=uuid4(), role="member")
+    goal = AgentSessionGoal(
+        id=uuid4(), tenant_id=agent.tenant_id, agent_id=agent.id,
+        chat_session_id=session.id, created_by_user_id=user.id,
+        objective="Replay the same goal input.", status="active", metadata_json={},
+    )
+    created = iter([True, False])
+
+    async def authorize(*_args, **_kwargs):
+        return SimpleNamespace(agent=agent, session=session)
+
+    async def load(**_kwargs):
+        return goal, next(created)
+
+    async def submit(**kwargs):
+        return {"input_id": str(kwargs["input_id"]), "run": {"run_id": "run-original", "status": "pending"}}
+
+    monkeypatch.setattr(goals_api, "authorize_session_action", authorize)
+    monkeypatch.setattr(goals_api, "_create_or_load_goal", load)
+    monkeypatch.setattr(goals_api, "submit_live_human_input", submit)
+    body = goals_api.StartGoalIn(request_id=goal.id, objective=goal.objective, start_immediately=True)
+    first = await goals_api.start_session_goal(agent.id, session.id, body, user, _FakeDB())
+    replay = await goals_api.start_session_goal(agent.id, session.id, body, user, _FakeDB())
+
+    assert first["input"]["input_id"] == str(uuid5(goal.id, "session-goal-initial-input"))
+    assert replay["run"]["replayed"] is True
+    assert replay["input"]["input_id"] == first["input"]["input_id"]
+
+
+@pytest.mark.asyncio
 async def test_goal_request_id_insert_and_replay_share_one_canonical_goal():
     import app.api.session_goals as goals_api
     from app.models.agent_session_goal import AgentSessionGoal

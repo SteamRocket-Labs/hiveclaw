@@ -10,7 +10,7 @@ from typing import Any
 
 from fastapi import HTTPException, status
 from loguru import logger
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import case, delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.permissions import agent_owned_by_clause
@@ -24,7 +24,6 @@ from app.models.external_principal import ExternalPrincipal
 from app.models.knowledge import KnowledgeGrant
 from app.models.local_agent_channel import LocalAgentChannel, LocalAgentChannelSession, LocalAgentChannelWsTicket
 from app.models.local_bridge import LocalAgentBridgeConnection, LocalAgentBridgePairingSession
-from app.models.machine_credential import MachineCredential
 from app.models.refresh_token import RefreshToken
 from app.models.runtime_task import RuntimeTask
 from app.models.security_audit import ResourcePermission
@@ -400,22 +399,15 @@ async def revoke_user_authority(
             .values(revoked_at=now, revoked_by_user_id=actor_user.id)
         )
     )
-    for account_model in (EmailAccount, CustomApiAccount):
-        await db.execute(
-            update(account_model)
-            .where(account_model.tenant_id == tenant_id, account_model.owner_user_id == target_user_id)
-            .values(config={}, version=account_model.version + 1)
-        )
-    await db.execute(
-        update(MCPServer)
-        .where(MCPServer.tenant_id == tenant_id, MCPServer.owner_user_id == target_user_id)
-        .values(config_json={}, auth_status="none", status="needs_auth")
-    )
     for account_model, grant_model in (
         (EmailAccount, EmailAccountGrant),
         (CustomApiAccount, CustomApiAccountGrant),
         (MCPServer, MCPAccountGrant),
     ):
+        values = {"config_json": {}, "auth_status": "none", "status": "needs_auth"} if account_model is MCPServer else {
+            "config": {}, "version": account_model.version + 1}
+        await db.execute(update(account_model).where(account_model.tenant_id == tenant_id,
+            account_model.owner_user_id == target_user_id).values(**values))
         owned_accounts = select(account_model.id).where(
             account_model.tenant_id == tenant_id, account_model.owner_user_id == target_user_id,
         )
@@ -426,12 +418,6 @@ async def revoke_user_authority(
                 (grant_model.requester_user_id == target_user_id) | grant_model.account_id.in_(owned_accounts),
             ).values(enabled=False, version=grant_model.version + 1)
         )
-    await db.execute(
-        update(MachineCredential)
-        .where(MachineCredential.tenant_id == tenant_id, MachineCredential.owner_user_id == target_user_id,
-               MachineCredential.status == "active")
-        .values(status="revoked", revoked_at=now)
-    )
     refresh_tokens = _rowcount(
         await db.execute(
             update(RefreshToken)
@@ -618,6 +604,12 @@ async def offboard_loaded_user(
                 transferred_agent_ids.append(agent.id)
 
     now = datetime.now(timezone.utc)
+    await db.execute(update(KnowledgeGrant).where(KnowledgeGrant.tenant_id == target_user.tenant_id,
+        KnowledgeGrant.scope_type == "person", KnowledgeGrant.scope_id == target_user.id,
+        KnowledgeGrant.grantee_type == "agent", KnowledgeGrant.grantee_id.in_(current_agent_ids),
+        KnowledgeGrant.requester_user_id == target_user.id, KnowledgeGrant.revoked_at.is_(None))
+        .values(scope_id=successor.id, requester_user_id=successor.id,
+            resource_id=case((KnowledgeGrant.resource_type == "scope", successor.id), else_=KnowledgeGrant.resource_id)))
     revocations = await revoke_user_authority(
         db,
         target_user=target_user,
@@ -634,11 +626,11 @@ async def offboard_loaded_user(
             **dict(audit.details or {}),
             "quarantined_trigger_ids": [str(value) for value in quarantined_trigger_ids],
         }
-        db.add(audit)
     from app.services.offboarding_notice import transfer_knowledge_and_notify
 
-    await transfer_knowledge_and_notify(db, target_user=target_user, successor=successor, agents=agents,
-        revocations=revocations, handover_audits=handover_audits)
+    handover_details = await transfer_knowledge_and_notify(db, target_user=target_user, successor=successor, agents=agents,
+        handover_audits=handover_audits)
+    db.add_all(handover_audits)
     was_active = bool(target_user.is_active)
     target_user.is_active = False
     db.add(
@@ -652,6 +644,7 @@ async def offboard_loaded_user(
                 "successor_user_id": str(successor.id),
                 "expected_agent_ids": [str(value) for value in expected_agent_ids],
                 "transferred_agent_ids": [str(value) for value in transferred_agent_ids],
+                **handover_details,
                 "revocations": {
                     "agent_permissions": revocations.agent_permissions,
                     "resource_permissions": revocations.resource_permissions,

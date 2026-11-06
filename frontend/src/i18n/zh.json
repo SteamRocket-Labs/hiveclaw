@@ -4536,6 +4536,22 @@
     "deleteCompanyConfirm": "确定删除此公司及其全部数据吗？此操作无法撤销。"
   },
   "handover": {
+    "merged": "已合并到接手人已有的资料",
+    "needsAdmin": "需要公司管理员处理",
+    "effect": {
+      "unknown": "对外结果未知",
+      "not_started": "尚未开始对外操作"
+    },
+    "step": {
+      "started": "已开始，结果未知",
+      "completed": "已完成",
+      "failed": "失败",
+      "denied": "未获授权",
+      "unavailable": "暂不可用",
+      "cancelled": "已停止",
+      "waiting": "等待确认",
+      "needs_reconciliation": "已开始，结果未知"
+    },
     "bots": "数字员工",
     "knowledge": "知识",
     "work": "未完成的工作",
@@ -4549,9 +4565,7 @@
     "reviewed": "决定已保存。请从已知结果出发，在对话中继续。",
     "closed": "已结束，没有重复执行任何动作。",
     "reclaim": "接管并设置",
-    "keepOff": "保持停用",
     "configureNext": "已接管并保持停用，请检查设置后再启用。",
-    "keptOff": "已接管并保持停用。",
     "settings": "打开自动化设置",
     "unavailable": "交接通知暂时无法读取，请重新打开重试。"
   },

@@ -4536,6 +4536,22 @@
     "deleteCompanyConfirm": "Are you sure you want to delete this company and ALL its data? This cannot be undone."
   },
   "handover": {
+    "merged": "Merged into the successor’s existing document",
+    "needsAdmin": "Needs a company administrator",
+    "effect": {
+      "unknown": "External outcome unknown",
+      "not_started": "External action not started"
+    },
+    "step": {
+      "started": "Started, outcome unknown",
+      "completed": "Completed",
+      "failed": "Failed",
+      "denied": "Not authorized",
+      "unavailable": "Unavailable",
+      "cancelled": "Stopped",
+      "waiting": "Waiting for confirmation",
+      "needs_reconciliation": "Started, outcome unknown"
+    },
     "bots": "Digital employees",
     "knowledge": "Knowledge",
     "work": "Unfinished work",
@@ -4549,9 +4565,7 @@
     "reviewed": "Decision saved. Continue from the known results in a conversation.",
     "closed": "Finished without repeating any action.",
     "reclaim": "Take over and configure",
-    "keepOff": "Keep off",
     "configureNext": "Taken over and kept off. Review the settings before enabling.",
-    "keptOff": "Taken over and kept off.",
     "settings": "Open automation settings",
     "unavailable": "The handover notice could not be read. Open it again to retry."
   },

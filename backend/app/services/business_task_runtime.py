@@ -473,7 +473,6 @@ async def apply_business_task_cancellation(
     )
     runtime_task.metadata_json = metadata
     _invalidate_runtime_claim(runtime_task)
-    known_result, known_summary = task.last_result, runtime_task.result_summary
     apply_business_task_outcome(
         db=db,
         task=task,
@@ -481,10 +480,6 @@ async def apply_business_task_cancellation(
         outcome=outcome,
         completed_at=completed_at,
     )
-    if known_result:
-        task.last_result = known_result
-    if known_summary:
-        runtime_task.result_summary = known_summary
     await _enqueue_business_task_channel_delivery(db=db, runtime_task=runtime_task, outcome=outcome)
     await enqueue_business_task_terminal_boundary(db, runtime_task)
     return outcome

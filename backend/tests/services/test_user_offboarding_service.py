@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import nullcontext
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -123,6 +124,8 @@ async def test_offboard_user_atomically_transfers_agents_then_deactivates(monkey
 
     db = SimpleNamespace(added=[], flushes=0)
     db.add = db.added.append
+    db.add_all = db.added.extend
+    db.no_autoflush = nullcontext()
 
     async def flush():
         db.flushes += 1
@@ -132,6 +135,7 @@ async def test_offboard_user_atomically_transfers_agents_then_deactivates(monkey
 
     db.flush = flush
     db.execute = execute
+    db.scalars = execute
 
     receipt = await service.offboard_loaded_user(
         db,
@@ -150,6 +154,8 @@ async def test_offboard_user_atomically_transfers_agents_then_deactivates(monkey
     assert receipt.status == "deactivated"
     assert receipt.transferred_agent_ids == [agent.id for agent in agents]
     assert receipt.revocations.refresh_tokens == 2
+    audit = next(row for row in db.added if getattr(row, "action", None) == "user:offboarded")
+    assert audit.details["task_original_creators"] == {}
 
 
 @pytest.mark.asyncio

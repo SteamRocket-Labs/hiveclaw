@@ -206,7 +206,7 @@ async def account_access(db, *, server, account_id, agent_id, user):
         )
         .execution_options(populate_existing=True)
     )
-    if owner and not owner.is_active:
+    if owner and owner.tenant_id == server.tenant_id and _active_in_tenant(user, server.tenant_id) and not owner.is_active:
         raise HTTPException(status_code=403, detail="个人 MCP 凭据已吊销")
     if not _active_in_tenant(owner, server.tenant_id) or not _active_in_tenant(user, server.tenant_id):
         raise HTTPException(

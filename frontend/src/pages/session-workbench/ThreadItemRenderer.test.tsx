@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
+    i18n: { language: 'en' },
     t: (_key: string, fallback?: string | Record<string, unknown>, options?: Record<string, unknown>) => {
       if (_key === 'sessionWorkbench.threadItem.failure.quotaExhausted') {
         return '模型额度或余额不足，请联系管理员检查额度，或切换模型后重试。';
@@ -221,8 +222,10 @@ describe('ThreadItemRenderer', () => {
       <ThreadItemRenderer item={approval} approvalActions={<button type="button">Allow once</button>} />,
     );
 
-    expect(markup).toContain('write_file');
-    expect(markup).toContain('2026-07-10T12:30:00Z');
+    expect(markup).toContain('Write file');
+    expect(markup).toContain(new Date('2026-07-10T12:30:00Z').toLocaleString('en'));
+    expect(markup).not.toContain('write_file');
+    expect(markup).not.toContain('2026-07-10T12:30:00Z');
     expect(markup).toContain('Allow once');
     expect(markup).toContain('waiting_user');
     expect(markup).not.toContain('report.md');

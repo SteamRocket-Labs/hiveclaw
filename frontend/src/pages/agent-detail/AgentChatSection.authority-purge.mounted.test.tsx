@@ -462,11 +462,12 @@ it.each(['user', 'assistant'] as const)('leaves unflagged %s content unchanged w
 
 describe('AgentChatSection operator child-state lifetime', () => {
   it('removes artifact, checkpoint, workflow, and technical inspectors when authority identity changes', async () => {
+    useAuthStore.setState({ user: { id: 'operator-user', tenant_id: 'company', role: 'org_admin' } as any });
     const view = render(React.createElement(AgentChatSection as any, props('Reason A')));
 
     fireEvent.click(screen.getByTestId('chat-artifact-row-open'));
     expect(await screen.findByTestId('session-artifact-inspector')).toBeTruthy();
-    expect(screen.getByText('PRIVATE ARTIFACT CONTENT')).toBeTruthy();
+    expect(await screen.findByText('PRIVATE ARTIFACT CONTENT')).toBeTruthy();
 
     fireEvent.click(screen.getByTestId('session-gitline-checkpoint'));
     expect(document.querySelector('.session-gitline-node.is-focused')).toBeTruthy();

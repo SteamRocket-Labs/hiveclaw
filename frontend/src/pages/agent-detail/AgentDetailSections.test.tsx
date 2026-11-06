@@ -181,6 +181,7 @@ describe('SessionDecisionHistory', () => {
 
 describe('SessionRuntimePanel read-only controls', () => {
   it('keeps operator evidence visible without goal, decision, team, or retry mutations', () => {
+    memoryReader.user = { id: 'operator', tenant_id: 'company', role: 'org_admin' };
     const markup = renderToStaticMarkup(
       <SessionRuntimePanel
         messages={[]}
@@ -1515,6 +1516,7 @@ describe('AgentDetail extracted sections', () => {
   });
 
   it('keeps operator inspection reason-scoped and removes every writable session control', () => {
+    memoryReader.user = { id: 'user-1', tenant_id: 'company', role: 'org_admin' };
     const renderOperatorAudit = (reason: string) => renderToStaticMarkup(
       <AgentChatSection
         agentId="agent-1"
@@ -4323,7 +4325,9 @@ describe('AgentDetail extracted sections', () => {
     );
 
     expect(markup).toContain('Approval required');
-    expect(markup).toContain('run_command');
+    expect(markup).toContain('Full parameters');
+    expect(markup).not.toContain('run_command');
+    expect(markup).toContain('rm workspace/report.md');
     expect(markup).toContain('Allow once');
     expect(markup).not.toContain('Allow for this session');
     expect(markup).toContain('Delete actions can only be allowed once.');
@@ -5304,9 +5308,10 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).toContain('data-testid="session-runtime-collapsed-deliverables"');
     expect(markup).toContain('Show deliverables (1)');
     expect(markup).toContain('data-testid="session-runtime-collapsed-attention"');
-    expect(markup).toContain('Show items waiting for you (4)');
-    expect(markup).toContain('data-testid="session-runtime-collapsed-running"');
-    expect(markup).toContain('Show running items (3)');
+    expect(markup).toContain('Show items waiting for you (1)');
+    expect(markup).not.toContain('Show items waiting for you (4)');
+    expect(markup).not.toContain('data-testid="session-runtime-collapsed-running"');
+    expect(markup).not.toContain('Show running items (3)');
     expect(markup).toContain('data-testid="session-gitline"');
     expect(markup).toContain('data-testid="session-gitline-checkpoint"');
     expect(markup).toContain('data-testid="session-gitline-branch"');
@@ -6443,7 +6448,7 @@ describe('AgentDetail extracted sections', () => {
       />,
     );
 
-    expect(markup).toContain('Agent Conversation');
+    expect(markup).toContain('Delegated conversation');
     expect(markup).not.toContain('data-testid="session-composer"');
     expect(markup).not.toContain('data-testid="session-composer-input"');
     expect(markup).not.toContain('data-testid="session-composer-send"');

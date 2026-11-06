@@ -294,9 +294,9 @@ describe('own assistant identity and settings', () => {
       <AgentDetailHeader agent={own.agent} agentId="own" canManage={false} isOperatorOnly={false}
         isSystemHr={false} onError={vi.fn()} statusKey="idle" /></>);
     const title = language === 'zh' ? '我的助理' : 'My Assistant';
-    expect(await screen.findByRole('link', { name: `Open ${title}` })).toBeTruthy();
+    expect(await screen.findByRole('link', { name: `${language === 'zh' ? '打开' : 'Open'} ${title}` })).toBeTruthy();
     await waitFor(() => expect(screen.getByRole('heading', { level: 1 }).textContent).toBe(title));
-    expect(screen.getByRole('link', { name: 'Open Other Assistant' })).toBeTruthy();
+    expect(screen.getByRole('link', { name: `${language === 'zh' ? '打开' : 'Open'} Other Assistant` })).toBeTruthy();
     expect(own.agent.name).toBe('My Assistant');
   });
   it.each(['zh', 'en'])('localizes the own assistant empty conversation: %s', async (language) => {

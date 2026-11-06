@@ -72,7 +72,8 @@
 
 - [完成] E2E 第一轮（Codex 以 test123 在实验室真实测试）。证据：~/hiveclaw-evidence/p1/e2e/run1-judgment/judgment.md；黄金任务 1、2、3、5 不通过，6 被挡
 - [完成] E2E 第二轮（生产 4af182c6）。证据：~/hiveclaw-evidence/p1/e2e/run2-judgment/judgment.md；黄金任务 1、3 通过；2 前半通过、下一轮改报告时收尾选成果抛 TerminalReadArtifactSelectionNeedsReconciliation 整轮待核对（编辑本身已生效）；5 未测到；“请记住它”被 explicit_memory_input_unverified 拒 5 次；调模型时按停止显示“失败”；新对话本人消息约 1 秒；审批详情和右侧面板仍有内部词。S0b 生产复测通过（发送中气泡短暂原文记 B7）
-- [进行中] B7 去内部词第二轮（Codex）
+- [完成] B7 去内部词第二轮。证据：eb49757e 已部署前端（资源 index-ny3Fl5sP，本地按同一提交构建一致；后端未动，指纹仍 99239aec）；审批卡展开一次见摘要（命令与目录、员工名与首个任务、收件人/主题/正文开头），原始参数收在“完整参数”后；成员右栏只列等本人决定的项；附件预览改用上传返回的原件引用，删掉后端按路径查；Codex 三轮，reviewer xhigh 一轮、Grok 两轮；生产代码净 +98。没做：发送中气泡隐藏贴入的密钥（检测器只在后端），时间线“等你决定”重复归 B6
+- [待办] B6 跟进：时间线“等你决定”重复
 - [待办] B6 状态如实（A4b 之后）
 - [待办] 黄金任务 1–6 全部通过（版本一）
 - [阻塞] P5 团队连用 5 个工作日。证据：需要 owner 和团队参与

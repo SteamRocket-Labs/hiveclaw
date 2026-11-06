@@ -224,7 +224,13 @@
         "retry": "retry",
         "retry reason": "retry reason",
         "event": "event",
-        "name": "Name"
+        "name": "Name",
+        "command": "Command",
+        "cwd": "Working directory",
+        "first_task": "First task",
+        "recipient": "Recipient",
+        "subject": "Subject",
+        "body": "Body"
       },
       "value": {
         "success": "success",
@@ -232,7 +238,8 @@
         "sessionAllowed": "session allowed",
         "oneAction": "one action",
         "destructive": "destructive",
-        "reversible": "reversible or read-only"
+        "reversible": "reversible or read-only",
+        "employeePermanent": "The employee can be deactivated, but cannot be deleted."
       },
       "inspectTechnicalDetails": "Inspect technical details",
       "operatorOnly": "Technical details are available only in Operator View.",
@@ -1233,7 +1240,10 @@
     "noActiveCompany": "No active company available",
     "selectCompanyPlaceholder": "Select a company…",
     "logout": "Sign Out",
-    "switchTenant": "Switch company"
+    "switchTenant": "Switch company",
+    "expandSidebar": "Expand Sidebar",
+    "collapseSidebar": "Collapse Sidebar",
+    "openNamed": "Open {{name}}"
   },
   "dashboard": {
     "greeting": {
@@ -2527,7 +2537,8 @@
         "resolveFailed": "Failed to resolve permission request",
         "waitingForRequester": "Waiting for the original requester to decide.",
         "applying": "Applying decision…",
-        "reconcileRequired": "The tool outcome needs review before this work can continue."
+        "reconcileRequired": "The tool outcome needs review before this work can continue.",
+        "fullArguments": "Full parameters"
       },
       "actions": {
         "like": "Like",
@@ -2837,7 +2848,11 @@
         "loadFailed": "Approval status could not load.",
         "waiting": "Waiting for the responsible approver."
       },
-      "agentExpired": "This digital employee has expired and is off duty. Ask an administrator to extend its service."
+      "agentExpired": "This digital employee has expired and is off duty. Ask an administrator to extend its service.",
+      "delegatedConversation": "Delegated conversation",
+      "delegation": "Delegation",
+      "readOnlyConversation": "Read-only · {{name}}",
+      "scrollToBottom": "Scroll to bottom"
     },
     "activityLog": {
       "title": "Activity Log",
@@ -3670,7 +3685,8 @@
     "removeSessionFailed": "Failed to remove the conversation from your list.",
     "send": "Send",
     "deleteConfirm": "Delete this conversation and all its messages? This cannot be undone.",
-    "stop": "Stop"
+    "stop": "Stop",
+    "removeNamedSession": "Remove conversation from list: {{name}}"
   },
   "messages": {
     "title": "Notifications",
@@ -4837,7 +4853,9 @@
     "remove": "Remove",
     "required": "Required",
     "saved": "Saved",
-    "saveFailed": "Save failed"
+    "saveFailed": "Save failed",
+    "copy": "Copy",
+    "user": "User"
   },
   "admin": {
     "title": "Company Management",

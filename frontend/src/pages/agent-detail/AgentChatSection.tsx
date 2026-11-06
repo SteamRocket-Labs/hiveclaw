@@ -128,7 +128,7 @@ import {
 import { InlinePlanCard, StructuredToolResultBody } from './StructuredToolResult';
 import { isDedicatedToolCardMessage } from './chatDisclosureReducer';
 import {
-  AssistantMessageBody,
+  AssistantMessageBody, assistantReplyForDisplay,
   shouldCollapseAssistantSupplement,
 } from './CanonicalCardAssistantSupplement';
 import { SessionToolEffectRecoveryBanner, sessionToolEffectRecoveryModel } from './SessionToolEffectRecovery';
@@ -866,7 +866,7 @@ const ChatMessageItem = React.memo(function ChatMessageItem({
         className={`session-tui-message-meta ${isLeft ? 'align-left' : 'align-right'}`}
       >
         {timeStr}
-        {msg.content && <CopyMessageButton text={msg.content} />}
+        {msg.content && <CopyMessageButton text={msg.role === 'assistant' ? assistantReplyForDisplay(msg.content) : msg.content} />}
         <MessageBranchActions
           message={msg}
           checkpointMessage={checkpointMessage}
@@ -2022,7 +2022,7 @@ function AgentChatSection({
                         <button
                           type="button"
                           className="detail-session-row-action"
-                          aria-label={`Delete session ${sessionTitleForUser(session, t('agent.chat.session', 'Session'))}`}
+                          aria-label={t('chat.removeNamedSession', 'Remove conversation from list: {{name}}', { name: sessionTitleForUser(session, t('agent.chat.session', 'Session')) })}
                           title={t('chat.removeSession', 'Remove from list')}
                           onClick={() => onDeleteSession(String(session.id))}
                         >
@@ -2039,7 +2039,7 @@ function AgentChatSection({
       <div className="session-tui-center">
         {operatorReadEnabled && (
           <SessionWorkbenchHeader
-            model={threadTimelineModel.header}
+            model={{ ...threadTimelineModel.header, title: sessionTitleForUser(activeSession, threadTimelineModel.header.title, t('agent.chat.delegation', 'Delegation')) }}
             history={effectiveAgentId && agent?.access_level !== 'operator' ? {
               // 历史 (B3): the bot's own conversations live behind one header
               // entry; the app sidebar no longer lists sessions. The merged
@@ -2108,7 +2108,7 @@ function AgentChatSection({
                       display: 'inline-block',
                     }}
                   >
-                    {isA2ASession(activeSession as any) ? `🤖 Agent Conversation · ${activeSession.username || 'Agents'}` : `Read-only · ${activeSession.username || 'User'}`}
+                    {isA2ASession(activeSession as any) ? `🤖 ${t('agent.chat.delegatedConversation', 'Delegated conversation')} · ${sessionTitleForUser({ ...activeSession, title: activeSession.username || activeSession.title }, t('agent.chat.session', 'Session'), t('agent.chat.delegation', 'Delegation'))}` : t('agent.chat.readOnlyConversation', 'Read-only · {{name}}', { name: activeSession.username || t('common.user', 'User') })}
                   </div>
                   {operatorReadEnabled && focusedWorkflow ? (
                     <WorkflowRunFocusPanel
@@ -2166,7 +2166,7 @@ function AgentChatSection({
                   boxShadow: '0 2px 8px rgba(0,0,0,0.3)',
                   zIndex: 10,
                 }}
-                title="Scroll to bottom"
+                title={t('agent.chat.scrollToBottom', 'Scroll to bottom')} aria-label={t('agent.chat.scrollToBottom', 'Scroll to bottom')}
               >
                 ↓
               </button>
@@ -2220,7 +2220,7 @@ function AgentChatSection({
                   boxShadow: '0 2px 8px rgba(0,0,0,0.3)',
                   zIndex: 10,
                 }}
-                title="Scroll to bottom"
+                title={t('agent.chat.scrollToBottom', 'Scroll to bottom')} aria-label={t('agent.chat.scrollToBottom', 'Scroll to bottom')}
               >
                 ↓
               </button>

@@ -130,7 +130,7 @@ function SessionHistoryMenu({ agentId, sessions, loading, activeSessionId }: Ses
                     onClick={() => setOpen(false)}
                   >
                     <span className="swb-history-item-title">
-                      <PastedCredentialText content={sessionTitleForUser(session, t('agent.chat.session', 'Session'))} />
+                      <PastedCredentialText content={sessionTitleForUser(session, t('agent.chat.session', 'Session'), t('agent.chat.delegation', 'Delegation'))} />
                     </span>
                     <span className="swb-history-item-meta">{historyTime(session, locale)}</span>
                   </Link>

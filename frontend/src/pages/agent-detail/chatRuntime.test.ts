@@ -46,6 +46,25 @@ import {
 import { normalizeThreadItemPayload, threadItemToAgentChatMessage } from '../session-workbench/threadItemReducer';
 
 describe('chatRuntime helpers', () => {
+  it.each(['sending', 'failed'] as const)('uses the server display and notice while the optimistic input is %s', sendState => {
+    const retrySend = () => {};
+    const server = { id: 'input-paste', role: 'user' as const, content: 'Use [REDACTED_SECRET]', pastedCredentialNotice: true };
+    const result = mergePendingUserMessages([server], [{ anchorMessageCount: 0,
+      message: { id: server.id, role: 'user', content: 'Use sk-proj-abcdefghijklmnopqrstuvwxyz1234567890ABCD', sendState, retrySend } }]);
+    expect(result.messages).toHaveLength(1);
+    expect(result.messages[0]).toMatchObject({ ...server, sendState, retrySend });
+  });
+  it.each([true, false])('preserves the server paste flag on stored and transcript messages: %s', pasted_credential_notice => {
+    const content = 'Use [REDACTED_SECRET] for this task';
+    const metadata = { pasted_credential_notice };
+    expect(normalizeStoredChatMessage({ role: 'user', content, metadata })).toMatchObject({
+      content, pastedCredentialNotice: pasted_credential_notice,
+    });
+    const state = applyTranscriptEvent(createEmptyTranscriptReplayState(), {
+      id: 'paste', event_type: 'user_message', role: 'user', content, metadata,
+    });
+    expect(state.messages.at(-1)).toMatchObject({ content, pastedCredentialNotice: pasted_credential_notice });
+  });
   it('treats draft human sessions as writable local composer state, not read-only A2A state', () => {
     const draftSession = {
       id: 'draft:local-session',

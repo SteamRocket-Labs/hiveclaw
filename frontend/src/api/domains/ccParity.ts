@@ -92,6 +92,7 @@ export interface SessionGoal {
   updated_at: string | null;
   completed_at: string | null;
   run?: Record<string, unknown> | null;
+  input?: { input_id: string } | null;
   continuation?: Record<string, unknown> | null;
 }
 

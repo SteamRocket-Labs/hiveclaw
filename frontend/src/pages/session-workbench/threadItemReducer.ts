@@ -420,12 +420,16 @@ export function threadItemToAgentChatMessage(item: ThreadItem): AgentChatMessage
     eventScheduleId: text(compatibility.schedule_id) || undefined,
     eventScheduleFireId: text(compatibility.schedule_fire_id) || undefined,
     eventGoalId: text(compatibility.goal_id) || undefined,
+    pastedCredentialNotice: typeof compatibility.pasted_credential_notice === 'boolean'
+      ? compatibility.pasted_credential_notice : undefined,
     eventOnceId: text(compatibility.once_id) || undefined,
     eventMemoryCandidateId: text(compatibility.memory_candidate_id) || undefined,
     eventArtifactId: text(compatibility.artifact_id) || undefined,
     eventPath: text(compatibility.path) || undefined,
     eventRevisionId: text(compatibility.revision_id) || undefined,
-    eventAction: text(compatibility.action) || undefined,
+    eventAction: text(compatibility.action) || (item.event_type === 'goal'
+      ? ({ goal_start: 'started', goal_update: 'updated' } as Record<string, string>)[text(compatibility.command) || '']
+      : undefined),
     eventDiffSummary: text(compatibility.diff_summary) || undefined,
     activatedToolGroupCount,
     skillName: text(compatibility.skill_name) || undefined,

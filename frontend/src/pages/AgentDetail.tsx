@@ -480,7 +480,7 @@ function AgentDetailInner() {
                 ...(pendingUserMessagesRef.current[key] || []),
                 { message, anchorMessageCount: prev.length },
             ];
-            return [...prev, message];
+            return mergePendingForSession(key, prev);
         });
     };
 
@@ -2013,7 +2013,7 @@ function AgentDetailInner() {
                 });
                 const run = goal.run as SessionRun | null | undefined;
                 if (!run?.run_id) throw new Error(t('agent.chat.goalStartFailed', 'The goal was created but its first turn did not start.'));
-                acceptedInputId = goalRequestId;
+                acceptedInputId = goal.input?.input_id || goalRequestId;
                 started = { session: goalSession as ChatSession, run };
             } else {
                 const input = {

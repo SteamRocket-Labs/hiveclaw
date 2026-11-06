@@ -4,6 +4,10 @@ import React from 'react';
 import { useAuthStore } from '../../stores';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import en from '../../i18n/en.json';
+import zh from '../../i18n/zh.json';
+
+const noticeLocale = vi.hoisted(() => ({ language: 'en' }));
 
 const harness = vi.hoisted(() => ({
   readArtifact: vi.fn(),
@@ -16,6 +20,10 @@ const harness = vi.hoisted(() => ({
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
     t: (_key: string, fallback?: string | Record<string, unknown>, values?: Record<string, unknown>) => {
+      if (_key === 'agent.chat.pastedCredentialNotice' || _key === 'agent.chat.hiddenCredential') {
+        const catalog = noticeLocale.language === 'zh' ? zh : en;
+        return _key.split('.').reduce<any>((value, key) => value?.[key], catalog) ?? _key;
+      }
       const template = typeof fallback === 'string'
         ? fallback
         : (typeof fallback?.defaultValue === 'string' ? fallback.defaultValue : _key);
@@ -376,6 +384,7 @@ function downloadProps(operatorReason: string) {
 }
 
 beforeEach(() => {
+  noticeLocale.language = 'en';
   harness.readArtifact.mockReset();
   harness.readArtifact.mockResolvedValue({ content: 'PRIVATE ARTIFACT CONTENT' });
   harness.downloadArtifact.mockReset();
@@ -406,6 +415,50 @@ beforeEach(() => {
 });
 
 afterEach(cleanup);
+
+function noticeProps() {
+  const base = props('', false, 'original-work');
+  return { ...base, agent: { ...base.agent, access_level: 'use' },
+    activeSession: { ...base.activeSession, user_id: 'operator-user', read_only: false,
+      is_current_user_session: true, operator_view: false },
+    historyMsgs: [], chatMessagesSessionId: 'original-work' };
+}
+
+it.each([
+  ['en', 'Hidden key', 'The key you pasted was hidden. It will not be saved or sent to the model.'],
+  ['zh', '已隐藏的密钥', '已隐藏你粘贴的密钥，不会保存，也不会发给模型。'],
+])('shows the localized notice and inline marks in a member bubble, preserving copy: %s', async (language, mark, notice) => {
+  noticeLocale.language = language;
+  const text = 'Before [REDACTED_SECRET]\nAfter [REDACTED_SECRET]';
+  const message = { id: 'pasted', role: 'user' as const, content: text, pastedCredentialNotice: true };
+  const writeText = vi.fn().mockResolvedValue(undefined);
+  Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
+  const { container } = render(<AgentChatSection {...noticeProps()} chatMessages={[message]} />);
+  expect(screen.getByText(notice)).toBeTruthy();
+  expect(screen.getAllByText(mark)).toHaveLength(2);
+  expect(container.querySelector('.session-tui-message-bubble')?.textContent).not.toContain('[REDACTED_SECRET]');
+  await act(async () => { fireEvent.click(screen.getByTitle('Copy')); });
+  expect(writeText).toHaveBeenCalledWith(text);
+  expect(message.content).toBe(text);
+});
+
+it('marks a placeholder in an unflagged member bubble without adding the sentence', () => {
+  const text = 'Use [REDACTED_SECRET] safely';
+  const { container } = render(<AgentChatSection {...noticeProps()}
+    chatMessages={[{ id: 'echoed', role: 'user', content: text }]} />);
+  expect(container.querySelector('.session-tui-message-bubble')?.textContent).toBe('Use Hidden key safely');
+  expect(container.querySelector('.hidden-credential-mark')).toBeTruthy();
+  expect(container.querySelector('.pasted-credential-notice')).toBeNull();
+});
+
+it.each(['user', 'assistant'] as const)('leaves unflagged %s content unchanged without detecting keys', role => {
+  const text = 'Ordinary sk-proj-abcdefghijklmnopqrstuvwxyz1234567890ABCD';
+  const { container } = render(<AgentChatSection {...noticeProps()}
+    chatMessages={[{ id: 'ordinary', role, content: text }]} />);
+  expect(container.querySelector('.session-tui-message-bubble')?.textContent).toContain(text);
+  expect(container.querySelector('.pasted-credential-notice')).toBeNull();
+  expect(container.querySelector('.hidden-credential-mark')).toBeNull();
+});
 
 describe('AgentChatSection operator child-state lifetime', () => {
   it('removes artifact, checkpoint, workflow, and technical inspectors when authority identity changes', async () => {

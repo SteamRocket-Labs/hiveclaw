@@ -32,6 +32,7 @@ const mocks = vi.hoisted(() => ({
   upload: vi.fn(),
   activeSessionRun: null as null | { run_id: string; status: string },
   chatProps: null as any,
+  transport: null as any,
 }));
 
 vi.mock('../api/core/upload-progress', () => ({ uploadFileWithProgress: (...args: unknown[]) => ({ promise: mocks.upload(...args) }) }));
@@ -132,7 +133,9 @@ vi.mock('../api/domains/activity', () => ({
 }));
 
 vi.mock('./agent-detail/useSessionTransportController', () => ({
-  useSessionTransportController: () => ({
+  useSessionTransportController: (options: any) => {
+    mocks.transport = options;
+    return ({
     wsConnected: false,
     transportPhase: 'initializing',
     transportReconnectAttempt: 0,
@@ -141,7 +144,8 @@ vi.mock('./agent-detail/useSessionTransportController', () => ({
     reconnectActiveTransport: vi.fn(),
     resetActiveTransportState: vi.fn(),
     syncActiveSocketState: vi.fn(),
-  }),
+    });
+  },
 }));
 
 vi.mock('../components/ConfirmModal', () => ({ default: () => null }));
@@ -596,6 +600,79 @@ async function composeOrdinaryMessage(text = 'Keep this message') {
   await mountOwnedArtifactWork();
   act(() => mocks.chatProps.onSetChatInput(text));
 }
+
+function receiveLiveMessage(data: any) {
+  mocks.transport.callbacks.onMessage({ data, session: mocks.chatProps.activeSession,
+    agentId: 'agent-1', sessionId: mocks.sessionId, key: `agent-1:${mocks.sessionId}`, isActiveRuntime: true,
+    closeSessionSocket: vi.fn(), failAuthentication: vi.fn() });
+}
+
+it('replaces the optimistic pasted text from the live server input before the send response', async () => {
+  const request = deferred<any>();
+  mocks.startSessionRun.mockReturnValue(request.promise);
+  await composeOrdinaryMessage('Use sk-proj-abcdefghijklmnopqrstuvwxyz1234567890ABCD');
+  let sending!: Promise<unknown>;
+  act(() => { sending = mocks.chatProps.onSendChatMsg(); });
+  const inputId = mocks.startSessionRun.mock.calls[0][2].input_id;
+  await act(async () => { receiveLiveMessage({ schema: 'hive.session_event', schema_version: 2,
+    event_id: 'paste-live', tenant_id: 'tenant-1', sequence: 1, item_id: inputId, item_kind: 'human_input',
+    kind: 'human_input.accepted', lifecycle: 'accepted', payload_schema: 'hive.session.payload.human_input.accepted.v2',
+    scope: { level: 'session', session_id: mocks.sessionId, thread_id: mocks.sessionId },
+    actor: { type: 'user', id: 'platform-admin-1' }, visibility: { audience: 'direct_user' },
+    payload: { content_parts: [{ type: 'text', text: 'Use [REDACTED_SECRET]', metadata: { pasted_credential_notice: true } }] },
+    occurred_at: '2026-11-05T00:00:00Z', persisted_at: '2026-11-05T00:00:00Z' }); });
+  await waitFor(() => expect(mocks.chatProps.chatMessages.filter((m: any) => m.role === 'user')).toEqual([
+    expect.objectContaining({ id: inputId, content: 'Use [REDACTED_SECRET]', pastedCredentialNotice: true }),
+  ]));
+  await act(async () => { request.resolve({ run_id: 'accepted-run', status: 'pending' }); await sending; });
+  expect(mocks.chatProps.chatMessages[0].content).toBe('Use [REDACTED_SECRET]');
+});
+
+it('replaces the optimistic /goal command with the existing live goal projection before the response', async () => {
+  const request = deferred<any>();
+  vi.spyOn(ccParityApi, 'executeCommand').mockReturnValue(request.promise);
+  await composeOrdinaryMessage('/goal Use sk-proj-abcdefghijklmnopqrstuvwxyz1234567890ABCD');
+  let sending!: Promise<unknown>;
+  await act(async () => { sending = mocks.chatProps.onSendChatMsg(); });
+  expect(mocks.chatProps.chatMessages.some((m: any) => m.content.startsWith('/goal'))).toBe(true);
+  await act(async () => { receiveLiveMessage({ event_id: 'goal-live', id: 'goal-live', sequence: 1,
+    event_type: 'goal', role: 'system', content: 'Goal started: Use [REDACTED_SECRET]',
+    metadata: { goal_id: 'goal-1', command: 'goal_start', objective: 'Use [REDACTED_SECRET]', pasted_credential_notice: true } }); });
+  await waitFor(() => expect(mocks.chatProps.chatMessages.some((m: any) => m.content.includes('sk-proj-'))).toBe(false));
+  expect(mocks.chatProps.chatMessages).toContainEqual(expect.objectContaining({
+    eventType: 'goal', eventGoalId: 'goal-1', pastedCredentialNotice: true,
+  }));
+  await act(async () => { request.resolve({ ok: true, command: 'goal_start', result: { id: 'goal-1', status: 'active' } }); await sending; });
+  expect(mocks.chatProps.chatMessages.some((m: any) => m.content.includes('sk-proj-'))).toBe(false);
+});
+
+it.each([
+  [false, true], [false, false], [true, true], [true, false],
+])('reconciles a goal-mode paste by receipt input identity, replay: %s, live before HTTP: %s', async (replayed, liveBeforeResponse) => {
+  const request = deferred<any>();
+  vi.spyOn(ccParityApi, 'startGoal').mockReturnValue(request.promise);
+  await composeOrdinaryMessage('Use sk-proj-abcdefghijklmnopqrstuvwxyz1234567890ABCD');
+  act(() => mocks.chatProps.onToggleGoalMode());
+  let sending!: Promise<unknown>;
+  act(() => { sending = mocks.chatProps.onSendChatMsg(); });
+  await waitFor(() => expect(ccParityApi.startGoal).toHaveBeenCalledTimes(1));
+  const receive = () => receiveLiveMessage({ schema: 'hive.session_event', schema_version: 2,
+    event_id: 'goal-mode-live', tenant_id: 'tenant-1', sequence: 1, item_id: 'goal-human-input', item_kind: 'human_input',
+    kind: 'human_input.accepted', lifecycle: 'accepted', payload_schema: 'hive.session.payload.human_input.accepted.v2',
+    scope: { level: 'session', session_id: mocks.sessionId, thread_id: mocks.sessionId },
+    actor: { type: 'user', id: 'platform-admin-1' }, visibility: { audience: 'direct_user' },
+    payload: { content_parts: [{ type: 'text', text: 'Use [REDACTED_SECRET]', metadata: { pasted_credential_notice: true } }] },
+    occurred_at: '2026-11-05T00:00:00Z', persisted_at: '2026-11-05T00:00:00Z' });
+  if (liveBeforeResponse) await act(async () => { receive(); });
+  await act(async () => {
+    request.resolve({ id: 'goal-1', input: { input_id: 'goal-human-input' }, run: { run_id: 'goal-run', status: 'pending', replayed } });
+    await sending;
+  });
+  if (!liveBeforeResponse) await act(async () => { receive(); });
+  await waitFor(() => expect(mocks.chatProps.chatMessages.filter((m: any) => m.role === 'user')).toEqual([
+    expect.objectContaining({ id: 'goal-human-input', content: 'Use [REDACTED_SECRET]', pastedCredentialNotice: true }),
+  ]));
+});
 
 it('shows the ordinary message before the response and sends only once on a double press', async () => {
   const request = deferred<any>();

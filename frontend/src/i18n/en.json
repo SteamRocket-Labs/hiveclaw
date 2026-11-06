@@ -2426,6 +2426,8 @@
       }
     },
     "chat": {
+      "hiddenCredential": "Hidden key",
+      "pastedCredentialNotice": "The key you pasted was hidden. It will not be saved or sent to the model.",
       "sending": "Sending…",
       "sendCancelled": "Not sent: sending was cancelled.",
       "sendUnconfirmed": "Could not confirm whether this message was saved.",

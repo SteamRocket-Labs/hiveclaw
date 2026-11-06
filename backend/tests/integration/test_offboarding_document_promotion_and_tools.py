@@ -86,7 +86,7 @@ async def test_moved_tool_credentials_are_cleared_but_company_and_peer_configs_s
             description="Fixture", base_url="https://api.example.test", method="GET", path="/status", auth_scheme="api_key")
         state.tool.name, state.tool.config = payload.tool_name, payload.tool_config
         state.tool.config_schema = {"fields": [*payload.config_schema["fields"],
-            {"key": "vendor_pin", "type": "password"}]}
+            {"key": "vendor_pin", "type": "password"}, {"key": "region", "type": "text"}]}
         config = {"api_key": "sk-e2e-fake-personal", "vendor_pin": "sk-e2e-fake-vendor", "region": "local",
             "nested": [{"access_token": "sk-e2e-fake-nested", "timeout": 7}],
             "empty": {"password": ""}, "label": "__HIVE_SECRET_SET__"}
@@ -101,7 +101,8 @@ async def test_moved_tool_credentials_are_cleared_but_company_and_peer_configs_s
         company = TenantToolConfig(tenant_id=state.tenant.id, tool_id=state.tool.id,
             config={"api_key": "sk-e2e-fake-company", "region": "company"})
         managed_tool = Tool(id=uuid4(), tenant_id=state.tenant.id, name=f"company-{uuid4().hex}",
-            display_name="Company-managed API", type="custom_api", config_schema=payload.config_schema,
+            display_name="Company-managed API", type="custom_api", config_schema={"fields": [
+                *payload.config_schema["fields"], {"key": "region", "type": "text"}]},
             config=payload.tool_config)
         db.add(managed_tool)
         await db.flush()
@@ -115,7 +116,7 @@ async def test_moved_tool_credentials_are_cleared_but_company_and_peer_configs_s
         await offboard(state)
         await db.refresh(assignment)
         assert assignment.config == {**config, "api_key": "", "vendor_pin": "",
-            "nested": [{"access_token": "", "timeout": 7}]}
+            "nested": "", "empty": "", "label": ""}
         for row in untouched:
             await db.refresh(row)
             assert row.config == config
@@ -143,6 +144,7 @@ async def test_moved_tool_credentials_are_cleared_but_company_and_peer_configs_s
 async def test_tool_revocation_rolls_back_with_offboarding(owner_sessionmaker):
     async with owner_sessionmaker() as db:
         state = await seed_handover(db)
+        state.tool.config_schema = {"fields": [{"key": "timeout", "type": "number"}]}
         assignment = AgentTool(tenant_id=state.tenant.id, agent_id=state.bot.id, tool_id=state.tool.id,
             config={"token": "sk-e2e-fake-rollback", "timeout": 9})
         db.add(assignment)

@@ -42,9 +42,9 @@ function notice(noticeBody = body) {
 }
 
 describe('offboarding handover notice', () => {
-  it('uses the existing translated HR name for a system employee in the card', () => {
+  it('uses a card-local HR name for a system employee', () => {
     notice(JSON.stringify({ ...JSON.parse(body), work: [], agents: [{ id: 'hr', name: '__system_hr__' }] }));
-    expect(screen.getByRole('link', { name: 'agentCreate.hrAgentName' })).toBeTruthy();
+    expect(screen.getByRole('link', { name: 'handover.hrAgentName' })).toBeTruthy();
     expect(screen.queryByText('__system_hr__')).toBeNull();
   });
 

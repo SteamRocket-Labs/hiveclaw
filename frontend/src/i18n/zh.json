@@ -679,7 +679,7 @@
   "agentCreate": {
     "eyebrow": "数字员工设置",
     "title": "创建数字员工",
-    "hrAgentName": "人事助理",
+    "hrAgentName": "HR Agent",
     "subtitle": "Hive 通过 HR Agent 创建员工。HR Agent 会澄清角色、权限、插件目录权限、记忆边界和第一个工作会话，然后再完成创建。",
     "useHr": "使用 HR Agent 引导创建",
     "hrError": "暂时无法打开 HR Agent。尚未提交任何创建内容，请重试。",
@@ -4552,6 +4552,7 @@
     "deleteCompanyConfirm": "确定删除此公司及其全部数据吗？此操作无法撤销。"
   },
   "handover": {
+    "hrAgentName": "人事助理",
     "toolsNeedCredentials": "需要重新填写密钥的工具",
     "enterCredentialsAgain": "原负责人的密钥已清除，请填写自己的密钥后再使用。",
     "merged": "已合并到接手人已有的资料",

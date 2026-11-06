@@ -66,7 +66,7 @@ function WorkDecision({ work, onNavigate }: { work: HandoverWork; onNavigate: ()
 
 export default function OffboardingNotice({ body, onNavigate }: { body: string; onNavigate: () => void }) {
   const { t } = useTranslation();
-  const agentName = (name: string) => name === '__system_hr__' ? t('agentCreate.hrAgentName') : name;
+  const agentName = (name: string) => name === '__system_hr__' ? t('handover.hrAgentName') : name;
   const handover = useMemo((): Handover | null => { try { return JSON.parse(body); } catch { return null; } }, [body]);
   if (!handover) return <p role="alert">{t('handover.unavailable')}</p>;
   return <div className="offboarding-notice">

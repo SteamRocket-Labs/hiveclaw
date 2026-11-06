@@ -501,6 +501,18 @@ async def _require_manage_access(db: AsyncSession, current_user: User, agent_id:
     return agent
 
 
+async def _lock_agent_tool_config_write(db: AsyncSession, current_user: User, agent_id: uuid.UUID) -> Agent:
+    from app.services.runtime_user_identity import load_runtime_user
+
+    # Match offboarding's Agent -> AgentTool order and NO KEY UPDATE strength.
+    await db.execute(select(Agent).where(Agent.id == agent_id).with_for_update(key_share=True)
+        .execution_options(populate_existing=True))
+    actor = await load_runtime_user(db, current_user.id)
+    if actor is None:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Manage access required")
+    return await _require_manage_access(db, actor, agent_id)
+
+
 async def _get_tenant_agent_ids(db: AsyncSession, tenant_id: uuid.UUID | None) -> list[uuid.UUID]:
     if not tenant_id:
         return []
@@ -1111,11 +1123,15 @@ async def update_category_config(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    agent = await _require_manage_access(db, current_user, agent_id)
+    await _require_manage_access(db, current_user, agent_id)
+    agent = await _lock_agent_tool_config_write(db, current_user, agent_id)
     rows_result = await db.execute(
         select(AgentTool, Tool)
         .join(Tool, Tool.id == AgentTool.tool_id)
         .where(AgentTool.agent_id == agent_id, Tool.category == category)
+        .order_by(AgentTool.agent_id, Tool.name)
+        .with_for_update(of=AgentTool)
+        .execution_options(populate_existing=True)
     )
     rows = [row for row in rows_result.all() if is_tool_allowed_for_agent(row[1], agent)]
     for assignment, tool in rows:
@@ -1175,6 +1191,7 @@ async def update_tool_config(
     tool = await _get_visible_agent_tool(db, agent, tool_id)
     if not tool:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tool not found")
+    agent = await _lock_agent_tool_config_write(db, current_user, agent_id)
     assignment = await _write_agent_tool_config(db, agent_id=agent_id, tool=tool, config=data.config)
     await db.commit()
     defaults, _enabled = await resolve_tool_config_for_tenant_display(db, tool, agent.tenant_id)
@@ -1182,15 +1199,12 @@ async def update_tool_config(
 
 
 async def _write_agent_tool_config(db, *, agent_id, tool, config):
-    assignment, _ = await ensure_agent_tool_assignment(
-        db,
-        agent_id=agent_id,
-        tool_id=tool.id,
-        enabled=True,
-        config=None,
-        source="system",
-        merge_config=False,
-    )
+    assignment = (await db.execute(select(AgentTool).where(AgentTool.agent_id == agent_id,
+        AgentTool.tool_id == tool.id).with_for_update().execution_options(populate_existing=True))).scalar_one_or_none()
+    if assignment is None:
+        assignment, _ = await ensure_agent_tool_assignment(db, agent_id=agent_id, tool_id=tool.id,
+            enabled=True, config=None, source="system", merge_config=False)
+    assignment.enabled = True
     assignment.config = merge_agent_tool_config_secrets(
         config,
         assignment.config,
@@ -1200,7 +1214,7 @@ async def _write_agent_tool_config(db, *, agent_id, tool, config):
 
 
 async def _configuration_question_context(
-    db, current_user, agent_id, session_id, question_id, *, target_management_required=True
+    db, current_user, agent_id, session_id, question_id, *, target_management_required=True, lock_target=False
 ):
     from app.services.chat_transcript import lock_transcript_session
     from app.services.session_user_question import load_configuration_question, question_payload
@@ -1209,6 +1223,11 @@ async def _configuration_question_context(
     authority = await resolve_session_mutation_authority(
         db, user=current_user, agent_id=agent_id, session_id=session_id, action="mutate_session_input"
     )
+    if lock_target:
+        question = await load_configuration_question(db, authority=authority, item_id=question_id)
+        target_id = uuid.UUID(question_payload(question)["configuration_request"]["target_agent_id"])
+        await _require_manage_access(db, current_user, target_id)
+        await _lock_agent_tool_config_write(db, current_user, target_id)
     await lock_transcript_session(db, session_id=session_id)
     question = await load_configuration_question(db, authority=authority, item_id=question_id)
     descriptor = question_payload(question)["configuration_request"]
@@ -1223,9 +1242,9 @@ async def _configuration_question_context(
     return authority, question, target, descriptor
 
 
-async def _configuration_request_context(db, current_user, agent_id, session_id, question_id):
+async def _configuration_request_context(db, current_user, agent_id, session_id, question_id, *, lock_target=False):
     authority, question, target, descriptor = await _configuration_question_context(
-        db, current_user, agent_id, session_id, question_id, target_management_required=False
+        db, current_user, agent_id, session_id, question_id, target_management_required=False, lock_target=lock_target
     )
     if not descriptor.get("tool_name"):
         raise HTTPException(status_code=409, detail="Use the requested connection settings")
@@ -1308,7 +1327,7 @@ async def save_session_tool_configuration(
     from app.services.session_v2_persistence import SessionEventDraft, append_session_events
 
     authority, question, target, tool = await _configuration_request_context(
-        db, current_user, agent_id, session_id, question_id
+        db, current_user, agent_id, session_id, question_id, lock_target=True
     )
     await _require_manage_access(db, current_user, target.id)
     payload = question_payload(question)

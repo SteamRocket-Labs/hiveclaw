@@ -244,6 +244,10 @@ async def test_category_config_masks_credentials_and_preserves_them_on_sentinel_
     )
     assert payload == {"config": {"api_key": MASKED_SECRET_SENTINEL, "region": "cn"}}
 
+    async def locked_manage_access(db, user, target_agent_id):
+        return await tools_api._require_manage_access(db, user, target_agent_id)
+
+    monkeypatch.setattr(tools_api, "_lock_agent_tool_config_write", locked_manage_access)
     write_db = _FakeDB([_ListResult([(assignment, tool)])])
     updated = await tools_api.update_category_config(
         agent_id=agent_id,

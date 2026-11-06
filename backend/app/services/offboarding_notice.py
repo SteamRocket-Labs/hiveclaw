@@ -2,6 +2,7 @@
 
 import json
 
+from fastapi import HTTPException
 from sqlalchemy import String, UniqueConstraint, delete, func, or_, select, update
 
 from app.database import Base
@@ -18,7 +19,9 @@ from app.models.task import Task
 from app.models.tool import AgentTool, Tool
 from app.models.trigger import AgentTrigger
 from app.models.user import User
-from app.services.personal_knowledge_service import PersonalKnowledgeService, _merge_source_refs, _merge_unique_strings
+from app.services.personal_knowledge_service import (
+    PersonalKnowledgeJobConflict, PersonalKnowledgeService, _merge_source_refs, _merge_unique_strings,
+)
 from app.services.privacy_layer import max_sensitivity
 from app.services.tool_config_service import clear_agent_tool_config_secrets
 
@@ -146,9 +149,13 @@ async def _move_knowledge(db, target_user, successor):
         .values(owner_user_id=successor.id))
     await db.flush()
     service = PersonalKnowledgeService()
-    for document_id in rebuild_ids:
-        await service.queue_rebuild_personal_document_index(db, tenant_id=target_user.tenant_id,
-            owner_user_id=successor.id, document_id=document_id, current_user_id=successor.id)
+    try:
+        for document_id in rebuild_ids:
+            await service.queue_rebuild_personal_document_index(db, tenant_id=target_user.tenant_id,
+                owner_user_id=successor.id, document_id=document_id, current_user_id=successor.id)
+    except PersonalKnowledgeJobConflict as exc:
+        raise HTTPException(status_code=409, detail={"code": "offboarding_knowledge_processing", "retryable": True,
+            "message": "知识仍在处理中，请一两分钟后重试。"}) from exc
     return documents, provenance
 
 

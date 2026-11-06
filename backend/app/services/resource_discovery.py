@@ -224,7 +224,9 @@ async def _get_smithery_api_key(agent_id: uuid.UUID | None = None) -> str:
             logger.debug(f"[ResourceDiscovery] Could not read Smithery API key: {exc}")
         return ""
 
-    return await _cached_provider_config(("smithery_api_key", str(agent_id) if agent_id else None), _load)
+    if agent_id:
+        return await _load()
+    return await _cached_provider_config(("smithery_api_key", None), _load)
 
 
 async def _search_smithery_api(query: str, max_results: int, api_key: str) -> list[dict]:

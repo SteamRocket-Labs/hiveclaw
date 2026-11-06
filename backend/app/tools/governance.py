@@ -499,6 +499,10 @@ async def _emit_session_no_policy_result(
             "destructive": True,
         }
     if action == "deny":
+        denial_reason = (
+            "this outward action requires approval" if request_reason == "preflight_ask"
+            else request_reason or "no enterprise capability policy is configured for it"
+        )
         authorization_decision_entry = build_authorization_decision_entry(
             resource=f"tool:{context.tool_name}",
             action=context.tool_name,
@@ -508,16 +512,14 @@ async def _emit_session_no_policy_result(
             result="denied",
             reason=f"permission_mode:{mode.value}",
             model_visible_message=(
-                f"Permission mode '{mode.value}' denies {context.tool_name} because no enterprise capability "
-                "policy is configured for it."
+                f"Permission mode '{mode.value}' denies {context.tool_name} because {denial_reason}."
             ),
             source="tool_governance",
         )
         message = _teaching_block_message(
             context.tool_name,
             reason=(
-                f"permission mode '{mode.value}' denies this tool because no enterprise capability policy "
-                "is configured for it"
+                f"permission mode '{mode.value}' denies this tool because {denial_reason}"
             ),
             capability=request_capability,
             next_steps=[

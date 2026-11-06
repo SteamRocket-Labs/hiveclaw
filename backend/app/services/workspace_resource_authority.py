@@ -585,6 +585,7 @@ class WorkspacePathDecision:
     authority_source: str
     operator_view: bool
     is_new: bool
+    full_control: bool = False
 
 
 def authorize_workspace_tool_path(
@@ -777,6 +778,7 @@ async def authorize_workspace_path(
                 authority_source=decision.authority_source,
                 operator_view=decision.operator_view,
                 is_new=False,
+                full_control=decision.full_control,
             )
         if action not in {"write", "create", "upload"}:
             raise WorkspaceAuthorityError("workspace_resource_not_found", "The workspace resource was not found.")
@@ -787,6 +789,7 @@ async def authorize_workspace_path(
             authority_source="new_resource_owner",
             operator_view=False,
             is_new=True,
+            full_control=True,
         )
 
     try:
@@ -814,6 +817,7 @@ async def authorize_workspace_path(
         authority_source=decision.authority_source,
         operator_view=decision.operator_view,
         is_new=False,
+        full_control=decision.full_control,
     )
 
 

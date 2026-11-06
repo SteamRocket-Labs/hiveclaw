@@ -1194,7 +1194,7 @@ async def _resolve_origin_dependencies(db, *, tenant_id, agent_id, ref):
         return _unique_dependencies(
             [*dependencies, *([dependency] if dependency else [])]
         ), complete and inherited_complete
-    if invocation.tool_name in {"write_file", "fs_write"}:
+    if invocation.tool_name in {"write_file", "edit_file", "fs_write"}:
         from app.services.content_input_receipts import load_workspace_execution_evidence
 
         arguments = invocation.effective_arguments_json or invocation.provider_arguments_json

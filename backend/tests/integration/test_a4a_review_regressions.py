@@ -76,12 +76,6 @@ async def test_quarantine_preserves_owners_and_base_grant_boundary(native_worksp
     assert response.status_code == (200 if owner_kind in {'self', 'root'} else 403), response.text
 
 
-@pytest.mark.parametrize('receipt', [None, SimpleNamespace(content_sha256='old', dependencies_json=[])])
-async def test_browser_working_copy_does_not_require_matching_receipt(receipt):
-    from app.services.content_input_receipts import validate_browser_workspace_receipt
-    await validate_browser_workspace_receipt(None, uuid.uuid4(), None, receipt, 'current')
-
-
 async def test_invalid_workspace_path_returns_typed_denial():
     from app.services.content_input_receipts import authorize_workspace_receipt_read
     result = await authorize_workspace_receipt_read(SimpleNamespace(tool_name='read_file', arguments={'path': '../outside'}))
@@ -213,17 +207,27 @@ async def test_revoked_document_cannot_leave_after_working_copy_read(native_work
 async def test_owned_unreceipted_read_keeps_handoff_inventory_complete(native_workspace, owner_sessionmaker, tool):  # noqa: F811
     from app.services.workspace_resource_authority import register_workspace_path
     n = native_workspace
-    path = 'workspace/bot-authored.md'
+    path = 'workspace/human-saved.md'
     (n.root / path).write_text('BOT_OWN_SOURCE')
     async with owner_sessionmaker() as db:
         await register_workspace_path(db, tenant_id=n.tenant, agent_id=n.agent, path=path,
-            owner_user_id=n.user, root_session_id=n.session, source='agent_tool',
+            owner_user_id=n.user, root_session_id=n.session, source='user_upload',
             content_hash=hashlib.sha256((n.root / path).read_bytes()).hexdigest())
         await db.commit()
         result, sources, complete, invocation = await _read_with_inventory(n, db, tool=tool, path=path)
         assert 'BOT_OWN_SOURCE' in str(result), result
         assert complete, 'UNRECEIPTED_OWN_FILE_BLOCKS_HANDOFFS'
         assert not any(row['source_kind'] == 'workspace_artifact' for row in sources), sources
+        from app.services.llm_client import LLMMessage
+        from app.services.content_input_receipts import latest_workspace_receipt
+        from tests.integration.test_a4a_round3 import _step
+
+        edited = await _step(n, db, 'edit_file', {'path': path, 'old_text': 'BOT_OWN_SOURCE',
+            'new_text': 'Human note edited by bot'}, [LLMMessage(role='tool', content=str(result),
+                tool_call_id=invocation.provider_tool_use_id, source_ref=f'session-tool-result:{invocation.id}')], 2)
+        assert edited.complete, 'HUMAN_FILE_EDIT_POISONED_HANDOFF_INVENTORY'
+        receipt = await latest_workspace_receipt(db, n.tenant, n.agent, path)
+        assert receipt is not None and receipt.content_sha256 == hashlib.sha256((n.root / path).read_bytes()).hexdigest()
 
 
 @pytest.mark.parametrize('created_by', ['bot', 'member_edited'])

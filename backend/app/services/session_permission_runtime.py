@@ -766,6 +766,20 @@ async def _resolve_session_tool_permission(
 
             await execution_lease.ensure_owned()
             await authorize_group_tool_permission(db, authority=authority, invocation=invocation)
+            from app.tools.registry import tool_execution_policy
+
+            if tool_execution_policy(invocation.tool_name).external_visible or is_destructive_tool(invocation.tool_name):
+                from app.models.agent import Agent
+                from app.models.audit import ApprovalRequest
+                from app.models.user import User
+                from app.services.approval_service import can_resolve_approval
+
+                agent = await db.get(Agent, authority.agent_id, populate_existing=True)
+                user = await db.get(User, authority.principal_id, populate_existing=True)
+                approval = ApprovalRequest(tenant_id=authority.tenant_id, agent_id=authority.agent_id,
+                    action_type=f"tool.action_preflight.{invocation.tool_name}", details={"origin": {"type": "action_preflight"}})
+                if agent is None or user is None or not await can_resolve_approval(db, agent=agent, user=user, approval=approval):
+                    raise PermissionError("Only the responsible approver can decide this action")
             from app.services.delegation_permission_runtime import validate_permission_input_sources
 
             await validate_permission_input_sources(db, authority=authority, session=session,

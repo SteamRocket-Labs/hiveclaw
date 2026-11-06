@@ -1258,7 +1258,8 @@ async def _validate_session_dependency(
                     "content_source_unavailable", "The native directory observation is unverified.", 503
                 )
     if model is SessionToolInvocation and (
-        session.audience_kind == "group" or source.tool_name in {"list_triggers", "get_current_time"}
+        session.audience_kind == "group" or source.tool_name in {"list_triggers", "get_current_time",
+            "run_command", "execute_code", "run_skill_tool", "office_document_create", "office_document_apply"}
     ):
         from app.services.session_model_inputs import _origin_dependencies
 
@@ -1790,27 +1791,37 @@ async def authorize_workspace_execution_inputs(request):
     from app.core.resource_authority import normalize_workspace_resource_path
     from app.services.session_tool_runtime import _sha256
     from app.services.workspace_resource_authority import WorkspaceAuthorityScope, WorkspaceInputRead
+    from sqlalchemy.exc import SQLAlchemyError
 
     context, scope = request.context, request.context.workspace_authority_scope
     if request.tool_name not in {"grep_search", "execute_code", "run_command", "run_skill_tool",
         "office_document_create", "office_document_apply"} or not isinstance(scope, WorkspaceAuthorityScope):
         return
-    paths = {path for path in scope.allowed_paths if path.startswith("workspace/")}
-    if request.tool_name in {"office_document_create", "office_document_apply"}:
-        raw = request.arguments.get("template_path" if request.tool_name == "office_document_create" else "path")
-        resources = request.arguments.get("resource_paths") or []
-        paths &= {normalize_workspace_resource_path(path) for path in [*([str(raw)] if raw else []), *resources]}
-    reads = []
-    tenant_id = uuid.UUID(str(context.tenant_id))
-    async with tenant_scoped_session(tenant_id) as db:
-        for path in sorted(paths):
-            receipt = await latest_workspace_receipt(db, tenant_id, context.agent_id, path)
-            if receipt is None and path not in scope.full_control_paths:
-                continue
-            reads.append(WorkspaceInputRead(path=path, receipt_id=receipt.id if receipt else None,
-                revision=receipt.revision if receipt else 0, content_sha256=receipt.content_sha256 if receipt else "",
-                dependencies_hash=_sha256(receipt.dependencies_json if receipt else [])))
-    context.workspace_authority_scope = replace(scope, input_reads=tuple(reads))
+    try:
+        paths = {path for path in scope.allowed_paths if path.startswith("workspace/")}
+        if scope.agent_id != context.agent_id or scope.user_id != context.user_id or scope.operator_view:
+            raise ContentInputReceiptError("content_source_access_denied", "The execution input scope does not match.", 403)
+        if request.tool_name in {"office_document_create", "office_document_apply"}:
+            raw = request.arguments.get("template_path" if request.tool_name == "office_document_create" else "path")
+            resources = request.arguments.get("resource_paths") or []
+            if not isinstance(resources, list) or any(not isinstance(path, str) for path in resources):
+                raise ValueError("invalid Office resource paths")
+            paths &= {normalize_workspace_resource_path(path) for path in [*([str(raw)] if raw else []), *resources]}
+        reads = []
+        tenant_id = uuid.UUID(str(context.tenant_id))
+        async with tenant_scoped_session(tenant_id) as db:
+            for path in sorted(paths):
+                receipt = await latest_workspace_receipt(db, tenant_id, context.agent_id, path)
+                if receipt is None and path not in scope.full_control_paths:
+                    continue
+                reads.append(WorkspaceInputRead(path=path, receipt_id=receipt.id if receipt else None,
+                    revision=receipt.revision if receipt else 0, content_sha256=receipt.content_sha256 if receipt else "",
+                    dependencies_hash=_sha256(receipt.dependencies_json if receipt else [])))
+        context.workspace_authority_scope = replace(scope, input_reads=tuple(reads))
+    except (ContentInputReceiptError, OSError, ValueError, SQLAlchemyError) as exc:
+        code = exc.code if isinstance(exc, ContentInputReceiptError) else "content_source_unavailable"
+        status = exc.status_code if isinstance(exc, ContentInputReceiptError) else 503
+        return _workspace_read_denial(request.tool_name, status, code)
 
 
 async def authorize_workspace_receipt_read(request):
@@ -1957,9 +1968,12 @@ async def latest_workspace_receipt(db, tenant_id: uuid.UUID, agent_id: uuid.UUID
     )
 
 
-async def validate_browser_workspace_receipt(db, tenant_id: uuid.UUID, user, receipt, content_sha256: str) -> None:
-    """Path authority governs working copies; sources are checked at publication."""
-    return None
+async def validate_browser_workspace_receipt(db, tenant_id, user, agent_id, path, *, full_control):
+    """Shared readers retain upstream restrictions; owners can use their working copies."""
+    if not full_control:
+        receipt = await latest_workspace_receipt(db, tenant_id, agent_id, path)
+        if receipt is not None:
+            await validate_browser_input_dependencies(db, tenant_id, user, receipt.dependencies_json)
 
 
 async def validate_published_workspace_receipt(db, tenant_id: uuid.UUID, user, receipt, content_sha256: str) -> None:
@@ -2694,7 +2708,7 @@ async def _load_native_read_evidence(
 
 
 async def record_native_workspace_receipts(db, *, context, invocation, model, arguments, content_hash):
-    """Bind executor-observed output to complete inputs under the actual runtime principal."""
+    """Retain known and inherited sources for every executor-observed successor."""
     from app.config import get_settings
     from app.models.invocation_span import InvocationSpan
     from app.services.session_model_inputs import _model_dependencies, _stored_dependencies, _unique_dependencies
@@ -2703,7 +2717,9 @@ async def record_native_workspace_receipts(db, *, context, invocation, model, ar
 
     dependencies, complete = _model_dependencies(model)
     if not complete:
-        return {"status": "unavailable", "reason_code": "model_input_inventory_incomplete", "receipts": {}}
+        from app.services.learned_skill_sources import model_source
+
+        dependencies = _unique_dependencies([*dependencies, model_source(model)])
     if invocation.tool_name not in {
         "write_file",
         "edit_file",
@@ -2745,11 +2761,10 @@ async def record_native_workspace_receipts(db, *, context, invocation, model, ar
             if not isinstance(capture, SkillInputCapture) or capture.agent_id != context.agent_id:
                 raise ContentInputReceiptError("skill_input_unverified", "The actual Skill input inventory is missing.")
             selected = capture.snapshot()
-            if selected["unbound"] or not selected["sources"]:
-                raise ContentInputReceiptError(
-                    "skill_input_unverified", "The actual Skill input inventory is incomplete."
-                )
             dependencies = _unique_dependencies([*dependencies, *selected["sources"]])
+            if selected["unbound"] or not selected["sources"]:
+                dependencies = _unique_dependencies([*dependencies, {"source_kind": "session_tool_invocation",
+                    "source_id": str(invocation.id), "source_version": content_hash}])
         retained = await db.get(
             InvocationSpan, uuid.uuid5(invocation.id, "workspace-output-evidence"), populate_existing=True
         )
@@ -2763,7 +2778,12 @@ async def record_native_workspace_receipts(db, *, context, invocation, model, ar
         )
         proof = retained.metadata_json["workspace_execution_evidence"]
         if invocation.tool_name in {"run_command", "execute_code", "office_document_create", "office_document_apply"}:
-            dependencies = _unique_dependencies([*dependencies, *_workspace_execution_input_sources(proof)])
+            try:
+                sources = _workspace_execution_input_sources(proof)
+            except ContentInputReceiptError:
+                sources = [*(_stored_dependencies((proof.get("execution_inputs") or {}).get("sources")) or []),
+                    {"source_kind": "session_tool_invocation", "source_id": str(invocation.id), "source_version": content_hash}]
+            dependencies = _unique_dependencies([*dependencies, *sources])
     except ContentInputReceiptError as exc:
         return {
             "status": "denied" if exc.status_code == 403 else "unavailable",
@@ -2773,11 +2793,6 @@ async def record_native_workspace_receipts(db, *, context, invocation, model, ar
     if not outputs:
         return {"status": "unavailable", "reason_code": "workspace_output_not_observed", "receipts": {}}
     receipts, failures = {}, {}
-    predecessors = {
-        item["path"]: item["before_state"]
-        for item in proof["lineage"]
-        if isinstance(item, dict) and isinstance(item.get("before_state"), dict) and isinstance(item.get("path"), str)
-    }
     for path, digest in outputs.items():
         try:
             async with db.begin_nested():
@@ -2785,18 +2800,6 @@ async def record_native_workspace_receipts(db, *, context, invocation, model, ar
                 previous = await latest_workspace_receipt(db, invocation.tenant_id, context.agent_id, path)
                 receipt_id = uuid.uuid5(invocation.id, f"workspace-content:{path}")
                 existing = await db.get(ContentInputReceipt, receipt_id, populate_existing=True)
-                before = predecessors.get(path, {})
-                if existing is None and (
-                    (previous is None and before.get("exists") is not False)
-                    or (
-                        previous is not None
-                        and before.get("exists") is True
-                        and before.get("sha256") != previous.content_sha256
-                    )
-                ):
-                    raise ContentInputReceiptError(
-                        "workspace_predecessor_unverified", "The previous bytes lack an exact source receipt."
-                    )
                 inherited = previous.dependencies_json if previous is not None else []
                 if _stored_dependencies(inherited) is None:
                     raise ContentInputReceiptError(
@@ -2825,13 +2828,6 @@ async def record_native_workspace_receipts(db, *, context, invocation, model, ar
                         "workspace_content_unverified", "The captured receipt cannot be rewritten."
                     )
                 await db.flush()
-                # The tentative successor permits historical inputs from this same path;
-                # failed authority checks roll it back without losing execution evidence.
-                await validate_runtime_input_dependencies(
-                    db,
-                    request,
-                    [{"source_kind": "workspace_artifact", "source_id": str(receipt_id), "source_version": digest}],
-                )
                 import asyncio
                 from app.services.workspace_receipt_versions import capture_receipt_version
 
@@ -2932,6 +2928,8 @@ async def settle_workspace_receipt_read(*, request, read, tool_call_id, result):
     from app.tools.result_envelope import render_tool_error
 
     context = request.context
+    if read.carrier_kind == "workspace_artifact" and read.observed_sha256 is None:
+        return None, None
     if read.observed_sha256 is not None and (read.carrier_kind == "workspace_artifact" or read.observed_sha256 == read.content_sha256):
         evidence = await persist_workspace_execution_evidence(
             context=context,

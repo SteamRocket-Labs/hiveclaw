@@ -1380,7 +1380,9 @@ class ToolRuntimeService:
                                 context=context, tool_name=tool_name, tool_call_id=tool_call_id, arguments=arguments,
                                 result=input_read, states={}, lineage=[], errors={}, native_read_denial=input_read.metadata["native_read_denial"])
                     return input_read
-                await authorize_workspace_execution_inputs(request)
+                input_denial = await authorize_workspace_execution_inputs(request)
+                if input_denial is not None:
+                    return input_denial
                 from app.services.workspace_resource_authority import (
                     WorkspaceAuthorityError, WorkspaceAuthorityScope, WorkspaceOutputWrite, authorize_workspace_tool_path,
                 )

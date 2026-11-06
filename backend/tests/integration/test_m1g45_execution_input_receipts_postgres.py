@@ -85,7 +85,8 @@ async def test_process_materialization_reads_current_owned_copies(
     current = await call()
     assert "AUTHORIZED_PROCESS_INPUT" in str(current), current
     expected = s.body if change == "revoked" else "FORGED_EXECUTION_INPUT"
-    assert expected in str(current) and "DERIVED_INPUT_DENIED" not in str(current), current
+    output = str(current).split("📤 Output:\n", 1)[1].split("\n\n⚠️ Stderr:", 1)[0]
+    assert expected in output and "DERIVED_INPUT_DENIED" not in output, current
     assert "workspace_input_denials" not in current.metadata
     assert (n.root / "workspace/delivery.txt").read_text() == "AUTHORIZED_PROCESS_DELIVERY"
     async with owner_sessionmaker() as db:

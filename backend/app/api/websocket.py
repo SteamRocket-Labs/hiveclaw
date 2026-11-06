@@ -33,6 +33,21 @@ from app.services.web_chat_runtime import (
 )
 from app.services.web_session_contract import apply_web_session_contract
 
+
+def _agent_access_refusal_code(error: HTTPException) -> str:
+    """A deactivation refusal surfaces the plain 已停用 notice (G1).
+
+    ``agent_deactivated`` maps to the localized ``session.agent_deactivated``
+    copy; every other refusal keeps the generic forbidden exit. Recognised by
+    the typed 410, never by comparing against the member-facing copy.
+    """
+    from app.core.permissions import AgentDeactivatedRefusal
+
+    if isinstance(error, AgentDeactivatedRefusal):
+        return "agent_deactivated"
+    return "session_forbidden"
+
+
 router = APIRouter(tags=["websocket"])
 
 
@@ -301,7 +316,7 @@ async def websocket_chat(
             except HTTPException as error:
                 if error.status_code >= 500:
                     raise SessionSubscriptionError("event_store_retryable", retryable=True) from error
-                raise SessionSubscriptionError("session_forbidden") from error
+                raise SessionSubscriptionError(_agent_access_refusal_code(error)) from error
             if is_agent_expired(agent):
                 raise SessionSubscriptionError("session_forbidden")
             active_session = await db.scalar(
@@ -589,8 +604,8 @@ async def websocket_chat(
                         continue
                     try:
                         await require_agent_execution_access(run_db, fresh_user, agent_id)
-                    except HTTPException:
-                        await send_control_error("session_forbidden", retryable=False)
+                    except HTTPException as error:
+                        await send_control_error(_agent_access_refusal_code(error), retryable=False)
                         continue
                     receipt = await submit_live_human_input(
                         db=run_db,

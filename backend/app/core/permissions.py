@@ -99,6 +99,11 @@ async def _load_agent_for_user(
     from app.services.agent_retirement import history_available
 
     if lifecycle_reason and not (retirement_history and history_available(agent)):
+        # A deactivation refusal shows the member the one plain word they
+        # need (已停用), typed so callers can branch on the class; every
+        # other lifecycle reason keeps its detail.
+        if lifecycle_reason == "deactivated":
+            raise AgentDeactivatedRefusal()
         raise HTTPException(
             status_code=status.HTTP_410_GONE,
             detail=f"Agent is not active: {lifecycle_reason}",
@@ -119,54 +124,20 @@ async def _load_agent_for_user(
     return agent
 
 
-async def load_deleted_agent_for_cleanup(db: AsyncSession, user: User, agent_id: uuid.UUID) -> Agent | None:
-    """Cleanup-only loader for an exact already-soft-deleted Agent.
-
-    The normal loaders resolve a deleted Agent exactly like a missing row
-    (404), which is the correct product boundary but leaves the post-commit
-    file cleanup of a committed deletion with no reachable retry surface.
-    This helper mirrors the exact authority boundary of
-    ``_load_agent_for_user`` — live-Tenant join, platform-admin selected-
-    company equality, tenantless quarantine, tenant equality/pin — but
-    resolves ONLY rows whose ``deleted_at`` is set; a live Agent, a tenant-
-    less row, an inactive company, or an out-of-scope row resolves to
-    ``None`` so the caller falls through to the ordinary access path
-    (404/410 there). Deleted Agents therefore never become usable through
-    this helper; the sole caller-exposed capability is the idempotent
-    pending-cleanup retry of the deletion endpoint.
-    """
-    if user.role == "platform_admin":
-        async with enter_rls_bypass(
-            db,
-            reason=f"platform-admin deleted-agent cleanup lookup for {agent_id}",
-            actor_id=str(user.id),
-        ) as bypass_db:
-            result = await bypass_db.execute(
-                select(Agent)
-                .join(Tenant, and_(Tenant.id == Agent.tenant_id, Tenant.is_active.is_(True)))
-                .where(Agent.id == agent_id, Agent.deleted_at.is_not(None))
-            )
-    else:
-        result = await db.execute(
-            select(Agent)
-            .join(Tenant, and_(Tenant.id == Agent.tenant_id, Tenant.is_active.is_(True)))
-            .where(Agent.id == agent_id, Agent.deleted_at.is_not(None))
-        )
-    agent = result.scalar_one_or_none()
-    if agent is None:
-        return None
-    if user.role == "platform_admin" and not _platform_admin_selection_allows_agent(user, agent.tenant_id):
-        return None
-    if agent.tenant_id is None:
-        return None
-    if user.role == "platform_admin":
-        await pin_rls_tenant_context(db, agent.tenant_id)
-    elif user.tenant_id is None or user.tenant_id != agent.tenant_id:
-        return None
-    return agent
-
-
 SCOPED_BUSINESS_ADMIN_AUTHORITY_SOURCE = "scoped_business_admin"
+
+# The single member-facing word for "this digital employee is deactivated".
+# Surfaces that map a deactivation refusal to copy reuse this exact detail so
+# every exit shows the same plain reason (G1). The typed subclass lets
+# transports recognise the refusal without comparing against the copy.
+DEACTIVATED_REFUSAL_DETAIL = "已停用"
+
+
+class AgentDeactivatedRefusal(HTTPException):
+    """The 410 a deactivated employee answers with, detail 已停用."""
+
+    def __init__(self) -> None:
+        super().__init__(status_code=status.HTTP_410_GONE, detail=DEACTIVATED_REFUSAL_DETAIL)
 
 
 def is_scoped_business_admin(user, *, resource_tenant_id) -> bool:

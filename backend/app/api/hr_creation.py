@@ -237,41 +237,7 @@ async def _list_creation_drafts(db, current_user, *, tenant_id, agent_id, limit)
         _out(hr_creation_draft_payload(draft, runtime_task=tasks_by_id.get(draft.provisioning_task_id)))
         for draft in drafts
     ]
-    from app.models.agent import Agent
-    from app.services.agent_manager import agent_manager
-
-    # A commit followed by a crash/failed archive must remain discoverable
-    # after reload. Existing abandoned drafts + deleted rows + live files
-    # are the durable truth; a successful archive needs no separate marker.
-    cleanup_drafts = (
-        (
-            await db.execute(
-                select(HrCreationDraft)
-                .options(selectinload(HrCreationDraft.provisioning_steps))
-                .join(Agent, Agent.id == HrCreationDraft.created_agent_id)
-                .where(
-                    *scope,
-                    HrCreationDraft.status == "superseded",
-                    HrCreationDraft.failure_code == "abandoned_by_requester",
-                    Agent.tenant_id == tenant_id,
-                    Agent.deleted_at.is_not(None),
-                )
-                .order_by(HrCreationDraft.updated_at, HrCreationDraft.id)
-            )
-        )
-        .scalars()
-        .all()
-    )
-    pending = []
-    for draft in cleanup_drafts:
-        if not agent_manager.has_agent_files(draft.created_agent_id):
-            continue
-        payload = hr_creation_draft_payload(draft)
-        payload["recovery"].update(cleanup_pending=True, can_abandon=True)
-        pending.append(_out(payload))
-        if len(pending) >= max(1, min(int(limit), 100)):
-            break
-    combined = [*pending, *output][: max(1, min(int(limit), 100))]
+    combined = output[: max(1, min(int(limit), 100))]
     if agent_id is not None:
         return combined
     visible = []
@@ -580,80 +546,30 @@ async def abandon_hr_creation_draft(
         draft_id=draft_id,
         task_required=False,
     )
-    from app.services.runtime_terminal_settlement import (
-        RuntimeTaskLateAdmissionConflict,
-        RuntimeTaskSessionBindingConflict,
-    )
     employee_id, tenant_id = draft.created_agent_id, draft.tenant_id
 
     try:
-        _, cleanup_agent_ids = await abandon_hr_creation(db, draft, actor_id=current_user.id, task=task)
+        await abandon_hr_creation(db, draft, actor=current_user, task=task)
         await db.commit()
     except HrCreationConflict as exc:
         raise HTTPException(status_code=409, detail={"error": exc.code, "message": exc.message}) from exc
     except HTTPException as exc:
-        if not isinstance(exc.detail, dict) or exc.detail.get("code") not in {
-            "agent_retirement_required", "agent_retirement_pending",
-        } or employee_id is None:
+        if not isinstance(exc.detail, dict) or exc.detail.get("code") != "agent_retirement_administrator_required" \
+                or employee_id is None:
             raise
         from app.core.permissions import is_scoped_business_admin
 
         recovery = {"employee_id": str(employee_id), "management_path": "/enterprise/digital-employees",
             "can_manage_retirement": is_scoped_business_admin(current_user, resource_tenant_id=tenant_id),
             "retry_after_retirement": True}
-        # Preparation can commit withdrawal, while this transaction owns the
-        # provisioning fence and draft. Keep that fence atomic and let the
-        # authenticated management entry perform retirement separately.
+        # The abandon transaction owns the provisioning fence and draft and
+        # stays atomic: it refuses before touching either, and the
+        # authenticated management entry performs the deactivation
+        # separately. A member gets the same governed path with one plain
+        # sentence — the created employee became a company asset the moment
+        # its row existed (G1, plan §3.3).
         await db.rollback()
         raise HTTPException(exc.status_code, detail={**exc.detail, "recovery": recovery}) from exc
-    except (RuntimeTaskLateAdmissionConflict, RuntimeTaskSessionBindingConflict) as exc:
-        # Same typed mapping as the DELETE-agent endpoint: the abandon
-        # transaction rolled back cleanly (draft intact, employee alive,
-        # files untouched) and the client may retry once admission pressure
-        # passes; a session-binding conflict is classified as not promised
-        # by an identical retry.
-        await db.rollback()
-        binding_conflict = isinstance(exc, RuntimeTaskSessionBindingConflict)
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "code": (
-                    "hr_abandon_session_binding_conflict" if binding_conflict else "hr_abandon_late_admission_conflict"
-                ),
-                "message": str(exc),
-                "retryable": not binding_conflict,
-            },
-        ) from exc
-    if cleanup_agent_ids:
-        # Destructive cleanup runs only after the abandon transaction is
-        # durable; the durable retry truth is the soft-deleted employee row
-        # plus its still existing data directory, and a repeat abandon
-        # request reaches that cleanup through the superseded cleanup-only
-        # branch instead of leaving an un-rollbackable archive in front of a
-        # rolled-back transaction (CC6 B5, same shape as the DELETE-agent
-        # endpoint).
-        from app.services.agent_identity_lifecycle import perform_pending_agent_cleanup
-
-        for cleanup_agent_id in cleanup_agent_ids:
-            outcome = await perform_pending_agent_cleanup(draft.tenant_id, cleanup_agent_id)
-            if not outcome["archive_ok"]:
-                # The abandon itself committed; the client must see the
-                # partial truth instead of a success payload. The message
-                # never implies a DB rollback, and the supported retry is
-                # the same abandon request (cleanup-only on repeat).
-                raise HTTPException(
-                    status_code=503,
-                    detail={
-                        "code": "hr_abandon_cleanup_pending",
-                        "retryable": True,
-                        "message": (
-                            "The HR creation draft was abandoned, but the employee's "
-                            "file archival is still pending. The abandon is committed and "
-                            "is NOT rolled back; retrying this abandon later performs "
-                            "only the remaining cleanup."
-                        ),
-                    },
-                )
     return _out(hr_creation_draft_payload(draft, runtime_task=task))
 
 

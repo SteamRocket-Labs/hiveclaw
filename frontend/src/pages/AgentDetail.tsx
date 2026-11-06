@@ -1294,7 +1294,7 @@ function AgentDetailInner() {
             await fetchMySessions(false, id);
             await fetchAllSessions();
         } catch (e: any) {
-            showToast(e.message || 'Delete failed', 'error');
+            showToast(e.message || t('chat.removeSessionFailed', 'Failed to remove the conversation from your list.'), 'error');
         }
     };
 
@@ -2560,7 +2560,7 @@ function AgentDetailInner() {
         <>
             <div className={sessionWorkbenchMode ? 'agent-detail-session-only' : undefined}>
                 {agent?.deactivation_reason === 'retirement_pending' && <div className="workbench-panel" role="status">
-                    {t('workspace.digitalEmployees.retirementPending', 'New execution is disabled. External work is still unconfirmed; review it in its original work before retrying retirement. Files are retained. Ending local tracking does not confirm that the external runner stopped.')}
+                    {t('agent.chat.deactivatedNotice', 'This digital employee is deactivated. Its files and conversations are kept.')}
                 </div>}
 
                 {(!sessionWorkbenchMode || isSystemHr) && (
@@ -2730,7 +2730,9 @@ function AgentDetailInner() {
                             agentPermissions={permData ?? null}
                             transportNotice={transportNotice === 'agent.chat.groupSourcesUnavailable'
                                 ? t('agent.chat.groupSourcesUnavailable', 'Some source content is unavailable to you. Request access or refresh this conversation.')
-                                : transportNotice || (groupDiscoveryUnavailable
+                                : transportNotice === 'session.agent_deactivated'
+                                    ? t('session.agent_deactivated', 'Deactivated')
+                                    : transportNotice || (groupDiscoveryUnavailable
                                     ? t('agent.chat.groupDiscoveryUnavailable', 'Shared group conversations are unavailable. Try refreshing.') : null)}
                             isWaiting={isWaiting}
                             runtimePhase={activePhase}
@@ -2852,14 +2854,13 @@ function AgentDetailInner() {
 
             <ConfirmModal
                 open={!!deleteSessionConfirm}
-                title={t('chat.deleteSession', 'Delete session')}
+                title={t('chat.removeSession', 'Remove from list')}
                 message={t(
-                    'chat.deleteConfirmWithTitle',
-                    'Delete "{{title}}" and all its messages? This cannot be undone.',
+                    'chat.removeConfirmWithTitle',
+                    'Remove "{{title}}" from your list? Its records are kept.',
                     { title: deleteSessionConfirm?.title || t('agent.chat.session', 'Session') },
                 )}
-                confirmLabel={t('common.delete')}
-                danger
+                confirmLabel={t('chat.removeSession', 'Remove from list')}
                 onCancel={() => setDeleteSessionConfirm(null)}
                 onConfirm={confirmDeleteSession}
             />

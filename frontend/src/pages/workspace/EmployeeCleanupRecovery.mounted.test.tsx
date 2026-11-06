@@ -13,10 +13,10 @@ import zh from '../../i18n/zh.json';
 
 const api = vi.hoisted(() => ({
   list: vi.fn(),
-  listPendingCleanup: vi.fn(),
   listPendingRetirement: vi.fn(),
   endRetirementTracking: vi.fn(),
-  remove: vi.fn(),
+  deactivate: vi.fn(),
+  restore: vi.fn(),
   listMine: vi.fn(),
   abandon: vi.fn(),
   confirm: vi.fn(),
@@ -59,7 +59,6 @@ beforeEach(() => {
   api.role = 'org_admin';
   api.confirm.mockResolvedValue(true);
   api.list.mockResolvedValue([]);
-  api.listPendingCleanup.mockResolvedValue([]);
   api.listPendingRetirement.mockResolvedValue([]);
   api.listMine.mockResolvedValue([]);
 });
@@ -78,101 +77,74 @@ describe.each(['en', 'zh'] as const)('committed deletion recovery (%s)', (locale
       requested_by_user_id: 'admin', draft_status: 'failed', blueprint: { name: 'Unfinished employee' },
       recovery: { can_abandon: true, can_retry: false },
     }]);
-    api.abandon.mockRejectedValueOnce(new ApiError(409, 'External work needs reconciliation', {
-      code: 'agent_retirement_required', recovery: { employee_id: 'retiring-employee',
+    api.abandon.mockRejectedValueOnce(new ApiError(409, 'The employee stays until an admin deactivates it', {
+      code: 'agent_retirement_administrator_required', recovery: { employee_id: 'retiring-employee',
         management_path: '/enterprise/digital-employees', can_manage_retirement: role === 'org_admin', retry_after_retirement: true },
     }));
     await mount('hr', locale);
     fireEvent.click(await screen.findByRole('button', { name: words.employees.hrRecovery.remove }));
-    await screen.findByText(words.employees.hrRecovery.retirementRequired);
+    await screen.findByText(words.employees.hrRecovery.retirementAdministrator);
     if (role === 'org_admin') {
       expect(screen.getByRole('link', { name: words.employees.hrRecovery.reviewRetirement }).getAttribute('href'))
         .toBe('/enterprise/digital-employees');
     } else {
       expect(screen.queryByRole('link', { name: words.employees.hrRecovery.reviewRetirement })).toBeNull();
-      expect(screen.getByText(words.employees.hrRecovery.retirementAdministrator)).toBeTruthy();
     }
     expect(screen.getByRole('button', { name: words.employees.hrRecovery.remove })).toBeTruthy();
     expect(api.abandon).toHaveBeenCalledWith('original-hr', 'draft-retirement');
-    expect(api.remove).not.toHaveBeenCalled();
   });
 
-  it('recovers employee cleanup through the same DELETE after a fresh mount', async () => {
+  it('deactivates an employee from the admin table and reports pending external work', async () => {
+    const words = (locale === 'en' ? en : zh).workspace.digitalEmployees;
     const employee = { id: 'employee-1', name: 'Recovery employee', status: 'idle' };
-    const pending = { id: employee.id, name: employee.name, deleted_at: '2026-09-10T00:00:00Z' };
+    api.deactivate.mockReset();
     api.list.mockResolvedValue([employee]);
-    api.remove.mockImplementationOnce(async () => {
-      api.list.mockResolvedValue([]);
-      api.listPendingCleanup.mockResolvedValue([pending]);
-      throw new ApiError(503, 'Deletion committed', { code: 'agent_cleanup_pending' });
-    }).mockImplementationOnce(async () => { api.listPendingCleanup.mockResolvedValue([]); });
-
-    const first = await mount('admin', locale);
-    fireEvent.click(await screen.findByRole('button', { name: words.workspace.digitalEmployees.deleteEmployeeButton }));
-    await screen.findByRole('button', { name: words.workspace.digitalEmployees.retryCleanup });
-    expect(api.toast).toHaveBeenCalledWith(words.workspace.digitalEmployees.cleanupPending, 'error');
-    first.unmount();
+    api.deactivate.mockRejectedValueOnce(new ApiError(409, 'External work needs reconciliation', { code: 'agent_retirement_pending' }));
 
     await mount('admin', locale);
-    const retry = await screen.findByRole('button', { name: words.workspace.digitalEmployees.retryCleanup });
-    expect(screen.getByText(words.workspace.digitalEmployees.cleanupPending)).toBeTruthy();
-    expect(screen.queryByRole('link', { name: employee.name })).toBeNull();
-    fireEvent.click(retry);
-    await waitFor(() => expect(screen.queryByRole('button', { name: words.workspace.digitalEmployees.retryCleanup })).toBeNull());
-    expect(api.listPendingCleanup).toHaveBeenCalledWith('tenant-1');
-    expect(api.remove.mock.calls).toEqual([[employee.id], [employee.id]]);
-    expect(api.confirm).toHaveBeenCalledTimes(1);
+    fireEvent.click(await screen.findByRole('button', { name: words.deactivateEmployeeButton }));
+    await waitFor(() => expect(api.deactivate).toHaveBeenCalledWith(employee.id));
+    expect(api.toast).toHaveBeenCalledWith(words.retirementPending, 'error');
+    expect(screen.queryByRole('button', { name: /Delete/i })).toBeNull();
   });
 
-  it('keeps an abandoned HR draft recoverable after reload without repeating abandonment confirmation', async () => {
+  it('an abandoned draft leaves the list once superseded; nothing is cleaned up afterwards', async () => {
     const draft = {
       blueprint_id: 'draft-1', hr_agent_id: 'original-employee', session_id: 'original-work',
       requested_by_user_id: 'admin', draft_status: 'failed', blueprint: { name: 'Recovery employee' },
       recovery: { can_abandon: true, can_retry: false, can_resume: false, requires_operator: false },
     };
     api.listMine.mockResolvedValue([draft]);
-    api.abandon.mockImplementationOnce(async () => {
-      api.listMine.mockResolvedValue([{ ...draft, draft_status: 'superseded', recovery: { ...draft.recovery, cleanup_pending: true } }]);
-      throw new ApiError(503, 'Removal committed', { code: 'hr_abandon_cleanup_pending' });
-    }).mockImplementationOnce(async () => { api.listMine.mockResolvedValue([]); });
-
-    const first = await mount('hr', locale);
-    fireEvent.click(await screen.findByRole('button', { name: words.employees.hrRecovery.remove }));
-    await screen.findByRole('button', { name: words.employees.hrRecovery.retryCleanup });
-    first.unmount();
+    api.abandon.mockImplementationOnce(async () => { api.listMine.mockResolvedValue([]); });
 
     await mount('hr', locale);
-    const retry = await screen.findByRole('button', { name: words.employees.hrRecovery.retryCleanup });
-    expect(screen.getByText(words.employees.hrRecovery.cleanupPending)).toBeTruthy();
-    expect(screen.getByText(words.employees.hrRecovery.cleanupStatus)).toBeTruthy();
-    expect(screen.queryByRole('button', { name: words.employees.hrRecovery.retry })).toBeNull();
-    fireEvent.click(retry);
+    fireEvent.click(await screen.findByRole('button', { name: words.employees.hrRecovery.remove }));
     await waitFor(() => expect(screen.queryByText('Recovery employee')).toBeNull());
-    expect(api.abandon.mock.calls).toEqual([['original-employee', 'draft-1'], ['original-employee', 'draft-1']]);
+    expect(api.abandon.mock.calls).toEqual([['original-employee', 'draft-1']]);
     expect(api.confirm).toHaveBeenCalledTimes(1);
   });
 });
 
-it('does not query the administrator cleanup inventory for a member', async () => {
+it('does not query the administrator retirement inventory for a member', async () => {
   api.role = 'member';
   await mount('admin', 'en');
   await act(async () => {});
-  expect(api.listPendingCleanup).not.toHaveBeenCalled();
+  expect(api.listPendingRetirement).not.toHaveBeenCalled();
   expect(screen.getByText(en.workspace.digitalEmployees.adminOnly)).toBeTruthy();
 });
 
-it('shows a retryable load error instead of hiding the cleanup inventory', async () => {
-  api.listPendingCleanup.mockRejectedValueOnce(new Error('unavailable')).mockResolvedValue([]);
+it('shows a retryable load error instead of hiding the deactivated inventory', async () => {
+  api.listPendingRetirement.mockRejectedValueOnce(new Error('unavailable')).mockResolvedValue([]);
   await mount('admin', 'en');
   expect(await screen.findByRole('alert')).toBeTruthy();
   fireEvent.click(screen.getByRole('button', { name: en.common.retry }));
   await waitFor(() => expect(screen.queryByRole('alert')).toBeNull());
-  expect(api.listPendingCleanup).toHaveBeenCalledTimes(2);
+  expect(api.listPendingRetirement).toHaveBeenCalledTimes(2);
 });
 
 
-describe.each(['en', 'zh'] as const)('pending retirement recovery (%s)', (locale) => {
-  it('requires an explicit management decision and keeps retirement a separate action', async () => {
+describe.each(['en', 'zh'] as const)('deactivated employee recovery (%s)', (locale) => {
+  it('requires an explicit management decision and keeps restore a separate action', async () => {
     const words = (locale === 'en' ? en : zh).workspace.digitalEmployees;
     const row = { id: 'retiring-employee', name: 'Pending external work', remote_work_count: 1,
       local_work_count: 0, inactive_requester_work_count: 1, tracking_version: 'a'.repeat(64) };
@@ -192,28 +164,24 @@ describe.each(['en', 'zh'] as const)('pending retirement recovery (%s)', (locale
       expected_tracking_version: row.tracking_version, external_execution_remains_unknown: true,
     }));
     await waitFor(() => expect(screen.queryByRole('button', { name: words.endInactiveTracking })).toBeNull());
-    expect(screen.getByRole('button', { name: words.retryRetirement })).toBeTruthy();
-    expect(api.remove).not.toHaveBeenCalled();
+    expect(screen.getByRole('button', { name: words.restoreEmployeeButton })).toBeTruthy();
+    expect(api.deactivate).not.toHaveBeenCalled();
     expect(api.toast).toHaveBeenCalledWith(words.trackingEnded, 'success');
     expect(api.confirm.mock.calls[1][0].message).toContain(locale === 'en' ? 'External execution remains unknown' : '外部执行仍然未知');
   });
 
-  it('keeps a pending employee reachable after reload and retries the same lifecycle command', async () => {
+  it('restores a deactivated employee and keeps it listed until then', async () => {
     const words = (locale === 'en' ? en : zh).workspace.digitalEmployees as any;
     const row = { id: 'retiring-employee', name: 'Pending external work', remote_work_count: 1, local_work_count: 0 };
     api.listPendingRetirement.mockResolvedValue([row]);
-    api.remove.mockRejectedValueOnce(new ApiError(409, 'External execution unknown', { code: 'agent_retirement_pending' }));
-    const first = await mount('admin', locale);
-    expect((await screen.findByRole('link', { name: row.name })).getAttribute('href')).toBe('/agents/retiring-employee');
-    fireEvent.click(await screen.findByRole('button', { name: words.retryRetirement || 'Retry retirement' }));
-    await waitFor(() => expect(api.remove).toHaveBeenCalledWith(row.id));
-    expect(api.toast).not.toHaveBeenCalledWith(words.employeeDeleted, 'success');
-    expect(api.toast).toHaveBeenCalledWith(words.retirementPending, 'error');
-    first.unmount();
-    api.remove.mockImplementationOnce(async () => { api.listPendingRetirement.mockResolvedValue([]); });
+    api.restore.mockReset();
+    api.restore.mockImplementationOnce(async () => { api.listPendingRetirement.mockResolvedValue([]); });
     await mount('admin', locale);
-    fireEvent.click(await screen.findByRole('button', { name: words.retryRetirement || 'Retry retirement' }));
-    await waitFor(() => expect(screen.queryByRole('link', { name: row.name })).toBeNull());
-    expect(api.remove).toHaveBeenCalledTimes(2);
+    const rowPattern = new RegExp(row.name);
+    await waitFor(() => expect(screen.getByText(rowPattern)).toBeTruthy());
+    fireEvent.click(await screen.findByRole('button', { name: words.restoreEmployeeButton || 'Restore' }));
+    await waitFor(() => expect(api.restore).toHaveBeenCalledWith(row.id));
+    await waitFor(() => expect(screen.queryByText(rowPattern)).toBeNull());
+    expect(api.toast).toHaveBeenCalledWith(words.employeeRestored, 'success');
   });
 });

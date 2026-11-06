@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   chatTransportPhase,
+  isSessionSocketAuthClose,
   isRetryableSessionReadError,
   mergeTranscriptBackfill,
   reconnectDelayMs,
@@ -73,6 +74,11 @@ describe('chat transport recovery policy', () => {
     expect(shouldReconnectSessionSocket(1000, false)).toBe(true);
     expect(shouldReconnectSessionSocket(1000, true)).toBe(false);
     expect(shouldReconnectSessionSocket(1011, false)).toBe(true);
+  });
+
+  it('treats the agent-deactivated close 4410 as terminal without failing authentication', () => {
+    expect(shouldReconnectSessionSocket(4410, false)).toBe(false);
+    expect(isSessionSocketAuthClose(4410)).toBe(false);
   });
 
   it('never reconnects an authentication or authorization close', () => {

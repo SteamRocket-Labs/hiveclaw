@@ -153,6 +153,6 @@ describe('DigitalEmployees page', () => {
     expect(markup).toContain('Interrupted Analyst');
     expect(markup).toContain('href="/agents/hr-agent-1?session_id=hr-session-1#chat"');
     expect(markup).toContain('Retry provisioning');
-    expect(markup).toContain('Remove unfinished employee');
+    expect(markup).toContain('Abandon unfinished creation');
   });
 });

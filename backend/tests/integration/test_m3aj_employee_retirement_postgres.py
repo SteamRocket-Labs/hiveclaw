@@ -57,28 +57,51 @@ async def test_delete_withdraws_the_actual_remote_work_and_keeps_unknown_recover
 
         if flow == "lost_cancel":
             monkeypatch.setattr(RemoteA2AEndpoint, "rpc", lose_cancel)
-        result = await api.delete(f"/agents/{seed['agent']}")
+        native_id = uuid4()
+        async with tenant_scoped_session(seed["tenant"], session_factory=app_user_sessionmaker) as db:
+            db.add(RuntimeTask(id=native_id, tenant_id=seed["tenant"], parent_agent_id=seed["agent"],
+                parent_session_id=str(session_id), status="running", task_type="web_chat_turn",
+                metadata_json={"turn_id": "t-pending"}))
+            await db.commit()
+        result = await api.post(f"/agents/{seed['agent']}/deactivate")
         assert result.status_code == (409 if flow == "lost_cancel" else 204), result.text
+        async with tenant_scoped_session(seed["tenant"], session_factory=app_user_sessionmaker) as db:
+            native = await db.get(RuntimeTask, native_id)
+            assert native.status == "killed", "a pending recall must not spare the native web turn"
         methods = [item[3]["method"] for item in remote.requests if item[0] == "POST"]
         assert methods == ([] if flow == "queued" else ["SendMessage", "CancelTask"])
         async with tenant_scoped_session(seed["tenant"], session_factory=app_user_sessionmaker) as db:
             agent = await db.get(Agent, seed["agent"])
             task = await db.get(RuntimeTask, UUID(task_id))
             assert agent.deactivated_at is not None
-            assert (agent.deleted_at is None) == (flow == "lost_cancel")
+            assert agent.deleted_at is None  # G1: deactivated, never deleted
             assert task.status == ("needs_reconciliation" if flow == "lost_cancel" else "killed")
             assert task.root_user_id == seed["owner"] and task.parent_session_id == str(session_id)
         if flow == "lost_cancel":
             assert result.json()["detail"]["code"] == "agent_retirement_pending" and directory.is_dir()
-            from fastapi import HTTPException
-            from app.services.agent_identity_lifecycle import soft_delete_agent
-
+            # The committed-but-pending state is fully bookkept before the 409:
+            # status gates closed, the projection revoked, the audit recorded.
             async with tenant_scoped_session(seed["tenant"], session_factory=app_user_sessionmaker) as db:
                 retained = await db.get(Agent, seed["agent"])
-                with pytest.raises(HTTPException) as refused:
-                    await soft_delete_agent(db, retained, actor_id=seed["owner"])
-                assert refused.value.detail["code"] == "agent_retirement_pending" and retained.deleted_at is None
-                await db.rollback()
+                assert retained.status == "stopped" and retained.deleted_at is None
+            async with tenant_scoped_session(seed["tenant"], session_factory=app_user_sessionmaker) as db:
+                requested = (await db.scalars(select(AuditLog).where(AuditLog.agent_id == seed["agent"],
+                    AuditLog.action == "agent:retirement_requested").order_by(AuditLog.created_at.desc()).limit(1))).first()
+                assert requested is not None, "prepare's retirement row must be committed"
+                from app.models.security_audit import SecurityAuditEvent
+
+                deactivated_event = (await db.scalars(select(SecurityAuditEvent).where(
+                    SecurityAuditEvent.tenant_id == seed["tenant"],
+                    SecurityAuditEvent.event_type == "agent.deactivated",
+                ).limit(1))).first()
+                assert deactivated_event is not None, "the 409 path must still record agent.deactivated"
+            # Retrying the deactivation while the recall is pending re-enters
+            # the same typed conflict; restoring waits for the settled recall.
+            retry = await api.post(f"/agents/{seed['agent']}/deactivate")
+            assert retry.status_code == 409 and retry.json()["detail"]["code"] == "agent_retirement_pending", retry.text
+            early_restore = await api.post(f"/agents/{seed['agent']}/restore")
+            assert early_restore.status_code == 409, early_restore.text
+            assert early_restore.json()["detail"]["code"] == "agent_restore_work_pending", early_restore.text
 
             profile = await api.get(f"/agents/{seed['agent']}")
             assert profile.status_code == 200 and profile.json()["access_level"] == "read", profile.text
@@ -91,16 +114,18 @@ async def test_delete_withdraws_the_actual_remote_work_and_keeps_unknown_recover
             assert (await api.post(f"/agents/{seed['agent']}/sessions/{session_id}/approvals/{uuid4()}/resolve",
                 json={"action": "approve"})).status_code == 410
 
-            replay = await api.delete(f"/agents/{seed['agent']}")
+            replay = await api.post(f"/agents/{seed['agent']}/deactivate")
             assert replay.status_code == 409 and len([r for r in remote.requests if r[0] == "POST"]) == len(methods)
             view = await api.get(path + "/tasks/" + task_id)
             assert view.status_code == 200 and "abandon" in view.json()["recovery_actions"], view.text
             ended = await api.post(path + f"/tasks/{task_id}/operations", json={
                 **withdrawal.request_frame(seed, 1), "operation_id": str(uuid4()), "action": "abandon", "params": {}})
             assert ended.status_code == 200 and ended.json()["local_abandoned"], ended.text
-            assert (await api.delete(f"/agents/{seed['agent']}")).status_code == 204
-        assert not directory.exists()
-        assert (await api.get(f"/agents/{seed['agent']}")).status_code == 404
+            assert (await api.post(f"/agents/{seed['agent']}/deactivate")).status_code == 204
+        assert directory.is_dir()  # G1: files stay after deactivation
+        settled = await api.get(f"/agents/{seed['agent']}")
+        assert settled.status_code == 200 and settled.json()["access_level"] == "read", settled.text
+        assert not settled.json()["action_capabilities"]["can_use"]
         async with tenant_scoped_session(seed["tenant"], session_factory=app_user_sessionmaker) as db:
             audits = list(await db.scalars(select(AuditLog).where(AuditLog.agent_id == seed["agent"], AuditLog.action == "agent:retirement_requested")))
             assert len(audits) == 1 and audits[0].user_id == seed["owner"]
@@ -136,7 +161,7 @@ async def test_delete_during_the_http_gap_keeps_the_real_worker_and_original_lat
         worker = asyncio.create_task(remote_tasks.execute(seed, task_id, app_user_sessionmaker))
         try:
             await asyncio.wait_for(received.wait(), 10)
-            result = await asyncio.wait_for(api.delete(f"/agents/{seed['agent']}"), 10)
+            result = await asyncio.wait_for(api.post(f"/agents/{seed['agent']}/deactivate"), 10)
             assert result.status_code == 409 and result.json()["detail"]["code"] == "agent_retirement_pending", result.text
             assert directory.exists()
             release.set()
@@ -146,7 +171,7 @@ async def test_delete_during_the_http_gap_keeps_the_real_worker_and_original_lat
                 operations = task.metadata_json["remote_a2a"]["operations"]
                 assert task.status == "killed" and operations[0]["observation"]["task"]["id"] == "late-retirement"
                 assert [o["method"] for o in operations] == ["SendMessage", "CancelTask"]
-            assert (await api.delete(f"/agents/{seed['agent']}")).status_code == 204
+            assert (await api.post(f"/agents/{seed['agent']}/deactivate")).status_code == 204
         finally:
             release.set()
             await asyncio.gather(worker, return_exceptions=True)
@@ -208,7 +233,7 @@ async def test_local_retirement_preserves_unknown_host_execution_and_original_re
         async with tenant_scoped_session(seed["tenant_id"], session_factory=app_user_sessionmaker) as db:
             actual = await channel.poll_pending_channel_messages(db, context=seed["selected"])
             assert [row["id"] for row in actual] == [seed["message_id"]]
-    result = await api.delete(f"/agents/{seed['agent_id']}")
+    result = await api.post(f"/agents/{seed['agent_id']}/deactivate")
     assert result.status_code == (409 if delivered else 204), result.text
     async with tenant_scoped_session(seed["tenant_id"], session_factory=app_user_sessionmaker) as db:
         message = await db.get(LocalAgentChannelMessage, UUID(seed["message_id"]))
@@ -232,8 +257,8 @@ async def test_local_retirement_preserves_unknown_host_execution_and_original_re
             "expected_user_id": str(seed["user_id"]), "expected_tenant_id": str(seed["tenant_id"]),
             "request_hash": request_hash, "idempotency_key": "end-retiring-local-tracking"})
         assert ended.status_code == 200 and ended.json()["execution_state"] == "unknown", ended.text
-        assert (await api.delete(f"/agents/{seed['agent_id']}")).status_code == 204
-    assert not directory.exists()
+        assert (await api.post(f"/agents/{seed['agent_id']}/deactivate")).status_code == 204
+    assert directory.is_dir()  # G1: deactivation never archives the employee's files
 
 
 @pytest.mark.parametrize("manager_kind", ["org_admin", "platform_admin"])
@@ -289,7 +314,7 @@ async def test_source_retirement_cancels_only_its_delegated_remote_work_without_
 
         if lost_reply:
             monkeypatch.setattr(RemoteA2AEndpoint, "rpc", lose)
-        response = await api.delete(f"/agents/{seed['agent']}", headers=manager_headers)
+        response = await api.post(f"/agents/{seed['agent']}/deactivate", headers=manager_headers)
         assert response.status_code == (409 if lost_reply else 204), response.text
         assert [r[3]["method"] for r in remote.requests if r[0] == "POST"] == ["SendMessage", "CancelTask"]
         async with tenant_scoped_session(seed["tenant"], session_factory=app_user_sessionmaker) as db:
@@ -318,12 +343,12 @@ async def test_source_retirement_cancels_only_its_delegated_remote_work_without_
             assert receipt.status_code == 200 and receipt.json()["remote_task_id"] == "source-retirement-task"
             assert "abandon" in receipt.json()["recovery_actions"]
             assert directory.exists()
-            assert (await api.delete(f"/agents/{seed['agent']}")).status_code == 409
+            assert (await api.post(f"/agents/{seed['agent']}/deactivate")).status_code == 409
             assert len([r for r in remote.requests if r[0] == "POST"]) == 2
             ended = await api.post(path + f"/tasks/{task_id}/operations", json={**withdrawal.request_frame(seed, 1),
                 "operation_id": str(uuid4()), "action": "abandon", "params": {}})
             assert ended.status_code == 200, ended.text
-            assert (await api.delete(f"/agents/{seed['agent']}")).status_code == 204
+            assert (await api.post(f"/agents/{seed['agent']}/deactivate")).status_code == 204
 
 
 @pytest.mark.parametrize("reconfigured", [False, True])
@@ -364,7 +389,7 @@ async def test_source_retirement_http_gap_retains_identity_and_cannot_cancel_a_n
         worker = asyncio.create_task(remote_tasks.execute(seed, task_id, app_user_sessionmaker))
         try:
             await asyncio.wait_for(received.wait(), 10)
-            response = await asyncio.wait_for(api.delete(f"/agents/{seed['agent']}"), 10)
+            response = await asyncio.wait_for(api.post(f"/agents/{seed['agent']}/deactivate"), 10)
             assert response.status_code == 409 and directory.exists(), response.text
             if reconfigured:
                 changed = await api.put(path, json={**configuration(target_seed, remote), "expected_version": 1,
@@ -385,7 +410,7 @@ async def test_source_retirement_http_gap_retains_identity_and_cannot_cancel_a_n
                 ended = await api.post(path + f"/tasks/{task_id}/operations", json={**request_frame(seed, 1),
                     "operation_id": str(uuid4()), "action": "abandon", "params": {}})
                 assert ended.status_code == 200, ended.text
-            assert (await api.delete(f"/agents/{seed['agent']}")).status_code == 204
+            assert (await api.post(f"/agents/{seed['agent']}/deactivate")).status_code == 204
         finally:
             release.set()
             await asyncio.gather(worker, return_exceptions=True)
@@ -437,3 +462,48 @@ async def test_retiring_shared_history_keeps_current_membership_without_restorin
         with pytest.raises(HTTPException) as revoked:
             await authorize_group_history_reader(db, session=group, user=user)
         assert revoked.value.status_code == 403
+
+
+async def test_restored_employee_runs_again_once_the_owner_reenables_a_trigger(
+    remote_work, app_user_sessionmaker, owner_sessionmaker,
+):
+    """G1 r3: deactivate closes the trigger gates; restore reopens them and
+    the owner's re-enabled cron trigger passes the real preflight."""
+
+    from app.models.trigger import AgentTrigger
+    from app.services.trigger_preflight import evaluate_trigger_preflight
+
+    seed, api, _session_id = remote_work
+    deactivating = await api.post(f"/agents/{seed['agent']}/deactivate")
+    assert deactivating.status_code == 204, deactivating.text
+
+    trigger = AgentTrigger(tenant_id=seed["tenant"], agent_id=seed["agent"], name="恢复后的定时任务",
+        type="cron", config={"expr": "0 9 * * 1-5", "metadata": {"plan_exempt_reason": "user_declined_plan_mode"}},
+        reason="G1 r3 restore preflight evidence", is_enabled=False)
+    async with tenant_scoped_session(seed["tenant"], session_factory=owner_sessionmaker) as db:
+        db.add(trigger)
+        await db.commit()
+        trigger_id = trigger.id
+
+    async def preflight() -> tuple[bool, str | None]:
+        async with tenant_scoped_session(seed["tenant"], session_factory=app_user_sessionmaker) as db:
+            agent = await db.get(Agent, seed["agent"])
+            row = await db.get(AgentTrigger, trigger_id)
+            result = await evaluate_trigger_preflight(db, agent=agent, model=object(), triggers=[row])
+            return result.ok, result.skip_reason
+
+    # While deactivated the trigger stays off and the runnable gate refuses.
+    ok, skip_reason = await preflight()
+    assert ok is False and skip_reason == "agent_not_runnable", (ok, skip_reason)
+
+    restoring = await api.post(f"/agents/{seed['agent']}/restore")
+    assert restoring.status_code == 204, restoring.text
+    # The owner turns the trigger back on; the real preflight now passes.
+    async with tenant_scoped_session(seed["tenant"], session_factory=owner_sessionmaker) as db:
+        (await db.get(AgentTrigger, trigger_id)).is_enabled = True
+        await db.commit()
+    ok, skip_reason = await preflight()
+    assert ok is True, (ok, skip_reason)
+    async with tenant_scoped_session(seed["tenant"], session_factory=app_user_sessionmaker) as db:
+        agent = await db.get(Agent, seed["agent"])
+        assert agent.status == "idle" and agent.deactivated_at is None

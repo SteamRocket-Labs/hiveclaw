@@ -2023,7 +2023,7 @@ function AgentChatSection({
                           type="button"
                           className="detail-session-row-action"
                           aria-label={`Delete session ${sessionTitleForUser(session, t('agent.chat.session', 'Session'))}`}
-                          title={t('common.delete', 'Delete')}
+                          title={t('chat.removeSession', 'Remove from list')}
                           onClick={() => onDeleteSession(String(session.id))}
                         >
                           <IconTrash size={13} stroke={1.8} />

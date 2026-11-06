@@ -174,28 +174,63 @@ async def test_inactive_original_disposition_preserves_owner_holds_and_current_c
     monkeypatch.setattr(runtime_task_service, "async_session", app_user_sessionmaker)
     monkeypatch.setattr(runtime_task_worker, "notify_runtime_task_worker", notify)
     assert await runtime_task_service.update_runtime_task_record(str(d.run), status="killed")
-    assert (await client.delete(f"/agents/{d.agent}/sessions/{source_session}")).status_code == 204
+    # G1: nobody can physically delete a conversation, and an administrator
+    # cannot remove another owner's conversation from a list — the session
+    # row and its messages stay for everyone who already had them.
+    refused = await client.delete(f"/agents/{d.agent}/sessions/{source_session}")
+    assert refused.status_code == 403, refused.text
+    # The owner's own removal does not apply here: the channel session belongs
+    # to an external principal, and the user custodian's session was handed
+    # over with its uploader already inactive. The conversation row stays for
+    # everyone who already had it; the chain below runs from that state.
     async with owner_sessionmaker() as db:
+        assert await db.get(ChatSession, source_session) is not None
         retained = await db.get(StorageBlobRef, reference_id)
         retained.legal_hold, retained.pinned_until = False, None
         await db.commit()
     row = (await client.get(base + "/references")).json()["items"][0]
-    assert row["retirable"] is True, row
-    retired = await client.post(base + "/references", json={**request, "operation_id": str(uuid.uuid4()),
-        "action": "retire_reference", "expected_reference_sha256": row["snapshot_sha256"]})
-    assert retired.status_code == 200 and retired.json()["outcome"] == "reference_retired", retired.text
-    assert (await client.get(base + "/references")).json()["items"] == []
-    policy = (await client.get("/enterprise/storage-original-retention")).json()
-    configured = await client.put("/enterprise/storage-original-retention", json={"enabled": True,
-        "retention_days": 0, "grace_days": 0, "expected_version": policy["version"]})
-    assert configured.status_code == 200, configured.text
-    cleanup = {"operation_id": str(uuid.uuid4()), "action": "quarantine", "expected_content_sha256": claim["content_sha256"],
-        "expected_policy_version": configured.json()["version"]}
-    quarantined = await client.post(base + "/retention", json=cleanup)
-    assert quarantined.status_code == 200 and quarantined.json()["sweep_eligible"], quarantined.text
     recovery = d.root.parent / "independent-recovery.bin"
     recovery.write_bytes(download.content)
-    swept = await client.post(base + "/sweep", json={**cleanup, "operation_id": str(uuid.uuid4()), "action": "sweep",
-        "expected_manifest_sha256": quarantined.json()["manifest_sha256"]})
-    assert swept.status_code == 200 and swept.json()["state"] == "deleted", swept.text
+    if custodian == "user":
+        # A withdrawn chat-upload source does not depend on the conversation
+        # row: with the holds cleared and the run settled, its explicit
+        # retirement and governed physical cleanup work exactly as before.
+        assert row["retirable"] is True, row
+        retired = await client.post(base + "/references", json={**request, "operation_id": str(uuid.uuid4()),
+            "action": "retire_reference", "expected_reference_sha256": row["snapshot_sha256"]})
+        assert retired.status_code == 200 and retired.json()["outcome"] == "reference_retired", retired.text
+        assert (await client.get(base + "/references")).json()["items"] == []
+        policy = (await client.get("/enterprise/storage-original-retention")).json()
+        configured = await client.put("/enterprise/storage-original-retention", json={"enabled": True,
+            "retention_days": 0, "grace_days": 0, "expected_version": policy["version"]})
+        assert configured.status_code == 200, configured.text
+        cleanup = {"operation_id": str(uuid.uuid4()), "action": "quarantine", "expected_content_sha256": claim["content_sha256"],
+            "expected_policy_version": configured.json()["version"]}
+        quarantined = await client.post(base + "/retention", json=cleanup)
+        assert quarantined.status_code == 200 and quarantined.json()["sweep_eligible"], quarantined.text
+        swept = await client.post(base + "/sweep", json={**cleanup, "operation_id": str(uuid.uuid4()), "action": "sweep",
+            "expected_manifest_sha256": quarantined.json()["manifest_sha256"]})
+        assert swept.status_code == 200 and swept.json()["state"] == "deleted", swept.text
+    else:
+        # G1: a channel-upload source's reference is retired only after its
+        # conversation closes, and conversations are never deleted any more —
+        # so the reference stays held (work_reference), stays listed, and the
+        # governed cleanup path holds: bytes, holds and copies are retained.
+        assert row["retirable"] is False and row["hold_reason"] == "work_reference", row
+        held = await client.post(base + "/references", json={**request, "operation_id": str(uuid.uuid4()),
+            "action": "retire_reference", "expected_reference_sha256": row["snapshot_sha256"]})
+        assert held.status_code == 200 and held.json()["outcome"] == "reference_held" and held.json()["changed"] is False, held.text
+        assert len((await client.get(base + "/references")).json()["items"]) == 1
+        policy = (await client.get("/enterprise/storage-original-retention")).json()
+        configured = await client.put("/enterprise/storage-original-retention", json={"enabled": True,
+            "retention_days": 0, "grace_days": 0, "expected_version": policy["version"]})
+        assert configured.status_code == 200, configured.text
+        quarantined = await client.post(base + "/retention", json={
+            "operation_id": str(uuid.uuid4()), "action": "quarantine", "expected_content_sha256": claim["content_sha256"],
+            "expected_policy_version": configured.json()["version"]})
+        assert quarantined.status_code == 200 and quarantined.json()["hold_reason"] == "referenced", quarantined.text
+        assert quarantined.json()["sweep_eligible"] is False, quarantined.text
+        async with app_user_sessionmaker() as db:
+            await pin_rls_tenant_context(db, d.tenant)
+            assert (await db.get(StorageBlob, blob_id)).state == "available"
     assert copy.read_bytes() == b"KEEP_CURRENT_WORK_COPY" and recovery.read_bytes() == body

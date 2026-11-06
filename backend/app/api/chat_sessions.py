@@ -1149,6 +1149,8 @@ async def list_sessions(
                 ChatSession.last_message_at.desc().nulls_last(), ChatSession.created_at.desc())))
         out = []
         for session in sessions:
+            if _removed_from_own_list(session, current_user.id):
+                continue
             try:
                 await require_current_group_member(db, session=session, user=current_user)
             except HTTPException as exc:
@@ -1281,6 +1283,8 @@ async def list_sessions(
         message_counts = await _load_mine_message_counts(db, sessions, agent_id=agent_id)
         out = []
         for session in sessions:
+            if _removed_from_own_list(session, current_user.id):
+                continue  # the owner removed this conversation from their own list (G1)
             # Count only — skip sessions with no user messages (orphan assistant-only records)
             session_id_text = _session_id_text(session)
             user_msg_count = user_message_counts.get(session_id_text, 0)
@@ -1967,13 +1971,19 @@ async def get_session_lineage(
         .order_by(ChatSession.created_at.asc())
     )
     sessions = result.scalars().all()
+    def _branch_metadata(item):
+        # The own-list removal marker is private list state, not lineage:
+        # readers of the branch map never see who removed what when.
+        metadata = dict(item.transcript_metadata_json or {})
+        metadata.pop("removed_from_list_by", None)
+        return metadata
     return [
         {
             "id": str(item.id),
             "parent_session_id": str(item.parent_session_id) if item.parent_session_id else None,
             "root_session_id": str(item.root_session_id) if item.root_session_id else None,
             "title": item.title,
-            "branch": item.transcript_metadata_json or {},
+            "branch": _branch_metadata(item),
             "created_at": item.created_at.isoformat() if item.created_at else None,
         }
         for item in sessions
@@ -2490,6 +2500,7 @@ async def resolve_session_permission(
         session_id=session_id,
         current_user=current_user,
         action="respond_tool_permission",
+        require_execution=True,
     )
     from app.services.session_permission_runtime import resolve_session_tool_permission
     from app.services.permission_execution import PermissionExecutionUnavailable
@@ -2795,6 +2806,12 @@ async def interrupt_thread_turn(
     )
 
 
+def _removed_from_own_list(session, user_id) -> bool:
+    """True when this user removed the conversation from their own list (G1)."""
+    removed = (getattr(session, "transcript_metadata_json", None) or {}).get("removed_from_list_by") or {}
+    return str(user_id) in removed
+
+
 @router.delete("/{agent_id}/sessions/{session_id}", status_code=204)
 async def delete_session(
     agent_id: uuid.UUID,
@@ -2802,73 +2819,85 @@ async def delete_session(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Delete a chat session and its messages. Owner, admin, or creator only."""
+    """Remove a conversation from the caller's own list; the data is preserved.
+
+    Nobody can physically delete a conversation (G1): rows, transcript and
+    files stay, other participants and administrators keep seeing the
+    conversation right where they saw it before.
+    """
     result = await db.execute(select(ChatSession).where(ChatSession.id == session_id, ChatSession.agent_id == agent_id))
     session = result.scalar_one_or_none()
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
 
-    agent, access_level = await check_agent_access(db, current_user, agent_id)
-    await _authorize_loaded_session(
-        db=db,
-        session=session,
-        agent=agent,
-        access_level=access_level,
-        current_user=current_user,
-        action="delete_session",
-        require_writable=True,
-    )
-
-    parent_session_id = getattr(session, "parent_session_id", None)
-    if parent_session_id is not None:
-        from app.runtime.hooks import HookEvent, emit_hook
-
-        remove_hook = await emit_hook(
-            HookEvent.WORKTREE_REMOVE,
-            evidence_mode="independent",
-            agent_id=agent_id,
-            session_id=str(session_id),
-            source="chat_session_delete",
-            metadata={
-                "tenant_id": str(getattr(session, "tenant_id", None) or getattr(agent, "tenant_id", None) or "")
-                or None,
-                "user_id": str(current_user.id),
-                "cloud_workspace_kind": "conversation_branch",
-                "source_session_id": str(parent_session_id),
-                "target_session_id": str(session_id),
-                "worktree_uri": f"session://{session_id}/workspace",
-            },
-        )
-        if remove_hook and remove_hook.block:
+    # History access, not the active lane: the owner can still remove a
+    # conversation from their own list while its employee is deactivated
+    # (the list keeps showing it); new execution stays refused elsewhere.
+    await check_agent_history_access(db, current_user, agent_id)
+    # Anyone who already sees this conversation in one of their lists may
+    # remove it from their own list: the session's own user, or a member of
+    # a shared group conversation. An administrator cannot remove it from
+    # someone else's list.
+    if session.user_id is None or session.user_id != current_user.id:
+        if getattr(session, "audience_kind", None) != "group":
             raise HTTPException(
-                status_code=409,
-                detail=remove_hook.reason or "Conversation branch removal blocked by hook",
+                status_code=403,
+                detail="A conversation can only be removed from a list you can see.",
             )
+        from app.services.shared_group_authority import require_current_group_member
 
-    # Shared production-shaped deletion: Session V2 rows with inbound
-    # transcript-event foreign keys must go before the transcript itself.
-    from sqlalchemy.exc import IntegrityError
+        try:
+            await require_current_group_member(db, session=session, user=current_user)
+        except HTTPException as exc:
+            if exc.status_code != 403:
+                raise
+            raise HTTPException(
+                status_code=403,
+                detail="A conversation can only be removed from a list you can see.",
+            ) from exc
 
-    from app.services.session_deletion import SessionWorkUnsettled, delete_session_tree
+    # Unsettled work keeps the conversation in the list (as before G1): while
+    # a tool permission waits or its effect is executing, the member must not
+    # lose sight of the pending approval. Nothing is deleted either way.
+    from app.models.runtime_task import RuntimeTask, SEALED_RUNTIME_TASK_STATUSES
+    from app.services.chat_transcript import lock_transcript_session
+    from app.services.session_tool_runtime import list_unresolved_tool_effects
 
-    try:
-        await delete_session_tree(db, session)
-    except SessionWorkUnsettled as exc:
+    # The marker is a read-modify-write of transcript_metadata_json, which
+    # ~15 runtime writers also rewrite whole. Take the session's transcript
+    # advisory lock first, then re-select the row FOR UPDATE — the same order
+    # the removed guarded deletion used — so neither side's write is lost.
+    await lock_transcript_session(db, session_id=session_id)
+    session = (
+        await db.execute(
+            select(ChatSession)
+            .where(ChatSession.id == session_id, ChatSession.agent_id == agent_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+    ).scalar_one()
+    session_keys = (str(session_id), session_id.hex)
+    active = await db.scalar(select(RuntimeTask.id).where(
+        RuntimeTask.tenant_id == session.tenant_id,
+        RuntimeTask.status.not_in(SEALED_RUNTIME_TASK_STATUSES),
+        or_(RuntimeTask.parent_session_id.in_(session_keys), RuntimeTask.child_session_id.in_(session_keys),
+            RuntimeTask.root_session_id.in_(session_keys)),
+    ).limit(1))
+    if active is not None or await list_unresolved_tool_effects(db, tenant_id=session.tenant_id,
+            session_id=session_id, terminal_tasks_only=False, limit=1):
         await db.rollback()
         raise HTTPException(status_code=409, detail={
-            "code": exc.code, "recovery_action": "resolve_session_work",
-            "message": "This conversation still has unfinished work. Resolve or cancel that work before deleting it.",
-        }) from exc
-    except IntegrityError as exc:
-        # Intentional restrict edges (workflow promotion proposals, session
-        # goals, agent teams, local-agent channel sessions, other sessions
-        # branching off this one) stay outside the deletion tree; surface
-        # them as an explicit conflict instead of an untyped 500.
-        logger.warning("Session deletion blocked: agent_id=%s session_id=%s error=%s", agent_id, session_id, exc.orig)
-        raise HTTPException(
-            status_code=409,
-            detail="Session has dependent records that must be removed first",
-        ) from exc
+            "code": "session_work_unsettled", "recovery_action": "resolve_session_work",
+            "message": "This conversation still has unfinished work. Resolve or cancel that work before removing it.",
+        })
+
+    if not _removed_from_own_list(session, current_user.id):
+        metadata = dict(session.transcript_metadata_json or {})
+        removed = dict(metadata.get("removed_from_list_by") or {})
+        removed[str(current_user.id)] = datetime.now(tz.utc).isoformat()
+        metadata["removed_from_list_by"] = removed
+        session.transcript_metadata_json = metadata
+        await db.commit()
     return None
 
 

@@ -806,6 +806,10 @@ def fingerprint_rls_bypass_scopes(app_root: Path) -> str:
 # limit. No query widening, new bypass, or scanner changes in this correction.
 # 2026-10-23 next-version refresh: complete current scopes and their authority,
 # source and recovery consumers reviewed across 758 entries in 82 modules.
+# 2026-11 G1 lifecycle retention: digital employees are never deleted, so the
+# bot DELETE endpoint and its cleanup retry surface are gone; the
+# load_deleted_agent_for_cleanup grant was removed together with its only
+# callsite. No other bypass scope, authorization, or scanner change.
 # Exact registered query shapes, scanner and expiry checks remain unchanged.
 # Provider quota holds without reported usage remain pending reconciliation.
 # Existing audited call signatures and grants remain unchanged.
@@ -827,7 +831,7 @@ def fingerprint_rls_bypass_scopes(app_root: Path) -> str:
 # authentication, query predicates and authority checks retain their boundaries.
 # Telegram webhook operator: one read-only cross-tenant inventory scope;
 # inactive or missing known companies are excluded before HTTP registration.
-RLS_BYPASS_SCOPES_SHA256 = "124ccb3b5c679313db892e9df6dd5b6e4bf72bbc96d730a78fef9c1d82d00b3d"
+RLS_BYPASS_SCOPES_SHA256 = "9556aab80530b4988c39aaa4a43b3ed19a40b78e68e851ea2196a2cc81dedc3d"
 
 
 def scan_rls_bypass_callsites(app_root: Path) -> list[RLSBypassCallsite]:
@@ -884,6 +888,15 @@ def _grant(
 
 
 RLS_BYPASS_ALLOWLIST = (
+    _grant(
+        # OIDC global account uniqueness (main 64c01175, slice S2, reviewed
+        # three times): subject + case-insensitive email conflict check must
+        # see rows hidden by the tenant pin. Read-only, one User.id probe.
+        "app/services/oidc_service.py",
+        "login_or_register",
+        "'OIDC account uniqueness check'",
+        ("select:User.id",),
+    ),
     _grant(
         "app/services/runtime_user_identity.py",
         "load_runtime_user",
@@ -1099,14 +1112,6 @@ RLS_BYPASS_ALLOWLIST = (
             "app/core/permissions.py",
             "_load_agent_for_user",
             "f'platform-admin agent access lookup for {agent_id}'",
-            ("select:Agent",),
-        )
-    ),
-    _grant(
-        *(
-            "app/core/permissions.py",
-            "load_deleted_agent_for_cleanup",
-            "f'platform-admin deleted-agent cleanup lookup for {agent_id}'",
             ("select:Agent",),
         )
     ),

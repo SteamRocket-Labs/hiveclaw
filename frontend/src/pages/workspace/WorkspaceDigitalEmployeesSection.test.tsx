@@ -99,9 +99,32 @@ vi.mock('@tanstack/react-query', () => ({
         error: null,
       };
     }
+    if (String(queryKey[0]) === 'agent-retirement-pending') {
+      return {
+        data: [
+          {
+            id: 'deactivated-1',
+            name: 'Pending Recall Employee',
+            remote_work_count: 1,
+            local_work_count: 0,
+            inactive_requester_work_count: 0,
+          },
+          {
+            id: 'deactivated-2',
+            name: 'Settled Employee',
+            remote_work_count: 0,
+            local_work_count: 0,
+            inactive_requester_work_count: 0,
+          },
+        ],
+        isLoading: false,
+        error: null,
+      };
+    }
     return { data: [], isLoading: false, error: null };
   },
   useMutation: () => ({
+    mutate: vi.fn(),
     mutateAsync: vi.fn(),
     isPending: false,
   }),
@@ -119,7 +142,7 @@ describe('WorkspaceDigitalEmployeesSection', () => {
     auth.role = 'org_admin';
   });
 
-  it('renders the standalone admin-only digital employee list with guarded delete actions', () => {
+  it('renders the standalone admin-only digital employee list with guarded deactivate actions', () => {
     const markup = renderToStaticMarkup(<WorkspaceDigitalEmployeesSection selectedTenantId="tenant-1" />);
 
     expect(markup).toContain('Digital Employee Management');
@@ -127,9 +150,37 @@ describe('WorkspaceDigitalEmployeesSection', () => {
     expect(markup).toContain('Agent Owner');
     expect(markup).toContain('href="/agents/agent-1"');
     expect(markup).toContain('Change owner');
-    expect(markup).toContain('Delete employee');
+    expect(markup).toContain('Deactivate');
+    expect(markup).not.toContain('Delete');
     expect(markup).toContain('System protected');
-    expect(markup).not.toContain('Delete __system_hr__');
+  });
+
+  it('describes the governed surface as review and deactivate, never review and remove', () => {
+    const markup = renderToStaticMarkup(<WorkspaceDigitalEmployeesSection selectedTenantId="tenant-1" />);
+
+    expect(markup).toContain('review and deactivate tenant digital employees');
+    expect(markup).not.toContain('review and remove');
+  });
+
+  it('offers retry deactivation only for deactivated rows with unconfirmed outward work, and links to the employee page', () => {
+    const markup = renderToStaticMarkup(<WorkspaceDigitalEmployeesSection selectedTenantId="tenant-1" />);
+
+    expect(markup).toContain('Pending Recall Employee');
+    expect(markup).toContain('Settled Employee');
+    expect(markup).toContain('Retry deactivation');
+    expect(markup).toContain('href="/agents/deactivated-1"');
+    expect(markup).toContain('href="/agents/deactivated-2"');
+    const settled = markup.split('Settled Employee')[1].split('</li>')[0];
+    expect(settled).not.toContain('Retry deactivation');
+  });
+
+  it('states the committed deactivation first in the retirement-pending copy', async () => {
+    const en = (await import('../../i18n/en.json')).default;
+    const zh = (await import('../../i18n/zh.json')).default;
+    // A committed deactivation with unsettled outward work must not read like
+    // a failed, retry-looking retirement (G1 round 2 review).
+    expect(en.workspace.digitalEmployees.retirementPending.startsWith('Deactivated')).toBe(true);
+    expect(zh.workspace.digitalEmployees.retirementPending.startsWith('已停用')).toBe(true);
   });
 
   it('mounts the same selected-company employee management for a platform administrator (PDEC-013)', () => {
@@ -139,7 +190,7 @@ describe('WorkspaceDigitalEmployeesSection', () => {
 
     expect(markup).not.toContain('Only company administrators can manage digital employees here.');
     expect(markup).toContain('AI Product Manager');
-    expect(markup).toContain('Delete employee');
+    expect(markup).toContain('Deactivate');
     expect(markup).toContain('Change owner');
     expect(markup).toContain('System protected');
   });
@@ -151,6 +202,6 @@ describe('WorkspaceDigitalEmployeesSection', () => {
 
     expect(markup).toContain('Only company administrators can manage digital employees here.');
     expect(markup).not.toContain('AI Product Manager');
-    expect(markup).not.toContain('Delete employee');
+    expect(markup).not.toContain('Deactivate');
   });
 });

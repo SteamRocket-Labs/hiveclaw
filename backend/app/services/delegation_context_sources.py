@@ -377,13 +377,17 @@ async def bind_native_recovery_context(db, *, task, session):
                     return
             else:
                 from app.models.runtime_result import RuntimeResultObject
+                from app.services.content_input_receipts import ContentInputReceiptError
                 from app.services.runtime_result_sources import load_canonical_result_sources
 
                 if group.user_id != task.root_user_id or not rows:
                     return
                 for row in rows:
                     result = await db.get(RuntimeResultObject, row.result_object_id)
-                    canonical = await load_canonical_result_sources(db, result) if result is not None else False
+                    try:
+                        canonical = await load_canonical_result_sources(db, result) if result is not None else False
+                    except ContentInputReceiptError:
+                        return
                     if (
                         not canonical
                         or row.tenant_id != task.tenant_id

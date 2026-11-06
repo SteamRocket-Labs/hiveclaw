@@ -430,6 +430,64 @@ def _committed_request_content_matches(result: SessionModelResult, snapshot: dic
     )
 
 
+def _withhold_model_source(messages, wire_request, input_bindings, source, code):
+    from app.services.llm_client import LLMMessage
+
+    note = (f"[context item withheld] {source['source_kind']} {source['source_id']} "
+        f"was not delivered ({code}). Continue with the remaining context; ask the user if this item matters.")
+    indexes = [entry["message_index"] for entry in input_bindings["messages"]
+        if source in entry.get("dependencies", [])]
+    if not indexes:
+        # Delegated instructions can inherit dependencies without inheriting their bodies.
+        indexes = [len(messages)]
+        messages.append(LLMMessage(role="system", content=note))
+        wire_request["messages"].append({"role": "system", "content": note})
+    wire_messages = wire_request["messages"]
+    call_ids = {call["id"] for index in indexes for call in wire_messages[index].get("tool_calls") or []}
+    indexes = set(indexes) | {index for index, message in enumerate(wire_messages)
+        if message.get("role") == "tool" and message.get("tool_call_id") in call_ids}
+    for index in indexes:
+        original = wire_messages[index]
+        replacement = {"role": "system", "content": note}
+        if original.get("role") == "tool" and original.get("tool_call_id") not in call_ids:
+            replacement.update(role="tool", tool_call_id=original["tool_call_id"])
+        # Replacing the complete payload also removes arguments and private
+        # reasoning; paired results become notes so no orphan tool call remains.
+        wire_messages[index] = replacement
+        messages[index] = dict(replacement) if isinstance(messages[index], dict) else LLMMessage(**replacement)
+    input_bindings["dependencies"].remove(source)
+    for entry in input_bindings["messages"]:
+        if entry["message_index"] in indexes:
+            entry.update(status="withheld", code=code, dependencies=[], dependency_status="resolved")
+
+
+async def _validate_or_withhold_model_sources(db, *, tenant_id, agent_id, session_id, run_id,
+    input_bindings, messages, wire_request):
+    from app.kernel.contracts import ExecutionAuthorityUnavailable
+    from app.services.content_input_receipts import ContentInputReceiptError
+    from app.services.shared_group_authority import validate_shared_group_model_inputs
+    from app.services.trigger_read_sources import validate_native_trigger_model_sources
+    from app.services.team_task_context import validate_model_sources
+    from app.services.explicit_memory_authority import validate_memory_model_sources
+
+    task = await db.get(RuntimeTask, run_id)
+    # Each dependency is checked once; an arbitrary retry cap must not turn the
+    # fourth unavailable item into a whole-turn failure.
+    for source in list(input_bindings["dependencies"]) or [None]:
+        dependencies = [source] if source is not None else []
+        try:
+            await validate_shared_group_model_inputs(db, tenant_id=tenant_id, agent_id=agent_id,
+                session_id=session_id, run_id=run_id, input_bindings={**input_bindings, "dependencies": dependencies})
+            await validate_native_trigger_model_sources(db, task=task, dependencies=dependencies, effect="model_request")
+            await validate_model_sources(db, task=task, dependencies=dependencies, effect="model_request")
+            await validate_memory_model_sources(db, task=task, agent_id=agent_id,
+                session_id=session_id, dependencies=dependencies)
+        except (ExecutionAuthorityUnavailable, ContentInputReceiptError) as exc:
+            if source is None or exc.code == "group_model_sources_unavailable":
+                raise
+            _withhold_model_source(messages, wire_request, input_bindings, source, exc.code)
+
+
 async def prepare_model_request(
     db: AsyncSession,
     *,
@@ -457,7 +515,8 @@ async def prepare_model_request(
     result_id = _result_id(run_id, round_id)
     from app.services.session_model_inputs import build_model_input_bindings, capture_context_message_origins, message_snapshot
 
-    messages = list(messages)
+    if not isinstance(messages, list):
+        messages = list(messages)
     rows = await _bound_rows(
         db,
         tenant_id=tenant_id,
@@ -613,22 +672,16 @@ async def prepare_model_request(
         run_id=run_id, result_id=result_id, messages=messages)
     input_bindings = await build_model_input_bindings(db, tenant_id=tenant_id, agent_id=agent_id,
         session_id=session_id, messages=messages, wire_messages=list(canonical_wire_request.get("messages") or []))
-    from app.services.shared_group_authority import validate_shared_group_model_inputs
-
-    await validate_shared_group_model_inputs(db, tenant_id=tenant_id, agent_id=agent_id, session_id=session_id,
-        run_id=run_id, input_bindings=input_bindings)
-    from app.services.trigger_read_sources import validate_native_trigger_model_sources
-
-    await validate_native_trigger_model_sources(db, task=await db.get(RuntimeTask, run_id),
-        dependencies=input_bindings["dependencies"], effect="model_request")
-    from app.services.team_task_context import validate_model_sources
-
-    await validate_model_sources(db, task=await db.get(RuntimeTask, run_id),
-        dependencies=input_bindings["dependencies"], effect="model_request")
-    from app.services.explicit_memory_authority import validate_memory_model_sources
-
-    await validate_memory_model_sources(db, task=await db.get(RuntimeTask, run_id), agent_id=agent_id,
-        session_id=session_id, dependencies=input_bindings["dependencies"])
+    await _validate_or_withhold_model_sources(
+        db,
+        tenant_id=tenant_id,
+        agent_id=agent_id,
+        session_id=session_id,
+        run_id=run_id,
+        input_bindings=input_bindings,
+        messages=messages,
+        wire_request=canonical_wire_request,
+    )
     snapshot = {
         "provider": provider,
         "model": model,

@@ -105,6 +105,19 @@ async def build_memory_snapshot(
     )
 
 
+def _render_withheld_note(withheld: dict | None) -> str:
+    """A typed note naming what recall withheld, so partial recall is never silent."""
+    if not withheld:
+        return ""
+    parts = [f"{layer}: {'all' if info['count'] is None else info['count']} withheld ({info['code']})"
+        for layer, info in withheld.items()]
+    return (
+        "[Memory notice] Some recalled items were withheld because their recorded sources "
+        f"could not be verified — {'; '.join(parts)}. The remaining authorized items above are "
+        "unaffected; ask the user if a withheld item matters."
+    )
+
+
 async def build_memory_context(
     agent_id: uuid.UUID,
     tenant_id: uuid.UUID,
@@ -466,6 +479,9 @@ async def _build_memory_context_result(
         )
 
     content = f"{resident.text}\n\n{assembled}" if resident.text and assembled else (resident.text or assembled)
+    withheld_note = _render_withheld_note(getattr(retriever, "last_withheld", None))
+    if withheld_note:
+        content = f"{content}\n\n{withheld_note}" if content else withheld_note
     common_surfacing = {
         "auto_surfaced_bytes": surfacing.surfaced_bytes,
         "auto_surface_total_bytes": surfacing.total_surfaced_bytes,

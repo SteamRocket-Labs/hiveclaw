@@ -3657,6 +3657,21 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
         )
     finally:
         reset_runtime_task_fence(token)
+    if input_case in {"unbound", "first_task_unbound", "first_task_ledger_unknown",
+        "first_task_explicit_unverified_memory"}:
+        # Incomplete historical coverage cannot invalidate an exact, authorized
+        # parent instruction. The instruction and its known sources stay pinned.
+        assert not result.failed and result.transcript_committed and len(client.requests) == 2, result
+        assert (seed["data_root"] / str(receiver) / report_path).read_text() == "DELEGATED_REPORT"
+        assert any(m.get("content") == message["content"] for m in client.requests[0]["messages"])
+        assert "OLD_UNVERIFIED_CREATION_MEMORY" not in json.dumps(client.requests)
+        async with app_user_sessionmaker() as db:
+            await pin_rls_tenant_context(db, seed["tenant_id"])
+            origin = await load_delegation_instruction_origin(
+                db, request=request, tenant_id=seed["tenant_id"], content=message["content"]
+            )
+            assert origin is not None and not origin.unbound and origin.sources
+        return
     if unbound_input or revoked_input:
         expected = (
             "delegation_instruction_sources_unbound" if unbound_input else "delegation_instruction_source_access_denied"

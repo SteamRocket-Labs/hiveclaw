@@ -14,7 +14,7 @@ from app.models.chat_session import ChatSession
 from app.models.invocation_span import InvocationSpan
 from app.models.session_v2 import SessionModelResult, SessionToolInvocation
 from app.runtime.context_candidates import ContextMessageOrigin
-from app.services.session_model_inputs import _hash, _model_dependencies
+from app.services.session_model_inputs import _hash, _model_dependencies, _model_snapshot_dependencies
 from app.tools.runtime import ToolExecutionContext
 
 
@@ -395,14 +395,15 @@ async def load_delegation_instruction_origin(db, *, request, tenant_id, content)
         or source_id != uuid.uuid5(invocation.id, f"delegation-instruction:{pointer['source_hash']}")
     ):
         return None
-    dependencies, complete = _model_dependencies(model)
+    dependencies, _complete = _model_snapshot_dependencies(model)
     return ContextMessageOrigin.capture(
         kind="delegated_instruction",
         role="user",
         content=content,
         sources=dependencies,
         sections=[{"kind": "parent_tool_call", "source_id": str(source_id), "source_hash": pointer["source_hash"]}],
-        unbound=() if complete else ("delegation_parent_inputs_unbound",),
+        # Instruction bytes are pinned above; historical coverage cannot deny the instruction.
+        unbound=() if dependencies else ("delegation_parent_inputs_unbound",),
     )
 
 

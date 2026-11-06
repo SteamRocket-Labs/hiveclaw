@@ -93,7 +93,10 @@ async def native_trigger_input_sources(db, *, tenant_id, agent_id, row, command)
             or not isinstance(proof.get("configuration_sources"), list)):
             raise ValueError("scheduled_input_source_changed")
         if proof.get("complete") is not True:
-            return [_reference(span, proof)], False
+            # A command-created schedule carries no configuration snapshot; the
+            # member's own verified command (input/command hashes above) is the
+            # source, so the run proceeds without configuration provenance.
+            return [_reference(span, proof)], len(proof["configuration_sources"]) == 0
         if len(proof["configuration_sources"]) != len(origin["trigger_ids"]):
             raise ValueError("scheduled_input_sources_missing")
         for trigger_id, ref in zip(origin["trigger_ids"], proof["configuration_sources"]):

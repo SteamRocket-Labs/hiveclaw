@@ -1,4 +1,4 @@
-"""Native read evidence pins the consumed receipt; mismatch quarantine is mechanical."""
+"""Native reads retain source bindings without quarantining working copies."""
 
 import json
 import uuid
@@ -22,14 +22,14 @@ async def _manifest(factory, n, path):
 
 
 @pytest.mark.parametrize("tool", ["read_file", "read_document"])
-async def test_observed_byte_mismatch_persists_quarantine(native_workspace, owner_sessionmaker, tool):  # noqa: F811
+async def test_observed_working_copy_edit_stays_readable_without_quarantine(native_workspace, owner_sessionmaker, tool):  # noqa: F811
     n = native_workspace
     path = "workspace/input.md"
     target = await _create(n, path, "Verified original")
     target.write_text("OUT_OF_BAND_REWRITE")
     output = await _read(n, tool, path)
-    assert "OUT_OF_BAND_REWRITE" not in output
-    assert (await _manifest(owner_sessionmaker, n, path)).authority_state == "quarantined"
+    assert "OUT_OF_BAND_REWRITE" in output
+    assert (await _manifest(owner_sessionmaker, n, path)).authority_state == "owned"
 
 
 async def test_tool_body_cannot_order_quarantine(native_workspace, owner_sessionmaker):  # noqa: F811
@@ -179,9 +179,6 @@ async def test_late_mismatch_does_not_quarantine_a_new_authenticated_revision(
             return result
     monkeypatch.setattr(n.service, "backend", ConcurrentEditBackend())
     output = await _read(n, "read_file", path)
-    assert "UNVERIFIED_BEFORE_READ" not in output and "workspace_input_revision_changed" in output
-    from app.tools.service import _extract_tool_error_payload
-    failure = _extract_tool_error_payload(output)
-    assert failure["http_status"] == 409 and failure["retryable"] is True
+    assert "UNVERIFIED_BEFORE_READ" in output and "workspace_input_revision_changed" not in output
     assert (await _manifest(owner_sessionmaker, n, path)).authority_state == "owned"
     assert target.read_text() == "New authenticated revision"

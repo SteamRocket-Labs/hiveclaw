@@ -147,7 +147,8 @@ async def test_ordinary_chat_uses_canonical_inputs_full_context_and_real_remote_
                 expected_runtime_revision=1))
             assert restored.status_code == 200, restored.text
         if flow == 'source_changed':
-            (tmp_path / str(seed['agent']) / 'soul.md').write_text('Unwitnessed replacement context')
+            # This edit precedes context capture; the current owner context remains usable.
+            (tmp_path / str(seed['agent']) / 'soul.md').write_text('CURRENT_OWNER_EDITED_CONTEXT')
         if flow == 'cancel_inflight':
             rpc = RemoteA2AEndpoint.rpc
             async def cancel_during_send(endpoint, *args, **kwargs):
@@ -158,7 +159,7 @@ async def test_ordinary_chat_uses_canonical_inputs_full_context_and_real_remote_
                 return result
             monkeypatch.setattr(RemoteA2AEndpoint, 'rpc', cancel_during_send)
         await execute_chat(seed, run_id, app_user_sessionmaker)
-        if flow in {'runtime_changed', 'source_changed'}:
+        if flow == 'runtime_changed':
             assert not [row for row in remote.requests if row[0] == 'POST']
             async with tenant_scoped_session(seed['tenant'], session_factory=app_user_sessionmaker) as db:
                 task = await db.get(RuntimeTask, UUID(run_id))
@@ -173,7 +174,10 @@ async def test_ordinary_chat_uses_canonical_inputs_full_context_and_real_remote_
         context = context_record(parts)
         assert context['schema'] == 'hive.remote_chat_context.v1'
         assert context['inputs'][0]['input_id'] == body['input_id']
-        assert 'ORIGINAL_REMOTE_EMPLOYEE_CONTEXT' in str(context['resources'])
+        expected_context = 'CURRENT_OWNER_EDITED_CONTEXT' if flow == 'source_changed' else 'ORIGINAL_REMOTE_EMPLOYEE_CONTEXT'
+        assert expected_context in str(context['resources'])
+        if flow == 'source_changed':
+            assert 'ORIGINAL_REMOTE_EMPLOYEE_CONTEXT' not in str(context['resources'])
         async with tenant_scoped_session(seed['tenant'], session_factory=app_user_sessionmaker) as db:
             task = await db.get(RuntimeTask, UUID(run_id), populate_existing=True)
             assert task.parent_session_id == task.child_session_id == str(session_id)

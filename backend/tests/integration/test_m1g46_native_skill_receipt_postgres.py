@@ -970,7 +970,8 @@ async def test_scoped_native_writer_binds_complete_control_input_once(
             async with owner_sessionmaker() as writer:
                 (await writer.get(KnowledgeGrant, grant.id)).revoked_at = datetime.now(timezone.utc)
                 await writer.commit()
-            assert (await n.client.get(f"/agents/{n.agent}/files/content", params={"path": n.path})).status_code == 403
+            working_copy = await n.client.get(f"/agents/{n.agent}/files/content", params={"path": n.path})
+            assert working_copy.status_code == 200 and working_copy.json()["content"] == arguments["content"]
             for endpoint in ("/content", "/download"):
                 response = await n.client.get(url + endpoint)
                 assert response.status_code == 403 and arguments["content"] not in response.text, response.text
@@ -1032,7 +1033,7 @@ async def test_scoped_native_writer_binds_complete_control_input_once(
             command.target_hash = "0" * 64
             await writer.delete(await writer.get(ContentInputReceipt, receipt_id))
             await writer.commit()
-        denied = await record_native_workspace_receipts(
+        retained = await record_native_workspace_receipts(
             db,
             context=context,
             invocation=invocation,
@@ -1040,10 +1041,14 @@ async def test_scoped_native_writer_binds_complete_control_input_once(
             arguments=arguments,
             content_hash=output.metadata_json["workspace_execution_evidence"]["tool_result_hash"],
         )
-        assert denied["receipts"] == {} and denied["failures"][n.path]["reason_code"] == "content_source_changed"
-        assert await db.get(ContentInputReceipt, receipt_id, populate_existing=True) is None
+        assert retained == status
+        successor = await db.get(ContentInputReceipt, receipt_id, populate_existing=True)
+        assert successor is not None and successor.dependencies_json == receipt.dependencies_json
+        await db.commit()
         assert (n.root / n.path).read_text() == arguments["content"]
-        assert (await n.client.get(f"/agents/{n.agent}/files/artifacts/{artifact.id}/content")).status_code == 409
+        denied = await n.client.get(f"/agents/{n.agent}/files/artifacts/{artifact.id}/content")
+        assert denied.status_code == 403 and "content_source_changed" in denied.text
+        assert arguments["content"] not in denied.text
         async with owner_sessionmaker() as writer:
             (await writer.get(SessionCommand, command_id)).target_hash = original_target_hash
             await writer.commit()

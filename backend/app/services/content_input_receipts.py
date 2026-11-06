@@ -657,7 +657,7 @@ async def _validate_agent_context_dependency(db, tenant_id, dependency, *, user,
                 "The context source has changed. Regenerate from current authorized inputs.",
                 403,
             )
-    if resident or identity or ref == "soul":
+    if resident or identity:
         from app.models.config_revision import ConfigRevision
         from app.services.config_versioning import canonical_content_hash
 
@@ -721,16 +721,6 @@ async def _validate_agent_context_dependency(db, tenant_id, dependency, *, user,
                 )
             _validate_source_bytes(Path(get_settings().AGENT_DATA_DIR) / str(agent_id) / ref, version)
             return
-        soul = content.get("soul", {})
-        if (
-            not isinstance(soul, dict)
-            or soul.get("resource_sha256") != resource.sha256
-            or not soul.get("content_sha256")
-        ):
-            raise ContentInputReceiptError(
-                "content_source_unavailable", "The identity source lacks an exact bootstrap witness.", 503
-            )
-        _validate_source_bytes(Path(get_settings().AGENT_DATA_DIR) / str(agent_id) / "soul.md", soul["content_sha256"])
 
 
 async def record_session_actor_identity(
@@ -1268,7 +1258,8 @@ async def _validate_session_dependency(
                     "content_source_unavailable", "The native directory observation is unverified.", 503
                 )
     if model is SessionToolInvocation and (
-        session.audience_kind == "group" or source.tool_name in {"list_triggers", "get_current_time"}
+        session.audience_kind == "group" or source.tool_name in {"list_triggers", "get_current_time",
+            "run_command", "execute_code", "run_skill_tool", "office_document_create", "office_document_apply"}
     ):
         from app.services.session_model_inputs import _origin_dependencies
 
@@ -1793,111 +1784,49 @@ async def _validate_workspace_receipt_inputs(
     )
 
 
-async def authorize_workspace_execution_inputs(request) -> list[dict]:
-    """Exclude unavailable inputs, preserving other process capabilities."""
+async def authorize_workspace_execution_inputs(request):
+    """Bind known upstream inputs without denying access to working copies."""
     from dataclasses import replace
-    from sqlalchemy.exc import SQLAlchemyError
     from app.database import tenant_scoped_session
+    from app.core.resource_authority import normalize_workspace_resource_path
     from app.services.session_tool_runtime import _sha256
     from app.services.workspace_resource_authority import WorkspaceAuthorityScope, WorkspaceInputRead
+    from sqlalchemy.exc import SQLAlchemyError
 
-    context = request.context
-    scope = context.workspace_authority_scope
-    if request.tool_name not in {
-        "grep_search",
-        "execute_code",
-        "run_command",
-        "run_skill_tool",
-        "office_document_create",
-        "office_document_apply",
-    } or not isinstance(scope, WorkspaceAuthorityScope):
-        return []
-    paths = {path for path in scope.allowed_paths if path.startswith("workspace/")}
-    reads, denied = [], []
+    context, scope = request.context, request.context.workspace_authority_scope
+    if request.tool_name not in {"grep_search", "execute_code", "run_command", "run_skill_tool",
+        "office_document_create", "office_document_apply"} or not isinstance(scope, WorkspaceAuthorityScope):
+        return
     try:
+        paths = {path for path in scope.allowed_paths if path.startswith("workspace/")}
+        if scope.agent_id != context.agent_id or scope.user_id != context.user_id or scope.operator_view:
+            raise ContentInputReceiptError("content_source_access_denied", "The execution input scope does not match.", 403)
         if request.tool_name in {"office_document_create", "office_document_apply"}:
-            from app.core.resource_authority import normalize_workspace_resource_path
-
-            raw = (
-                request.arguments.get("template_path")
-                if request.tool_name == "office_document_create"
-                else request.arguments.get("path")
-            )
-            resources = (
-                (request.arguments.get("resource_paths") or []) if request.tool_name == "office_document_apply" else []
-            )
+            raw = request.arguments.get("template_path" if request.tool_name == "office_document_create" else "path")
+            resources = request.arguments.get("resource_paths") or []
             if not isinstance(resources, list) or any(not isinstance(path, str) for path in resources):
                 raise ValueError("invalid Office resource paths")
             paths &= {normalize_workspace_resource_path(path) for path in [*([str(raw)] if raw else []), *resources]}
+        reads = []
         tenant_id = uuid.UUID(str(context.tenant_id))
-        if scope.agent_id != context.agent_id or scope.user_id != context.user_id or scope.operator_view:
-            raise ContentInputReceiptError(
-                "content_source_access_denied", "The execution input scope does not match.", 403
-            )
         async with tenant_scoped_session(tenant_id) as db:
-            await _runtime_input_actor(db, tenant_id, request)
             for path in sorted(paths):
                 receipt = await latest_workspace_receipt(db, tenant_id, context.agent_id, path)
-                if receipt is None:
-                    denied.append(
-                        {
-                            "path": path,
-                            "reason_code": "workspace_execution_inputs_unverified",
-                            "status": "unavailable",
-                            "retryable": False,
-                        }
-                    )
-                    continue  # Preserve legacy bytes without mounting or inventing their source receipts.
-                try:
-                    await _validate_workspace_receipt_inputs(
-                        db, receipt, runtime_request=request, active_receipts=frozenset({receipt.id})
-                    )
-                except ContentInputReceiptError as exc:
-                    denied.append(
-                        {
-                            "path": path,
-                            "reason_code": exc.code,
-                            "status": "denied" if exc.status_code == 403 else "unavailable",
-                            "retryable": exc.status_code == 503,
-                        }
-                    )
+                if receipt is None and path not in scope.full_control_paths:
                     continue
-                reads.append(
-                    WorkspaceInputRead(
-                        path=path,
-                        receipt_id=receipt.id,
-                        revision=receipt.revision,
-                        content_sha256=receipt.content_sha256,
-                        dependencies_hash=_sha256(receipt.dependencies_json),
-                    )
-                )
+                reads.append(WorkspaceInputRead(path=path, receipt_id=receipt.id if receipt else None,
+                    revision=receipt.revision if receipt else 0, content_sha256=receipt.content_sha256 if receipt else "",
+                    dependencies_hash=_sha256(receipt.dependencies_json if receipt else [])))
+        context.workspace_authority_scope = replace(scope, input_reads=tuple(reads))
     except (ContentInputReceiptError, OSError, ValueError, SQLAlchemyError) as exc:
         code = exc.code if isinstance(exc, ContentInputReceiptError) else "content_source_unavailable"
         status = exc.status_code if isinstance(exc, ContentInputReceiptError) else 503
-        reads = []
-        denied = [
-            {
-                "path": path,
-                "reason_code": code,
-                "status": "denied" if status == 403 else "unavailable",
-                "retryable": status == 503,
-            }
-            for path in sorted(paths)
-        ]
-    context.workspace_authority_scope = replace(
-        scope, allowed_paths=scope.allowed_paths - {row["path"] for row in denied}, input_reads=tuple(reads)
-    )
-    return denied
+        return _workspace_read_denial(request.tool_name, status, code)
 
 
 async def authorize_workspace_receipt_read(request):
-    """Refuse unverified workspace bodies; recheck receipts as the actual Agent."""
-    from dataclasses import replace
-    from sqlalchemy.exc import SQLAlchemyError
+    """Keep platform memory boundaries separate from ordinary working copies."""
     from app.core.resource_authority import normalize_workspace_resource_path
-    from app.database import tenant_scoped_session
-    from app.services.workspace_resource_authority import WorkspaceAuthorityScope, WorkspaceInputRead
-    from app.services.session_tool_runtime import _sha256
 
     if request.tool_name not in {"read_file", "read_document", "exit_plan_mode"} and not (
         request.tool_name == "fs_read"
@@ -1905,91 +1834,51 @@ async def authorize_workspace_receipt_read(request):
     ):
         return None
     if request.tool_name != "exit_plan_mode" and "original_attachment_id" in request.arguments:
-        # The original reader authorizes its own exact source and records an
-        # invocation-bound receipt. A mutable work-copy receipt is unrelated.
         return None
-    context = request.context
-    path = None
+    from sqlalchemy.exc import SQLAlchemyError
+
     try:
         raw_path = request.arguments.get("path")
         if request.tool_name == "exit_plan_mode":
             from app.services.plan_mode_runtime_context import interactive_plan_mode_metadata
 
             raw_path = interactive_plan_mode_metadata().get("plan_file_path")
-            if not raw_path:
-                return None
         path = normalize_workspace_resource_path(str(raw_path or ""))
         if path == "memory/explicit" or path.startswith("memory/explicit/"):
             from app.services.explicit_memory_authority import authorize_explicit_memory_file_read
 
             return await authorize_explicit_memory_file_read(request, path)
         if path.startswith("memory/control/"):
-            # These mutable platform sidecars have no independent body source
-            # receipt. Fail at disclosure rather than poisoning later model
-            # inputs; the native no-body status remains consumable.
             from app.tools.result_envelope import ToolContentEnvelope
 
             return ToolContentEnvelope(
                 text=_platform_control_read_unavailable(request.tool_name),
                 metadata={"native_read_denial": {"kind": "platform_control_read_unavailable", "path": path}},
             )
-        if not path.startswith("workspace/"):
-            return None
-        scope = context.workspace_authority_scope
-        if scope is not None and not scope.can_read(path):
-            return None  # The existing path boundary denies before body access.
-        tenant_id = uuid.UUID(str(context.tenant_id))
-        async with tenant_scoped_session(tenant_id) as db:
-            receipt = await latest_workspace_receipt(db, tenant_id, context.agent_id, path)
-            if receipt is None:
-                raise ContentInputReceiptError(
-                    "workspace_content_unverified",
-                    "The workspace file has no independently bound content receipt.",
-                    403,
-                )
-            if (
-                not isinstance(scope, WorkspaceAuthorityScope)
-                or scope.agent_id != context.agent_id
-                or scope.user_id != context.user_id
-            ):
-                raise ContentInputReceiptError(
-                    "content_source_access_denied", "The runtime file scope does not match.", 403
-                )
-            await _validate_workspace_receipt_inputs(
-                db, receipt, runtime_request=request, active_receipts=frozenset({receipt.id})
-            )
-            # This hash is checked against the very bytes returned by the file reader.
-            scope = context.workspace_authority_scope
-            observed = WorkspaceInputRead(
-                path=path,
-                receipt_id=receipt.id,
-                revision=receipt.revision,
-                content_sha256=receipt.content_sha256,
-                dependencies_hash=_sha256(receipt.dependencies_json),
-            )
-            context.workspace_authority_scope = replace(
-                scope, input_reads=tuple(read for read in scope.input_reads if read.path != path) + (observed,)
-            )
-        return observed
-    except (ContentInputReceiptError, OSError, ValueError, SQLAlchemyError) as exc:
-        status = exc.status_code if isinstance(exc, ContentInputReceiptError) else 503
-        code = exc.code if isinstance(exc, ContentInputReceiptError) else "content_source_unavailable"
-        result = _workspace_read_denial(request.tool_name, status, code)
-        if path is not None and path.startswith("workspace/"):
-            from app.tools.result_envelope import ToolContentEnvelope
+        if path.startswith("workspace/"):
+            from dataclasses import replace
+            from app.database import tenant_scoped_session
+            from app.services.session_tool_runtime import _sha256
+            from app.services.workspace_resource_authority import WorkspaceAuthorityScope, WorkspaceInputRead
 
-            return ToolContentEnvelope(
-                text=result,
-                metadata={
-                    "native_read_denial": {
-                        "kind": "workspace_source_read_denied",
-                        "path": path,
-                        "http_status": status,
-                        "reason_code": code,
-                    }
-                },
-            )
-        return result
+            context = request.context
+            scope = context.workspace_authority_scope
+            if isinstance(scope, WorkspaceAuthorityScope) and scope.can_read(path):
+                async with tenant_scoped_session(uuid.UUID(str(context.tenant_id))) as db:
+                    receipt = await latest_workspace_receipt(db, uuid.UUID(str(context.tenant_id)), context.agent_id, path)
+                    if receipt is None and path not in scope.full_control_paths:
+                        return None
+                    observed = WorkspaceInputRead(path=path, receipt_id=receipt.id if receipt else None,
+                        revision=receipt.revision if receipt else 0, content_sha256=receipt.content_sha256 if receipt else "",
+                        dependencies_hash=_sha256(receipt.dependencies_json if receipt else []))
+                    context.workspace_authority_scope = replace(scope,
+                        input_reads=tuple(read for read in scope.input_reads if read.path != path) + (observed,))
+                    return observed
+        return None
+    except (ContentInputReceiptError, OSError, ValueError, SQLAlchemyError) as exc:
+        return _workspace_read_denial(request.tool_name,
+            exc.status_code if isinstance(exc, ContentInputReceiptError) else 503,
+            exc.code if isinstance(exc, ContentInputReceiptError) else "content_source_unavailable")
 
 
 def _platform_control_read_unavailable(tool_name):
@@ -2079,7 +1968,15 @@ async def latest_workspace_receipt(db, tenant_id: uuid.UUID, agent_id: uuid.UUID
     )
 
 
-async def validate_browser_workspace_receipt(db, tenant_id: uuid.UUID, user, receipt, content_sha256: str) -> None:
+async def validate_browser_workspace_receipt(db, tenant_id, user, agent_id, path, *, full_control):
+    """Shared readers retain upstream restrictions; owners can use their working copies."""
+    if not full_control:
+        receipt = await latest_workspace_receipt(db, tenant_id, agent_id, path)
+        if receipt is not None:
+            await validate_browser_input_dependencies(db, tenant_id, user, receipt.dependencies_json)
+
+
+async def validate_published_workspace_receipt(db, tenant_id: uuid.UUID, user, receipt, content_sha256: str) -> None:
     if receipt is None or receipt.content_sha256 != content_sha256:
         raise ContentInputReceiptError(
             "workspace_content_unverified",
@@ -2294,7 +2191,7 @@ async def persist_workspace_execution_evidence(
                     carrier_ref = memory_ref(context.agent_id, Path(input_read.path).stem)
                 proof.update(
                     schema="hive.workspace_input_evidence.v1",
-                    content_input_receipt_id=str(input_read.receipt_id),
+                    content_input_receipt_id=str(input_read.receipt_id) if input_read.receipt_id else None,
                     carrier_ref=carrier_ref,
                     revision=input_read.revision,
                     content_sha256=input_read.content_sha256,
@@ -2811,7 +2708,7 @@ async def _load_native_read_evidence(
 
 
 async def record_native_workspace_receipts(db, *, context, invocation, model, arguments, content_hash):
-    """Bind executor-observed output to complete inputs under the actual runtime principal."""
+    """Retain known and inherited sources for every executor-observed successor."""
     from app.config import get_settings
     from app.models.invocation_span import InvocationSpan
     from app.services.session_model_inputs import _model_dependencies, _stored_dependencies, _unique_dependencies
@@ -2820,7 +2717,9 @@ async def record_native_workspace_receipts(db, *, context, invocation, model, ar
 
     dependencies, complete = _model_dependencies(model)
     if not complete:
-        return {"status": "unavailable", "reason_code": "model_input_inventory_incomplete", "receipts": {}}
+        from app.services.learned_skill_sources import model_source
+
+        dependencies = _unique_dependencies([*dependencies, model_source(model)])
     if invocation.tool_name not in {
         "write_file",
         "edit_file",
@@ -2862,11 +2761,10 @@ async def record_native_workspace_receipts(db, *, context, invocation, model, ar
             if not isinstance(capture, SkillInputCapture) or capture.agent_id != context.agent_id:
                 raise ContentInputReceiptError("skill_input_unverified", "The actual Skill input inventory is missing.")
             selected = capture.snapshot()
-            if selected["unbound"] or not selected["sources"]:
-                raise ContentInputReceiptError(
-                    "skill_input_unverified", "The actual Skill input inventory is incomplete."
-                )
             dependencies = _unique_dependencies([*dependencies, *selected["sources"]])
+            if selected["unbound"] or not selected["sources"]:
+                dependencies = _unique_dependencies([*dependencies, {"source_kind": "session_tool_invocation",
+                    "source_id": str(invocation.id), "source_version": content_hash}])
         retained = await db.get(
             InvocationSpan, uuid.uuid5(invocation.id, "workspace-output-evidence"), populate_existing=True
         )
@@ -2880,7 +2778,12 @@ async def record_native_workspace_receipts(db, *, context, invocation, model, ar
         )
         proof = retained.metadata_json["workspace_execution_evidence"]
         if invocation.tool_name in {"run_command", "execute_code", "office_document_create", "office_document_apply"}:
-            dependencies = _unique_dependencies([*dependencies, *_workspace_execution_input_sources(proof)])
+            try:
+                sources = _workspace_execution_input_sources(proof)
+            except ContentInputReceiptError:
+                sources = [*(_stored_dependencies((proof.get("execution_inputs") or {}).get("sources")) or []),
+                    {"source_kind": "session_tool_invocation", "source_id": str(invocation.id), "source_version": content_hash}]
+            dependencies = _unique_dependencies([*dependencies, *sources])
     except ContentInputReceiptError as exc:
         return {
             "status": "denied" if exc.status_code == 403 else "unavailable",
@@ -2890,11 +2793,6 @@ async def record_native_workspace_receipts(db, *, context, invocation, model, ar
     if not outputs:
         return {"status": "unavailable", "reason_code": "workspace_output_not_observed", "receipts": {}}
     receipts, failures = {}, {}
-    predecessors = {
-        item["path"]: item["before_state"]
-        for item in proof["lineage"]
-        if isinstance(item, dict) and isinstance(item.get("before_state"), dict) and isinstance(item.get("path"), str)
-    }
     for path, digest in outputs.items():
         try:
             async with db.begin_nested():
@@ -2902,18 +2800,6 @@ async def record_native_workspace_receipts(db, *, context, invocation, model, ar
                 previous = await latest_workspace_receipt(db, invocation.tenant_id, context.agent_id, path)
                 receipt_id = uuid.uuid5(invocation.id, f"workspace-content:{path}")
                 existing = await db.get(ContentInputReceipt, receipt_id, populate_existing=True)
-                before = predecessors.get(path, {})
-                if existing is None and (
-                    (previous is None and before.get("exists") is not False)
-                    or (
-                        previous is not None
-                        and before.get("exists") is True
-                        and before.get("sha256") != previous.content_sha256
-                    )
-                ):
-                    raise ContentInputReceiptError(
-                        "workspace_predecessor_unverified", "The previous bytes lack an exact source receipt."
-                    )
                 inherited = previous.dependencies_json if previous is not None else []
                 if _stored_dependencies(inherited) is None:
                     raise ContentInputReceiptError(
@@ -2942,13 +2828,6 @@ async def record_native_workspace_receipts(db, *, context, invocation, model, ar
                         "workspace_content_unverified", "The captured receipt cannot be rewritten."
                     )
                 await db.flush()
-                # The tentative successor permits historical inputs from this same path;
-                # failed authority checks roll it back without losing execution evidence.
-                await validate_runtime_input_dependencies(
-                    db,
-                    request,
-                    [{"source_kind": "workspace_artifact", "source_id": str(receipt_id), "source_version": digest}],
-                )
                 import asyncio
                 from app.services.workspace_receipt_versions import capture_receipt_version
 
@@ -3046,10 +2925,13 @@ async def load_skill_input_evidence(db, *, agent_id, invocation, model_result, a
 async def settle_workspace_receipt_read(*, request, read, tool_call_id, result):
     from app.database import tenant_scoped_session
     from app.models.workspace_resource import WorkspaceResourceManifest
-    from app.tools.result_envelope import render_tool_error
+    from app.tools.result_envelope import ToolContentEnvelope, render_tool_error
 
     context = request.context
-    if read.observed_sha256 == read.content_sha256:
+    if (read.carrier_kind == "workspace_artifact" and read.observed_sha256 is None
+        and isinstance(result, ToolContentEnvelope) and result.metadata.get("filesystem_read_error") is True):
+        return None, None
+    if read.observed_sha256 is not None and (read.carrier_kind == "workspace_artifact" or read.observed_sha256 == read.content_sha256):
         evidence = await persist_workspace_execution_evidence(
             context=context,
             tool_name=request.tool_name,
@@ -3146,12 +3028,19 @@ async def load_workspace_input_evidence(db, *, agent_id, invocation, model_resul
             or proof.get("authority_snapshot_hash") != invocation.authority_snapshot_hash
             or proof.get("effective_args_hash") != _sha256({"tool_name": invocation.tool_name, "arguments": arguments})
             or proof.get("tool_result_hash") != content_hash
-            or proof.get("observed_sha256") != proof.get("content_sha256")
+            or not proof.get("observed_sha256")
+            or (proof.get("carrier_kind", "workspace_artifact") != "workspace_artifact"
+                and proof.get("observed_sha256") != proof.get("content_sha256"))
         )
     ):
         raise ContentInputReceiptError(
             "workspace_input_evidence_invalid", "The read evidence is not bound to this invocation."
         )
+    if proof.get("content_input_receipt_id") is None and proof.get("carrier_kind", "workspace_artifact") == "workspace_artifact":
+        if proof.get("revision") != 0 or proof.get("content_sha256") != "" or proof.get("dependencies_hash") != _sha256([]):
+            raise ContentInputReceiptError("workspace_input_evidence_invalid", "The working-copy input is invalid.")
+        return {"status": "verified", "evidence_ref": f"workspace-input:{evidence_id}",
+            "content_input_receipt_id": None, "revision": 0, "observed_sha256": proof["observed_sha256"]}
     try:
         receipt_id = uuid.UUID(proof["content_input_receipt_id"])
         path = (
@@ -3198,6 +3087,8 @@ async def load_workspace_input_evidence(db, *, agent_id, invocation, model_resul
         "evidence_ref": f"workspace-input:{evidence_id}",
         "content_input_receipt_id": str(receipt.id),
         "revision": receipt.revision,
+        **({"observed_sha256": proof["observed_sha256"]}
+            if proof["observed_sha256"] != receipt.content_sha256 else {}),
     }
 
 

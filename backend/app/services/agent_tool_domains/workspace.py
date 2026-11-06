@@ -359,7 +359,10 @@ def _read_receipted_workspace_bytes(read_root: Path, read_path: str, authority_s
         raw = source.read()
     read = authority_scope.input_read(authority_path) if hasattr(authority_scope, "input_read") else None
     if read is not None:
-        read.verify(raw)
+        if read.carrier_kind == "workspace_artifact":
+            read.observed_sha256 = hashlib.sha256(raw).hexdigest()
+        else:
+            read.verify(raw)
     learned = next((digest for path, _revision, digest in getattr(authority_scope, "learning_files", ())
         if path == authority_path), None)
     if learned is not None and hashlib.sha256(raw).hexdigest() != learned:
@@ -1142,8 +1145,9 @@ async def _read_document(
                 mode=mode if mode in {"auto", "fast", "ocr", "layout", "vision"} else "auto",
                 max_pages=max_pages,
                 max_output_chars=None,
-                force_refresh=force_refresh,
-                expected_source_sha256=input_read.content_sha256 if input_read is not None else None,
+                force_refresh=True,
+                expected_source_sha256=(input_read.content_sha256
+                    if input_read is not None and input_read.carrier_kind != "workspace_artifact" else None),
                 input_read=input_read,
             )
         )

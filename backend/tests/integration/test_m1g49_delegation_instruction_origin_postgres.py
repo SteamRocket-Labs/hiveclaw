@@ -1391,8 +1391,7 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
             assert (seed["agent_root"] / prior_path).read_text() == prior_body
         if legacy_workspace_read_case:
             after_read = json.dumps(creator_client.requests[2]["messages"])
-            assert prior_body not in after_read and "workspace_content_unverified" in after_read
-            assert "regenerate" in after_read
+            assert prior_body in after_read and "workspace_content_unverified" not in after_read
         if discovery_case:
             if creator_readiness_case:
                 assert len(creator_client.requests) == 4
@@ -1428,7 +1427,7 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
                     "unbound": [],
                 }, inputs
                 result = _event_payload(await db.get(ChatTranscriptEvent, wait.result_event_id))["content"]
-                assert "waited" in result and "workspace_input_denials" in result and prior_body not in result
+                assert "📤 Output:\nwaited" in result and "workspace_input_denials" not in result and prior_body not in result
                 from app.services.employee_creation_sources import _owned_context_source
                 from app.services.session_model_inputs import tool_result_source_hash
 
@@ -1692,7 +1691,7 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
             if legacy_workspace_read_case:
                 from app.services.content_input_receipts import (
                     ContentInputReceiptError,
-                    load_native_read_denial_evidence,
+                    load_workspace_input_evidence,
                 )
                 from app.services.employee_creation_sources import _owned_context_source
                 from app.services.session_model_inputs import tool_result_source_hash
@@ -1705,9 +1704,9 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
                 )
                 read_event = await db.get(ChatTranscriptEvent, read.result_event_id)
                 read_payload = _event_payload(read_event)
-                denial = read_payload["metadata"]["native_read_denial_receipt"]
-                assert denial["status"] == "verified"
-                assert prior_body not in json.dumps(creator_client.requests)
+                bound_read = read_payload["metadata"]["workspace_input_receipt"]
+                assert bound_read["status"] == "verified" and bound_read["content_input_receipt_id"] is None
+                assert prior_body in json.dumps(creator_client.requests)
                 read_model = await db.scalar(
                     select(SessionModelResult).where(
                         SessionModelResult.run_id == seed["run_id"],
@@ -1720,27 +1719,25 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
                     "model_result": read_model,
                     "arguments": read.effective_arguments_json or read.provider_arguments_json,
                     "content_hash": read_payload["content_hash"],
-                    "capture": {"status": "captured", "receipt_ref": denial["evidence_ref"]},
+                    "capture": {"status": "captured", "receipt_ref": bound_read["evidence_ref"]},
                 }
-                assert await load_native_read_denial_evidence(db, **kwargs) == denial
+                assert await load_workspace_input_evidence(db, **kwargs) == bound_read
                 for changed in (
                     {"agent_id": uuid4()},
                     {"content_hash": "0" * 64},
                     {"arguments": {"path": "workspace/another.md"}},
                 ):
                     with pytest.raises(ContentInputReceiptError):
-                        await load_native_read_denial_evidence(db, **{**kwargs, **changed})
+                        await load_workspace_input_evidence(db, **{**kwargs, **changed})
                 fields = {
                     key: getattr(read, key)
                     for key in ("id", "tenant_id", "session_id", "run_id", "tool_name", "authority_snapshot_hash")
                 }
                 with pytest.raises(ContentInputReceiptError):
-                    await load_native_read_denial_evidence(
+                    await load_workspace_input_evidence(
                         db, **{**kwargs, "invocation": SimpleNamespace(**{**fields, "session_id": uuid4()})}
                     )
-                assert (await load_native_read_denial_evidence(db, **{**kwargs, "capture": None}))[
-                    "status"
-                ] == "unavailable"
+                assert await load_workspace_input_evidence(db, **{**kwargs, "capture": None}) is None
                 ref = f"session-tool-result:{read.id}"
                 assert (
                     await _origin_dependencies(db, tenant_id=seed["tenant_id"], agent_id=seed["agent_id"], ref=ref)
@@ -1763,7 +1760,7 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
                 assert not await _owned_context_source(db, dependency=dependency, **{**scope, "session_id": uuid4()})
                 before = deepcopy(read_event.metadata_json)
                 payload = deepcopy(before)
-                payload["v2_payload"]["metadata"].pop("native_read_denial_receipt")
+                payload["v2_payload"]["metadata"].pop("workspace_input_receipt")
                 async with owner_sessionmaker() as writer:
                     (await writer.get(ChatTranscriptEvent, read_event.id)).metadata_json = payload
                     await writer.commit()
@@ -3717,7 +3714,7 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
                     "workspace/delegated-report.md:1:DELEGATED_REPORT" in searched and "<tool_error>" not in searched
                 ), searched
             if grep_legacy_case:
-                assert "UNVERIFIED_CHILD_NOTE" not in searched and "workspace_input_denials" in searched
+                assert "UNVERIFIED_CHILD_NOTE" in searched and "workspace_input_denials" not in searched
                 assert legacy_child_file.read_text() == "UNVERIFIED_CHILD_NOTE"
     else:
         assert not result.failed and result.transcript_committed and len(client.requests) == 2, result
@@ -3839,8 +3836,18 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
                     errors.append({"source": dependency, "code": exc.code, "message": str(exc)})
         (tmp_path / "input-source-errors.json").write_text(json.dumps(errors, indent=2))
         if refined_input:
-            assert receipt is None and errors and all(error["code"] == "content_source_unavailable" for error in errors)
-            assert observed["status"]["status"] == "unavailable"
+            from app.models.chat_artifact import ChatArtifact
+
+            assert receipt is not None and errors and all(error["code"] == "content_source_unavailable" for error in errors)
+            assert all(source in receipt.dependencies_json for source in bindings["dependencies"])
+            assert observed["status"]["status"] == "captured"
+            with pytest.raises(ContentInputReceiptError) as denied:
+                await validate_runtime_input_dependencies(db,
+                    ToolExecutionRequest(tool_name="send_email", arguments={}, context=observed["context"]),
+                    receipt.dependencies_json)
+            assert denied.value.code == "content_source_unavailable"
+            assert await db.scalar(select(ChatArtifact.id).where(
+                ChatArtifact.runtime_task_id == task_id, ChatArtifact.path == report_path)) is None
             return
         assert (receipt is not None) is parent_complete, (observed.get("status"), errors)
         if glob_case:
@@ -5102,12 +5109,21 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
                 assert creation_result["dependency_coverage"]["complete"] is True
         if parent_status_unknown:
             assert "Unverified legacy task result" in second_request
-            assert observed["status"]["status"] == "unavailable", observed["status"]
-            assert observed["status"]["reason_code"] == "model_input_inventory_incomplete"
-            return
-        if historical_creation_unknown:
-            assert observed["status"]["status"] == "unavailable", observed["status"]
-            assert observed["status"]["reason_code"] == "model_input_inventory_incomplete"
+        if parent_status_unknown or historical_creation_unknown:
+            from app.models.chat_artifact import ChatArtifact
+
+            assert observed["status"]["status"] == "captured", observed["status"]
+            async with app_user_sessionmaker() as db:
+                await pin_rls_tenant_context(db, seed["tenant_id"])
+                successor = await db.get(ContentInputReceipt, UUID(observed["status"]["receipts"][parent_path]))
+                assert successor is not None and any(
+                    source["source_kind"] == "session_model_result" for source in successor.dependencies_json)
+                with pytest.raises(ContentInputReceiptError):
+                    await validate_runtime_input_dependencies(db,
+                        ToolExecutionRequest(tool_name="send_email", arguments={}, context=observed["context"]),
+                        successor.dependencies_json)
+                assert await db.scalar(select(ChatArtifact.id).where(
+                    ChatArtifact.runtime_task_id == return_id, ChatArtifact.path == parent_path)) is None
             return
         assert observed["status"]["status"] == "captured", observed["status"]
         async with app_user_sessionmaker() as db:

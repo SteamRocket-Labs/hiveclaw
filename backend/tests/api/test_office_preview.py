@@ -57,7 +57,7 @@ async def test_workspace_office_preview_returns_isolated_html_headers(tmp_path, 
 
     async def fake_authorize(_db, _user, **kwargs):
         captured_authority.update(kwargs)
-        return SimpleNamespace(authority_source="resource_owner", operator_view=False)
+        return SimpleNamespace(authority_source="resource_owner", operator_view=False, full_control=True)
 
     spans = []
 

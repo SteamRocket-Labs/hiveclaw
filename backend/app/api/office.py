@@ -69,7 +69,7 @@ class OfficeContentWrite(BaseModel):
 async def _office_content_source(db, current_user, *, agent_id, path):
     from app.api.files import _content_receipt_http_error, _workspace_authority_http_error
     from app.services.content_input_receipts import (
-        ContentInputReceiptError, latest_workspace_receipt, validate_browser_workspace_receipt,
+        ContentInputReceiptError,
     )
     from app.services.workspace_resource_authority import snapshot_workspace_file
 
@@ -79,18 +79,14 @@ async def _office_content_source(db, current_user, *, agent_id, path):
         raise HTTPException(status_code=404, detail="Office document not found")
     if target.stat().st_size > settings.OFFICECLI_PREVIEW_MAX_BYTES:
         raise HTTPException(status_code=413, detail="Document exceeds the configured Office processing limit")
-    receipt = await latest_workspace_receipt(db, access[0].tenant_id, agent_id, normalized)
     source = None
     try:
-        source, captured = await asyncio.to_thread(snapshot_workspace_file, _agent_workspace(agent_id), normalized,
-            expected_sha256=receipt.content_sha256 if receipt is not None else None)
+        source, captured = await asyncio.to_thread(snapshot_workspace_file, _agent_workspace(agent_id), normalized)
         digest = await asyncio.to_thread(_content_hash, captured)
         if captured.stat().st_size > settings.OFFICECLI_PREVIEW_MAX_BYTES:
             raise HTTPException(status_code=413, detail="Document exceeds the configured Office processing limit")
-        await validate_browser_workspace_receipt(db, access[0].tenant_id, current_user, receipt, digest)
         yield captured, normalized, digest
         await _authorize_office_request_path(db, current_user, agent_id=agent_id, path=normalized, action="read")
-        await validate_browser_workspace_receipt(db, access[0].tenant_id, current_user, receipt, digest)
     except ContentInputReceiptError as exc:
         raise _content_receipt_http_error(exc) from exc
     except WorkspaceAuthorityError as exc:
@@ -216,6 +212,15 @@ async def _authorize_office_request_path(
         )
     except WorkspaceAuthorityError as exc:
         raise _workspace_authority_http_error(exc) from exc
+    if action == "read":
+        from app.services.content_input_receipts import ContentInputReceiptError, validate_browser_workspace_receipt
+        from app.api.files import _content_receipt_http_error
+
+        try:
+            await validate_browser_workspace_receipt(db, resolved_agent_access[0].tenant_id, current_user,
+                agent_id, normalized, full_control=decision.full_control)
+        except ContentInputReceiptError as exc:
+            raise _content_receipt_http_error(exc) from exc
     return resolved_agent_access, decision, target, normalized
 
 

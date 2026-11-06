@@ -1380,7 +1380,9 @@ class ToolRuntimeService:
                                 context=context, tool_name=tool_name, tool_call_id=tool_call_id, arguments=arguments,
                                 result=input_read, states={}, lineage=[], errors={}, native_read_denial=input_read.metadata["native_read_denial"])
                     return input_read
-                input_denials = await authorize_workspace_execution_inputs(request)
+                input_denial = await authorize_workspace_execution_inputs(request)
+                if input_denial is not None:
+                    return input_denial
                 from app.services.workspace_resource_authority import (
                     WorkspaceAuthorityError, WorkspaceAuthorityScope, WorkspaceOutputWrite, authorize_workspace_tool_path,
                 )
@@ -1426,21 +1428,6 @@ class ToolRuntimeService:
                     value = await self.backend.execute(request, _execute_request)
                 async def _settle_backend_result():
                     nonlocal value
-                    if tool_name in {"execute_code", "run_command", "run_skill_tool"}:
-                        for read in getattr(context.workspace_authority_scope, "input_reads", ()):
-                            if read.observed_sha256 is not None and read.observed_sha256 != read.content_sha256:
-                                _block, evidence = await settle_workspace_receipt_read(
-                                    request=request, read=read, tool_call_id=tool_call_id, result=value)
-                                input_denials.append({"path": read.path, "reason_code": "workspace_content_unverified",
-                                    "status": "denied", "retryable": False, "quarantine": evidence.get("quarantine", "unknown")})
-                    if input_denials:
-                        for denial in input_denials:
-                            denial["actionable_hint"] = "Restore the scoped source grant or regenerate this file from current authorized inputs."
-                        notice = "\n\n<workspace_input_denials>" + _json.dumps(input_denials) + "</workspace_input_denials>"
-                        value = replace(value, text=value.text + notice,
-                            model_visible_text=value.model_visible_text + notice if value.model_visible_text is not None else None,
-                            metadata={**value.metadata, "workspace_input_denials": input_denials}) if isinstance(value, ToolContentEnvelope) else (
-                            ToolContentEnvelope(text=str(value) + notice, metadata={"workspace_input_denials": input_denials}))
                     value, _redaction = self._redact_runtime_egress(
                         value,
                         context=context,

@@ -372,7 +372,7 @@ def snapshot_workspace_file(
 @dataclass(slots=True)
 class WorkspaceInputRead:
     path: str
-    receipt_id: uuid.UUID
+    receipt_id: uuid.UUID | None
     revision: int
     content_sha256: str
     dependencies_hash: str
@@ -384,7 +384,7 @@ class WorkspaceInputRead:
 
     def verify_digest(self, digest: str) -> None:
         self.observed_sha256 = digest
-        if self.observed_sha256 != self.content_sha256:
+        if self.carrier_kind != "workspace_artifact" and self.observed_sha256 != self.content_sha256:
             raise WorkspaceAuthorityError("workspace_content_unverified",
                 "The file bytes no longer match the verified input receipt. Regenerate from authorized inputs.")
 
@@ -430,11 +430,11 @@ class WorkspaceExecutionInputs:
         for state in states.values():
             path, digest = state["path"], state.get("sha256")
             read = scope.input_read(path)
-            if read is None or not digest or read.observed_sha256 != digest or read.content_sha256 != digest:
+            if read is None or not digest or read.observed_sha256 != digest:
                 self.unbound.append(path)
-            else:
+            elif read.receipt_id is not None:
                 self.sources.append({"source_kind": "workspace_artifact", "source_id": str(read.receipt_id),
-                    "source_version": digest})
+                    "source_version": read.content_sha256})
         self.observed = True
 
     def snapshot(self) -> dict:
@@ -453,6 +453,7 @@ class WorkspaceAuthorityScope:
     operator_view: bool
     authority_source: str
     known_paths: frozenset[str] = frozenset()
+    full_control_paths: frozenset[str] = frozenset()
     action_permissions: frozenset[tuple[str, str]] = frozenset()
     collection_actions: frozenset[str] = frozenset()
     input_reads: tuple[WorkspaceInputRead, ...] = ()
@@ -584,6 +585,7 @@ class WorkspacePathDecision:
     authority_source: str
     operator_view: bool
     is_new: bool
+    full_control: bool = False
 
 
 def authorize_workspace_tool_path(
@@ -776,6 +778,7 @@ async def authorize_workspace_path(
                 authority_source=decision.authority_source,
                 operator_view=decision.operator_view,
                 is_new=False,
+                full_control=decision.full_control,
             )
         if action not in {"write", "create", "upload"}:
             raise WorkspaceAuthorityError("workspace_resource_not_found", "The workspace resource was not found.")
@@ -786,6 +789,7 @@ async def authorize_workspace_path(
             authority_source="new_resource_owner",
             operator_view=False,
             is_new=True,
+            full_control=True,
         )
 
     try:
@@ -813,6 +817,7 @@ async def authorize_workspace_path(
         authority_source=decision.authority_source,
         operator_view=decision.operator_view,
         is_new=False,
+        full_control=decision.full_control,
     )
 
 
@@ -1036,6 +1041,7 @@ async def load_workspace_authority_scope(
         authority_source=(collection_decision.authority_source if operator_view else
             next(iter(authority_sources)) if len(authority_sources) == 1 else "resource_scope"),
         known_paths=frozenset(manifest.path for manifest in manifests),
+        full_control_paths=frozenset(full_control_paths),
         action_permissions=frozenset(action_permissions),
         collection_actions=frozenset(_WORKSPACE_EFFECT_ACTIONS) if collection_decision and collection_decision.full_control else frozenset(),
         learning_roots=learning_roots,

@@ -166,18 +166,12 @@ def authorized_execution_workspace(canonical_workspace: Path, authority_scope):
             if not source.is_file():
                 continue
             read = authority_scope.input_read(allowed_path)
-            try:
-                if read is None:
-                    _copy_workspace_resource(canonical_workspace, isolated, allowed_path)
-                else:
-                    _copy_workspace_resource(canonical_workspace, isolated, allowed_path, input_read=read)
-                copied_inputs[allowed_path] = {"path": allowed_path,
-                    "sha256": read.observed_sha256 if read is not None else None}
-            except WorkspaceAuthorityError as exc:
-                if read is None or exc.code != "workspace_content_unverified":
-                    raise
-                # The rejected bytes never become available to the process.
-                delete_workspace_path(isolated, allowed_path)
+            if read is None:
+                _copy_workspace_resource(canonical_workspace, isolated, allowed_path)
+            else:
+                _copy_workspace_resource(canonical_workspace, isolated, allowed_path, input_read=read)
+            copied_inputs[allowed_path] = {"path": allowed_path,
+                "sha256": read.observed_sha256 if read is not None else None}
         before = _workspace_file_state(isolated_work)
         if authority_scope.execution_inputs is not None:
             authority_scope.execution_inputs.observe(copied_inputs, authority_scope)

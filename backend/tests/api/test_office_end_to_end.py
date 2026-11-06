@@ -56,6 +56,7 @@ async def test_office_create_agent_update_preview_and_readback_loop(tmp_path, mo
             root_session_id=None,
             authority_source="resource_owner",
             operator_view=False,
+            full_control=True,
             manifest=SimpleNamespace(),
         )
 

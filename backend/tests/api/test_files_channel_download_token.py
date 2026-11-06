@@ -340,7 +340,7 @@ async def test_workspace_download_query_jwt_pins_token_tenant_before_user_lookup
     from app.services import workspace_resource_authority
 
     async def fake_authorize_workspace_path(*_args, **_kwargs):
-        return SimpleNamespace(authority_source="resource_owner", operator_view=False)
+        return SimpleNamespace(authority_source="resource_owner", operator_view=False, full_control=True)
 
     monkeypatch.setattr(workspace_resource_authority, "authorize_workspace_path", fake_authorize_workspace_path)
 

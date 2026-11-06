@@ -507,11 +507,11 @@ def _settlement_from_evidence(
         return None
     machine_status = str(evidence.get("status") or "")
     if (
-        machine_status == "aborted"
+        machine_status in {"aborted", "failed"}
         and invocation.effect_state == "prepared_not_started"
         and str(evidence.get("pre_effect_fence_ref") or "")
     ):
-        return "cancelled", "aborted", False, {}
+        return ("failed", "failed", False, {}) if machine_status == "failed" else ("cancelled", "aborted", False, {})
     if machine_status == "cancelled":
         return "cancelled", "cancelled", bool(evidence.get("retryable", False)), {}
     decision = evidence.get("tool_decision")

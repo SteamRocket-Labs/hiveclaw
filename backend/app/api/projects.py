@@ -23,7 +23,7 @@ from app.models.security_audit import ResourcePermission
 from app.models.user import User
 from app.models.workbench_project import WorkbenchProject, WorkbenchProjectEntry
 from app.models.workspace_resource import WorkspaceResourceManifest
-from app.services.content_input_receipts import ContentInputReceiptError, latest_workspace_receipt, validate_browser_workspace_receipt
+from app.services.content_input_receipts import ContentInputReceiptError, validate_browser_workspace_receipt
 from app.services.workspace_resource_authority import WorkspaceAuthorityError, authorize_workspace_path
 
 class ProjectRoute(APIRoute):
@@ -206,13 +206,10 @@ async def _source(db, user, tenant, kind, target_id):
     if not (base / manifest.path).is_file():
         raise HTTPException(404)
     try:
-        await authorize_workspace_path(db, user, agent_id=manifest.agent_id, path=manifest.path, action="read",
+        decision = await authorize_workspace_path(db, user, agent_id=manifest.agent_id, path=manifest.path, action="read",
             path_exists=True, agent_access=access)
-        receipt = await latest_workspace_receipt(db, tenant, manifest.agent_id, manifest.path)
-        if receipt is not None:
-            # Only metadata is projected here. File consumers still capture and verify
-            # the actual bytes, hash, sources and current authority on every open.
-            await validate_browser_workspace_receipt(db, tenant, user, receipt, receipt.content_sha256)
+        await validate_browser_workspace_receipt(db, tenant, user, manifest.agent_id, manifest.path,
+            full_control=decision.full_control)
     except WorkspaceAuthorityError as exc:
         from app.api.files import _workspace_authority_http_error
         raise _workspace_authority_http_error(exc) from exc

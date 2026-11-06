@@ -615,6 +615,7 @@ async def permission_abort_result_bound(db, *, invocation, event, content):
         reason = payload.get("reason_code")
         suffix = {
             "approved_tool_execution_not_released": "effect-authority-not-released",
+            "approved_tool_execution_failed": "effect-authority-not-released",
             "approved_permission_not_consumed": "approved-effect-not-released",
         }.get(reason)
         receipt = f"session-permission:{control_id}:{suffix}"
@@ -631,8 +632,9 @@ async def permission_abort_result_bound(db, *, invocation, event, content):
             and payload
             == {
                 "schema": "hive.tool_permission_execution_abort.v1",
-                "status": "aborted",
+                "status": "failed" if reason == "approved_tool_execution_failed" else "aborted",
                 "reason_code": reason,
+                **({"message": "The approved action failed before it started."} if "message" in payload else {}),
                 "invocation_id": str(invocation.id),
                 "provider_tool_use_id": invocation.provider_tool_use_id,
             }
@@ -1192,7 +1194,7 @@ async def _resolve_origin_dependencies(db, *, tenant_id, agent_id, ref):
         return _unique_dependencies(
             [*dependencies, *([dependency] if dependency else [])]
         ), complete and inherited_complete
-    if invocation.tool_name in {"write_file", "fs_write"}:
+    if invocation.tool_name in {"write_file", "edit_file", "fs_write"}:
         from app.services.content_input_receipts import load_workspace_execution_evidence
 
         arguments = invocation.effective_arguments_json or invocation.provider_arguments_json
@@ -1355,6 +1357,8 @@ async def _resolve_origin_dependencies(db, *, tenant_id, agent_id, ref):
             )
             if bound != pointer:
                 return _unique_dependencies(dependencies), False
+            if bound["content_input_receipt_id"] is None:
+                return _unique_dependencies(dependencies), inherited_complete
             receipt = await db.get(ContentInputReceipt, uuid.UUID(bound["content_input_receipt_id"]))
             inherited = _stored_dependencies(receipt.dependencies_json)
             if inherited is None:

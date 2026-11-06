@@ -517,7 +517,9 @@ async def test_old_default_assistant_uses_known_sources_without_rewriting_genesi
             (workspace / "soul.md").write_bytes(original_files["soul.md"] + b"\n")
             unchanged_render = await load_agent_context_resource(agent_id=agent_id, tenant_id=tenant_id, resource_ref="soul")
             assert unchanged_render.sha256 == soul.sha256
-            with pytest.raises(ContentInputReceiptError, match="canonical source bytes no longer match"):
+            await _validate_input_dependencies(db, tenant_id, dependencies[1:2], user=actor)
+            (workspace / "soul.md").write_bytes(original_files["soul.md"] + b"\nChanged personality\n")
+            with pytest.raises(ContentInputReceiptError, match="context source has changed"):
                 await _validate_input_dependencies(db, tenant_id, dependencies[1:2], user=actor)
             (workspace / "soul.md").write_bytes(original_files["soul.md"])
         else:

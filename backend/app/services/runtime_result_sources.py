@@ -208,8 +208,6 @@ async def _published_owned_delegation_input(db, dependency, task, *, receipt_ids
                 )
             except (ContentInputReceiptError, KeyError, TypeError, ValueError):
                 return False
-        if not receipt_ids:
-            return False  # A body read still needs the exact published artifact pins.
         pointer = (payload.get("metadata") or {}).get("workspace_input_receipt")
         if not isinstance(pointer, dict):
             return False
@@ -223,7 +221,8 @@ async def _published_owned_delegation_input(db, dependency, task, *, receipt_ids
                 content_hash=payload.get("content_hash"),
                 capture={"status": "captured", "receipt_ref": pointer.get("evidence_ref")},
             )
-            return bound == pointer and uuid.UUID(bound["content_input_receipt_id"]) in receipt_ids
+            return bound == pointer and (bound["content_input_receipt_id"] is None
+                or uuid.UUID(bound["content_input_receipt_id"]) in receipt_ids)
         except (ContentInputReceiptError, KeyError, TypeError, ValueError):
             return False
     if kind == "session_command":

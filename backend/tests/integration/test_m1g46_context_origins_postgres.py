@@ -143,7 +143,7 @@ async def test_context_origins_enforce_session_scope_and_detect_rewritten_record
 
 
 @pytest.mark.parametrize("creation", ["original", "model_blueprint", "legacy", "repair"])
-async def test_soul_authority_requires_original_creation_and_exact_bootstrap_bytes(
+async def test_soul_uses_current_content_while_memory_and_skills_keep_their_origins(
     owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, creation,
 ):
     from app.config import get_settings
@@ -204,8 +204,7 @@ async def test_soul_authority_requires_original_creation_and_exact_bootstrap_byt
         platform_refs = capture.snapshot()["sources"]
         if creation != "original":
             assert platform_refs == [] and capture.snapshot()["unbound"]
-            with pytest.raises(ContentInputReceiptError):
-                await validate_browser_input_dependencies(db, tenant, user, refs)
+            await validate_browser_input_dependencies(db, tenant, user, refs)
             with pytest.raises(ContentInputReceiptError):
                 await validate_browser_input_dependencies(db, tenant, user, list(resident.source_refs))
             return
@@ -230,15 +229,14 @@ async def test_soul_authority_requires_original_creation_and_exact_bootstrap_byt
         (root / "soul.md").write_text(original + "\n")
         same_render = await agent_context.load_agent_context_resource(agent_id=agent_id, tenant_id=tenant, resource_ref="soul")
         assert same_render.sha256 == soul.sha256
-        with pytest.raises(ContentInputReceiptError):
-            await validate_browser_input_dependencies(db, tenant, user, refs)
-        # Neither matching current hashes nor a subsequent repair can rebaseline unknown bytes.
+        await validate_browser_input_dependencies(db, tenant, user, refs)
+        # Current context stays usable; an earlier rendered version remains stale.
         (root / "soul.md").write_text("# Rewritten\nRESTRICTED_MODEL_DERIVATIVE\n")
         current = await agent_context.load_agent_context_resource(agent_id=agent_id, tenant_id=tenant, resource_ref="soul")
-        for version in (soul.sha256, current.sha256):
-            refs[0]["source_version"] = version
-            with pytest.raises(ContentInputReceiptError):
-                await validate_browser_input_dependencies(db, tenant, user, refs)
+        with pytest.raises(ContentInputReceiptError):
+            await validate_browser_input_dependencies(db, tenant, user, refs)
+        refs[0]["source_version"] = current.sha256
+        await validate_browser_input_dependencies(db, tenant, user, refs)
         await AgentManager().initialize_agent_files(db, agent, original_author_id=user_id, repair_existing=True)
         assert (await db.scalars(select(ConfigRevision).where(ConfigRevision.entity_type == "agent_bootstrap",
             ConfigRevision.entity_id == agent_id))).all() == [revision]

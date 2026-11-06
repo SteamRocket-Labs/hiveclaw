@@ -97,7 +97,7 @@ async def validate_business_task_context(db, tenant_id, dependency, *, user=None
             raise ValueError('source_changed')
         task = await db.get(Task, uuid.UUID(proof['task']['task_id']), populate_existing=True)
         await authorize_resource_action(db, user, agent_id=task.agent_id, resource_kind='task', resource_id=task.id,
-            action='read', owner_user_id=task.responsible_user_id or task.created_by, root_session_id=task.root_session_id,
+            action='read', owner_user_id=getattr(task, 'responsible_user_id', None) or task.created_by, root_session_id=task.root_session_id,
             authority_state=task.authority_state)
     except (ValueError, TypeError, KeyError, AttributeError) as exc:
         raise ContentInputReceiptError('business_task_source_changed', 'Review the current business task input.', 403) from exc

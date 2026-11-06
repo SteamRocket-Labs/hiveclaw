@@ -9,7 +9,7 @@ import AgentChatSection from './AgentChatSection';
 import { AssistantMessageBody } from './CanonicalCardAssistantSupplement';
 import { SessionRuntimePanel } from './SessionRuntimePanel';
 import { ThreadItemRenderer } from '../session-workbench/ThreadItemRenderer';
-import SessionPermissionActions from './SessionPermissionActions';
+import SessionPermissionActions, { permissionOnceOnlyMessageKey } from './SessionPermissionActions';
 import { SessionGitLine } from './SessionLineageSurface';
 import CopyMessageButton from './CopyMessageButton';
 import RunDisclosureBlock from './RunDisclosureBlock';
@@ -52,9 +52,9 @@ function chat(overrides: Record<string, unknown> = {}) {
 
 it('makes opened employee-creation approval details readable and keeps raw arguments folded', () => {
   const expires = '2026-11-06T14:13:43.874659+00:00';
-  const args = { name: '周报助手', duty: '整理每周工作', core_outputs: ['周报模板'] };
+  const args = { name: '周报助手', first_task: '整理本周工作，写一份周报草稿。', core_outputs: ['周报模板'] };
   const request = { tool_name: 'create_employee_from_request', arguments: args, expires_at: expires,
-    destructive: true, allow_session_allowed: false, risk_class: 'destructive_delete', confirmation_kind: 'destructive_once' };
+    destructive: true, allow_session_allowed: false, risk_class: 'enterprise_asset_mutation', confirmation_kind: 'destructive_once' };
   const item = { id: 'approval', item_type: 'approval_request', item_status: 'waiting_user',
     item_data: request, audience: 'user', event_type: 'permission', metadata: {},
     user_action: { kind: 'resolve_approval', impact: '破坏性操作', expires_at: expires, details: [] },
@@ -65,6 +65,8 @@ it('makes opened employee-creation approval details readable and keeps raw argum
   fireEvent.click(screen.getByText('详情'));
   const details = container.querySelector('.thread-item-disclosure')!;
   expect.soft(details.textContent).toContain('创建数字员工');
+  expect.soft(details.textContent).toContain(args.name);
+  expect.soft(details.textContent).toContain(args.first_task);
   expect.soft(details.textContent).toContain('可停用，但不能删除');
   expect.soft(details.textContent).toContain(new Date(expires).toLocaleString('zh'));
   expect.soft(details.textContent).not.toContain('create_employee_from_request');
@@ -75,6 +77,65 @@ it('makes opened employee-creation approval details readable and keeps raw argum
   expect.soft(container.textContent).toContain('此操作只能本次允许');
   fireEvent.click(screen.getByRole('button', { name: '完整参数' }));
   expect(container.querySelector('pre')?.textContent).toBe(JSON.stringify(args, null, 2));
+});
+
+it('summarizes the command and working directory after one expand with a local action name', () => {
+  const command = 'printf "' + 'a'.repeat(300) + '"';
+  const args = { command };
+  const item = { id: 'command-approval', item_type: 'approval_request', item_status: 'waiting_user',
+    item_data: { tool_name: 'run_command' }, audience: 'user', event_type: 'permission', metadata: {},
+  } as unknown as ThreadItem;
+  const { container } = render(<ThreadItemRenderer item={item} approvalArguments={args} />);
+  fireEvent.click(screen.getByText('详情'));
+  const summary = container.querySelector('.thread-item-disclosure')!.textContent!;
+  expect.soft(summary).toContain(command.slice(0, 240));
+  expect.soft(summary).not.toContain(command);
+  expect.soft(summary).toContain('workspace/');
+  expect.soft(container.textContent).toContain('运行命令');
+  expect.soft(container.textContent).not.toContain('对外操作');
+  expect.soft(container.querySelector('pre')).toBeNull();
+  const toggle = screen.getByRole('button', { name: '完整参数' });
+  expect.soft(toggle.querySelector('svg')).toBeTruthy();
+  fireEvent.click(toggle);
+  expect(container.querySelector('pre')?.textContent).toBe(JSON.stringify(args, null, 2));
+});
+
+it('uses only the risk class for delete-only approval wording', () => {
+  expect(permissionOnceOnlyMessageKey({ tool_name: 'create_employee_from_request', risk_class: 'destructive_delete' } as never))
+    .toBe('agent.chat.permission.deleteOnceOnly');
+});
+
+it('excludes a queued background waiter from the member list and badge, and shows a decision state once', () => {
+  useAuthStore.setState({ user: { id: 'member', role: 'member' } as never });
+  const props = { messages: [], activeSession: { id: 'work' }, sessionWorkbench: { runtime_sections: {
+    background: [{ id: 'background', status: 'queued', summary: '运行-1' }],
+    runs: [{ id: 'approval', status: 'awaiting_approval', summary: '请确认运行命令',
+      user_blocker: { status: 'waiting', title: '等你决定', reason: '确认命令和工作目录。' } },
+    { id: 'permission', status: 'approval_required', summary: '请确认发送邮件' }],
+  } } } as unknown as React.ComponentProps<typeof SessionRuntimePanel>;
+  const { container, rerender } = render(<SessionRuntimePanel {...props} />);
+  expect.soft(container.textContent).not.toContain('运行-1');
+  expect.soft(screen.getByTestId('session-runtime-waiters').children).toHaveLength(2);
+  expect.soft(screen.getByTestId('session-runtime-waiter-approval').textContent?.match(/等你决定/g)).toHaveLength(1);
+  rerender(<SessionRuntimePanel {...props} collapsed />);
+  expect(screen.getByTestId('session-runtime-collapsed-attention').getAttribute('aria-label')).toBe('查看 2 个待你处理的事项');
+});
+
+it('keeps the real suspended run that has a pending approval for this member', () => {
+  useAuthStore.setState({ user: { id: 'member', role: 'member' } as never });
+  const permission = { permission_request_id: 'request', runtime_task_id: 'approval-run', requested_by_user_id: 'member' };
+  const props = { messages: [{ role: 'event', content: '', eventStatus: 'session_permission_required', sessionPermissionRequest: permission }],
+    activeSession: { id: 'work' }, sessionWorkbench: { runtime_sections: {
+      background: [{ id: 'background', status: 'suspended', summary: '运行-1' }],
+      runs: [{ id: 'approval-run', status: 'suspended', result_summary: 'awaiting_session_permission' }],
+    } } } as unknown as React.ComponentProps<typeof SessionRuntimePanel>;
+  const { container, rerender } = render(<SessionRuntimePanel {...props} collapsed />);
+  expect.soft(screen.queryByTestId('session-runtime-collapsed-attention')?.getAttribute('aria-label')).toBe('查看 1 个待你处理的事项');
+  rerender(<SessionRuntimePanel {...props} />);
+  expect.soft(screen.queryByTestId('session-runtime-waiters')?.children).toHaveLength(1);
+  expect.soft(container.textContent).not.toContain('运行-1');
+  rerender(<SessionRuntimePanel {...props} collapsed messages={[{ ...props.messages[0], sessionPermissionRequest: { ...permission, requested_by_user_id: 'other' } }]} />);
+  expect(screen.queryByTestId('session-runtime-collapsed-attention')).toBeNull();
 });
 
 it('hides only the platform deliverable declaration from rendered replies', () => {

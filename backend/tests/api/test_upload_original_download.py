@@ -4,55 +4,11 @@ import io
 from pathlib import Path
 import tempfile
 import uuid
-from types import SimpleNamespace
-from unittest.mock import AsyncMock
 
 from fastapi import UploadFile
 import pytest
 
 from tests.api.test_files_channel_download_token import _send_download
-
-
-@pytest.mark.parametrize("denied", [False, True])
-async def test_workspace_original_discovers_web_upload_with_existing_authorization(monkeypatch, denied):
-    from fastapi import HTTPException
-    from app.api.upload import discover_workspace_original
-    from app.models.storage_blob import StorageBlobRef
-    import app.services.upload_originals as originals
-
-    user = SimpleNamespace(id=uuid.uuid4(), tenant_id=uuid.uuid4())
-    agent_id, manifest_id, ref_id = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
-    path = "workspace/uploads/sales-e2e.csv"
-    ref = StorageBlobRef(id=ref_id, tenant_id=user.tenant_id, owner_type="chat_upload", owner_id=str(ref_id),
-        purpose="original_attachment", metadata_json={"schema": originals.REF_SCHEMA, "owner_user_id": str(user.id),
-            "agent_id": str(agent_id), "workspace_path": path, "workspace_manifest_id": str(manifest_id),
-            "filename": "sales-e2e.csv", "content_sha256": "a" * 64, "size_bytes": 64})
-
-    class DB:
-        async def scalar(self, query):
-            if query.column_descriptions[0].get("entity") is StorageBlobRef:
-                sql = str(query.compile(compile_kwargs={"literal_binds": True}))
-                assert user.tenant_id in query.compile().params.values()
-                assert str(agent_id) in sql
-                assert path in sql
-                assert "chat_upload" in sql
-                return ref
-            return manifest_id
-
-        async def get(self, model, key):
-            return None
-
-    authorize = AsyncMock(side_effect=HTTPException(403, "Not authorized") if denied else None)
-    monkeypatch.setattr(originals, "authorize_upload_original", authorize)
-    db = DB()
-    if denied:
-        with pytest.raises(HTTPException) as failure:
-            await discover_workspace_original(agent_id, path, user, db)
-        assert failure.value.status_code == 403
-    else:
-        assert await discover_workspace_original(agent_id, path, user, db) == {
-            "id": str(ref_id), "owner_user_id": str(user.id), "content_sha256": "a" * 64, "size_bytes": 64}
-    authorize.assert_awaited_once_with(db, user, ref)
 
 
 @pytest.mark.parametrize("mode", ["get", "invalid_range", "disconnect"])

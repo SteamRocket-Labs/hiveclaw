@@ -224,7 +224,13 @@
         "retry": "retry",
         "retry reason": "retry reason",
         "event": "event",
-        "name": "Name"
+        "name": "Name",
+        "command": "Command",
+        "cwd": "Working directory",
+        "first_task": "First task",
+        "recipient": "Recipient",
+        "subject": "Subject",
+        "body": "Body"
       },
       "value": {
         "success": "success",

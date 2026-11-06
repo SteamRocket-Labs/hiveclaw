@@ -224,7 +224,13 @@
         "retry": "重试",
         "retry reason": "重试原因",
         "event": "事件",
-        "name": "名称"
+        "name": "名称",
+        "command": "命令",
+        "cwd": "工作目录",
+        "first_task": "第一项任务",
+        "recipient": "收件人",
+        "subject": "主题",
+        "body": "正文"
       },
       "value": {
         "success": "成功",

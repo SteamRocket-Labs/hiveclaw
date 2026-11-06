@@ -2,7 +2,7 @@ import React from 'react';
 import type { SessionPermissionRequest } from './chatRuntime';
 
 export function permissionOnceOnlyMessageKey(request: SessionPermissionRequest): string {
-  return request.risk_class === 'destructive_delete' && request.tool_name !== 'create_employee_from_request'
+  return request.risk_class === 'destructive_delete'
     ? 'agent.chat.permission.deleteOnceOnly' : 'agent.chat.permission.onceOnly';
 }
 

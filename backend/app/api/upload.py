@@ -53,24 +53,9 @@ async def discover_workspace_original(agent_id: uuid.UUID, path: str, current_us
     db: AsyncSession = Depends(get_db)):
     from app.services.blob_store import BlobStoreError
     from app.services.channel_originals import find_channel_original
-    from sqlalchemy import select
-    from app.core.resource_authority import normalize_workspace_resource_path
-    from app.models.storage_blob import StorageBlobRef
-    from app.services.upload_originals import authorize_upload_original, original_upload_projection
 
     try:
-        normalized = normalize_workspace_resource_path(path)
-        original = await db.scalar(select(StorageBlobRef).where(
-            StorageBlobRef.tenant_id == current_user.tenant_id, StorageBlobRef.owner_type == "chat_upload",
-            StorageBlobRef.purpose == "original_attachment",
-            StorageBlobRef.metadata_json["agent_id"].astext == str(agent_id),
-            StorageBlobRef.metadata_json["workspace_path"].astext == normalized))
-        if original is not None:
-            await authorize_upload_original(db, current_user, original)
-            return original_upload_projection(original)
         return await find_channel_original(db, user=current_user, agent_id=agent_id, path=path)
-    except ValueError:
-        raise HTTPException(422, detail={"code": "invalid_workspace_path"}) from None
     except BlobStoreError:
         raise HTTPException(503, detail={"code": "original_attachment_unavailable", "retryable": True}) from None
 

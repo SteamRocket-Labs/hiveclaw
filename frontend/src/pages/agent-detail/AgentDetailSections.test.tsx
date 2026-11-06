@@ -4327,6 +4327,7 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).toContain('Approval required');
     expect(markup).toContain('Full parameters');
     expect(markup).not.toContain('run_command');
+    expect(markup).toContain('rm workspace/report.md');
     expect(markup).toContain('Allow once');
     expect(markup).not.toContain('Allow for this session');
     expect(markup).toContain('Delete actions can only be allowed once.');
@@ -5307,7 +5308,8 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).toContain('data-testid="session-runtime-collapsed-deliverables"');
     expect(markup).toContain('Show deliverables (1)');
     expect(markup).toContain('data-testid="session-runtime-collapsed-attention"');
-    expect(markup).toContain('Show items waiting for you (4)');
+    expect(markup).toContain('Show items waiting for you (1)');
+    expect(markup).not.toContain('Show items waiting for you (4)');
     expect(markup).not.toContain('data-testid="session-runtime-collapsed-running"');
     expect(markup).not.toContain('Show running items (3)');
     expect(markup).toContain('data-testid="session-gitline"');

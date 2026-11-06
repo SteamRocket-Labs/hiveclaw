@@ -438,6 +438,10 @@ describe('default screen language (B2)', () => {
     const view = render(element);
     fireEvent.click(screen.getByText('详情'));
     expect(view.container.querySelector('pre')).toBeNull();
+    const summary = view.container.querySelector('.thread-item-disclosure')!.textContent!;
+    expect(summary).toContain('boss@example.com');
+    expect(summary).toContain('Q3 复盘');
+    expect(summary).toContain('请查收');
     fireEvent.click(screen.getByRole('button', { name: '完整参数' }));
     const body = view.container.querySelector('pre')!.textContent!;
     expect(body).toContain('"to"');

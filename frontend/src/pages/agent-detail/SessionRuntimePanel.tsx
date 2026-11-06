@@ -4,6 +4,7 @@ import React from 'react';
 import { useTranslation } from 'react-i18next';
 import { IconAlertTriangle, IconChevronLeft, IconChevronRight, IconFileText, IconLoader, IconX } from '@tabler/icons-react';
 import { useAuthStore } from '../../stores';
+import { isAdministratorRole } from '../../roles';
 import { canOpenWorkBrowser } from '../session-workbench/workBrowserState';
 
 import { SessionGoalPanel } from '../session-workbench/SessionGoalPanel';
@@ -27,6 +28,7 @@ import type { ThreadItem } from '../../api/domains/threadItems.generated';
 import type { SessionWorkbench } from '../../api/domains/ccParity';
 import type { SessionDecisionTrace } from '../../api/domains/chat';
 import type { AgentChatMessage, ChatArtifactPart } from './chatRuntime';
+import { agentChatMessageRunId } from './chatRuntime';
 import { artifactContributorLabel, formatArtifactSize } from './ArtifactSurface';
 import { SessionDecisionHistory } from './SessionDecisionHistory';
 import type { ArtifactContinuationContext } from './ArtifactContinuation';
@@ -268,7 +270,7 @@ export function SessionRuntimePanel({
   ) => void | Promise<unknown>;
 }) {
   const browserUserId = useAuthStore((state) => state.user?.id);
-  const isAdmin = useAuthStore((state) => ['org_admin', 'platform_admin'].includes(state.user?.role || ''));
+  const isAdmin = useAuthStore((state) => isAdministratorRole(state.user?.role));
   const RUNTIME_PANEL_WIDTH_KEY = 'hive.sessionRuntimePanel.width';
   const [panelWidth, setPanelWidth] = React.useState<number | null>(() => {
     try {
@@ -316,6 +318,13 @@ export function SessionRuntimePanel({
   const docs = rightPanel.workspaceDocuments;
   const currentSessionDocumentCount = docs.currentSession.items.length;
   const runtimeConsole = rightPanel.runtimeConsole;
+  const pendingApprovalRuns = new Set(messages.filter(message => message.eventStatus === 'session_permission_required'
+    && message.sessionPermissionRequest && (!message.sessionPermissionRequest.requested_by_user_id
+      || message.sessionPermissionRequest.requested_by_user_id === browserUserId))
+    .map(message => message.sessionPermissionRequest!.runtime_task_id || agentChatMessageRunId(message)));
+  const memberWaiters = runtimeConsole.waiters.map(waiter => pendingApprovalRuns.has(waiter.id)
+    ? { ...waiter, status: 'awaiting_approval' } : waiter).filter(waiter => waiter.userBlocker
+    || ['awaiting_approval', 'approval_required'].includes(waiter.status));
   const [showAllCurrentDocuments, setShowAllCurrentDocuments] = React.useState(false);
   const [runtimeSegmentOverride, setRuntimeSegmentOverride] = React.useState<RuntimeConsoleSegmentKey | null>(null);
   const selectedRuntimeSegment: RuntimeConsoleSegmentKey = runtimeSegmentOverride && runtimeConsole.segments.some((segment) => segment.key === runtimeSegmentOverride)
@@ -378,16 +387,18 @@ export function SessionRuntimePanel({
     const clickable = Boolean(waiter.enterable && sessionId && onSelectSession);
     const segmentLabel = t(`sessionWorkbench.rightPanel.runtimeSegments.${waiter.segment}`, waiter.segment);
     const blocker = waiter.userBlocker;
+    const title = blocker?.title || (isAdmin ? waiter.label : t('sessionWorkbench.rightPanel.waiters', 'Waiting items'));
+    const status = runtimeStatusLabel(waiter.status || 'waiting', t);
     const meta = blocker
       ? [blocker.reason, blocker.nextAction].filter(Boolean).join(' ')
       : [waiter.summary, isAdmin ? segmentLabel : null].filter(Boolean).join(' · ');
     const content = (
       <>
         <span className="session-runtime-row-main">
-          <span className="session-runtime-row-title">{blocker?.title || (isAdmin ? waiter.label : t('sessionWorkbench.rightPanel.waiters', 'Waiting items'))}</span>
+          <span className="session-runtime-row-title">{title}</span>
           <span className="session-runtime-row-meta">{meta || (isAdmin ? waiter.label : '')}</span>
         </span>
-        <span className="session-runtime-status">{runtimeStatusLabel(waiter.status || 'waiting', t)}</span>
+        {(isAdmin || title !== status) && <span className="session-runtime-status">{status}</span>}
       </>
     );
     return clickable ? (
@@ -725,7 +736,7 @@ export function SessionRuntimePanel({
   const sessionWindow = rightPanel.sessionWindow;
 
   if (collapsed) {
-    const attentionCount = runtimeConsole.summary.waitingCount + runtimeConsole.summary.blockedCount;
+    const attentionCount = isAdmin ? runtimeConsole.summary.waitingCount + runtimeConsole.summary.blockedCount : memberWaiters.length;
     const runningCount = runtimeConsole.summary.runningCount;
     return (
       <aside data-testid="session-runtime-panel" className="session-runtime-panel is-collapsed">
@@ -834,7 +845,7 @@ export function SessionRuntimePanel({
         )}
       </section>
 
-      {(isAdmin || runtimeConsole.waiters.length > 0) && <>
+      {(isAdmin || memberWaiters.length > 0) && <>
       <div data-testid="session-runtime-divider" className="session-runtime-divider" aria-hidden="true" />
 
       <section
@@ -865,7 +876,7 @@ export function SessionRuntimePanel({
 
         <div data-testid="session-runtime-console" className="session-runtime-console">
           {!isAdmin ? <div data-testid="session-runtime-waiters" className="session-runtime-waiters">
-            {runtimeConsole.waiters.map(renderRuntimeWaiter)}
+            {memberWaiters.map(renderRuntimeWaiter)}
           </div> : consoleIsEmpty ? (
             <div data-testid="session-runtime-console-empty" className="session-runtime-empty">
               {t('sessionWorkbench.rightPanel.noRuntimeActivity', 'No background agents, teams, or workflows in this session.')}

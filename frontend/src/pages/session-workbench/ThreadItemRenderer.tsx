@@ -51,18 +51,30 @@ function statusIcon(status: ThreadItemStatus, itemType: ThreadItemType): React.R
   return <IconCheck size={14} aria-hidden="true" />;
 }
 
-function detailsFor(item: ThreadItem, t: (key: string, fallback: string) => string, language: string): Detail[] {
+function detailsFor(item: ThreadItem, t: (key: string, fallback: string) => string, language: string, approvalArguments: unknown): Detail[] {
   const userAction = item.user_action;
   if (item.item_type === 'approval_request') {
     const data = item.item_data;
     const expires = userAction?.expires_at || data.expires_at;
+    const args = approvalArguments && typeof approvalArguments === 'object' && !Array.isArray(approvalArguments)
+      ? approvalArguments as Record<string, unknown> : null;
+    const summary = args ? data.tool_name === 'run_command' ? { command: args.command, cwd: 'workspace/' }
+      : data.tool_name === 'create_employee_from_request' ? { name: args.name, first_task: args.first_task }
+        : ['send_email', 'reply_email'].includes(data.tool_name || '') ? { recipient: args.to || args.recipient, subject: args.subject, body: args.body }
+          : {} : {};
+    const proposalDetails = Object.entries(summary).flatMap(([label, value]) => {
+      const text = Array.isArray(value) ? value.join(', ') : value;
+      return typeof text === 'string' && text ? [{ label, value: text.length > 240 ? `${text.slice(0, 240)}…` : text }] : [];
+    });
     return [
       { label: 'tool', value: approvalActionLabel(data.tool_name, t) },
       { label: 'expires', value: expires ? new Date(expires).toLocaleString(language) : null },
       { label: 'impact', value: data.tool_name === 'create_employee_from_request'
         ? t('sessionWorkbench.threadItem.value.employeePermanent', 'The employee can be deactivated, but cannot be deleted.')
         : userAction?.impact || (data.destructive ? t('sessionWorkbench.threadItem.value.destructive', 'Irreversible action') : t('sessionWorkbench.threadItem.value.reversible', 'Reversible or read-only')) },
+      ...proposalDetails,
       ...(userAction?.details || []).flatMap((detail) => typeof detail.label === 'string' && typeof detail.value === 'string'
+        && !proposalDetails.some(proposal => proposal.label === detail.label)
         ? [{ label: detail.label, value: detail.value }] : []),
     ];
   }
@@ -231,7 +243,7 @@ export function ThreadItemRenderer({
   const { t, i18n } = useTranslation();
   const [showArguments, setShowArguments] = React.useState(false);
   const sourceNotice = item.event_type === 'source_access_notice';
-  const details = sourceNotice ? [] : detailsFor(item, t, i18n.language).filter((detail) => detail.value !== null && detail.value !== undefined && detail.value !== '');
+  const details = sourceNotice ? [] : detailsFor(item, t, i18n.language, approvalArguments).filter((detail) => detail.value !== null && detail.value !== undefined && detail.value !== '');
   const title = sourceNotice ? t('agent.chat.sourceAccess', 'Source access')
     : t(`sessionWorkbench.threadItem.type.${item.item_type}`, TITLES[item.item_type]);
   const status = sourceNotice ? t('agent.chat.sourceUnavailable', 'Unavailable')
@@ -258,7 +270,8 @@ export function ThreadItemRenderer({
   );
   const argumentsBody = item.item_type === 'approval_request' && approvalArguments != null && (
     <>
-    <button type="button" aria-expanded={showArguments} onClick={() => setShowArguments(!showArguments)}>
+    <button type="button" className="btn btn-secondary" aria-expanded={showArguments} onClick={() => setShowArguments(!showArguments)}>
+      <IconChevronRight size={13} aria-hidden="true" style={{ transform: showArguments ? 'rotate(90deg)' : undefined }} />
       {t('agent.chat.permission.fullArguments', 'Full parameters')}
     </button>
     {showArguments && <pre

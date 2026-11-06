@@ -21,7 +21,9 @@ export function parseUserAttachment(msg: AgentChatMessage, agentId?: string): Ag
             const original = attachment.original_attachment && typeof attachment.original_attachment === 'object'
                 ? attachment.original_attachment as Record<string, unknown> : null;
             const originalUpload = original && typeof original.id === 'string' && typeof original.owner_user_id === 'string'
-                && msg.sessionItem?.actor.type === 'user' && msg.sessionItem.actor.id === original.owner_user_id
+                // Later lifecycle events are runtime-authored; the server-bound ref keeps its owner.
+                && (msg.sessionItem?.actor.type === 'runtime'
+                    || (msg.sessionItem?.actor.type === 'user' && msg.sessionItem.actor.id === original.owner_user_id))
                 ? { id: original.id, ownerUserId: original.owner_user_id } : undefined;
             return [{ path, name: typeof attachment?.name === 'string' ? attachment.name : path.split('/').pop() || 'file',
                 ...(typeof attachment?.size === 'number' ? { size: attachment.size } : {}),
@@ -75,7 +77,7 @@ export function parseUserAttachment(msg: AgentChatMessage, agentId?: string): Ag
     // job: the bubble keeps the sentence only (B2 r2). A member may also
     // type the marker line as their own words — it is stripped only when the
     // message actually carries attachment metadata (B2 r3).
-    if (parsed.fileName && /^\[📎\s*[^\]]+\]/.test(parsed.content)) {
+    if ((parsed.fileName || parsed.inputAttachments?.length) && /^\[📎\s*[^\]]+\]/.test(parsed.content)) {
         parsed.content = dropLeadingAttachmentMarkers(parsed.content).text;
     }
     if (parsed.fileName && !parsed.imageUrl && agentId) {
@@ -124,6 +126,10 @@ export function formatComposerAttachments(userMsg: string, attachedFiles: Array<
         userMsg = userMsg ? `${displayFiles}\n${userMsg}` : displayFiles;
     }
     return { userMsg, contentForLLM, fileName: attachedFiles.map(file => file.name).join(', '),
+        inputAttachments: attachedFiles.filter(file => file.path).map(file => ({
+            path: file.path!, name: file.name, source: 'human_input',
+            ...(file.originalAttachment ? { originalUpload: { id: file.originalAttachment.id, ownerUserId: file.originalAttachment.owner_user_id } } : {}),
+        })),
         attachmentPayload: attachedFiles.map(file => ({
             original_attachment: file.originalAttachment || undefined, name: file.name, path: file.path,
             is_image: Boolean(file.imageUrl), has_image_data: Boolean(file.imageUrl), conversion: file.conversion || null,

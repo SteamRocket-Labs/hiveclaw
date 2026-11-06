@@ -831,7 +831,7 @@ def fingerprint_rls_bypass_scopes(app_root: Path) -> str:
 # authentication, query predicates and authority checks retain their boundaries.
 # Telegram webhook operator: one read-only cross-tenant inventory scope;
 # inactive or missing known companies are excluded before HTTP registration.
-RLS_BYPASS_SCOPES_SHA256 = "b006316fd225ec5ee5a15cdf52819c0176472a0ede0edf7af83fadeed29b4794"
+RLS_BYPASS_SCOPES_SHA256 = "69cb3af71d2529bcbbc2fc277b6f508d56e8eb20a5bc1369c3cce70e9dec2955"
 
 
 def scan_rls_bypass_callsites(app_root: Path) -> list[RLSBypassCallsite]:

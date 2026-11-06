@@ -692,7 +692,22 @@ async def _resolve_session_tool_permission(
     await db.refresh(invocation)
 
     input_hash = hash_tool_input(invocation.tool_name, effective_arguments)
-    session = await db.get(ChatSession, authority.session_id)
+    # The grant merge is a read-modify-write of transcript_metadata_json,
+    # which the list removal and other runtime writers also rewrite whole.
+    # Take the session's transcript lock first (a child control writer locks
+    # its parent work session before this execution session), then re-select
+    # the row FOR UPDATE so the grant merges into the current metadata
+    # instead of a copy a concurrent removal can resurrect the list with.
+    await _lock_permission_session(db, tenant_id=authority.tenant_id, session_id=authority.session_id,
+        permission_request_id=permission_request_id)
+    session = (
+        await db.execute(
+            select(ChatSession)
+            .where(ChatSession.id == authority.session_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+    ).scalar_one_or_none()
     if session is None:
         raise RuntimeError("permission_chat_session_missing")
     session_grants = [

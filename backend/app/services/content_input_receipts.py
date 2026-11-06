@@ -2925,10 +2925,11 @@ async def load_skill_input_evidence(db, *, agent_id, invocation, model_result, a
 async def settle_workspace_receipt_read(*, request, read, tool_call_id, result):
     from app.database import tenant_scoped_session
     from app.models.workspace_resource import WorkspaceResourceManifest
-    from app.tools.result_envelope import render_tool_error
+    from app.tools.result_envelope import ToolContentEnvelope, render_tool_error
 
     context = request.context
-    if read.carrier_kind == "workspace_artifact" and read.observed_sha256 is None:
+    if (read.carrier_kind == "workspace_artifact" and read.observed_sha256 is None
+        and isinstance(result, ToolContentEnvelope) and result.metadata.get("filesystem_read_error") is True):
         return None, None
     if read.observed_sha256 is not None and (read.carrier_kind == "workspace_artifact" or read.observed_sha256 == read.content_sha256):
         evidence = await persist_workspace_execution_evidence(

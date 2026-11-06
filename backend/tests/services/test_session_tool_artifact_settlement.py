@@ -242,8 +242,9 @@ async def _start_effect(
         from app.services.content_input_receipts import workspace_artifact_ref
         import hashlib
 
-        # Known fixture original; receipt production is covered by the native integration tests.
-        db.add(
+        # Pin this consumer fixture's known original, including when native capture already stored the row.
+        # Receipt production is covered by the native integration tests.
+        await db.merge(
             ContentInputReceipt(
                 id=uuid.uuid5(invocation.id, f"workspace-content:{path}"),
                 tenant_id=tenant_id,

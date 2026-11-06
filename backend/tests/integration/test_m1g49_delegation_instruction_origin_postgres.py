@@ -3836,8 +3836,18 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
                     errors.append({"source": dependency, "code": exc.code, "message": str(exc)})
         (tmp_path / "input-source-errors.json").write_text(json.dumps(errors, indent=2))
         if refined_input:
-            assert receipt is None and errors and all(error["code"] == "content_source_unavailable" for error in errors)
-            assert observed["status"]["status"] == "unavailable"
+            from app.models.chat_artifact import ChatArtifact
+
+            assert receipt is not None and errors and all(error["code"] == "content_source_unavailable" for error in errors)
+            assert all(source in receipt.dependencies_json for source in bindings["dependencies"])
+            assert observed["status"]["status"] == "captured"
+            with pytest.raises(ContentInputReceiptError) as denied:
+                await validate_runtime_input_dependencies(db,
+                    ToolExecutionRequest(tool_name="send_email", arguments={}, context=observed["context"]),
+                    receipt.dependencies_json)
+            assert denied.value.code == "content_source_unavailable"
+            assert await db.scalar(select(ChatArtifact.id).where(
+                ChatArtifact.runtime_task_id == task_id, ChatArtifact.path == report_path)) is None
             return
         assert (receipt is not None) is parent_complete, (observed.get("status"), errors)
         if glob_case:
@@ -5099,12 +5109,21 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
                 assert creation_result["dependency_coverage"]["complete"] is True
         if parent_status_unknown:
             assert "Unverified legacy task result" in second_request
-            assert observed["status"]["status"] == "unavailable", observed["status"]
-            assert observed["status"]["reason_code"] == "model_input_inventory_incomplete"
-            return
-        if historical_creation_unknown:
-            assert observed["status"]["status"] == "unavailable", observed["status"]
-            assert observed["status"]["reason_code"] == "model_input_inventory_incomplete"
+        if parent_status_unknown or historical_creation_unknown:
+            from app.models.chat_artifact import ChatArtifact
+
+            assert observed["status"]["status"] == "captured", observed["status"]
+            async with app_user_sessionmaker() as db:
+                await pin_rls_tenant_context(db, seed["tenant_id"])
+                successor = await db.get(ContentInputReceipt, UUID(observed["status"]["receipts"][parent_path]))
+                assert successor is not None and any(
+                    source["source_kind"] == "session_model_result" for source in successor.dependencies_json)
+                with pytest.raises(ContentInputReceiptError):
+                    await validate_runtime_input_dependencies(db,
+                        ToolExecutionRequest(tool_name="send_email", arguments={}, context=observed["context"]),
+                        successor.dependencies_json)
+                assert await db.scalar(select(ChatArtifact.id).where(
+                    ChatArtifact.runtime_task_id == return_id, ChatArtifact.path == parent_path)) is None
             return
         assert observed["status"]["status"] == "captured", observed["status"]
         async with app_user_sessionmaker() as db:

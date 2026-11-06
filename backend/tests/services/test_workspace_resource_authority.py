@@ -248,7 +248,7 @@ async def test_scoped_admin_binds_employee_session_root_without_reassigning_owne
 
     async def fake_resource_action(_db, user, **kwargs):
         resource_decisions.append(kwargs)
-        return SimpleNamespace(authority_source="scoped_business_admin", operator_view=False)
+        return SimpleNamespace(authority_source="scoped_business_admin", operator_view=False, full_control=True)
 
     monkeypatch.setattr(workspace_authority, "check_agent_access", fake_access)
     monkeypatch.setattr(workspace_authority, "authorize_resource_action", fake_resource_action)

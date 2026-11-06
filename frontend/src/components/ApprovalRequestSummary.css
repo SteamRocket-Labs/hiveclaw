@@ -25,7 +25,7 @@
 
 .approval-request-field {
   display: grid;
-  grid-template-columns: minmax(88px, auto) minmax(0, 1fr);
+  grid-template-columns: fit-content(35%) minmax(0, 1fr);
   gap: var(--space-2);
   align-items: baseline;
 }

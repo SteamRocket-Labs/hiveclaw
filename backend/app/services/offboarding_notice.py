@@ -15,15 +15,18 @@ from app.models.notification import Notification
 from app.models.runtime_task import RuntimeTask
 from app.models.session_v2 import SessionToolInvocation
 from app.models.task import Task
+from app.models.tool import AgentTool, Tool
 from app.models.trigger import AgentTrigger
 from app.models.user import User
-from app.services.personal_knowledge_service import _merge_source_refs, _merge_unique_strings
+from app.services.personal_knowledge_service import PersonalKnowledgeService, _merge_source_refs, _merge_unique_strings
 from app.services.privacy_layer import max_sensitivity
+from app.services.tool_config_service import clear_agent_tool_config_secrets
 
 
 async def _move_knowledge(db, target_user, successor):
     models = (KnowledgeDocument, KnowledgeSegment, KnowledgeEntity, KnowledgeAssertion, KnowledgeLink, KnowledgeIndexJob)
     rows, replacements, duplicates, documents = {}, {}, {}, []
+    rebuild_ids = set()
     provenance = {model.__tablename__.removeprefix("knowledge_"): [] for model in models}
     losing_documents, deleted_segments, segment_counts = {}, {}, {}
 
@@ -97,6 +100,8 @@ async def _move_knowledge(db, target_user, successor):
             if model is KnowledgeDocument and row.scope_id == target_user.id:
                 documents.append({"id": str(match.id if match else row.id), "title": match.title if match else row.title,
                     **({"merged": True} if match else {})})
+                if row.status != "archived" and (not match or leaver_wins):
+                    rebuild_ids.add(match.id if match else row.id)
 
     provenance["segments"] = [{"document_id": str(document_id), "dropped_segment_count": count}
         for document_id, count in segment_counts.items()]
@@ -139,6 +144,11 @@ async def _move_knowledge(db, target_user, successor):
     await db.execute(update(PersonalKnowledgeProposal).where(PersonalKnowledgeProposal.tenant_id == target_user.tenant_id,
         PersonalKnowledgeProposal.owner_user_id == target_user.id, PersonalKnowledgeProposal.status == "pending")
         .values(owner_user_id=successor.id))
+    await db.flush()
+    service = PersonalKnowledgeService()
+    for document_id in rebuild_ids:
+        await service.queue_rebuild_personal_document_index(db, tenant_id=target_user.tenant_id,
+            owner_user_id=successor.id, document_id=document_id, current_user_id=successor.id)
     return documents, provenance
 
 
@@ -146,6 +156,17 @@ async def transfer_knowledge_and_notify(db, *, target_user, successor, agents, h
     with db.no_autoflush:
         documents, provenance = await _move_knowledge(db, target_user, successor)
     agent_ids = [agent.id for agent in agents]
+    tools_needing_credentials = []
+    assignments = (await db.execute(select(AgentTool, Tool).join(Tool, Tool.id == AgentTool.tool_id).where(
+        AgentTool.tenant_id == target_user.tenant_id, AgentTool.agent_id.in_(agent_ids))
+        .order_by(AgentTool.agent_id, Tool.name).with_for_update(of=AgentTool))).all()
+    agent_names = {agent.id: agent.name for agent in agents}
+    for assignment, tool in assignments:
+        cleared = clear_agent_tool_config_secrets(assignment.config, tool.config_schema)
+        if cleared != assignment.config:
+            assignment.config = cleared
+            tools_needing_credentials.append({"agent_id": str(assignment.agent_id),
+                "agent_name": agent_names[assignment.agent_id], "name": tool.display_name or tool.name})
     tasks = (await db.execute(select(Task, User.id).join(Agent, Agent.id == Task.agent_id)
         .outerjoin(User, (User.id == func.coalesce(Agent.owner_user_id, Agent.creator_id)) & User.is_active
             & (User.tenant_id == target_user.tenant_id)).where(
@@ -183,6 +204,7 @@ async def transfer_knowledge_and_notify(db, *, target_user, successor, agents, h
         AgentTrigger.agent_id.in_(agent_ids), AgentTrigger.id.in_(trigger_ids)))).all()
     if agents or documents or work or triggers:
         payload = {"agents": [{"id": str(agent.id), "name": agent.name} for agent in agents], "knowledge": documents,
+            "tools_needing_credentials": tools_needing_credentials,
             "work": work, "triggers": [{"id": str(trigger.id), "agent_id": str(trigger.agent_id), "name": trigger.name}
                 for trigger in triggers]}
         db.add(Notification(user_id=successor.id, type="offboarding_handover", title="工作交接",

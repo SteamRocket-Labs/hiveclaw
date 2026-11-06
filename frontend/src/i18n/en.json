@@ -4552,6 +4552,8 @@
     "deleteCompanyConfirm": "Are you sure you want to delete this company and ALL its data? This cannot be undone."
   },
   "handover": {
+    "toolsNeedCredentials": "Tools needing new credentials",
+    "enterCredentialsAgain": "The previous owner's keys were cleared. Enter your own keys before using these tools.",
     "merged": "Merged into the successor’s existing document",
     "needsAdmin": "Needs a company administrator",
     "effect": {

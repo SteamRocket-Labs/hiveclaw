@@ -42,6 +42,22 @@ function notice(noticeBody = body) {
 }
 
 describe('offboarding handover notice', () => {
+  it('uses the existing translated HR name for a system employee in the card', () => {
+    notice(JSON.stringify({ ...JSON.parse(body), work: [], agents: [{ id: 'hr', name: '__system_hr__' }] }));
+    expect(screen.getByRole('link', { name: 'agentCreate.hrAgentName' })).toBeTruthy();
+    expect(screen.queryByText('__system_hr__')).toBeNull();
+  });
+
+  it('lists tools that need new credentials without showing stored secrets', () => {
+    notice(JSON.stringify({ ...JSON.parse(body), work: [], tools_needing_credentials: [
+      { agent_id: 'bot', agent_name: 'Research bot', name: 'Project API' },
+    ] }));
+    expect(screen.getByRole('heading', { name: 'handover.toolsNeedCredentials' })).toBeTruthy();
+    expect(screen.getByText('handover.enterCredentialsAgain')).toBeTruthy();
+    expect(screen.getByRole('link', { name: /Project API/ }).getAttribute('href')).toBe('/agents/bot#tools');
+    expect(screen.queryByText(/sk-e2e-fake/)).toBeNull();
+  });
+
   it.each(['agents', 'knowledge', 'work', 'triggers'])('hides the %s section when it has no items', section => {
     notice(JSON.stringify({ ...JSON.parse(body), work: [], [section]: [] }));
     const title = section === 'agents' ? 'bots' : section;

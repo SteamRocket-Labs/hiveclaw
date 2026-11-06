@@ -106,6 +106,19 @@ def mask_agent_tool_config_secrets(config: dict | None, config_schema: dict | No
     return mask(schema_masked)  # type: ignore[return-value]
 
 
+def clear_agent_tool_config_secrets(config: dict | None, config_schema: dict | None) -> dict:
+    """Clear bot-local credentials while preserving every other setting."""
+    def clear(item, schema_keys=()):
+        if isinstance(item, dict):
+            return {key: "" if child and (key in schema_keys or is_agent_tool_credential_key(key)) else clear(child)
+                for key, child in item.items()}
+        if isinstance(item, list):
+            return [clear(child) for child in item]
+        return item
+
+    return clear(config, _secret_field_keys(config_schema)) if isinstance(config, dict) else {}
+
+
 def merge_tool_config_secrets(
     incoming: dict | None,
     stored: dict | None,

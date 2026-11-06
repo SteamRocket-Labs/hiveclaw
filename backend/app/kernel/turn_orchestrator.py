@@ -591,6 +591,14 @@ async def _finalize_model_response(
     final_content, _source_permission_allowed = await _enforce_generated_source_permissions(final_content)
     if _source_permission_allowed:
         await _flush_buffered_chunks()
+    if (last_model_result_receipt or {}).get("continuation", {}).get("verdict") == "continue":
+        # A message can arrive after the provider's input snapshot. The sealed
+        # round already records that obligation; bind it on the next round.
+        api_messages.append(LLMMessage(role="assistant", content=final_content,
+            reasoning_content=response.reasoning_content,
+            reasoning_signature=getattr(response, "reasoning_signature", None),
+            source_ref=f"session-provider-result:{provider_request_id}"))
+        return None
     from app.runtime.hooks import HookEvent
 
     _session_source = request.session_context.source if request.session_context else "runtime"

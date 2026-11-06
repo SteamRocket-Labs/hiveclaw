@@ -64,6 +64,15 @@ async def session_approval_projection(approval, *, db, agent, user):
         path = (approval.normalized_arguments or {}).get("path")
         if isinstance(path, str):
             details["path"] = path
+    continuation_status = (approval.execution_receipt or {}).get("continuation_status")
+    if (approval.execution_receipt or {}).get("continuation_mode") == "same_run":
+        from app.models.session_v2 import SessionTurnInput
+
+        applied = await db.scalar(select(SessionTurnInput.status).where(
+            SessionTurnInput.id == uuid.uuid5(approval.id, "approval-return"),
+            SessionTurnInput.tenant_id == approval.tenant_id))
+        if applied == "applied":
+            continuation_status = "delivered"
     return {
         "id": str(approval.id), "status": approval.status, "action_type": approval.action_type,
         "agent_id": str(agent.id), "agent_name": agent.name, "created_at": approval.created_at,
@@ -71,7 +80,7 @@ async def session_approval_projection(approval, *, db, agent, user):
         "tool_name": approval.tool_name, "execution_status": approval.execution_status,
         **({"execution_kind": "browser_human"} if is_human_approval(approval) else {}),
         "details": details,
-        "execution_receipt": {"continuation_status": (approval.execution_receipt or {}).get("continuation_status")},
+        "execution_receipt": {"continuation_status": continuation_status},
         "can_resolve": approval.status == "pending" and await can_resolve_approval(db, agent=agent, user=user, approval=approval),
     }
 

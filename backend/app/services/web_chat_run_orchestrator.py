@@ -703,7 +703,7 @@ class _WebChatCallbacks:
         cancelled = bool(state.cancel_event.is_set())
         state.terminal_phase_hint = state.ports.terminal.phase_for_pause(summary, cancelled=cancelled)
         metadata = _interactive_pause_metadata(state, summary)
-        if summary == "awaiting_session_permission" and not cancelled:
+        if _interactive_pause_suspends_run(state, summary) and not cancelled:
             # Approval is an open Tool/Run/Turn obligation, not a completed
             # turn. Release the worker lease without inventing a terminal
             # outcome; the same RuntimeTask becomes resumable after the typed
@@ -1511,6 +1511,14 @@ async def _finalize_invocation_result(state: _WebChatRunState, result: Any) -> N
     await _finalize_assistant_response(state, result, response, thinking, status, metadata)
 
 
+def _interactive_pause_suspends_run(state: _WebChatRunState, summary: str) -> bool:
+    session = state.session
+    return summary == "awaiting_session_permission" or (
+        summary == "awaiting_company_approval" and session is not None
+        and session.source_channel == "web" and session.user_id is not None and session.audience_kind != "group"
+    )
+
+
 def _interactive_pause_metadata(state: _WebChatRunState, summary: str) -> dict[str, Any]:
     cancelled = bool(state.cancel_event.is_set())
     return {
@@ -1535,7 +1543,7 @@ async def _finalize_interactive_pause(state: _WebChatRunState, summary: str) -> 
     cancelled = bool(state.cancel_event.is_set())
     state.terminal_phase_hint = state.ports.terminal.phase_for_pause(summary, cancelled=cancelled)
     metadata = _interactive_pause_metadata(state, summary)
-    if summary == "awaiting_session_permission" and not cancelled:
+    if _interactive_pause_suspends_run(state, summary) and not cancelled:
         await state.ports.terminal.update_runtime_task(
             state.run_uuid,
             status="suspended",

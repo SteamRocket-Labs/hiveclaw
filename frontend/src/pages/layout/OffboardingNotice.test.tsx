@@ -42,6 +42,13 @@ function notice(noticeBody = body) {
 }
 
 describe('offboarding handover notice', () => {
+  it.each(['agents', 'knowledge', 'work', 'triggers'])('hides the %s section when it has no items', section => {
+    notice(JSON.stringify({ ...JSON.parse(body), work: [], [section]: [] }));
+    const title = section === 'agents' ? 'bots' : section;
+    expect(screen.queryByRole('heading', { name: `handover.${title}` })).toBeNull();
+    if (section === 'triggers') expect(screen.queryByText('handover.triggersPaused')).toBeNull();
+  });
+
   it('renders known results before asking for a decision and never retries on confirmation', async () => {
     const { onCloseDetail } = notice();
     expect(screen.getByText('Research bot').getAttribute('href')).toBe('/agents/bot#chat');

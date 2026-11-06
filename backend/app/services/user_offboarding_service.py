@@ -21,7 +21,7 @@ from app.models.custom_api_account import CustomApiAccount, CustomApiAccountGran
 from app.models.email_account import EmailAccount, EmailAccountGrant
 from app.models.mcp_server import MCPAccountGrant, MCPServer
 from app.models.external_principal import ExternalPrincipal
-from app.models.knowledge import KnowledgeDocument, KnowledgeGrant
+from app.models.knowledge import KnowledgeDocument, KnowledgeGrant, KnowledgeIndexJob
 from app.models.local_agent_channel import LocalAgentChannel, LocalAgentChannelSession, LocalAgentChannelWsTicket
 from app.models.local_bridge import LocalAgentBridgeConnection, LocalAgentBridgePairingSession
 from app.models.refresh_token import RefreshToken
@@ -582,6 +582,13 @@ async def offboard_loaded_user(
                 "current_agent_ids": sorted(str(value) for value in current_agent_ids),
             },
         )
+
+    if (await db.scalars(select(KnowledgeIndexJob.id).where(
+        KnowledgeIndexJob.tenant_id == target_user.tenant_id, KnowledgeIndexJob.scope_type == "person",
+        KnowledgeIndexJob.scope_id.in_([target_user.id, successor.id]),
+        KnowledgeIndexJob.status.in_(("queued", "claimed", "running"))).limit(1))).all():
+        raise HTTPException(status_code=409, detail={"code": "offboarding_knowledge_processing", "retryable": True,
+            "message": "知识仍在处理中，请一两分钟后重试。"})
 
     transferred_agent_ids: list[uuid.UUID] = []
     # Advisory (inside revoke) must be held before any Trigger row lock.

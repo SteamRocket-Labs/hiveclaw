@@ -25,7 +25,7 @@ async def _move_knowledge(db, target_user, successor):
     models = (KnowledgeDocument, KnowledgeSegment, KnowledgeEntity, KnowledgeAssertion, KnowledgeLink, KnowledgeIndexJob)
     rows, replacements, duplicates, documents = {}, {}, {}, []
     provenance = {model.__tablename__.removeprefix("knowledge_"): [] for model in models}
-    losing_documents, deleted_segments = {}, {}
+    losing_documents, deleted_segments, segment_counts = {}, {}, {}
 
     def repoint(value):
         if isinstance(value, dict):
@@ -66,7 +66,7 @@ async def _move_knowledge(db, target_user, successor):
                 if model is KnowledgeDocument:
                     entry.update(sensitivity=row.sensitivity, agent_searchable=row.agent_searchable,
                         doc_metadata_json={key: value for key, value in row.doc_metadata_json.items() if key in paths})
-                    leaver_wins = match.status not in ("ready", "degraded") and row.status in ("ready", "degraded")
+                    leaver_wins = match.status not in ("ready", "degraded", "archived") and row.status in ("ready", "degraded")
                     losing_documents[match.id if leaver_wins else row.id] = match.id
                     if leaver_wins:
                         for field in ("status", "canonical_md_path", "canonical_md_sha256", "artifact_hash"):
@@ -75,24 +75,31 @@ async def _move_knowledge(db, target_user, successor):
                     match.agent_searchable = match.agent_searchable and row.agent_searchable
                 elif model is KnowledgeSegment:
                     deleted_segments[row.id] = deleted_segments[str(row.id)] = replacement_id
+                    segment_counts[row.document_id] = segment_counts.get(row.document_id, 0) + 1
                 elif model in (KnowledgeEntity, KnowledgeAssertion, KnowledgeLink):
                     match.source_refs_json = _merge_source_refs(repoint(match.source_refs_json), repoint(row.source_refs_json))
                     match.confidence = max(match.confidence, row.confidence)
                     if model is KnowledgeEntity:
                         match.aliases_json = _merge_unique_strings(match.aliases_json, row.aliases_json)
                         match.description = match.description or row.description
+                    elif model is KnowledgeAssertion:
+                        match.subject_entity_id = match.subject_entity_id or repoint(row.subject_entity_id)
+                        match.object_entity_id = match.object_entity_id or repoint(row.object_entity_id)
                 elif model is KnowledgeIndexJob:
                     entry.update(stage=row.stage, attempt_count=row.attempt_count, job_metadata_json={key: value
                             for key, value in row.job_metadata_json.items() if key in (*paths, "queued_at", "retried_at",
                                 "failed_at", "finished_at", "cancelled_at", "claimed_at", "claimed_token",
                                 "created_by_user_id", "processed_result_job_id", "processed_document_id")})
-                provenance[model.__tablename__.removeprefix("knowledge_")].append(entry)
+                if model is not KnowledgeSegment:
+                    provenance[model.__tablename__.removeprefix("knowledge_")].append(entry)
                 replacements[row.id], replacements[str(row.id)] = replacement_id, str(replacement_id)
                 duplicates.setdefault(model, []).append(row.id)
             if model is KnowledgeDocument and row.scope_id == target_user.id:
-                documents.append({"id": str(match.id if match else row.id), "title": row.title,
+                documents.append({"id": str(match.id if match else row.id), "title": match.title if match else row.title,
                     **({"merged": True} if match else {})})
 
+    provenance["segments"] = [{"document_id": str(document_id), "dropped_segment_count": count}
+        for document_id, count in segment_counts.items()]
     duplicate_ids = [value for ids in duplicates.values() for value in ids]
     # Edges have polymorphic endpoints; remove duplicate edges before repointing them.
     await db.execute(delete(KnowledgeLink).where(KnowledgeLink.id.in_(duplicates.get(KnowledgeLink, []))))

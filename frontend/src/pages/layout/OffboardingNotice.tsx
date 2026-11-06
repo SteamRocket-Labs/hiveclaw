@@ -68,16 +68,16 @@ export default function OffboardingNotice({ body, onNavigate }: { body: string; 
   const handover = useMemo((): Handover | null => { try { return JSON.parse(body); } catch { return null; } }, [body]);
   if (!handover) return <p role="alert">{t('handover.unavailable')}</p>;
   return <div className="offboarding-notice">
-    <h4>{t('handover.bots')}</h4>
-    <ul>{handover.agents.map(agent => <li key={agent.id}><Link to={`/agents/${agent.id}#chat`} onClick={onNavigate}>{agent.name}</Link></li>)}</ul>
-    <h4>{t('handover.knowledge')}</h4>
-    <ul>{handover.knowledge.map(document => <li key={document.id}>{document.title}{document.merged && ` · ${t('handover.merged')}`}</li>)}</ul>
-    <h4>{t('handover.work')}</h4>
-    <ul>{handover.work.map(work => <WorkDecision key={work.id} work={work} onNavigate={onNavigate} />)}</ul>
-    <h4>{t('handover.triggers')}</h4>
+    {handover.agents.length > 0 && <><h4>{t('handover.bots')}</h4>
+    <ul>{handover.agents.map(agent => <li key={agent.id}><Link to={`/agents/${agent.id}#chat`} onClick={onNavigate}>{agent.name}</Link></li>)}</ul></>}
+    {handover.knowledge.length > 0 && <><h4>{t('handover.knowledge')}</h4>
+    <ul>{handover.knowledge.map(document => <li key={document.id}>{document.title}{document.merged && ` · ${t('handover.merged')}`}</li>)}</ul></>}
+    {handover.work.length > 0 && <><h4>{t('handover.work')}</h4>
+    <ul>{handover.work.map(work => <WorkDecision key={work.id} work={work} onNavigate={onNavigate} />)}</ul></>}
+    {handover.triggers.length > 0 && <><h4>{t('handover.triggers')}</h4>
     <p>{t('handover.triggersPaused')}</p>
-    <ul>{handover.triggers.map(trigger => <li key={trigger.id} className="offboarding-notice-trigger">
+    <ul>{handover.triggers.map(trigger => <li key={trigger.id}><span className="offboarding-notice-trigger">
       <span>{trigger.name}</span><Link to={`/agents/${trigger.agent_id}#aware`} onClick={onNavigate}>{t('handover.settings')}</Link>
-    </li>)}</ul>
+    </span></li>)}</ul></>}
   </div>;
 }

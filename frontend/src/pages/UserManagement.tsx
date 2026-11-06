@@ -47,8 +47,8 @@ export default function UserManagement() {
 
     const selectedTenantId = () => localStorage.getItem('current_tenant_id') || '';
 
-    const notify = (message: string, error = false) => {
-        setToast(`${error ? '❌' : '✅'} ${message}`);
+    const notify = (message: string, error: boolean | 'retryable' = false) => {
+        setToast(`${error === 'retryable' ? '⏳' : error ? '❌' : '✅'} ${message}`);
         window.setTimeout(() => setToast(''), error ? 4000 : 2400);
     };
 
@@ -194,7 +194,9 @@ export default function UserManagement() {
             setOffboardingRequestId('');
             await Promise.all([loadUsers(), loadExternalPrincipals()]);
         } catch (error: any) {
-            notify(error?.message || t('userManagement.offboardingFailed', 'Failed to deactivate member.'), true);
+            const retryable = error?.status === 409 && error?.data?.code === 'offboarding_knowledge_processing'
+                && error?.data?.retryable === true;
+            notify(error?.message || t('userManagement.offboardingFailed', 'Failed to deactivate member.'), retryable ? 'retryable' : true);
         } finally {
             setOffboardingBusy(false);
         }
@@ -238,7 +240,7 @@ export default function UserManagement() {
     return (
         <div>
             {toast && (
-                <div className="user-mgmt-toast" style={{ background: toast.startsWith('✅') ? 'var(--success)' : 'var(--error)' }}>
+                <div role="status" className="user-mgmt-toast" style={{ background: toast.startsWith('✅') ? 'var(--success)' : toast.startsWith('⏳') ? 'var(--warning)' : 'var(--error)' }}>
                     {toast}
                 </div>
             )}

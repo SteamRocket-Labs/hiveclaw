@@ -425,6 +425,9 @@ async def test_overlapping_knowledge_merges_all_references_and_searches_once(own
             from_kind="document", from_id=state.doc.id, to_kind="entity", to_id=state.entity.id,
             relation="mentions", source_refs_json=[source_ref])
         db.add_all([alias, extra, proposal, peer_edge])
+        extra_segment = KnowledgeSegment(tenant_id=state.tenant.id, scope_type="person", scope_id=state.leaver.id,
+            document_id=state.doc.id, position=1, segment_hash="1" * 64, content="Second dropped segment")
+        db.add(extra_segment)
         await db.flush()
         await offboard(state)
         audit = (await db.scalars(select(AuditLog).where(AuditLog.tenant_id == state.tenant.id,
@@ -432,9 +435,10 @@ async def test_overlapping_knowledge_merges_all_references_and_searches_once(own
         provenance = audit.details["merged_knowledge_provenance"]
         assert provenance["documents"] == [document_provenance]
         assert provenance["index_jobs"] == [job_provenance]
-        for kind, original in zip(("segments", "entities", "assertions", "links"), old_rows[1:5]):
+        for kind, original in zip(("entities", "assertions", "links"), old_rows[2:5]):
             assert [entry["id"] for entry in provenance[kind]] == [str(original.id)]
-        assert provenance["segments"][0]["segment_hash"] == state.segment.segment_hash
+        assert provenance["segments"] == [{"document_id": str(state.doc.id), "dropped_segment_count": 2}]
+        assert await db.scalar(select(KnowledgeSegment.id).where(KnowledgeSegment.id == extra_segment.id)) is None
         assert "CONTENT_MUST_NOT_ENTER_AUDIT" not in json.dumps(audit.details)
         for row in old_rows:
             assert await db.scalar(select(type(row).id).where(type(row).id == row.id)) is None
@@ -478,8 +482,94 @@ async def test_pending_knowledge_proposals_move_to_successor(owner_sessionmaker)
         await db.rollback()
 
 
+@pytest.mark.parametrize("job_status", ["queued", "claimed", "running"])
+@pytest.mark.parametrize("owner", ["leaver", "successor"])
+async def test_processing_knowledge_blocks_offboarding_without_changes(owner_sessionmaker, job_status, owner):
+    async with owner_sessionmaker() as db:
+        state = await seed_handover(db)
+        state.job.scope_id = getattr(state, owner).id
+        state.job.status = state.job.stage = job_status
+        await db.flush()
+
+        async def snapshot():
+            return {model.__tablename__: (await db.execute(select(model.__table__).where(
+                Notification.user_id.in_([state.leaver.id, state.successor.id, state.peer.id, state.admin.id])
+                if model is Notification else model.tenant_id == state.tenant.id).order_by(model.id))).all()
+                for model in (User, Agent, KnowledgeDocument, KnowledgeSegment, KnowledgeIndexJob,
+                    KnowledgeEntity, KnowledgeAssertion, KnowledgeLink, KnowledgeGrant, EmailAccount,
+                    CustomApiAccount, MCPServer, MachineCredential, ExternalPrincipal, Task, RuntimeTask,
+                    AgentTrigger, AuditLog, Notification)}
+
+        before = await snapshot()
+        with pytest.raises(HTTPException) as error:
+            await offboard(state)
+        assert error.value.status_code == 409
+        assert error.value.detail["code"] == "offboarding_knowledge_processing"
+        assert error.value.detail["retryable"] is True
+        assert "知识仍在处理中" in error.value.detail["message"]
+        assert "一两分钟后重试" in error.value.detail["message"]
+        await db.flush()
+        assert await snapshot() == before
+        await db.rollback()
+
+
+async def test_processing_knowledge_retry_keeps_stricter_merged_settings(owner_sessionmaker):
+    async with owner_sessionmaker() as db:
+        state = await seed_handover(db)
+        state.doc.sensitivity, state.doc.agent_searchable = "PL3_sensitive", False
+        kept = KnowledgeDocument(id=uuid4(), tenant_id=state.tenant.id, scope_type="person",
+            scope_id=state.successor.id, owner_user_id=state.successor.id, source_kind=state.doc.source_kind,
+            source_sha256=state.doc.source_sha256, title="Kept successor title", status="queued",
+            canonical_md_path="successor.md", sensitivity="PL1_public", agent_searchable=True)
+        db.add(kept)
+        await db.flush()
+        job = KnowledgeIndexJob(tenant_id=state.tenant.id, scope_type="person", scope_id=state.successor.id,
+            document_id=kept.id, artifact_hash=state.job.artifact_hash, status="queued", stage="queued")
+        db.add(job)
+        await db.flush()
+        with pytest.raises(HTTPException) as error:
+            await offboard(state)
+        assert error.value.status_code == 409 and error.value.detail["retryable"] is True
+        kept.status, job.status, job.stage = "ready", "ready", "ready"
+        segment = KnowledgeSegment(tenant_id=state.tenant.id, scope_type="person", scope_id=state.successor.id,
+            document_id=kept.id, position=0, segment_hash="f" * 64, content="Completed successor content")
+        db.add(segment)
+        await db.flush()
+        await offboard(state)
+        await db.refresh(kept)
+        assert kept.status == "ready" and kept.sensitivity == "PL3_sensitive" and kept.agent_searchable is False
+        assert list(await db.scalars(select(KnowledgeSegment.id).where(KnowledgeSegment.document_id == kept.id))) == [segment.id]
+        notice = (await db.scalars(select(Notification).where(Notification.user_id == state.successor.id))).one()
+        assert json.loads(notice.body)["knowledge"] == [{"id": str(kept.id), "title": kept.title, "merged": True}]
+        await db.rollback()
+
+
+@pytest.mark.parametrize("missing", ["subject_entity_id", "object_entity_id", "both"])
+async def test_kept_assertion_fills_missing_entity_links_and_repoints(owner_sessionmaker, missing):
+    async with owner_sessionmaker() as db:
+        state = await seed_handover(db)
+        state.assertion.object_entity_id = state.entity.id
+        entity = KnowledgeEntity(id=uuid4(), tenant_id=state.tenant.id, scope_type="person",
+            scope_id=state.successor.id, canonical_name=state.entity.canonical_name, entity_type=state.entity.entity_type)
+        override = KnowledgeEntity(id=uuid4(), tenant_id=state.tenant.id, scope_type="person",
+            scope_id=state.successor.id, canonical_name="Successor override", entity_type="project")
+        db.add_all([entity, override])
+        await db.flush()
+        kept = KnowledgeAssertion(tenant_id=state.tenant.id, scope_type="person", scope_id=state.successor.id,
+            subject_text=state.assertion.subject_text, predicate=state.assertion.predicate, object_text=state.assertion.object_text,
+            subject_entity_id=None if missing in ("subject_entity_id", "both") else override.id,
+            object_entity_id=None if missing in ("object_entity_id", "both") else override.id)
+        db.add(kept)
+        await db.flush()
+        await offboard(state)
+        await db.refresh(kept)
+        for field in ("subject_entity_id", "object_entity_id"):
+            assert getattr(kept, field) == (entity.id if missing in (field, "both") else override.id)
+        await db.rollback()
+
+
 @pytest.mark.parametrize("source_kind", ["upload", "url"])
-@pytest.mark.parametrize("successor_status", ["queued", "failed", "ready", "degraded"])
+@pytest.mark.parametrize("successor_status", ["queued", "failed", "ready", "degraded", "archived"])
 async def test_document_overlap_preserves_usable_content_and_restricts_settings(owner_sessionmaker, tmp_path,
         source_kind, successor_status):
     async with owner_sessionmaker() as db:
@@ -500,7 +590,7 @@ async def test_document_overlap_preserves_usable_content_and_restricts_settings(
             content="Successor snapshot differs from leaver snapshot")
         db.add(other_segment)
         await db.flush()
-        leaver_wins = successor_status not in ("ready", "degraded")
+        leaver_wins = successor_status not in ("ready", "degraded", "archived")
         winner, loser = (state.segment, other_segment) if leaver_wins else (other_segment, state.segment)
         state.entity.source_refs_json = [{"document_id": str(loser.document_id),
             "segment_id": str(loser.id), "seg_hash": loser.segment_hash, "position": 0}]
@@ -529,8 +619,7 @@ async def test_document_overlap_preserves_usable_content_and_restricts_settings(
         assert dropped["id"] == str(state.doc.id) and dropped["status"] == "ready"
         assert dropped["canonical_md_sha256"] == "a" * 64 and dropped["artifact_hash"] == "leaver-artifact"
         assert dropped["sensitivity"] == "PL3_sensitive" and dropped["agent_searchable"] is True
-        assert provenance["segments"][0]["id"] == str(loser.id)
-        assert provenance["segments"][0]["segment_hash"] == loser.segment_hash
+        assert provenance["segments"] == [{"document_id": str(loser.document_id), "dropped_segment_count": 1}]
         assert all((tmp_path / name).is_file() for name in ("leaver.md", "successor.md"))
         await db.rollback()
 

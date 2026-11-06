@@ -23,6 +23,10 @@ async def _command(owner_sessionmaker, monkeypatch, tmp_path):
 
     seed = await _seed_waiting_batch(owner_sessionmaker, tool_name="run_command",
         tool_arguments={"command": "rm workspace/approved-disposable.txt"})
+    async with owner_sessionmaker() as db:
+        task = await db.get(RuntimeTask, seed.run_id)
+        task.metadata_json = {**task.metadata_json, "interactive_pause": "awaiting_session_permission"}
+        await db.commit()
     monkeypatch.setattr(get_settings(), "AGENT_DATA_DIR", str(tmp_path))
     monkeypatch.setattr(agent_tools, "_TOOL_RUNTIME_SERVICE", None)
     workspace = tmp_path / str(seed.agent_id) / "workspace"
@@ -196,8 +200,11 @@ async def test_permission_binding_rejects_another_owner_or_changed_run(
             if invalid == "different_lease":
                 async with permission_execution_lease(db, uuid.uuid4()) as other:
                     binding = replace(binding, lease=other)
-                    with pytest.raises(EnvironmentError, match="environment_source_authority_revoked"):
-                        await binding.authorize(db, scope)
+                    for validate in (binding.authorize, binding.revalidate):
+                        with group_permission_execution(authority=authority, invocation=invocation, control_id=control_id), \
+                                pytest.raises(EnvironmentError, match="environment_source_authority_revoked"):
+                            await validate(db, scope)
+                    assert not binding.owns_terminal_task(task)
                 return
             if invalid == "lost_lease":
                 await lease.connection.close()

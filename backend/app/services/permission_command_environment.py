@@ -31,7 +31,7 @@ class PermissionCommandBinding:
 
     def owns_terminal_task(self, task):
         metadata = task.metadata_json or {}
-        pause = metadata.get("interactive_pause") or {}
+        execution = _GROUP_PERMISSION_EXECUTION.get()
         try:
             requester = runtime_task_requester_user_id({"id": task.id, "root_user_id": task.root_user_id,
                 "metadata": task.metadata_json})
@@ -43,8 +43,8 @@ class PermissionCommandBinding:
             and task.id == self.run_id and task.status == "suspended"
             and metadata.get("cancel_state") != "cancelling"
             and requester == self.authority.principal_id
-            and pause.get("schema") == "hive.tool_permission_wait.v1"
-            and str(self.invocation_id) in (pause.get("invocation_ids") or [])
+            and metadata.get("interactive_pause") == "awaiting_session_permission"
+            and execution is not None and execution[:3] == (self.authority, self.invocation_id, self.run_id)
         )
 
     async def _validate(self, db, scope, *, before_command):
@@ -53,7 +53,6 @@ class PermissionCommandBinding:
             task = await db.get(RuntimeTask, self.run_id, populate_existing=True)
             invocation = await db.get(SessionToolInvocation, self.invocation_id, populate_existing=True)
             session = await db.get(ChatSession, self.authority.session_id, populate_existing=True)
-            execution = _GROUP_PERMISSION_EXECUTION.get()
             if (
                 any(str(getattr(scope, key)) != str(value) for key, value in (
                     ("tenant_id", self.authority.tenant_id), ("agent_id", self.authority.agent_id),
@@ -66,7 +65,6 @@ class PermissionCommandBinding:
                 or invocation is None or invocation.permission_item_id != self.permission_request_id
                 or invocation.provider_tool_use_id != self.tool_call_id
                 or invocation.result_event_id is not None
-                or execution is None or execution[:3] != (self.authority, self.invocation_id, self.run_id)
                 or not await _permission_execution_matches(db, task=task, session=session)
             ):
                 raise EnvironmentError("environment_source_authority_revoked", 403)

@@ -493,6 +493,8 @@ def _withhold_model_source(messages, wire_request, input_bindings, source, code,
     for entry in input_bindings["messages"]:
         if entry["message_index"] in indexes:
             entry.update(status="withheld", code=code, dependencies=[], dependency_status="resolved")
+    retained = [ref for entry in input_bindings["messages"] for ref in entry.get("dependencies", [])]
+    input_bindings["dependencies"][:] = [ref for ref in input_bindings["dependencies"] if ref in retained]
 
 
 async def _validate_or_withhold_model_sources(db, *, tenant_id, agent_id, session_id, run_id,
@@ -518,6 +520,8 @@ async def _validate_or_withhold_model_sources(db, *, tenant_id, agent_id, sessio
     # Each dependency is checked once; an arbitrary retry cap must not turn the
     # fourth unavailable item into a whole-turn failure.
     for source in list(input_bindings["dependencies"]) or [None]:
+        if source is not None and source not in input_bindings["dependencies"]:
+            continue
         dependencies = [source] if source is not None else []
         try:
             if group_principal is not None:

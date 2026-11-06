@@ -120,7 +120,8 @@ async def test_unbound_sibling_never_reaches_wire_or_derived_content(monkeypatch
     good = {"source_kind": "session_input", "source_id": "own", "source_version": "v1"}
     messages = [{"role": "user", "content": "Remember: weekly report on Friday."},
         {"role": "user", "content": "PRIVATE_GROUP_NOTE_CANARY UNBOUND_SECRET"}]
-    bindings = _bindings(2, {0: [good]})
+    ambient = {"source_kind": "agent_resident_memory", "source_id": "unbound-ambient", "source_version": "v1"}
+    bindings = _bindings(2, {0: [good], 1: [ambient]})
     bindings["messages"][1].update(status="unbound", dependency_status="incomplete", code="source_origin_missing")
     bindings["status"] = "incomplete"
     bindings["dependency_coverage"]["complete"] = False
@@ -130,6 +131,7 @@ async def test_unbound_sibling_never_reaches_wire_or_derived_content(monkeypatch
     assert messages[0]["content"].startswith("Remember:")
     assert bindings["messages"][1]["status"] == "withheld"
     assert bindings["dependency_coverage"]["complete"] is True
+    assert bindings["dependencies"] == [good]
     # A copying consumer can only copy the sanitized model input.
     for tool in ("save_memory", "delegate_to_agent"):
         instruction = json.dumps({"tool": tool, "content": wire["messages"]})

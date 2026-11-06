@@ -653,16 +653,18 @@ async def test_exchange_and_retirement_serialize_on_pairing_locks_without_deadlo
         sentinel_claimed_pairing_id,
     ) = await _seed_approved_pairing(owner_sessionmaker, app_user_sessionmaker, bind_agent=variant == "real_agent")
     if variant == "real_agent":
-        # The retirement active-Agent blocker requires owned Agents to be
-        # soft-deleted first; the Agent FK row itself still exists, so the
-        # connection INSERT still takes its implicit KEY SHARE lock.
+        # The retirement active-Agent blocker requires every owned Agent to
+        # be deactivated first (G1: employees are never deleted); the Agent
+        # FK row itself still exists, so the connection INSERT still takes
+        # its implicit KEY SHARE lock.
         from app.models.agent import Agent
 
+        now = datetime.now(timezone.utc)
         async with owner_sessionmaker() as db:
             await db.execute(
                 update(Agent)
                 .where(Agent.tenant_id == tenant_id)
-                .values(deleted_at=datetime.now(timezone.utc))
+                .values(deactivated_at=now, deactivation_reason="retirement_pending", status="stopped")
                 .execution_options(synchronize_session=False)
             )
             await db.commit()
@@ -1127,13 +1129,15 @@ async def test_fresh_approval_before_retirement_is_rejected_by_retirement(
     assert approved["status"] == "approved"
     agent_id = uuid.UUID(approved["agent_id"])
 
-    # The retirement active-Agent blocker requires owned Agents to be
-    # soft-deleted first (mirrors the race test's real_agent variant).
+    # The retirement active-Agent blocker requires every owned Agent to be
+    # deactivated first (G1: employees are never deleted; mirrors the race
+    # test's real_agent variant).
+    now = datetime.now(timezone.utc)
     async with owner_sessionmaker() as db:
         await db.execute(
             update(Agent)
             .where(Agent.tenant_id == tenant_id)
-            .values(deleted_at=datetime.now(timezone.utc))
+            .values(deactivated_at=now, deactivation_reason="retirement_pending", status="stopped")
             .execution_options(synchronize_session=False)
         )
         await db.commit()
@@ -1167,7 +1171,7 @@ async def test_fresh_approval_before_retirement_is_rejected_by_retirement(
         agent = await db.get(Agent, agent_id)
     assert pairing.status == "rejected"
     assert connections == 0
-    assert agent is not None and agent.deleted_at is not None
+    assert agent is not None and agent.deactivated_at is not None and agent.deleted_at is None
 
 
 async def _seed_platform_admin_owned_agent_tenant(

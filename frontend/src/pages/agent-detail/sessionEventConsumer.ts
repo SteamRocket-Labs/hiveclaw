@@ -349,11 +349,15 @@ function projectCanonicalItem(
   }
   if (item.kind === 'human_input') {
     const firstPart = Array.isArray(item.payload.content_parts) ? recordValue(item.payload.content_parts[0]) : undefined;
+    const noticePart = Array.isArray(item.payload.content_parts) ? item.payload.content_parts
+      .map(recordValue).find(part => part?.type === 'text'
+        && typeof recordValue(part.metadata)?.pasted_credential_notice === 'boolean') : undefined;
     // Internal result inputs already have a dedicated runtime notification in the conversation.
     if (firstPart?.role === 'system') return null;
     return {
       role: 'user',
       content: itemDisplayContent(item),
+      pastedCredentialNotice: recordValue(noticePart?.metadata)?.pasted_credential_notice as boolean | undefined,
       id: item.id,
       // Item identity and the durable checkpoint anchor are distinct: the
       // branch/rewind API needs an actual ChatTranscriptEvent id, never the

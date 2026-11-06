@@ -2,15 +2,18 @@ from types import SimpleNamespace
 from uuid import uuid4
 
 
-def test_agent_revision_applier_restores_config_and_lifecycle() -> None:
+def test_agent_revision_applier_restores_config_but_never_lifecycle() -> None:
+    """G1: 停用/恢复 are the only lifecycle movers; a rollback cannot revive or delete."""
     from app.services.ai_asset_adapters import apply_agent_content
 
+    deleted_at = object()
+    deactivated_at = object()
     agent = SimpleNamespace(
         name="Current",
         role_description="Current role",
-        deleted_at=object(),
-        deactivated_at=object(),
-        deactivation_reason="deleted",
+        deleted_at=deleted_at,
+        deactivated_at=deactivated_at,
+        deactivation_reason="retirement_pending",
         default_session_permission_mode="default",
     )
 
@@ -30,9 +33,9 @@ def test_agent_revision_applier_restores_config_and_lifecycle() -> None:
     assert agent.name == "Restored"
     assert agent.role_description == "Restored role"
     assert agent.default_session_permission_mode == "auto"
-    assert agent.deleted_at is None
-    assert agent.deactivated_at is None
-    assert agent.deactivation_reason is None
+    assert agent.deleted_at is deleted_at
+    assert agent.deactivated_at is deactivated_at
+    assert agent.deactivation_reason == "retirement_pending"
 
 
 def test_agent_projection_contains_config_not_runtime_usage() -> None:

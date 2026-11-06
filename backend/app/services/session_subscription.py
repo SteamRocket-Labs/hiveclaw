@@ -26,6 +26,7 @@ SESSION_SUBSCRIPTION_CLOSE_CODES = {
     "session_forbidden": 4403,
     "session_not_found": 4404,
     "schema_unsupported": 4406,
+    "agent_deactivated": 4410,
     "event_store_retryable": 1013,
 }
 

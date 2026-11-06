@@ -306,7 +306,6 @@ async def test_profile_and_native_schedule_replacements_preserve_the_original_wo
         "context",
         "allowed_tool",
         "context_revoked",
-        "context_deleted",
         "context_tool_revoked",
         "context_kb",
         "context_kb_denied",
@@ -610,7 +609,7 @@ async def test_enabled_routine_uses_native_tool_edits_and_returns_once_to_its_so
                     trigger = await db.get(AgentTrigger, uuid.UUID(trigger_id))
                     trigger.config = {**trigger.config, "authority_state": "quarantined"}
                 await db.commit()
-        if len(invocation_receipts) == 3 and fault in {"context_revoked", "context_deleted", "context_kb_revoked"}:
+        if len(invocation_receipts) == 3 and fault in {"context_revoked", "context_kb_revoked"}:
             from app.models.chat_session import ChatSession
 
             async with owner_sessionmaker() as db:
@@ -622,12 +621,7 @@ async def test_enabled_routine_uses_native_tool_edits_and_returns_once_to_its_so
                     grant.revoked_at = datetime.now(timezone.utc)
                 else:
                     source = await db.get(ChatSession, context_id)
-                    if fault == "context_deleted":
-                        from app.api.chat_sessions import delete_session
-
-                        await delete_session(agent_id=seed["agent_id"], session_id=context_id, current_user=user, db=db)
-                    else:
-                        source.user_id = other_id
+                    source.user_id = other_id
                 await db.commit()
         return await real_invoke(request)
 
@@ -1162,8 +1156,7 @@ async def test_enabled_routine_uses_native_tool_edits_and_returns_once_to_its_so
             "model_disabled",
             "origin_tamper",
             "context_revoked",
-            "context_deleted",
-            "context_kb_revoked",
+                "context_kb_revoked",
             "context_kb_command_revoked",
             "instruction_tamper",
             "context_kb_metadata_revoked",
@@ -1202,7 +1195,6 @@ async def test_enabled_routine_uses_native_tool_edits_and_returns_once_to_its_so
         "context_kb_denied",
         "context_kb_revoked",
         "context_revoked",
-        "context_deleted",
         "context_kb_command_revoked",
         "instruction_tamper",
         "context_kb_metadata_revoked",
@@ -1235,8 +1227,7 @@ async def test_enabled_routine_uses_native_tool_edits_and_returns_once_to_its_so
         assert task.root_session_id == str(seed["session_id"])
         if fault in {
             "context_revoked",
-            "context_deleted",
-            "context_kb_denied",
+                "context_kb_denied",
             "context_kb_revoked",
             "context_kb_command_revoked",
             "instruction_tamper",

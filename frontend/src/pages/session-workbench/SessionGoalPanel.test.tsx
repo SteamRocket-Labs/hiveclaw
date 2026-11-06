@@ -15,6 +15,7 @@ vi.mock('react-i18next', () => ({
 }));
 
 import { SessionGoalPanel, goalProgressFacts } from './SessionGoalPanel';
+import { normalizeStoredChatMessage } from '../agent-detail/chatRuntime';
 
 const goal = {
   id: 'goal-1',
@@ -41,6 +42,51 @@ const goal = {
 };
 
 describe('SessionGoalPanel', () => {
+  it.each(['started', 'updated'])('uses the server goal %s event for its objective mark and notice', action => {
+    const objective = 'Deliver [REDACTED_SECRET] safely';
+    const markup = renderToStaticMarkup(<SessionGoalPanel agentId="agent-1" sessionId="session-1"
+      goals={[{ ...goal, objective }]} messages={[normalizeStoredChatMessage({ role: 'system', event_type: 'goal',
+        content: objective, metadata: { command: action === 'started' ? 'goal_start' : 'goal_update', goal_id: goal.id,
+          pasted_credential_notice: true } })]} />);
+    expect(markup).toContain('Hidden key');
+    expect(markup).toContain('The key you pasted was hidden. It will not be saved or sent to the model.');
+    expect(markup).not.toContain('[REDACTED_SECRET]');
+    expect(objective).toBe('Deliver [REDACTED_SECRET] safely');
+  });
+
+  it('marks an unflagged goal by text without reusing another goal notice', () => {
+    const objective = 'Literal [REDACTED_SECRET]';
+    const markup = renderToStaticMarkup(<SessionGoalPanel agentId="agent-1" sessionId="session-1"
+      goals={[{ ...goal, objective }]} messages={[{ role: 'event', eventType: 'goal', eventGoalId: 'other-goal',
+        content: objective, pastedCredentialNotice: true }]} />);
+    expect(markup).toContain('Hidden key');
+    expect(markup).not.toContain('[REDACTED_SECRET]');
+    expect(markup).not.toContain('pasted-credential-notice');
+  });
+
+  it('clears the notice when a newer objective update has no flag', () => {
+    const objective = 'A new ordinary objective';
+    const markup = renderToStaticMarkup(<SessionGoalPanel agentId="agent-1" sessionId="session-1"
+      goals={[{ ...goal, objective }]} messages={[
+        { role: 'event', eventType: 'goal', eventGoalId: goal.id, eventAction: 'started', content: 'Old [REDACTED_SECRET]', pastedCredentialNotice: true },
+        { role: 'event', eventType: 'goal', eventGoalId: goal.id, eventAction: 'updated', content: objective },
+      ]} />);
+    expect(markup).toContain(objective);
+    expect(markup).not.toContain('pasted-credential-notice');
+  });
+  it('keeps the objective mark after an update without a new pasted key, dropping only the sentence', () => {
+    const objective = 'Deliver [REDACTED_SECRET] safely';
+    const messages = [
+      { role: 'event' as const, eventType: 'goal', eventGoalId: goal.id, eventAction: 'started', content: objective, pastedCredentialNotice: true },
+      { role: 'event' as const, eventType: 'goal', eventGoalId: goal.id, eventAction: 'updated', content: 'Budget updated' },
+    ];
+    const markup = renderToStaticMarkup(<SessionGoalPanel agentId="agent-1" sessionId="session-1"
+      goals={[{ ...goal, objective }]} messages={messages} />);
+    expect(markup).toContain('hidden-credential-mark');
+    expect(markup).toContain('Hidden key');
+    expect(markup).not.toContain('[REDACTED_SECRET]');
+    expect(markup).not.toContain('pasted-credential-notice');
+  });
   it('projects only user-meaningful progress and semantic controls', () => {
     const markup = renderToStaticMarkup(
       <SessionGoalPanel agentId="agent-1" sessionId="session-1" goals={[goal]} />,

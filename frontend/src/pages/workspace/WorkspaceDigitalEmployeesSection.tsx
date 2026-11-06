@@ -41,13 +41,6 @@ export default function WorkspaceDigitalEmployeesSection({ selectedTenantId }: W
         enabled: canManageEmployees,
     });
 
-    const cleanupQueryKey = ['agent-cleanup-pending', selectedTenantId];
-    const { data: pendingCleanups = [], error: cleanupError, refetch: reloadCleanups } = useQuery({
-        queryKey: cleanupQueryKey,
-        queryFn: () => agentApi.listPendingCleanup(selectedTenantId || undefined),
-        enabled: canManageEmployees,
-    });
-
     const retirementQueryKey = ['agent-retirement-pending', selectedTenantId];
     const { data: pendingRetirements = [], isError: retirementError, refetch: reloadRetirements } = useQuery({
         queryKey: retirementQueryKey,
@@ -64,29 +57,43 @@ export default function WorkspaceDigitalEmployeesSection({ selectedTenantId }: W
 
     const userById = new Map(users.map((user) => [user.id, user]));
 
-    const deleteAgentMutation = useMutation({
-        mutationFn: (agentId: string) => agentApi.remove(agentId),
+    const invalidateEmployeeLists = () => {
+        queryClient.invalidateQueries({ queryKey: retirementQueryKey });
+        queryClient.invalidateQueries({ queryKey: ['agents'] });
+        queryClient.invalidateQueries({ queryKey: ['agents', selectedTenantId, 'admin-management'] });
+        queryClient.invalidateQueries({ queryKey: ['enterprise-stats'] });
+    };
+
+    const deactivateAgentMutation = useMutation({
+        mutationFn: (agentId: string) => agentApi.deactivate(agentId),
         onSuccess: () => {
-            queryClient.invalidateQueries({ queryKey: ['agents'] });
-            queryClient.invalidateQueries({ queryKey: ['agents', selectedTenantId, 'admin-management'] });
-            queryClient.invalidateQueries({ queryKey: ['enterprise-stats'] });
-            showAppToast(t('workspace.digitalEmployees.employeeDeleted', 'Digital employee deleted.'), 'success');
+            showAppToast(t('workspace.digitalEmployees.employeeDeactivated', 'Digital employee deactivated. Its files, memory and conversations are kept.'), 'success');
         },
         onError: (error: any) => {
             showAppToast(
                 error?.data?.code === 'agent_retirement_pending'
-                    ? t('workspace.digitalEmployees.retirementPending', 'New execution is disabled. External work is still unconfirmed; review it in its original work before retrying retirement. Files are retained. Ending local tracking does not confirm that the external runner stopped.')
-                    : error?.data?.code === 'agent_cleanup_pending'
-                    ? t('workspace.digitalEmployees.cleanupPending', 'Deletion is committed. File archival is pending; retry only the cleanup below.')
-                    : error?.message || t('workspace.digitalEmployees.employeeDeleteFailed', 'Failed to delete digital employee.'),
+                    ? t('workspace.digitalEmployees.retirementPending', 'Deactivated; external work is not yet confirmed. Review it in its original work; ending local tracking does not confirm that the external runner stopped. Files are retained.')
+                    : error?.message || t('workspace.digitalEmployees.employeeDeactivateFailed', 'Failed to deactivate digital employee.'),
                 'error',
             );
         },
-        onSettled: () => {
-            queryClient.invalidateQueries({ queryKey: cleanupQueryKey });
-            queryClient.invalidateQueries({ queryKey: retirementQueryKey });
-            queryClient.invalidateQueries({ queryKey: ['agents'] });
+        onSettled: invalidateEmployeeLists,
+    });
+
+    const restoreAgentMutation = useMutation({
+        mutationFn: (agentId: string) => agentApi.restore(agentId),
+        onSuccess: () => {
+            showAppToast(t('workspace.digitalEmployees.employeeRestored', 'Digital employee restored. Scheduled tasks stay off until their owner turns each one back on.'), 'success');
         },
+        onError: (error: any) => {
+            showAppToast(
+                error?.data?.code === 'agent_restore_work_pending'
+                    ? t('workspace.digitalEmployees.restoreWorkPending', 'Outward work is not yet confirmed. Review the recall, then restore.')
+                    : error?.message || t('workspace.digitalEmployees.employeeRestoreFailed', 'Failed to restore digital employee.'),
+                'error',
+            );
+        },
+        onSettled: invalidateEmployeeLists,
     });
 
     const transferOwnerMutation = useMutation({
@@ -143,20 +150,20 @@ export default function WorkspaceDigitalEmployeesSection({ selectedTenantId }: W
 
     const isSystemProtectedAgent = (agent: Agent) => agent.id === hrAgent?.id || agent.name === '__system_hr__';
 
-    const handleDeleteAgent = async (agent: Agent) => {
+    const handleDeactivateAgent = async (agent: Agent) => {
         if (isSystemProtectedAgent(agent)) return;
         const confirmed = await requestAppConfirm({
-            title: t('workspace.digitalEmployees.deleteEmployeeTitle', 'Delete digital employee'),
+            title: t('workspace.digitalEmployees.deactivateEmployeeTitle', 'Deactivate digital employee'),
             message: t(
-                'workspace.digitalEmployees.deleteEmployeeConfirm',
-                'Retire {{name}}? New execution will be disabled and in-flight work withdrawn. Unconfirmed external work keeps the employee and files available for reconciliation. Files are archived when tracking is settled; audit history is preserved.',
+                'workspace.digitalEmployees.deactivateEmployeeConfirm',
+                'Deactivate {{name}}? It stops taking new work and in-flight work is withdrawn. Files, memory and conversations are kept, and it can be restored later. Scheduled tasks stay off after restore until their owner re-enables them.',
                 { name: agent.name },
             ),
-            confirmLabel: t('workspace.digitalEmployees.deleteEmployeeButton', 'Delete employee'),
+            confirmLabel: t('workspace.digitalEmployees.deactivateEmployeeButton', 'Deactivate'),
             danger: true,
         });
         if (!confirmed) return;
-        deleteAgentMutation.mutate(agent.id);
+        deactivateAgentMutation.mutate(agent.id);
     };
 
     const openOwnershipModal = async (agent: Agent) => {
@@ -213,7 +220,7 @@ export default function WorkspaceDigitalEmployeesSection({ selectedTenantId }: W
                             {t('workspace.digitalEmployees.title', 'Digital Employee Management')}
                         </h3>
                         <p className="ws-employees-desc">
-                            {t('workspace.digitalEmployees.description', 'Company admins can review and remove tenant digital employees from this governed backend surface.')}
+                            {t('workspace.digitalEmployees.description', 'Company admins can review and deactivate tenant digital employees from this governed backend surface.')}
                         </p>
                     </div>
                     <Link className="btn btn-primary ws-employees-create" to="/agents/new">
@@ -221,50 +228,30 @@ export default function WorkspaceDigitalEmployeesSection({ selectedTenantId }: W
                     </Link>
                 </div>
 
-                {cleanupError && (
-                    <div role="alert">
-                        {t('workspace.digitalEmployees.cleanupLoadFailed', 'Could not check pending file cleanup.')}
-                        <button type="button" className="btn btn-secondary" onClick={() => void reloadCleanups()}>
-                            {t('common.retry', 'Retry')}
-                        </button>
-                    </div>
-                )}
-                {pendingCleanups.length > 0 && (
-                    <section aria-label={t('workspace.digitalEmployees.pendingCleanupTitle', 'Pending file cleanup')}>
-                        <h4>{t('workspace.digitalEmployees.pendingCleanupTitle', 'Pending file cleanup')}</h4>
-                        <p>{t('workspace.digitalEmployees.cleanupPending', 'Deletion is committed. File archival is pending; retry only the cleanup below.')}</p>
-                        <ul>
-                            {pendingCleanups.map((agent) => (
-                                <li key={agent.id}>
-                                    {agent.name}{' '}
-                                    <button
-                                        type="button"
-                                        className="btn btn-secondary"
-                                        disabled={deleteAgentMutation.isPending}
-                                        onClick={() => deleteAgentMutation.mutate(agent.id)}
-                                    >
-                                        {t('workspace.digitalEmployees.retryCleanup', 'Retry file cleanup')}
-                                    </button>
-                                </li>
-                            ))}
-                        </ul>
-                    </section>
-                )}
-
                 {retirementError && <p role="alert">
                     {t('workspace.digitalEmployees.retirementLoadFailed', 'Pending retirement could not be loaded.')}{' '}
                     <button type="button" className="btn btn-secondary" onClick={() => void reloadRetirements()}>
                         {t('common.retry', 'Retry')}
                     </button>
                 </p>}
-                {pendingRetirements.length > 0 && <section aria-label={t('workspace.digitalEmployees.pendingRetirementTitle', 'Pending retirement')}>
-                    <h4>{t('workspace.digitalEmployees.pendingRetirementTitle', 'Pending retirement')}</h4>
-                    <p>{t('workspace.digitalEmployees.retirementPending', 'New execution is disabled. External work is still unconfirmed; review it in its original work before retrying retirement. Files are retained. Ending local tracking does not confirm that the external runner stopped.')}</p>
+                {pendingRetirements.length > 0 && <section aria-label={t('workspace.digitalEmployees.deactivatedTitle', 'Deactivated digital employees')}>
+                    <h4>{t('workspace.digitalEmployees.deactivatedTitle', 'Deactivated digital employees')}</h4>
+                    <p>{t('workspace.digitalEmployees.deactivatedDesc', 'Deactivated employees keep their files, memory and conversations. Unconfirmed external work stays listed for review; ending local tracking does not confirm that the external runner stopped.')}</p>
                     <ul>{pendingRetirements.map((employee) => <li key={employee.id}>
-                        <Link to={`/agents/${employee.id}`}>{employee.name}</Link>{' '}
-                        <button type="button" className="btn btn-secondary" disabled={deleteAgentMutation.isPending}
-                            onClick={() => deleteAgentMutation.mutate(employee.id)}>
-                            {t('workspace.digitalEmployees.retryRetirement', 'Retry retirement')}
+                        <Link to={`/agents/${employee.id}`} className="ws-employees-deactivated-link">{employee.name}</Link>
+                        {' '}
+                        {!!employee.remote_work_count && t('workspace.digitalEmployees.unconfirmedRemoteWork', '{{count}} unconfirmed external task(s)', { count: employee.remote_work_count })}
+                        {' '}
+                        {!!employee.local_work_count && t('workspace.digitalEmployees.unconfirmedLocalWork', '{{count}} unconfirmed delegation(s)', { count: employee.local_work_count })}
+                        {' '}
+                        {(!!employee.remote_work_count || !!employee.local_work_count) && <button type="button"
+                            className="btn btn-secondary" disabled={deactivateAgentMutation.isPending}
+                            onClick={() => deactivateAgentMutation.mutate(employee.id)}>
+                            {t('workspace.digitalEmployees.retryDeactivateButton', 'Retry deactivation')}
+                        </button>}
+                        <button type="button" className="btn btn-secondary" disabled={restoreAgentMutation.isPending}
+                            onClick={() => restoreAgentMutation.mutate(employee.id)}>
+                            {t('workspace.digitalEmployees.restoreEmployeeButton', 'Restore')}
                         </button>
                         {!!employee.inactive_requester_work_count && employee.tracking_version && <button type="button"
                             className="btn btn-secondary" disabled={endTrackingMutation.isPending}
@@ -331,10 +318,10 @@ export default function WorkspaceDigitalEmployeesSection({ selectedTenantId }: W
                                                         <button
                                                             type="button"
                                                             className="btn btn-ghost ws-employees-del"
-                                                            onClick={() => handleDeleteAgent(agent)}
-                                                            disabled={deleteAgentMutation.isPending}
+                                                            onClick={() => void handleDeactivateAgent(agent)}
+                                                            disabled={deactivateAgentMutation.isPending}
                                                         >
-                                                            {t('workspace.digitalEmployees.deleteEmployeeButton', 'Delete employee')}
+                                                            {t('workspace.digitalEmployees.deactivateEmployeeButton', 'Deactivate')}
                                                         </button>
                                                     )}
                                                 </div>

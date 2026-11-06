@@ -6,6 +6,7 @@ import { IconChevronDown, IconPlus } from '@tabler/icons-react';
 
 import type { SessionWorkbenchHeaderModel } from './timelineModel';
 import { sessionTitleForUser } from './sessionTitlePresentation';
+import { PastedCredentialText } from './PastedCredentialNotice';
 import { buildNewSessionDraftNavigation } from '../agent-detail/newSessionNavigation';
 import './SessionWorkbenchChrome.css';
 
@@ -129,7 +130,7 @@ function SessionHistoryMenu({ agentId, sessions, loading, activeSessionId }: Ses
                     onClick={() => setOpen(false)}
                   >
                     <span className="swb-history-item-title">
-                      {sessionTitleForUser(session, t('agent.chat.session', 'Session'))}
+                      <PastedCredentialText content={sessionTitleForUser(session, t('agent.chat.session', 'Session'))} />
                     </span>
                     <span className="swb-history-item-meta">{historyTime(session, locale)}</span>
                   </Link>
@@ -168,7 +169,7 @@ export function SessionWorkbenchHeader({ model, history, manageHref }: {
   return (
     <div data-testid="session-workbench-header" className="swb-header">
       <div className="swb-header-title-row">
-        <h2 className="swb-header-title">{model.title || t('agent.chat.newSessionTitle', 'New conversation')}</h2>
+        <h2 className="swb-header-title"><PastedCredentialText content={model.title || t('agent.chat.newSessionTitle', 'New conversation')} /></h2>
         {history && <SessionHistoryMenuWithRouter {...history} />}
         {managementHref && (
           <Link className="swb-history-trigger" to={managementHref}>

@@ -2,8 +2,6 @@
 
 import hashlib
 import uuid
-from datetime import datetime, timedelta, timezone
-
 import pytest
 from sqlalchemy import select
 
@@ -84,128 +82,55 @@ async def test_deleted_work_retires_exact_source_edges_before_governed_physical_
     monkeypatch.setattr(runtime_task_service, "async_session", app_user_sessionmaker)
     monkeypatch.setattr(runtime_task_worker, "notify_runtime_task_worker", notify)
     assert await runtime_task_service.update_runtime_task_record(str(d.run), status="killed")
-    if origin == "web" and provider[0] == "filesystem":
-        from app.models.chat_session import ChatSession
+    # G1: with the work settled, the owner's removal takes the conversation out
+    # of their own list. The row, its transcript and every pin stay exactly as
+    # they were — nothing stamps a closure proof, because no conversation ever
+    # closes.
+    from app.models.chat_session import ChatSession
 
-        child_id = uuid.uuid4()
-        async with owner_sessionmaker() as db:
-            db.add(ChatSession(id=child_id, tenant_id=d.tenant, agent_id=d.agent, user_id=d.user.id, root_session_id=d.session))
-            await db.commit()
-        restricted = await client.delete(f"/agents/{d.agent}/sessions/{d.session}", headers=owner_headers)
-        assert restricted.status_code == 409, restricted.text
-        async with owner_sessionmaker() as db:
-            assert await db.get(ChatSession, d.session) is not None
-            held_refs = (await db.scalars(select(StorageBlobRef).where(StorageBlobRef.blob_id == blob_id))).all()
-            assert all("session_retirement" not in ref.metadata_json for ref in held_refs)
-            await db.delete(await db.get(ChatSession, child_id))
-            await db.commit()
     deleted = await client.delete(f"/agents/{d.agent}/sessions/{d.session}", headers=owner_headers)
     assert deleted.status_code == 204, deleted.text
+    async with owner_sessionmaker() as db:
+        row = await db.get(ChatSession, d.session)
+        assert row is not None, "the conversation row must stay in the database"
+        assert str(d.user.id) in ((row.transcript_metadata_json or {}).get("removed_from_list_by") or {})
+        assert all("session_retirement" not in ref.metadata_json for ref in
+            (await db.scalars(select(StorageBlobRef).where(StorageBlobRef.blob_id == blob_id))).all())
     inspected = await client.get(f"/chat/attachments/{reference}/download")
     assert inspected.status_code == 200 and inspected.content == body, inspected.text
+
     after = (await client.get(base + "/references")).json()
     pin = next(item for item in after["items"] if item["owner_type"] == "session_input")
-    assert pin["retirable"] is True, pin
-    if origin == "web" and provider[0] == "filesystem":
-        async with owner_sessionmaker() as db:
-            target = await db.get(StorageBlobRef, uuid.UUID(pin["reference_id"]))
-            saved_proof = target.metadata_json
-            target.legal_hold = True
-            await db.commit()
-        stale = {"operation_id": str(uuid.uuid4()), "action": "retire_reference", "expected_content_sha256": claim["content_sha256"],
-            "reference_id": pin["reference_id"], "expected_reference_sha256": pin["snapshot_sha256"]}
-        changed = await client.post(base + "/references", json=stale)
-        assert changed.status_code == 200 and changed.json()["changed"] is False and changed.json()["hold_reason"] == "reference_changed"
-        assert (await client.post(base + "/references", json=stale)).json()["replayed"] is True
-        assert (await client.get(base + "/references", headers=owner_headers)).status_code == 403
-        assert (await client.post(base + "/references", json=stale, headers=owner_headers)).status_code == 403
-        assert (await client.get(base + "/references", params={"tenant_id": str(uuid.uuid4())})).status_code == 403
-        async with owner_sessionmaker() as db:
-            (await db.get(User, admin)).role = "member"
-            await db.commit()
-        assert (await client.post(base + "/references", json=stale)).status_code == 403
-        async with owner_sessionmaker() as db:
-            (await db.get(User, admin)).role = "org_admin"
-            await db.commit()
-        for kind in ("legal", "future", "legacy"):
-            async with owner_sessionmaker() as db:
-                target = await db.get(StorageBlobRef, uuid.UUID(pin["reference_id"]))
-                target.legal_hold = kind == "legal"
-                target.pinned_until = datetime.now(timezone.utc) + timedelta(days=1) if kind == "future" else None
-                target.metadata_json = {key: value for key, value in saved_proof.items() if key != "session_retirement"} if kind == "legacy" else saved_proof
-                await db.commit()
-            row = next(item for item in (await client.get(base + "/references")).json()["items"] if item["reference_id"] == pin["reference_id"])
-            assert row["retirable"] is False, row
-            held = await client.post(base + "/references", json={**stale, "operation_id": str(uuid.uuid4()),
-                "expected_reference_sha256": row["snapshot_sha256"]})
-            assert held.status_code == 200 and held.json()["outcome"] == "reference_held" and held.json()["changed"] is False
-        async with owner_sessionmaker() as db:
-            target = await db.get(StorageBlobRef, uuid.UUID(pin["reference_id"]))
-            target.metadata_json, target.legal_hold, target.pinned_until = saved_proof, False, None
-            await db.commit()
-        pin = next(item for item in (await client.get(base + "/references")).json()["items"] if item["reference_id"] == pin["reference_id"])
+    # G1: a conversation that never closes keeps holding its session pin for
+    # the work that referenced the original (work_reference). Explicit
+    # retirement of the held pin stays a recorded no-op — the retired-proof
+    # path belonged to the removed physical deletion.
+    assert pin["retirable"] is False and pin["hold_reason"] == "work_reference", pin
+    held = await client.post(base + "/references", json={"operation_id": str(uuid.uuid4()),
+        "action": "retire_reference", "expected_content_sha256": claim["content_sha256"],
+        "reference_id": pin["reference_id"], "expected_reference_sha256": pin["snapshot_sha256"]})
+    assert held.status_code == 200 and held.json()["outcome"] == "reference_held", held.text
+    assert held.json()["changed"] is False, held.text
+    # The withdrawn source stays held too: the immortal session pin (and the
+    # conversation's turn inputs) still reference it.
+    root = next(item for item in (await client.get(base + "/references")).json()["items"]
+        if item["reference_id"] == str(reference))
+    assert root["retirable"] is False and root["hold_reason"] == "work_reference", root
+    assert (await client.get(base + "/references")).json()["items"], "references stay listed"
 
-    async def retire(item):
-        request = {"operation_id": str(uuid.uuid4()), "action": "retire_reference",
-            "expected_content_sha256": claim["content_sha256"], "reference_id": item["reference_id"],
-            "expected_reference_sha256": item["snapshot_sha256"]}
-        result = await client.post(base + "/references", json=request)
-        assert result.status_code == 200 and result.json()["outcome"] == "reference_retired", result.text
-        replay = await client.post(base + "/references", json=request)
-        assert replay.status_code == 200 and replay.json()["replayed"] is True, replay.text
-        receipt = await client.get(base + f"/operations/references/{request['operation_id']}")
-        assert receipt.status_code == 200 and receipt.json()["result"] == result.json(), receipt.text
-        assert result.json()["physical_bytes_reclaimed"] is None
-
-    if origin == "web" and provider[0] == "filesystem":
-        from tests.integration.original_reference_ui import retire_references_through_ui
-
-        ui = await retire_references_through_ui(d, client, app_user_sessionmaker, admin)
-        assert set(ui["retired_references"]) == {pin["reference_id"], str(reference)}
-        assert ui["post_count"] == 2 and ui["lost_acknowledgement_recovered"]
-    else:
-        await retire(pin)
-        root = next(item for item in (await client.get(base + "/references")).json()["items"]
-            if item["reference_id"] == str(reference))
-        assert root["retirable"] is True, root
-        await retire(root)
-    assert (await client.get(base + "/references")).json()["items"] == []
-    backup_id = None
-    if origin == "web" and provider[0] == "filesystem":
-        async with owner_sessionmaker() as db:
-            backup = StorageBlobRef(tenant_id=d.tenant, blob_id=blob_id, owner_type="recovery_bundle", owner_id="test-owned-bundle",
-                purpose="disaster_recovery", metadata_json={"schema": "test.recovery_holder.v1"})
-            db.add(backup)
-            await db.commit()
-            backup_id = backup.id
+    # Governed physical cleanup is held by the same immortal references: the
+    # blob is quarantined only when nothing references it, so it stays
+    # available with the current edit and the independent recovery copy.
     policy = (await client.get("/enterprise/storage-original-retention")).json()
     configured = await client.put("/enterprise/storage-original-retention", json={"enabled": True,
         "retention_days": 0, "grace_days": 0, "expected_version": policy["version"]})
     assert configured.status_code == 200, configured.text
-    request = {"operation_id": str(uuid.uuid4()), "action": "quarantine", "expected_content_sha256": claim["content_sha256"],
-        "expected_policy_version": configured.json()["version"]}
-    quarantine = await client.post(base + "/retention", json=request)
-    if backup_id is not None:
-        assert quarantine.status_code == 200 and quarantine.json()["hold_reason"] == "referenced", quarantine.text
-        backup_row = (await client.get(base + "/references")).json()["items"][0]
-        assert backup_row["retirable"] is False
-        denied = await client.post(base + "/references", json={"operation_id": str(uuid.uuid4()), "action": "retire_reference",
-            "expected_content_sha256": claim["content_sha256"], "reference_id": str(backup_id),
-            "expected_reference_sha256": backup_row["snapshot_sha256"]})
-        assert denied.status_code == 200 and denied.json()["changed"] is False
-        async with owner_sessionmaker() as db:
-            # Its separate fixture owner releases this test-owned backup edge;
-            # the original-reference endpoint is deliberately unable to do so.
-            await db.delete(await db.get(StorageBlobRef, backup_id))
-            await db.commit()
-        request["operation_id"] = str(uuid.uuid4())
-        quarantine = await client.post(base + "/retention", json=request)
-    assert quarantine.status_code == 200 and quarantine.json()["sweep_eligible"] is True, quarantine.text
-    snapshot = quarantine.json()
-    swept = await client.post(base + "/sweep", json={**request, "operation_id": str(uuid.uuid4()), "action": "sweep",
-        "expected_manifest_sha256": snapshot["manifest_sha256"]})
-    assert swept.status_code == 200 and swept.json()["state"] == "deleted", swept.text
+    request = {"operation_id": str(uuid.uuid4()), "action": "quarantine",
+        "expected_content_sha256": claim["content_sha256"], "expected_policy_version": configured.json()["version"]}
+    quarantined = await client.post(base + "/retention", json=request)
+    assert quarantined.status_code == 200 and quarantined.json()["hold_reason"] == "referenced", quarantined.text
+    assert quarantined.json()["sweep_eligible"] is False, quarantined.text
     async with app_user_sessionmaker() as db:
         await pin_rls_tenant_context(db, d.tenant)
-        assert (await db.get(StorageBlob, blob_id)).state == "deleted"
+        assert (await db.get(StorageBlob, blob_id)).state == "available"
     assert current.read_bytes() == b"KEEP_CURRENT_EDIT" and recovery.read_bytes() == body

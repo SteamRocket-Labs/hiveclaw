@@ -266,6 +266,7 @@ async def start_session_goal(
                 "status": resolved_status or str(metadata.get("last_goal_run_status") or "running"),
                 "replayed": True,
             }
+            input_receipt = {"input_id": str(uuid.uuid5(goal.id, "session-goal-initial-input"))}
         elif goal.status == "active":
             goal_input_id = uuid.uuid5(goal.id, "session-goal-initial-input")
             receipt = await submit_live_human_input(

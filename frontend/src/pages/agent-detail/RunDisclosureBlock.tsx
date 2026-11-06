@@ -16,6 +16,7 @@ import {
 
 import MarkdownRenderer from '../../components/MarkdownRenderer';
 import { approvalActionFor } from '../session-workbench/approvalActionPresentation';
+import { PastedCredentialText } from '../session-workbench/PastedCredentialNotice';
 import type {
   RunStepKind,
   RunStepPresentation,
@@ -247,7 +248,7 @@ function RunStepDetails({ step }: { step: RunStepSnapshot }) {
   if (exec) return <ExecOutput exec={exec} />;
   const detailText = typeof step.details === 'string' ? step.details : JSON.stringify(step.details ?? {}, null, 2);
   if (!detailText || detailText === '{}') return null;
-  return <pre className="run-detail-pre">{detailText}</pre>;
+  return <pre className="run-detail-pre"><PastedCredentialText content={detailText} /></pre>;
 }
 
 function RunStepRow({ step }: { step: RunStepSnapshot }) {
@@ -280,7 +281,7 @@ function RunStepRow({ step }: { step: RunStepSnapshot }) {
             <span className="run-step-caret" />
           )}
           <span className="run-step-title">{localizedToolTitle(step, t)}</span>
-          {step.summary && <span className="run-step-summary">{step.summary}</span>}
+          {step.summary && <span className="run-step-summary"><PastedCredentialText content={step.summary} /></span>}
         </button>
         {expanded && <RunStepDetails step={step} />}
       </div>

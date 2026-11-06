@@ -325,6 +325,13 @@ class _ScalarResult:
     def scalar_one_or_none(self):
         return self._value
 
+    def scalar_one(self):
+        if self._value is None:
+            from sqlalchemy.exc import NoResultFound
+
+            raise NoResultFound()
+        return self._value
+
     def scalar(self):
         return self._value
 
@@ -1254,7 +1261,14 @@ async def test_get_session_context_usage_returns_context_diagnostics(monkeypatch
 
 
 @pytest.mark.asyncio
-async def test_delete_session_removes_transcript_before_messages(monkeypatch):
+async def test_delete_session_issued_no_physical_delete_statements(monkeypatch):
+    """G1: DELETE only removes the conversation from the owner's own list.
+
+    The former physical-deletion suite (transcript-before-messages ordering,
+    restrict-FK 409 mapping, branch worktree removal hook) covered the
+    ``session_deletion`` tree that G1 removed; list-removal semantics are
+    asserted in ``tests/api/test_g1_lifecycle_retention.py``.
+    """
     import app.api.chat_sessions as chat_sessions_api
 
     agent_id = uuid4()
@@ -1262,8 +1276,15 @@ async def test_delete_session_removes_transcript_before_messages(monkeypatch):
     owner_id = uuid4()
     session_id = uuid4()
     agent = SimpleNamespace(id=agent_id, creator_id=owner_id, tenant_id=tenant_id)
-    session = SimpleNamespace(id=session_id, agent_id=agent_id, tenant_id=tenant_id, user_id=owner_id)
-    current_user = SimpleNamespace(id=owner_id, role="member")
+    session = SimpleNamespace(
+        id=session_id,
+        agent_id=agent_id,
+        tenant_id=tenant_id,
+        user_id=owner_id,
+        parent_session_id=uuid4(),
+        transcript_metadata_json={},
+    )
+    current_user = SimpleNamespace(id=owner_id, role="member", tenant_id=tenant_id)
     db = _QueryAwareDB(agent=agent, sessions=[session])
 
     async def fake_check_agent_access(_db, _user, _agent_id):
@@ -1278,120 +1299,11 @@ async def test_delete_session_removes_transcript_before_messages(monkeypatch):
         db=db,
     )
 
-    delete_sql = [str(stmt) for stmt in db.statements if str(stmt).startswith("DELETE FROM ")]
-
-    # Session V2 rows holding inbound transcript-event foreign keys must be
-    # removed before the transcript itself, and the transcript before legacy
-    # chat messages.
-    def first_statement_index(prefix: str) -> int:
-        return next(index for index, statement in enumerate(delete_sql) if statement.startswith(prefix))
-
-    for v2_table in (
-        "session_run_outcomes",
-        "session_model_results",
-        "session_turn_replacements",
-        "session_carry_forwards",
-        "session_tool_invocations",
-    ):
-        assert first_statement_index(f"DELETE FROM {v2_table}") < first_statement_index(
-            "DELETE FROM chat_transcript_events"
-        )
-    # Session-owned feedback and artifacts hold NOT NULL NO ACTION references
-    # into chat_messages (and, for feedback, the session row deleted after
-    # the last SQL statement); both must precede chat_messages.
-    assert first_statement_index("DELETE FROM session_feedback_events") < first_statement_index(
-        "DELETE FROM chat_messages"
-    )
-    assert first_statement_index("DELETE FROM chat_artifacts") < first_statement_index("DELETE FROM chat_messages")
-    assert first_statement_index("DELETE FROM chat_transcript_events") < first_statement_index(
-        "DELETE FROM chat_messages"
-    )
-    assert db.deleted == [session]
-    assert db.commits == 1
     assert result is None
-
-
-@pytest.mark.asyncio
-async def test_delete_session_maps_restrict_foreign_keys_to_conflict(monkeypatch):
-    """Intentional restrict edges surface as 409, not an untyped 500."""
-
-    import app.api.chat_sessions as chat_sessions_api
-    from sqlalchemy.exc import IntegrityError
-
-    agent_id = uuid4()
-    tenant_id = uuid4()
-    owner_id = uuid4()
-    session_id = uuid4()
-    agent = SimpleNamespace(id=agent_id, creator_id=owner_id, tenant_id=tenant_id)
-    session = SimpleNamespace(id=session_id, agent_id=agent_id, tenant_id=tenant_id, user_id=owner_id)
-    current_user = SimpleNamespace(id=owner_id, role="member")
-
-    class _RestrictDB(_QueryAwareDB):
-        async def execute(self, stmt):
-            if str(stmt).startswith("DELETE FROM session_run_outcomes"):
-                raise IntegrityError("restrict", None, Exception("orig"))
-            return await super().execute(stmt)
-
-    db = _RestrictDB(agent=agent, sessions=[session])
-
-    async def fake_check_agent_access(_db, _user, _agent_id):
-        return agent, "use"
-
-    monkeypatch.setattr(chat_sessions_api, "check_agent_access", fake_check_agent_access, raising=False)
-
-    with pytest.raises(HTTPException) as exc:
-        await chat_sessions_api.delete_session(
-            agent_id=agent_id,
-            session_id=session_id,
-            current_user=current_user,
-            db=db,
-        )
-
-    assert exc.value.status_code == 409
-    assert db.commits == 0
-
-
-@pytest.mark.asyncio
-async def test_delete_branch_session_runs_blockable_worktree_remove_hook(monkeypatch):
-    import app.api.chat_sessions as chat_sessions_api
-
-    tenant_id = uuid4()
-    agent_id = uuid4()
-    owner_id = uuid4()
-    source_session_id = uuid4()
-    session_id = uuid4()
-    agent = SimpleNamespace(id=agent_id, creator_id=owner_id, tenant_id=tenant_id)
-    session = SimpleNamespace(
-        id=session_id,
-        agent_id=agent_id,
-        tenant_id=tenant_id,
-        user_id=owner_id,
-        parent_session_id=source_session_id,
-    )
-    current_user = SimpleNamespace(id=owner_id, role="member", tenant_id=tenant_id)
-    db = _QueryAwareDB(agent=agent, sessions=[session])
-    captured = []
-
-    async def fake_check_agent_access(_db, _user, _agent_id):
-        return agent, "use"
-
-    async def fake_emit(event, **kwargs):
-        captured.append((event.value, kwargs))
-        return None
-
-    monkeypatch.setattr(chat_sessions_api, "check_agent_access", fake_check_agent_access, raising=False)
-    monkeypatch.setattr("app.runtime.hooks.emit_hook", fake_emit)
-
-    await chat_sessions_api.delete_session(
-        agent_id=agent_id,
-        session_id=session_id,
-        current_user=current_user,
-        db=db,
-    )
-
-    assert captured[0][0] == "worktree_remove"
-    assert captured[0][1]["metadata"]["source_session_id"] == str(source_session_id)
-    assert captured[0][1]["metadata"]["target_session_id"] == str(session_id)
+    assert not [stmt for stmt in db.statements if str(stmt).startswith("DELETE FROM ")], db.statements
+    assert db.deleted == []
+    assert db.commits == 1
+    assert session.transcript_metadata_json.get("removed_from_list_by", {}).get(str(owner_id))
 
 
 @pytest.mark.asyncio

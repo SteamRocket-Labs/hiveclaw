@@ -43,6 +43,7 @@ async def _seed_hr_draft(owner_sessionmaker, *, draft_status: str = "awaiting_co
             password_hash="x",
             display_name="HR Owner",
             tenant_id=tenant_id,
+            role="org_admin",
         )
         hr_agent = Agent(
             id=hr_agent_id,
@@ -1279,7 +1280,6 @@ async def test_recoverable_draft_list_and_abandon_are_direct_user_surfaces(
         return None
 
     monkeypatch.setattr("app.services.agent_manager.agent_manager.remove_container", noop)
-    monkeypatch.setattr("app.services.agent_manager.agent_manager.archive_agent_files", noop)
     monkeypatch.setattr("app.services.ai_assets.register_projection", noop)
     monkeypatch.setattr("app.core.policy.write_audit_event", noop)
 
@@ -1293,6 +1293,22 @@ async def test_recoverable_draft_list_and_abandon_are_direct_user_surfaces(
         assert listed[0].recovery["can_resume"] is True
         assert listed[0].recovery["can_abandon"] is True
 
+    from fastapi import HTTPException
+
+    async with owner_sessionmaker() as db:
+        user = await db.get(User, user_id)
+        assert user is not None
+        with pytest.raises(HTTPException) as refusal:
+            await abandon_hr_creation_draft(hr_agent_id, draft_id, user, db)
+        assert refusal.value.status_code == 409
+        assert refusal.value.detail["code"] == "agent_retirement_administrator_required"
+
+    async with owner_sessionmaker() as db:
+        employee = await db.get(Agent, employee_id)
+        employee.deactivated_at = datetime.now(timezone.utc)
+        employee.deactivation_reason = "retirement_pending"
+        await db.commit()
+
     async with owner_sessionmaker() as db:
         user = await db.get(User, user_id)
         assert user is not None
@@ -1303,4 +1319,5 @@ async def test_recoverable_draft_list_and_abandon_are_direct_user_surfaces(
         draft = await db.get(HrCreationDraft, draft_id)
         employee = await db.get(Agent, employee_id)
         assert draft is not None and draft.status == "superseded"
-        assert employee is not None and employee.deleted_at is not None
+        assert employee is not None and employee.deactivated_at is not None
+        assert employee.deleted_at is None

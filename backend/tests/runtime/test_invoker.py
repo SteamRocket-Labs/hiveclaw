@@ -3571,6 +3571,42 @@ async def test_resolve_runtime_config_success_does_not_set_tenant_error(monkeypa
 
 @pytest.mark.real_runtime_config
 @pytest.mark.asyncio
+async def test_resolve_runtime_config_deactivated_agent_refuses_plain_and_fail_closed(monkeypatch):
+    """G1 r4: a deactivated employee answers with the plain word 已停用 on the
+    existing executor field AND keeps the tenant sentinel, so every
+    fail-closed consumer (evolution maintenance included) still skips it."""
+    from app.core.permissions import DEACTIVATED_REFUSAL_DETAIL
+    from app.runtime import invoker
+
+    fake_agent = SimpleNamespace(
+        id=uuid4(),
+        tenant_id=uuid4(),
+        max_tool_rounds=42,
+        execution_mode="standard",
+        deleted_at=None,
+        deactivated_at=object(),  # any non-None value blocks
+        owner_user_id=uuid4(),
+        owner_is_active=True,
+    )
+
+    async def _fake_resolve_tenant_for_agent(_agent_id, **_kwargs):
+        return fake_agent.tenant_id
+
+    monkeypatch.setattr(invoker, "resolve_tenant_for_agent", _fake_resolve_tenant_for_agent)
+    monkeypatch.setattr(
+        invoker,
+        "tenant_scoped_session",
+        lambda *a, **k: _FakeAsyncSessionCM(_FakeDB(fake_agent, True)),
+    )
+
+    cfg = await invoker._resolve_runtime_config(fake_agent.id)
+
+    assert cfg.executor_unavailable == DEACTIVATED_REFUSAL_DETAIL, cfg.executor_unavailable
+    assert cfg.tenant_resolution_error is not None, "fail-closed consumers still skip"
+
+
+@pytest.mark.real_runtime_config
+@pytest.mark.asyncio
 async def test_invoke_agent_aborts_when_tenant_resolution_fails(monkeypatch):
     """End-to-end: invoke_agent with an unresolvable agent_id must abort
     before any tool runs. Verifies kernel.engine reads the sentinel and

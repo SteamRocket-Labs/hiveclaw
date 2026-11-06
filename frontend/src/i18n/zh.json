@@ -32,6 +32,9 @@
     "validRequest": "请填写集成名称并选择未来的到期时间。",
     "unavailable": "员工或负责人暂不可用"
   },
+  "session": {
+    "agent_deactivated": "已停用"
+  },
   "companyMessaging": {
     "fileUnavailable": "文件未能获取。请在原会话重新上传，或请管理员检查连接。",
     "historyConflict": "此发送账号存在历史绑定，请管理员核对连接；此前的私有工作仍属于原持有人。",
@@ -652,18 +655,14 @@
     "hrRecovery": {
       "firstTaskPending": "员工已就绪，首任务尚需恢复。",
       "loadFailed": "无法加载中断的创建任务或待清理项。",
-      "cleanupStatus": "文件待清理",
-      "cleanupPending": "移除已提交。重试只会完成剩余文件归档，不会再次移除员工。",
-      "retryCleanup": "重试文件清理",
-      "retirementRequired": "该员工仍有外部工作需要先完成。请先完成员工退役，再重试移除未完成的创建；员工和文件均已保留。",
-      "reviewRetirement": "处理员工退役",
-      "retirementAdministrator": "请联系公司管理员处理该员工的退役，然后回到这里重试移除。",
+      "reviewRetirement": "到数字员工页面停用",
+      "retirementAdministrator": "这次创建已经产生了数字员工。请公司管理员在数字员工页面停用它，之后再放弃这份草稿。",
       "description": "回到原工作，或直接恢复开通，无需重新描述需求。",
       "eyebrow": "开通恢复",
       "operatorRequired": "重试前需要运营人员完成核查。",
-      "remove": "移除未完成员工",
-      "removeConfirm": "移除 {{name}} 并停止其未完成的创建流程？审计历史会保留。",
-      "removeTitle": "移除未完成员工",
+      "remove": "放弃未完成的创建",
+      "removeConfirm": "放弃 {{name}} 的未完成创建？其员工、文件与历史都会保留，直到公司管理员停用。",
+      "removeTitle": "放弃未完成的创建",
       "resume": "回到原工作",
       "sourceMissing": "无法确认原员工，请刷新后重试。",
       "retry": "重试创建",
@@ -925,7 +924,7 @@
       },
       "digital_employees": {
         "title": "数字员工",
-        "description": "公司全部数字员工清单、生命周期控制与管理删除。"
+        "description": "公司全员数字员工台账与生命周期管理。"
       },
       "hr": {
         "title": "Agent 治理",
@@ -2426,7 +2425,10 @@
       }
     },
     "chat": {
+      "hiddenCredential": "已隐藏的密钥",
+      "pastedCredentialNotice": "已隐藏你粘贴的密钥，不会保存，也不会发给模型。",
       "sending": "发送中…",
+      "deactivatedNotice": "该数字员工已停用，文件和会话都会保留。",
       "sendCancelled": "未发送：发送已取消。",
       "sendUnconfirmed": "暂时无法确认这条消息是否已保存。",
       "sendRefused": "未发送：暂时无法接受这条消息。",
@@ -3663,10 +3665,11 @@
   },
   "chat": {
     "placeholder": "输入消息...",
+    "removeSession": "从列表移除",
+    "removeConfirmWithTitle": "把「{{title}}」从你的列表移除？记录会保留。",
+    "removeSessionFailed": "从列表移除对话失败。",
     "send": "发送",
-    "deleteSession": "删除对话",
     "deleteConfirm": "删除这段对话和所有消息？此操作无法撤销。",
-    "deleteConfirmWithTitle": "删除「{{title}}」和其中所有消息？此操作无法撤销。",
     "stop": "停止"
   },
   "messages": {
@@ -4667,25 +4670,26 @@
     },
     "digitalEmployees": {
       "title": "数字员工管理",
-      "pendingCleanupTitle": "待完成的文件清理",
-      "cleanupPending": "删除已提交，文件尚待归档；可在下方仅重试清理。",
-      "cleanupLoadFailed": "无法检查待完成的文件清理。",
-      "retryCleanup": "重试文件清理",
-      "description": "公司管理员可以在这个受治理后台查看并移除租户内数字员工。",
+      "description": "公司管理员可以在这个受治理后台查看并停用租户内数字员工。",
       "adminOnly": "只有公司管理员可以在这里管理数字员工。",
-      "employeeDeleted": "数字员工已删除。",
-      "employeeDeleteFailed": "删除数字员工失败。",
-      "deleteEmployeeTitle": "删除数字员工",
-      "deleteEmployeeConfirm": "退役 {{name}}？系统将停用新的执行并撤回在途工作。外部执行尚未确认时，会保留员工和文件供核对；跟踪结束后再归档文件，并保留审计历史。",
-      "pendingRetirementTitle": "待完成退役",
-      "retirementPending": "新的执行已停用。外部工作尚未确认，请在原工作中核对后重试退役。文件仍保留；结束本地跟踪不代表外部运行器已停止。",
-      "retryRetirement": "重试退役",
+      "employeeDeactivated": "数字员工已停用。它的文件、记忆和会话都会保留。",
+      "employeeDeactivateFailed": "停用数字员工失败。",
+      "deactivateEmployeeTitle": "停用数字员工",
+      "deactivateEmployeeConfirm": "停用 {{name}}？它将不再接新任务，在途工作会被收回。文件、记忆和会话都会保留，之后可以恢复。恢复后定时任务保持关闭，由负责人逐个重新打开。",
+      "deactivatedTitle": "已停用的数字员工",
+      "deactivatedDesc": "已停用的员工保留文件、记忆和会话。未确认的外部工作会继续列在这里供核对；结束本地跟踪不代表外部运行器已停止。",
+      "unconfirmedRemoteWork": "{{count}} 项未确认的外部任务",
+      "unconfirmedLocalWork": "{{count}} 项未确认的派活",
+      "restoreEmployeeButton": "恢复",
+      "employeeRestored": "数字员工已恢复。定时任务保持关闭，由负责人逐个重新打开。",
+      "employeeRestoreFailed": "恢复数字员工失败。",
+      "retirementPending": "已停用，对外工作尚未确认。请在原工作中核对；结束本地跟踪不代表外部运行器已停止。文件仍保留。",
       "retirementLoadFailed": "未能加载待完成的退役。",
       "endInactiveTracking": "结束已停用请求人的任务跟踪",
       "endInactiveTrackingConfirm": "确定结束 {{name}} 的 {{count}} 个原请求人已停用、执行仍未确认的请求的本地跟踪？外部执行仍然未知。系统会记录由你作出的管理决定，不移交私人工作或凭据。核对结果后，请另行重试退役。",
       "trackingEnded": "本地跟踪已结束，外部执行仍然未知。可以重新核对并重试退役。",
       "trackingChanged": "任务或请求人已变化，请核对刷新后的状态再作决定。",
-      "deleteEmployeeButton": "删除员工",
+      "deactivateEmployeeButton": "停用",
       "employeeName": "员工",
       "employeeOwner": "Owner",
       "ownerUnknown": "未知用户",
@@ -4705,7 +4709,9 @@
       "ownerCandidatesFailed": "加载可选 Owner 失败。",
       "noOwnerCandidates": "没有其他符合条件的有效公司成员。",
       "systemProtected": "系统保护",
-      "noEmployees": "未找到数字员工。"
+      "noEmployees": "未找到数字员工。",
+      "retryDeactivateButton": "重试停用",
+      "restoreWorkPending": "对外工作尚未确认，请先核对，再恢复。"
     },
     "quotas": {
       "tokenQuotas": "用量配额",

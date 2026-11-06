@@ -262,7 +262,7 @@ async def test_platform_admin_delete_tenant_returns_fallback_and_rehomes_platfor
 
 
 @pytest.mark.asyncio
-async def test_platform_admin_exact_retirement_deactivates_last_admin_after_owned_agent_soft_delete(monkeypatch):
+async def test_platform_admin_exact_retirement_deactivates_last_admin_after_owned_agent_deactivated(monkeypatch):
     import app.api.tenants as tenants_api
     from app.services import channel_secret_storage, tool_config_service
     from app.services.user_offboarding_service import AuthorityRevocationReceipt
@@ -296,6 +296,7 @@ async def test_platform_admin_exact_retirement_deactivates_last_admin_after_owne
         creator_id=last_admin.id,
         status="stopped",
         deleted_at=object(),
+        deactivated_at=object(),
     )
     target_tenant = _tenant(tenant_id)
     fallback_tenant = _tenant(fallback_tenant_id)
@@ -472,6 +473,7 @@ async def test_tenant_retirement_rejects_live_owned_agent_before_any_effect(monk
         creator_id=admin.id,
         status="idle",
         deleted_at=None,
+        deactivated_at=None,
     )
     target_tenant = _tenant(tenant_id)
     db = _FakeDB(

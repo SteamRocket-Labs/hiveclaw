@@ -171,6 +171,14 @@ async def resolve_a2a_collaboration_policy(
     if getattr(source_agent, "tenant_id", None) != getattr(target_agent, "tenant_id", None):
         return A2ACollaborationPolicyResult(False, "cross_tenant", "Cross-tenant A2A is not exposed.")
     target_status = _agent_status(target_agent)
+    from app.services.agent_identity_lifecycle import get_agent_lifecycle_block_reason
+
+    if get_agent_lifecycle_block_reason(target_agent) == "deactivated":
+        return A2ACollaborationPolicyResult(
+            False,
+            "target_unavailable",
+            f"{getattr(target_agent, 'name', 'Target agent')} 已停用。",
+        )
     if target_status not in ACTIVE_AGENT_STATUSES:
         status_label = target_status or "unknown"
         return A2ACollaborationPolicyResult(

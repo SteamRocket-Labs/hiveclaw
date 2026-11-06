@@ -32,6 +32,9 @@
     "validRequest": "Enter an integration name and a future expiry time.",
     "unavailable": "Employee or owner unavailable"
   },
+  "session": {
+    "agent_deactivated": "Deactivated"
+  },
   "companyMessaging": {
     "fileUnavailable": "The file could not be retrieved. Upload it again in the original conversation, or ask an administrator to check the connection.",
     "historyConflict": "This sender account has prior channel ownership. Contact your administrator to review the connection; earlier private work remains with its original owner.",
@@ -677,18 +680,14 @@
     "hrRecovery": {
       "firstTaskPending": "The employee is ready; its first task needs recovery.",
       "loadFailed": "Could not load interrupted creations or pending cleanup.",
-      "cleanupStatus": "File cleanup pending",
-      "cleanupPending": "Removal is committed. Retry only the remaining file archival; the employee will not be removed again.",
-      "retryCleanup": "Retry file cleanup",
-      "retirementRequired": "This employee has unresolved external work. Complete retirement before retrying removal of the unfinished creation. The employee and files are retained.",
-      "reviewRetirement": "Review employee retirement",
-      "retirementAdministrator": "Ask a company administrator to review this employee’s retirement, then retry removal here.",
+      "reviewRetirement": "Deactivate it on the digital-employees page",
+      "retirementAdministrator": "This creation already produced a digital employee. A company administrator deactivates it on the digital-employees page; then this draft can be abandoned.",
       "description": "Resume the original work or recover provisioning directly, without restating the request.",
       "eyebrow": "Creation recovery",
       "operatorRequired": "An operator needs to review this before retry.",
-      "remove": "Remove unfinished employee",
-      "removeConfirm": "Remove {{name}} and stop its unfinished provisioning? Audit history is preserved.",
-      "removeTitle": "Remove unfinished employee",
+      "remove": "Abandon unfinished creation",
+      "removeConfirm": "Abandon the unfinished creation of {{name}}? Its employee, files and history are kept and stay until a company admin deactivates them.",
+      "removeTitle": "Abandon unfinished creation",
       "resume": "Resume original work",
       "sourceMissing": "The original employee could not be identified. Reload before retrying.",
       "retry": "Retry provisioning",
@@ -950,7 +949,7 @@
       },
       "digital_employees": {
         "title": "Digital Employees",
-        "description": "Company-wide employee inventory, lifecycle controls, and admin deletion."
+        "description": "Company-wide employee inventory and lifecycle controls."
       },
       "hr": {
         "title": "Agent Governance",
@@ -2426,7 +2425,10 @@
       }
     },
     "chat": {
+      "hiddenCredential": "Hidden key",
+      "pastedCredentialNotice": "The key you pasted was hidden. It will not be saved or sent to the model.",
       "sending": "Sending…",
+      "deactivatedNotice": "This digital employee is deactivated. Its files and conversations are kept.",
       "sendCancelled": "Not sent: sending was cancelled.",
       "sendUnconfirmed": "Could not confirm whether this message was saved.",
       "sendRefused": "Not sent: this message could not be accepted.",
@@ -3663,10 +3665,11 @@
   },
   "chat": {
     "placeholder": "Type a message...",
+    "removeSession": "Remove from list",
+    "removeConfirmWithTitle": "Remove \"{{title}}\" from your list? Its records are kept.",
+    "removeSessionFailed": "Failed to remove the conversation from your list.",
     "send": "Send",
-    "deleteSession": "Delete conversation",
     "deleteConfirm": "Delete this conversation and all its messages? This cannot be undone.",
-    "deleteConfirmWithTitle": "Delete \"{{title}}\" and all its messages? This cannot be undone.",
     "stop": "Stop"
   },
   "messages": {
@@ -4667,25 +4670,26 @@
     },
     "digitalEmployees": {
       "title": "Digital Employee Management",
-      "pendingCleanupTitle": "Pending file cleanup",
-      "cleanupPending": "Deletion is committed. File archival is pending; retry only the cleanup below.",
-      "cleanupLoadFailed": "Could not check pending file cleanup.",
-      "retryCleanup": "Retry file cleanup",
-      "description": "Company admins can review and remove tenant digital employees from this governed backend surface.",
+      "description": "Company admins can review and deactivate tenant digital employees from this governed backend surface.",
       "adminOnly": "Only company administrators can manage digital employees here.",
-      "employeeDeleted": "Digital employee deleted.",
-      "employeeDeleteFailed": "Failed to delete digital employee.",
-      "deleteEmployeeTitle": "Delete digital employee",
-      "deleteEmployeeConfirm": "Retire {{name}}? New execution will be disabled and in-flight work withdrawn. Unconfirmed external work keeps the employee and files available for reconciliation. Files are archived when tracking is settled; audit history is preserved.",
-      "pendingRetirementTitle": "Pending retirement",
-      "retirementPending": "New execution is disabled. External work is still unconfirmed; review it in its original work before retrying retirement. Files are retained. Ending local tracking does not confirm that the external runner stopped.",
-      "retryRetirement": "Retry retirement",
+      "employeeDeactivated": "Digital employee deactivated. Its files, memory and conversations are kept.",
+      "employeeDeactivateFailed": "Failed to deactivate digital employee.",
+      "deactivateEmployeeTitle": "Deactivate digital employee",
+      "deactivateEmployeeConfirm": "Deactivate {{name}}? It stops taking new work and in-flight work is withdrawn. Files, memory and conversations are kept, and it can be restored later. Scheduled tasks stay off after restore until their owner re-enables them.",
+      "deactivatedTitle": "Deactivated digital employees",
+      "deactivatedDesc": "Deactivated employees keep their files, memory and conversations. Unconfirmed external work stays listed for review; ending local tracking does not confirm that the external runner stopped.",
+      "unconfirmedRemoteWork": "{{count}} unconfirmed external task(s)",
+      "unconfirmedLocalWork": "{{count}} unconfirmed delegation(s)",
+      "restoreEmployeeButton": "Restore",
+      "employeeRestored": "Digital employee restored. Scheduled tasks stay off until their owner turns each one back on.",
+      "employeeRestoreFailed": "Failed to restore digital employee.",
+      "retirementPending": "Deactivated; external work is not yet confirmed. Review it in its original work; ending local tracking does not confirm that the external runner stopped. Files are retained.",
       "retirementLoadFailed": "Pending retirement could not be loaded.",
       "endInactiveTracking": "End tracking for inactive requesters",
       "endInactiveTrackingConfirm": "End local tracking of {{count}} unresolved requests for {{name}} whose original requesters are inactive? External execution remains unknown. This records your management decision without transferring private work or credentials. Retry retirement separately after reviewing the result.",
       "trackingEnded": "Local tracking ended. External execution is still unknown. Retirement can now be reviewed again.",
       "trackingChanged": "The work or requester changed. Review the refreshed status before deciding again.",
-      "deleteEmployeeButton": "Delete employee",
+      "deactivateEmployeeButton": "Deactivate",
       "employeeName": "Employee",
       "employeeOwner": "Owner",
       "ownerUnknown": "Unknown user",
@@ -4705,7 +4709,9 @@
       "ownerCandidatesFailed": "Failed to load eligible owners.",
       "noOwnerCandidates": "No other active company member is eligible.",
       "systemProtected": "System protected",
-      "noEmployees": "No digital employees found."
+      "noEmployees": "No digital employees found.",
+      "retryDeactivateButton": "Retry deactivation",
+      "restoreWorkPending": "Outward work is not yet confirmed. Review the recall, then restore."
     },
     "quotas": {
       "tokenQuotas": "Usage Quotas",

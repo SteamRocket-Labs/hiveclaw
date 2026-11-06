@@ -8,8 +8,17 @@ export function isSessionSocketAuthClose(code: number): boolean {
   return SESSION_SOCKET_AUTH_CLOSE_CODES.has(code);
 }
 
+// The server's agent-deactivated close (4410) is terminal: reconnecting
+// cannot change it, and treating it as an auth failure would clear the
+// member's history view.
+const SESSION_SOCKET_TERMINAL_CLOSE_CODES = new Set([4410]);
+
+export function isSessionSocketTerminalClose(code: number): boolean {
+  return SESSION_SOCKET_TERMINAL_CLOSE_CODES.has(code);
+}
+
 export function shouldReconnectSessionSocket(code: number, reconnectDisabled: boolean): boolean {
-  return !reconnectDisabled && !isSessionSocketAuthClose(code);
+  return !reconnectDisabled && !isSessionSocketAuthClose(code) && !isSessionSocketTerminalClose(code);
 }
 
 export function reconnectDelayMs(attempt: number, randomValue: number = Math.random()): number {

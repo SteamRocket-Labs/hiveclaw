@@ -971,6 +971,9 @@ async def validate_creation_publication_inputs(
         )
     creation_dependencies = dependencies if creation_dependencies is None else creation_dependencies
     published = await _creation_seed_dependencies(db, draft=draft, parent=parent, dependencies=creation_dependencies)
+    # The confirmed profile uses its original human reader's memory rights.
+    # This does not publish raw upstream sources to the child's tools.
+    published.extend(ref for ref in creation_dependencies if ref["source_kind"] == "explicit_memory")
     for dependency in creation_dependencies:
         if dependency["source_kind"] == "session_command":
             try:

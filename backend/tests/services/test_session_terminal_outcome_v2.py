@@ -1732,8 +1732,7 @@ async def test_terminal_recovery_waits_for_active_worker_lease(owner_sessionmake
     async with owner_sessionmaker() as db:
         await outcomes._record_terminal_outcome_recovery_hold(db, tenant_id=tenant_id, session_id=session_id,
             run_id=run_id, outcome_id=outcomes._outcome_id(run_id), worker_id="recovery-worker",
-            now=datetime.now(timezone.utc), reason="read_selection_retry",
-            read_selection_result_id=uuid.UUID(result["result_id"]))
+            now=datetime.now(timezone.utc), reason="terminal_recovery_retry")
     async with owner_sessionmaker() as db:
         task = await db.get(RuntimeTask, run_id)
         assert task.status == "running" and task.claim_version == 7

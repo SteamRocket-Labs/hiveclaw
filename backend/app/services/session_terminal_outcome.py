@@ -30,10 +30,6 @@ class TerminalOutcomeNeedsReconciliation(RuntimeError):
     """A terminal transaction has an ambiguous durable outcome."""
 
 
-class TerminalReadArtifactSelectionNeedsReconciliation(TerminalOutcomeNeedsReconciliation):
-    """A sealed file read needs current source access before artifact publication."""
-
-
 class _ActiveRuntimeTaskClaim(RuntimeError):
     """Terminal recovery must wait for the current worker to finish or expire."""
 
@@ -79,6 +75,10 @@ async def _recover_read_artifact_selection(db: AsyncSession, *, task: RuntimeTas
         metadata.update({"declared_artifact_paths": paths, "artifacts": list(by_path.values()),
             "artifact_paths": list(by_path), "artifact_ids": [part["artifact_id"] for part in by_path.values()],
             "artifact_attachment_policy": "model_declared_verified_read_or_write"})
+    metadata["rejected_artifact_paths"] = list(dict.fromkeys([
+        *(metadata.get("rejected_artifact_paths") or []),
+        *(path for path in paths if _is_user_visible_terminal_artifact_path(path) and path not in by_path),
+    ]))
     metadata["artifact_selection_result_id"] = str(result.id)
     task.metadata_json = metadata
 
@@ -587,6 +587,12 @@ async def commit_terminal_outcome(
         raise TerminalOutcomeNeedsReconciliation("terminal source block hash mismatch")
     turn_id = outcome.turn_id
     semantic_content = str(result.seal_json.get("semantic_content") or "")
+    attachment_notice = "部分文件未能附在这条回复中。已保存的工作区文件可以在「文件」中查看。"
+    notices = [SessionEventDraft(
+        item_id=uuid.uuid5(outcome.id, "unattached-files"), item_kind="assistant_commentary", lifecycle="completed",
+        scope=_round_scope(session_id, turn_id, run_id, result.round_id), actor={"type": "runtime"},
+        payload={"content": attachment_notice}, content_hash=_sha256(attachment_notice),
+    )] if (task.metadata_json or {}).get("rejected_artifact_paths") else []
     events = await append_session_events(
         db,
         tenant_id=tenant_id,
@@ -612,6 +618,7 @@ async def commit_terminal_outcome(
                 result_id=result.id,
                 content_hash=str(outcome.seal_json["result_content_hash"]),
             ),
+            *notices,
             SessionEventDraft(
                 item_id=run_id,
                 item_kind="run",
@@ -637,7 +644,7 @@ async def commit_terminal_outcome(
                 payload={
                     "outcome_id": str(outcome.id),
                     "terminal_result_id": str(result.id),
-                    "terminal_event_count": 4,
+                    "terminal_event_count": 4 + len(notices),
                 },
                 content_hash=str(outcome.seal_json["result_content_hash"]),
             ),
@@ -920,7 +927,6 @@ async def _record_terminal_outcome_recovery_hold(
     worker_id: str,
     now: datetime,
     reason: str,
-    read_selection_result_id: uuid.UUID | None = None,
 ) -> None:
     """Persist a retry lease without violating advisory -> task -> outcome order."""
 
@@ -950,12 +956,6 @@ async def _record_terminal_outcome_recovery_hold(
         outcome.reconciliation_owner = f"{worker_id}:{reason}"[:200]
         outcome.reconciliation_lease_expires_at = now + timedelta(minutes=5)
         outcome.version = int(outcome.version) + 1
-    if (read_selection_result_id is not None and task is not None and task.status in {"running", "starting", "needs_reconciliation"}
-        and (outcome is None or outcome.state != "terminal_committed")):
-        task.status = "needs_reconciliation"
-        task.result_summary = "Declared file read requires source reconciliation."
-        task.metadata_json = {**(task.metadata_json or {}), "session_v2_reconciliation": {
-            "reason": "terminal_artifact_selection", "result_id": str(read_selection_result_id), "error_class": reason}}
     await db.commit()
 
 
@@ -1048,12 +1048,6 @@ async def recover_terminal_candidates_once(
             completed += 1
         except _ActiveRuntimeTaskClaim:
             await db.rollback()
-        except TerminalReadArtifactSelectionNeedsReconciliation as exc:
-            await db.rollback()
-            await _record_terminal_outcome_recovery_hold(db, tenant_id=tenant_id, session_id=session_id,
-                run_id=result_run_id, outcome_id=_outcome_id(result_run_id), worker_id=worker_id,
-                now=datetime.now(timezone.utc), reason=type(exc).__name__, read_selection_result_id=result_id)
-            held += 1
         except TerminalOutcomeIneligible:
             await db.rollback()
             held += 1

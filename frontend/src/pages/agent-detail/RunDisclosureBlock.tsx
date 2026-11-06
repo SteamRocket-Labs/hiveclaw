@@ -595,6 +595,9 @@ export default function RunDisclosureBlock({
           </div>
         )}
       </div>
+      {!expanded && visibleSteps
+        .filter((step) => step.kind === 'commentary' && getRunStepPresentation(step) === 'surface')
+        .map((step) => <RunProse key={step.id} step={step} />)}
     </div>
   );
 }

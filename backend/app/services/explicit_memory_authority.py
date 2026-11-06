@@ -393,8 +393,11 @@ async def _writer_input(db, request, *, require_sources=True):
     arguments_hash = _sha256({"tool_name": request.tool_name, "arguments": request.arguments})
     effective = invocation.effective_args_hash or invocation.args_hash
     dependencies, complete = _model_dependencies(model)
+    # A new member memory uses the exact sealed request; ambient coverage cannot
+    # veto it. All retained sources below still require current read authority.
     if (effective != arguments_hash or model.state not in {"sealed", "round_committed"}
-        or _sha256(model.model_request_snapshot_json) != model.model_request_hash or (require_sources and not complete)):
+        or _sha256(model.model_request_snapshot_json) != model.model_request_hash
+        or (require_sources and not complete and request.tool_name != "save_memory")):
         raise ContentInputReceiptError("explicit_memory_input_unverified",
             "The memory write requires complete source bindings for its exact model inputs.")
     if require_sources:

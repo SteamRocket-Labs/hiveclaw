@@ -125,7 +125,10 @@ class DocumentConversionService:
         with open_workspace_file(request.workspace_root, relative_path) as source:
             data = source.read()
         if request.input_read is not None:
-            request.input_read.verify(data)
+            if request.input_read.carrier_kind == "workspace_artifact":
+                request.input_read.observed_sha256 = _sha256_bytes(data)
+            else:
+                request.input_read.verify(data)
         if request.expected_source_sha256 is not None and _sha256_bytes(data) != request.expected_source_sha256:
             from app.services.workspace_resource_authority import WorkspaceAuthorityError
 

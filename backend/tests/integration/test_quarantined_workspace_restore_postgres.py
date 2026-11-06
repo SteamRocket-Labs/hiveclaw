@@ -34,7 +34,7 @@ async def quarantined_file(native_workspace, owner_sessionmaker):  # noqa: F811
     n.unverified = b"UNRECEIPTED_EDIT_PRESERVE_THIS"
     n.target.write_bytes(n.unverified)
     read = await _read(n, "read_file", n.path)
-    assert n.unverified.decode() not in read and "workspace_content_unverified" in read, read
+    assert n.unverified.decode() in read and "workspace_content_unverified" not in read, read
     n.restore_request = {
         "expected_current_exists": True,
         "expected_current_hash": hashlib.sha256(n.unverified).hexdigest(),
@@ -45,7 +45,9 @@ async def quarantined_file(native_workspace, owner_sessionmaker):  # noqa: F811
                 WorkspaceResourceManifest.agent_id == n.agent, WorkspaceResourceManifest.path == n.path
             )
         )
-        assert manifest.authority_state == "quarantined"
+        assert manifest.authority_state == "owned"
+        # Legacy quarantined rows remain restorable; ordinary edits no longer create them.
+        manifest.authority_state = "quarantined"
         n.identity = (manifest.id, manifest.owner_user_id, manifest.root_session_id)
         n.receipts = [
             (row.id, row.revision, row.content_sha256, row.dependencies_json) for row in await receipts(db, n, n.path)
@@ -98,7 +100,19 @@ async def test_quarantined_version_restore_preserves_evidence_identity_and_nativ
     assert n.unverified.decode() not in rejected and "<tool_error>" in rejected
 
 
-@pytest.mark.parametrize("failure", ["stale", "member", "changed_snapshot"])
+async def test_owner_can_restore_their_quarantined_copy_as_a_member(
+    quarantined_file,
+    owner_sessionmaker,
+    app_user_sessionmaker,
+):
+    n = quarantined_file
+    async with owner_sessionmaker() as db:
+        (await db.get(User, n.user)).role = "member"
+        await db.commit()
+    await test_quarantined_version_restore_preserves_evidence_identity_and_native_read(n, app_user_sessionmaker)
+
+
+@pytest.mark.parametrize("failure", ["stale", "foreign_owner", "changed_snapshot"])
 async def test_quarantine_restore_denial_preserves_original_and_receipts(
     quarantined_file,
     owner_sessionmaker,
@@ -108,15 +122,20 @@ async def test_quarantine_restore_denial_preserves_original_and_receipts(
     request = dict(n.restore_request)
     if failure == "stale":
         request["expected_current_hash"] = "0" * 64
-    elif failure == "member":
+    elif failure == "foreign_owner":
         async with owner_sessionmaker() as db:
             (await db.get(User, n.user)).role = "member"
+            manifest = await db.scalar(select(WorkspaceResourceManifest).where(
+                WorkspaceResourceManifest.agent_id == n.agent, WorkspaceResourceManifest.path == n.path
+            ))
+            manifest.owner_user_id = n.foreign
+            manifest.root_session_id = None
             await db.commit()
     else:
         snapshot = n.root / f"runtime_artifacts/workspace_content_versions/{n.receipts[-1][0]}/files/recovery.md"
         snapshot.write_text("Substituted snapshot")
     denied = await n.client.post(n.restore_url, params={"path": n.path}, json=request)
-    assert denied.status_code == {"stale": 409, "member": 403, "changed_snapshot": 503}[failure], denied.text
+    assert denied.status_code == {"stale": 409, "foreign_owner": 403, "changed_snapshot": 503}[failure], denied.text
     assert n.target.read_bytes() == n.unverified
     assert not (n.root.parent / ".workspace-quarantine").exists()
     async with owner_sessionmaker() as db:

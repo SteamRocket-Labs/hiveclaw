@@ -108,8 +108,11 @@ async def test_permission_rechecks_original_sources_before_releasing_effect(
                 ChatTranscriptEvent.invocation_id == invocation_id, ChatTranscriptEvent.item_kind == "tool_result")) == 1
             if withdraw_at != "unchanged":
                 payload = event.metadata_json["v2_payload"]
-                assert payload["outcome"] == "aborted"
-                assert json.loads(payload["content"])["reason_code"] == "approved_tool_execution_not_released"
+                assert payload["outcome"] == "failed"
+                failure = json.loads(payload["content"])
+                assert failure["reason_code"] == "approved_tool_execution_failed"
+                assert failure["status"] == "failed"
+                assert failure["message"] == "The approved action failed before it started."
 
     await business_source(original_api, provider, owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path,
         withdrawn=False, unknown_effect=False, artifact_body="# Report\nPRIVATE_BUSINESS_INPUT\n",

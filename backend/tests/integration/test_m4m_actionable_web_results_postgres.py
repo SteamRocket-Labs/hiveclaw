@@ -178,42 +178,31 @@ async def test_actionable_routine_delivers_only_to_its_original_web_work(
         await asyncio.wait_for(web_chat_runtime.execute_web_chat_run(run_id), 20)
         async with state.scoped() as db:
             run = await db.get(RuntimeTask, run_id)
-            assert run.status == "completed", run.result_summary
-        async with state.scoped() as db:
-            ticket = (
+            assert run.status == "suspended" and run.result_summary == "awaiting_session_permission"
+            invocation = (
                 await db.scalars(
-                    select(ApprovalRequest).where(
-                        ApprovalRequest.agent_id == state.seed["agent_id"],
-                        ApprovalRequest.tool_name == "send_web_message",
+                    select(SessionToolInvocation).where(
+                        SessionToolInvocation.run_id == run_id,
+                        SessionToolInvocation.tool_name == "send_web_message",
                     )
                 )
             ).one()
-            assert ticket.status == "pending" and ticket.consumed_at is None
-            ticket_id = ticket.id
+            assert invocation.effect_state == "prepared_not_started" and invocation.permission_item_id is not None
+            permission_id = invocation.permission_item_id
+            assert await db.scalar(select(ApprovalRequest.id).where(
+                ApprovalRequest.agent_id == state.seed["agent_id"], ApprovalRequest.tool_name == "send_web_message"
+            )) is None
         assert recipient.events == bystander.events == unbound.events == []
-        approval_url = state.endpoint + f"/sessions/{state.seed['session_id']}/approvals/{ticket_id}/resolve"
-        approved = await client.post(approval_url, json={"action": "approve"})
-        assert approved.status_code == 200 and approved.json()["execution_status"] == "queued", approved.text
-        from app.services.approval_execution_runtime import execute_claimed_approval_execution
-        from app.services.runtime_task_claim_service import RuntimeTaskClaimService
-        from app.services.runtime_task_fence import run_claimed_runtime_task
-
-        async with state.scoped() as db:
-            job = (
-                await RuntimeTaskClaimService(
-                    db=db, worker_id="actionable-approval", task_types=["approval_execution"], lease_seconds=180
-                ).claim_available(batch_size=1)
-            )[0]
-            job_id, version = job.id, job.claim_version
-        outcome = await run_claimed_runtime_task(
-            execute_claimed_approval_execution(job_id),
-            task_id=job_id,
-            claim_version=version,
-            worker_id="actionable-approval",
-            lease_seconds=180,
-        )
-        assert outcome == "succeeded", outcome
-        assert bool([event for event in recipient.events if event.get("content") == marker]) is online, recipient.events
+        approval_url = state.endpoint + f"/sessions/{state.seed['session_id']}/permissions/{permission_id}/resolve"
+        approved = await client.post(approval_url, json={"action": "allow_once"})
+        assert approved.status_code == 200, approved.text
+        assert approved.json()["run_id"] == str(run_id) and approved.json()["run_status"] == "resumable"
+        replay = await client.post(approval_url, json={"action": "allow_once"})
+        assert replay.status_code == 200 and replay.json()["result_event_id"] == approved.json()["result_event_id"]
+        resumed_id = await state.claim("web_chat_turn")
+        assert resumed_id == run_id
+        await asyncio.wait_for(web_chat_runtime.execute_web_chat_run(resumed_id), 20)
+        assert len([event for event in recipient.events if event.get("content") == marker]) == int(online), recipient.events
         assert bystander.events == [] and unbound.events == [], (
             "A routine must never broadcast private results to other work"
         )
@@ -225,10 +214,9 @@ async def test_actionable_routine_delivers_only_to_its_original_web_work(
                     )
                 )
             ).one()
-            assert invocation.effect_state == "prepared_not_started" and invocation.result_event_id is not None
-            ticket = await db.get(ApprovalRequest, ticket_id)
-            assert ticket.execution_status == "succeeded" and ticket.consumed_at is not None
-            assert ticket.normalized_arguments == {"username": username, "message": marker}
+            assert (await db.get(RuntimeTask, run_id)).status == "completed"
+            assert invocation.effect_state == "effect_committed"
+            assert str(invocation.result_event_id) == approved.json()["result_event_id"]
             assert invocation.effective_arguments_json == {"username": username, "message": marker}
             sent = list(
                 await db.scalars(
@@ -240,8 +228,10 @@ async def test_actionable_routine_delivers_only_to_its_original_web_work(
             assert len(sent) == 1
         history = await client.get(state.endpoint + f"/sessions/{state.seed['session_id']}/messages")
         assert history.status_code == 200 and marker in history.text, history.text
-        assert await execute_claimed_approval_execution(job_id) == "succeeded"
-        assert len(recipient.events) == int(online) and bystander.events == unbound.events == []
+        replay = await client.post(approval_url, json={"action": "allow_once"})
+        assert replay.status_code == 200 and replay.json()["result_event_id"] == approved.json()["result_event_id"]
+        assert len([event for event in recipient.events if event.get("content") == marker]) == int(online)
+        assert bystander.events == unbound.events == []
         await state.boundary(run_id)
         before = len(state.llm.requests)
         state.llm.script.clear()

@@ -66,7 +66,7 @@ async def test_later_verified_write_does_not_rebase_or_taint_the_selected_old_so
 
 
 @pytest.mark.parametrize("change", ["version", "bytes", "quarantine", "deleted", "cycle"])
-async def test_unverified_or_unusable_source_never_releases_derived_content(
+async def test_invalid_source_blocks_outward_use_but_keeps_owned_derived_copy_readable(
     workspace_source, owner_sessionmaker, app_user_sessionmaker, change,
 ):
     s = workspace_source
@@ -91,7 +91,7 @@ async def test_unverified_or_unusable_source_never_releases_derived_content(
         with pytest.raises(ContentInputReceiptError) as error:
             await validate_runtime_input_dependencies(db, s.request, [dependency])
         assert error.value.status_code == (503 if change == "cycle" else 403)
-    assert s.body not in await _read(s.n, "read_file", s.derived)
+    assert s.body in await _read(s.n, "read_file", s.derived)
 
 
 async def test_transitive_grant_revocation_is_live_and_browser_admin_does_not_authorize_native(

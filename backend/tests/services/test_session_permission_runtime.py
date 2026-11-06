@@ -515,10 +515,11 @@ async def test_exception_after_effect_fence_quarantines_run_without_result_or_re
         )
 
 
-async def test_exception_before_effect_fence_is_truthfully_aborted_and_same_run_resumes(
+async def test_exception_before_effect_fence_is_failed_once_and_same_run_resumes(
     owner_sessionmaker,
     monkeypatch,
 ) -> None:
+    from app.models.chat_transcript_event import ChatTranscriptEvent
     from app.models.runtime_task import RuntimeTask
     from app.models.session_v2 import SessionToolInvocation
     from app.services import agent_tools
@@ -526,7 +527,10 @@ async def test_exception_before_effect_fence_is_truthfully_aborted_and_same_run_
 
     seed = await _seed_waiting_batch(owner_sessionmaker)
 
+    calls = []
+
     async def execute(_tool_name, _arguments, **_kwargs):
+        calls.append(_tool_name)
         raise RuntimeError("runtime unavailable before effect authority")
 
     monkeypatch.setattr(agent_tools, "execute_session_permission_tool", execute)
@@ -545,6 +549,23 @@ async def test_exception_before_effect_fence_is_truthfully_aborted_and_same_run_
         assert task.status == "resumable"
         assert invocation.effect_state == "prepared_not_started"
         assert await _event_count(db, invocation_id=invocation.id, item_kind="tool_result") == 1
+
+        event = await db.get(ChatTranscriptEvent, invocation.result_event_id)
+        payload = event.metadata_json["v2_payload"]
+        assert payload["outcome"] == "failed", payload
+        assert payload["retryable"] is False
+        from app.services.session_model_inputs import permission_abort_result_bound
+
+        assert await permission_abort_result_bound(db, invocation=invocation, event=event, content=payload["content"])
+        legacy = json.loads(payload["content"])
+        assert legacy.pop("message") == "The approved action failed before it started."
+        assert await permission_abort_result_bound(db, invocation=invocation, event=event, content=json.dumps(legacy))
+        legacy["message"] = "An unbound replacement."
+        assert not await permission_abort_result_bound(db, invocation=invocation, event=event, content=json.dumps(legacy))
+        replay = await resolve_session_tool_permission(db, authority=authority,
+            permission_request_id=seed.permission_ids[0], decision="allow_once")
+        assert replay.result_event_id == receipt.result_event_id
+        assert calls == ["read_file"]
 
 
 async def test_channel_permission_command_uses_canonical_pending_aggregate_and_requires_id_for_ambiguity(

@@ -138,6 +138,20 @@ it('keeps the real suspended run that has a pending approval for this member', (
   expect(screen.queryByTestId('session-runtime-collapsed-attention')).toBeNull();
 });
 
+it('excludes a suspended approval with no requester from the member list and badge', () => {
+  useAuthStore.setState({ user: { id: 'member', role: 'member' } as never });
+  const permission = { permission_request_id: 'request', runtime_task_id: 'approval-run', requested_by_user_id: null };
+  const props = { messages: [{ role: 'event', content: '', eventStatus: 'session_permission_required', sessionPermissionRequest: permission }],
+    activeSession: { id: 'work' }, sessionWorkbench: { runtime_sections: {
+      runs: [{ id: 'approval-run', status: 'suspended', result_summary: 'awaiting_session_permission' }],
+    } } } as unknown as React.ComponentProps<typeof SessionRuntimePanel>;
+  const { rerender } = render(<SessionRuntimePanel {...props} />);
+  expect.soft(screen.queryByTestId('session-runtime-waiter-approval-run')).toBeNull();
+  expect.soft(screen.queryByTestId('session-runtime-waiters')).toBeNull();
+  rerender(<SessionRuntimePanel {...props} collapsed />);
+  expect(screen.queryByTestId('session-runtime-collapsed-attention')).toBeNull();
+});
+
 it('hides only the platform deliverable declaration from rendered replies', () => {
   const prose = '报告已写入 workspace/report.md，创建结果仍可查看。';
   const { container, rerender } = render(<AssistantMessageBody content={`${prose}\n\nDELIVERABLE: workspace/report.md`}

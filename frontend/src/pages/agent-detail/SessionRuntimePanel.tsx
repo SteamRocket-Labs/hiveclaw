@@ -319,8 +319,7 @@ export function SessionRuntimePanel({
   const currentSessionDocumentCount = docs.currentSession.items.length;
   const runtimeConsole = rightPanel.runtimeConsole;
   const pendingApprovalRuns = new Set(messages.filter(message => message.eventStatus === 'session_permission_required'
-    && message.sessionPermissionRequest && (!message.sessionPermissionRequest.requested_by_user_id
-      || message.sessionPermissionRequest.requested_by_user_id === browserUserId))
+    && message.sessionPermissionRequest && message.sessionPermissionRequest.requested_by_user_id === browserUserId)
     .map(message => message.sessionPermissionRequest!.runtime_task_id || agentChatMessageRunId(message)));
   const memberWaiters = runtimeConsole.waiters.map(waiter => pendingApprovalRuns.has(waiter.id)
     ? { ...waiter, status: 'awaiting_approval' } : waiter).filter(waiter => waiter.userBlocker

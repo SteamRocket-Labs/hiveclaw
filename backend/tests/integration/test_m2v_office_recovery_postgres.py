@@ -78,7 +78,7 @@ async def test_company_update_requires_new_approval_and_returns_result_to_same_w
                 process_callback=processor, task_types=("web_chat_turn",))
 
         async def request_action():
-            await _successor(seed=seed, client=client, app=app, app_user_sessionmaker=app_user_sessionmaker,
+            source_run, _ = await _successor(seed=seed, client=client, app=app, app_user_sessionmaker=app_user_sessionmaker,
                 monkeypatch=monkeypatch, script=[_call("feishu_doc_create", {"title": "Recovery report"}),
                     {"content": "Waiting for company approval.", "finish_reason": "stop"}])
             await drain_boundary()
@@ -86,7 +86,7 @@ async def test_company_update_requires_new_approval_and_returns_result_to_same_w
                 row = await db.scalar(select(ApprovalRequest).where(ApprovalRequest.tenant_id == seed["tenant_id"],
                     ApprovalRequest.tool_name == "feishu_doc_create", ApprovalRequest.status == "pending"))
                 assert row is not None
-                return row.id
+                return row.id, source_run
 
         async def approve_and_execute(approval_id, expected):
             actor["id"] = approver
@@ -108,21 +108,27 @@ async def test_company_update_requires_new_approval_and_returns_result_to_same_w
             assert await execute_claimed_approval_execution(job) == expected
             return job
 
-        async def consume_result(content, path):
+        async def consume_result(content, path, source_run):
             service = RuntimeNotificationOutboxService(session_factory=app_user_sessionmaker)
             rows = await service.claim_batch(worker_id="office-recovery-return", limit=100)
             pages = await service.prepare_integration_pages(worker_id="office-recovery-return",
                 claimed=[row for row in rows if row.tenant_id == seed["tenant_id"]])
             assert len(pages) == 1
             page = pages[0]
+            async with owner_sessionmaker() as db:
+                original = await db.get(RuntimeTask, source_run)
+                assert original.status == "suspended" and original.result_summary == "awaiting_company_approval"
             receipt = await service._deliver_page(page)
             assert receipt.get("ok") is True, receipt
+            assert receipt["continuation_status"] == "delivered", receipt
             assert await service._mark_page_delivered(page=page, worker_id="office-recovery-return", receipt=receipt) == 1
             async with app_user_sessionmaker() as db:
                 await pin_rls_tenant_context(db, seed["tenant_id"])
-                task = await db.scalar(select(RuntimeTask).where(RuntimeTask.tenant_id == seed["tenant_id"],
-                    RuntimeTask.metadata_json["integration_page_id"].astext == str(page.id)))
+                task = await db.get(RuntimeTask, source_run)
                 assert task and task.root_user_id == seed["user_id"] and task.parent_session_id == str(seed["session_id"])
+                assert task.task_type == "web_chat_turn" and task.status == "resumable"
+                assert await db.scalar(select(RuntimeTask.id).where(RuntimeTask.tenant_id == seed["tenant_id"],
+                    RuntimeTask.metadata_json["integration_page_id"].astext == str(page.id))) is None
                 task_id = task.id
                 claims = await RuntimeTaskClaimService(db=db, worker_id="office-recovery-reader", task_types=("web_chat_turn",),
                     lease_seconds=600).claim_available()
@@ -139,14 +145,15 @@ async def test_company_update_requires_new_approval_and_returns_result_to_same_w
             await drain_boundary()
             async with app_user_sessionmaker() as db:
                 await pin_rls_tenant_context(db, seed["tenant_id"])
+                assert (await db.get(RuntimeTask, source_run)).status == "completed"
                 artifact = await db.scalar(select(ChatArtifact).where(ChatArtifact.runtime_task_id == task_id, ChatArtifact.path == path))
                 assert artifact and artifact.snapshot_json["content_input_receipt_id"]
                 return artifact.id
 
-        first = await request_action()
+        first, first_run = await request_action()
         old_job = await approve_and_execute(first, "failed")
         assert mutations == []
-        failed_artifact = await consume_result(DIAGNOSTIC, "workspace/connection-feedback.md")
+        failed_artifact = await consume_result(DIAGNOSTIC, "workspace/connection-feedback.md", first_run)
         body = {"app_id": "cli_company_work", "app_secret": new_secret, "verification_token": "synthetic-callback-token",
             "expected_tenant_id": str(seed["tenant_id"]), "expected_user_id": str(approver)}
         async with client(transport=httpx.ASGITransport(app=app), base_url="http://recovery") as api:
@@ -168,11 +175,11 @@ async def test_company_update_requires_new_approval_and_returns_result_to_same_w
         state["reconnected"] = True
         before = len(requests)
         assert await execute_claimed_approval_execution(old_job) == "failed" and len(requests) == before
-        second = await request_action()
+        second, second_run = await request_action()
         assert second != first and mutations == []
         await approve_and_execute(second, "succeeded")
         assert len(mutations) == 1
-        ready = await consume_result(DOCUMENT_URL, "workspace/recovered-office.md")
+        ready = await consume_result(DOCUMENT_URL, "workspace/recovered-office.md", second_run)
         async with client(transport=httpx.ASGITransport(app=app), base_url="http://recovery") as api:
             delivered = await api.get(f"/agents/{seed['agent_id']}/files/artifacts/{ready}/content")
             assert delivered.status_code == 200 and delivered.json()["content"] == DOCUMENT_URL, delivered.text

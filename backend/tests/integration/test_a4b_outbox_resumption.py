@@ -23,6 +23,26 @@ from tests.integration.test_a4b_company_approval_resumption import (
 pytestmark = pytest.mark.usefixtures("migrated_pg_url")
 
 
+@pytest.fixture(autouse=True)
+async def own_tenant_outbox_claims(member_work, monkeypatch, owner_sessionmaker):  # noqa: F811
+    claim_batch = RuntimeNotificationOutboxService.claim_batch
+
+    async def claim_test_rows(self, **kwargs):
+        # The real queue is global; counts and page selection belong to this tenant.
+        rows = await claim_batch(self, **kwargs)
+        return [row for row in rows if row.tenant_id == member_work["tenant_id"]]
+
+    monkeypatch.setattr(RuntimeNotificationOutboxService, "claim_batch", claim_test_rows)
+    yield
+    # Channel-origin cases leave real prompts; later tests must not send them.
+    from app.models.channel_delivery_outbox import ChannelDeliveryOutbox
+
+    async with owner_sessionmaker() as db:
+        await db.execute(delete(ChannelDeliveryOutbox).where(
+            ChannelDeliveryOutbox.tenant_id == member_work["tenant_id"]))
+        await db.commit()
+
+
 async def consume(seed, factory, *, replay=False):
     service = RuntimeNotificationOutboxService(session_factory=factory)
     await service.reconcile_terminal_tasks_once()
@@ -291,12 +311,21 @@ async def test_result_before_suspend_is_retried_then_resumes_same_run_once(
         page = await db.scalar(select(RuntimeResultIntegrationPage).where(
             RuntimeResultIntegrationPage.tenant_id == seed["tenant_id"]))
         assert page.status == "prepared" and page.attempt_count == 1
+        row = await db.scalar(select(RuntimeNotificationOutbox).where(
+            RuntimeNotificationOutbox.tenant_id == seed["tenant_id"]))
+        assert row.status == "pending" and row.attempt_count == 1 and row.delivered_at is None
+        assert row.delivery_receipt_json is None and "approval_origin_active" in row.last_error
         run = await db.get(RuntimeTask, run_id)
         assert run.status == status
         run.status, run.result_summary = "suspended", "awaiting_company_approval"
         await db.commit()
     assert (await service.drain_once(worker_id="after-suspend"))["delivered"] == 1
     assert (await service.drain_once(worker_id="redelivery"))["claimed"] == 0
+    async with owner_sessionmaker() as db:
+        row = await db.scalar(select(RuntimeNotificationOutbox).where(
+            RuntimeNotificationOutbox.tenant_id == seed["tenant_id"]))
+        assert row.status == "delivered" and row.attempt_count == 2 and row.delivered_at is not None
+        assert row.delivery_receipt_json["continuation_status"] == "delivered"
     await _drive_resumed_run(seed, app_user_sessionmaker)
     assert len(model.requests) == 2
     async with owner_sessionmaker() as db:
@@ -326,6 +355,9 @@ async def test_origin_that_never_suspends_exhausts_existing_retry_budget(
         page = await db.scalar(select(RuntimeResultIntegrationPage).where(
             RuntimeResultIntegrationPage.tenant_id == seed["tenant_id"]))
         assert page.status == "dead_letter" and page.attempt_count == 2
+        row = await db.scalar(select(RuntimeNotificationOutbox).where(
+            RuntimeNotificationOutbox.tenant_id == seed["tenant_id"]))
+        assert row.status == "dead_letter" and row.attempt_count == 2 and row.delivered_at is None
         approval = await db.get(ApprovalRequest, ticket.id)
         assert approval.execution_receipt["continuation_status"] == "needs_reconciliation"
 

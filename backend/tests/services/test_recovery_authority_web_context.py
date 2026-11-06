@@ -77,6 +77,7 @@ async def test_web_runtime_session_carries_root_task_and_base_transcript_authori
         ports=SimpleNamespace(context=context_port),
         agent=SimpleNamespace(id=uuid4(), tenant_id=uuid4()),
         session_id="session-a",
+        session=None,
         metadata={
             "source": "web",
             "initial_user_message_t0_sequence": 91,

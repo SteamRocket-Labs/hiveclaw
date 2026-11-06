@@ -52,6 +52,8 @@ const BANNED_WORDS = [
   '主体', '对账', '回执', '来源绑定', '租约', '隔离', '入账',
   'runtime', 'token', 'trace', 'schema', 'quarantine', 'workspace',
   'Agent', 'agent', 'A2A',
+  'Delegation', 'Team', 'Workers', 'Workflow', 'Activity', 'BACKGROUND',
+  'snapshot', 'My Assistant', 'Send Email', 'Copy', 'Collapse Sidebar', 'Scroll to bottom', 'Open ',
 ];
 const SNAKE_CASE_RE = /[a-z]+_[a-z_]+/;
 const PATH_RE = /workspace\/|(?:^|\s)\/(?:tmp|usr|home|var)\//;
@@ -94,7 +96,7 @@ function visibleSurface(markup: string): string {
 function findInternalWords(text: string): string[] {
   const found: string[] = [];
   for (const word of BANNED_WORDS) {
-    if (text.includes(word)) found.push(word);
+    if (word === 'Team' ? /\bTeam\b/.test(text) : text.includes(word)) found.push(word);
   }
   if (SNAKE_CASE_RE.test(text)) found.push(`snake_case:${text.match(SNAKE_CASE_RE)![0]}`);
   if (PATH_RE.test(text)) found.push('file-path');
@@ -125,6 +127,7 @@ const DEFAULT_SCREEN_KEY_ROOTS = [
   'sessionWorkbench.threadItem.thisTool',
   'sessionWorkbench.waitingGuidance',
   'sessionWorkbench.status',
+  'sessionWorkbench.rightPanel',
 ];
 
 function flattenLeaves(node: unknown, prefix: string, out: Array<[string, string]>): void {
@@ -401,7 +404,7 @@ describe('default screen language (B2)', () => {
       },
       audience: 'user',
     } as unknown as ThreadItem;
-    const markup = renderToStaticMarkup(
+    const element = (
       <ThreadItemRenderer
         item={item}
         approvalArguments={emailArguments}
@@ -419,8 +422,9 @@ describe('default screen language (B2)', () => {
             t={zhT as never}
           />
         )}
-      />,
+      />
     );
+    const markup = renderToStaticMarkup(element);
     // Still exactly one disclosure on the card.
     expect(markup.match(/<details\b/g) || []).toHaveLength(1);
     // Closed, the member's visible surface shows the request but none of the
@@ -430,12 +434,21 @@ describe('default screen language (B2)', () => {
     expect(closed).not.toContain('boss@example.com');
     expect(closed).not.toContain('Q3 复盘');
     expect(closed).not.toContain('请查收');
-    // Opened (the disclosure's body), the full proposal is there.
-    const body = decodeEntities(markup.replace(/^[\s\S]*?<details\b[^>]*>/, '').replace(/<\/details>[\s\S]*$/, ''));
+    // B7: raw parameters need their own explicit reveal inside the details.
+    const view = render(element);
+    fireEvent.click(screen.getByText('详情'));
+    expect(view.container.querySelector('pre')).toBeNull();
+    const summary = view.container.querySelector('.thread-item-disclosure')!.textContent!;
+    expect(summary).toContain('boss@example.com');
+    expect(summary).toContain('Q3 复盘');
+    expect(summary).toContain('请查收');
+    fireEvent.click(screen.getByRole('button', { name: '完整参数' }));
+    const body = view.container.querySelector('pre')!.textContent!;
     expect(body).toContain('"to"');
     expect(body).toContain('boss@example.com');
     expect(body).toContain('Q3 复盘');
     expect(body).toContain('请查收');
+    cleanup();
   });
 
   it('renders one disclosure on the approval card, not two', () => {

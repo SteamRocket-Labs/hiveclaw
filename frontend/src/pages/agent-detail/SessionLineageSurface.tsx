@@ -253,7 +253,7 @@ export function checkpointPromptIntent(checkpoint: Record<string, unknown>): str
     checkpoint.summary,
   ];
   for (const candidate of candidates) {
-    const text = normalizeCheckpointPreviewText(candidate);
+    const text = sessionTitleForUser({ title: normalizeCheckpointPreviewText(candidate) }, '');
     if (!isOpaqueCheckpointPreview(text, checkpoint)) return text;
   }
   return '';

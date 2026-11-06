@@ -392,7 +392,7 @@ function kindForToolMessage(message: AgentChatMessage): RunStepKind {
   return 'tool';
 }
 
-function titleForToolMessage(message: AgentChatMessage): string {
+export function titleForToolMessage(message: Pick<AgentChatMessage, 'toolName'>): string {
   if (message.toolName === 'tool_search') return 'Loading tools';
   const name = (message.toolName || '').toLowerCase();
   if (TASK_LEDGER_MUTATION_TOOLS.has(name)) return 'Update tasks';

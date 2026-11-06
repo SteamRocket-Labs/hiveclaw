@@ -1,5 +1,6 @@
 import { useTranslation } from 'react-i18next';
 import './NotificationCenter.css';
+import OffboardingNotice from './OffboardingNotice';
 
 interface NotificationCenterProps {
   isOpen: boolean;
@@ -79,7 +80,7 @@ export default function NotificationCenter({
                       {notification.title}
                     </span>
                   </div>
-                  {notification.body && (
+                  {notification.body && notification.type !== 'offboarding_handover' && (
                     <div className="notification-center-item-body">
                       {notification.body}
                     </div>
@@ -104,7 +105,9 @@ export default function NotificationCenter({
               </button>
             </div>
             <div className="notification-center-detail-body">
-              {selectedNotification.body || t('notifications.noDetails')}
+              {selectedNotification.type === 'offboarding_handover'
+                ? <OffboardingNotice key={selectedNotification.id} body={selectedNotification.body} onNavigate={() => { onCloseDetail(); onClose(); }} />
+                : selectedNotification.body || t('notifications.noDetails')}
             </div>
             <div className="notification-center-detail-footer">
               <span>

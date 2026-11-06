@@ -11,6 +11,7 @@ export type ApprovalActionLabel = {
 // the existing toolTitle.* keys instead of duplicates (B2 r2).
 const EXACT_TOOLS: Record<string, ApprovalActionLabel> = {
   create_employee_from_request: { key: 'sessionWorkbench.approvalAction.createEmployee', fallback: 'Create a digital employee' },
+  run_command: { key: 'agent.chat.disclosure.toolTitle.runCommand', fallback: 'Run command' },
   start_hr_agent_handoff: { key: 'sessionWorkbench.approvalAction.createEmployee', fallback: 'Create a digital employee' },
   send_email: { key: 'sessionWorkbench.approvalAction.sendEmail', fallback: 'Send an email' },
   reply_email: { key: 'sessionWorkbench.approvalAction.replyEmail', fallback: 'Reply to an email' },

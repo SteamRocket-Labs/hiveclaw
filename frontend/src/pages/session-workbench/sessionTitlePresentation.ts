@@ -111,9 +111,13 @@ export function hasSessionBranchIdentity(session: Record<string, unknown> | null
 export function sessionTitleForUser(
   session: Record<string, unknown> | null | undefined,
   fallback: string,
+  delegationLabel = 'Delegation',
 ): string {
   const source = recordValue(session);
-  const rawTitle = String(source.title || source.name || '').trim() || fallback;
+  let rawTitle = String(source.title || source.name || '').trim() || fallback;
+  if ((source.session_kind === 'agent_chat' || source.runtime_source === 'delegation_run') && rawTitle.startsWith('Delegation: ')) {
+    rawTitle = `${delegationLabel}：${rawTitle.slice('Delegation: '.length)}`;
+  }
   if (!hasSessionBranchIdentity(source)) {
     // A runtime-JSON title recovers its member text or falls to the plain
     // default — the raw JSON encoding is never a title (B2 r3). Current

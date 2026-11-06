@@ -2,7 +2,8 @@
 
 import React from 'react';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { useAuthStore } from '../../stores';
 
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
@@ -26,7 +27,8 @@ vi.mock('react-i18next', () => ({
 import { SessionRuntimePanel } from './SessionRuntimePanel';
 import type { AgentChatMessage } from './chatRuntime';
 
-afterEach(cleanup);
+beforeEach(() => useAuthStore.setState({ user: { id: 'reviewer', role: 'org_admin' } as never }));
+afterEach(() => { cleanup(); useAuthStore.setState({ user: null }); });
 
 const ACTIVE_SESSION = { id: 'runtime-panel-session', title: 'Runtime panel session' };
 

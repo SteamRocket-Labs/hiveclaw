@@ -9,7 +9,7 @@
     "preview": "vite preview",
     "test": "NODE_OPTIONS=--no-experimental-webstorage vitest run",
     "i18n:inventory": "node scripts/i18n-audit.mjs --json",
-    "i18n:check": "node --test scripts/i18n-audit.node.mjs && node scripts/i18n-audit.mjs --check",
+    "i18n:check": "node --test scripts/i18n-audit.node.mjs && node scripts/i18n-audit.mjs --check && NODE_OPTIONS=--no-experimental-webstorage vitest run src/pages/session-workbench/DefaultSurfaceLanguage.test.tsx src/pages/agent-detail/B7MemberSurface.test.tsx",
     "test:e2e": "env -u NO_COLOR playwright test",
     "test:e2e:journeys": "env -u NO_COLOR playwright test --config playwright.journeys.config.ts"
   },

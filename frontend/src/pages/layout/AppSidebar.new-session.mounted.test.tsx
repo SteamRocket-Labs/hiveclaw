@@ -18,7 +18,8 @@ const harness = vi.hoisted(() => ({
 
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
-    t: (_key: string, fallback?: string) => fallback ?? _key,
+    t: (_key: string, fallback?: string, values?: Record<string, unknown>) => (fallback ?? _key)
+      .replace(/\{\{(\w+)\}\}/g, (_, name) => String(values?.[name] ?? '')),
     i18n: { language: 'en' },
   }),
 }));

@@ -228,7 +228,7 @@ export default function AppSidebar({
           <button
             className="btn btn-ghost sidebar-collapse-btn"
             onClick={onToggleSidebar}
-            title={isSidebarCollapsed ? 'Expand Sidebar' : 'Collapse Sidebar'}
+            title={isSidebarCollapsed ? t('layout.expandSidebar', 'Expand Sidebar') : t('layout.collapseSidebar', 'Collapse Sidebar')}
           >
             {isSidebarCollapsed ? sidebarIcons.expand : sidebarIcons.collapse}
           </button>
@@ -282,7 +282,7 @@ export default function AppSidebar({
                 to={botEntry}
                 className={() => `sidebar-item sidebar-agent-link ${isAgentRowActive ? 'active' : ''}`}
                 title={name}
-                aria-label={`Open ${name}`}
+                aria-label={t('layout.openNamed', 'Open {{name}}', { name })}
               >
                 <span className="sidebar-item-icon" style={{ position: 'relative' }}>
                   <span className={`agent-avatar${isLocalAgentRuntimeType(agent) ? ' local-runtime' : ''}`}>{avatarChar}</span>

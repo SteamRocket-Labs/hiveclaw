@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import nullcontext
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -21,6 +22,38 @@ class _EmptyScalars:
 
     def all(self):
         return []
+
+
+def test_offboarding_accepts_active_same_company_member_without_promoting_role() -> None:
+    from app.services.user_offboarding_service import _validate_successor
+
+    tenant_id = uuid4()
+    target = SimpleNamespace(id=uuid4(), tenant_id=tenant_id)
+    successor = SimpleNamespace(id=uuid4(), tenant_id=tenant_id, role="member", is_active=True)
+
+    _validate_successor(target_user=target, successor=successor)
+
+    assert successor.role == "member"
+
+
+@pytest.mark.parametrize("invalid_successor", ["self", "inactive", "other_company"])
+def test_offboarding_rejects_invalid_successor(invalid_successor) -> None:
+    from app.services.user_offboarding_service import _validate_successor
+
+    tenant_id = uuid4()
+    target = SimpleNamespace(id=uuid4(), tenant_id=tenant_id)
+    successor = SimpleNamespace(id=uuid4(), tenant_id=tenant_id, role="member", is_active=True)
+    if invalid_successor == "self":
+        successor.id = target.id
+    elif invalid_successor == "inactive":
+        successor.is_active = False
+    else:
+        successor.tenant_id = uuid4()
+
+    with pytest.raises(HTTPException) as caught:
+        _validate_successor(target_user=target, successor=successor)
+
+    assert caught.value.status_code == 400
 
 
 @pytest.mark.asyncio
@@ -91,6 +124,8 @@ async def test_offboard_user_atomically_transfers_agents_then_deactivates(monkey
 
     db = SimpleNamespace(added=[], flushes=0)
     db.add = db.added.append
+    db.add_all = db.added.extend
+    db.no_autoflush = nullcontext()
 
     async def flush():
         db.flushes += 1
@@ -100,6 +135,7 @@ async def test_offboard_user_atomically_transfers_agents_then_deactivates(monkey
 
     db.flush = flush
     db.execute = execute
+    db.scalars = execute
 
     receipt = await service.offboard_loaded_user(
         db,
@@ -118,6 +154,8 @@ async def test_offboard_user_atomically_transfers_agents_then_deactivates(monkey
     assert receipt.status == "deactivated"
     assert receipt.transferred_agent_ids == [agent.id for agent in agents]
     assert receipt.revocations.refresh_tokens == 2
+    audit = next(row for row in db.added if getattr(row, "action", None) == "user:offboarded")
+    assert audit.details["task_original_creators"] == {}
 
 
 @pytest.mark.asyncio

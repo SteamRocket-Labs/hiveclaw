@@ -1380,7 +1380,7 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
         if input_case == "first_task_explicit_unverified_memory":
             assert len(creator_client.requests) == 3
             assert "OLD_UNVERIFIED_CREATION_MEMORY" not in json.dumps(creator_client.requests[0]["messages"])
-            assert "OLD_UNVERIFIED_CREATION_MEMORY" in json.dumps(creator_client.requests[1]["messages"])
+            assert "OLD_UNVERIFIED_CREATION_MEMORY" not in json.dumps(creator_client.requests[1]["messages"])
         elif memory_case:
             visible = json.dumps(creator_client.requests[0]["messages"])
             assert old_memory_path in visible and "source_unverified" in visible

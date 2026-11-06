@@ -430,32 +430,66 @@ def _committed_request_content_matches(result: SessionModelResult, snapshot: dic
     )
 
 
-def _withhold_model_source(messages, wire_request, input_bindings, source, code):
+def split_context_message(message, sections):
+    """Keep compiler-known input items separate before capturing model bindings."""
+    from app.runtime.context_candidates import ContextMessageOrigin
     from app.services.llm_client import LLMMessage
 
-    note = (f"[context item withheld] {source['source_kind']} {source['source_id']} "
-        f"was not delivered ({code}). Continue with the remaining context; ask the user if this item matters.")
-    indexes = [entry["message_index"] for entry in input_bindings["messages"]
-        if source in entry.get("dependencies", [])]
+    origin = message.context_origin
+    remainder = message.content
+    sources, unbound = list(origin.sources), list(origin.unbound)
+    parts = []
+    for section in sections:
+        text = section["content"]
+        if not text:
+            continue
+        start = remainder.index(text)
+        remainder = remainder[:start] + remainder[start + len(text):]
+        refs, unknown = section["sources"], section["unbound"]
+        parts.append(LLMMessage(role=message.role, content=text, context_origin=ContextMessageOrigin.capture(
+            kind=origin.kind, role=message.role, content=text, sources=refs, unbound=unknown)))
+        sources = [ref for ref in sources if ref not in refs]
+        unbound = [reason for reason in unbound if reason not in unknown]
+    if remainder.strip():
+        parts.insert(0, LLMMessage(role=message.role, content=remainder, context_origin=ContextMessageOrigin.capture(
+            kind=origin.kind, role=message.role, content=remainder, sources=sources, unbound=unbound)))
+    return parts
+
+
+def _withhold_model_source(messages, wire_request, input_bindings, source, code, indexes=None):
+    from app.services.llm_client import LLMMessage
+
+    note = "有一项上下文暂时无法核实，已略过，请使用其余内容继续，需要时向用户询问。"
+    if indexes is None:
+        indexes = [entry["message_index"] for entry in input_bindings["messages"]
+            if source in entry.get("dependencies", [])]
     if not indexes:
         # Delegated instructions can inherit dependencies without inheriting their bodies.
         indexes = [len(messages)]
         messages.append(LLMMessage(role="system", content=note))
         wire_request["messages"].append({"role": "system", "content": note})
     wire_messages = wire_request["messages"]
-    call_ids = {call["id"] for index in indexes for call in wire_messages[index].get("tool_calls") or []}
-    indexes = set(indexes) | {index for index, message in enumerate(wire_messages)
-        if message.get("role") == "tool" and message.get("tool_call_id") in call_ids}
+    indexes = set(indexes)
+    result_ids = {wire_messages[i].get("tool_call_id") for i in indexes if wire_messages[i].get("role") == "tool"}
+    indexes.update(i for i, message in enumerate(wire_messages) if any(
+        call.get("id") in result_ids for call in message.get("tool_calls") or [] if call.get("id")))
+    call_ids = {call.get("id") for i in indexes for call in wire_messages[i].get("tool_calls") or [] if call.get("id")}
+    for i in list(indexes):
+        if any(not call.get("id") for call in wire_messages[i].get("tool_calls") or []):
+            for j in range(i + 1, len(wire_messages)):
+                if wire_messages[j].get("role") != "tool":
+                    break
+                indexes.add(j)
+    indexes.update(index for index, message in enumerate(wire_messages)
+        if message.get("role") == "tool" and message.get("tool_call_id") in call_ids)
     for index in indexes:
-        original = wire_messages[index]
         replacement = {"role": "system", "content": note}
-        if original.get("role") == "tool" and original.get("tool_call_id") not in call_ids:
-            replacement.update(role="tool", tool_call_id=original["tool_call_id"])
         # Replacing the complete payload also removes arguments and private
         # reasoning; paired results become notes so no orphan tool call remains.
         wire_messages[index] = replacement
         messages[index] = dict(replacement) if isinstance(messages[index], dict) else LLMMessage(**replacement)
-    input_bindings["dependencies"].remove(source)
+    if source in input_bindings["dependencies"]:
+        input_bindings["dependencies"].remove(source)
     for entry in input_bindings["messages"]:
         if entry["message_index"] in indexes:
             entry.update(status="withheld", code=code, dependencies=[], dependency_status="resolved")
@@ -471,13 +505,26 @@ async def _validate_or_withhold_model_sources(db, *, tenant_id, agent_id, sessio
     from app.services.explicit_memory_authority import validate_memory_model_sources
 
     task = await db.get(RuntimeTask, run_id)
+    # Compiler-bound platform constants have resolved, empty dependencies;
+    # unbound data has no such proof, even when sent with the system role.
+    unbound = [entry["message_index"] for entry in input_bindings["messages"]
+        if entry.get("dependency_status") != "resolved"]
+    if unbound:
+        _withhold_model_source(messages, wire_request, input_bindings, None, "model_input_source_unbound", unbound)
+        input_bindings["status"] = "resolved"
+        input_bindings["dependency_coverage"]["complete"] = True
+    group_principal = await validate_shared_group_model_inputs(db, tenant_id=tenant_id, agent_id=agent_id,
+        session_id=session_id, run_id=run_id, input_bindings={**input_bindings, "dependencies": []})
     # Each dependency is checked once; an arbitrary retry cap must not turn the
     # fourth unavailable item into a whole-turn failure.
     for source in list(input_bindings["dependencies"]) or [None]:
         dependencies = [source] if source is not None else []
         try:
-            await validate_shared_group_model_inputs(db, tenant_id=tenant_id, agent_id=agent_id,
-                session_id=session_id, run_id=run_id, input_bindings={**input_bindings, "dependencies": dependencies})
+            if group_principal is not None:
+                from app.services.content_input_receipts import _validate_input_dependencies, group_source_read
+
+                with group_source_read():
+                    await _validate_input_dependencies(db, tenant_id, dependencies, runtime_request=group_principal)
             await validate_native_trigger_model_sources(db, task=task, dependencies=dependencies, effect="model_request")
             await validate_model_sources(db, task=task, dependencies=dependencies, effect="model_request")
             await validate_memory_model_sources(db, task=task, agent_id=agent_id,

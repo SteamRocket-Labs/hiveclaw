@@ -96,6 +96,7 @@ def test_memory_context_names_withheld_count_in_note():
     from app.services.memory_service import _render_withheld_note
 
     note = _render_withheld_note({"explicit_memory": {"count": 1, "code": "explicit_memory_source_partial"}})
-    assert "1" in note and "explicit_memory" in note and "explicit_memory_source_partial" in note
+    assert "1" in note and "记忆暂时无法核实" in note
+    assert "explicit_memory" not in note and "source_partial" not in note
     assert _render_withheld_note({}) == ""
     assert _render_withheld_note(None) == ""

@@ -76,7 +76,7 @@ async def _recover_read_artifact_selection(db: AsyncSession, *, task: RuntimeTas
             "artifact_paths": list(by_path), "artifact_ids": [part["artifact_id"] for part in by_path.values()],
             "artifact_attachment_policy": "model_declared_verified_read_or_write"})
     metadata["rejected_artifact_paths"] = list(dict.fromkeys([
-        *(metadata.get("rejected_artifact_paths") or []),
+        *(path for path in metadata.get("rejected_artifact_paths") or [] if path not in by_path),
         *(path for path in paths if _is_user_visible_terminal_artifact_path(path) and path not in by_path),
     ]))
     metadata["artifact_selection_result_id"] = str(result.id)
@@ -587,7 +587,7 @@ async def commit_terminal_outcome(
         raise TerminalOutcomeNeedsReconciliation("terminal source block hash mismatch")
     turn_id = outcome.turn_id
     semantic_content = str(result.seal_json.get("semantic_content") or "")
-    attachment_notice = "部分文件未能附在这条回复中。已保存的工作区文件可以在「文件」中查看。"
+    attachment_notice = "部分文件未能附在这条回复中。"
     notices = [SessionEventDraft(
         item_id=uuid.uuid5(outcome.id, "unattached-files"), item_kind="assistant_commentary", lifecycle="completed",
         scope=_round_scope(session_id, turn_id, run_id, result.round_id), actor={"type": "runtime"},

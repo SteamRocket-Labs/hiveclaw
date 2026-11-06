@@ -213,8 +213,17 @@ async def test_member_can_remember_own_request_with_incomplete_ambient_context(
         await db.commit()
     original_prepare = session_model_round.prepare_model_request
     async def prepare_with_ambient_guidance(db, **kwargs):
-        kwargs["messages"].insert(0, LLMMessage(role="system", content="Platform formatting guidance for the reply."))
-        return await original_prepare(db, **kwargs)
+        from app.runtime.context_candidates import ContextMessageOrigin
+
+        text = "Platform formatting guidance for the reply."
+        kwargs["messages"].insert(0, LLMMessage(role="system", content=text,
+            context_origin=ContextMessageOrigin.capture(kind="platform_guidance", role="system", content=text, unbound=())))
+        kwargs["messages"].insert(1, LLMMessage(role="user", content="UNBOUND_MEMORY_SECRET"))
+        result = await original_prepare(db, **kwargs)
+        # A copying model can only use the messages left at the shared entry.
+        if any("UNBOUND_MEMORY_SECRET" in str(message.content) for message in kwargs["messages"]):
+            memory_arguments["content"] += " UNBOUND_MEMORY_SECRET"
+        return result
 
     async def reference_review(content, *, category, **_kwargs):
         return MemoryWriteDecision(original_content=content, content=content, category=category,
@@ -223,17 +232,20 @@ async def test_member_can_remember_own_request_with_incomplete_ambient_context(
     monkeypatch.setattr(session_model_round, "prepare_model_request", prepare_with_ambient_guidance)
     monkeypatch.setattr("app.memory.explicit_overlay.prepare_memory_write_with_llm", reference_review)
     memory_content = "A4c test credential value: [REDACTED_SECRET]." if pasted_key else command
-    saved, invocation = await memory_call(n, app_user_sessionmaker, "save_memory",
-        {"category": "project", "content": memory_content}, command=command)
+    memory_arguments = {"category": "project", "content": memory_content}
+    saved, invocation = await memory_call(n, app_user_sessionmaker, "save_memory", memory_arguments, command=command)
     assert "Saved to explicit memory overlay" in saved, saved
+    entries = list((n.root / "memory/explicit/entries").glob("*.md"))
+    assert len(entries) == 1 and memory_content in entries[0].read_text()
+    assert "UNBOUND_MEMORY_SECRET" not in entries[0].read_text()
     async with app_user_sessionmaker() as db:
         await pin_rls_tenant_context(db, n.tenant)
         model = await db.scalar(select(SessionModelResult).where(
             SessionModelResult.provider_request_id == invocation.provider_request_id))
         dependencies, complete = _model_dependencies(model)
-        assert not complete and dependencies
-    entries = list((n.root / "memory/explicit/entries").glob("*.md"))
-    assert len(entries) == 1 and memory_content in entries[0].read_text()
+        assert complete and dependencies
+        assert "UNBOUND_MEMORY_SECRET" not in json.dumps(model.model_request_snapshot_json["wire_request"])
+        assert "Platform formatting guidance" in json.dumps(model.model_request_snapshot_json["wire_request"])
     if pasted_key:
         assert key not in entries[0].read_text() and key not in saved
 

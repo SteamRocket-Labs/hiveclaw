@@ -324,10 +324,7 @@ def _list_files(
             items.append(f"  📄 {p.name} ({size_str})")
 
     if withheld_count:
-        items.append(
-            f"  ⚠️ {withheld_count} more entr{'y exists' if withheld_count == 1 else 'ies exist'} in this listing "
-            "but cannot be shown in this work (its source is not authorized here)."
-        )
+        items.append(f"  ⚠️ 有 {withheld_count} 项暂时无法显示，已略过。")
 
     if not items:
         result = _append_workspace_provenance_hint(

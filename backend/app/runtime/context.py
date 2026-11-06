@@ -83,6 +83,7 @@ class RuntimeAssemblyState:
     # Transient compiler output: never hydrate source claims from session metadata.
     compiled_context_sources: dict[str, tuple[dict[str, str], ...]] = field(default_factory=dict, repr=False)
     compiled_context_unbound: dict[str, tuple[str, ...]] = field(default_factory=dict, repr=False)
+    compiled_context_sections: dict[str, tuple[dict, ...]] = field(default_factory=dict, repr=False)
     prompt_assembly_manifest: dict[str, Any] = field(default_factory=dict)
     context_usage_ledger: dict[str, Any] = field(default_factory=dict)
     dynamic_context_section_ledger: dict[str, Any] = field(default_factory=dict)
@@ -98,13 +99,21 @@ class RuntimeAssemblyState:
     skill_catalog_ranking: list[dict[str, Any]] = field(default_factory=list)
     skill_catalog_ranking_inputs: dict[str, Any] = field(default_factory=dict)
 
-    def record_context_sources(self, *, agent_id: Any, content: str, sources, unbound=("context_source_inventory_missing",)) -> None:
+    def record_context_sources(self, *, agent_id: Any, content: str, sources, unbound=("context_source_inventory_missing",), sections=()) -> None:
         import hashlib
         from copy import deepcopy
 
         key = f"{agent_id}:{hashlib.sha256(content.encode()).hexdigest()}"
         self.compiled_context_sources[key] = tuple(deepcopy(sources))
         self.compiled_context_unbound[key] = tuple(unbound)
+        self.compiled_context_sections[key] = tuple(deepcopy(sections))
+
+    def context_sections_for(self, *, agent_id: Any, content: str):
+        import hashlib
+        from copy import deepcopy
+
+        key = f"{agent_id}:{hashlib.sha256(content.encode()).hexdigest()}"
+        return deepcopy(self.compiled_context_sections.get(key, ()))
 
     def context_unbound_for(self, *, agent_id: Any, content: str):
         import hashlib

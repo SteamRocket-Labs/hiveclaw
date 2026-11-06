@@ -395,15 +395,14 @@ async def load_delegation_instruction_origin(db, *, request, tenant_id, content)
         or source_id != uuid.uuid5(invocation.id, f"delegation-instruction:{pointer['source_hash']}")
     ):
         return None
-    dependencies, _complete = _model_snapshot_dependencies(model)
+    dependencies, complete = _model_snapshot_dependencies(model)
     return ContextMessageOrigin.capture(
         kind="delegated_instruction",
         role="user",
         content=content,
         sources=dependencies,
         sections=[{"kind": "parent_tool_call", "source_id": str(source_id), "source_hash": pointer["source_hash"]}],
-        # Instruction bytes are pinned above; historical coverage cannot deny the instruction.
-        unbound=() if dependencies else ("delegation_parent_inputs_unbound",),
+        unbound=() if complete else ("delegation_parent_inputs_unbound",),
     )
 
 

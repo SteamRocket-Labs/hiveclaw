@@ -32,8 +32,7 @@ def test_listing_says_how_many_entries_were_withheld(tmp_path):
 
     assert "mine.md" in result
     assert "foreign.md" not in result
-    assert "1 more entry exists" in result
-    assert "cannot be shown" in result
+    assert "有 1 项暂时无法显示，已略过。" in result
 
 
 def test_listing_without_withheld_entries_has_no_note(tmp_path):
@@ -45,5 +44,4 @@ def test_listing_without_withheld_entries_has_no_note(tmp_path):
     result = _list_files(tmp_path, "workspace", authority_scope=scope)
 
     assert "mine.md" in result
-    assert "more entry" not in result
-    assert "cannot be shown" not in result
+    assert "暂时无法显示" not in result

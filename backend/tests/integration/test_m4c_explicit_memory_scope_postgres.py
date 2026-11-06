@@ -652,7 +652,8 @@ async def test_next_provider_request_cannot_reuse_memory_after_its_historical_so
         rows = list((await db.scalars(select(SessionModelResult).where(SessionModelResult.run_id == run))).all())
         assert len(rows) == 2, rows
         current = max(rows, key=lambda row: row.round_id)
-        request = json.dumps(current.model_request_snapshot_json["messages"])
+        request = json.dumps(current.model_request_snapshot_json["messages"], ensure_ascii=False)
         assert "ORCHID_PRIVATE_MARKER" not in request
-        assert "[context item withheld]" in request and "content_source_access_denied" in request
+        assert "有一项上下文暂时无法核实" in request
+        assert "content_source_access_denied" not in request
         assert "Remember a note derived from the withdrawn release memory" in request

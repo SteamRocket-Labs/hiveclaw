@@ -38,78 +38,10 @@ def migrated_pg_url(request, migrated_pg_url):
     return integration.migrated_pg_url.__wrapped__(request.getfixturevalue("migration_pg_container"))
 
 
-async def test_command_created_scheduled_input_is_complete(owner_sessionmaker, monkeypatch):
-    """A /loop created from the commands API carries no configuration snapshot.
+async def test_command_created_scheduled_input_is_complete():
+    from tests.integration.test_a4c_r2 import test_schedule_producer_distinguishes_no_pointer_command
 
-    Before A4c the immediate run was refused with
-    ``native_trigger_input_sources_unavailable`` before the model call; the
-    member's own hash-verified command is the source, so the run must proceed.
-    The upstream origin loader is covered by the trigger requester batch tests;
-    this test pins the changed completeness decision itself.
-    """
-    from types import SimpleNamespace
-
-    from app.models.agent import Agent
-    from app.models.chat_session import ChatSession
-    from app.models.invocation_span import InvocationSpan
-    from app.models.tenant import Tenant
-    from app.models.user import User
-    from app.services.session_model_inputs import _hash
-    from app.services.trigger_instruction_sources import _identity, native_trigger_input_sources
-
-    tenant_id, user_id, agent_id, session_id = (uuid.uuid4() for _ in range(4))
-    wrapper_id, input_id, command_id = (uuid.uuid4() for _ in range(3))
-    async with owner_sessionmaker() as db:
-        db.add(Tenant(id=tenant_id, name="A4c Loop Tenant", slug=f"a4c-{tenant_id.hex[:8]}"))
-        await db.flush()
-        db.add(User(id=user_id, username=f"a4c-{user_id.hex[:8]}", email=f"{user_id.hex[:8]}@a4c.test",
-            password_hash="x", display_name="A4c", tenant_id=tenant_id))
-        await db.flush()
-        db.add(Agent(id=agent_id, name="A4c Loop Agent", role_description="probe", tenant_id=tenant_id,
-            creator_id=user_id, sponsor_user_id=user_id, owner_user_id=user_id, agent_type="native", status="idle"))
-        await db.flush()
-        db.add(ChatSession(id=session_id, agent_id=agent_id, tenant_id=tenant_id, user_id=user_id,
-            title="a4c", session_kind="human_chat", runtime_source="web_chat", source_channel="web"))
-        await db.flush()
-        from app.models.runtime_task import RuntimeTask
-
-        db.add(RuntimeTask(id=wrapper_id, task_type="trigger", tenant_id=tenant_id,
-            parent_agent_id=agent_id, root_user_id=user_id, parent_session_id=str(session_id),
-            status="completed", metadata_json={"delivery": "same_session", "source_session_id": str(session_id),
-                "trigger_ids": []}))
-        await db.flush()
-        # The exact proof shape the S0b/A4c repro produced for a command-created
-        # loop: complete=False, configuration_sources=[] (no model configuration).
-        parts = [{"text": "===== Trigger Awakening Context =====", "type": "text"}]
-        proof = {"schema": "hive.native_trigger_input.v1", "wrapper_id": str(wrapper_id),
-            "input_id": str(input_id), "command_id": str(command_id),
-            "request_hash": _hash({"v": 1}), "target_hash": _hash({"v": 2}),
-            "input_sha256": _hash(parts), "trigger_ids": [], "configuration_sources": [],
-            "complete": False}
-        db.add(InvocationSpan(id=_identity(wrapper_id, input_id), tenant_id=tenant_id, agent_id=agent_id,
-            user_id=user_id, session_id=str(session_id), runtime_task_id=wrapper_id,
-            trace_id=f"trigger:{wrapper_id}", span_id=f"native-trigger-input:{_identity(wrapper_id, input_id)}",
-            span_type="native_trigger_input", name="scheduled_input", status="captured", duration_ms=0,
-            started_at=datetime.now(timezone.utc), metadata_json={"native_trigger_input": proof}))
-        await db.commit()
-
-    async def fake_origin(_db, **_kwargs):
-        return {"wrapper_id": str(wrapper_id), "input_id": str(input_id), "command_id": str(command_id),
-            "request_hash": proof["request_hash"], "target_hash": proof["target_hash"],
-            "input_sha256": proof["input_sha256"],
-            "requester_user_id": str(user_id), "trigger_ids": []}
-
-    monkeypatch.setattr("app.services.trigger_input_authority.load_trigger_input_origin", fake_origin)
-
-    row = SimpleNamespace(id=input_id, session_id=session_id, content_parts_json=parts)
-    command = SimpleNamespace(id=command_id, request_hash=proof["request_hash"], target_hash=proof["target_hash"],
-        target_json={"runtime_metadata": {"source": "loop_same_session"}})
-    async with owner_sessionmaker() as db:
-        references, complete = await native_trigger_input_sources(
-            db, tenant_id=tenant_id, agent_id=agent_id, row=row, command=command)
-
-    assert complete, "a command-created scheduled input must reach the model"
-    assert len(references) == 1
+    await test_schedule_producer_distinguishes_no_pointer_command("command")
 
 
 # ---------------------------------------------------------------------------
@@ -197,7 +129,7 @@ async def test_one_failing_source_replaces_its_message_and_continues(monkeypatch
         messages=messages, tools=[], provider="local", model="a4c", wire_request=wire_request)
 
     request = db.added[0].model_request_snapshot_json["wire_request"]
-    assert all("[context item withheld]" in m["content"] and kind in m["content"]
+    assert all("有一项上下文暂时无法核实" in m["content"]
         for m in request["messages"][:count])
     assert "recalled block" not in json.dumps(request)
     assert all("recalled block" not in m["content"] for m in messages)

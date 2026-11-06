@@ -12,7 +12,7 @@ from app.models.chat_transcript_event import ChatTranscriptEvent
 from app.models.runtime_task import RuntimeTask
 from app.models.session_v2 import SessionToolInvocation
 from tests.integration.test_session_permission_execution_once import _mounted_client
-from tests.services.test_session_permission_runtime import _authority, _seed_waiting_batch
+from tests.services.test_session_permission_runtime import _seed_waiting_batch
 
 pytestmark = pytest.mark.usefixtures("migrated_pg_url")
 
@@ -169,57 +169,45 @@ async def test_running_approved_command_stops_when_its_authority_is_revoked(
 async def test_permission_binding_rejects_another_owner_or_changed_run(
     owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, invalid,
 ):
-    from app.services.permission_command_environment import PermissionCommandBinding
+    from tests.integration.test_permission_command_boundary import _approved_binding
     from app.services.permission_execution import permission_execution_lease
-    from app.services.execution_environments import EnvironmentCommandScope, EnvironmentError
-    from app.services.session_control_input import accept_tool_permission_response, apply_permission_response_control_input
+    from app.services.execution_environments import EnvironmentError, command_environment_context
     from app.services.shared_group_authority import group_permission_execution
 
     seed, _effect, _notifications = await _command(owner_sessionmaker, monkeypatch, tmp_path)
-    async with app_user_sessionmaker() as db:
-        await pin_rls_tenant_context(db, seed.tenant_id)
-        _user, authority = await _authority(db, seed)
-        invocation = await db.get(SessionToolInvocation, seed.invocation_ids[0])
-        control_id = uuid.uuid5(seed.permission_ids[0], "permission-response:allow_once")
-        await accept_tool_permission_response(db, authority=authority, control_id=control_id,
-            idempotency_key=f"permission:{seed.permission_ids[0]}:allow_once", invocation_id=invocation.id,
-            permission_item_id=seed.permission_ids[0], permission_request_version=invocation.permission_request_version,
-            permission_authority_snapshot_hash=invocation.permission_authority_snapshot_hash,
-            expected_run_id=seed.run_id, decision="allow_once", response_schema="hive.tool_permission_response.v1")
-        await apply_permission_response_control_input(db, authority=authority, control_id=control_id)
+    async with _approved_binding(app_user_sessionmaker, seed, tmp_path) as values:
+        db, authority, invocation, control_id, binding, frame, scope = values
+        lease = binding.lease
+        task = await db.get(RuntimeTask, seed.run_id)
+        with group_permission_execution(authority=authority, invocation=invocation, control_id=control_id), \
+                command_environment_context(frame):
+            assert (await binding.authorize(db, scope)).id == seed.user_id
+            assert (await binding.revalidate(db, scope)).id == seed.user_id
+        if invalid == "different_lease":
+            async with permission_execution_lease(db, uuid.uuid4()) as other:
+                binding = replace(binding, lease=other)
+                for validate in (binding.authorize, binding.revalidate):
+                    with group_permission_execution(authority=authority, invocation=invocation, control_id=control_id), \
+                            command_environment_context(frame), \
+                            pytest.raises(EnvironmentError, match="environment_source_authority_revoked"):
+                        await validate(db, scope)
+                assert not binding.owns_terminal_task(task)
+            return
+        if invalid == "lost_lease":
+            await lease.connection.close()
+        elif invalid == "requester":
+            task.metadata_json = {**task.metadata_json, "root_user_id": str(uuid.uuid4())}
+        elif invalid == "permission":
+            binding = replace(binding, permission_request_id=uuid.uuid4())
+        elif invalid == "pause":
+            task.metadata_json = {**task.metadata_json, "interactive_pause": {
+                "schema": "hive.tool_permission_wait.v1", "invocation_ids": [str(uuid.uuid4())]}}
+        else:
+            task.status = invalid
         await db.commit()
-        async with permission_execution_lease(db, seed.permission_ids[0]) as lease:
-            binding = PermissionCommandBinding(authority, invocation.id, invocation.run_id,
-                seed.permission_ids[0], invocation.provider_tool_use_id, lease)
-            scope = EnvironmentCommandScope(seed.tenant_id, seed.agent_id, seed.user_id, "test", seed.run_id,
-                source_binding=binding, session_id=seed.session_id)
-            task = await db.get(RuntimeTask, seed.run_id)
-            with group_permission_execution(authority=authority, invocation=invocation, control_id=control_id):
-                assert (await binding.authorize(db, scope)).id == seed.user_id
-                assert (await binding.revalidate(db, scope)).id == seed.user_id
-            if invalid == "different_lease":
-                async with permission_execution_lease(db, uuid.uuid4()) as other:
-                    binding = replace(binding, lease=other)
-                    for validate in (binding.authorize, binding.revalidate):
-                        with group_permission_execution(authority=authority, invocation=invocation, control_id=control_id), \
-                                pytest.raises(EnvironmentError, match="environment_source_authority_revoked"):
-                            await validate(db, scope)
-                    assert not binding.owns_terminal_task(task)
-                return
-            if invalid == "lost_lease":
-                await lease.connection.close()
-            elif invalid == "requester":
-                task.metadata_json = {**task.metadata_json, "root_user_id": str(uuid.uuid4())}
-            elif invalid == "permission":
-                binding = replace(binding, permission_request_id=uuid.uuid4())
-            elif invalid == "pause":
-                task.metadata_json = {**task.metadata_json, "interactive_pause": {
-                    "schema": "hive.tool_permission_wait.v1", "invocation_ids": [str(uuid.uuid4())]}}
-            else:
-                task.status = invalid
-            await db.commit()
-            for validate in (binding.authorize, binding.revalidate):
-                with group_permission_execution(authority=authority, invocation=invocation, control_id=control_id), \
-                        pytest.raises(EnvironmentError, match="environment_source_authority_"):
-                    await validate(db, scope)
-            assert not binding.owns_terminal_task(task)
+        for validate in (binding.authorize, binding.revalidate):
+            with group_permission_execution(authority=authority, invocation=invocation, control_id=control_id), \
+                    command_environment_context(frame), \
+                    pytest.raises(EnvironmentError, match="environment_source_authority_"):
+                await validate(db, scope)
+        assert not binding.owns_terminal_task(task)

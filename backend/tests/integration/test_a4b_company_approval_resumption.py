@@ -229,9 +229,22 @@ async def _run_approval_execution(seed, app_user_sessionmaker, job: UUID) -> str
         claim_version=version, worker_id="a4b-execution-worker", lease_seconds=600)
 
 
+async def _consume_approval_return(seed, factory):
+    from app.services.runtime_notification_outbox import RuntimeNotificationOutboxService
+
+    service = RuntimeNotificationOutboxService(session_factory=factory)
+    claimed = await service.claim_batch(worker_id="a4b-return", limit=100)
+    pages = await service.prepare_integration_pages(worker_id="a4b-return",
+        claimed=[row for row in claimed if row.tenant_id == seed["tenant_id"]])
+    assert len(pages) == 1
+    receipt = await service._deliver_page(pages[0])
+    assert receipt["ok"] is True
+    assert await service._mark_page_delivered(page=pages[0], worker_id="a4b-return", receipt=receipt) == 1
+
+
 def _outcome_requests(model: ScriptedLLMClient) -> list[dict]:
     return [request for request in model.requests
-            if any("[Approval tool result]" in str(message.get("content") or "") for message in request["messages"])]
+            if any("Runtime result integration page." in str(message.get("content") or "") for message in request["messages"])]
 
 
 async def test_company_approval_by_another_user_resumes_same_run_in_place(
@@ -282,11 +295,13 @@ async def test_company_approval_by_another_user_resumes_same_run_in_place(
             job = await db.get(RuntimeTask, approval.execution_task_id)
             await _enqueue_origin_continuation(db, approval=resolved, task=job,
                 approval_status=resolved.execution_status, execution_result=resolved.execution_result)
-            assert resolved.execution_receipt["continuation_mode"] == "same_run"
-            assert await db.scalar(select(RuntimeNotificationOutbox.id).where(
-                RuntimeNotificationOutbox.tenant_id == seed["tenant_id"])) is None
+            assert resolved.execution_receipt["continuation_status"] == "delivered"
+            rows = list(await db.scalars(select(RuntimeNotificationOutbox).where(
+                RuntimeNotificationOutbox.tenant_id == seed["tenant_id"])))
+            assert len(rows) == 1 and rows[0].status == "delivered"
             await db.commit()
 
+    await _consume_approval_return(seed, app_user_sessionmaker)
     await repeat_return()
 
     await _drive_resumed_run(seed, app_user_sessionmaker)
@@ -294,7 +309,7 @@ async def test_company_approval_by_another_user_resumes_same_run_in_place(
 
     outcome_requests = _outcome_requests(model)
     assert len(outcome_requests) == 1, "the outcome must reach the model exactly once"
-    assert "Status: succeeded" in str(outcome_requests[0]["messages"])
+    assert "status=completed" in str(outcome_requests[0]["messages"])
     async with owner_sessionmaker() as db:
         task = await db.get(RuntimeTask, run_id)
         assert task.status == "completed" and task.result_summary != "awaiting_company_approval"
@@ -302,9 +317,10 @@ async def test_company_approval_by_another_user_resumes_same_run_in_place(
             RuntimeTask.tenant_id == seed["tenant_id"], RuntimeTask.parent_session_id == str(seed["session_id"]),
             RuntimeTask.task_type == "web_chat_turn"))).all()
         assert [row.id for row in successors] == [run_id], "no successor run: the same Run continued in place"
+        consumed = await db.get(ApprovalRequest, ticket.id)
         return_input = await db.scalar(select(SessionTurnInput).where(
             SessionTurnInput.tenant_id == seed["tenant_id"], SessionTurnInput.session_id == seed["session_id"],
-            SessionTurnInput.id == uuid.uuid5(ticket.id, "approval-return")))
+            SessionTurnInput.id == uuid.uuid5(UUID(consumed.execution_receipt["continuation_outbox_id"]), "web-approval-return")))
         assert return_input is not None and return_input.status == "applied"
         consumed = await db.get(ApprovalRequest, ticket.id)
         assert consumed.consumed_at is not None and consumed.execution_status == "succeeded"
@@ -340,11 +356,12 @@ async def test_denied_company_approval_carries_on_in_place_without_the_action(
     approval = await _resolve_as_owner(seed, app_user_sessionmaker, ticket.id, "reject")
     assert approval.execution_status == "rejected" and approval.execution_task_id is None
 
+    await _consume_approval_return(seed, app_user_sessionmaker)
     await _drive_resumed_run(seed, app_user_sessionmaker)
 
     outcome_requests = _outcome_requests(model)
     assert len(outcome_requests) == 1
-    assert "Status: rejected" in str(outcome_requests[0]["messages"])
+    assert "status=blocked" in str(outcome_requests[0]["messages"])
     async with owner_sessionmaker() as db:
         task = await db.get(RuntimeTask, run_id)
         assert task.status == "completed"
@@ -383,11 +400,12 @@ async def test_expired_company_approval_reports_one_honest_result_in_place(
     assert approval.execution_status == "needs_reapproval"
     assert approval.execution_task_id is None
 
+    await _consume_approval_return(seed, app_user_sessionmaker)
     await _drive_resumed_run(seed, app_user_sessionmaker)
 
     outcome_requests = _outcome_requests(model)
     assert len(outcome_requests) == 1
-    assert "Status: needs_reapproval" in str(outcome_requests[0]["messages"])
+    assert "status=blocked" in str(outcome_requests[0]["messages"])
     assert not (seed["agent_root"] / TOOL_ARGUMENTS["path"]).exists(), "an expired approval never executes"
 
 
@@ -454,16 +472,18 @@ async def test_resume_failure_is_typed_without_a_second_delivery(
     if action == "approve":
         assert await _run_approval_execution(seed, app_user_sessionmaker, resolved.execution_task_id) == "succeeded"
     await RuntimeNotificationOutboxService(session_factory=app_user_sessionmaker).reconcile_terminal_tasks_once()
+    await _consume_approval_return(seed, app_user_sessionmaker)
     async with owner_sessionmaker() as db:
         resolved = await db.get(ApprovalRequest, ticket.id)
         assert resolved.execution_receipt["continuation_status"] == "needs_reconciliation"
-        assert resolved.execution_receipt["continuation_reason"] == "origin_run_resume_failed"
-        assert (await db.get(RuntimeTask, seed["run_id"])).status == ("killed" if failure == "stopped" else "suspended")
+        assert resolved.execution_receipt["continuation_reason"] and resolved.execution_receipt["continuation_reason"] != "origin_run_resume_failed"
+        assert (await db.get(RuntimeTask, seed["run_id"])).status == ("killed" if failure == "stopped" else "failed")
         runs = (await db.scalars(select(RuntimeTask).where(
             RuntimeTask.tenant_id == seed["tenant_id"], RuntimeTask.task_type == "web_chat_turn"))).all()
         assert [run.id for run in runs] == [seed["run_id"]], "a stopped origin must not receive a successor delivery"
-        assert await db.scalar(select(RuntimeNotificationOutbox.id).where(
-            RuntimeNotificationOutbox.tenant_id == seed["tenant_id"])) is None
+        rows = list(await db.scalars(select(RuntimeNotificationOutbox).where(
+            RuntimeNotificationOutbox.tenant_id == seed["tenant_id"])))
+        assert len(rows) == 1 and rows[0].status == "delivered"
     assert (seed["agent_root"] / TOOL_ARGUMENTS["path"]).exists() is (action == "approve")
 
 
@@ -496,12 +516,13 @@ async def test_mid_run_message_during_the_approval_wait_reaches_the_resumed_mode
 
     approval = await _resolve_as_owner(seed, app_user_sessionmaker, ticket.id, "approve")
     assert await _run_approval_execution(seed, app_user_sessionmaker, approval.execution_task_id) == "succeeded"
+    await _consume_approval_return(seed, app_user_sessionmaker)
     await _drive_resumed_run(seed, app_user_sessionmaker)
 
     outcome_requests = _outcome_requests(model)
     assert len(outcome_requests) == 1
     resumed_messages = str(outcome_requests[0]["messages"])
-    assert "[Approval tool result]" in resumed_messages and "A4B-MIDWAIT-42" in resumed_messages, (
+    assert "Runtime result integration page." in resumed_messages and "A4B-MIDWAIT-42" in resumed_messages, (
         "both the approval outcome and the mid-wait message must reach the model in the resumed round"
     )
 

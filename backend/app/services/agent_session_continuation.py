@@ -465,6 +465,71 @@ def build_result_integration_message(manifest: dict[str, Any]) -> str:
     )
 
 
+async def _approval_page_origins(db, session, page_id):
+    from app.models.audit import ApprovalRequest
+    from app.models.runtime_notification_outbox import RuntimeNotificationOutbox
+    from app.services.session_approval import group_approval_origin
+
+    rows = list(await db.scalars(select(RuntimeNotificationOutbox).where(
+        RuntimeNotificationOutbox.integration_page_id == page_id)))
+    if not rows or any(row.source_kind != "approval" for row in rows):
+        return []
+    origins = []
+    for row in rows:
+        approval = await db.get(ApprovalRequest, uuid.UUID(row.metadata_json["approval_id"]))
+        run, invocation, _event = await group_approval_origin(db, session=session, approval=approval)
+        origins.append((run, invocation))
+    return origins
+
+
+async def _continue_web_approval_result(db, *, agent, user, session, page_id, submit_input, run_id):
+    from app.models.runtime_task import SEALED_RUNTIME_TASK_STATUSES
+    from app.services.session_permission_runtime import _queue_same_run_continuation, _source_result
+    from app.services.runtime_terminal_settlement import (
+        lock_runtime_task_with_session_authority, settle_and_enqueue_runtime_task_terminal,
+    )
+
+    reason = None
+    try:
+        origins = await _approval_page_origins(db, session, page_id)
+        if not origins:
+            return None
+        run, invocation = origins[0]
+        if run.status == "completed" and run.result_summary == "awaiting_company_approval" and user.is_active:
+            return None
+        run_id = run.id
+        source = await _source_result(db, invocation)
+        if run.status != "suspended" or run.result_summary != "awaiting_company_approval":
+            reason = "origin_run_not_suspended"
+        elif not user.is_active:
+            reason = "requester_inactive"
+        else:
+            receipt = await submit_input("web", display_content="审批结果已返回。",
+                requested_kind="steer_current_turn", expected_run_id=run.id, expected_turn_id=source.turn_id,
+                terminal_fallback="reject")
+            if receipt.get("admission_state") != "admitted" or receipt.get("status") not in {"queued", "bound", "applied"}:
+                reason = receipt.get("reason_code") or "approval_return_admission_refused"
+            else:
+                run = await _queue_same_run_continuation(db, tenant_id=session.tenant_id, agent_id=agent.id,
+                    session_id=session.id, invocation=invocation, source_result=source)
+                if run.status in SEALED_RUNTIME_TASK_STATUSES:
+                    reason = "origin_run_not_suspended"
+    except Exception as exc:
+        await db.rollback()
+        detail = getattr(exc, "detail", None)
+        reason = getattr(exc, "code", None) or (detail.get("code") if isinstance(detail, dict) else None) or str(exc)
+    if reason:
+        run = await lock_runtime_task_with_session_authority(db, task_id=run_id)
+        if run is not None and run.status == "suspended":
+            from datetime import datetime, timezone
+
+            run.status, run.result_summary, run.completed_at = "failed", reason, datetime.now(timezone.utc)
+            await settle_and_enqueue_runtime_task_terminal(db, run,
+                terminal_source="company_approval_return", root_reason_code=reason)
+    return {"continuation_status": "needs_reconciliation" if reason else "delivered",
+        **({"continuation_reason": reason} if reason else {})}
+
+
 async def continue_parent_session_with_result_page(
     *,
     db: AsyncSession,
@@ -514,6 +579,17 @@ async def continue_parent_session_with_result_page(
         ),
         **({"budget_run_id": str(inherited_budget_run_id)} if inherited_budget_run_id is not None else {}),
     }
+    async def submit_input(kind, **target):
+        from app.services.session_live_input import submit_live_human_input
+
+        return await submit_live_human_input(db=db, agent=agent, user=user, session=session,
+            content=runtime_context, display_content=target.pop("display_content", display_content),
+            role="system", source="runtime_result_integration",
+            input_id=uuid.uuid5(integration_page_id, f"{kind}-approval-return"),
+            idempotency_key=f"runtime-result-page:{integration_page_id}", runtime_metadata=metadata,
+            **({"runtime_result_page_id": integration_page_id,
+                "runtime_result_page_claim_token": page_claim_token} if kind != "web" else {}), **target)
+
     for item in items:
         runtime_action_payload = _build_result_runtime_action_payload(item)
         if runtime_action_payload is None:
@@ -539,6 +615,15 @@ async def continue_parent_session_with_result_page(
             materialize_chat_message=False,
             source="runtime_result_integration",
         )
+    if items and all(item.get("source_kind") == "approval" for item in items) and (
+        getattr(session, "source_channel", None) == "web" and session.user_id is not None and session.audience_kind != "group"):
+        returned = await _continue_web_approval_result(db, agent=agent, user=user, session=session,
+            page_id=integration_page_id, submit_input=submit_input, run_id=_uuid_or_none(manifest.get("root_runtime_task_id")))
+        if returned is not None:
+            display_content = "审批结果已保留，本次对话未继续。" if returned.get("continuation_reason") else "审批结果已返回。"
+            metadata.update(returned, message=display_content, display_content=display_content)
+            resume_parent = False
+            continuation_denial = None
     if not resume_parent:
         await _append_mailbox_event(
             db=db,
@@ -559,6 +644,7 @@ async def continue_parent_session_with_result_page(
             "status": "projected",
             "consumer": "session_projection",
             "integration_page_id": str(integration_page_id),
+            **{key: value for key, value in metadata.items() if key.startswith("continuation_")},
             **(
                 {"continuation_status": "denied", "continuation_denial": continuation_denial}
                 if continuation_denial
@@ -568,23 +654,7 @@ async def continue_parent_session_with_result_page(
     from app.services.machine_runtime_authority import is_machine_runtime_actor
 
     if is_machine_runtime_actor(user):
-        from app.services.session_live_input import submit_live_human_input
-
-        receipt = await submit_live_human_input(
-            db=db,
-            agent=agent,
-            user=user,
-            session=session,
-            content=runtime_context,
-            display_content=display_content,
-            role="system",
-            source="runtime_result_integration",
-            input_id=uuid.uuid5(integration_page_id, "machine-approval-return"),
-            idempotency_key=f"runtime-result-page:{integration_page_id}",
-            runtime_metadata=metadata,
-            runtime_result_page_id=integration_page_id,
-            runtime_result_page_claim_token=page_claim_token,
-        )
+        receipt = await submit_input("machine")
         await db.commit()
         return {
             "ok": True,
@@ -594,22 +664,8 @@ async def continue_parent_session_with_result_page(
             "input_receipt": receipt,
         }
     if getattr(session, "audience_kind", None) == "group":
-        from app.models.audit import ApprovalRequest
-        from app.models.runtime_notification_outbox import RuntimeNotificationOutbox
-        from app.services.session_approval import group_approval_origin
-        from app.services.session_live_input import submit_live_human_input
-
-        rows = list(
-            await db.scalars(
-                select(RuntimeNotificationOutbox).where(
-                    RuntimeNotificationOutbox.integration_page_id == integration_page_id
-                )
-            )
-        )
         roots = set()
-        for row in rows:
-            approval = await db.get(ApprovalRequest, uuid.UUID(row.metadata_json["approval_id"]))
-            original, _invocation, _event = await group_approval_origin(db, session=session, approval=approval)
+        for original, _invocation in await _approval_page_origins(db, session, integration_page_id):
             roots.add(
                 str(
                     (original.metadata_json or {}).get("root_runtime_task_id")
@@ -620,21 +676,7 @@ async def continue_parent_session_with_result_page(
         if len(roots) != 1:
             raise PermissionError("group_approval_return_root_mismatch")
         metadata["root_runtime_task_id"] = roots.pop()
-        receipt = await submit_live_human_input(
-            db=db,
-            agent=agent,
-            user=user,
-            session=session,
-            content=runtime_context,
-            display_content=display_content,
-            role="system",
-            source="runtime_result_integration",
-            input_id=uuid.uuid5(integration_page_id, "group-approval-return"),
-            idempotency_key=f"runtime-result-page:{integration_page_id}",
-            runtime_metadata=metadata,
-            runtime_result_page_id=integration_page_id,
-            runtime_result_page_claim_token=page_claim_token,
-        )
+        receipt = await submit_input("group")
         await db.commit()
         return {
             "ok": True,

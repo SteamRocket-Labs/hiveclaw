@@ -1516,6 +1516,7 @@ def _interactive_pause_suspends_run(state: _WebChatRunState, summary: str) -> bo
     return summary == "awaiting_session_permission" or (
         summary == "awaiting_company_approval" and session is not None
         and session.source_channel == "web" and session.user_id is not None and session.audience_kind != "group"
+        and state.ports.context.is_web_origin_turn(state.metadata, state.runtime_session_context)
     )
 
 

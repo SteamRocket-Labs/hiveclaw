@@ -20,7 +20,7 @@ DOCUMENT_URL = "https://company.feishu.cn/docx/approved_document"
     ("feishu_doc_create", "confirmed"), ("feishu_doc_create", "unknown"),
     ("feishu_approval_definition", "confirmed"),
     ("feishu_doc_create", "denied"), ("feishu_doc_create", "auth_failed"),
-    ("feishu_approval_definition", "denied"),
+    ("feishu_approval_definition", "denied"), ("feishu_doc_create", "revoked"),
 ])
 async def test_approved_office_job_is_consumed_in_original_private_work(
     ordinary_work, owner_sessionmaker, app_user_sessionmaker, monkeypatch, tool_name, outcome,  # noqa: F811
@@ -29,6 +29,7 @@ async def test_approved_office_job_is_consumed_in_original_private_work(
     from app.core.security import get_current_user
     from app.models.audit import ApprovalRequest
     from app.models.chat_artifact import ChatArtifact
+    from app.models.chat_transcript_event import ChatTranscriptEvent
     from app.models.guard_policy import GuardPolicy
     from app.models.tenant_channel_config import TenantChannelConfig
     from app.models.runtime_task import RuntimeTask
@@ -46,6 +47,7 @@ async def test_approved_office_job_is_consumed_in_original_private_work(
     arguments = {"title": "Approved report"} if tool_name == "feishu_doc_create" else {"approval_code": "approved_definition"}
     expected_content = DOCUMENT_URL if tool_name == "feishu_doc_create" else "APPROVED_DEFINITION_RESULT"
     failure = outcome in {"denied", "auth_failed"}
+    confirmed = outcome in {"confirmed", "revoked"}
     provider_code = 90032 if outcome == "auth_failed" else 90031 if tool_name == "feishu_doc_create" else 90033
     if failure:
         expected_content = str(provider_code)
@@ -120,7 +122,7 @@ async def test_approved_office_job_is_consumed_in_original_private_work(
             assert [row.id for row in claims] == [job]
             version = claims[0].claim_version
             await db.commit()
-        expected = "failed" if failure else "succeeded" if outcome == "confirmed" else "needs_reconciliation"
+        expected = "failed" if failure else "succeeded" if confirmed else "needs_reconciliation"
         assert await run_claimed_runtime_task(execute_claimed_approval_execution(job), task_id=job,
             claim_version=version, worker_id="approved-office", lease_seconds=600) == expected
         assert await execute_claimed_approval_execution(job) == expected
@@ -132,7 +134,7 @@ async def test_approved_office_job_is_consumed_in_original_private_work(
             assert ticket.requested_by == seed["user_id"] and ticket.resolved_by == approver
             assert task.root_user_id == seed["user_id"] and task.parent_session_id == str(seed["session_id"])
             assert ticket.execution_status == expected
-            if outcome == "confirmed":
+            if confirmed:
                 assert expected_content in ticket.execution_result
             elif failure:
                 assert task.status == "failed" and ticket.execution_receipt["error"]["provider_code"] == provider_code
@@ -145,12 +147,37 @@ async def test_approved_office_job_is_consumed_in_original_private_work(
         claimed = await service.claim_batch(worker_id="approved-return", limit=100)
         pages = await service.prepare_integration_pages(worker_id="approved-return",
             claimed=[row for row in claimed if row.tenant_id == seed["tenant_id"]])
-        # A4b: a member's own web run suspends for the company decision and
-        # resumes IN PLACE with the outcome as its continuation input, so this
-        # lane no longer produces a successor-turn result page.  The
-        # result-page governed reader remains the delivery path for channel and
-        # machine origins (covered by the m2ac company-approval flows).
-        assert pages == []
+        assert len(pages) == 1
+        page = pages[0]
+        receipt = await service._deliver_page(page)
+        assert receipt.get("ok") is True, receipt
+        assert await service._mark_page_delivered(page=page, worker_id="approved-return", receipt=receipt) == 1
+        result_ref = page.manifest["items"][0]["result_ref"]
+        pages = await service.prepare_integration_pages(worker_id="approved-return-replay",
+            claimed=await service.claim_batch(worker_id="approved-return-replay", limit=100))
+        assert pages == [], "consumption leaves no second return or successor page"
+        if outcome == "unknown":
+            async with owner_sessionmaker() as db:
+                blocked = await db.scalar(select(ChatTranscriptEvent).where(
+                    ChatTranscriptEvent.session_id == seed["session_id"],
+                    ChatTranscriptEvent.metadata_json["integration_page_id"].astext == str(page.id),
+                    ChatTranscriptEvent.event_type == "runtime_action_blocked"))
+                assert blocked is not None and blocked.metadata_json["status"] == "needs_reconciliation"
+                assert blocked.metadata_json["result_ref"] == result_ref and DOCUMENT_URL not in blocked.content
+                assert await db.scalar(select(ChatTranscriptEvent.id).where(
+                    ChatTranscriptEvent.session_id == seed["session_id"],
+                    ChatTranscriptEvent.event_type == "runtime_action_completed")) is None
+        # Exercise the same governed reader used by the resumed model with the
+        # approver's identity; approval never grants private result access.
+        from pathlib import Path
+        from app.tools.handlers import context_resources
+        from app.tools.runtime import ToolExecutionContext, ToolExecutionRequest
+
+        denied = json.loads(await context_resources.read_runtime_result(ToolExecutionRequest(
+            tool_name="read_runtime_result", arguments={"result_ref": result_ref},
+            context=ToolExecutionContext(agent_id=seed["agent_id"], user_id=approver,
+                tenant_id=str(seed["tenant_id"]), session_id=str(seed["session_id"]), workspace=Path("/tmp")))))
+        assert denied["status"] == "authority_denied" and expected_content not in json.dumps(denied)
         async with app_user_sessionmaker() as db:
             await pin_rls_tenant_context(db, seed["tenant_id"])
             ticket = await db.get(ApprovalRequest, approval_id)
@@ -183,6 +210,10 @@ async def test_approved_office_job_is_consumed_in_original_private_work(
             await db.flush()
             assert await load_approved_feishu_result(db, approval=ticket) is None
             await db.rollback()
+        if outcome == "revoked":
+            async with owner_sessionmaker() as db:
+                (await db.get(TenantChannelConfig, seed["config_id"])).is_active = False
+                await db.commit()
         async with app_user_sessionmaker() as db:
             await pin_rls_tenant_context(db, seed["tenant_id"])
             continuation_id = source_run
@@ -192,31 +223,42 @@ async def test_approved_office_job_is_consumed_in_original_private_work(
                 lease_seconds=600).claim_available()
             version = next(row.claim_version for row in claims if row.id == continuation_id)
             await db.commit()
-        model = ScriptedLLMClient([
-            _call("write_file", {"path": "workspace/approved-office.md", "content": expected_content}),
-            {"content": ("The provider response needs review." if failure else "The approved document is ready.")
-                + "\nDELIVERABLE: workspace/approved-office.md", "finish_reason": "stop"}])
+        calls = _call("read_runtime_result", {"result_ref": result_ref})
+        if outcome not in {"unknown", "revoked"}:
+            calls["tool_calls"] += _call("write_file", {
+                "path": "workspace/approved-office.md", "content": expected_content})["tool_calls"]
+        answer = ("The action outcome is unknown. Verify before retrying." if outcome == "unknown" else
+            "The connection was disabled; the result could not be read." if outcome == "revoked" else
+            ("The provider response needs review." if failure else "The approved document is ready.")
+            + "\nDELIVERABLE: workspace/approved-office.md")
+        model = ScriptedLLMClient([calls, {"content": answer, "finish_reason": "stop"}])
         monkeypatch.setattr(invoker, "create_llm_client", lambda **_kw: model)
         assert await run_claimed_runtime_task(execute_web_chat_run(continuation_id), task_id=continuation_id,
             claim_version=version, worker_id="approved-consumer", lease_seconds=600) is None
-        # The SAME Run continues in place: its resumed round carries the honest
-        # approval outcome to the member's model, exactly once.
         assert len(model.requests) == 2
         resumed_messages = json.dumps(model.requests[0]["messages"])
-        assert "[Approval tool result]" in resumed_messages
-        if outcome == "confirmed":
-            assert expected_content in resumed_messages
-        elif outcome == "unknown":
-            assert "Status: needs_reconciliation" in resumed_messages
-            assert DOCUMENT_URL not in resumed_messages
-            assert "Verify its outcome before retrying" in resumed_messages
+        assert "Runtime result integration page." in resumed_messages and result_ref in resumed_messages
+        assert expected_content not in resumed_messages, "provider bytes enter only through the governed reader"
+        returned = json.dumps(model.requests[1]["messages"])
+        if outcome == "unknown":
+            assert "needs_reconciliation" in returned and DOCUMENT_URL not in returned
+            assert "Verify its outcome before retrying" in returned
+            assert "ready" not in answer and "success" not in answer
+        elif outcome == "revoked":
+            assert "source_unavailable" in returned and DOCUMENT_URL not in returned
+        else:
+            assert expected_content in returned
         if failure:
-            assert ("reconnect" if outcome == "auth_failed" else "review_permissions") in resumed_messages
-            assert ("Fixture credential rejected" if outcome == "auth_failed" else "Fixture permission denied") in resumed_messages
-        assert expected_content in json.dumps(model.requests[1]["messages"])
+            assert ("reconnect" if outcome == "auth_failed" else "review_permissions") in returned
+            assert ("Fixture credential rejected" if outcome == "auth_failed" else "Fixture permission denied") in returned
         await RuntimeTerminalBoundaryOutboxService(session_factory=app_user_sessionmaker).drain_once(
             tenant_id=seed["tenant_id"], worker_id="approved-consumer-boundary", canonical_validator=processor.validate,
             process_callback=processor, task_types=("web_chat_turn",))
+        if outcome in {"unknown", "revoked"}:
+            async with owner_sessionmaker() as db:
+                assert await db.scalar(select(ChatArtifact.id).where(ChatArtifact.runtime_task_id == continuation_id)) is None
+            assert len(mutations) == expected_calls
+            return
         async with app_user_sessionmaker() as db:
             await pin_rls_tenant_context(db, seed["tenant_id"])
             artifact = await db.scalar(select(ChatArtifact).where(ChatArtifact.runtime_task_id == continuation_id,

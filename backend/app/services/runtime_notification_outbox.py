@@ -771,6 +771,7 @@ async def _set_approval_continuation_status(
     )
     if error:
         receipt["continuation_error"] = error
+        receipt["continuation_reason"] = error
     else:
         receipt.pop("continuation_error", None)
     approval.execution_receipt = receipt
@@ -1700,6 +1701,8 @@ class RuntimeNotificationOutboxService:
                     )
                 return {
                     "status": "already_delivered",
+                    "ok": True,
+                    **{key: value for key, value in (existing.metadata_json or {}).items() if key.startswith("continuation_")},
                     "event_id": str(existing.id),
                     "integration_page_id": str(page.id),
                     "deduplicated": True,
@@ -1723,6 +1726,12 @@ class RuntimeNotificationOutboxService:
 
             owner = await load_scoped_runtime_user(db, page.parent_user_id,
                 tenant_id=page.tenant_id) if page.parent_user_id is not None else None
+            if (owner is None and parent_session is not None and parent_session.source_channel == "web"
+                and parent_session.user_id is not None and parent_session.audience_kind != "group"
+                and all(item.source_kind == "approval" for item in page.items)):
+                from app.models.user import User
+
+                owner = await db.get(User, page.parent_user_id)
             if parent_session is not None and page.parent_user_id is None:
                 from app.services.machine_runtime_authority import machine_approval_return_actor
 
@@ -1850,7 +1859,8 @@ class RuntimeNotificationOutboxService:
                 row.locked_at = None
                 row.claim_token = None
                 row.lease_expires_at = None
-                await _set_approval_continuation_status(db, row, status="delivered")
+                await _set_approval_continuation_status(db, row, status=receipt.get("continuation_status", "delivered"),
+                    error=receipt.get("continuation_reason"))
             cursor = await _locked_mailbox_cursor(
                 db,
                 tenant_id=page.tenant_id,

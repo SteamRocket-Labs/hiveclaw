@@ -216,40 +216,6 @@ async def _resolve_origin_session(
     return (await db.execute(query)).scalar_one_or_none(), session_key
 
 
-async def _resume_suspended_origin_run(db, *, approval, session, model_context):
-    """Reuse native permission resumption; the company ticket owns the effect."""
-    from app.models.agent import Agent
-    from app.models.user import User
-    from app.services.session_approval import group_approval_origin
-    from app.services.session_live_input import submit_live_human_input
-    from app.services.session_permission_runtime import _queue_same_run_continuation, _source_result
-
-    origin_id = _uuid_or_none((approval.execution_envelope or {}).get("runtime_task_id"))
-    origin = await db.get(RuntimeTask, origin_id) if origin_id else None
-    if origin is None or origin.status != "suspended":
-        return None  # Legacy terminal handoffs still use the existing outbox.
-    # This existing binder verifies the canonical call, sealed envelope and
-    # requester independently of the user who resolved the company ticket.
-    run, invocation, _event = await group_approval_origin(db, session=session, approval=approval)
-    if run.root_user_id != session.user_id:
-        raise ApprovalTicketError("approval origin requester mismatch")
-    if run.status != "suspended" or run.result_summary != "awaiting_company_approval":
-        raise RuntimeError("company_approval_origin_not_suspended")
-    source = await _source_result(db, invocation)
-    receipt = await submit_live_human_input(
-        db=db, agent=await db.get(Agent, approval.agent_id), user=await db.get(User, session.user_id),
-        session=session, content=model_context, source="approval_return", role="system",
-        display_content=f"Approval {approval.execution_status}.",
-        input_id=uuid.uuid5(approval.id, "approval-return"), idempotency_key=f"approval-return:{approval.id}",
-        requested_kind="steer_current_turn", expected_run_id=run.id, expected_turn_id=source.turn_id,
-        terminal_fallback="reject",
-    )
-    if receipt.get("admission_state") != "admitted" or receipt.get("status") not in {"queued", "applied", "bound"}:
-        raise RuntimeError(f"approval_return_admission_failed:{receipt.get('reason_code')}")
-    return await _queue_same_run_continuation(db, tenant_id=approval.tenant_id,
-        agent_id=approval.agent_id, session_id=session.id, invocation=invocation, source_result=source)
-
-
 async def _enqueue_origin_continuation(
     db: AsyncSession,
     *,
@@ -262,7 +228,9 @@ async def _enqueue_origin_continuation(
     session, session_key = await _resolve_origin_session(db, approval=approval, task=task)
     receipt = dict(approval.execution_receipt or {})
     parent_user_id = session.user_id if session else None
-    root_runtime_task_id = None
+    root_runtime_task_id = (_uuid_or_none((approval.execution_envelope or {}).get("runtime_task_id"))
+        if session is not None and session.source_channel == "web" and parent_user_id is not None
+        and session.audience_kind != "group" else None)
     machine_budget_run_id = None
     machine_return = (session is not None and session.audience_kind != "group"
         and session.user_id is None and approval.requested_by_external_principal_id is not None)
@@ -301,9 +269,7 @@ async def _enqueue_origin_continuation(
             task.metadata_json = metadata
         return None
 
-    from app.services.runtime_notification_outbox import (
-        CompletionNotification, _settle_runtime_task_completion_outbox, enqueue_completion_notification,
-    )
+    from app.services.runtime_notification_outbox import CompletionNotification, enqueue_completion_notification
     from app.services.feishu_read_receipts import FEISHU_RESULT_TOOLS, load_approved_feishu_result
 
     tool_name = str(approval.tool_name or approval.action_type or "approved_action")
@@ -329,31 +295,6 @@ async def _enqueue_origin_continuation(
         "needs_reconciliation": "needs_reconciliation",
         "rejected": "blocked",
     }.get(approval_status, approval_status)
-
-    if session.source_channel == "web" and parent_user_id is not None and session.audience_kind != "group":
-        if task is not None:
-            # Input admission commits in stages. Retire the old outbox handoff
-            # before that first commit so its repair sweep cannot race a resume.
-            _settle_runtime_task_completion_outbox(task)
-        # The receipt is the delivery identity even after the origin is running
-        # or terminal. A repeated finalize must never create an outbox delivery.
-        if receipt.get("continuation_mode") == "same_run":
-            return None
-        continuation = {"origin_session_id": str(session.id)}
-        try:
-            resumed = await _resume_suspended_origin_run(db, approval=approval, session=session,
-                model_context=model_context)
-            if resumed is not None:
-                continuation.update(continuation_status="queued", continuation_mode="same_run",
-                    continuation_run_id=str(resumed.id))
-        except Exception:
-            logger.exception("[ApprovalExecution] Origin resume failed: approval={}", approval.id)
-            continuation.update(continuation_status="needs_reconciliation", continuation_reason="origin_run_resume_failed")
-        if "continuation_status" in continuation:
-            approval.execution_receipt = {**receipt, **continuation}
-            if task is not None:
-                task.metadata_json = {**dict(task.metadata_json or {}), **continuation}
-            return None
     outbox_id = await enqueue_completion_notification(
         db,
         CompletionNotification(
@@ -382,7 +323,7 @@ async def _enqueue_origin_continuation(
     )
     receipt.update(
         {
-            "continuation_status": "queued",
+            "continuation_status": receipt.get("continuation_status") or "queued",
             "continuation_outbox_id": str(outbox_id),
             "origin_session_id": str(session.id),
         }
@@ -618,7 +559,9 @@ async def _mark_preflight_reapproval(
             "automatic_replay": False,
             "error": error,
         }
-        return _set_task_terminal(task, approval_status="needs_reapproval", result=error)
+        status = _set_task_terminal(task, approval_status="needs_reapproval", result=error)
+        await _enqueue_origin_continuation(db, approval=approval, task=task, approval_status=status, execution_result=error)
+        return status
 
 
 async def _handle_operational_failure(

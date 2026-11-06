@@ -68,6 +68,10 @@ class _FakeDB:
     async def rollback(self):
         self.rollbacks += 1
 
+    async def refresh(self, agent):
+        committed_agent = self._results.pop(0).scalar_one_or_none()
+        agent.deactivated_at = committed_agent.deactivated_at if committed_agent is not None else None
+
 
 def _employee_row(*, deactivated: bool):
     return SimpleNamespace(

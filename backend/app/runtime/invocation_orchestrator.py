@@ -222,7 +222,10 @@ async def _assemble_invocation_state(
 
     async def model_request_prepare(**payload: Any) -> Any:
         safe_payload = redact_payload("model_request_prepare", payload)
-        return await ports.maybe_await(request.model_request_prepare(**safe_payload))
+        result = await ports.maybe_await(request.model_request_prepare(**safe_payload))
+        if "messages" in payload:
+            payload["messages"][:] = safe_payload["messages"]
+        return result
 
     secret_stream_redactor = None
     secret_thinking_redactor = None

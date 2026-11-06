@@ -1301,18 +1301,17 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
 
             async def continue_parity_ledger(**kwargs):
                 if len(creator_client.requests) == 1:
-                    created = next(
-                        message
+                    created = next((message
                         for message in kwargs["messages"]
                         if (message.get("tool_call_id") if isinstance(message, dict) else message.tool_call_id)
-                        == "creator-parity-create"
-                    )
-                    body = json.loads(created["content"] if isinstance(created, dict) else created.content)
-                    task_identity = body["task"]["id"]
-                    for call in creator_client.script[0]["tool_calls"]:
-                        if call["function"]["name"] in {"task_get", "task_update"}:
-                            args = json.loads(call["function"]["arguments"])
-                            call["function"]["arguments"] = json.dumps({**args, "task_id": task_identity})
+                        == "creator-parity-create"), None)
+                    if created is not None:
+                        body = json.loads(created["content"] if isinstance(created, dict) else created.content)
+                        task_identity = body["task"]["id"]
+                        for call in creator_client.script[0]["tool_calls"]:
+                            if call["function"]["name"] in {"task_get", "task_update"}:
+                                args = json.loads(call["function"]["arguments"])
+                                call["function"]["arguments"] = json.dumps({**args, "task_id": task_identity})
                 return await native_parity_stream(**kwargs)
 
             monkeypatch.setattr(creator_client, "stream", continue_parity_ledger)
@@ -1402,7 +1401,7 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
             else:
                 assert len(creator_client.requests) == 3
         if ledger_unknown_case:
-            assert "LEGACY_PRIVATE_LEDGER_WITHOUT_NATIVE_RECEIPT" in json.dumps(creator_client.requests[1]["messages"])
+            assert "LEGACY_PRIVATE_LEDGER_WITHOUT_NATIVE_RECEIPT" not in json.dumps(creator_client.requests[1]["messages"])
         if input_case != "first_task_explicit_unverified_memory" and not discovery_case:
             assert len(creator_client.requests) == 2 and "NATIVE_PARENT_CONTEXT" in json.dumps(
                 creator_client.requests[0]["messages"]
@@ -1473,22 +1472,13 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
                 from app.services.employee_creation_sources import creation_tool_result_bound
 
                 assert (await db.get(RuntimeTask, seed["run_id"])).status == "completed"
-                if input_case == "first_task_explicit_unverified_memory" or ledger_unknown_case or forged_timeout_case:
-                    assert not await creation_tool_result_bound(
-                        db,
-                        tenant_id=seed["tenant_id"],
-                        agent_id=seed["agent_id"],
-                        invocation=invocation,
-                        content=result,
-                    )
-                else:
-                    assert await creation_tool_result_bound(
-                        db,
-                        tenant_id=seed["tenant_id"],
-                        agent_id=seed["agent_id"],
-                        invocation=invocation,
-                        content=result,
-                    ), result
+                assert await creation_tool_result_bound(
+                    db,
+                    tenant_id=seed["tenant_id"],
+                    agent_id=seed["agent_id"],
+                    invocation=invocation,
+                    content=result,
+                ), result
                 assert not await creation_tool_result_bound(
                     db,
                     tenant_id=seed["tenant_id"],
@@ -1507,9 +1497,16 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
                 assert len(ordered) == 3
                 assert ordered[0].model_request_snapshot_json["input_bindings"]["dependency_coverage"]["complete"]
                 assert all(
-                    not row.model_request_snapshot_json["input_bindings"]["dependency_coverage"]["complete"]
+                    row.model_request_snapshot_json["input_bindings"]["dependency_coverage"]["complete"]
                     for row in ordered[1:]
                 )
+                from app.services.runtime_tool_timeout_sources import _timeout_text
+
+                for row in ordered[1:]:
+                    snapshot = row.model_request_snapshot_json
+                    assert any(entry["status"] == "withheld" for entry in snapshot["input_bindings"]["messages"])
+                    assert all(message.get("content") != _timeout_text("search_memory", 30)
+                        for message in snapshot["wire_request"]["messages"])
                 assert not (
                     await _origin_dependencies(
                         db,
@@ -1528,7 +1525,9 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
                 else:
                     assert len(ordered) == 3
                 assert ordered[0].model_request_snapshot_json["input_bindings"]["dependency_coverage"]["complete"]
-                assert not ordered[1].model_request_snapshot_json["input_bindings"]["dependency_coverage"]["complete"]
+                snapshot = ordered[1].model_request_snapshot_json
+                assert snapshot["input_bindings"]["dependency_coverage"]["complete"]
+                assert any(entry["status"] == "withheld" for entry in snapshot["input_bindings"]["messages"])
             elif discovery_case:
                 if creator_readiness_case:
                     assert len(creating_rounds) == 4 and all(

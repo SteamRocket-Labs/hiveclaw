@@ -5108,7 +5108,7 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
                 )
             )
             assert denial["status"] == "source_access_denied" and "content" not in denial
-        if creation_result_case:
+        if creation_result_case and not historical_creation_unknown:
             creation_result = json.loads(
                 next(
                     m["content"]
@@ -5122,23 +5122,23 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
             else:
                 assert creation_result["dependency_coverage"]["complete"] is True
         if parent_status_unknown:
-            assert "Unverified legacy task result" in second_request
+            assert "Unverified legacy task result" not in second_request
+        if historical_creation_unknown:
+            assert all(message.get("tool_call_id") != "parent-read-creation"
+                for message in parent_client.requests[1]["messages"])
         if parent_status_unknown or historical_creation_unknown:
-            from app.models.chat_artifact import ChatArtifact
-
             assert observed["status"]["status"] == "captured", observed["status"]
             async with app_user_sessionmaker() as db:
                 await pin_rls_tenant_context(db, seed["tenant_id"])
                 successor = await db.get(ContentInputReceipt, UUID(observed["status"]["receipts"][parent_path]))
-                assert successor is not None and any(
+                assert successor is not None and not any(
                     source["source_kind"] == "session_model_result" for source in successor.dependencies_json)
-                with pytest.raises(ContentInputReceiptError):
-                    await validate_runtime_input_dependencies(db,
-                        ToolExecutionRequest(tool_name="send_email", arguments={}, context=observed["context"]),
-                        successor.dependencies_json)
-                assert await db.scalar(select(ChatArtifact.id).where(
-                    ChatArtifact.runtime_task_id == return_id, ChatArtifact.path == parent_path)) is None
-            return
+                await validate_runtime_input_dependencies(db,
+                    ToolExecutionRequest(tool_name="send_email", arguments={}, context=observed["context"]),
+                    successor.dependencies_json)
+                assert any(entry["status"] == "withheld"
+                    for model in await db.scalars(select(SessionModelResult).where(SessionModelResult.run_id == return_id))
+                    for entry in model.model_request_snapshot_json["input_bindings"]["messages"])
         assert observed["status"]["status"] == "captured", observed["status"]
         async with app_user_sessionmaker() as db:
             await pin_rls_tenant_context(db, seed["tenant_id"])

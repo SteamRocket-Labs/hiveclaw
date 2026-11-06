@@ -164,6 +164,54 @@ async def test_private_session_frame_is_checked_once_for_many_dependencies(monke
     assert db.session_reads == 1
 
 
+async def test_one_bad_tool_result_preserves_valid_sibling_call_and_result(monkeypatch):
+    db = DB()
+    db.session = NS(audience_kind="private")
+    bad = {"source_kind": "explicit_memory", "source_id": "revoked", "source_version": "v1"}
+    good = {"source_kind": "session_input", "source_id": "own", "source_version": "v1"}
+    calls = [{"id": name, "type": "function", "function": {"name": "read_file", "arguments": content}}
+        for name, content in (("bad", "REVOKED_ARGUMENT"), ("good", "VALID_ARGUMENT"))]
+    messages = [{"role": "assistant", "content": "REVOKED_REASONING", "reasoning_content": "REVOKED_REASONING", "tool_calls": calls},
+        {"role": "tool", "tool_call_id": "bad", "content": "REVOKED_RESULT"},
+        {"role": "tool", "tool_call_id": "good", "content": "VALID_RESULT"}]
+    bindings = _bindings(3, {0: [good], 1: [bad], 2: [good]})
+    patch_validators(monkeypatch, [bad])
+    wire = await validate(db, bindings, messages)
+    assert "REVOKED_" not in json.dumps(wire)
+    assert "VALID_RESULT" in json.dumps(wire) and "VALID_ARGUMENT" in json.dumps(wire)
+    assert wire["messages"][0]["tool_calls"] == [calls[1]]
+    assert wire["messages"][2]["role"] == "tool"
+    assert bindings["dependencies"] == [good]
+
+
+@pytest.mark.parametrize("unbound_sibling", [False, True])
+async def test_unattributable_group_dependency_still_refuses_the_frame(monkeypatch, unbound_sibling):
+    from app.models.runtime_task import RuntimeTask
+    from app.services.content_input_receipts import ContentInputReceiptError
+
+    db = DB()
+    db.session = NS(audience_kind="group")
+    db.rows[RuntimeTask, _Task.id] = _Task()
+    patch_validators(monkeypatch)
+    monkeypatch.setattr("app.services.shared_group_authority.load_shared_group_runtime_actor",
+        AsyncMock(return_value=NS(id=_Task.root_user_id)))
+    bad = {"source_kind": "session_command", "source_id": "private-unattributed", "source_version": "v1"}
+    async def check(db, tenant_id, dependencies, **kwargs):
+        if bad in dependencies:
+            raise ContentInputReceiptError("content_source_access_denied", "Private source", 403)
+    monkeypatch.setattr("app.services.content_input_receipts._validate_input_dependencies", check)
+    bindings = _bindings(1, {})
+    bindings["dependencies"].append(bad)
+    messages = [{"role": "user", "content": "Member command"}]
+    if unbound_sibling:
+        messages.append({"role": "user", "content": "Unbound sibling"})
+        bindings["messages"].append({"message_index": 1, "dependency_status": "incomplete", "dependencies": []})
+        bindings["dependency_coverage"]["complete"] = False
+    with pytest.raises(ContentInputReceiptError) as denied:
+        await validate(db, bindings, messages)
+    assert denied.value.code == "group_model_sources_unavailable"
+
+
 async def test_recovered_attachment_is_removed_from_rejections(monkeypatch):
     from app.services.session_terminal_outcome import _recover_read_artifact_selection
 

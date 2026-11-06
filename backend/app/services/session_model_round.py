@@ -469,10 +469,19 @@ def _withhold_model_source(messages, wire_request, input_bindings, source, code,
         messages.append(LLMMessage(role="system", content=note))
         wire_request["messages"].append({"role": "system", "content": note})
     wire_messages = wire_request["messages"]
+    attached = [ref for entry in input_bindings["messages"] for ref in entry.get("dependencies", [])]
+    unattached = [ref for ref in input_bindings["dependencies"] if ref not in attached]
     indexes = set(indexes)
     result_ids = {wire_messages[i].get("tool_call_id") for i in indexes if wire_messages[i].get("role") == "tool"}
-    indexes.update(i for i, message in enumerate(wire_messages) if any(
-        call.get("id") in result_ids for call in message.get("tool_calls") or [] if call.get("id")))
+    partial = {}
+    for i, message in enumerate(wire_messages):
+        calls = message.get("tool_calls") or []
+        if i not in indexes and any(call.get("id") in result_ids for call in calls if call.get("id")):
+            remaining = [call for call in calls if call.get("id") not in result_ids]
+            if remaining:
+                partial[i] = {"role": "assistant", "content": note, "tool_calls": remaining}
+            else:
+                indexes.add(i)
     call_ids = {call.get("id") for i in indexes for call in wire_messages[i].get("tool_calls") or [] if call.get("id")}
     for i in list(indexes):
         if any(not call.get("id") for call in wire_messages[i].get("tool_calls") or []):
@@ -482,10 +491,9 @@ def _withhold_model_source(messages, wire_request, input_bindings, source, code,
                 indexes.add(j)
     indexes.update(index for index, message in enumerate(wire_messages)
         if message.get("role") == "tool" and message.get("tool_call_id") in call_ids)
-    for index in indexes:
-        replacement = {"role": "system", "content": note}
+    for index, replacement in {**partial, **{i: {"role": "system", "content": note} for i in indexes}}.items():
         # Replacing the complete payload also removes arguments and private
-        # reasoning; paired results become notes so no orphan tool call remains.
+        # reasoning; unaffected sibling calls keep their own paired results.
         wire_messages[index] = replacement
         messages[index] = dict(replacement) if isinstance(messages[index], dict) else LLMMessage(**replacement)
     if source in input_bindings["dependencies"]:
@@ -493,7 +501,9 @@ def _withhold_model_source(messages, wire_request, input_bindings, source, code,
     for entry in input_bindings["messages"]:
         if entry["message_index"] in indexes:
             entry.update(status="withheld", code=code, dependencies=[], dependency_status="resolved")
-    retained = [ref for entry in input_bindings["messages"] for ref in entry.get("dependencies", [])]
+        elif entry["message_index"] in partial:
+            entry.update(code=code, message_hash=_sha256(partial[entry["message_index"]]))
+    retained = [*unattached, *(ref for entry in input_bindings["messages"] for ref in entry.get("dependencies", []))]
     input_bindings["dependencies"][:] = [ref for ref in input_bindings["dependencies"] if ref in retained]
 
 
@@ -536,6 +546,10 @@ async def _validate_or_withhold_model_sources(db, *, tenant_id, agent_id, sessio
         except (ExecutionAuthorityUnavailable, ContentInputReceiptError) as exc:
             if source is None or exc.code == "group_model_sources_unavailable":
                 raise
+            if group_principal is not None and not any(source in entry.get("dependencies", [])
+                for entry in input_bindings["messages"]):
+                raise ContentInputReceiptError("group_model_sources_unavailable",
+                    "这次对话暂时无法确认访问范围，请重试。", 503) from exc
             _withhold_model_source(messages, wire_request, input_bindings, source, exc.code)
 
 

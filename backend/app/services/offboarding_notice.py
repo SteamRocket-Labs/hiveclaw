@@ -2,8 +2,9 @@
 
 import json
 
-from sqlalchemy import func, select, update
+from sqlalchemy import String, cast, func, select, update
 
+from app.models.chat_session import ChatSession
 from app.models.chat_transcript_event import ChatTranscriptEvent
 from app.models.knowledge import (
     KnowledgeAssertion, KnowledgeDocument, KnowledgeEntity, KnowledgeIndexJob, KnowledgeLink, KnowledgeSegment,
@@ -27,9 +28,14 @@ async def transfer_knowledge_and_notify(db, *, target_user, successor, agents, r
             model.scope_type == "person", model.scope_id == target_user.id).values(**values))
 
     agent_ids = [agent.id for agent in agents]
+    private_chat = select(ChatSession.id).where(
+        ChatSession.tenant_id == target_user.tenant_id, ChatSession.session_kind == "human_chat",
+        cast(ChatSession.id, String) == func.coalesce(RuntimeTask.child_session_id, RuntimeTask.parent_session_id),
+    ).exists()
     runs = list((await db.execute(select(RuntimeTask).where(
         RuntimeTask.id.in_([signal.task_id for signal in revocations.runtime_task_signals]),
         RuntimeTask.tenant_id == target_user.tenant_id, RuntimeTask.parent_agent_id.in_(agent_ids),
+        ~private_chat,
     ))).scalars().all())
     tasks = list((await db.execute(select(Task).where(
         Task.tenant_id == target_user.tenant_id, Task.agent_id.in_(agent_ids),

@@ -280,3 +280,36 @@ async def test_completed_outward_action_lost_receipt_then_offboarding_requires_c
     finally:
         server.close()
         await server.wait_closed()
+
+
+@pytest.mark.parametrize("successor_role", ["org_admin", "member"])
+@pytest.mark.parametrize("bind_child", [False, True])
+async def test_handover_notice_does_not_copy_private_conversation_results(owner_sessionmaker, successor_role, bind_child):
+    from app.models.chat_transcript_event import ChatTranscriptEvent
+    from app.services.session_writer_epoch import assign_runtime_task_writer_generation
+
+    async with owner_sessionmaker() as db:
+        state = await seed_handover(db, successor_role=successor_role)
+        await write_known_result(state)
+        runtime = RuntimeTask(id=uuid4(), tenant_id=state.tenant.id, parent_agent_id=state.bot.id,
+            root_user_id=state.leaver.id, task_type="web_chat_turn", status="running", metadata_json={"phase": "invoking"})
+        await assign_runtime_task_writer_generation(db, runtime)
+        db.add(runtime)
+        await db.flush()
+        session = ChatSession(id=uuid4(), tenant_id=state.tenant.id, agent_id=state.bot.id, user_id=state.leaver.id,
+            runtime_task_id=runtime.id, session_kind="human_chat", visibility_scope="direct_user")
+        db.add(session)
+        await db.flush()
+        runtime.parent_session_id = runtime.root_session_id = str(session.id)
+        runtime.child_session_id = str(session.id) if bind_child else None
+        private = SimpleNamespace(**{**vars(state), "runtime": runtime, "session": session})
+        marker = "PRIVATE_CONVERSATION_SHOULD_STAY_WITH_LEAVER"
+        await write_known_result(private, marker)
+        await offboard(state)
+        notice = (await db.scalars(select(Notification).where(Notification.user_id == state.successor.id))).one()
+        assert marker not in notice.body
+        assert [work["id"] for work in json.loads(notice.body)["work"]] == [str(state.runtime.id)]
+        assert session.user_id == state.leaver.id
+        assert await db.scalar(select(ChatTranscriptEvent.id).where(ChatTranscriptEvent.run_id == runtime.id,
+            ChatTranscriptEvent.event_type == "tool_result.completed", ChatTranscriptEvent.content == marker))
+        await db.rollback()

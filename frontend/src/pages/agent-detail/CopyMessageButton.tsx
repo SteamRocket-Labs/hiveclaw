@@ -1,10 +1,12 @@
 import React from 'react';
+import { useTranslation } from 'react-i18next';
 
 type CopyMessageButtonProps = {
   text: string;
 };
 
 export default function CopyMessageButton({ text }: CopyMessageButtonProps) {
+  const { t } = useTranslation();
   const [copied, setCopied] = React.useState(false);
 
   const handleCopy = (event: React.MouseEvent) => {
@@ -18,7 +20,8 @@ export default function CopyMessageButton({ text }: CopyMessageButtonProps) {
   return (
     <button
       onClick={handleCopy}
-      title="Copy"
+      title={t('common.copy', 'Copy')}
+      aria-label={t('common.copy', 'Copy')}
       style={{
         background: 'none',
         border: 'none',

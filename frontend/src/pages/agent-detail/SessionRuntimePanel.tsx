@@ -4,6 +4,7 @@ import React from 'react';
 import { useTranslation } from 'react-i18next';
 import { IconAlertTriangle, IconChevronLeft, IconChevronRight, IconFileText, IconLoader, IconX } from '@tabler/icons-react';
 import { useAuthStore } from '../../stores';
+import { isAdministratorRole } from '../../roles';
 import { canOpenWorkBrowser } from '../session-workbench/workBrowserState';
 
 import { SessionGoalPanel } from '../session-workbench/SessionGoalPanel';
@@ -27,6 +28,7 @@ import type { ThreadItem } from '../../api/domains/threadItems.generated';
 import type { SessionWorkbench } from '../../api/domains/ccParity';
 import type { SessionDecisionTrace } from '../../api/domains/chat';
 import type { AgentChatMessage, ChatArtifactPart } from './chatRuntime';
+import { agentChatMessageRunId } from './chatRuntime';
 import { artifactContributorLabel, formatArtifactSize } from './ArtifactSurface';
 import { SessionDecisionHistory } from './SessionDecisionHistory';
 import type { ArtifactContinuationContext } from './ArtifactContinuation';
@@ -268,6 +270,7 @@ export function SessionRuntimePanel({
   ) => void | Promise<unknown>;
 }) {
   const browserUserId = useAuthStore((state) => state.user?.id);
+  const isAdmin = useAuthStore((state) => isAdministratorRole(state.user?.role));
   const RUNTIME_PANEL_WIDTH_KEY = 'hive.sessionRuntimePanel.width';
   const [panelWidth, setPanelWidth] = React.useState<number | null>(() => {
     try {
@@ -315,6 +318,12 @@ export function SessionRuntimePanel({
   const docs = rightPanel.workspaceDocuments;
   const currentSessionDocumentCount = docs.currentSession.items.length;
   const runtimeConsole = rightPanel.runtimeConsole;
+  const pendingApprovalRuns = new Set(messages.filter(message => message.eventStatus === 'session_permission_required'
+    && message.sessionPermissionRequest && message.sessionPermissionRequest.requested_by_user_id === browserUserId)
+    .map(message => message.sessionPermissionRequest!.runtime_task_id || agentChatMessageRunId(message)));
+  const memberWaiters = runtimeConsole.waiters.map(waiter => pendingApprovalRuns.has(waiter.id)
+    ? { ...waiter, status: 'awaiting_approval' } : waiter).filter(waiter => waiter.userBlocker
+    || ['awaiting_approval', 'approval_required'].includes(waiter.status));
   const [showAllCurrentDocuments, setShowAllCurrentDocuments] = React.useState(false);
   const [runtimeSegmentOverride, setRuntimeSegmentOverride] = React.useState<RuntimeConsoleSegmentKey | null>(null);
   const selectedRuntimeSegment: RuntimeConsoleSegmentKey = runtimeSegmentOverride && runtimeConsole.segments.some((segment) => segment.key === runtimeSegmentOverride)
@@ -377,16 +386,18 @@ export function SessionRuntimePanel({
     const clickable = Boolean(waiter.enterable && sessionId && onSelectSession);
     const segmentLabel = t(`sessionWorkbench.rightPanel.runtimeSegments.${waiter.segment}`, waiter.segment);
     const blocker = waiter.userBlocker;
+    const title = blocker?.title || (isAdmin ? waiter.label : t('sessionWorkbench.rightPanel.waiters', 'Waiting items'));
+    const status = runtimeStatusLabel(waiter.status || 'waiting', t);
     const meta = blocker
       ? [blocker.reason, blocker.nextAction].filter(Boolean).join(' ')
-      : [waiter.summary, segmentLabel].filter(Boolean).join(' · ');
+      : [waiter.summary, isAdmin ? segmentLabel : null].filter(Boolean).join(' · ');
     const content = (
       <>
         <span className="session-runtime-row-main">
-          <span className="session-runtime-row-title">{blocker?.title || waiter.label}</span>
-          <span className="session-runtime-row-meta">{meta || waiter.summary || waiter.label}</span>
+          <span className="session-runtime-row-title">{title}</span>
+          <span className="session-runtime-row-meta">{meta || (isAdmin ? waiter.label : '')}</span>
         </span>
-        <span className="session-runtime-status">{runtimeStatusLabel(waiter.status || 'waiting', t)}</span>
+        {(isAdmin || title !== status) && <span className="session-runtime-status">{status}</span>}
       </>
     );
     return clickable ? (
@@ -655,7 +666,8 @@ export function SessionRuntimePanel({
   };
 
   const renderDocumentRow = (doc: WorkspaceDocumentModel) => {
-    const contributorLabel = artifactContributorLabel(doc.artifact, agent);
+    const contributor = artifactContributorLabel(doc.artifact, agent);
+    const contributorLabel = contributor === 'My Assistant' ? t('assistant.title', 'My Assistant') : contributor;
     return (
       <button
         key={doc.key}
@@ -666,7 +678,7 @@ export function SessionRuntimePanel({
         <IconFileText size={15} />
         <span>
           <strong>{doc.name}</strong>
-          <small>{[doc.previewKind, doc.status, formatArtifactSize(doc.size)].filter(Boolean).join(' · ')}</small>
+          <small>{[doc.previewKind, isAdmin ? doc.status : null, formatArtifactSize(doc.size)].filter(Boolean).join(' · ')}</small>
           {contributorLabel ? (
             <em className="session-runtime-doc-author">
               {t('sessionWorkbench.rightPanel.documentAuthor', 'By {{name}}', { name: contributorLabel })}
@@ -723,7 +735,7 @@ export function SessionRuntimePanel({
   const sessionWindow = rightPanel.sessionWindow;
 
   if (collapsed) {
-    const attentionCount = runtimeConsole.summary.waitingCount + runtimeConsole.summary.blockedCount;
+    const attentionCount = isAdmin ? runtimeConsole.summary.waitingCount + runtimeConsole.summary.blockedCount : memberWaiters.length;
     const runningCount = runtimeConsole.summary.runningCount;
     return (
       <aside data-testid="session-runtime-panel" className="session-runtime-panel is-collapsed">
@@ -763,7 +775,7 @@ export function SessionRuntimePanel({
             <span>{attentionCount}</span>
           </button>
         ) : null}
-        {runningCount > 0 ? (
+        {isAdmin && runningCount > 0 ? (
           <button
             type="button"
             data-testid="session-runtime-collapsed-running"
@@ -807,7 +819,7 @@ export function SessionRuntimePanel({
       >
         <IconChevronRight size={15} stroke={1.8} />
       </button>
-      {agentId && sessionId && canOpenWorkBrowser(activeSession, readOnly, browserUserId) &&
+      {isAdmin && agentId && sessionId && canOpenWorkBrowser(activeSession, readOnly, browserUserId) &&
         <React.Suspense fallback={null}><WorkBrowser agentId={agentId} sessionId={sessionId} continuation={browserContinuation} /></React.Suspense>}
       <section
         data-testid="session-runtime-deliverables"
@@ -832,6 +844,7 @@ export function SessionRuntimePanel({
         )}
       </section>
 
+      {(isAdmin || memberWaiters.length > 0) && <>
       <div data-testid="session-runtime-divider" className="session-runtime-divider" aria-hidden="true" />
 
       <section
@@ -842,12 +855,12 @@ export function SessionRuntimePanel({
         <div className="session-runtime-section-header">
           <div>
             <div className="session-tui-kicker">{t('sessionWorkbench.rightPanel.session', 'Session')}</div>
-            <h3>{t('sessionWorkbench.rightPanel.runStatus', 'Run status')}</h3>
+            <h3>{isAdmin ? t('sessionWorkbench.rightPanel.runStatus', 'Run status') : t('sessionWorkbench.rightPanel.waiters', 'Waiting items')}</h3>
           </div>
-          {consoleIsEmpty ? null : <span>{runStatusCount}</span>}
+          {isAdmin && !consoleIsEmpty ? <span>{runStatusCount}</span> : null}
         </div>
 
-        {agentId && sessionId && sessionWorkbench?.goals?.length ? (
+        {isAdmin && agentId && sessionId && sessionWorkbench?.goals?.length ? (
           <SessionGoalPanel
             agentId={agentId}
             sessionId={sessionId}
@@ -858,10 +871,12 @@ export function SessionRuntimePanel({
           />
         ) : null}
 
-        <SessionDecisionHistory decisions={sessionDecisions} onFeedback={readOnly ? undefined : onDecisionFeedback} />
+        {isAdmin && <SessionDecisionHistory decisions={sessionDecisions} onFeedback={readOnly ? undefined : onDecisionFeedback} />}
 
         <div data-testid="session-runtime-console" className="session-runtime-console">
-          {consoleIsEmpty ? (
+          {!isAdmin ? <div data-testid="session-runtime-waiters" className="session-runtime-waiters">
+            {memberWaiters.map(renderRuntimeWaiter)}
+          </div> : consoleIsEmpty ? (
             <div data-testid="session-runtime-console-empty" className="session-runtime-empty">
               {t('sessionWorkbench.rightPanel.noRuntimeActivity', 'No background agents, teams, or workflows in this session.')}
             </div>
@@ -929,6 +944,7 @@ export function SessionRuntimePanel({
           )}
         </div>
       </section>
+      </>}
       {selectedThreadItem?.audience === 'operator' && selectedThreadItem.operator_details ? (
         <div className="session-technical-drawer" role="dialog" aria-modal="false">
           <React.Suspense fallback={null}>

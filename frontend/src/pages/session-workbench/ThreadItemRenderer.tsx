@@ -51,8 +51,33 @@ function statusIcon(status: ThreadItemStatus, itemType: ThreadItemType): React.R
   return <IconCheck size={14} aria-hidden="true" />;
 }
 
-function detailsFor(item: ThreadItem, t: (key: string, fallback: string) => string): Detail[] {
+function detailsFor(item: ThreadItem, t: (key: string, fallback: string) => string, language: string, approvalArguments: unknown): Detail[] {
   const userAction = item.user_action;
+  if (item.item_type === 'approval_request') {
+    const data = item.item_data;
+    const expires = userAction?.expires_at || data.expires_at;
+    const args = approvalArguments && typeof approvalArguments === 'object' && !Array.isArray(approvalArguments)
+      ? approvalArguments as Record<string, unknown> : null;
+    const summary = args ? data.tool_name === 'run_command' ? { command: args.command, cwd: 'workspace/' }
+      : data.tool_name === 'create_employee_from_request' ? { name: args.name, first_task: args.first_task }
+        : ['send_email', 'reply_email'].includes(data.tool_name || '') ? { recipient: args.to || args.recipient, subject: args.subject, body: args.body }
+          : {} : {};
+    const proposalDetails = Object.entries(summary).flatMap(([label, value]) => {
+      const text = Array.isArray(value) ? value.join(', ') : value;
+      return typeof text === 'string' && text ? [{ label, value: text.length > 240 ? `${text.slice(0, 240)}…` : text }] : [];
+    });
+    return [
+      { label: 'tool', value: approvalActionLabel(data.tool_name, t) },
+      { label: 'expires', value: expires ? new Date(expires).toLocaleString(language) : null },
+      { label: 'impact', value: data.tool_name === 'create_employee_from_request'
+        ? t('sessionWorkbench.threadItem.value.employeePermanent', 'The employee can be deactivated, but cannot be deleted.')
+        : userAction?.impact || (data.destructive ? t('sessionWorkbench.threadItem.value.destructive', 'Irreversible action') : t('sessionWorkbench.threadItem.value.reversible', 'Reversible or read-only')) },
+      ...proposalDetails,
+      ...(userAction?.details || []).flatMap((detail) => typeof detail.label === 'string' && typeof detail.value === 'string'
+        && !proposalDetails.some(proposal => proposal.label === detail.label)
+        ? [{ label: detail.label, value: detail.value }] : []),
+    ];
+  }
   if (userAction) {
     const safeActionDetails = (userAction.details || []).flatMap((detail) => {
       const label = typeof detail.label === 'string' ? detail.label : '';
@@ -80,12 +105,6 @@ function detailsFor(item: ThreadItem, t: (key: string, fallback: string) => stri
       return [
         { label: 'tool', value: item.item_data.tool_name },
         { label: 'result', value: item.item_data.success ? t('sessionWorkbench.threadItem.value.success', 'success') : t('sessionWorkbench.threadItem.value.failure', 'failure') },
-      ];
-    case 'approval_request':
-      return [
-        { label: 'tool', value: item.item_data.tool_display_name || item.item_data.tool_name },
-        { label: 'expires', value: item.item_data.expires_at },
-        { label: 'impact', value: item.item_data.destructive ? t('sessionWorkbench.threadItem.value.destructive', 'destructive') : t('sessionWorkbench.threadItem.value.reversible', 'reversible or read-only') },
       ];
     case 'approval_decision':
       return [{ label: 'action', value: item.item_data.action === 'allow_once' ? t('agent.chat.permission.allowOnce', 'Allow once')
@@ -221,9 +240,10 @@ export function ThreadItemRenderer({
   approvalArguments,
   actions,
 }: ThreadItemRendererProps) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
+  const [showArguments, setShowArguments] = React.useState(false);
   const sourceNotice = item.event_type === 'source_access_notice';
-  const details = sourceNotice ? [] : detailsFor(item, t).filter((detail) => detail.value !== null && detail.value !== undefined && detail.value !== '');
+  const details = sourceNotice ? [] : detailsFor(item, t, i18n.language, approvalArguments).filter((detail) => detail.value !== null && detail.value !== undefined && detail.value !== '');
   const title = sourceNotice ? t('agent.chat.sourceAccess', 'Source access')
     : t(`sessionWorkbench.threadItem.type.${item.item_type}`, TITLES[item.item_type]);
   const status = sourceNotice ? t('agent.chat.sourceUnavailable', 'Unavailable')
@@ -248,13 +268,18 @@ export function ThreadItemRenderer({
       ))}
     </dl>
   );
-  // The whole proposal (the old 操作详情) lives inside the card's single
-  // disclosure: the whitelisted summary alone is not a proposal (B2 r3).
   const argumentsBody = item.item_type === 'approval_request' && approvalArguments != null && (
-    <pre
+    <>
+    <button type="button" className="btn btn-secondary" aria-expanded={showArguments} onClick={() => setShowArguments(!showArguments)}>
+      <IconChevronRight size={13} aria-hidden="true" style={{ transform: showArguments ? 'rotate(90deg)' : undefined }} />
+      {t('agent.chat.permission.fullArguments', 'Full parameters')}
+    </button>
+    {showArguments && <pre
       className="thread-item-arguments"
       aria-label={t('agent.chat.permission.actionDetails', 'Action details')}
-    >{JSON.stringify(approvalArguments, null, 2)}</pre>
+      style={{ maxHeight: '240px', overflow: 'auto', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}
+    >{JSON.stringify(approvalArguments, null, 2)}</pre>}
+    </>
   );
 
   if (item.item_type === 'approval_decision' && item.event_type === 'permission_resolved') {

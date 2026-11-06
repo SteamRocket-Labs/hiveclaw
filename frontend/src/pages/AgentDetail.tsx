@@ -1853,7 +1853,7 @@ function AgentDetailInner() {
         if (options?.parts?.length && !stillOriginalSubject()) return false;
         if (!chatInput.trim() && attachedFiles.length === 0) return;
         const goalObjective = chatInput.trim();
-        const { userMsg, contentForLLM, attachmentPayload, fileName } = formatComposerAttachments(goalObjective, attachedFiles, supportsVision);
+        const { userMsg, contentForLLM, attachmentPayload, fileName, inputAttachments } = formatComposerAttachments(goalObjective, attachedFiles, supportsVision);
 
         if (attachedFiles.length === 0 && !goalModeRequested) {
             let parsedSlashCommand: ReturnType<typeof parseSlashCommandInput> = null;
@@ -1979,7 +1979,7 @@ function AgentDetailInner() {
             }
             setChatMessagesSessionId(sendSessionId);
             appendOptimisticUserMessage(sendKey, sendSessionId, {
-                role: 'user', id: acceptedInputId, content: userMsg, fileName,
+                role: 'user', id: acceptedInputId, content: userMsg, inputAttachments, fileName: inputAttachments.length ? undefined : fileName,
                 imageUrl: attachedFiles.length === 1 ? attachedFiles[0].imageUrl : undefined,
                 timestamp: new Date().toISOString(), sendState: 'sending',
             });
@@ -2060,7 +2060,7 @@ function AgentDetailInner() {
                 role: 'user',
                 id: acceptedInputId,
                 content: userMsg,
-                fileName,
+                inputAttachments, fileName: inputAttachments.length ? undefined : fileName,
                 imageUrl: attachedFiles.length === 1 ? attachedFiles[0].imageUrl : undefined,
                 timestamp: new Date().toISOString(),
             });

@@ -3,7 +3,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { afterEach, expect, it, vi } from 'vitest';
 
 import { ArtifactCards } from './ArtifactSurface';
-import { parseUserAttachment } from './chatAttachments';
+import { formatComposerAttachments, parseUserAttachment } from './chatAttachments';
 import type { AgentChatMessage } from './chatRuntime';
 import * as downloads from '../../utils/authenticatedResource';
 import * as dialogs from '../../components/AppDialogs';
@@ -20,11 +20,33 @@ function restoredInput(actor = 'owner') {
   const message: AgentChatMessage = { role: 'user', content: JSON.stringify(parts), sessionItem: {
     id: 'input', kind: 'human_input', scope: { level: 'session', session_id: 'work', thread_id: 'work' },
     lifecycle: 'accepted', terminal: false, revision: 0, content: JSON.stringify(parts), payload: { content_parts: parts },
-    actor: { type: 'user', id: actor }, visibility: { audience: 'private' }, occurredAt: '2026-10-21T00:00:00Z',
+    actor: actor === 'runtime' ? { type: 'runtime' } : { type: 'user', id: actor }, visibility: { audience: 'private' }, occurredAt: '2026-10-21T00:00:00Z',
     first_sequence: 1, last_sequence: 1,
   } };
   return parseUserAttachment(message, 'employee').inputAttachments;
 }
+
+it('keeps the uploaded reference on the optimistic bubble without a workspace lookup', () => {
+  const original = { id: 'new-ref', owner_user_id: 'owner', content_sha256: 'a'.repeat(64), size_bytes: 8 };
+  const formatted = formatComposerAttachments('Read this.', [{ name: 'source.bin', path: 'workspace/uploads/source.bin', text: '', originalAttachment: original }], false);
+  const message = parseUserAttachment({ role: 'user', content: formatted.userMsg, inputAttachments: formatted.inputAttachments }, 'employee');
+  expect(message.inputAttachments).toEqual([{ name: 'source.bin', path: 'workspace/uploads/source.bin', source: 'human_input', originalUpload: { id: 'new-ref', ownerUserId: 'owner' } }]);
+  expect(message.content).toBe('Read this.');
+});
+
+it('keeps the persisted ref when the last human-input lifecycle event is authored by the runtime', async () => {
+  const fetcher = vi.fn().mockResolvedValue({ ok: true, blob: async () => new Blob(['ORIGINAL']) });
+  vi.stubGlobal('fetch', fetcher);
+  vi.spyOn(downloads, 'saveBlob').mockImplementation(() => {});
+  const artifacts = restoredInput('runtime');
+  const { rerender } = render(<ArtifactCards agentId="employee" viewerUserId="owner" artifacts={artifacts} />);
+  fireEvent.click(screen.getByRole('button', { name: 'More file actions' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Download original' }));
+  await waitFor(() => expect(fetcher).toHaveBeenCalledWith('/api/chat/attachments/original-ref/download', expect.anything()));
+  expect(fetcher.mock.calls.some(call => call[0].includes('workspace-original'))).toBe(false);
+  rerender(<ArtifactCards agentId="employee" viewerUserId="other" artifacts={artifacts} />);
+  expect(screen.queryByRole('button', { name: 'More file actions' })).toBeNull();
+});
 
 // An attachment is just an attachment (P3): the original-file actions sit
 // behind the attachment's own "…" menu; the current file keeps its ordinary

@@ -1,4 +1,4 @@
-import { runtimeStatusLabel, userFacingRuntimeStatus } from './runtimeStatus';
+import { runtimeStatusKey, runtimeStatusLabel, userFacingRuntimeStatus } from './runtimeStatus';
 export { runtimeStatusKey, runtimeStatusLabel, userFacingRuntimeStatus } from './runtimeStatus';
 import React from 'react';
 import { useTranslation } from 'react-i18next';
@@ -322,8 +322,8 @@ export function SessionRuntimePanel({
     && message.sessionPermissionRequest && message.sessionPermissionRequest.requested_by_user_id === browserUserId)
     .map(message => message.sessionPermissionRequest!.runtime_task_id || agentChatMessageRunId(message)));
   const memberWaiters = runtimeConsole.waiters.map(waiter => pendingApprovalRuns.has(waiter.id)
-    ? { ...waiter, status: 'awaiting_approval' } : waiter).filter(waiter => waiter.userBlocker
-    || ['awaiting_approval', 'approval_required'].includes(waiter.status));
+    ? { ...waiter, status: 'awaiting_approval' } : waiter).filter(waiter => runtimeStatusKey(waiter.status) === 'waiting'
+    && (waiter.userBlocker || ['awaiting_approval', 'approval_required'].includes(waiter.status)));
   const [showAllCurrentDocuments, setShowAllCurrentDocuments] = React.useState(false);
   const [runtimeSegmentOverride, setRuntimeSegmentOverride] = React.useState<RuntimeConsoleSegmentKey | null>(null);
   const selectedRuntimeSegment: RuntimeConsoleSegmentKey = runtimeSegmentOverride && runtimeConsole.segments.some((segment) => segment.key === runtimeSegmentOverride)
@@ -844,7 +844,7 @@ export function SessionRuntimePanel({
         )}
       </section>
 
-      {(isAdmin || memberWaiters.length > 0) && <>
+      {(isAdmin || memberWaiters.length > 0 || (presentationStatus && presentationStatus !== 'idle')) && <>
       <div data-testid="session-runtime-divider" className="session-runtime-divider" aria-hidden="true" />
 
       <section
@@ -855,7 +855,7 @@ export function SessionRuntimePanel({
         <div className="session-runtime-section-header">
           <div>
             <div className="session-tui-kicker">{t('sessionWorkbench.rightPanel.session', 'Session')}</div>
-            <h3>{isAdmin ? t('sessionWorkbench.rightPanel.runStatus', 'Run status') : t('sessionWorkbench.rightPanel.waiters', 'Waiting items')}</h3>
+            <h3>{t('sessionWorkbench.rightPanel.runStatus', 'Run status')}</h3>
           </div>
           {isAdmin && !consoleIsEmpty ? <span>{runStatusCount}</span> : null}
         </div>
@@ -875,6 +875,7 @@ export function SessionRuntimePanel({
 
         <div data-testid="session-runtime-console" className="session-runtime-console">
           {!isAdmin ? <div data-testid="session-runtime-waiters" className="session-runtime-waiters">
+            {presentationStatus && <span className="session-runtime-status">{runtimeStatusLabel(presentationStatus, t)}</span>}
             {memberWaiters.map(renderRuntimeWaiter)}
           </div> : consoleIsEmpty ? (
             <div data-testid="session-runtime-console-empty" className="session-runtime-empty">
@@ -891,7 +892,7 @@ export function SessionRuntimePanel({
                   <span className="session-runtime-summary-dot" aria-hidden="true" />
                   <span>
                     <strong>
-                      {runtimeStatusLabel(runtimeConsole.summary.state, t)}
+                      {runtimeStatusLabel(presentationStatus || runtimeConsole.summary.state, t)}
                     </strong>
                     <small>
                       <PastedCredentialText content={sessionWindow

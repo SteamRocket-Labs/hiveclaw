@@ -6,6 +6,15 @@ from uuid import uuid4
 import pytest
 
 
+def test_approval_result_keeps_its_existing_approval_card_instead_of_another_run_error():
+    from app.services.agent_session_continuation import _build_result_runtime_action_payload
+
+    assert _build_result_runtime_action_payload({
+        'source_kind': 'approval', 'task_type': 'approval_execution',
+        'terminal_status': 'needs_reconciliation', 'source_run_id': str(uuid4()),
+    }) is None
+
+
 def test_task_notification_runtime_context_includes_full_canonical_model_context():
     from app.services.agent_session_continuation import build_task_notification_runtime_context
 

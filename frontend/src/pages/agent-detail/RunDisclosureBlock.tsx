@@ -521,7 +521,7 @@ export default function RunDisclosureBlock({
   );
   const visibleSteps = timeline.steps.filter((step) => getRunStepPresentation(step) !== 'external');
   if (visibleSteps.length === 0) {
-    if (timeline.status !== 'interrupted') return null;
+    if (timeline.status === 'idle') return null;
     return (
       <div data-testid="run-disclosure-block" data-status={timeline.status} className="run-disclosure">
         <div className="run-disclosure-frame">
@@ -530,7 +530,7 @@ export default function RunDisclosureBlock({
             {timeline.durationMs != null && duration && (
               <span className="run-disclosure-duration">{duration}</span>
             )}
-            <span className="run-disclosure-summary">{interruptedHint}</span>
+            {timeline.status === 'interrupted' && <span className="run-disclosure-summary">{interruptedHint}</span>}
           </div>
         </div>
       </div>

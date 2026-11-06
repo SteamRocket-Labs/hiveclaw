@@ -412,7 +412,7 @@ def build_result_integration_runtime_context(manifest: dict[str, Any]) -> str:
 def _build_result_runtime_action_payload(item: dict[str, Any]) -> dict[str, Any] | None:
     task_type = _text(item.get("task_type")) or "background_task"
     source_kind = _text(item.get("source_kind")) or "runtime_result"
-    if _task_notification_has_dedicated_projection(task_type, source_kind):
+    if source_kind == "approval" or _task_notification_has_dedicated_projection(task_type, source_kind):
         return None
     status = _text(item.get("terminal_status")).lower() or "completed"
     source_run_id = _text(item.get("source_run_id"))

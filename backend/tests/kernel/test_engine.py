@@ -84,6 +84,45 @@ class _FakeClient:
         return None
 
 
+@pytest.mark.asyncio
+async def test_stopping_an_inflight_model_request_does_not_require_effect_reconciliation():
+    from app.kernel import AgentKernel, InvocationRequest, KernelDependencies, RuntimeConfig
+    from app.kernel.contracts import TerminalReason
+
+    started, cancel = asyncio.Event(), asyncio.Event()
+    failures, tools = [], []
+
+    class WaitingClient(_FakeClient):
+        async def stream(self, **kwargs):
+            started.set()
+            await asyncio.Event().wait()
+
+    kernel = AgentKernel(KernelDependencies(
+        resolve_runtime_config=lambda *_a, **_k: RuntimeConfig(tenant_id=uuid4(), max_tool_rounds=1),
+        resolve_current_user_name=lambda *_a, **_k: 'Member', build_system_prompt=lambda *_a, **_k: 'PROMPT',
+        resolve_memory_context=lambda *_a, **_k: '', get_tools=lambda *_a, **_k: [],
+        maybe_compress_messages=lambda messages, **_k: messages, create_client=lambda _m: WaitingClient([]),
+        execute_tool=lambda *args, **_k: tools.append(args), persist_memory=lambda **_k: None,
+        record_token_usage=lambda *_a, **_k: None, get_max_tokens=lambda *_a, **_k: 2048,
+        extract_usage_tokens=lambda usage: usage.get('total_tokens'), estimate_tokens_from_chars=lambda n: n // 4,
+    ))
+    task = asyncio.create_task(kernel.handle(InvocationRequest(
+        model=SimpleNamespace(provider='openai', model='local', api_key='local', base_url=None),
+        messages=[{'role': 'user', 'content': 'Work until stopped'}], agent_name='Agent', role_description='',
+        cancel_event=cancel,
+        model_request_prepare=lambda **_k: 'provider-request:stop',
+        model_request_fail=lambda **payload: failures.append(payload),
+    )))
+    await asyncio.wait_for(started.wait(), 5)
+    cancel.set()
+    result = await asyncio.wait_for(task, 5)
+    assert result.terminal_reason is TerminalReason.USER_CANCEL
+    assert tools == []
+    assert len(failures) == 1
+    assert failures[0]['error_class'] == 'cancelled'
+    assert failures[0]['retry_safe'] is True
+
+
 def test_llm_message_dict_round_trip_preserves_reasoning_signature() -> None:
     from app.kernel.engine import _dicts_to_llm_messages, _llm_messages_to_dicts
     from app.services.llm_client import LLMMessage

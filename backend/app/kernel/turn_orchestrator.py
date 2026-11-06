@@ -2211,7 +2211,7 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                                     round_index=logical_round_index,
                                     provider_request_id=provider_request_id,
                                     error_class="cancelled",
-                                    retry_safe=False,
+                                    retry_safe=True,
                                 )
                             )
                         await _record_span(

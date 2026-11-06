@@ -44,6 +44,7 @@ from app.services.chat_message_parts import serialize_chat_message, split_inline
 from app.services.chat_transcript import append_session_event
 from app.services.web_chat_runtime import (
     ActiveWebChatRunExists,
+    EXECUTABLE_CHAT_TASK_TYPES,
     broadcast_web_chat_event,
     get_active_web_chat_run,
     start_web_chat_run,
@@ -131,6 +132,7 @@ class SessionOut(BaseModel):
     root_session_id: Optional[str] = None
     runtime_task_id: Optional[str] = None
     title: str
+    status: str | None = None
     created_at: str
     last_message_at: Optional[str] = None
     message_count: int = 0
@@ -324,6 +326,21 @@ async def _load_grouped_message_counts(
     stmt = stmt.group_by(ChatMessage.conversation_id)
     result = await db.execute(stmt)
     return {str(row[0]): int(row[1] or 0) for row in result.all()}
+
+
+async def _with_run_status(db: AsyncSession, sessions: list[SessionOut], agent: Agent) -> list[SessionOut]:
+    if not sessions:
+        return sessions
+    rows = await db.execute(select(RuntimeTask.parent_session_id, RuntimeTask.status)
+        .where(RuntimeTask.parent_session_id.in_([s.id for s in sessions]),
+            RuntimeTask.parent_agent_id == agent.id, RuntimeTask.tenant_id == agent.tenant_id,
+            RuntimeTask.task_type.in_(EXECUTABLE_CHAT_TASK_TYPES))
+        .distinct(RuntimeTask.parent_session_id)
+        .order_by(RuntimeTask.parent_session_id, RuntimeTask.created_at.desc()))
+    statuses = dict(rows.all())
+    for session in sessions:
+        session.status = statuses.get(session.id)
+    return sessions
 
 
 async def _load_mine_message_counts(
@@ -1170,7 +1187,7 @@ async def list_sessions(
                 title="Shared group work", created_at=session.created_at.isoformat(),
                 last_message_at=session.last_message_at.isoformat() if session.last_message_at else None,
                 read_only=not can_write, authority_source="shared_group_member"))
-        return out
+        return await _with_run_status(db, out, agent)
 
     if scope == "all":
         if is_scoped_business_admin(current_user, resource_tenant_id=getattr(agent, "tenant_id", None)):
@@ -1258,7 +1275,7 @@ async def list_sessions(
             await _audit_scoped_admin_session_collection(
                 db, current_user=current_user, agent=agent, sessions=exposed_sessions
             )
-        return out
+        return await _with_run_status(db, out, agent)
 
     else:  # scope == "mine"
         ownership_filter = ChatSession.user_id == current_user.id
@@ -1324,7 +1341,7 @@ async def list_sessions(
                     **_session_contract_fields(session),
                 )
             )
-        return out
+        return await _with_run_status(db, out, agent)
 
 
 @router.post("/{agent_id}/sessions", status_code=201)

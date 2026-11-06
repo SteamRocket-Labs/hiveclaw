@@ -1051,6 +1051,7 @@ async def test_typed_permission_batch_suspends_original_run_with_non_json_displa
     update = AsyncMock()
     state = SimpleNamespace(
         run_uuid=uuid4(),
+        session=None,
         interactive_pause_summary=None,
         interactive_pause_channel_text=None,
         cancel_event=SimpleNamespace(is_set=lambda: False),

@@ -517,8 +517,6 @@ def _validate_successor(*, target_user: User, successor: User) -> None:
         raise HTTPException(status_code=400, detail="Successor must be active")
     if successor.tenant_id != target_user.tenant_id:
         raise HTTPException(status_code=400, detail="Successor must belong to the same company")
-    if successor.role not in ("org_admin", "platform_admin"):
-        raise HTTPException(status_code=400, detail="Successor must be a company administrator")
 
 
 async def offboard_loaded_user(
@@ -671,7 +669,6 @@ async def build_user_offboarding_preview(
                 .where(
                     User.tenant_id == tenant_id,
                     User.is_active.is_(True),
-                    User.role.in_(("org_admin", "platform_admin")),
                     User.id != target_user.id,
                 )
                 .order_by(User.display_name.asc(), User.username.asc())

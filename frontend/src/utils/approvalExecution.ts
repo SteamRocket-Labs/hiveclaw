@@ -18,7 +18,7 @@ export type ApprovalExecutionPresentation = {
 
 export type ApprovalContinuationPresentation = {
   status: string;
-  translationKey?: string;
+  reasonKey?: string;
   label: string;
   tone: 'warning' | 'success' | 'error';
 };
@@ -90,8 +90,11 @@ export function approvalContinuationPresentation(
     admission_refused: 'This input was not accepted. Work did not continue.',
     approval_return_admission_refused: 'This input was not accepted. Work did not continue.',
     active_turn_conflict_after_admission: 'This conversation is processing another input. Try again later.',
+    origin_run_not_suspended: 'The conversation has stopped or ended. Work did not continue.',
+    approval_origin_unavailable: 'The original conversation is unavailable. Work did not continue.',
+    human_input_secret_boundary_unavailable: 'Credential protection is unavailable. Try again later.',
   };
   return presentation && status === 'needs_reconciliation' && reasons[reason]
-    ? { ...presentation, label: reasons[reason], translationKey: `approvalContinuation.reasons.${reason}` }
+    ? { ...presentation, label: reasons[reason], reasonKey: `reasons.${reason}` }
     : presentation || null;
 }

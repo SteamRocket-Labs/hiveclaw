@@ -134,6 +134,11 @@ async def test_real_stop_before_decision_never_starts_a_turn(
         assert "origin_run_not_suspended" not in event.content and "needs_reconciliation" not in event.content
         assert event.metadata_json["message"] == event.metadata_json["display_content"] == event.content
         assert "integration epoch" not in event.metadata_json["message"]
+    app, headers = _mounted_app(seed, app_user_sessionmaker, user_id=seed["member_id"])
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://a4b", headers=headers) as api:
+        card = await api.get(f"/api/agents/{seed['agent_id']}/sessions/{seed['session_id']}/approvals/{ticket.id}")
+        assert card.status_code == 200, card.text
+        assert card.json()["execution_receipt"]["continuation_reason"] == "origin_run_not_suspended"
     assert len(model.requests) == 1
 
 
@@ -235,10 +240,18 @@ async def test_failed_return_terminates_origin_with_typed_reason(
         expected = {"inactive": "这个账号已停用，没有做任何更改。",
             "hook": "这次输入被规则阻止，未继续执行。",
             "admission": "这次输入未被接受，未继续执行。",
-            "access": "你无权访问这位数字员工。"}
+            "access": "你无权访问这位数字员工。",
+            "origin": "原对话暂不可用，本次未继续执行。",
+            "sealed": "对话已停止或结束，本次未继续执行。"}
         if failure in expected:
             assert expected[failure] in notice.content
         assert reason not in notice.content
+    if failure not in {"inactive", "access"}:
+        app, headers = _mounted_app(seed, app_user_sessionmaker, user_id=seed["member_id"])
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://a4b", headers=headers) as api:
+            card = await api.get(f"/api/agents/{seed['agent_id']}/sessions/{seed['session_id']}/approvals/{ticket.id}")
+            assert card.status_code == 200, card.text
+            assert card.json()["execution_receipt"]["continuation_reason"] == reason
     assert len(model.requests) == 1
 
 

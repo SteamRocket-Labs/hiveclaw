@@ -557,6 +557,9 @@ def _approval_continuation_display_content(reason):
         "admission_refused": "这次输入未被接受，未继续执行。",
         "approval_return_admission_refused": "这次输入未被接受，未继续执行。",
         "active_turn_conflict_after_admission": "当前对话正在处理其他输入，请稍后重试。",
+        "origin_run_not_suspended": "对话已停止或结束，本次未继续执行。",
+        "approval_origin_unavailable": "原对话暂不可用，本次未继续执行。",
+        "human_input_secret_boundary_unavailable": "凭据保护暂不可用，请稍后重试。",
     }.get(reason, "审批结果已保留，本次对话未继续。" if reason else "审批结果已返回。")
 
 

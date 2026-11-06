@@ -17,6 +17,9 @@ it.each([
   ['user_prompt_submit_blocked', 'This input was blocked by a rule. Work did not continue.'],
   ['admission_refused', 'This input was not accepted. Work did not continue.'],
   ['agent_execute_denied', 'You do not have access to this employee.'],
+  ['origin_run_not_suspended', 'The conversation has stopped or ended. Work did not continue.'],
+  ['approval_origin_unavailable', 'The original conversation is unavailable. Work did not continue.'],
+  ['human_input_secret_boundary_unavailable', 'Credential protection is unavailable. Try again later.'],
 ])('shows the known continuation failure %s on the card', async (reason, message) => {
   api.getApproval.mockResolvedValue({ id: 'ticket', status: 'approved', tool_name: 'write_file',
     execution_status: 'succeeded', can_resolve: false,

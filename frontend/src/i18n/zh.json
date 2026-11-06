@@ -910,7 +910,10 @@
       "user_prompt_submit_prevented": "这次输入被规则阻止，未继续执行。",
       "admission_refused": "这次输入未被接受，未继续执行。",
       "approval_return_admission_refused": "这次输入未被接受，未继续执行。",
-      "active_turn_conflict_after_admission": "当前对话正在处理其他输入，请稍后重试。"
+      "active_turn_conflict_after_admission": "当前对话正在处理其他输入，请稍后重试。",
+      "origin_run_not_suspended": "对话已停止或结束，本次未继续执行。",
+      "approval_origin_unavailable": "原对话暂不可用，本次未继续执行。",
+      "human_input_secret_boundary_unavailable": "凭据保护暂不可用，请稍后重试。"
     }
   },
   "controlPlane": {

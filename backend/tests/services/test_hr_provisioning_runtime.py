@@ -1293,6 +1293,22 @@ async def test_recoverable_draft_list_and_abandon_are_direct_user_surfaces(
         assert listed[0].recovery["can_resume"] is True
         assert listed[0].recovery["can_abandon"] is True
 
+    from fastapi import HTTPException
+
+    async with owner_sessionmaker() as db:
+        user = await db.get(User, user_id)
+        assert user is not None
+        with pytest.raises(HTTPException) as refusal:
+            await abandon_hr_creation_draft(hr_agent_id, draft_id, user, db)
+        assert refusal.value.status_code == 409
+        assert refusal.value.detail["code"] == "agent_retirement_administrator_required"
+
+    async with owner_sessionmaker() as db:
+        employee = await db.get(Agent, employee_id)
+        employee.deactivated_at = datetime.now(timezone.utc)
+        employee.deactivation_reason = "retirement_pending"
+        await db.commit()
+
     async with owner_sessionmaker() as db:
         user = await db.get(User, user_id)
         assert user is not None

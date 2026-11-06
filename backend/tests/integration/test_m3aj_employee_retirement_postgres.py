@@ -57,8 +57,17 @@ async def test_delete_withdraws_the_actual_remote_work_and_keeps_unknown_recover
 
         if flow == "lost_cancel":
             monkeypatch.setattr(RemoteA2AEndpoint, "rpc", lose_cancel)
+        native_id = uuid4()
+        async with tenant_scoped_session(seed["tenant"], session_factory=app_user_sessionmaker) as db:
+            db.add(RuntimeTask(id=native_id, tenant_id=seed["tenant"], parent_agent_id=seed["agent"],
+                parent_session_id=str(session_id), status="running", task_type="web_chat_turn",
+                metadata_json={"turn_id": "t-pending"}))
+            await db.commit()
         result = await api.post(f"/agents/{seed['agent']}/deactivate")
         assert result.status_code == (409 if flow == "lost_cancel" else 204), result.text
+        async with tenant_scoped_session(seed["tenant"], session_factory=app_user_sessionmaker) as db:
+            native = await db.get(RuntimeTask, native_id)
+            assert native.status == "killed", "a pending recall must not spare the native web turn"
         methods = [item[3]["method"] for item in remote.requests if item[0] == "POST"]
         assert methods == ([] if flow == "queued" else ["SendMessage", "CancelTask"])
         async with tenant_scoped_session(seed["tenant"], session_factory=app_user_sessionmaker) as db:
@@ -460,7 +469,6 @@ async def test_restored_employee_runs_again_once_the_owner_reenables_a_trigger(
 ):
     """G1 r3: deactivate closes the trigger gates; restore reopens them and
     the owner's re-enabled cron trigger passes the real preflight."""
-    from datetime import datetime, timezone
 
     from app.models.trigger import AgentTrigger
     from app.services.trigger_preflight import evaluate_trigger_preflight

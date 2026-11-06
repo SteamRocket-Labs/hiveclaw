@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import and_, func, inspect as sqlalchemy_inspect, or_, select, update
+from sqlalchemy import and_, func, inspect as sqlalchemy_inspect, or_, select
 from sqlalchemy.exc import NoInspectionAvailable
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -24,9 +24,7 @@ from app.database import enter_rls_bypass
 from app.models.agent import Agent
 from app.models.participant import Participant
 from app.models.runtime_task import RuntimeTask
-from app.models.schedule import AgentSchedule
 from app.models.tenant import Tenant
-from app.models.trigger import AgentTrigger
 from app.models.user import User
 
 _ACTIVE_RUNTIME_TASK_STATUSES = ("pending", "running")
@@ -213,11 +211,13 @@ async def terminate_agent_runtime_tasks(
     reason: str,
     terminal_source: str,
 ) -> None:
-    """Settle an employee's unfinished parent RuntimeTasks; delete nothing.
+    """Settle a deactivated employee's unfinished native RuntimeTasks.
 
-    Shared by soft deletion and G1 deactivation: work still running when the
-    employee leaves the active roster is withdrawn with the same termination
-    settlement — no ``deleted_at``, no file move.
+    G1 deactivation's settlement: native work still running when the employee
+    is deactivated is withdrawn; nothing is deleted, no file moves, and a
+    remote A2A task (excluded by the schema filter below) never has its
+    unknown outcome converted into a native stop receipt — that work is the
+    recall flow's to settle.
 
     Canonical advisory-first batch order: the shared terminal settlement
     acquires each task's session advisory, so THIS caller must already hold
@@ -237,7 +237,7 @@ async def terminate_agent_runtime_tasks(
     already held — a real row → advisory edge (demonstrated deadlock by the
     CC5 late-admission probe) — and is gone.
     """
-    from app.services.agent_retirement import guard_remote_admission, require_settled
+    from app.services.agent_retirement import guard_remote_admission
     from app.services.runtime_terminal_settlement import (
         lock_runtime_task_batch_with_session_authority,
         settle_and_enqueue_runtime_task_terminal,
@@ -259,9 +259,6 @@ async def terminate_agent_runtime_tasks(
             func.coalesce(RuntimeTask.metadata_json["schema"].as_string(), "") != REMOTE_A2A_SCHEMA,
         ),
     )
-    # Recheck after canonical batch locking: a late external admission must
-    # never be converted into a native stop receipt or lose its HTTP fence.
-    await require_settled(db, agent)
     now = datetime.now(timezone.utc)
     for task in runtime_tasks:
         task.status = "killed"

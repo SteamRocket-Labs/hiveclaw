@@ -144,9 +144,10 @@ async def test_restore_rejects_agent_that_is_not_deactivated(monkeypatch) -> Non
         return agent, "manage"
 
     monkeypatch.setattr("app.core.permissions.check_agent_history_access", fake_check_agent_history_access)
+    db = _FakeDB([_SessionResult(agent)])
 
     with pytest.raises(HTTPException) as exc_info:
-        await agents_api.restore_agent(agent_id=agent.id, current_user=admin, db=_FakeDB())
+        await agents_api.restore_agent(agent_id=agent.id, current_user=admin, db=db)
 
     assert exc_info.value.status_code == 409
     assert exc_info.value.detail.get("code") == "agent_not_deactivated"

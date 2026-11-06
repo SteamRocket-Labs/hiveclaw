@@ -194,3 +194,136 @@ async def test_lineage_never_exposes_the_removal_marker(lifecycle_stack):
     assert lineage.status_code == 200, lineage.text
     body = lineage.text
     assert "removed_from_list_by" not in body, body[:400]
+
+
+async def test_dashboard_lists_ordinary_conversations_and_hides_only_the_callers_marker(
+    lifecycle_stack, app_user_sessionmaker, owner_sessionmaker,
+):
+    """The removed-marker predicate must not drop conversations whose metadata
+    merely exists (JSON NULL extraction is not FALSE)."""
+    from datetime import datetime, timezone
+
+    from app.api.dashboard import _load_dashboard_sessions
+    from app.models.chat_session import ChatSession as Session
+    from app.models.user import User
+
+    seed = lifecycle_stack
+    async with tenant_scoped_session(seed["tenant"], session_factory=owner_sessionmaker) as db:
+        member = await db.get(User, seed["member_id"])
+        ordinary = Session(id=uuid.uuid4(), tenant_id=seed["tenant"], agent_id=seed["agent"],
+            user_id=member.id, source_channel="web", listed_surface="chat",
+            transcript_metadata_json={"permission_mode": "default"})
+        null_metadata = Session(id=uuid.uuid4(), tenant_id=seed["tenant"], agent_id=seed["agent"],
+            user_id=member.id, source_channel="web", listed_surface="chat", transcript_metadata_json=None)
+        removed = Session(id=uuid.uuid4(), tenant_id=seed["tenant"], agent_id=seed["agent"],
+            user_id=member.id, source_channel="web", listed_surface="chat",
+            transcript_metadata_json={"removed_from_list_by": {str(member.id): datetime.now(timezone.utc).isoformat()}})
+        db.add_all([ordinary, null_metadata, removed])
+        await db.commit()
+        ordinary_id, null_id, removed_id = ordinary.id, null_metadata.id, removed.id
+
+    async with tenant_scoped_session(seed["tenant"], session_factory=app_user_sessionmaker) as db:
+        member = await db.get(User, seed["member_id"])
+        rows, session_count = await _load_dashboard_sessions(db, member, agent_ids=[seed["agent"]], limit=10)
+    listed = {row["id"] for row in rows}
+    assert str(ordinary_id) in listed, "an ordinary conversation must stay in recent work"
+    assert str(null_id) in listed, "a NULL-metadata conversation must stay in recent work"
+    assert str(seed["session"]) in listed, "the fixture's own conversation must stay in recent work"
+    assert str(removed_id) not in listed, "the caller's removed conversation stays hidden"
+    # fixture session (NULL metadata) + ordinary + null_metadata
+    assert session_count == 3, session_count
+
+
+async def test_deactivate_terminates_native_work_even_while_the_recall_is_pending(
+    lifecycle_stack, app_user_sessionmaker, owner_sessionmaker, monkeypatch,
+):
+    """A pending outward recall must not spare the employee's own running web
+    turn: native withdrawal is unconditional once deactivation commits."""
+    from app.models.agent import Agent
+    from app.models.runtime_task import RuntimeTask
+
+    class RecalledOutwardTask:
+        """An external_work row whose recall stays pending; pointing
+        child_agent_id at the retiring employee keeps prepare's withdrawal
+        loop from acting on it."""
+
+        def __init__(self, agent_id):
+            self.id = uuid.uuid4()
+            self.tenant_id = seed["tenant"]
+            self.parent_agent_id = agent_id
+            self.child_agent_id = agent_id
+            self.status = "needs_reconciliation"
+
+    seed = lifecycle_stack
+    async with tenant_scoped_session(seed["tenant"], session_factory=owner_sessionmaker) as db:
+        run = RuntimeTask(id=uuid.uuid4(), tenant_id=seed["tenant"],
+            parent_agent_id=seed["agent"], parent_session_id=str(seed["session"]),
+            status="running", task_type="web_chat_turn", metadata_json={"turn_id": "t-r4"})
+        db.add(run)
+        await db.commit()
+        run_id = run.id
+
+    from app.services import agent_retirement
+
+    async def unsettled_recall(db, agent):
+        return [RecalledOutwardTask(agent.id)], []
+
+    monkeypatch.setattr(agent_retirement, "external_work", unsettled_recall)
+    refused = await seed["admin"].post(f"/agents/{seed['agent']}/deactivate")
+    assert refused.status_code == 409, refused.text
+    assert refused.json()["detail"]["code"] == "agent_retirement_pending", refused.text
+    async with tenant_scoped_session(seed["tenant"], session_factory=app_user_sessionmaker) as db:
+        task = await db.get(RuntimeTask, run_id)
+        agent = await db.get(Agent, seed["agent"])
+        assert agent.deactivated_at is not None and agent.status == "stopped"
+        assert task.status == "killed", "the pending recall must not spare the native web turn"
+
+
+async def test_restore_waits_for_the_deactivations_row_lock(
+    lifecycle_stack, app_user_sessionmaker, owner_sessionmaker, monkeypatch,
+):
+    """A restore issued while the deactivate's settlement holds the employee
+    row lock cannot cross it: it applies only after the settlement commits."""
+    import asyncio
+
+    from app.models.agent import Agent
+    from app.models.runtime_task import RuntimeTask
+    from app.services import agent_identity_lifecycle as lifecycle
+
+    seed = lifecycle_stack
+    async with tenant_scoped_session(seed["tenant"], session_factory=owner_sessionmaker) as db:
+        run = RuntimeTask(id=uuid.uuid4(), tenant_id=seed["tenant"],
+            parent_agent_id=seed["agent"], parent_session_id=str(seed["session"]),
+            status="running", task_type="web_chat_turn", metadata_json={"turn_id": "t-lock"})
+        db.add(run)
+        await db.commit()
+        run_id = run.id
+
+    gated = asyncio.Event()
+    release = asyncio.Event()
+    real_terminate = lifecycle.terminate_agent_runtime_tasks
+
+    async def gated_terminate(db, agent, **kwargs):
+        gated.set()
+        await asyncio.wait_for(release.wait(), 30)
+        return await real_terminate(db, agent, **kwargs)
+
+    monkeypatch.setattr(lifecycle, "terminate_agent_runtime_tasks", gated_terminate)
+
+    deactivate_task = asyncio.create_task(seed["admin"].post(f"/agents/{seed['agent']}/deactivate"))
+    await asyncio.wait_for(gated.wait(), 30)
+    restore_task = asyncio.create_task(seed["admin"].post(f"/agents/{seed['agent']}/restore"))
+    _done, pending = await asyncio.wait({restore_task}, timeout=3)
+    assert restore_task in pending, "restore must block on the deactivation's row lock"
+    release.set()
+    deactivated = await asyncio.wait_for(deactivate_task, 30)
+    assert deactivated.status_code == 204, deactivated.text
+    restored = await asyncio.wait_for(restore_task, 30)
+    assert restored.status_code == 204, restored.text
+    async with tenant_scoped_session(seed["tenant"], session_factory=app_user_sessionmaker) as db:
+        agent = await db.get(Agent, seed["agent"])
+        task = await db.get(RuntimeTask, run_id)
+        # The settlement ran to completion before the restore applied, and
+        # the restore returned the employee to runnable idle.
+        assert task.status == "killed"
+        assert agent.status == "idle" and agent.deactivated_at is None

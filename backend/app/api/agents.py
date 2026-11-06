@@ -1944,25 +1944,61 @@ async def deactivate_agent(
     from app.services.agent_retirement import prepare
 
     agent, _access = await check_agent_history_access(db, current_user, agent_id)
+    actor_id = current_user.id  # the rollback below expires loaded instances
     pending_error: HTTPException | None = None
     try:
         await prepare(db, agent=agent, actor=current_user)
     except HTTPException as exc:
-        detail = exc.detail if isinstance(exc.detail, dict) else {}
-        if exc.status_code != 409 or detail.get("code") != "agent_retirement_pending":
+        # Only outcomes whose deactivation already committed inside
+        # ``prepare`` keep their bookkeeping: verify against the row, not
+        # against the error's wording. The rollback expires the loaded
+        # instances, so refresh the agent from its committed row and use the
+        # snapshotted actor id from here on.
+        await db.rollback()
+        await db.refresh(agent)
+        if not (exc.status_code == 409 and agent.deactivated_at is not None):
             raise
-        # The deactivation itself has committed inside ``prepare``; the
-        # outward recall is still unconfirmed. This endpoint's bookkeeping
-        # still happens — projection, audit, sync version — so the committed
-        # state is visible everywhere, then the typed pending state surfaces.
         pending_error = exc
 
-    # ``prepare`` has committed the deactivation (``deactivated_at`` and
-    # ``status = "stopped"`` in one commit, triggers off, outward work
-    # recalled). Work still running on the employee's own web turns is
-    # withdrawn here with the same termination settlement a delete used —
-    # no ``deleted_at``, no file move. Never while recall is pending: that
-    # work belongs to the recall's own disposition.
+    # The bookkeeping is committed for every committed-deactivation outcome
+    # of ``prepare`` — settled, pending recall, admission conflict — before
+    # any native task is touched.
+    from app.services.ai_asset_adapters import project_agent
+    from app.services.ai_assets import register_projection
+
+    await register_projection(
+        db,
+        project_agent(agent),
+        change_source="revoke",
+        actor_user_id=actor_id,
+        change_message="Agent deactivated",
+    )
+    try:
+        from app.core.policy import write_audit_event
+
+        await write_audit_event(
+            db,
+            event_type="agent.deactivated",
+            severity="warn",
+            actor_type="user",
+            actor_id=actor_id,
+            tenant_id=agent.tenant_id,
+            action="deactivate_agent",
+            resource_type="agent",
+            resource_id=agent.id,
+            details={"name": agent.name, "recall_pending": pending_error is not None},
+        )
+    except Exception:
+        logger.warning("Audit write failed for agent.deactivated", exc_info=True)
+    from app.services.sync_service import bump_sync_version
+
+    await bump_sync_version(db, agent.tenant_id)
+    await db.commit()
+
+    # Native work is always withdrawn — remote A2A work stays excluded (it
+    # is the recall's to settle), and a restore that crossed in between is
+    # respected: the employee row is re-read under its lock and nothing is
+    # killed on a bot that is no longer deactivated.
     from app.services.agent_identity_lifecycle import terminate_agent_runtime_tasks
     from app.services.runtime_terminal_settlement import (
         RuntimeTaskLateAdmissionConflict,
@@ -1970,51 +2006,26 @@ async def deactivate_agent(
     )
 
     try:
-        if pending_error is None:
+        agent = (
+            await db.execute(
+                select(Agent).where(Agent.id == agent_id).with_for_update()
+                .execution_options(populate_existing=True)
+            )
+        ).scalar_one()
+        if agent.deactivated_at is not None:
             await terminate_agent_runtime_tasks(
                 db,
                 agent,
-                actor_id=current_user.id,
+                actor_id=actor_id,
                 reason="agent_deactivated",
                 terminal_source="api.agents:deactivate_agent",
             )
-        from app.services.ai_asset_adapters import project_agent
-        from app.services.ai_assets import register_projection
-
-        await register_projection(
-            db,
-            project_agent(agent),
-            change_source="revoke",
-            actor_user_id=current_user.id,
-            change_message="Agent deactivated",
-        )
-        try:
-            from app.core.policy import write_audit_event
-
-            await write_audit_event(
-                db,
-                event_type="agent.deactivated",
-                severity="warn",
-                actor_type="user",
-                actor_id=current_user.id,
-                tenant_id=agent.tenant_id,
-                action="deactivate_agent",
-                resource_type="agent",
-                resource_id=agent.id,
-                details={"name": agent.name, "recall_pending": pending_error is not None},
-            )
-        except Exception:
-            logger.warning("Audit write failed for agent.deactivated", exc_info=True)
-        from app.services.sync_service import bump_sync_version
-
-        await bump_sync_version(db, agent.tenant_id)
         await db.commit()
     except (RuntimeTaskLateAdmissionConflict, RuntimeTaskSessionBindingConflict) as exc:
         # Truthful retryable conflict, mirroring the retired delete route: the
-        # transaction rolled back cleanly — the deactivation itself already
-        # committed inside ``prepare`` and stays; the running tasks were not
-        # settled — and the client retries the same request once the
-        # admission pressure passes.
+        # deactivation and its bookkeeping are already durable; only the
+        # native settlement is outstanding, and the client retries the same
+        # request once the admission pressure passes.
         await db.rollback()
         binding_conflict = isinstance(exc, RuntimeTaskSessionBindingConflict)
         raise HTTPException(
@@ -2053,6 +2064,17 @@ async def restore_agent(
     from app.core.permissions import check_agent_history_access
 
     agent, _access = await check_agent_history_access(db, current_user, agent_id)
+    # The employee row lock is taken before anything else and held to
+    # commit, so a restore cannot cross a deactivate's native settlement:
+    # either this lock wins and the deactivation's settlement sees the row
+    # still deactivated, or the settlement wins and this restore applies to
+    # the settled, still-deactivated row.
+    agent = (
+        await db.execute(
+            select(Agent).where(Agent.id == agent_id).with_for_update()
+            .execution_options(populate_existing=True)
+        )
+    ).scalar_one()
     if agent.deactivated_at is None:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,

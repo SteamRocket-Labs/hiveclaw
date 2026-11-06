@@ -10,7 +10,6 @@ from loguru import logger
 from sqlalchemy import select
 
 from app.core.permissions import (
-    DEACTIVATED_REFUSAL_DETAIL,
     authorize_loaded_session_access,
     check_agent_access,
     is_agent_expired,
@@ -19,17 +18,6 @@ from app.core.permissions import (
 from app.core.security import decode_access_token
 from app.database import tenant_scoped_session
 from app.kernel.contracts import ExecutionIdentityRef
-
-
-def _agent_access_refusal_code(error: HTTPException) -> str:
-    """A deactivation refusal surfaces the plain 已停用 notice (G1).
-
-    ``agent_deactivated`` maps to the localized ``session.agent_deactivated``
-    copy; every other refusal keeps the generic forbidden exit.
-    """
-    if error.status_code == 410 and str(error.detail) == DEACTIVATED_REFUSAL_DETAIL:
-        return "agent_deactivated"
-    return "session_forbidden"
 from app.models.audit import ChatMessage
 from app.models.llm import LLMModel
 from app.models.user import User
@@ -44,6 +32,21 @@ from app.services.web_chat_runtime import (
     get_active_web_chat_run,
 )
 from app.services.web_session_contract import apply_web_session_contract
+
+
+def _agent_access_refusal_code(error: HTTPException) -> str:
+    """A deactivation refusal surfaces the plain 已停用 notice (G1).
+
+    ``agent_deactivated`` maps to the localized ``session.agent_deactivated``
+    copy; every other refusal keeps the generic forbidden exit. Recognised by
+    the typed 410, never by comparing against the member-facing copy.
+    """
+    from app.core.permissions import AgentDeactivatedRefusal
+
+    if isinstance(error, AgentDeactivatedRefusal):
+        return "agent_deactivated"
+    return "session_forbidden"
+
 
 router = APIRouter(tags=["websocket"])
 

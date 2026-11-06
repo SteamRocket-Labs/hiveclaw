@@ -5,6 +5,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timezone
 
+from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -50,20 +51,22 @@ def _fence_abandoned_task(
     }
 
 
-async def _retire_unfinished_employee(
+async def _ensure_created_employee_retired(
     db: AsyncSession,
     draft: HrCreationDraft,
     *,
     actor: "User",
 ) -> None:
-    """Deactivate the partial employee through the same path as 停用.
+    """Refuse the abandon until the created employee is deactivated.
 
-    G1: a digital employee is never deleted, and an abandoned HR creation can
-    already own conversations and remote work once its Agent row exists, so
-    the retirement is a deactivation — ``agent_retirement.prepare`` commits
-    ``deactivated_at`` (status gates closed), recalls outward work, and the
-    native runtime settlement withdraws work still running on its own turns.
-    Nothing writes ``deleted_at`` and no file is ever moved.
+    G1: a digital employee is never deleted, and members and owners cannot
+    deactivate one (plan §3.3) — so the abandon never deactivates either.
+    It supersedes a draft whose employee is already deactivated (by anyone
+    allowed to), or it changes nothing and answers with the governed
+    recovery path: an administrator deactivates the employee on the
+    digital-employees page, a member asks their company admin to. Nothing
+    is deleted and no file is ever moved; the abandon transaction stays
+    atomic because no retirement machinery runs inside it.
     """
 
     if draft.created_agent_id is None:
@@ -78,29 +81,18 @@ async def _retire_unfinished_employee(
     if employee is None or employee.deactivated_at is not None:
         return
 
-    from app.services.agent_retirement import prepare
+    from app.core.permissions import is_scoped_business_admin
 
-    await prepare(db, agent=employee, actor=actor)
-
-    from app.services.agent_identity_lifecycle import terminate_agent_runtime_tasks
-
-    await terminate_agent_runtime_tasks(
-        db,
-        employee,
-        actor_id=actor.id,
-        reason="hr_creation_abandoned",
-        terminal_source="hr_creation_recovery:abandon_hr_creation",
-    )
-
-    from app.services.ai_asset_adapters import project_agent
-    from app.services.ai_assets import register_projection
-
-    await register_projection(
-        db,
-        project_agent(employee),
-        change_source="revoke",
-        actor_user_id=actor.id,
-        change_message="Unfinished HR-created employee abandoned (deactivated)",
+    if is_scoped_business_admin(actor, resource_tenant_id=draft.tenant_id):
+        message = (
+            "This creation already produced a digital employee. Deactivate it on the "
+            "digital-employees page, then abandon this draft again."
+        )
+    else:
+        message = "This creation already produced a digital employee. Ask a company admin to deactivate it."
+    raise HTTPException(
+        status_code=409,
+        detail={"code": "agent_retirement_administrator_required", "message": message},
     )
 
 
@@ -123,18 +115,37 @@ async def abandon_hr_creation(
         raise HrCreationConflict("invalid_status", f"HR draft cannot be abandoned from {draft.status}.")
     if draft.status not in _ABANDONABLE_STATUSES:
         raise HrCreationConflict("invalid_status", f"HR draft cannot be abandoned from {draft.status}.")
+    await _ensure_created_employee_retired(db, draft, actor=actor)
+
+    # Re-lock the draft and task for this decision: the employee guard above
+    # may have waited on its row, and a concurrent mutation must not be
+    # fenced on stale state.
+    draft = (
+        await db.execute(
+            select(HrCreationDraft).where(HrCreationDraft.id == draft.id).with_for_update()
+            .execution_options(populate_existing=True)
+        )
+    ).scalar_one()
+    if draft.status not in _ABANDONABLE_STATUSES:
+        raise HrCreationConflict("invalid_status", f"HR draft cannot be abandoned from {draft.status}.")
+    if task is not None:
+        task = (
+            await db.execute(
+                select(RuntimeTask).where(RuntimeTask.id == task.id).with_for_update()
+                .execution_options(populate_existing=True)
+            )
+        ).scalar_one()
     now = datetime.now(timezone.utc)
     uncertain = bool(draft.claim_token) or (task is not None and task.status in {"running", "needs_reconciliation"})
     if task is not None:
         _fence_abandoned_task(task, actor_id=actor.id, now=now, uncertain=uncertain)
-    await _retire_unfinished_employee(db, draft, actor=actor)
 
     draft.status = "superseded"
     draft.claim_token = None
     draft.claim_heartbeat_at = None
     draft.claim_expires_at = None
     draft.failure_code = "abandoned_by_requester"
-    draft.failure_message = "The unfinished digital employee was removed by its requester."
+    draft.failure_message = "The unfinished creation was abandoned by its requester; its employee stays until an admin deactivates it."
     draft.provisioning_json = {
         **dict(draft.provisioning_json or {}),
         "abandoned_at": now.isoformat(),

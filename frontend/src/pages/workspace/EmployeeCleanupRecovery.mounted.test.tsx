@@ -77,19 +77,18 @@ describe.each(['en', 'zh'] as const)('committed deletion recovery (%s)', (locale
       requested_by_user_id: 'admin', draft_status: 'failed', blueprint: { name: 'Unfinished employee' },
       recovery: { can_abandon: true, can_retry: false },
     }]);
-    api.abandon.mockRejectedValueOnce(new ApiError(409, 'External work needs reconciliation', {
-      code: 'agent_retirement_required', recovery: { employee_id: 'retiring-employee',
+    api.abandon.mockRejectedValueOnce(new ApiError(409, 'The employee stays until an admin deactivates it', {
+      code: 'agent_retirement_administrator_required', recovery: { employee_id: 'retiring-employee',
         management_path: '/enterprise/digital-employees', can_manage_retirement: role === 'org_admin', retry_after_retirement: true },
     }));
     await mount('hr', locale);
     fireEvent.click(await screen.findByRole('button', { name: words.employees.hrRecovery.remove }));
-    await screen.findByText(words.employees.hrRecovery.retirementRequired);
+    await screen.findByText(words.employees.hrRecovery.retirementAdministrator);
     if (role === 'org_admin') {
       expect(screen.getByRole('link', { name: words.employees.hrRecovery.reviewRetirement }).getAttribute('href'))
         .toBe('/enterprise/digital-employees');
     } else {
       expect(screen.queryByRole('link', { name: words.employees.hrRecovery.reviewRetirement })).toBeNull();
-      expect(screen.getByText(words.employees.hrRecovery.retirementAdministrator)).toBeTruthy();
     }
     expect(screen.getByRole('button', { name: words.employees.hrRecovery.remove })).toBeTruthy();
     expect(api.abandon).toHaveBeenCalledWith('original-hr', 'draft-retirement');
@@ -109,31 +108,19 @@ describe.each(['en', 'zh'] as const)('committed deletion recovery (%s)', (locale
     expect(screen.queryByRole('button', { name: /Delete/i })).toBeNull();
   });
 
-  it('keeps an abandoned HR draft recoverable after reload without repeating abandonment confirmation', async () => {
+  it('an abandoned draft leaves the list once superseded; nothing is cleaned up afterwards', async () => {
     const draft = {
       blueprint_id: 'draft-1', hr_agent_id: 'original-employee', session_id: 'original-work',
       requested_by_user_id: 'admin', draft_status: 'failed', blueprint: { name: 'Recovery employee' },
       recovery: { can_abandon: true, can_retry: false, can_resume: false, requires_operator: false },
     };
     api.listMine.mockResolvedValue([draft]);
-    api.abandon.mockImplementationOnce(async () => {
-      api.listMine.mockResolvedValue([{ ...draft, draft_status: 'superseded', recovery: { ...draft.recovery, cleanup_pending: true } }]);
-      throw new ApiError(503, 'Removal committed', { code: 'hr_abandon_cleanup_pending' });
-    }).mockImplementationOnce(async () => { api.listMine.mockResolvedValue([]); });
-
-    const first = await mount('hr', locale);
-    fireEvent.click(await screen.findByRole('button', { name: words.employees.hrRecovery.remove }));
-    await screen.findByRole('button', { name: words.employees.hrRecovery.retryCleanup });
-    first.unmount();
+    api.abandon.mockImplementationOnce(async () => { api.listMine.mockResolvedValue([]); });
 
     await mount('hr', locale);
-    const retry = await screen.findByRole('button', { name: words.employees.hrRecovery.retryCleanup });
-    expect(screen.getByText(words.employees.hrRecovery.cleanupPending)).toBeTruthy();
-    expect(screen.getByText(words.employees.hrRecovery.cleanupStatus)).toBeTruthy();
-    expect(screen.queryByRole('button', { name: words.employees.hrRecovery.retry })).toBeNull();
-    fireEvent.click(retry);
+    fireEvent.click(await screen.findByRole('button', { name: words.employees.hrRecovery.remove }));
     await waitFor(() => expect(screen.queryByText('Recovery employee')).toBeNull());
-    expect(api.abandon.mock.calls).toEqual([['original-employee', 'draft-1'], ['original-employee', 'draft-1']]);
+    expect(api.abandon.mock.calls).toEqual([['original-employee', 'draft-1']]);
     expect(api.confirm).toHaveBeenCalledTimes(1);
   });
 });

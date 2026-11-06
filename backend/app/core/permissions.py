@@ -99,13 +99,14 @@ async def _load_agent_for_user(
     from app.services.agent_retirement import history_available
 
     if lifecycle_reason and not (retirement_history and history_available(agent)):
+        # A deactivation refusal shows the member the one plain word they
+        # need (已停用), typed so callers can branch on the class; every
+        # other lifecycle reason keeps its detail.
+        if lifecycle_reason == "deactivated":
+            raise AgentDeactivatedRefusal()
         raise HTTPException(
             status_code=status.HTTP_410_GONE,
-            # A deactivation refusal shows the member the one plain word they
-            # need (已停用); every other lifecycle reason keeps its detail.
-            detail=DEACTIVATED_REFUSAL_DETAIL
-            if lifecycle_reason == "deactivated"
-            else f"Agent is not active: {lifecycle_reason}",
+            detail=f"Agent is not active: {lifecycle_reason}",
         )
 
     # Agents are tenant-owned resources. A legacy/corrupt tenant-less Agent
@@ -127,8 +128,16 @@ SCOPED_BUSINESS_ADMIN_AUTHORITY_SOURCE = "scoped_business_admin"
 
 # The single member-facing word for "this digital employee is deactivated".
 # Surfaces that map a deactivation refusal to copy reuse this exact detail so
-# every exit shows the same plain reason (G1).
+# every exit shows the same plain reason (G1). The typed subclass lets
+# transports recognise the refusal without comparing against the copy.
 DEACTIVATED_REFUSAL_DETAIL = "已停用"
+
+
+class AgentDeactivatedRefusal(HTTPException):
+    """The 410 a deactivated employee answers with, detail 已停用."""
+
+    def __init__(self) -> None:
+        super().__init__(status_code=status.HTTP_410_GONE, detail=DEACTIVATED_REFUSAL_DETAIL)
 
 
 def is_scoped_business_admin(user, *, resource_tenant_id) -> bool:

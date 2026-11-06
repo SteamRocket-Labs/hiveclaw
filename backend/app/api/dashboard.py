@@ -110,10 +110,13 @@ async def _load_dashboard_sessions(
             # A conversation the caller removed from their own list (G1) is
             # not "recent work": the same per-user marker the chat lists
             # filter on, applied in the query so the limit stays truthful.
-            or_(
-                ChatSession.transcript_metadata_json.is_(None),
-                ~ChatSession.transcript_metadata_json["removed_from_list_by"].has_key(str(current_user.id)),
-            ),
+            # coalesce: a missing key (or NULL metadata) extracts as SQL
+            # NULL, and NOT NULL would silently drop every ordinary
+            # conversation from recent work.
+            func.coalesce(
+                ChatSession.transcript_metadata_json["removed_from_list_by"].has_key(str(current_user.id)),
+                False,
+            ).is_(False),
         )
         .order_by(ChatSession.last_message_at.desc().nulls_last(), ChatSession.created_at.desc())
         .limit(max(1, int(limit)))

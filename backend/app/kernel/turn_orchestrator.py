@@ -1211,12 +1211,13 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
 
         runtime_config = await _maybe_await(self._deps.resolve_runtime_config(request.agent_id))
         span_recorder.runtime_config = runtime_config
-        # A lifecycle refusal (已停用) is the member's plain answer, shown
-        # verbatim — never wrapped in retry/contact-admin machinery.
-        if getattr(runtime_config, "lifecycle_refusal", None):
+        # An executor refusal (已停用 for a deactivated employee) is the
+        # member's plain answer, shown verbatim — never wrapped in
+        # retry/contact-admin machinery. Checked before the tenant sentinel
+        # so the deactivation wording wins.
+        if getattr(runtime_config, "executor_unavailable", None):
             return _build_error_result(
-                runtime_config.lifecycle_refusal,
-                terminal_reason=TerminalReason.LIFECYCLE_REFUSED,
+                runtime_config.executor_unavailable, terminal_reason=TerminalReason.EXECUTOR_UNAVAILABLE
             )
         # P0-1b: invoker fallback paths set tenant_resolution_error instead
         # of silently returning tenant_id=None. Abort before any tool runs;
@@ -1233,10 +1234,6 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                 f"[Error] Cannot invoke agent — tenant resolution failed: "
                 f"{runtime_config.tenant_resolution_error}. Please retry or contact admin.",
                 terminal_reason=TerminalReason.TENANT_RESOLUTION_ERROR,
-            )
-        if getattr(runtime_config, "executor_unavailable", None):
-            return _build_error_result(
-                runtime_config.executor_unavailable, terminal_reason=TerminalReason.EXECUTOR_UNAVAILABLE
             )
         if runtime_config.quota_message:
             # Note: final_tools not included — not yet resolved at this point

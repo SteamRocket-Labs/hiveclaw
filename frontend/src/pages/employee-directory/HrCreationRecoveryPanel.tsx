@@ -64,7 +64,7 @@ export default function HrCreationRecoveryPanel() {
   });
   const errorData = abandonMutation.error instanceof ApiError ? abandonMutation.error.data : null;
   const retirementRecovery = errorData !== null && typeof errorData === 'object' && 'code' in errorData
-    && (errorData.code === 'agent_retirement_required' || errorData.code === 'agent_retirement_pending')
+    && errorData.code === 'agent_retirement_administrator_required'
     && 'recovery' in errorData && errorData.recovery !== null && typeof errorData.recovery === 'object'
     ? errorData.recovery : null;
 
@@ -79,18 +79,14 @@ export default function HrCreationRecoveryPanel() {
   if (drafts.length === 0) return null;
 
   const abandon = async (draft: HrCreationDraft) => {
-    if (draft.recovery?.cleanup_pending) {
-      abandonMutation.mutate(draft);
-      return;
-    }
     const confirmed = await requestAppConfirm({
-      title: t('employees.hrRecovery.removeTitle', 'Remove unfinished employee'),
+      title: t('employees.hrRecovery.removeTitle', 'Abandon unfinished creation'),
       message: t(
         'employees.hrRecovery.removeConfirm',
-        'Remove {{name}} and stop its unfinished provisioning? Audit history is preserved.',
+        'Abandon the unfinished creation of {{name}}? Its employee, files and history are kept and stay until a company admin deactivates them.',
         { name: draftName(draft) },
       ),
-      confirmLabel: t('employees.hrRecovery.remove', 'Remove unfinished employee'),
+      confirmLabel: t('employees.hrRecovery.remove', 'Abandon unfinished creation'),
       danger: true,
     });
     if (confirmed) abandonMutation.mutate(draft);
@@ -119,20 +115,14 @@ export default function HrCreationRecoveryPanel() {
               <div>
                 <div className="hr-recovery-title-row">
                   <h3>{draftName(draft)}</h3>
-                  <span>{recovery?.cleanup_pending
-                    ? t('employees.hrRecovery.cleanupStatus', 'File cleanup pending')
-                    : blueprintStatusLabel(draft.draft_status, t)}</span>
+                  <span>{blueprintStatusLabel(draft.draft_status, t)}</span>
                 </div>
-                {recovery?.cleanup_pending && (
-                  <p>{t('employees.hrRecovery.cleanupPending', 'Removal is committed. Retry only the remaining file archival; the employee will not be removed again.')}</p>
-                )}
                 {failure && <p role={recovery?.requires_operator ? 'alert' : undefined}>{failure}</p>}
                 {retirementError && <div role="alert">
-                  <p>{t('employees.hrRecovery.retirementRequired', 'This employee has unresolved external work. Complete retirement before retrying removal of the unfinished creation. The employee and files are retained.')}</p>
+                  <p>{t('employees.hrRecovery.retirementAdministrator', 'This creation already produced a digital employee. A company administrator deactivates it on the digital-employees page; then this draft can be abandoned.')}</p>
                   {'can_manage_retirement' in retirementError && retirementError.can_manage_retirement === true
                     && isAdministratorRole(user?.role)
-                    ? <Link to="/enterprise/digital-employees">{t('employees.hrRecovery.reviewRetirement', 'Review employee retirement')}</Link>
-                    : <p>{t('employees.hrRecovery.retirementAdministrator', 'Ask a company administrator to review this employee’s retirement, then retry removal here.')}</p>}
+                    && <Link to="/enterprise/digital-employees">{t('employees.hrRecovery.reviewRetirement', 'Deactivate it on the digital-employees page')}</Link>}
                 </div>}
                 {recovery?.requires_operator && (
                   <small>{t('employees.hrRecovery.operatorRequired', 'An operator needs to review this before retry.')}</small>
@@ -163,9 +153,7 @@ export default function HrCreationRecoveryPanel() {
                     disabled={abandonMutation.isPending}
                     onClick={() => void abandon(draft)}
                   >
-                    {recovery?.cleanup_pending
-                      ? t('employees.hrRecovery.retryCleanup', 'Retry file cleanup')
-                      : t('employees.hrRecovery.remove', 'Remove unfinished employee')}
+                    {t('employees.hrRecovery.remove', 'Abandon unfinished creation')}
                   </button>
                 )}
               </div>

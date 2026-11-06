@@ -1205,7 +1205,9 @@ async def _send_message_to_agent_outcome(
                     "consult",
                     error_code="target_agent_unavailable",
                     message=f"{target.name} 已停用。",
-                    retryable=True,
+                    # Deactivation is a state, not an outage — the same
+                    # refusal the task executor marks not retryable.
+                    retryable=False,
                 )
 
             if target.status in ("expired", "stopped", "archived"):

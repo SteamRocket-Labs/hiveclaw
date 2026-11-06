@@ -282,12 +282,6 @@ async def test_terminate_agent_runtime_tasks_settles_native_work_without_deletin
 
     monkeypatch.setattr(runtime_terminal_settlement, "settle_and_enqueue_runtime_task_terminal", fake_settle)
     db = _LifecycleDb(runtime_tasks=(runtime_task,))
-    external_checks = []
-
-    async def no_external_work(db_arg, agent_arg):
-        external_checks.append((db_arg, agent_arg))
-
-    monkeypatch.setattr("app.services.agent_retirement.require_settled", no_external_work)
 
     await terminate_agent_runtime_tasks(
         db, agent, actor_id=uuid4(), reason="agent_deactivated",
@@ -299,7 +293,6 @@ async def test_terminate_agent_runtime_tasks_settles_native_work_without_deletin
     # outcome belongs to the recall flow, never to a native stop receipt.
     assert "FROM runtime_tasks" in sql and "status IN" in sql
     assert "metadata_json" in sql
-    assert external_checks == [(db, agent)]
     assert runtime_task.status == "killed"
     assert runtime_task.claim_version == 5
     assert runtime_task.claimed_by is None

@@ -179,7 +179,8 @@ async def test_restore_returns_the_employee_to_the_runnable_idle_state(monkeypat
     monkeypatch.setattr("app.services.ai_assets.register_projection", fake_register)
     monkeypatch.setattr(agent_retirement, "external_work", settled)
 
-    await agents_api.restore_agent(agent_id=agent.id, current_user=admin, db=_FakeDB())
+    db = _FakeDB(results=[_Result(agent)])  # the row-lock re-select
+    await agents_api.restore_agent(agent_id=agent.id, current_user=admin, db=db)
 
     # Exactly what the trigger, messaging and delegation gates read.
     assert agent.status == "idle"
@@ -224,14 +225,18 @@ async def test_member_chat_refusal_for_deactivation_is_the_plain_word(monkeypatc
 
 def test_websocket_maps_a_deactivation_refusal_to_the_deactivated_notice() -> None:
     from app.api.websocket import _agent_access_refusal_code
-    from app.core.permissions import DEACTIVATED_REFUSAL_DETAIL
+    from app.core.permissions import DEACTIVATED_REFUSAL_DETAIL, AgentDeactivatedRefusal
     from app.services.session_subscription import (
         SESSION_SUBSCRIPTION_CLOSE_CODES,
         SessionSubscriptionError,
         session_subscription_error_frame,
     )
 
-    assert _agent_access_refusal_code(HTTPException(410, DEACTIVATED_REFUSAL_DETAIL)) == "agent_deactivated"
+    assert _agent_access_refusal_code(AgentDeactivatedRefusal()) == "agent_deactivated"
+    # The typed refusal keeps the member-facing copy and the 410 shape.
+    refusal = AgentDeactivatedRefusal()
+    assert refusal.status_code == 410 and refusal.detail == DEACTIVATED_REFUSAL_DETAIL
+    assert _agent_access_refusal_code(HTTPException(410, DEACTIVATED_REFUSAL_DETAIL)) == "session_forbidden"
     assert _agent_access_refusal_code(HTTPException(410, "Agent is not active: expired")) == "session_forbidden"
     assert _agent_access_refusal_code(HTTPException(403, "nope")) == "session_forbidden"
     frame = session_subscription_error_frame(SessionSubscriptionError("agent_deactivated"))
@@ -298,7 +303,6 @@ async def test_task_executor_refusal_for_deactivation_reads_the_plain_word(monke
         async def __aexit__(self, *_exc):
             return False
 
-    factory = _SessionFactory(session_results)
     sessions = [
         _SessionFactory([session_results[0], session_results[1]]),
         _SessionFactory([session_results[2]]),
@@ -357,6 +361,7 @@ async def test_deactivate_settles_unfinished_runtime_tasks_after_prepare(monkeyp
 
     async def fake_settle(_db, agent_in, *, actor_id, reason, terminal_source):
         settled.append({"agent": agent_in.id, "actor": actor_id, "reason": reason, "source": terminal_source})
+        assert agent_in.deactivated_at is not None
 
     async def fake_audit(_db, **_kwargs):
         return None
@@ -369,8 +374,10 @@ async def test_deactivate_settles_unfinished_runtime_tasks_after_prepare(monkeyp
     monkeypatch.setattr(lifecycle, "terminate_agent_runtime_tasks", fake_settle)
     monkeypatch.setattr("app.core.policy.write_audit_event", fake_audit)
     monkeypatch.setattr("app.services.ai_assets.register_projection", fake_register)
+    # queue: bump_sync_version's UPDATE…RETURNING, then the in-lock re-select
+    db = _FakeDB(results=[_Result(agent), _Result(agent)])
 
-    await agents_api.deactivate_agent(agent_id=agent.id, current_user=admin, db=_FakeDB())
+    await agents_api.deactivate_agent(agent_id=agent.id, current_user=admin, db=db)
 
     assert settled == [{
         "agent": agent.id, "actor": admin.id,

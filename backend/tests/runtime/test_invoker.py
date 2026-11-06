@@ -3571,9 +3571,11 @@ async def test_resolve_runtime_config_success_does_not_set_tenant_error(monkeypa
 
 @pytest.mark.real_runtime_config
 @pytest.mark.asyncio
-async def test_resolve_runtime_config_deactivated_agent_sets_plain_lifecycle_refusal(monkeypatch):
-    """G1 r3: a deactivated employee refuses with the one plain word 已停用,
-    never dressed up as a tenant-resolution failure."""
+async def test_resolve_runtime_config_deactivated_agent_refuses_plain_and_fail_closed(monkeypatch):
+    """G1 r4: a deactivated employee answers with the plain word 已停用 on the
+    existing executor field AND keeps the tenant sentinel, so every
+    fail-closed consumer (evolution maintenance included) still skips it."""
+    from app.core.permissions import DEACTIVATED_REFUSAL_DETAIL
     from app.runtime import invoker
 
     fake_agent = SimpleNamespace(
@@ -3599,8 +3601,8 @@ async def test_resolve_runtime_config_deactivated_agent_sets_plain_lifecycle_ref
 
     cfg = await invoker._resolve_runtime_config(fake_agent.id)
 
-    assert cfg.lifecycle_refusal == "已停用", cfg.lifecycle_refusal
-    assert cfg.tenant_resolution_error is None
+    assert cfg.executor_unavailable == DEACTIVATED_REFUSAL_DETAIL, cfg.executor_unavailable
+    assert cfg.tenant_resolution_error is not None, "fail-closed consumers still skip"
 
 
 @pytest.mark.real_runtime_config

@@ -118,9 +118,9 @@ def _coerce_session_ids(session_ids: Iterable[uuid.UUID | str | None]) -> list[u
 async def lock_transcript_sessions(db: AsyncSession, *, session_ids: Iterable[uuid.UUID | str | None]) -> None:
     """Acquire several session advisories in one deterministic global order.
 
-    Batch terminal writers (agent soft-delete, root-user offboarding) settle
-    RuntimeTask rows across several sessions through the shared terminal
-    settlement, which acquires each task's session advisory.  Locking the
+    Batch terminal writers (G1 deactivation's native settlement, root-user
+    offboarding) settle RuntimeTask rows across several sessions through the
+    shared terminal settlement, which acquires each task's session advisory.  Locking the
     RuntimeTask rows FIRST would put such a caller on the row → advisory
     side of the global order and deadlock against any advisory-first writer
     of the same session (an in-flight transcript append, the Stop fence, the

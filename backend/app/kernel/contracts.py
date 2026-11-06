@@ -108,7 +108,6 @@ class TerminalReason(str, Enum):
     TENANT_RESOLUTION_ERROR = "tenant_resolution_error"
     EXECUTOR_UNAVAILABLE = "executor_unavailable"
     MEMORY_UNAVAILABLE = "memory_unavailable"
-    LIFECYCLE_REFUSED = "lifecycle_refused"
 
 
 class ContextDependencyUnavailable(RuntimeError):
@@ -243,10 +242,6 @@ class RuntimeConfig:
     runtime_continuity_enabled: bool = False
     skill_candidate_loop_enabled: bool = False
     executor_unavailable: str | None = None
-    # A plain lifecycle refusal (已停用) the member should see verbatim,
-    # distinct from an infrastructure failure: never retried, never worded
-    # as a tenant-resolution problem.
-    lifecycle_refusal: str | None = None
     # P0-1b: when invoker._resolve_runtime_config cannot resolve tenant
     # (missing agent_id / agent not found / DB exception), it now sets this
     # sentinel instead of silently returning tenant_id=None. Kernel checks

@@ -546,10 +546,6 @@ async def abandon_hr_creation_draft(
         draft_id=draft_id,
         task_required=False,
     )
-    from app.services.runtime_terminal_settlement import (
-        RuntimeTaskLateAdmissionConflict,
-        RuntimeTaskSessionBindingConflict,
-    )
     employee_id, tenant_id = draft.created_agent_id, draft.tenant_id
 
     try:
@@ -558,41 +554,22 @@ async def abandon_hr_creation_draft(
     except HrCreationConflict as exc:
         raise HTTPException(status_code=409, detail={"error": exc.code, "message": exc.message}) from exc
     except HTTPException as exc:
-        if not isinstance(exc.detail, dict) or exc.detail.get("code") not in {
-            "agent_retirement_required", "agent_retirement_pending",
-            "agent_retirement_administrator_required",
-        } or employee_id is None:
+        if not isinstance(exc.detail, dict) or exc.detail.get("code") != "agent_retirement_administrator_required" \
+                or employee_id is None:
             raise
         from app.core.permissions import is_scoped_business_admin
 
         recovery = {"employee_id": str(employee_id), "management_path": "/enterprise/digital-employees",
             "can_manage_retirement": is_scoped_business_admin(current_user, resource_tenant_id=tenant_id),
             "retry_after_retirement": True}
-        # Preparation can commit withdrawal, while this transaction owns the
-        # provisioning fence and draft. Keep that fence atomic and let the
-        # authenticated management entry perform retirement separately. A
-        # non-admin requester gets the same governed path: the created
-        # employee became a company asset the moment its row existed (G1).
+        # The abandon transaction owns the provisioning fence and draft and
+        # stays atomic: it refuses before touching either, and the
+        # authenticated management entry performs the deactivation
+        # separately. A member gets the same governed path with one plain
+        # sentence — the created employee became a company asset the moment
+        # its row existed (G1, plan §3.3).
         await db.rollback()
         raise HTTPException(exc.status_code, detail={**exc.detail, "recovery": recovery}) from exc
-    except (RuntimeTaskLateAdmissionConflict, RuntimeTaskSessionBindingConflict) as exc:
-        # Same typed mapping as the DELETE-agent endpoint: the abandon
-        # transaction rolled back cleanly (draft intact, employee alive,
-        # files untouched) and the client may retry once admission pressure
-        # passes; a session-binding conflict is classified as not promised
-        # by an identical retry.
-        await db.rollback()
-        binding_conflict = isinstance(exc, RuntimeTaskSessionBindingConflict)
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "code": (
-                    "hr_abandon_session_binding_conflict" if binding_conflict else "hr_abandon_late_admission_conflict"
-                ),
-                "message": str(exc),
-                "retryable": not binding_conflict,
-            },
-        ) from exc
     return _out(hr_creation_draft_payload(draft, runtime_task=task))
 
 

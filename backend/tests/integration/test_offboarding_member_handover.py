@@ -406,8 +406,13 @@ async def test_overlapping_knowledge_merges_all_references_and_searches_once(own
             "processed_canonical_md_path": "leaver/processed.md", "content": "JOB_CONTENT_MUST_NOT_ENTER_AUDIT"}
         document_provenance = {"id": str(state.doc.id), "created_by_user_id": str(state.leaver.id),
             "created_at": state.doc.created_at.isoformat(), "canonical_md_path": state.doc.canonical_md_path,
+            "tenant_id": str(state.tenant.id), "scope_id": str(state.leaver.id), "owner_user_id": str(state.leaver.id),
+            "source_sha256": state.doc.source_sha256, "status": "ready", "sensitivity": "PL1_public", "agent_searchable": True,
+            "canonical_md_sha256": None, "artifact_hash": None,
             "doc_metadata_json": {key: value for key, value in state.doc.doc_metadata_json.items() if key != "content"}}
         job_provenance = {"id": str(state.job.id), "status": "degraded", "stage": "indexed", "attempt_count": 2,
+            "tenant_id": str(state.tenant.id), "scope_id": str(state.leaver.id), "document_id": str(state.doc.id),
+            "artifact_hash": state.job.artifact_hash, "created_at": state.job.created_at.isoformat(),
             "job_metadata_json": {key: value for key, value in state.job.job_metadata_json.items() if key != "content"}}
         alias = KnowledgeEntity(tenant_id=state.tenant.id, scope_type="person", scope_id=state.leaver.id,
             canonical_name="Orchid alias", entity_type="project", merged_into_entity_id=state.entity.id)
@@ -424,8 +429,12 @@ async def test_overlapping_knowledge_merges_all_references_and_searches_once(own
         await offboard(state)
         audit = (await db.scalars(select(AuditLog).where(AuditLog.tenant_id == state.tenant.id,
             AuditLog.action == "user:offboarded"))).one()
-        assert audit.details["merged_knowledge_provenance"] == {
-            "documents": [document_provenance], "index_jobs": [job_provenance]}
+        provenance = audit.details["merged_knowledge_provenance"]
+        assert provenance["documents"] == [document_provenance]
+        assert provenance["index_jobs"] == [job_provenance]
+        for kind, original in zip(("segments", "entities", "assertions", "links"), old_rows[1:5]):
+            assert [entry["id"] for entry in provenance[kind]] == [str(original.id)]
+        assert provenance["segments"][0]["segment_hash"] == state.segment.segment_hash
         assert "CONTENT_MUST_NOT_ENTER_AUDIT" not in json.dumps(audit.details)
         for row in old_rows:
             assert await db.scalar(select(type(row).id).where(type(row).id == row.id)) is None
@@ -434,13 +443,14 @@ async def test_overlapping_knowledge_merges_all_references_and_searches_once(own
         await db.refresh(proposal)
         await db.refresh(peer_edge)
         assert alias.merged_into_entity_id == replacements[state.entity.id]
-        assert extra.from_id == replacements[state.assertion.id] and extra.to_id == replacements[state.segment.id]
+        assert extra.from_id == replacements[state.assertion.id] and extra.to_id == copies[0].id
+        assert extra.to_kind == "document"
         assert extra.source_refs_json[0]["document_id"] == str(copies[0].id)
-        assert extra.source_refs_json[0]["segment_id"] == str(copies[1].id)
+        assert extra.source_refs_json == [{"document_id": str(copies[0].id)}]
         assert proposal.baseline_document_id == copies[0].id
         assert proposal.source_refs_json == [str(copies[0].id)]
         assert peer_edge.from_id == copies[0].id and peer_edge.to_id == copies[2].id
-        assert peer_edge.source_refs_json[0]["segment_id"] == str(copies[1].id)
+        assert peer_edge.source_refs_json == [{"document_id": str(copies[0].id)}]
         assert all((tmp_path / f"{user.id}.md").exists() for user in (state.leaver, state.successor))
         service = PersonalKnowledgeService()
         docs = await service.list_personal_documents(db, tenant_id=state.tenant.id,
@@ -465,6 +475,178 @@ async def test_pending_knowledge_proposals_move_to_successor(owner_sessionmaker)
         await offboard(state)
         await db.refresh(proposal)
         assert proposal.owner_user_id == state.successor.id and proposal.status == "pending"
+        await db.rollback()
+
+
+@pytest.mark.parametrize("source_kind", ["upload", "url"])
+@pytest.mark.parametrize("successor_status", ["queued", "failed", "ready", "degraded"])
+async def test_document_overlap_preserves_usable_content_and_restricts_settings(owner_sessionmaker, tmp_path,
+        source_kind, successor_status):
+    async with owner_sessionmaker() as db:
+        state = await seed_handover(db)
+        state.doc.source_kind = source_kind
+        state.doc.canonical_md_sha256, state.doc.artifact_hash = "a" * 64, "leaver-artifact"
+        state.doc.sensitivity = "PL3_sensitive"
+        state.doc.canonical_md_path = str(tmp_path / "leaver.md")
+        kept = KnowledgeDocument(id=uuid4(), tenant_id=state.tenant.id, scope_type="person",
+            scope_id=state.successor.id, owner_user_id=state.successor.id, source_kind=source_kind,
+            source_sha256=state.doc.source_sha256, title="Successor snapshot", status=successor_status,
+            canonical_md_path=str(tmp_path / "successor.md"), canonical_md_sha256="b" * 64,
+            artifact_hash="successor-artifact", sensitivity="PL2_pii", agent_searchable=False)
+        db.add(kept)
+        await db.flush()
+        other_segment = KnowledgeSegment(id=uuid4(), tenant_id=state.tenant.id, scope_type="person",
+            scope_id=state.successor.id, document_id=kept.id, position=0, segment_hash="c" * 64,
+            content="Successor snapshot differs from leaver snapshot")
+        db.add(other_segment)
+        await db.flush()
+        leaver_wins = successor_status not in ("ready", "degraded")
+        winner, loser = (state.segment, other_segment) if leaver_wins else (other_segment, state.segment)
+        state.entity.source_refs_json = [{"document_id": str(loser.document_id),
+            "segment_id": str(loser.id), "seg_hash": loser.segment_hash, "position": 0}]
+        state.link.to_kind, state.link.to_id = "segment", loser.id
+        for path in (state.doc.canonical_md_path, kept.canonical_md_path):
+            from pathlib import Path
+            Path(path).write_text("Retained original snapshot")
+        await db.flush()
+        await offboard(state)
+        await db.refresh(kept)
+        assert kept.status == ("ready" if leaver_wins else successor_status)
+        assert kept.canonical_md_sha256 == ("a" * 64 if leaver_wins else "b" * 64)
+        assert kept.artifact_hash == ("leaver-artifact" if leaver_wins else "successor-artifact")
+        assert kept.canonical_md_path == str(tmp_path / ("leaver.md" if leaver_wins else "successor.md"))
+        assert kept.sensitivity == "PL3_sensitive" and kept.agent_searchable is False
+        segments = list(await db.scalars(select(KnowledgeSegment).where(KnowledgeSegment.document_id == kept.id)))
+        assert [segment.id for segment in segments] == [winner.id]
+        await db.refresh(state.entity)
+        await db.refresh(state.link)
+        assert state.entity.source_refs_json == [{"document_id": str(kept.id)}]
+        assert state.link.to_kind == "document" and state.link.to_id == kept.id
+        audit = (await db.scalars(select(AuditLog).where(AuditLog.tenant_id == state.tenant.id,
+            AuditLog.action == "user:offboarded"))).one()
+        provenance = audit.details["merged_knowledge_provenance"]
+        dropped = provenance["documents"][0]
+        assert dropped["id"] == str(state.doc.id) and dropped["status"] == "ready"
+        assert dropped["canonical_md_sha256"] == "a" * 64 and dropped["artifact_hash"] == "leaver-artifact"
+        assert dropped["sensitivity"] == "PL3_sensitive" and dropped["agent_searchable"] is True
+        assert provenance["segments"][0]["id"] == str(loser.id)
+        assert provenance["segments"][0]["segment_hash"] == loser.segment_hash
+        assert all((tmp_path / name).is_file() for name in ("leaver.md", "successor.md"))
+        await db.rollback()
+
+
+async def test_different_documents_merge_shared_graph_evidence(owner_sessionmaker):
+    async with owner_sessionmaker() as db:
+        state = await seed_handover(db)
+        service = PersonalKnowledgeService(extractor=None)
+        state.entity.canonical_name, state.entity.entity_type = "Hive Inc", "organization"
+        state.entity.aliases_json, state.entity.description, state.entity.confidence = ["Hive"], "Leaver description", .95
+        state.entity.source_refs_json = [{"document_id": str(state.doc.id)}]
+        other_doc = KnowledgeDocument(id=uuid4(), tenant_id=state.tenant.id, scope_type="person", scope_id=state.successor.id,
+            owner_user_id=state.successor.id, source_kind="paste", source_sha256="d" * 64, title="Older private document",
+            canonical_md_path="successor.md", status="ready")
+        db.add(other_doc)
+        await db.flush()
+        other = await service._upsert_entity(db, tenant_id=state.tenant.id, owner_user_id=state.successor.id,
+            canonical_name="Hive Inc", entity_type="organization", aliases=["Hive Incorporated"],
+            description="Successor description", confidence=.4, source_ref={"document_id": str(other_doc.id)})
+        other.confidence = .4
+        state.assertion.subject_text = "Hive Inc"
+        state.assertion.source_refs_json, state.assertion.confidence = list(state.entity.source_refs_json), .9
+        assertion = KnowledgeAssertion(id=uuid4(), tenant_id=state.tenant.id, scope_type="person", scope_id=state.successor.id,
+            source_document_id=other_doc.id, subject_entity_id=other.id, subject_text="Hive Inc",
+            predicate=state.assertion.predicate, object_text=state.assertion.object_text, status="rejected",
+            source_refs_json=[{"document_id": str(other_doc.id)}], confidence=.3)
+        state.link.from_kind, state.link.from_id = "entity", state.entity.id
+        state.link.to_kind, state.link.to_id = "assertion", state.assertion.id
+        state.link.source_refs_json, state.link.confidence = list(state.entity.source_refs_json), .8
+        db.add(assertion)
+        await db.flush()
+        link = KnowledgeLink(id=uuid4(), tenant_id=state.tenant.id, scope_type="person", scope_id=state.successor.id,
+            from_kind="entity", from_id=other.id, to_kind="assertion", to_id=assertion.id,
+            relation=state.link.relation, source_refs_json=[{"document_id": str(other_doc.id)}], confidence=.2)
+        db.add(link)
+        await db.flush()
+        await offboard(state)
+        for row, confidence in ((other, .95), (assertion, .9), (link, .8)):
+            await db.refresh(row)
+            assert row.confidence == confidence
+            assert {ref["document_id"] for ref in row.source_refs_json} == {str(state.doc.id), str(other_doc.id)}
+        assert other.aliases_json == ["Hive Incorporated", "Hive"] and other.description == "Successor description"
+        assert assertion.status == "rejected" and assertion.subject_entity_id == other.id
+        assert link.from_id == other.id and link.to_id == assertion.id
+        await db.rollback()
+
+
+async def test_handed_over_scope_grant_never_opens_successors_older_documents(owner_sessionmaker):
+    async with owner_sessionmaker() as db:
+        state = await seed_handover(db)
+        older = KnowledgeDocument(id=uuid4(), tenant_id=state.tenant.id, scope_type="person", scope_id=state.successor.id,
+            owner_user_id=state.successor.id, source_kind="paste", source_sha256="e" * 64, title="Older private document",
+            canonical_md_path="private.md", status="ready", agent_searchable=True)
+        db.add(older)
+        await db.flush()
+        db.add(KnowledgeSegment(tenant_id=state.tenant.id, scope_type="person", scope_id=state.successor.id,
+            document_id=older.id, position=0, segment_hash="e" * 64, content="ORCHID42 PRIVATE_OLDER_SUCCESSOR"))
+        expiry = datetime.now(timezone.utc) + timedelta(hours=1)
+        grant = KnowledgeGrant(tenant_id=state.tenant.id, scope_type="person", scope_id=state.leaver.id,
+            resource_type="scope", resource_id=state.leaver.id, grantee_type="agent", grantee_id=state.bot.id,
+            permission="read", requester_user_id=state.leaver.id, purpose="autonomous_agent", expires_at=expiry,
+            sensitivity_ceiling="PL2_pii", binding_key="scope-binding", created_by_user_id=state.leaver.id)
+        db.add(grant)
+        await db.flush()
+        await offboard(state)
+        result = await PersonalKnowledgeService().search_personal_with_authority(db, tenant_id=state.tenant.id,
+            owner_user_id=state.successor.id, principal=AgentRuntimePrincipal(agent_id=state.bot.id,
+                requester_user_id=state.successor.id, purpose="autonomous_agent", autonomous=True), query="ORCHID42")
+        assert result.status == "ok" and {hit.document_id for hit in result.hits} == {state.doc.id}
+        active = list(await db.scalars(select(KnowledgeGrant).where(KnowledgeGrant.tenant_id == state.tenant.id,
+            KnowledgeGrant.revoked_at.is_(None))))
+        assert len(active) == 1
+        moved = active[0]
+        assert moved.resource_type == "document" and moved.document_id == moved.resource_id == state.doc.id
+        assert moved.scope_id == moved.requester_user_id == state.successor.id
+        assert moved.purpose == "autonomous_agent" and moved.expires_at == expiry
+        assert moved.sensitivity_ceiling == "PL2_pii" and moved.binding_key != grant.binding_key
+        assert older.agent_searchable is True and older.sensitivity == "PL1_public"
+        await db.rollback()
+
+
+async def test_handover_preserves_active_task_assignee(owner_sessionmaker):
+    async with owner_sessionmaker() as db:
+        state = await seed_handover(db)
+        state.task.responsible_user_id = state.peer.id
+        await db.flush()
+        await offboard(state)
+        await db.refresh(state.task)
+        assert state.task.created_by == state.successor.id
+        assert state.task.responsible_user_id == state.peer.id
+        await db.rollback()
+
+
+@pytest.mark.parametrize("active", [True, False])
+async def test_other_bot_creator_fallback_requires_active_user(owner_sessionmaker, active):
+    async with owner_sessionmaker() as db:
+        state = await seed_handover(db)
+        state.peer.is_active = active
+        other = Agent(tenant_id=state.tenant.id, creator_id=state.peer.id,
+            owner_user_id=None if active else state.peer.id, name="Other bot", role_description="Company work")
+        db.add(other)
+        await db.flush()
+        task = Task(tenant_id=state.tenant.id, agent_id=other.id, created_by=state.leaver.id,
+            title="Not started work", status="pending", request_id=uuid4().hex, request_hash="0" * 64)
+        db.add(task)
+        await db.flush()
+        await offboard(state)
+        await db.refresh(task)
+        notice = (await db.scalars(select(Notification).where(Notification.user_id == state.successor.id))).one()
+        work = json.loads(notice.body)["work"]
+        if active:
+            assert task.created_by == task.responsible_user_id == state.peer.id
+            assert str(task.id) not in {item["task_id"] for item in work}
+        else:
+            assert task.created_by == state.leaver.id and task.responsible_user_id is None
+            assert next(item for item in work if item["task_id"] == str(task.id))["needs_admin"] is True
         await db.rollback()
 
 
@@ -495,8 +677,11 @@ async def test_autonomous_handed_over_bot_keeps_only_its_knowledge_grants(owner_
         assert after.status == "ok" and len(after.hits) == 1
         for grant in grants:
             await db.refresh(grant)
-        assert grants[0].scope_id == grants[0].resource_id == grants[0].requester_user_id == state.successor.id
-        assert grants[0].revoked_at is None
+        moved = (await db.scalars(select(KnowledgeGrant).where(KnowledgeGrant.tenant_id == state.tenant.id,
+            KnowledgeGrant.revoked_at.is_(None)))).one()
+        assert moved.scope_id == moved.requester_user_id == state.successor.id
+        assert moved.resource_type == "document" and moved.document_id == moved.resource_id == state.doc.id
+        assert grants[0].revoked_at is not None
         assert all(grant.revoked_at is not None for grant in grants[1:])
         await db.rollback()
 
@@ -506,6 +691,7 @@ async def test_other_bot_work_moves_only_to_its_owner_or_needs_admin(owner_sessi
     from app.api.tasks import _load_authorized_task
     async with owner_sessionmaker() as db:
         state = await seed_handover(db)
+        state.peer.is_active = has_owner
         bot = Agent(tenant_id=state.tenant.id, creator_id=state.peer.id,
             owner_user_id=state.peer.id if has_owner else None, name="Company bot", role_description="Company work")
         db.add(bot)

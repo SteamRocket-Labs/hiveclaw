@@ -16,6 +16,7 @@ import {
 
 import MarkdownRenderer from '../../components/MarkdownRenderer';
 import { approvalActionFor } from '../session-workbench/approvalActionPresentation';
+import { toolStepLabel as localizedToolName } from './toolStepLabel';
 import { PastedCredentialText } from '../session-workbench/PastedCredentialNotice';
 import type {
   RunStepKind,
@@ -330,24 +331,6 @@ function RunCompactionBoundary({ step }: { step: RunStepSnapshot }) {
   );
 }
 
-// Titles arrive as presentation sentinels (chatDisclosureReducer); their
-// locale text lives under agent.chat.disclosure.toolTitle.<camelCase(sentinel)>.
-// Cross-module sentinels keep an explicit key here.
-const TOOL_TITLE_KEY: Record<string, string> = {
-  Thinking: 'agent.chat.phase.thinking',
-  Working: 'agent.chat.disclosure.working',
-  'Waiting for input': 'agent.chat.disclosure.waiting',
-  'Delegation update': 'agent.chat.disclosure.toolTitle.delegationStep',
-};
-
-function titleKeyFor(sentinel: string): string {
-  return TOOL_TITLE_KEY[sentinel] ?? `agent.chat.disclosure.toolTitle.${sentinel
-    .split(/[^a-zA-Z0-9]+/)
-    .filter(Boolean)
-    .map((part, index) => (index ? part.charAt(0).toUpperCase() + part.slice(1) : part.toLowerCase()))
-    .join('')}`;
-}
-
 /** The original tool id kept in the step's details (operators' evidence). */
 function toolNameOf(step: RunStepSnapshot): string | null {
   const details = step.details;
@@ -360,12 +343,7 @@ function localizedToolTitle(step: RunStepSnapshot, t: TFunction): string {
   if (step.kind === 'permission' && step.title === 'permission_resolved') {
     return t('sessionWorkbench.threadItem.type.approval_decision', 'Approval decision');
   }
-  // A step whose tool has approval-card words localizes through the same key
-  // (B2 r2): the action reads identically on card and timeline.
-  const action = approvalActionFor(toolNameOf(step));
-  if (action) return t(action.key, action.fallback);
-  // Unknown/backend-authored titles pass through untouched via the fallback.
-  return t(titleKeyFor(step.title), step.title);
+  return localizedToolName(toolNameOf(step), t, step.title);
 }
 
 /**

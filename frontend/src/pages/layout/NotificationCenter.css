@@ -221,3 +221,4 @@
 .offboarding-notice p { white-space: pre-wrap; margin: 8px 0; }
 .offboarding-notice-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0; }
 .offboarding-notice textarea { display: block; width: 100%; box-sizing: border-box; }
+.offboarding-notice-trigger { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 16px; }

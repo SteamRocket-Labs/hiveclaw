@@ -4564,8 +4564,6 @@
     "closeWork": "Finish without repeating",
     "reviewed": "Decision saved. Continue from the known results in a conversation.",
     "closed": "Finished without repeating any action.",
-    "reclaim": "Take over and configure",
-    "configureNext": "Taken over and kept off. Review the settings before enabling.",
     "settings": "Open automation settings",
     "unavailable": "The handover notice could not be read. Open it again to retry."
   },

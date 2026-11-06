@@ -26,7 +26,8 @@ afterEach(() => { cleanup(); vi.clearAllMocks(); });
 const body = JSON.stringify({
   agents: [{ id: 'bot', name: 'Research bot' }], knowledge: [{ id: 'doc', title: 'Company guide' }],
   work: [{ id: 'run', agent_id: 'bot', task_id: 'task', title: 'Send report',
-    known_results: [{ tool_name: 'call_api', state: 'started', time: '2026-11-06T01:00:00Z' }],
+    known_results: [{ tool_name: 'read_file', state: 'completed', time: '2026-11-06T00:59:00Z' },
+      { tool_name: 'send_email', state: 'started', time: '2026-11-06T01:00:00Z' }],
     side_effect_state: 'unknown', requires_confirmation: true }],
   triggers: [{ id: 'daily', agent_id: 'bot', name: 'Daily report' }, { id: 'weekly', agent_id: 'bot', name: 'Weekly report' }],
 });
@@ -45,7 +46,9 @@ describe('offboarding handover notice', () => {
     const { onCloseDetail } = notice();
     expect(screen.getByText('Research bot').getAttribute('href')).toBe('/agents/bot#chat');
     expect(screen.getByText('Company guide')).toBeTruthy();
-    const result = screen.getByText(/call_api/);
+    const result = screen.getByText(/agent.chat.disclosure.toolTitle.readFile/);
+    expect(screen.getByText(/sessionWorkbench.approvalAction.sendEmail/)).toBeTruthy();
+    expect(screen.queryByText(/read_file|send_email/)).toBeNull();
     expect(screen.getByText('handover.step.started')).toBeTruthy();
     expect(screen.getByText('handover.effect.unknown')).toBeTruthy();
     expect(screen.getByRole('link', { name: 'Send report' }).getAttribute('href')).toBe('/agents/bot?task_id=task#tasks');
@@ -63,18 +66,16 @@ describe('offboarding handover notice', () => {
     expect(taskApi.retry).not.toHaveBeenCalled();
   });
 
-  it('reclaims each trigger separately and keeps enabling on the existing settings path', async () => {
-    notice(JSON.stringify({ ...JSON.parse(body), work: [] }));
-    const buttons = await screen.findAllByRole('button', { name: 'handover.reclaim' });
-    expect(buttons).toHaveLength(2);
-    expect(screen.queryByRole('button', { name: 'handover.keepOff' })).toBeNull();
-    fireEvent.click(buttons[0]);
-    await waitFor(() => expect(triggerApi.reclaim).toHaveBeenCalledWith('bot', 'daily'));
-    expect(triggerApi.reclaim).toHaveBeenCalledTimes(1);
-    expect(triggerApi.update).not.toHaveBeenCalled();
-    expect(screen.getByRole('link', { name: 'handover.settings' }).getAttribute('href')).toBe('/agents/bot#aware');
-    fireEvent.click(screen.getByRole('button', { name: 'handover.reclaim' }));
-    await waitFor(() => expect(triggerApi.reclaim).toHaveBeenCalledWith('bot', 'weekly'));
+  it('links each trigger to the existing reclaim view without a duplicate control or fetch', () => {
+    const { onCloseDetail } = notice(JSON.stringify({ ...JSON.parse(body), work: [] }));
+    const links = screen.getAllByRole('link', { name: 'handover.settings' });
+    expect(links).toHaveLength(2);
+    for (const link of links) expect(link.getAttribute('href')).toBe('/agents/bot#aware');
+    expect(screen.queryByRole('button', { name: 'handover.reclaim' })).toBeNull();
+    fireEvent.click(links[0]);
+    expect(onCloseDetail).toHaveBeenCalledTimes(1);
+    expect(triggerApi.list).not.toHaveBeenCalled();
+    expect(triggerApi.reclaim).not.toHaveBeenCalled();
     expect(triggerApi.update).not.toHaveBeenCalled();
   });
 
@@ -82,26 +83,21 @@ describe('offboarding handover notice', () => {
     vi.mocked(taskApi.get).mockResolvedValueOnce({ task: { status: 'cancelled', actions: { can_reconcile: false } } } as any);
     notice();
     expect(await screen.findByText('handover.closed')).toBeTruthy();
-    expect(screen.getByText(/call_api/)).toBeTruthy();
+    expect(screen.getByText(/agent.chat.disclosure.toolTitle.readFile/)).toBeTruthy();
     expect(screen.queryByRole('textbox')).toBeNull();
     expect(taskApi.retry).not.toHaveBeenCalled();
   });
 
-  it('hides reclaimed triggers after reopening the persisted notice', async () => {
-    vi.mocked(triggerApi.list).mockResolvedValueOnce([
-      { id: 'daily', config: { authority_state: 'active' } },
-      { id: 'weekly', config: { authority_state: 'quarantined' } },
-    ]);
+  it('keeps settings links on a reopened notice and leaves the live trigger state to that view', () => {
     notice(JSON.stringify({ ...JSON.parse(body), work: [] }));
-    await waitFor(() => expect(triggerApi.list).toHaveBeenCalledWith('bot'));
-    await waitFor(() => expect(screen.getAllByRole('button', { name: 'handover.reclaim' })).toHaveLength(1));
-    expect(screen.getByRole('link', { name: 'handover.settings' })).toBeTruthy();
+    expect(screen.getAllByRole('link', { name: 'handover.settings' })).toHaveLength(2);
+    expect(screen.queryByRole('button', { name: 'handover.reclaim' })).toBeNull();
+    expect(triggerApi.list).not.toHaveBeenCalled();
     expect(triggerApi.reclaim).not.toHaveBeenCalled();
   });
 
   it('uses the translated error presentation instead of raw exceptions', async () => {
     vi.mocked(taskApi.get).mockRejectedValueOnce(new Error('PRIVATE_BACKEND_DETAIL'));
-    vi.mocked(triggerApi.list).mockRejectedValueOnce(new Error('PRIVATE_TRIGGER_DETAIL'));
     notice(JSON.stringify({ ...JSON.parse(body), work: [{ ...JSON.parse(body).work[0], known_results: [] }] }));
     expect(await screen.findAllByText('assistant.actionFailed')).not.toHaveLength(0);
     expect(screen.queryByText(/PRIVATE_/)).toBeNull();

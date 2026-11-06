@@ -2,8 +2,7 @@
 
 import json
 
-from fastapi import HTTPException
-from sqlalchemy import String, UniqueConstraint, delete, or_, select, update
+from sqlalchemy import String, UniqueConstraint, delete, func, or_, select, update
 
 from app.database import Base
 from app.models.agent import Agent
@@ -17,15 +16,23 @@ from app.models.runtime_task import RuntimeTask
 from app.models.session_v2 import SessionToolInvocation
 from app.models.task import Task
 from app.models.trigger import AgentTrigger
+from app.models.user import User
+from app.services.personal_knowledge_service import _merge_source_refs, _merge_unique_strings
+from app.services.privacy_layer import max_sensitivity
 
 
 async def _move_knowledge(db, target_user, successor):
     models = (KnowledgeDocument, KnowledgeSegment, KnowledgeEntity, KnowledgeAssertion, KnowledgeLink, KnowledgeIndexJob)
     rows, replacements, duplicates, documents = {}, {}, {}, []
-    provenance = {"documents": [], "index_jobs": []}
+    provenance = {model.__tablename__.removeprefix("knowledge_"): [] for model in models}
+    losing_documents, deleted_segments = {}, {}
 
     def repoint(value):
         if isinstance(value, dict):
+            if value.get("segment_id") in deleted_segments:
+                return {**{key: repoint(item) for key, item in value.items()
+                    if key not in {"segment_id", "seg_hash", "segment_hash", "position"}},
+                    "document_id": str(deleted_segments[value["segment_id"]])}
             return {key: repoint(item) for key, item in value.items()}
         if isinstance(value, list):
             return [repoint(item) for item in value]
@@ -39,28 +46,48 @@ async def _move_knowledge(db, target_user, successor):
             for constraint in model.__table__.constraints if isinstance(constraint, UniqueConstraint)]
         kept = []
         for row in rows[model]:
+            if model is KnowledgeLink:
+                for end in ("from", "to"):
+                    if getattr(row, f"{end}_id") in deleted_segments:
+                        setattr(row, f"{end}_kind", "document")
             match = next((other for other in kept if any(all(repoint(getattr(row, key)) == repoint(getattr(other, key))
                 for key in fields) for fields in keys)), None)
-            if match is None:
+            losing_segment = model is KnowledgeSegment and row.document_id in losing_documents
+            replacement_id = losing_documents[row.document_id] if losing_segment else match.id if match else None
+            if replacement_id is None:
                 kept.append(row)
             else:
-                ignored = {"id", "scope_id", "created_at", "updated_at"}
-                if model not in (KnowledgeDocument, KnowledgeIndexJob) and any(repoint(getattr(row, col.name)) != repoint(getattr(match, col.name))
-                    for col in model.__table__.columns if col.name not in ignored):
-                    raise HTTPException(409, "Overlapping knowledge has different evidence; review it before offboarding")
                 paths = ("queued_markdown_path", "queued_source_path", "processed_canonical_md_path")
+                entry = {col.name: str(value) if value is not None and (col.name == "id" or col.name.endswith("_id")) else value
+                    for col in model.__table__.columns
+                    if (col.name == "id" or col.name.endswith(("_id", "_hash", "_sha256", "_path"))
+                        or col.name == "status") for value in [getattr(row, col.name)]}
+                entry["created_at"] = row.created_at.isoformat()
                 if model is KnowledgeDocument:
-                    provenance["documents"].append({"id": str(row.id),
-                        "created_by_user_id": str(row.created_by_user_id) if row.created_by_user_id else None,
-                        "created_at": row.created_at.isoformat(), "canonical_md_path": row.canonical_md_path,
-                        "doc_metadata_json": {key: value for key, value in row.doc_metadata_json.items() if key in paths}})
+                    entry.update(sensitivity=row.sensitivity, agent_searchable=row.agent_searchable,
+                        doc_metadata_json={key: value for key, value in row.doc_metadata_json.items() if key in paths})
+                    leaver_wins = match.status not in ("ready", "degraded") and row.status in ("ready", "degraded")
+                    losing_documents[match.id if leaver_wins else row.id] = match.id
+                    if leaver_wins:
+                        for field in ("status", "canonical_md_path", "canonical_md_sha256", "artifact_hash"):
+                            setattr(match, field, getattr(row, field))
+                    match.sensitivity = max_sensitivity(match.sensitivity, row.sensitivity).value
+                    match.agent_searchable = match.agent_searchable and row.agent_searchable
+                elif model is KnowledgeSegment:
+                    deleted_segments[row.id] = deleted_segments[str(row.id)] = replacement_id
+                elif model in (KnowledgeEntity, KnowledgeAssertion, KnowledgeLink):
+                    match.source_refs_json = _merge_source_refs(repoint(match.source_refs_json), repoint(row.source_refs_json))
+                    match.confidence = max(match.confidence, row.confidence)
+                    if model is KnowledgeEntity:
+                        match.aliases_json = _merge_unique_strings(match.aliases_json, row.aliases_json)
+                        match.description = match.description or row.description
                 elif model is KnowledgeIndexJob:
-                    provenance["index_jobs"].append({"id": str(row.id), "status": row.status, "stage": row.stage,
-                        "attempt_count": row.attempt_count, "job_metadata_json": {key: value
+                    entry.update(stage=row.stage, attempt_count=row.attempt_count, job_metadata_json={key: value
                             for key, value in row.job_metadata_json.items() if key in (*paths, "queued_at", "retried_at",
                                 "failed_at", "finished_at", "cancelled_at", "claimed_at", "claimed_token",
-                                "created_by_user_id", "processed_result_job_id", "processed_document_id")}})
-                replacements[row.id], replacements[str(row.id)] = match.id, str(match.id)
+                                "created_by_user_id", "processed_result_job_id", "processed_document_id")})
+                provenance[model.__tablename__.removeprefix("knowledge_")].append(entry)
+                replacements[row.id], replacements[str(row.id)] = replacement_id, str(replacement_id)
                 duplicates.setdefault(model, []).append(row.id)
             if model is KnowledgeDocument and row.scope_id == target_user.id:
                 documents.append({"id": str(match.id if match else row.id), "title": row.title,
@@ -69,6 +96,7 @@ async def _move_knowledge(db, target_user, successor):
     duplicate_ids = [value for ids in duplicates.values() for value in ids]
     # Edges have polymorphic endpoints; remove duplicate edges before repointing them.
     await db.execute(delete(KnowledgeLink).where(KnowledgeLink.id.in_(duplicates.get(KnowledgeLink, []))))
+    await db.execute(delete(KnowledgeSegment).where(KnowledgeSegment.id.in_(duplicates.get(KnowledgeSegment, []))))
     for model, ids in duplicates.items():
         for old_id in ids:
             for table in Base.metadata.tables.values():
@@ -77,6 +105,8 @@ async def _move_knowledge(db, target_user, successor):
                     references += [table.c.from_id, table.c.to_id]
                 for column in references:
                     values = {column.name: replacements[old_id]}
+                    if model is KnowledgeSegment and table is KnowledgeLink.__table__:
+                        values[column.name.removesuffix("_id") + "_kind"] = "document"
                     if table.name == "knowledge_grants":
                         values["resource_id"] = replacements[old_id]
                     await db.execute(update(table).where(table.c.tenant_id == target_user.tenant_id,
@@ -109,7 +139,9 @@ async def transfer_knowledge_and_notify(db, *, target_user, successor, agents, h
     with db.no_autoflush:
         documents, provenance = await _move_knowledge(db, target_user, successor)
     agent_ids = [agent.id for agent in agents]
-    tasks = (await db.execute(select(Task, Agent.owner_user_id).join(Agent, Agent.id == Task.agent_id).where(
+    tasks = (await db.execute(select(Task, User.id).join(Agent, Agent.id == Task.agent_id)
+        .outerjoin(User, (User.id == func.coalesce(Agent.owner_user_id, Agent.creator_id)) & User.is_active
+            & (User.tenant_id == target_user.tenant_id)).where(
         Task.tenant_id == target_user.tenant_id, Task.status.notin_(("done", "cancelled")),
         Task.created_by == target_user.id))).all()
     work, originals = [], {}
@@ -117,7 +149,9 @@ async def transfer_knowledge_and_notify(db, *, target_user, successor, agents, h
         owner = successor.id if task.agent_id in agent_ids else bot_owner
         originals[str(task.id)] = str(task.created_by)
         if owner:
-            task.created_by = task.responsible_user_id = owner
+            task.created_by = owner
+            if task.responsible_user_id in (None, target_user.id):
+                task.responsible_user_id = owner
         if owner != successor.id and owner is not None:
             continue
         run = await db.scalar(select(RuntimeTask).where(RuntimeTask.id == task.active_runtime_task_id,

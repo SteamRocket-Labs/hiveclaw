@@ -10,7 +10,7 @@ from typing import Any
 
 from fastapi import HTTPException, status
 from loguru import logger
-from sqlalchemy import case, delete, func, select, update
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.permissions import agent_owned_by_clause
@@ -21,7 +21,7 @@ from app.models.custom_api_account import CustomApiAccount, CustomApiAccountGran
 from app.models.email_account import EmailAccount, EmailAccountGrant
 from app.models.mcp_server import MCPAccountGrant, MCPServer
 from app.models.external_principal import ExternalPrincipal
-from app.models.knowledge import KnowledgeGrant
+from app.models.knowledge import KnowledgeDocument, KnowledgeGrant
 from app.models.local_agent_channel import LocalAgentChannel, LocalAgentChannelSession, LocalAgentChannelWsTicket
 from app.models.local_bridge import LocalAgentBridgeConnection, LocalAgentBridgePairingSession
 from app.models.refresh_token import RefreshToken
@@ -604,12 +604,23 @@ async def offboard_loaded_user(
                 transferred_agent_ids.append(agent.id)
 
     now = datetime.now(timezone.utc)
-    await db.execute(update(KnowledgeGrant).where(KnowledgeGrant.tenant_id == target_user.tenant_id,
+    grants = (await db.scalars(select(KnowledgeGrant).where(KnowledgeGrant.tenant_id == target_user.tenant_id,
         KnowledgeGrant.scope_type == "person", KnowledgeGrant.scope_id == target_user.id,
         KnowledgeGrant.grantee_type == "agent", KnowledgeGrant.grantee_id.in_(current_agent_ids),
-        KnowledgeGrant.requester_user_id == target_user.id, KnowledgeGrant.revoked_at.is_(None))
-        .values(scope_id=successor.id, requester_user_id=successor.id,
-            resource_id=case((KnowledgeGrant.resource_type == "scope", successor.id), else_=KnowledgeGrant.resource_id)))
+        KnowledgeGrant.requester_user_id == target_user.id, KnowledgeGrant.revoked_at.is_(None)).with_for_update())).all()
+    document_ids = (await db.scalars(select(KnowledgeDocument.id).where(
+        KnowledgeDocument.tenant_id == target_user.tenant_id, KnowledgeDocument.scope_type == "person",
+        KnowledgeDocument.scope_id == target_user.id))).all() if any(grant.resource_type == "scope" for grant in grants) else []
+    for grant in grants:
+        if grant.resource_type == "document":
+            grant.scope_id = grant.requester_user_id = successor.id
+        else:
+            for document_id in document_ids:
+                values = {col.name: getattr(grant, col.name) for col in KnowledgeGrant.__table__.columns
+                    if col.name not in {"id", "scope_id", "requester_user_id", "resource_type", "resource_id", "document_id", "binding_key"}}
+                db.add(KnowledgeGrant(**values, scope_id=successor.id, requester_user_id=successor.id,
+                    resource_type="document", resource_id=document_id, document_id=document_id,
+                    binding_key=f"offboard:{grant.id}:{document_id}"))
     revocations = await revoke_user_authority(
         db,
         target_user=target_user,

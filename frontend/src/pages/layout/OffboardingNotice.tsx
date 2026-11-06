@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { taskApi } from '../../api/domains/tasks';
-import { triggerApi } from '../../api/domains/triggers';
+import { toolStepLabel } from '../agent-detail/toolStepLabel';
 
 interface HandoverWork {
   id: string; agent_id: string; task_id: string | null; title: string;
@@ -46,7 +46,7 @@ function WorkDecision({ work, onNavigate }: { work: HandoverWork; onNavigate: ()
     <p>{work.needs_admin ? t('handover.needsAdmin') : t(`handover.effect.${work.side_effect_state || 'unknown'}`)}</p>
     {work.known_results.length > 0
       ? work.known_results.filter(step => typeof step === 'object').map((step, index) => <p key={index}>
-        {step.tool_name}: <span>{t(`handover.step.${step.state}`)}</span> · <time dateTime={step.time}>{new Date(step.time).toLocaleString()}</time></p>)
+        {toolStepLabel(step.tool_name, t)}: <span>{t(`handover.step.${step.state}`)}</span> · <time dateTime={step.time}>{new Date(step.time).toLocaleString()}</time></p>)
       : <p>{t('handover.noResult')}</p>}
     {work.requires_confirmation && !resolved && <p>{t('handover.reviewFirst')}</p>}
     {work.requires_confirmation && work.task_id && !resolved && <>
@@ -63,45 +63,11 @@ function WorkDecision({ work, onNavigate }: { work: HandoverWork; onNavigate: ()
   </li>;
 }
 
-function TriggerDecision({ trigger, reclaimed, onReclaim, onNavigate }: {
-  trigger: HandoverTrigger; reclaimed?: boolean; onReclaim: () => void; onNavigate: () => void;
-}) {
-  const { t } = useTranslation();
-  const [status, setStatus] = useState('');
-  const [busy, setBusy] = useState(false);
-  const reclaim = async () => {
-    setBusy(true);
-    try {
-      await triggerApi.reclaim(trigger.agent_id, trigger.id);
-      onReclaim();
-      setStatus(t('handover.configureNext'));
-    } catch { setStatus(t('assistant.actionFailed')); }
-    finally { setBusy(false); }
-  };
-  return <li>{trigger.name}
-    {reclaimed === false && <button className="btn btn-secondary" disabled={busy} onClick={reclaim}>{t('handover.reclaim')}</button>}
-    {status && <p role="status">{status}</p>}
-    {reclaimed && <Link to={`/agents/${trigger.agent_id}#aware`} onClick={onNavigate}>{t('handover.settings')}</Link>}
-  </li>;
-}
-
 export default function OffboardingNotice({ body, onNavigate }: { body: string; onNavigate: () => void }) {
   const { t } = useTranslation();
   const handover = useMemo((): Handover | null => { try { return JSON.parse(body); } catch { return null; } }, [body]);
-  const [reclaimed, setReclaimed] = useState<Record<string, boolean>>({});
-  const [error, setError] = useState('');
-  useEffect(() => {
-    let active = true;
-    setReclaimed({});
-    Promise.all([...new Set(handover?.triggers.map(trigger => trigger.agent_id))].map(id => triggerApi.list(id)))
-      .then(lists => { if (active) setReclaimed(Object.fromEntries(lists.flat().map(trigger =>
-        [trigger.id, trigger.config?.authority_state !== 'quarantined']))); })
-      .catch(() => { if (active) setError(t('assistant.actionFailed')); });
-    return () => { active = false; };
-  }, [handover, t]);
   if (!handover) return <p role="alert">{t('handover.unavailable')}</p>;
   return <div className="offboarding-notice">
-    {error && <p role="alert">{error}</p>}
     <h4>{t('handover.bots')}</h4>
     <ul>{handover.agents.map(agent => <li key={agent.id}><Link to={`/agents/${agent.id}#chat`} onClick={onNavigate}>{agent.name}</Link></li>)}</ul>
     <h4>{t('handover.knowledge')}</h4>
@@ -110,7 +76,8 @@ export default function OffboardingNotice({ body, onNavigate }: { body: string; 
     <ul>{handover.work.map(work => <WorkDecision key={work.id} work={work} onNavigate={onNavigate} />)}</ul>
     <h4>{t('handover.triggers')}</h4>
     <p>{t('handover.triggersPaused')}</p>
-    <ul>{handover.triggers.map(trigger => <TriggerDecision key={trigger.id} trigger={trigger} reclaimed={reclaimed[trigger.id]}
-      onReclaim={() => setReclaimed(current => ({ ...current, [trigger.id]: true }))} onNavigate={onNavigate} />)}</ul>
+    <ul>{handover.triggers.map(trigger => <li key={trigger.id} className="offboarding-notice-trigger">
+      <span>{trigger.name}</span><Link to={`/agents/${trigger.agent_id}#aware`} onClick={onNavigate}>{t('handover.settings')}</Link>
+    </li>)}</ul>
   </div>;
 }

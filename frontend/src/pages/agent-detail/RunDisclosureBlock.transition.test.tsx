@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import React from 'react';
-import { cleanup, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import RunDisclosureBlock from './RunDisclosureBlock';
@@ -26,6 +26,19 @@ afterEach(() => {
 });
 
 describe('RunDisclosureBlock live-to-terminal presentation', () => {
+  it('marks the placeholder in expanded goal step details without a server flag', () => {
+    const details = 'Goal updated: Use [REDACTED_SECRET] safely';
+    const { container } = render(<RunDisclosureBlock timeline={{ id: 'goal-run', status: 'running', steps: [{
+      id: 'goal-step', kind: 'event', title: 'Goal updated', status: 'done', summary: 'Budget updated',
+      details, visibility: 'collapsed',
+    }] }} />);
+    fireEvent.click(screen.getByRole('button', { name: /Goal updated/ }));
+    const expanded = container.querySelector('.run-detail-pre');
+    expect(expanded?.textContent).toBe('Goal updated: Use Hidden key safely');
+    expect(expanded?.querySelector('.hidden-credential-mark')).toBeTruthy();
+    expect(expanded?.textContent).not.toContain('[REDACTED_SECRET]');
+  });
+
   it('keeps the mounted and reloaded duration stable across terminal delivery latency', () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-08-29T00:00:29.400Z'));

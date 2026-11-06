@@ -96,7 +96,7 @@ export function SessionGoalPanel({
         return (
           <article key={goal.id} className="session-goal-card" data-goal-status={goal.status}>
             <div className="session-goal-card-title">
-              <span>{pastedCredentialNotice ? <PastedCredentialText content={goal.objective} /> : goal.objective}</span>
+              <span><PastedCredentialText content={goal.objective} /></span>
               <small>{t(`sessionGoal.status.${goal.status}`, goalStatusLabel(goal.status))}</small>
             </div>
             {pastedCredentialNotice && <PastedCredentialNotice />}

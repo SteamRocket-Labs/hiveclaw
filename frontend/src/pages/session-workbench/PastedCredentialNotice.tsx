@@ -6,8 +6,7 @@ import type { AgentChatMessage } from '../agent-detail/chatRuntime';
 export function MemberMessageBody({ message }: { message: AgentChatMessage }) {
   const noticed = message.role === 'user' && message.pastedCredentialNotice;
   return <>
-    <div style={{ whiteSpace: 'pre-wrap' }}>{noticed
-      ? <PastedCredentialText content={message.content} /> : message.content}</div>
+    <div style={{ whiteSpace: 'pre-wrap' }}><PastedCredentialText content={message.content} /></div>
     {noticed && <PastedCredentialNotice />}
   </>;
 }

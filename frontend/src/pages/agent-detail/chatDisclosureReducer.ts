@@ -46,7 +46,6 @@ export type RunStepStatus =
 export type RunStepPresentation = 'process' | 'tool_history' | 'surface' | 'external';
 
 export interface RunStepSnapshot {
-  pastedCredentialNotice?: boolean;
   id: string;
   toolCallId?: string | null;
   kind: RunStepKind;
@@ -685,7 +684,6 @@ function buildStep(message: AgentChatMessage, index: number, allowLiveRunning: b
     id: stepIdForMessage(message, index),
     kind,
     title: eventTitle(message),
-    ...(message.eventType === 'goal' && message.pastedCredentialNotice ? { pastedCredentialNotice: true } : {}),
     status,
     startedAt: message.timestamp,
     completedAt: message.timestamp,

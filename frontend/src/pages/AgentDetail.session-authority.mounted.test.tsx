@@ -646,6 +646,32 @@ it('replaces the optimistic /goal command with the existing live goal projection
   expect(mocks.chatProps.chatMessages.some((m: any) => m.content.includes('sk-proj-'))).toBe(false);
 });
 
+it.each([true, false])('reconciles a goal-mode paste by receipt input identity, live before HTTP: %s', async liveBeforeResponse => {
+  const request = deferred<any>();
+  vi.spyOn(ccParityApi, 'startGoal').mockReturnValue(request.promise);
+  await composeOrdinaryMessage('Use sk-proj-abcdefghijklmnopqrstuvwxyz1234567890ABCD');
+  act(() => mocks.chatProps.onToggleGoalMode());
+  let sending!: Promise<unknown>;
+  act(() => { sending = mocks.chatProps.onSendChatMsg(); });
+  await waitFor(() => expect(ccParityApi.startGoal).toHaveBeenCalledTimes(1));
+  const receive = () => receiveLiveMessage({ schema: 'hive.session_event', schema_version: 2,
+    event_id: 'goal-mode-live', tenant_id: 'tenant-1', sequence: 1, item_id: 'goal-human-input', item_kind: 'human_input',
+    kind: 'human_input.accepted', lifecycle: 'accepted', payload_schema: 'hive.session.payload.human_input.accepted.v2',
+    scope: { level: 'session', session_id: mocks.sessionId, thread_id: mocks.sessionId },
+    actor: { type: 'user', id: 'platform-admin-1' }, visibility: { audience: 'direct_user' },
+    payload: { content_parts: [{ type: 'text', text: 'Use [REDACTED_SECRET]', metadata: { pasted_credential_notice: true } }] },
+    occurred_at: '2026-11-05T00:00:00Z', persisted_at: '2026-11-05T00:00:00Z' });
+  if (liveBeforeResponse) await act(async () => { receive(); });
+  await act(async () => {
+    request.resolve({ id: 'goal-1', input: { input_id: 'goal-human-input' }, run: { run_id: 'goal-run', status: 'pending' } });
+    await sending;
+  });
+  if (!liveBeforeResponse) await act(async () => { receive(); });
+  await waitFor(() => expect(mocks.chatProps.chatMessages.filter((m: any) => m.role === 'user')).toEqual([
+    expect.objectContaining({ id: 'goal-human-input', content: 'Use [REDACTED_SECRET]', pastedCredentialNotice: true }),
+  ]));
+});
+
 it('shows the ordinary message before the response and sends only once on a double press', async () => {
   const request = deferred<any>();
   mocks.startSessionRun.mockReturnValue(request.promise);

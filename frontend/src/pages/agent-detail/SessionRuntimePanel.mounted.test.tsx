@@ -209,6 +209,25 @@ function textOf(element: HTMLElement): string {
   return element.textContent ?? '';
 }
 
+it('marks the current run title without changing its stored title', () => {
+  const session = { ...ACTIVE_SESSION, title: 'Use [REDACTED_SECRET] safely' };
+  const { container } = renderPanel({ activeSession: session, sessionWorkbench: undefined, activeRunStatus: 'running', presentationStatus: 'running' });
+  const title = container.querySelector('.session-runtime-row-title');
+  expect(title?.textContent).toBe('Use Hidden key safely');
+  expect(title?.querySelector('.hidden-credential-mark')).toBeTruthy();
+  expect(title?.textContent).not.toContain('[REDACTED_SECRET]');
+  expect(session.title).toBe('Use [REDACTED_SECRET] safely');
+});
+
+it('marks the current session title in the run summary line', () => {
+  const session = { ...ACTIVE_SESSION, title: 'Use [REDACTED_SECRET] safely' };
+  const { container } = renderPanel({ activeSession: session, sessionWorkbench: undefined, activeRunStatus: 'running', presentationStatus: 'running' });
+  const summary = container.querySelector('.session-runtime-summary-main small');
+  expect(summary?.textContent).toContain('Use Hidden key safely');
+  expect(summary?.querySelector('.hidden-credential-mark')).toBeTruthy();
+  expect(container.textContent).not.toContain('[REDACTED_SECRET]');
+});
+
 describe('SessionRuntimePanel collapsed rail', () => {
   it('stays a quiet expand affordance when the session has no deliverables or runtime activity', () => {
     const onToggleCollapsed = vi.fn();

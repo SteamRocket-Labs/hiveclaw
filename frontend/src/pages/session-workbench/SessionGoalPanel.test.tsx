@@ -54,12 +54,13 @@ describe('SessionGoalPanel', () => {
     expect(objective).toBe('Deliver [REDACTED_SECRET] safely');
   });
 
-  it('keeps an unflagged goal unchanged and does not reuse another goal notice', () => {
+  it('marks an unflagged goal by text without reusing another goal notice', () => {
     const objective = 'Literal [REDACTED_SECRET]';
     const markup = renderToStaticMarkup(<SessionGoalPanel agentId="agent-1" sessionId="session-1"
       goals={[{ ...goal, objective }]} messages={[{ role: 'event', eventType: 'goal', eventGoalId: 'other-goal',
         content: objective, pastedCredentialNotice: true }]} />);
-    expect(markup).toContain(objective);
+    expect(markup).toContain('Hidden key');
+    expect(markup).not.toContain('[REDACTED_SECRET]');
     expect(markup).not.toContain('pasted-credential-notice');
   });
 
@@ -71,6 +72,19 @@ describe('SessionGoalPanel', () => {
         { role: 'event', eventType: 'goal', eventGoalId: goal.id, eventAction: 'updated', content: objective },
       ]} />);
     expect(markup).toContain(objective);
+    expect(markup).not.toContain('pasted-credential-notice');
+  });
+  it('keeps the objective mark after an update without a new pasted key, dropping only the sentence', () => {
+    const objective = 'Deliver [REDACTED_SECRET] safely';
+    const messages = [
+      { role: 'event' as const, eventType: 'goal', eventGoalId: goal.id, eventAction: 'started', content: objective, pastedCredentialNotice: true },
+      { role: 'event' as const, eventType: 'goal', eventGoalId: goal.id, eventAction: 'updated', content: 'Budget updated' },
+    ];
+    const markup = renderToStaticMarkup(<SessionGoalPanel agentId="agent-1" sessionId="session-1"
+      goals={[{ ...goal, objective }]} messages={messages} />);
+    expect(markup).toContain('hidden-credential-mark');
+    expect(markup).toContain('Hidden key');
+    expect(markup).not.toContain('[REDACTED_SECRET]');
     expect(markup).not.toContain('pasted-credential-notice');
   });
   it('projects only user-meaningful progress and semantic controls', () => {

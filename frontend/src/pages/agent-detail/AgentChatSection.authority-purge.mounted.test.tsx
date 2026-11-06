@@ -442,8 +442,17 @@ it.each([
   expect(message.content).toBe(text);
 });
 
+it('marks a placeholder in an unflagged member bubble without adding the sentence', () => {
+  const text = 'Use [REDACTED_SECRET] safely';
+  const { container } = render(<AgentChatSection {...noticeProps()}
+    chatMessages={[{ id: 'echoed', role: 'user', content: text }]} />);
+  expect(container.querySelector('.session-tui-message-bubble')?.textContent).toBe('Use Hidden key safely');
+  expect(container.querySelector('.hidden-credential-mark')).toBeTruthy();
+  expect(container.querySelector('.pasted-credential-notice')).toBeNull();
+});
+
 it.each(['user', 'assistant'] as const)('leaves unflagged %s content unchanged without detecting keys', role => {
-  const text = 'Ordinary sk-proj-abcdefghijklmnopqrstuvwxyz1234567890ABCD [REDACTED_SECRET]';
+  const text = 'Ordinary sk-proj-abcdefghijklmnopqrstuvwxyz1234567890ABCD';
   const { container } = render(<AgentChatSection {...noticeProps()}
     chatMessages={[{ id: 'ordinary', role, content: text }]} />);
   expect(container.querySelector('.session-tui-message-bubble')?.textContent).toContain(text);

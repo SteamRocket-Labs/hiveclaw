@@ -7,6 +7,7 @@ import { useAuthStore } from '../../stores';
 import { canOpenWorkBrowser } from '../session-workbench/workBrowserState';
 
 import { SessionGoalPanel } from '../session-workbench/SessionGoalPanel';
+import { PastedCredentialText } from '../session-workbench/PastedCredentialNotice';
 import {
   SessionAgentTeamCloseControl,
   SessionAgentTeamMemberControls,
@@ -337,7 +338,7 @@ export function SessionRuntimePanel({
     const content = (
       <>
         <span className="session-runtime-row-main">
-          <span className="session-runtime-row-title">{runtimeItemDisplayLabel(item, fallback)}</span>
+          <span className="session-runtime-row-title"><PastedCredentialText content={runtimeItemDisplayLabel(item, fallback)} /></span>
           <span className="session-runtime-row-meta">{meta || t('sessionWorkbench.rightPanel.noAdditionalDetails', 'No additional details')}</span>
         </span>
         <span className="session-runtime-status">{runtimeItemDisplayStatus(item, t)}</span>
@@ -878,9 +879,9 @@ export function SessionRuntimePanel({
                       {runtimeStatusLabel(runtimeConsole.summary.state, t)}
                     </strong>
                     <small>
-                      {sessionWindow
+                      <PastedCredentialText content={sessionWindow
                         ? [sessionWindow.label, runtimeStatusLabel(sessionWindow.status, t)].filter(Boolean).join(' · ')
-                        : t('sessionWorkbench.rightPanel.noMainSession', 'No selected session')}
+                        : t('sessionWorkbench.rightPanel.noMainSession', 'No selected session')} />
                     </small>
                   </span>
                 </div>

@@ -15,20 +15,22 @@ it.each(['goal_start', 'goal_update'])('marks the member objective in the server
     { role: 'event', eventType: 'runtime_action_progress', eventStatus: 'running', content: 'Working' }], { activeRun: true });
   const markup = renderToStaticMarkup(<RunDisclosureBlock timeline={timeline} />);
   expect(markup).toContain('Hidden key');
-  expect(markup).toContain('The key you pasted was hidden. It will not be saved or sent to the model.');
+  expect(markup).not.toContain('pasted-credential-notice');
   expect(markup).not.toContain('[REDACTED_SECRET]');
   expect(message.content).toBe(content);
 });
 
-it('keeps an unflagged goal step summary unchanged', () => {
+it('marks an unflagged goal step summary by its placeholder text', () => {
   const content = 'Goal: Literal [REDACTED_SECRET]';
   const message = normalizeStoredChatMessage({ role: 'system', event_type: 'goal', content,
     metadata: { command: 'goal_start', goal_id: 'goal-1' } });
   const timeline = buildRunTimelineFromMessages([message,
     { role: 'event', eventType: 'runtime_action_progress', eventStatus: 'running', content: 'Working' }], { activeRun: true });
   const markup = renderToStaticMarkup(<RunDisclosureBlock timeline={timeline} />);
-  expect(markup).toContain(content);
+  expect(markup).toContain('Hidden key');
+  expect(markup).not.toContain('[REDACTED_SECRET]');
   expect(markup).not.toContain('pasted-credential-notice');
+  expect(message.content).toBe(content);
 });
 
 // A turn owns one disclosure: live work starts open, while completed work

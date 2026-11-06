@@ -17,8 +17,11 @@ from app.core.permissions import agent_owned_by_clause
 from app.models.agent import Agent, AgentPermission
 from app.models.audit import ApprovalRequest, AuditLog
 from app.models.channel_config import ChannelConfig
+from app.models.custom_api_account import CustomApiAccount, CustomApiAccountGrant
+from app.models.email_account import EmailAccount, EmailAccountGrant
+from app.models.mcp_server import MCPAccountGrant, MCPServer
 from app.models.external_principal import ExternalPrincipal
-from app.models.knowledge import KnowledgeGrant
+from app.models.knowledge import KnowledgeDocument, KnowledgeGrant, KnowledgeIndexJob
 from app.models.local_agent_channel import LocalAgentChannel, LocalAgentChannelSession, LocalAgentChannelWsTicket
 from app.models.local_bridge import LocalAgentBridgeConnection, LocalAgentBridgePairingSession
 from app.models.refresh_token import RefreshToken
@@ -396,6 +399,25 @@ async def revoke_user_authority(
             .values(revoked_at=now, revoked_by_user_id=actor_user.id)
         )
     )
+    for account_model, grant_model in (
+        (EmailAccount, EmailAccountGrant),
+        (CustomApiAccount, CustomApiAccountGrant),
+        (MCPServer, MCPAccountGrant),
+    ):
+        values = {"config_json": {}, "auth_status": "none", "status": "needs_auth"} if account_model is MCPServer else {
+            "config": {}, "version": account_model.version + 1}
+        await db.execute(update(account_model).where(account_model.tenant_id == tenant_id,
+            account_model.owner_user_id == target_user_id).values(**values))
+        owned_accounts = select(account_model.id).where(
+            account_model.tenant_id == tenant_id, account_model.owner_user_id == target_user_id,
+        )
+        await db.execute(
+            update(grant_model).where(
+                grant_model.tenant_id == tenant_id,
+                grant_model.enabled.is_(True),
+                (grant_model.requester_user_id == target_user_id) | grant_model.account_id.in_(owned_accounts),
+            ).values(enabled=False, version=grant_model.version + 1)
+        )
     refresh_tokens = _rowcount(
         await db.execute(
             update(RefreshToken)
@@ -517,8 +539,6 @@ def _validate_successor(*, target_user: User, successor: User) -> None:
         raise HTTPException(status_code=400, detail="Successor must be active")
     if successor.tenant_id != target_user.tenant_id:
         raise HTTPException(status_code=400, detail="Successor must belong to the same company")
-    if successor.role not in ("org_admin", "platform_admin"):
-        raise HTTPException(status_code=400, detail="Successor must be a company administrator")
 
 
 async def offboard_loaded_user(
@@ -563,6 +583,13 @@ async def offboard_loaded_user(
             },
         )
 
+    if (await db.scalars(select(KnowledgeIndexJob.id).where(
+        KnowledgeIndexJob.tenant_id == target_user.tenant_id, KnowledgeIndexJob.scope_type == "person",
+        KnowledgeIndexJob.scope_id.in_([target_user.id, successor.id]),
+        KnowledgeIndexJob.status.in_(("queued", "claimed", "running"))).limit(1))).all():
+        raise HTTPException(status_code=409, detail={"code": "offboarding_knowledge_processing", "retryable": True,
+            "message": "知识仍在处理中，请一两分钟后重试。"})
+
     transferred_agent_ids: list[uuid.UUID] = []
     # Advisory (inside revoke) must be held before any Trigger row lock.
     # The handover audit is inserted only after quarantine, so the append-only
@@ -584,6 +611,23 @@ async def offboard_loaded_user(
                 transferred_agent_ids.append(agent.id)
 
     now = datetime.now(timezone.utc)
+    grants = (await db.scalars(select(KnowledgeGrant).where(KnowledgeGrant.tenant_id == target_user.tenant_id,
+        KnowledgeGrant.scope_type == "person", KnowledgeGrant.scope_id == target_user.id,
+        KnowledgeGrant.grantee_type == "agent", KnowledgeGrant.grantee_id.in_(current_agent_ids),
+        KnowledgeGrant.requester_user_id == target_user.id, KnowledgeGrant.revoked_at.is_(None)).with_for_update())).all()
+    document_ids = (await db.scalars(select(KnowledgeDocument.id).where(
+        KnowledgeDocument.tenant_id == target_user.tenant_id, KnowledgeDocument.scope_type == "person",
+        KnowledgeDocument.scope_id == target_user.id))).all() if any(grant.resource_type == "scope" for grant in grants) else []
+    for grant in grants:
+        if grant.resource_type == "document":
+            grant.scope_id = grant.requester_user_id = successor.id
+        else:
+            for document_id in document_ids:
+                values = {col.name: getattr(grant, col.name) for col in KnowledgeGrant.__table__.columns
+                    if col.name not in {"id", "scope_id", "requester_user_id", "resource_type", "resource_id", "document_id", "binding_key"}}
+                db.add(KnowledgeGrant(**values, scope_id=successor.id, requester_user_id=successor.id,
+                    resource_type="document", resource_id=document_id, document_id=document_id,
+                    binding_key=f"offboard:{grant.id}:{document_id}"))
     revocations = await revoke_user_authority(
         db,
         target_user=target_user,
@@ -600,7 +644,11 @@ async def offboard_loaded_user(
             **dict(audit.details or {}),
             "quarantined_trigger_ids": [str(value) for value in quarantined_trigger_ids],
         }
-        db.add(audit)
+    from app.services.offboarding_notice import transfer_knowledge_and_notify
+
+    handover_details = await transfer_knowledge_and_notify(db, target_user=target_user, successor=successor, agents=agents,
+        handover_audits=handover_audits)
+    db.add_all(handover_audits)
     was_active = bool(target_user.is_active)
     target_user.is_active = False
     db.add(
@@ -614,6 +662,7 @@ async def offboard_loaded_user(
                 "successor_user_id": str(successor.id),
                 "expected_agent_ids": [str(value) for value in expected_agent_ids],
                 "transferred_agent_ids": [str(value) for value in transferred_agent_ids],
+                **handover_details,
                 "revocations": {
                     "agent_permissions": revocations.agent_permissions,
                     "resource_permissions": revocations.resource_permissions,
@@ -671,7 +720,6 @@ async def build_user_offboarding_preview(
                 .where(
                     User.tenant_id == tenant_id,
                     User.is_active.is_(True),
-                    User.role.in_(("org_admin", "platform_admin")),
                     User.id != target_user.id,
                 )
                 .order_by(User.display_name.asc(), User.username.asc())

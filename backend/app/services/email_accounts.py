@@ -57,8 +57,10 @@ def account_public(account, grant=None):
 
 async def active_user(db, user_id, tenant_id):
     user = await db.get(User, user_id, populate_existing=True) if user_id else None
-    if not user or not user.is_active or not (user.tenant_id == tenant_id or user.role == "platform_admin"):
+    if not user or not (user.tenant_id == tenant_id or user.role == "platform_admin"):
         raise HTTPException(403, "Current company mailbox identity is unavailable")
+    if not user.is_active:
+        raise HTTPException(403, "个人邮箱凭据已吊销")
     return user
 
 

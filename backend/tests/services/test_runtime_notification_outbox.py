@@ -761,6 +761,7 @@ async def test_approval_continuation_retry_and_ack_update_approval_receipt(owner
         assert approval.execution_receipt["continuation_status"] == "delivered"
         assert approval.execution_receipt["continuation_attempt_count"] == 2
         assert "continuation_error" not in approval.execution_receipt
+        assert "continuation_reason" not in approval.execution_receipt
 
 
 @pytest.mark.usefixtures("migrated_pg_url")

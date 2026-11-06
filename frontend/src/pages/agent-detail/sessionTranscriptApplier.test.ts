@@ -281,6 +281,22 @@ function makeApplierHarness(messageStore?: SessionMessageStore) {
 }
 
 describe('session transcript applier real consumption path (Codex REQUEST_CHANGES #3)', () => {
+  it.each(['cancelled', 'completed'] as const)('keeps a settled %s phase when an approval result notice follows', (lifecycle) => {
+    const harness = makeApplierHarness();
+    harness.refs.replayStates[KEY]!.ui = uiForPhase('tool_running');
+    harness.refs.uiStates[KEY] = uiForPhase('tool_running');
+    harness.applyEvent(canonicalRunLifecycleEvent(1, lifecycle));
+    const terminalUi = uiForPhase(lifecycle === 'cancelled' ? 'cancelled' : 'done');
+    expect(harness.refs.uiStates[KEY]).toEqual(terminalUi);
+    harness.applyEvent(compatibilityCarrier(2, 'agent_task_notification', {
+      content: 'Approval result retained; the conversation did not continue.',
+      metadata: { status: 'ready', task_notification: true },
+    }));
+    expect(harness.refs.uiStates[KEY]).toEqual(terminalUi);
+    expect(harness.deps.setIsStreaming).toHaveBeenLastCalledWith(false);
+    expect(harness.deps.setIsWaiting).toHaveBeenLastCalledWith(false);
+  });
+
   it('seals the company handoff run while keeping the work waiting live and after reload', () => {
     const harness = makeApplierHarness();
     harness.refs.uiStates[KEY] = uiForPhase('responding');

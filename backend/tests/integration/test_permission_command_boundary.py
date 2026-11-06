@@ -196,4 +196,3 @@ async def test_pre_tool_command_hook_cannot_repeat_effect_before_durable_fence(
         assert not effect.exists()
         assert content.startswith("Blocked by hook: Required hook pre-command failed:")
         assert "environment_source_authority_revoked" in content
-

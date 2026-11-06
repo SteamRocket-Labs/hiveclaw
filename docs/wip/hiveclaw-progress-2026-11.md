@@ -71,6 +71,9 @@
 ### 验证
 
 - [完成] E2E 第一轮（Codex 以 test123 在实验室真实测试）。证据：~/hiveclaw-evidence/p1/e2e/run1-judgment/judgment.md；黄金任务 1、2、3、5 不通过，6 被挡
+- [完成] E2E 第二轮（生产 4af182c6）。证据：~/hiveclaw-evidence/p1/e2e/run2-judgment/judgment.md；黄金任务 1、3 通过；2 前半通过、下一轮改报告时收尾选成果抛 TerminalReadArtifactSelectionNeedsReconciliation 整轮待核对（编辑本身已生效）；5 未测到；“请记住它”被 explicit_memory_input_unverified 拒 5 次；调模型时按停止显示“失败”；新对话本人消息约 1 秒；审批详情和右侧面板仍有内部词。S0b 生产复测通过（发送中气泡短暂原文记 B7）
+- [进行中] B7 去内部词第二轮（Codex）
+- [待办] B6 状态如实（A4b 之后）
 - [待办] 黄金任务 1–6 全部通过（版本一）
 - [阻塞] P5 团队连用 5 个工作日。证据：需要 owner 和团队参与
 - [待办] 黄金任务 1–8（版本二）

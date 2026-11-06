@@ -325,6 +325,13 @@ class _ScalarResult:
     def scalar_one_or_none(self):
         return self._value
 
+    def scalar_one(self):
+        if self._value is None:
+            from sqlalchemy.exc import NoResultFound
+
+            raise NoResultFound()
+        return self._value
+
     def scalar(self):
         return self._value
 

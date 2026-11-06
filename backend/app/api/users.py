@@ -286,7 +286,7 @@ async def preview_user_offboarding(
             "runtime_tasks": preview.runtime_tasks,
             "pending_approvals": preview.pending_approvals,
         },
-        "blockers": [] if preview.eligible_successors else ["No active company administrator can receive ownership"],
+        "blockers": [] if preview.eligible_successors else ["No active company member can receive ownership"],
     }
 
 

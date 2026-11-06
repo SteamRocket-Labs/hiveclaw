@@ -47,8 +47,8 @@ export default function UserManagement() {
 
     const selectedTenantId = () => localStorage.getItem('current_tenant_id') || '';
 
-    const notify = (message: string, error = false) => {
-        setToast(`${error ? '❌' : '✅'} ${message}`);
+    const notify = (message: string, error: boolean | 'retryable' = false) => {
+        setToast(`${error === 'retryable' ? '⏳' : error ? '❌' : '✅'} ${message}`);
         window.setTimeout(() => setToast(''), error ? 4000 : 2400);
     };
 
@@ -194,7 +194,9 @@ export default function UserManagement() {
             setOffboardingRequestId('');
             await Promise.all([loadUsers(), loadExternalPrincipals()]);
         } catch (error: any) {
-            notify(error?.message || t('userManagement.offboardingFailed', 'Failed to deactivate member.'), true);
+            const retryable = error?.status === 409 && error?.data?.code === 'offboarding_knowledge_processing'
+                && error?.data?.retryable === true;
+            notify(error?.message || t('userManagement.offboardingFailed', 'Failed to deactivate member.'), retryable ? 'retryable' : true);
         } finally {
             setOffboardingBusy(false);
         }
@@ -238,7 +240,7 @@ export default function UserManagement() {
     return (
         <div>
             {toast && (
-                <div className="user-mgmt-toast" style={{ background: toast.startsWith('✅') ? 'var(--success)' : 'var(--error)' }}>
+                <div role="status" className="user-mgmt-toast" style={{ background: toast.startsWith('✅') ? 'var(--success)' : toast.startsWith('⏳') ? 'var(--warning)' : 'var(--error)' }}>
                     {toast}
                 </div>
             )}
@@ -457,7 +459,7 @@ export default function UserManagement() {
                         <p className="user-mgmt-offboard-summary">
                             {t(
                                 'userManagement.offboardingSummary',
-                                '{{name}} will be unable to sign in. {{count}} Agent(s) will move to the selected administrator.',
+                                '{{name}} will be unable to sign in. {{count}} Agent(s) will move to the selected member.',
                                 { name: offboardingTarget?.display_name || offboardingTarget?.username, count: offboardingPreview.owned_agents.length },
                             )}
                         </p>
@@ -479,14 +481,14 @@ export default function UserManagement() {
                             <div className="user-mgmt-offboard-blocker">{offboardingPreview.blockers.join(' · ')}</div>
                         )}
                         <div className="form-group">
-                            <label className="form-label" htmlFor="offboarding-successor">{t('userManagement.successorAdmin', 'Receiving administrator')}</label>
+                            <label className="form-label" htmlFor="offboarding-successor">{t('userManagement.successorAdmin', 'Receiving member')}</label>
                             <select
                                 id="offboarding-successor"
                                 className="form-input"
                                 value={successorUserId}
                                 onChange={(event) => setSuccessorUserId(event.target.value)}
                             >
-                                <option value="">{t('userManagement.selectSuccessor', 'Select an active company administrator')}</option>
+                                <option value="">{t('userManagement.selectSuccessor', 'Select an active company member')}</option>
                                 {offboardingPreview.eligible_successors.map((successor) => (
                                     <option key={successor.id} value={successor.id}>{successor.display_name} · {successor.email}</option>
                                 ))}

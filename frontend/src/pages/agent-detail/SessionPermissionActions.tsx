@@ -2,10 +2,8 @@ import React from 'react';
 import type { SessionPermissionRequest } from './chatRuntime';
 
 export function permissionOnceOnlyMessageKey(request: SessionPermissionRequest): string {
-  const destructive = request.destructive === true
-    || request.risk_class === 'destructive_delete'
-    || request.confirmation_kind === 'destructive_once';
-  return destructive ? 'agent.chat.permission.deleteOnceOnly' : 'agent.chat.permission.onceOnly';
+  return request.risk_class === 'destructive_delete'
+    ? 'agent.chat.permission.deleteOnceOnly' : 'agent.chat.permission.onceOnly';
 }
 
 export default function SessionPermissionActions({

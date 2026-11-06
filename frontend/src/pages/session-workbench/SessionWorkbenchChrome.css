@@ -57,6 +57,8 @@
 
 .swb-history-trigger {
   display: inline-flex;
+  flex-shrink: 0;
+  white-space: nowrap;
   align-items: center;
   gap: 4px;
   padding: 3px 10px;

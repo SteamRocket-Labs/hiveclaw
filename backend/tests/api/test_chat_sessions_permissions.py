@@ -465,7 +465,7 @@ class _QueryAwareDB:
     async def execute(self, stmt):
         self.statements.append(stmt)
         sql = str(stmt.compile(dialect=dialect()))
-        if sql.startswith("SELECT DISTINCT ON") and "runtime_tasks.parent_session_id, runtime_tasks.status" in sql:
+        if "SELECT DISTINCT ON" in sql and "runtime_tasks.parent_session_id, runtime_tasks.status" in sql:
             return _ListResult(list(self.run_statuses.items()))
         if "FROM runtime_tasks" in sql:
             return _ScalarResult(None)

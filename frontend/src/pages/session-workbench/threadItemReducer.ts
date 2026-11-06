@@ -38,7 +38,7 @@ const THREAD_ITEM_STATUS_SET = new Set<string>([
   'cancelled',
 ]);
 const RUNNING_STATUSES = new Set(['pending', 'queued', 'running', 'started', 'executing', 'in_progress']);
-const WAITING_STATUSES = new Set(['awaiting_confirmation', 'awaiting_approval', 'session_permission_required', 'waiting_user']);
+const WAITING_STATUSES = new Set(['awaiting_confirmation', 'awaiting_approval', 'approval_required', 'session_permission_required', 'waiting_user']);
 const FAILED_STATUSES = new Set(['failed', 'error', 'blocked', 'denied', 'capability_denied']);
 const CANCELLED_STATUSES = new Set(['killed', 'cancelled', 'canceled']);
 const EVENT_TITLES: Readonly<Record<string, string>> = {

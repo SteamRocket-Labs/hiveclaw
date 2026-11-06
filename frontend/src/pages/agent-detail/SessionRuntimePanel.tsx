@@ -225,6 +225,7 @@ export function SessionRuntimePanel({
   activeSession,
   agent,
   activeRunStatus,
+  activeRunId,
   presentationStatus,
   collapsed = false,
   onToggleCollapsed,
@@ -248,6 +249,7 @@ export function SessionRuntimePanel({
   activeSession?: Record<string, unknown> | null;
   agent?: Record<string, unknown> | null;
   activeRunStatus?: string | null;
+  activeRunId?: string | null;
   presentationStatus?: SessionWorkbenchStatus | null;
   collapsed?: boolean;
   onToggleCollapsed?: () => void;
@@ -313,6 +315,7 @@ export function SessionRuntimePanel({
     sessionWorkbench: sessionWorkbench as Record<string, unknown> | null,
     activeSession,
     activeRunStatus,
+    activeRunId,
     presentationStatus,
   });
   const docs = rightPanel.workspaceDocuments;

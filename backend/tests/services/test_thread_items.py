@@ -298,6 +298,17 @@ def test_thread_item_status_matches_the_historical_backfill(
     assert classify_thread_item_status(item_type=item_type, event_type=event_type, metadata={}) == expected
 
 
+def test_pending_company_approval_is_waiting_in_generic_projections() -> None:
+    from app.services.thread_items import build_thread_item, classify_thread_item_status
+
+    assert classify_thread_item_status(item_type="approval_request", event_type="permission_request",
+        metadata={"status": "approval_required"}) == "waiting_user"
+    for audience in ("user", "operator"):
+        item = build_thread_item(_event(event_type="permission_request", item_type="approval_request",
+            item_status="succeeded", metadata_json={"status": "approval_required"}), audience=audience)
+        assert item["item_status"] == "waiting_user"
+
+
 def test_child_session_classification_uses_typed_collaboration_metadata() -> None:
     from app.services.chat_transcript import build_transcript_item_contract
 

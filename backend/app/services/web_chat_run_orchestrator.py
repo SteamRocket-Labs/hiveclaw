@@ -1433,7 +1433,7 @@ async def _fail_session_model_request(state: _WebChatRunState, **payload: Any) -
     from app.services.session_model_round import fail_model_request
 
     async with state.ports.runtime.tenant_scoped_session(state.agent.tenant_id) as db:
-        await fail_model_request(
+        result_state = await fail_model_request(
             db,
             tenant_id=state.agent.tenant_id,
             agent_id=state.agent.id,
@@ -1448,7 +1448,7 @@ async def _fail_session_model_request(state: _WebChatRunState, **payload: Any) -
             continuation_index=int(payload.get("continuation_index") or 0),
         )
         await db.commit()
-    if not bool(payload.get("retry_safe")):
+    if result_state == "needs_reconciliation" or (result_state is None and not bool(payload.get("retry_safe"))):
         state.provider_reconciliation = ProviderRequestNeedsReconciliation(
             provider_request_id=str(payload["provider_request_id"]),
             error_class=str(payload.get("error_class") or "provider_error"),

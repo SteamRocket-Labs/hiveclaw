@@ -120,7 +120,7 @@ async def test_stopping_an_inflight_model_request_does_not_require_effect_reconc
     assert tools == []
     assert len(failures) == 1
     assert failures[0]['error_class'] == 'cancelled'
-    assert failures[0]['retry_safe'] is True
+    assert failures[0]['retry_safe'] is False
 
 
 def test_llm_message_dict_round_trip_preserves_reasoning_signature() -> None:

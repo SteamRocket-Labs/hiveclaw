@@ -1357,12 +1357,14 @@ export function buildSessionRightPanelModel({
   sessionWorkbench,
   activeSession,
   activeRunStatus,
+  activeRunId,
   presentationStatus,
 }: {
   messages: AgentChatMessage[];
   sessionWorkbench?: SessionWorkbench | Record<string, unknown> | null;
   activeSession?: Record<string, unknown> | null;
   activeRunStatus?: string | null;
+  activeRunId?: string | null;
   presentationStatus?: SessionWorkbenchStatus | null;
 }): SessionRightPanelModel {
   const workbenchRecord = asRecord(sessionWorkbench) ?? null;
@@ -1376,7 +1378,8 @@ export function buildSessionRightPanelModel({
   const selectedSession = activeSession ?? asRecord(workbenchRecord?.session);
   const selectedSessionId = readString(selectedSession ?? {}, ['id', 'chat_session_id', 'session_id'], 'session');
   const durableSessionWindow = buildSessionWindowModel(selectedSession, activeRunStatus);
-  const currentRunId = messageRunId([...messages].reverse().find(message => message.sessionItem?.kind === 'run'));
+  const currentRunId = normalizeSessionRunId(activeRunId)
+    || messageRunId([...messages].reverse().find(message => message.sessionItem?.kind === 'run'));
   const durableRuntimeSections = buildRuntimeSectionsSummary({ ...evidenceRuntimeSections,
     runs: evidenceRuntimeSections.runs.map(run => presentationRunStatus && (
       currentRunId ? isSameSessionRunId(readString(run.raw, ['runtime_task_id', 'id'], run.id), currentRunId)
@@ -1782,7 +1785,7 @@ function ensureOpenRunDisclosureContinuity(
   }
 }
 
-function buildCells(messages: AgentChatMessage[]): ThreadTimelineCell[] {
+function buildCells(messages: AgentChatMessage[], runtimePhase?: string | null): ThreadTimelineCell[] {
   const cells: ThreadTimelineCell[] = [];
   const pendingRun: Array<{ message: AgentChatMessage; index: number }> = [];
   const answeredRuns = new Map<string, Extract<ThreadTimelineCell, { kind: 'active_run' }>>();
@@ -1874,6 +1877,11 @@ function buildCells(messages: AgentChatMessage[]): ThreadTimelineCell[] {
     }
 
     if (message.role === 'event') {
+      if (message.sessionItem?.kind === 'run' && CANONICAL_RUN_TERMINAL_LIFECYCLES.has(message.sessionItem.lifecycle)
+        && (runtimePhase !== 'idle' || ['cancelled', 'killed', 'canceled'].includes(message.sessionItem.lifecycle))
+        && !cells.some(cell => cell.kind === 'active_run' && isSameSessionRunId(cell.runId, messageRunId(message)))) {
+        cells.push(buildRunCell(runIndex++, [{ message, index }], undefined, false, turnStartedAt));
+      }
       cells.push({
         kind: 'boundary',
         id: messageId(message, `boundary-${index}`),
@@ -2124,7 +2132,7 @@ export function createThreadTimelineCache(): ThreadTimelineCache {
 
 export function buildThreadTimeline(input: BuildThreadTimelineInput): ThreadTimelineModel {
   const cells = applyCanonicalRunTerminalEvidence(
-    coalesceProcessCellsByUserTurn(buildCells(input.messages), input.messages),
+    coalesceProcessCellsByUserTurn(buildCells(input.messages, input.runtimePhase), input.messages),
     input.messages,
   );
   const latestTurnAnswered = hasAssistantAnswerAfterLatestUser(input.messages);
@@ -2149,7 +2157,7 @@ export function buildThreadTimeline(input: BuildThreadTimelineInput): ThreadTime
     && !input.isStreaming
     && !activeRunStatus
     && (!runtimePhaseValue || runtimePhaseValue === 'idle');
-  const pendingRunCell = terminalAnswerOwnsActiveRun
+  const pendingRunCell = terminalAnswerOwnsActiveRun || CANONICAL_RUN_TERMINAL_LIFECYCLES.has(currentRun?.lifecycle || '')
     ? null
     : buildPendingRunCell({ ...input, activeRunId }, runtimePhaseValue === 'idle' && !input.activeRunId
       ? activeRunStatus : currentRun?.lifecycle || activeRunStatus, unresolvedUserTurn, interruptedUserTurn);

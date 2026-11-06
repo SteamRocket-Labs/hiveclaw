@@ -11,7 +11,7 @@ from typing import Any, Literal, Optional
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import or_, select, func, text
+from sqlalchemy import String, or_, select, func, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.permissions import (
@@ -331,15 +331,19 @@ async def _load_grouped_message_counts(
 async def _with_run_status(db: AsyncSession, sessions: list[SessionOut], agent: Agent) -> list[SessionOut]:
     if not sessions:
         return sessions
-    rows = await db.execute(select(RuntimeTask.parent_session_id, RuntimeTask.status)
-        .where(RuntimeTask.parent_session_id.in_([s.id for s in sessions]),
+    chat_runs = (select(RuntimeTask.parent_session_id, RuntimeTask.status).where(
+            RuntimeTask.parent_session_id.in_([s.id for s in sessions if not s.runtime_task_id]),
             RuntimeTask.parent_agent_id == agent.id, RuntimeTask.tenant_id == agent.tenant_id,
             RuntimeTask.task_type.in_(EXECUTABLE_CHAT_TASK_TYPES))
         .distinct(RuntimeTask.parent_session_id)
         .order_by(RuntimeTask.parent_session_id, RuntimeTask.created_at.desc()))
+    bound_runs = select(RuntimeTask.id.cast(String), RuntimeTask.status).where(
+        RuntimeTask.id.in_([uuid.UUID(s.runtime_task_id) for s in sessions if s.runtime_task_id]),
+        RuntimeTask.tenant_id == agent.tenant_id)
+    rows = await db.execute(chat_runs.union_all(bound_runs))
     statuses = dict(rows.all())
     for session in sessions:
-        session.status = statuses.get(session.id)
+        session.status = statuses.get(session.runtime_task_id or session.id)
     return sessions
 
 

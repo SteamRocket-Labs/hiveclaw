@@ -40,7 +40,9 @@ it.each([
   ['killed', 'Stopped'], ['completed', 'Done'], ['failed', 'Failed'],
 ])('uses the backend %s state across the timeline, header, panel and list', (status, label) => {
   const { messages, timeline } = model(status);
-  const run = timeline.cells.find(cell => cell.kind === 'active_run');
+  const runs = timeline.cells.filter(cell => cell.kind === 'active_run');
+  expect(runs).toHaveLength(1);
+  const run = runs[0];
   expect(run?.kind).toBe('active_run');
   if (run?.kind !== 'active_run') throw Error('Missing run');
   expect(runtimeStatusKey(run.timeline.status)).toBe(runtimeStatusKey(status));
@@ -134,4 +136,36 @@ it('keeps a historical approval result on its existing card without a second run
     metadata: { runtime_action_from_result_integration: true, notification_source: 'approval' } });
   expect(item).not.toBeNull();
   expect(shouldRenderThreadItemInConversation(item!, false)).toBe(false);
+});
+
+it('reuses the stopped process group after reload with no active registry', () => {
+  const { messages } = model('cancelled');
+  const timeline = buildThreadTimeline({ messages, activeSession: session, activeRunId: null,
+    activeRunStatus: null, runtimePhase: 'cancelled', isWaiting: false, isStreaming: false });
+  const runs = timeline.cells.filter(cell => cell.kind === 'active_run');
+  expect(runs.map(run => run.runId)).toEqual(['run-1']);
+  expect(runs.map(run => run.timeline.status)).toEqual(['cancelled']);
+});
+
+it('does not apply the current run presentation to an older stopped run', () => {
+  const { messages } = model('killed');
+  const panel = buildSessionRightPanelModel({ messages, activeSession: session,
+    activeRunId: 'run-2', activeRunStatus: 'running', presentationStatus: 'running',
+    sessionWorkbench: { runtime_sections: { runs: [
+      { id: 'run-1', status: 'killed' }, { id: 'run-2', status: 'running' },
+    ] } } });
+  expect(panel.runtimeSections.runs.map(run => [run.id, run.status])).toEqual([
+    ['run-1', 'killed'], ['run-2', 'running'],
+  ]);
+});
+
+it('leaves company approval display to its existing approval card', () => {
+  const item = normalizeThreadItemPayload({ type: 'permission_request', status: 'approval_required',
+    approval_id: 'approval-1', tool_name: 'write_file' });
+  expect(item?.item_status).toBe('waiting_user');
+  expect(shouldRenderThreadItemInConversation(item!, false)).toBe(false);
+  expect(shouldRenderThreadItemInConversation({ ...item!, metadata: { status: 'waiting_user' } }, false)).toBe(false);
+  const permission = normalizeThreadItemPayload({ type: 'permission_request',
+    status: 'session_permission_required', permission_request_id: 'permission-1' });
+  expect(shouldRenderThreadItemInConversation(permission!, false)).toBe(true);
 });

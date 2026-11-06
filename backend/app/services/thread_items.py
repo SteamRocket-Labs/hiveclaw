@@ -115,7 +115,7 @@ EVENT_THREAD_ITEM_TYPES: dict[str, str] = {
 _FAILED_STATUSES = {"failed", "error", "blocked", "denied", "capability_denied"}
 _CANCELLED_STATUSES = {"killed", "cancelled", "canceled"}
 _RUNNING_STATUSES = {"pending", "queued", "running", "started", "executing", "in_progress"}
-_WAITING_STATUSES = {"awaiting_confirmation", "awaiting_approval", "session_permission_required", "waiting_user"}
+_WAITING_STATUSES = {"awaiting_confirmation", "awaiting_approval", "approval_required", "session_permission_required", "waiting_user"}
 # Session V2 persists the item lifecycle in the item_status column — the
 # tool-call exec contract spans started/progress/queued/failed/denied/
 # unavailable/waiting/needs_reconciliation/reconciled/completed/cancelled.
@@ -1006,6 +1006,8 @@ def build_thread_item(
             if persisted_status in {"running", "waiting_user", "succeeded", "failed", "cancelled"}
             else classify_thread_item_status(item_type=item_type, event_type=event_type, metadata=clean_metadata)
         )  # type: ignore[assignment]
+    if item_type == "approval_request" and clean_metadata.get("status") == "approval_required":
+        item_status = "waiting_user"
     merged = _merged_data(clean_metadata, clean_parts)
     evidence_refs = clean_metadata.get("evidence_refs")
     clean_evidence_refs = (

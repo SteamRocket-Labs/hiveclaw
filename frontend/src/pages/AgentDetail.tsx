@@ -2117,7 +2117,7 @@ function AgentDetailInner() {
         try {
             const input = {
                 content: userMsg,
-                display_content: displayContent,
+                display_content: displayContent, parts: options?.parts || [],
                 ...(options?.planMode ? { plan_mode_requested: true } : {}),
                 permission_mode: sessionPermissionMode,
                 input_id: acceptedInputId,

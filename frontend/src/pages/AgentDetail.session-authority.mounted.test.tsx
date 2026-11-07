@@ -287,7 +287,8 @@ it('retries an artifact input in the exact original work with the same durable i
   const send = await mountOwnedArtifactWork();
   mocks.startSessionRun.mockRejectedValueOnce(new ApiError(503, 'Acknowledgement unavailable'))
     .mockResolvedValue({ schema: 'hive.human_input_receipt', schema_version: 2, status: 'accepted' });
-  const options = { expectedSessionId: 'owned-artifact-work', inputId: globalThis.crypto.randomUUID(), displayContent: 'report.md\nRevise saved file' };
+  const options = { expectedSessionId: 'owned-artifact-work', inputId: globalThis.crypto.randomUUID(), displayContent: 'report.md\nRevise saved file',
+    parts: [{ type: 'workspace_file_ref', agent_id: 'agent-1', path: 'workspace/report.md', human_saved_hash: 'a'.repeat(64) }] };
   await act(async () => { await expect(send('Selected saved file reference', options)).rejects.toThrow('Acknowledgement unavailable'); });
   expect(mocks.chatProps.chatMessages.at(-1)).toMatchObject({ eventStatus: 'input_outcome_unknown' });
   expect(mocks.chatProps.chatMessages.at(-1).threadItem).toMatchObject({ item_type: 'warning', item_status: 'waiting_user' });
@@ -296,7 +297,7 @@ it('retries an artifact input in the exact original work with the same durable i
   expect(mocks.startSessionRun.mock.calls[1]).toEqual(mocks.startSessionRun.mock.calls[0]);
   expect(mocks.startSessionRun.mock.calls[0].slice(0, 2)).toEqual(['agent-1', 'owned-artifact-work']);
   expect(mocks.startSessionRun.mock.calls[0][2]).toMatchObject({ input_id: options.inputId,
-    idempotency_key: `session-input:${options.inputId}`, display_content: options.displayContent });
+    idempotency_key: `session-input:${options.inputId}`, display_content: options.displayContent, parts: options.parts });
   expect(mocks.createSessionRun).not.toHaveBeenCalled();
 });
 

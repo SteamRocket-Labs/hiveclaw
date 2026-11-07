@@ -46,7 +46,8 @@ def shape_human_input_parts(parts, *, pasted_credential_notice=False) -> list[di
     for part in parts:
         if not isinstance(part, dict):
             continue
-        item = {key: value for key, value in part.items() if key in fields}
+        allowed = {"type", "agent_id", "path", "human_saved_hash"} if part.get("type") == "workspace_file_ref" else fields
+        item = {key: value for key, value in part.items() if key in allowed}
         if isinstance(item.get("attachment"), dict):
             item["attachment"] = {key: value for key, value in item["attachment"].items() if key in attachment_fields}
         result.append(item)

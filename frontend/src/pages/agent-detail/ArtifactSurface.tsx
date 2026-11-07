@@ -184,9 +184,11 @@ export function ArtifactPreviewPanel({
   const [showCurrent, setShowCurrent] = useState(false);
   const currentFileOpen = openedFile === fileIdentity && showCurrent;
   const canOpenCurrent = workspaceAgentId && preview.artifact.path.startsWith('workspace/') && ['markdown', 'text', 'office'].includes(previewKind);
-  const [editor, setEditor] = useState<{ identity: string; state: FileEditorState } | null>(null);
-  const editorChanged = useCallback((state: FileEditorState) => setEditor({ identity: fileIdentity, state }), [fileIdentity]);
-  const currentEditor = editor?.identity === fileIdentity ? editor.state : null;
+  const [editor, setEditor] = useState<{ identity: string; version: string; state: FileEditorState } | null>(null);
+  const keepDraft = editor?.identity === fileIdentity && (editor.state.dirty || editor.state.busy || editor.state.unavailable);
+  const editorIdentity = keepDraft ? editor.version : `${fileIdentity}:${preview.artifact.id}:${preview.artifact.snapshotHash}`;
+  const editorChanged = useCallback((state: FileEditorState) => setEditor({ identity: fileIdentity, version: editorIdentity, state }), [fileIdentity, editorIdentity]);
+  const currentEditor = editor?.identity === fileIdentity && editor.version === editorIdentity ? editor.state : null;
   const continuationBlocked = Boolean(currentEditor && (currentEditor.dirty || currentEditor.busy || currentEditor.unavailable));
   const showPendingEmptyPreview = isPendingEmptyArtifactPreview(
     preview.artifact,
@@ -323,7 +325,7 @@ export function ArtifactPreviewPanel({
         <div style={{ padding: '12px', overflow: 'auto', flex: 1, minHeight: 0 }}>
           {openedFile === fileIdentity && workspaceAgentId && (
             <div hidden={!currentFileOpen}>
-              <AgentWorkspaceSection agentId={workspaceAgentId} singleFile={preview.artifact.path}
+              <AgentWorkspaceSection key={editorIdentity} agentId={workspaceAgentId} singleFile={preview.artifact.path}
                 canUseOperatorView={Boolean(workspaceAuthority?.operatorView)} operatorOnly={Boolean(workspaceAuthority?.operatorView)}
                 operatorReason={workspaceAuthority?.reason} onOperatorAuthorityDenied={onWorkspaceAuthorityDenied}
                 onEditorStateChange={editorChanged} />

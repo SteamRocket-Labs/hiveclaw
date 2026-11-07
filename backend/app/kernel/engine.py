@@ -3239,6 +3239,9 @@ def _mid_run_items_to_user_messages(items: Any) -> list[LLMMessage]:
         return []
     messages: list[LLMMessage] = []
     for item in items:
+        if isinstance(item, LLMMessage):
+            messages.append(item)
+            continue
         role = "user"
         source_ref = None
         if isinstance(item, dict):

@@ -15,6 +15,33 @@ afterEach(() => { cleanup(); vi.restoreAllMocks(); });
 const preview = { artifact: { id: 'delivery', name: 'report.md', path: 'workspace/report.md', downloadAgentId: 'employee' },
   content: 'Original delivery bytes', usingSnapshot: true };
 
+it('refreshes the open file and saved reference when a newer file card is opened, keeping the follow-up draft', async () => {
+  vi.spyOn(fileApi, 'read')
+    .mockResolvedValueOnce({ path: preview.artifact.path, content: 'Current file', content_hash: 'a'.repeat(64) })
+    .mockResolvedValue({ path: preview.artifact.path, content: 'Bot revision', content_hash: 'c'.repeat(64) });
+  vi.spyOn(fileApi, 'writeIfUnchanged').mockResolvedValue({ content_hash: 'b'.repeat(64) });
+  const send = vi.fn().mockResolvedValue(undefined);
+  const props = { agentId: 'employee', onClose: vi.fn(), t: t as never,
+    continuation: { sessionId: 'original-work', send } };
+  const view = render(<ArtifactPreviewPanel preview={preview} {...props} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Open current file' }));
+  await screen.findByText('Current file');
+  fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
+  fireEvent.change(screen.getByRole('textbox', { name: 'Your draft' }), { target: { value: 'Human saved revision' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+  await waitFor(() => expect(screen.queryByRole('textbox', { name: 'Your draft' })).toBeNull());
+  fireEvent.change(screen.getByRole('textbox', { name: 'Continue with this file' }), { target: { value: 'Keep going' } });
+  view.rerender(<ArtifactPreviewPanel {...props} preview={{ ...preview,
+    artifact: { ...preview.artifact, id: 'bot-next-delivery', snapshotHash: 'c'.repeat(64) } }} />);
+  await screen.findByText('Bot revision');
+  expect((screen.getByRole('textbox', { name: 'Continue with this file' }) as HTMLTextAreaElement).value).toBe('Keep going');
+  fireEvent.click(screen.getByRole('button', { name: 'Continue in this work' }));
+  await waitFor(() => expect(send).toHaveBeenCalledOnce());
+  expect(send.mock.calls[0][1].parts).toEqual([
+    { type: 'workspace_file_ref', agent_id: 'employee', path: 'workspace/report.md' },
+  ]);
+});
+
 it('continues the saved file in the original work without sending the preview bytes', async () => {
   const send = vi.fn().mockResolvedValue(undefined);
   render(<ArtifactPreviewPanel preview={preview} agentId="employee" onClose={vi.fn()} t={t as never}
@@ -24,8 +51,8 @@ it('continues the saved file in the original work without sending the preview by
   fireEvent.click(screen.getByRole('button', { name: 'Continue in this work' }));
   await waitFor(() => expect(send).toHaveBeenCalledTimes(1));
   const [content, options] = send.mock.calls[0];
-  expect(content).toContain('workspace/report.md');
-  expect(content).toContain('Revise the conclusion using my saved changes.');
+  expect(content).toBe('Revise the conclusion using my saved changes.');
+  expect(options.parts).toEqual([{ type: 'workspace_file_ref', agent_id: 'employee', path: 'workspace/report.md' }]);
   expect(content).not.toContain('Original delivery bytes');
   expect(options.expectedSessionId).toBe('original-work');
   expect(options.inputId).toMatch(/^[0-9a-f-]{36}$/);
@@ -65,7 +92,7 @@ it('blocks unsaved, saving and conflicting file edits while keeping both drafts'
   let rejectSave!: (error: unknown) => void;
   const write = vi.spyOn(fileApi, 'writeIfUnchanged').mockReturnValue(new Promise((_resolve, reject) => { rejectSave = reject; }));
   const send = vi.fn();
-  render(<ArtifactPreviewPanel preview={preview} agentId="employee" onClose={vi.fn()} t={t as never}
+  const view = render(<ArtifactPreviewPanel preview={preview} agentId="employee" onClose={vi.fn()} t={t as never}
     continuation={{ sessionId: 'original-work', send }} />);
   const followUp = screen.getByRole('textbox', { name: 'Continue with this file' });
   fireEvent.change(followUp, { target: { value: 'Continue after saving.' } });
@@ -74,6 +101,9 @@ it('blocks unsaved, saving and conflicting file edits while keeping both drafts'
   fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
   const editor = screen.getByRole('textbox', { name: 'Your draft' });
   fireEvent.change(editor, { target: { value: 'Unsaved human revision' } });
+  view.rerender(<ArtifactPreviewPanel preview={{ ...preview, artifact: { ...preview.artifact, id: 'new-delivery' } }}
+    agentId="employee" onClose={vi.fn()} t={t as never} continuation={{ sessionId: 'original-work', send }} />);
+  expect((screen.getByRole('textbox', { name: 'Your draft' }) as HTMLTextAreaElement).value).toBe('Unsaved human revision');
   const submit = screen.getByRole('button', { name: 'Continue in this work' }) as HTMLButtonElement;
   await waitFor(() => expect(submit.disabled).toBe(true));
   fireEvent.click(screen.getByRole('button', { name: 'Save' }));
@@ -140,7 +170,8 @@ it.each([false, true])('continues after an uncertain save is read back and expli
   fireEvent.click(submit);
   await waitFor(() => expect(send).toHaveBeenCalledTimes(1));
   expect(send.mock.calls[0][1].expectedSessionId).toBe('original-work');
-  expect(send.mock.calls[0][0]).toContain('"human_saved_hash":"' + 'b'.repeat(64) + '"');
+  expect(send.mock.calls[0][1].parts).toEqual([{ type: 'workspace_file_ref', agent_id: 'employee',
+    path: preview.artifact.path, human_saved_hash: 'b'.repeat(64) }]);
   expect(send.mock.calls[0][0]).not.toContain('Human revision');
 });
 
@@ -163,7 +194,8 @@ it('uses a new input for a newly acknowledged human file version after an uncert
   fireEvent.click(screen.getByRole('button', { name: 'Continue in this work' }));
   await waitFor(() => expect(send).toHaveBeenCalledTimes(2));
   expect(send.mock.calls[1][1].inputId).not.toBe(send.mock.calls[0][1].inputId);
-  expect(send.mock.calls[1][0]).toContain('"human_saved_hash":"' + 'b'.repeat(64) + '"');
+  expect(send.mock.calls[1][1].parts).toEqual([{ type: 'workspace_file_ref', agent_id: 'employee',
+    path: preview.artifact.path, human_saved_hash: 'b'.repeat(64) }]);
   expect(send.mock.calls[1][0]).not.toContain('New saved bytes');
 });
 

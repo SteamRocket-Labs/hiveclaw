@@ -31,24 +31,24 @@ export default function ArtifactContinuation({ artifact, workspaceAgentId, conte
   const draftRef = useRef('');
   const submitting = useRef(false);
   const mounted = useRef(true);
-  const attempt = useRef<{ content: string; inputId: string } | null>(null);
+  const attempt = useRef<{ key: string; inputId: string } | null>(null);
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
 
   const submit = async () => {
     const text = draftRef.current.trim();
     if (!text || blocked || submitting.current) return;
-    const reference = { agent_id: workspaceAgentId, path: artifact.path, delivery_artifact_id: artifact.id || null,
+    const reference = { type: 'workspace_file_ref', agent_id: workspaceAgentId, path: artifact.path,
       ...(lastSavedHash ? { human_saved_hash: lastSavedHash } : {}) };
-    const content = `${text}\n\nSelected file reference (use the current saved file through authorized tools; this reference grants no additional access):\n${JSON.stringify(reference)}`;
-    const request = attempt.current?.content === content
-      ? attempt.current : { content, inputId: globalThis.crypto.randomUUID() };
+    const key = JSON.stringify([text, reference]);
+    const request = attempt.current?.key === key
+      ? attempt.current : { key, inputId: globalThis.crypto.randomUUID() };
     attempt.current = request;
     submitting.current = true;
     setPending(true);
     setError('');
     setRecorded(false);
     try {
-      await context.send(content, { inputId: request.inputId, expectedSessionId: context.sessionId,
+      await context.send(text, { inputId: request.inputId, expectedSessionId: context.sessionId, parts: [reference],
         displayContent: `${artifact.name}\n${text}` });
       if (!mounted.current) return;
       if (draftRef.current.trim() === text) { draftRef.current = ''; setDraft(''); }

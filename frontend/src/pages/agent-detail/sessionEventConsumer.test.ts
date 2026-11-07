@@ -727,6 +727,24 @@ describe('canonical runtime_failure consumption (DAY1-PROVIDER-402-TERMINAL-CONS
     })).toBe('[{"text":"研究这个文件","type":"text"},{"a":"report.pdf","type":"file","z":2}]');
   });
 
+  it('shows the human request while retaining saved file references outside the conversation text', () => {
+    const input: SessionEventV2 = {
+      ...event(1, 'completed'), item_id: 'saved-input', item_kind: 'human_input', kind: 'human_input.accepted',
+      lifecycle: 'accepted', ordinal: undefined, payload_schema: 'hive.session.payload.human_input.accepted.v2',
+      scope: { level: 'session', session_id: 'session-1', thread_id: 'session-1' },
+      actor: { type: 'user', id: 'user-1' }, payload: { intent: 'start_turn', content_parts: [
+        { type: 'text', text: 'Continue my saved report', display_content: 'report.md\nContinue my saved report' },
+        { type: 'workspace_file_ref', agent_id: 'employee', path: 'workspace/report.md', human_saved_hash: 'a'.repeat(64) },
+      ] },
+    };
+    const store = replay([input]);
+    const projected = projectSessionEventStoreToMessages(store);
+    expect(projected[0].content).toBe('report.md\nContinue my saved report');
+    expect(store.items['saved-input'].payload.content_parts).toEqual(input.payload.content_parts);
+    const refreshed = hydrateSessionTranscriptEvents([input as unknown as ChatTranscriptEventPayload]);
+    expect(refreshed.messages[0].content).toBe(projected[0].content);
+  });
+
   it('uses the same highest-contiguous reducer for history, live, reconnect, and duplicate delivery', () => {
     const started = event(1, 'started');
     const delta = event(2, 'delta');

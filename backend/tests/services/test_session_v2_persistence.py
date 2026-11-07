@@ -827,20 +827,14 @@ async def test_cancel_and_terminal_finalizer_converge_to_one_monotonic_outcome(
             )
         )
 
-    if task.status == "killed":
-        assert cancelled_result is True
-        assert ordinary_result is False
-        assert task.metadata_json["cancelled_by_user"] is True
-        assert control.status == command.status == "applied"
-        assert assistant_count == 0
-    else:
-        assert task.status == "completed"
-        assert ordinary_result is True
-        assert cancelled_result is False
-        assert "cancelled_by_user" not in (task.metadata_json or {})
-        assert control.status == command.status == "rejected"
-        assert (command.rejection_json or {})["reason_code"] == "run_terminal_before_cancel_effect"
-        assert assistant_count == (1 if terminal_kind == "assistant" else 0)
+    # R2: a stop accepted before both finalizers always wins the terminal row.
+    assert task.status == "killed"
+    assert (cancelled_result, ordinary_result) in ((True, False), (False, True))
+    assert task.metadata_json["cancelled_by_user"] is True
+    assert task.metadata_json["cancel_state"] == "cancelled"
+    assert control.status == command.status == "applied"
+    # B6 preserves the answer committed when the ordinary finalizer wins.
+    assert assistant_count == (1 if terminal_kind == "assistant" and ordinary_result else 0)
 
 
 @pytest.mark.parametrize("mutation", ["pending_to_running", "recovery_quarantine"])

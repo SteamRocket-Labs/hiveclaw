@@ -6605,7 +6605,8 @@ async def test_execute_web_chat_run_keeps_cancelled_exception_as_killed(monkeypa
             {
                 "status": "killed",
                 "result_summary": "Generation stopped by user.",
-                "metadata_json": {"cancelled_by_user": True},
+                # R2 records the committed stop's terminal reason explicitly.
+                "metadata_json": {"cancelled_by_user": True, "terminal_reason": "user_cancel"},
             },
         )
     ]

@@ -6,6 +6,9 @@ import {
   type AgentChannelCapability,
 } from '../../api/domains/agents';
 import { runtimeBudgetApi } from '../../api/domains/runtimeBudgets';
+import { useAuthStore } from '../../stores';
+import { isAdministratorRole } from '../../roles';
+import { assistantRoleForDisplay } from '../assistant/assistantScope';
 import { activityDisplaySummary } from './activityDisplay';
 import './AgentStatusSection.css';
 
@@ -46,6 +49,8 @@ export default function AgentStatusSection({
   onSelectTab,
 }: AgentStatusSectionProps) {
   const { t } = useTranslation();
+  const isAdmin = useAuthStore((state) => isAdministratorRole(state.user?.role));
+  const role = assistantRoleForDisplay(agent.role_description, t('assistant.role', "The user's assistant"));
   const primaryModel = llmModels.find((model: any) => model.id === agent.primary_model_id);
   const modelLabel = primaryModel ? primaryModel.label || primaryModel.model : '—';
   const modelProvider = primaryModel ? primaryModel.provider : '—';
@@ -55,13 +60,13 @@ export default function AgentStatusSection({
   const runtimeBudgetQuery = useQuery({
     queryKey: ['agent-runtime-budget-runs', agent.id],
     queryFn: () => runtimeBudgetApi.listRuns({ agentId: agent.id, limit: 5 }),
-    enabled: !!agent.id,
+    enabled: isAdmin && !!agent.id,
     staleTime: 30_000,
   });
   const runtimeHealthQuery = useQuery({
     queryKey: ['agent-runtime-health', agent.id],
     queryFn: () => agentApi.getRuntimeHealth(agent.id),
-    enabled: !!agent.id,
+    enabled: isAdmin && !!agent.id,
     staleTime: 30_000,
   });
   const runtimeRuns = runtimeBudgetQuery.data || [];
@@ -125,6 +130,7 @@ export default function AgentStatusSection({
             <span className="agent-status-status-value">{t(`agent.status.${statusKey}`)}</span>
           </div>
         </div>
+        {isAdmin && <>
         <div className="card">
           <div className="agent-status-metric-label">🗓️ {t('agent.settings.today')} Token</div>
           <div className="agent-status-metric-value">{formatTokens(agent.tokens_used_today)}</div>
@@ -185,9 +191,10 @@ export default function AgentStatusSection({
             </div>
           </>
         )}
+        </>}
       </div>
 
-      <div className={`card agent-status-runtime-card ${runtimeNeedsAttention ? 'is-warning' : 'is-healthy'}`}>
+      {isAdmin && <div className={`card agent-status-runtime-card ${runtimeNeedsAttention ? 'is-warning' : 'is-healthy'}`}>
         <div>
           <h3 className="agent-status-card-title">{t('agent.status.runtimeProtection', 'Runtime Protection')}</h3>
           <div className="agent-status-runtime-main">{runtimeMain}</div>
@@ -201,7 +208,7 @@ export default function AgentStatusSection({
         <span className={`badge ${runtimeNeedsAttention ? 'badge-warning' : 'badge-success'}`}>
           {runtimeNeedsAttention ? t('agent.status.needsAttention', 'Needs attention') : t('agent.status.ok', 'OK')}
         </span>
-      </div>
+      </div>}
 
       <div className="agent-status-two-col">
         <div className="card">
@@ -209,8 +216,8 @@ export default function AgentStatusSection({
           <div className="agent-status-field-list">
             <div className="agent-status-field">
               <span className="agent-status-field-label">{t('agent.fields.role')}</span>
-              <span title={agent.role_description || ''} className="agent-status-field-clamp">
-                {agent.role_description || '—'}
+              <span title={role || ''} className="agent-status-field-clamp">
+                {role || '—'}
               </span>
             </div>
             <div className="agent-status-field">
@@ -248,7 +255,7 @@ export default function AgentStatusSection({
         </div>
       </div>
 
-      {capabilityInstalls.length > 0 && (
+      {isAdmin && capabilityInstalls.length > 0 && (
         <div className="card agent-status-section">
           <div className="agent-status-section-header">
             <h3 className="agent-status-panel-title">
@@ -307,7 +314,7 @@ export default function AgentStatusSection({
         </div>
       )}
 
-      {channelCapabilities.length > 0 && (
+      {isAdmin && channelCapabilities.length > 0 && (
         <div className="card agent-status-section">
           <div className="agent-status-section-header">
             <h3 className="agent-status-panel-title">
@@ -364,7 +371,7 @@ export default function AgentStatusSection({
         </div>
       )}
 
-      {activityLogs.length > 0 && (
+      {isAdmin && activityLogs.length > 0 && (
         <div className="card">
           <div className="agent-status-activity-header">
             <h3 className="agent-status-panel-title">📊 {t('dashboard.globalActivity', 'Recent Activity')}</h3>

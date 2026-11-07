@@ -2355,6 +2355,7 @@ describe('AgentDetail extracted sections', () => {
   });
 
   it('renders AgentStatusSection as a standalone overview module', () => {
+    memoryReader.user = { id: 'admin', tenant_id: 'company', role: 'org_admin' };
     const markup = renderToStaticMarkup(
       <AgentStatusSection
         agent={{
@@ -2438,6 +2439,7 @@ describe('AgentDetail extracted sections', () => {
   });
 
   it('does not present an active budget envelope as an active task or safeguard intervention', () => {
+    memoryReader.user = { id: 'admin', tenant_id: 'company', role: 'org_admin' };
     const markup = renderToStaticMarkup(
       <AgentStatusSection
         agent={{
@@ -2463,6 +2465,7 @@ describe('AgentDetail extracted sections', () => {
   });
 
   it('renders recent tool activity as user actions without raw tool identifiers', () => {
+    memoryReader.user = { id: 'admin', tenant_id: 'company', role: 'org_admin' };
     const markup = renderToStaticMarkup(
       <AgentStatusSection
         agent={{

@@ -1175,13 +1175,18 @@ def runtime_result_denial_bound(*, invocation, payload, content):
             invocation.tool_name == "read_runtime_result"
             and invocation.effect_state == "effect_committed"
             and payload.get("outcome") == "success"
-            and str(payload.get("content_or_error_ref") or "").startswith("tool-frame:")
+            and payload.get("content_or_error_ref") == invocation.receipt_ref
+            == f"tool-frame:{payload.get('content_hash')}"
             and isinstance(body, dict)
             and set(body) == {"schema", "status", "reason_code", "result_ref", "retryable", "recovery_action"}
             and body["schema"] == "hive.runtime_result_page.v1"
-            and body["status"] == "source_access_denied"
-            and body["reason_code"] == "content_source_access_denied"
-            and body["retryable"] is False
+            and (
+                (body["status"] == "source_access_denied"
+                    and body["reason_code"] == "content_source_access_denied" and body["retryable"] is False)
+                or (body["status"] == "source_unavailable"
+                    and isinstance(body["reason_code"], str) and bool(body["reason_code"])
+                    and isinstance(body["retryable"], bool))
+            )
             and body["recovery_action"] == "reconcile_result_sources"
             and body["result_ref"] == arguments.get("result_ref")
             and _RUNTIME_RESULT_REF_RE.fullmatch(body["result_ref"]) is not None

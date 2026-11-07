@@ -253,7 +253,7 @@ async def test_category_config_masks_credentials_and_preserves_them_on_sentinel_
     async def locked_manage_access(db, target_agent_id, *, current_user=None):
         return await tools_api._require_manage_access(db, current_user, target_agent_id)
 
-    monkeypatch.setattr("app.services.agent_tool_assignment_service.lock_agent_tool_config_write", locked_manage_access)
+    monkeypatch.setattr(tools_api, "lock_agent_tool_config_write", locked_manage_access)
     write_db = _FakeDB([_ListResult([(assignment, tool)]), _ScalarResult(assignment)])
     updated = await tools_api.update_category_config(
         agent_id=agent_id,
@@ -450,6 +450,11 @@ async def test_update_agent_tools_creates_missing_system_assignment(monkeypatch)
         return SimpleNamespace(id=uuid4()), True
 
     monkeypatch.setattr(tools_api, "_require_manage_access", fake_require_manage_access)
+
+    async def locked_manage_access(db_session, target_agent_id, *, current_user):
+        return await fake_require_manage_access(db_session, current_user, target_agent_id)
+
+    monkeypatch.setattr(tools_api, "lock_agent_tool_config_write", locked_manage_access)
     monkeypatch.setattr(tools_api, "ensure_agent_tool_assignment", fake_ensure_assignment)
 
     result = await tools_api.update_agent_tools(
@@ -495,6 +500,11 @@ async def test_update_agent_tools_rejects_agent_base_tool_toggle(monkeypatch):
         return agent
 
     monkeypatch.setattr(tools_api, "_require_manage_access", fake_require_manage_access)
+
+    async def locked_manage_access(db_session, target_agent_id, *, current_user):
+        return await fake_require_manage_access(db_session, current_user, target_agent_id)
+
+    monkeypatch.setattr(tools_api, "lock_agent_tool_config_write", locked_manage_access)
 
     with pytest.raises(HTTPException) as exc:
         await tools_api.update_agent_tools(
@@ -559,7 +569,7 @@ async def test_update_global_tool_builtin_toggle_is_runtime_authority(monkeypatc
         ttc.enabled = bool(enabled)
         return ttc
 
-    async def fake_upsert_assignments(db_session, tenant, updated_tool, *, enabled, config, current_user):
+    async def fake_upsert_assignments(db_session, tenant, updated_tool, *, enabled, config):
         calls["assignments"] = {
             "db": db_session,
             "tenant_id": tenant,
@@ -654,6 +664,11 @@ async def test_update_agent_tools_rejects_existing_hr_only_assignment_for_regula
 
     monkeypatch.setattr(tools_api, "_require_manage_access", fake_require_manage_access)
 
+    async def locked_manage_access(db_session, target_agent_id, *, current_user):
+        return await fake_require_manage_access(db_session, current_user, target_agent_id)
+
+    monkeypatch.setattr(tools_api, "lock_agent_tool_config_write", locked_manage_access)
+
     with pytest.raises(HTTPException) as exc:
         await tools_api.update_agent_tools(
             agent_id=agent_id,
@@ -700,7 +715,7 @@ async def test_update_tool_config_rejects_hr_only_tool_for_regular_agent(monkeyp
     async def locked_manage_access(db_session, target_agent_id, *, current_user=None):
         return await fake_require_manage_access(db_session, current_user, target_agent_id)
 
-    monkeypatch.setattr("app.services.agent_tool_assignment_service.lock_agent_tool_config_write", locked_manage_access)
+    monkeypatch.setattr(tools_api, "lock_agent_tool_config_write", locked_manage_access)
 
     with pytest.raises(HTTPException) as exc:
         await tools_api.update_tool_config(

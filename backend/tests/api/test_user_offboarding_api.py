@@ -17,6 +17,10 @@ class _ScalarResult:
 
 
 class _FakeDB:
+    async def scalar(self, statement):
+        assert "knowledge_index_jobs" in str(statement) and "count(" in str(statement)
+        return 0
+
     def __init__(self, values=()):
         self.values = list(values)
         self.commits = 0

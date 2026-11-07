@@ -342,8 +342,11 @@ def test_put_agent_mcp_server_upserts_with_agent_tenant(monkeypatch):
     async def fake_check(db_session, user, target_agent_id):
         return SimpleNamespace(id=agent_id, tenant_id=agent_tenant), "manage"
 
+    async def fake_lock(db_session, target_agent_id, *, current_user):
+        return (await fake_check(db_session, current_user, target_agent_id))[0]
+
     async def fake_set(
-        db_session, tenant_id, target_agent_id, target_server_id, *, enabled, default_tool_mode, always_load, current_user
+        db_session, tenant_id, target_agent_id, target_server_id, *, enabled, default_tool_mode, always_load, current_user, locked_agent
     ):
         captured.update(
             tenant_id=tenant_id,
@@ -353,6 +356,7 @@ def test_put_agent_mcp_server_upserts_with_agent_tenant(monkeypatch):
             default_tool_mode=default_tool_mode,
             always_load=always_load,
             current_user=current_user,
+            locked_agent=locked_agent,
         )
         return {
             "id": str(uuid4()),
@@ -363,7 +367,7 @@ def test_put_agent_mcp_server_upserts_with_agent_tenant(monkeypatch):
             "always_load": always_load,
         }
 
-    monkeypatch.setattr(mcp_mod, "check_agent_access", fake_check)
+    monkeypatch.setattr("app.services.agent_tool_assignment_service.lock_agent_tool_config_write", fake_lock)
     monkeypatch.setattr(mcp_mod, "set_agent_mcp_assignment", fake_set)
 
     resp = client.put(
@@ -379,6 +383,7 @@ def test_put_agent_mcp_server_upserts_with_agent_tenant(monkeypatch):
     assert captured["default_tool_mode"] == "approval"
     assert captured["always_load"] is True
     assert captured["current_user"] is current_user
+    assert captured["locked_agent"].id == agent_id
     assert resp.json()["enabled"] is True
     assert resp.json()["always_load"] is True
 
@@ -392,12 +397,16 @@ def test_put_agent_mcp_server_defaults_tool_mode_auto(monkeypatch):
     async def fake_check(db_session, user, target_agent_id):
         return SimpleNamespace(id=agent_id, tenant_id=current_user.tenant_id), "manage"
 
+    async def fake_lock(db_session, target_agent_id, *, current_user):
+        return (await fake_check(db_session, current_user, target_agent_id))[0]
+
     async def fake_set(
-        db_session, tenant_id, target_agent_id, target_server_id, *, enabled, default_tool_mode, always_load, current_user
+        db_session, tenant_id, target_agent_id, target_server_id, *, enabled, default_tool_mode, always_load, current_user, locked_agent
     ):
         captured["default_tool_mode"] = default_tool_mode
         captured["always_load"] = always_load
         captured["current_user"] = current_user
+        captured["locked_agent"] = locked_agent
         return {
             "id": str(uuid4()),
             "agent_id": str(target_agent_id),
@@ -407,7 +416,7 @@ def test_put_agent_mcp_server_defaults_tool_mode_auto(monkeypatch):
             "always_load": always_load,
         }
 
-    monkeypatch.setattr(mcp_mod, "check_agent_access", fake_check)
+    monkeypatch.setattr("app.services.agent_tool_assignment_service.lock_agent_tool_config_write", fake_lock)
     monkeypatch.setattr(mcp_mod, "set_agent_mcp_assignment", fake_set)
 
     resp = client.put(f"/agents/{agent_id}/mcp-servers/{server_id}", json={"enabled": False})
@@ -416,6 +425,7 @@ def test_put_agent_mcp_server_defaults_tool_mode_auto(monkeypatch):
     assert captured["default_tool_mode"] == "auto"
     assert captured["always_load"] is False
     assert captured["current_user"] is current_user
+    assert captured["locked_agent"].id == agent_id
 
 
 def test_put_agent_mcp_server_rejects_invalid_default_mode():

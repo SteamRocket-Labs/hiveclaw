@@ -175,6 +175,22 @@ class _FakeSession:
         return _ScalarResult(self._value)
 
 
+def _patch_firecrawl_key(monkeypatch, get_key):
+    from app.services.agent_tool_domains import web_mcp
+    from app.services.tool_seeder import BUILTIN_TOOLS
+
+    defaults = {row["name"]: row.get("config", {}) for row in BUILTIN_TOOLS}
+
+    async def resolve(name, _tenant_id=None, **_kwargs):
+        config = dict(defaults.get(name, {}))
+        if name in {"firecrawl_search", "firecrawl_fetch"}:
+            config["api_key"] = await get_key()
+        return config
+
+    monkeypatch.setattr(web_mcp, "_get_firecrawl_api_key", get_key)
+    monkeypatch.setattr("app.services.tool_config_service.resolve_tool_config", resolve)
+
+
 def _pin_tool_config(monkeypatch, web_mcp, tool):
     """Pin the tool config source deterministically.
 
@@ -198,7 +214,7 @@ async def test_firecrawl_fetch_falls_back_to_web_fetch_on_billing_error(monkeypa
     async def fake_get_firecrawl_api_key() -> str:
         return "fc-key"
 
-    monkeypatch.setattr(web_mcp, "_get_firecrawl_api_key", fake_get_firecrawl_api_key)
+    _patch_firecrawl_key(monkeypatch, fake_get_firecrawl_api_key)
 
     async def fake_web_fetch(arguments: dict) -> str:
         assert arguments["url"] == "https://example.com/article"
@@ -350,7 +366,7 @@ async def test_web_fetch_escalates_to_firecrawl_on_http_error(monkeypatch):
         ),
     ]
 
-    monkeypatch.setattr(web_mcp, "_get_firecrawl_api_key", fake_get_firecrawl_api_key)
+    _patch_firecrawl_key(monkeypatch, fake_get_firecrawl_api_key)
     monkeypatch.setattr(web_mcp, "_get_xcrawl_api_key", fake_get_xcrawl_api_key)
     monkeypatch.setattr("httpx.AsyncClient", lambda *args, **kwargs: _SequencedAsyncClient(responses, calls))
 
@@ -391,7 +407,7 @@ async def test_web_fetch_escalates_to_xcrawl_when_firecrawl_fails(monkeypatch):
         ),
     ]
 
-    monkeypatch.setattr(web_mcp, "_get_firecrawl_api_key", fake_get_firecrawl_api_key)
+    _patch_firecrawl_key(monkeypatch, fake_get_firecrawl_api_key)
     monkeypatch.setattr(web_mcp, "_get_xcrawl_api_key", fake_get_xcrawl_api_key)
     monkeypatch.setattr("httpx.AsyncClient", lambda *args, **kwargs: _SequencedAsyncClient(responses, calls))
 
@@ -1351,7 +1367,7 @@ async def test_firecrawl_search_uses_keyless_v2_search_without_provider_key(monk
 
     requests: list[dict] = []
     monkeypatch.setattr(web_mcp, "_get_tool_config", fake_get_tool_config)
-    monkeypatch.setattr(web_mcp, "_get_firecrawl_api_key", fake_get_firecrawl_api_key)
+    _patch_firecrawl_key(monkeypatch, fake_get_firecrawl_api_key)
     monkeypatch.setattr(
         "httpx.AsyncClient",
         lambda *args, **kwargs: _CapturingAsyncClient(
@@ -1695,7 +1711,7 @@ async def test_firecrawl_fetch_returns_markdown_content(monkeypatch):
     async def fake_get_firecrawl_api_key() -> str:
         return "fc-key"
 
-    monkeypatch.setattr(web_mcp, "_get_firecrawl_api_key", fake_get_firecrawl_api_key)
+    _patch_firecrawl_key(monkeypatch, fake_get_firecrawl_api_key)
     monkeypatch.setattr(
         "httpx.AsyncClient",
         lambda *args, **kwargs: _FakeAsyncClient(
@@ -1723,7 +1739,7 @@ async def test_firecrawl_fetch_uses_keyless_mode_without_provider_key(monkeypatc
         return ""
 
     requests: list[dict] = []
-    monkeypatch.setattr(web_mcp, "_get_firecrawl_api_key", fake_get_firecrawl_api_key)
+    _patch_firecrawl_key(monkeypatch, fake_get_firecrawl_api_key)
     monkeypatch.setattr(
         "httpx.AsyncClient",
         lambda *args, **kwargs: _CapturingAsyncClient(
@@ -1752,7 +1768,7 @@ async def test_firecrawl_fetch_posts_v2_scrape_payload_with_official_options(mon
         return "fc-key"
 
     requests: list[dict] = []
-    monkeypatch.setattr(web_mcp, "_get_firecrawl_api_key", fake_get_firecrawl_api_key)
+    _patch_firecrawl_key(monkeypatch, fake_get_firecrawl_api_key)
     monkeypatch.setattr(
         "httpx.AsyncClient",
         lambda *args, **kwargs: _CapturingAsyncClient(

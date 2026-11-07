@@ -258,7 +258,7 @@ async def _get_connector_or_404(db: AsyncSession, tenant_id: uuid.UUID, tool_id:
 
 
 async def _get_tenant_agent_ids(db: AsyncSession, tenant_id: uuid.UUID) -> list[uuid.UUID]:
-    result = await db.execute(select(Agent.id).where(Agent.tenant_id == tenant_id))
+    result = await db.execute(select(Agent.id).where(Agent.tenant_id == tenant_id).order_by(Agent.id))
     return list(result.scalars().all())
 
 
@@ -346,7 +346,6 @@ async def create_custom_api_connector(
             config={},
             source="system",
             merge_config=False,
-            current_user=current_user,
         )
     await db.commit()
     await db.refresh(tool)

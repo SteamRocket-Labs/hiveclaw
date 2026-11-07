@@ -84,24 +84,8 @@ def mask_tool_config_secrets(config: dict | None, config_schema: dict | None) ->
 def is_safe_agent_tool_setting(key: str, value: object, config_schema: dict | None, *, platform_tool: bool) -> bool:
     """Only platform-declared non-credential scalars may be shown or handed over."""
     field = _schema_fields_by_key(config_schema).get(key)
-    normalized = re.sub(r"[^a-z0-9]", "", key.casefold())
-    if (not platform_tool or field is None or not isinstance(value, (str, int, float, bool, type(None)))
-            or value == MASKED_SECRET_SENTINEL or field.get("type") in {"password", "object", "array"}
-            or field.get("format") == "password" or field.get("writeOnly") or is_agent_tool_credential_key(key)
-            or normalized in {"headers", "auth", "env", "environment", "envvars", "authorization"}
-            or normalized.endswith("headers")):
-        return False
-    if isinstance(value, str):
-        try:
-            url = urlsplit(value)
-            if url.username is not None or url.password is not None:
-                return False
-            if any(is_agent_tool_credential_key(name) or name.casefold() in {"key", "auth", "authorization", "signature", "sig"}
-                    for name, _ in parse_qsl(url.query, keep_blank_values=True)):
-                return False
-        except ValueError:
-            return False
-    return True
+    return bool(platform_tool and field and field.get("type") in {"select", "number", "boolean"}
+        and isinstance(value, (str, int, float, bool, type(None))) and value != MASKED_SECRET_SENTINEL)
 
 
 def mask_agent_tool_config_secrets(config: dict | None, config_schema: dict | None, *, platform_tool: bool = True) -> dict:
@@ -110,10 +94,35 @@ def mask_agent_tool_config_secrets(config: dict | None, config_schema: dict | No
         else MASKED_SECRET_SENTINEL for key, value in config.items()} if isinstance(config, dict) else {}
 
 
-def clear_agent_tool_config_secrets(config: dict | None, config_schema: dict | None, *, platform_tool: bool = True) -> dict:
-    """Empty every setting that cannot safely pass the disclosure boundary."""
-    return {key: value if is_safe_agent_tool_setting(key, value, config_schema, platform_tool=platform_tool) else ""
+def clear_agent_tool_config_secrets(config: dict | None, config_schema: dict | None, *, platform_tool: bool = True,
+    company_config: dict | None = None) -> dict:
+    """Keep company copies and declared safe scalars; empty personal secrets."""
+    company = company_config or {}
+    return {key: value if _is_safe_handover_setting(key, value, config_schema)
+        or (key in company and _decrypt_secret(value) == company[key]) else ""
         for key, value in config.items()} if isinstance(config, dict) else {}
+
+
+def _is_safe_handover_setting(key: str, value: object, config_schema: dict | None) -> bool:
+    """A private declared scalar need not be disclosed to survive handover."""
+    field = _schema_fields_by_key(config_schema).get(key, {})
+    normalized = re.sub(r"[^a-z0-9]", "", key.casefold())
+    if (field.get("type") not in {"text", "select", "number", "boolean"}
+            or not isinstance(value, (str, int, float, bool, type(None))) or value == MASKED_SECRET_SENTINEL
+            or field.get("format") == "password" or field.get("writeOnly") or is_agent_tool_credential_key(key)
+            or normalized in {"headers", "auth", "env", "environment", "envvars", "authorization"}
+            or normalized.endswith("headers")):
+        return False
+    if isinstance(value, str):
+        try:
+            url = urlsplit(value)
+            if url.username is not None or url.password is not None or any(is_agent_tool_credential_key(name)
+                    or name.casefold() in {"key", "auth", "authorization", "signature", "sig"}
+                    for name, _ in parse_qsl(url.query, keep_blank_values=True)):
+                return False
+        except ValueError:
+            return False
+    return True
 
 
 def merge_tool_config_secrets(
@@ -130,6 +139,8 @@ def merge_tool_config_secrets(
     """
     incoming = dict(incoming) if isinstance(incoming, dict) else {}
     stored = stored if isinstance(stored, dict) else {}
+    incoming = {key: value for key, value in merge_agent_tool_config_secrets(incoming, stored, config_schema).items()
+        if key in incoming}
     fields_by_key = _schema_fields_by_key(config_schema)
     for key in _secret_field_keys(config_schema):
         if key not in incoming or incoming.get(key) == MASKED_SECRET_SENTINEL:
@@ -167,10 +178,22 @@ def merge_agent_tool_config_secrets(
     """A sentinel keeps current storage; every other submitted value is new input."""
     merged = dict(stored) if isinstance(stored, dict) else {}
     for key, value in (incoming or {}).items():
-        if not is_safe_agent_tool_setting(key, value, config_schema, platform_tool=platform_tool) and value == MASKED_SECRET_SENTINEL:
+        if isinstance(value, (dict, list)) and _contains_mask(value):
+            from fastapi import HTTPException
+
+            raise HTTPException(400, "Masked nested settings must be entered again before saving.")
+        if value == MASKED_SECRET_SENTINEL:
             continue
         merged[key] = value
     return merged
+
+
+def _contains_mask(value: object) -> bool:
+    if isinstance(value, dict):
+        return any(_contains_mask(item) for item in value.values())
+    if isinstance(value, list):
+        return any(_contains_mask(item) for item in value)
+    return value == MASKED_SECRET_SENTINEL
 
 
 _ENCRYPTED_SECRET_PREFIX = "enc:v1:"
@@ -265,7 +288,7 @@ async def resolve_tool_config(
         if not tool:
             return {}
 
-    base_config = dict(tool.config or {})
+    base_config = decrypt_tool_config_secrets(tool.config, tool.config_schema)
 
     # 2. Resolve tenant_id from agent if needed
     effective_tenant_id = tenant_id
@@ -285,7 +308,19 @@ async def resolve_tool_config(
         )
         ttc = ttc_r.scalar_one_or_none()
         if ttc and ttc.config:
-            base_config.update(ttc.config)
+            base_config.update(decrypt_tool_config_secrets(ttc.config, tool.config_schema))
+
+    # These providers historically read environment defaults in their handlers.
+    # Resolve them before employee overrides so endpoint changes also withhold them.
+    if tool_name == "firecrawl_search" and not (base_config.get("api_key") or base_config.get("firecrawl_api_key")):
+        base_config["api_key"] = (await resolve_tool_config("firecrawl_fetch", effective_tenant_id,
+            agent_id=agent_id, db=db)).get("api_key")
+    fallback = {"firecrawl_search": "FIRECRAWL_API_KEY", "firecrawl_fetch": "FIRECRAWL_API_KEY",
+        "exa_fetch": "EXA_API_KEY"}.get(tool_name)
+    if fallback and not (base_config.get("api_key") or base_config.get(fallback.lower())):
+        from app.config import get_settings
+
+        base_config["api_key"] = getattr(get_settings(), fallback)
 
     # 4. Merge agent-level override (if requested)
     if agent_id:
@@ -297,9 +332,19 @@ async def resolve_tool_config(
         )
         agent_config = at_r.scalar_one_or_none()
         if agent_config:
+            agent_config = decrypt_tool_config_secrets(agent_config, tool.config_schema)
+            fields = _schema_fields_by_key(tool.config_schema)
+            endpoint_keys = {key for key, field in fields.items() if key == "url" or key.endswith("_url")
+                or field.get("type") == "url" or field.get("format") in {"uri", "url"}}
+            endpoint_keys.update({"base_url", "mcp_url"})
+            if any(key in agent_config and agent_config[key] != base_config.get(key) for key in endpoint_keys):
+                inherited_secrets = (_secret_field_keys(tool.config_schema)
+                    | {key for key in base_config if is_agent_tool_credential_key(key)}) - endpoint_keys
+                agent_config = {key: value for key, value in agent_config.items() if key not in inherited_secrets or value != base_config.get(key)}
+                base_config = {key: value for key, value in base_config.items() if key not in inherited_secrets}
             base_config.update(agent_config)
 
-    return decrypt_tool_config_secrets(base_config, tool.config_schema)
+    return base_config
 
 
 async def get_or_create_tenant_tool_config(
@@ -346,9 +391,8 @@ async def update_tenant_tool_config(
     """
     ttc = await get_or_create_tenant_tool_config(db, tenant_id, tool_id)
     if config is not None:
-        if config_schema is not None:
-            config = merge_tool_config_secrets(config, ttc.config, config_schema)
-            config = encrypt_tool_config_secrets(config, config_schema)
+        config = merge_tool_config_secrets(config, ttc.config, config_schema)
+        config = encrypt_tool_config_secrets(config, config_schema)
         ttc.config = config
     if enabled is not None:
         ttc.enabled = enabled

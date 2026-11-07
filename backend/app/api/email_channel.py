@@ -156,7 +156,7 @@ async def configure_email_channel(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    await lock_agent_tool_config_write(db, agent_id, current_user=current_user)
+    agent = await lock_agent_tool_config_write(db, agent_id, current_user=current_user)
 
     email_config = {
         "email_provider": data.get("email_provider", "gmail"),
@@ -171,7 +171,7 @@ async def configure_email_channel(
         if not tool:
             continue
         await ensure_agent_tool_assignment(db, agent_id=agent_id, tool_id=tool.id,
-            enabled=None, source=None, config=email_config, current_user=current_user)
+            enabled=None, source=None, config=email_config, locked_agent=agent)
     await db.flush()
 
     return {
@@ -217,7 +217,7 @@ async def delete_email_channel(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    await lock_agent_tool_config_write(db, agent_id, current_user=current_user)
+    agent = await lock_agent_tool_config_write(db, agent_id, current_user=current_user)
     for tool_name in ("send_email", "read_emails", "reply_email"):
         r = await db.execute(select(Tool).where(Tool.name == tool_name))
         tool = r.scalar_one_or_none()
@@ -225,4 +225,4 @@ async def delete_email_channel(
             continue
         await ensure_agent_tool_assignment(db, agent_id=agent_id, tool_id=tool.id, enabled=None, source=None,
             config=lambda stored: {k: v for k, v in stored.items() if k not in ("email_provider", "email_address", "auth_code")},
-            current_user=current_user, create=False)
+            create=False, locked_agent=agent)

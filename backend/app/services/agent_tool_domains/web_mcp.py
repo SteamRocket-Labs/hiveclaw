@@ -1487,7 +1487,7 @@ async def _firecrawl_search(arguments: dict) -> str:
         )
 
     config = await _get_tool_config("firecrawl_search")
-    api_key = config.get("api_key") or config.get("firecrawl_api_key") or await _get_firecrawl_api_key()
+    api_key = config.get("api_key") or config.get("firecrawl_api_key")
     auth_mode = _provider_auth_mode(config)
     if auth_mode == "api_key" and not api_key:
         return render_tool_error(
@@ -1676,7 +1676,7 @@ async def _exa_fetch(arguments: dict) -> str:
         return denied
 
     config = await _get_tool_config("exa_fetch")
-    api_key = config.get("api_key") or config.get("exa_api_key") or await _get_exa_api_key()
+    api_key = config.get("api_key") or config.get("exa_api_key")
     auth_mode = _provider_auth_mode(config)
     if auth_mode == "api_key" and not api_key:
         return render_tool_error(
@@ -1733,7 +1733,7 @@ async def _firecrawl_fetch(arguments: dict) -> str:
         return denied
 
     config = await _get_tool_config("firecrawl_fetch")
-    api_key = config.get("api_key") or config.get("firecrawl_api_key") or await _get_firecrawl_api_key()
+    api_key = config.get("api_key") or config.get("firecrawl_api_key")
     auth_mode = _optional_enum(config.get("auth_mode"), _WEB_PROVIDER_AUTH_MODES, default="auto")
     if auth_mode == "api_key" and not api_key:
         return render_tool_error(

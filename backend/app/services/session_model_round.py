@@ -447,7 +447,8 @@ def split_context_message(message, sections):
         remainder = remainder[:start] + remainder[start + len(text):]
         refs, unknown = section["sources"], section["unbound"]
         parts.append(LLMMessage(role=message.role, content=text, context_origin=ContextMessageOrigin.capture(
-            kind=origin.kind, role=message.role, content=text, sources=refs, unbound=unknown)))
+            kind=origin.kind, role=message.role, content=text, sources=refs, unbound=unknown,
+            sections=[{"name": section["name"]}] if section.get("name") else [])))
         sources = [ref for ref in sources if ref not in refs]
         unbound = [reason for reason in unbound if reason not in unknown]
     if remainder.strip():
@@ -492,22 +493,33 @@ def _withhold_model_source(messages, wire_request, input_bindings, source, code,
     indexes.update(index for index, message in enumerate(wire_messages)
         if message.get("role") == "tool" and message.get("tool_call_id") in call_ids)
     for index, replacement in {**partial, **{i: {"role": "system", "content": note} for i in indexes}}.items():
+        origin = getattr(messages[index], "context_origin", None)
+        if origin is not None and any(section.get("name") == "skill_catalog" for section in origin.sections):
+            replacement["content"] = "技能目录内容暂时无法核实，已略过；请使用其余内容继续，需要时向用户询问。"
         # Replacing the complete payload also removes arguments and private
         # reasoning; unaffected sibling calls keep their own paired results.
         wire_messages[index] = replacement
         messages[index] = dict(replacement) if isinstance(messages[index], dict) else LLMMessage(**replacement)
-    if source in input_bindings["dependencies"]:
-        input_bindings["dependencies"].remove(source)
     for entry in input_bindings["messages"]:
         if entry["message_index"] in indexes:
             entry.update(status="withheld", code=code, dependencies=[], dependency_status="resolved")
         elif entry["message_index"] in partial:
             entry.update(code=code, message_hash=_sha256(partial[entry["message_index"]]))
-    retained = [*unattached, *(ref for entry in input_bindings["messages"] for ref in entry.get("dependencies", []))]
+    retained = [*(ref for ref in unattached if ref != source),
+        *(ref for entry in input_bindings["messages"] for ref in entry.get("dependencies", []))]
     input_bindings["dependencies"][:] = [ref for ref in input_bindings["dependencies"] if ref in retained]
 
 
 async def _validate_or_withhold_model_sources(db, *, tenant_id, agent_id, session_id, run_id,
+    input_bindings, messages, wire_request):
+    from app.services.content_input_receipts import group_source_read
+
+    with group_source_read():
+        return await _validate_model_sources(db, tenant_id=tenant_id, agent_id=agent_id, session_id=session_id,
+            run_id=run_id, input_bindings=input_bindings, messages=messages, wire_request=wire_request)
+
+
+async def _validate_model_sources(db, *, tenant_id, agent_id, session_id, run_id,
     input_bindings, messages, wire_request):
     from app.kernel.contracts import ExecutionAuthorityUnavailable
     from app.services.content_input_receipts import ContentInputReceiptError
@@ -527,6 +539,16 @@ async def _validate_or_withhold_model_sources(db, *, tenant_id, agent_id, sessio
         input_bindings["dependency_coverage"]["complete"] = True
     group_principal = await validate_shared_group_model_inputs(db, tenant_id=tenant_id, agent_id=agent_id,
         session_id=session_id, run_id=run_id, input_bindings={**input_bindings, "dependencies": []})
+    from app.services.delegation_input_origin import delegated_instruction_memory_reader
+
+    memory_readers = {}
+    for entry in input_bindings["messages"]:
+        if not any(ref["source_kind"] == "explicit_memory" for ref in entry.get("dependencies", [])):
+            continue
+        reader = await delegated_instruction_memory_reader(db, task=task, agent_id=agent_id,
+            session_id=session_id, source_ref=entry.get("source_ref", ""))
+        if reader is not None:
+            memory_readers[entry["message_index"]] = reader
     # Each dependency is checked once; an arbitrary retry cap must not turn the
     # fourth unavailable item into a whole-turn failure.
     for source in list(input_bindings["dependencies"]) or [None]:
@@ -541,8 +563,20 @@ async def _validate_or_withhold_model_sources(db, *, tenant_id, agent_id, sessio
                     await _validate_input_dependencies(db, tenant_id, dependencies, runtime_request=group_principal)
             await validate_native_trigger_model_sources(db, task=task, dependencies=dependencies, effect="model_request")
             await validate_model_sources(db, task=task, dependencies=dependencies, effect="model_request")
-            await validate_memory_model_sources(db, task=task, agent_id=agent_id,
-                session_id=session_id, dependencies=dependencies)
+            if source is not None and source["source_kind"] == "explicit_memory" and memory_readers:
+                readers = {}
+                for entry in input_bindings["messages"]:
+                    if source in entry.get("dependencies", []):
+                        readers.setdefault(memory_readers.get(entry["message_index"]), []).append(entry["message_index"])
+                for reader, indexes in readers.items():
+                    try:
+                        await validate_memory_model_sources(db, task=task, agent_id=agent_id,
+                            session_id=session_id, dependencies=dependencies, principal=reader)
+                    except (ExecutionAuthorityUnavailable, ContentInputReceiptError) as exc:
+                        _withhold_model_source(messages, wire_request, input_bindings, source, exc.code, indexes)
+            else:
+                await validate_memory_model_sources(db, task=task, agent_id=agent_id,
+                    session_id=session_id, dependencies=dependencies)
         except (ExecutionAuthorityUnavailable, ContentInputReceiptError) as exc:
             if source is None or exc.code == "group_model_sources_unavailable":
                 raise

@@ -1381,6 +1381,7 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
         }
         dynamic_sources["available_deferred_tools"] = ()
         dynamic_unbound["available_deferred_tools"] = tuple(deferred_source_unbound)
+        permissions_platform_constant = not dynamic_sources["permissions_context"] and not dynamic_unbound["permissions_context"]
 
         def _dynamic_source_refs():
             from app.services.session_model_inputs import _unique_dependencies
@@ -1414,7 +1415,7 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                 key=lambda s: s["render_order"]):
                 end = cursor + section["rendered_chars"]
                 key = _dynamic_source_key(section)
-                sections.append({"content": dynamic_prompt_suffix[cursor:end],
+                sections.append({"name": section["name"], "content": dynamic_prompt_suffix[cursor:end],
                     "sources": dynamic_sources.get(key, ()),
                     "unbound": () if section.get("platform_constant") else dynamic_unbound.get(
                         key, (f"dynamic_section_sources_unbound:{section['name']}",))})
@@ -1516,6 +1517,7 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                 skill_catalog=request.skill_catalog,
                 runtime_metadata_context=resolved_runtime_metadata_context,
                 permissions_context=resolved_permissions_context,
+                permissions_platform_constant=permissions_platform_constant,
                 retrieval_context=resolved_retrieval_context,
                 system_prompt_suffix=_system_prompt_suffix,
                 system_prompt_suffix_sections=_system_prompt_suffix_sections(),
@@ -1548,6 +1550,7 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                 skill_catalog=request.skill_catalog,
                 runtime_metadata_context=resolved_runtime_metadata_context,
                 permissions_context=resolved_permissions_context,
+                permissions_platform_constant=permissions_platform_constant,
                 retrieval_context=resolved_retrieval_context,
                 system_prompt_suffix=_system_prompt_suffix,
                 system_prompt_suffix_sections=_system_prompt_suffix_sections(),
@@ -2348,6 +2351,7 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                                         skill_catalog=request.skill_catalog,
                                         runtime_metadata_context=resolved_runtime_metadata_context,
                                         permissions_context=resolved_permissions_context,
+                                        permissions_platform_constant=permissions_platform_constant,
                                         retrieval_context=resolved_retrieval_context,
                                         system_prompt_suffix=_system_prompt_suffix,
                                         system_prompt_suffix_sections=_system_prompt_suffix_sections(),
@@ -2459,6 +2463,7 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                                         skill_catalog=request.skill_catalog,
                                         runtime_metadata_context=resolved_runtime_metadata_context,
                                         permissions_context=resolved_permissions_context,
+                                        permissions_platform_constant=permissions_platform_constant,
                                         retrieval_context=resolved_retrieval_context,
                                         system_prompt_suffix=_system_prompt_suffix,
                                         system_prompt_suffix_sections=_system_prompt_suffix_sections(),
@@ -2552,6 +2557,7 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                                             skill_catalog=request.skill_catalog,
                                             runtime_metadata_context=resolved_runtime_metadata_context,
                                             permissions_context=resolved_permissions_context,
+                                            permissions_platform_constant=permissions_platform_constant,
                                             retrieval_context=resolved_retrieval_context,
                                             system_prompt_suffix=_system_prompt_suffix,
                                             system_prompt_suffix_sections=_system_prompt_suffix_sections(),
@@ -2976,6 +2982,7 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                                             skill_catalog=request.skill_catalog,
                                             runtime_metadata_context=resolved_runtime_metadata_context,
                                             permissions_context=resolved_permissions_context,
+                                            permissions_platform_constant=permissions_platform_constant,
                                             retrieval_context=resolved_retrieval_context,
                                             system_prompt_suffix=_system_prompt_suffix,
                                             system_prompt_suffix_sections=_system_prompt_suffix_sections(),

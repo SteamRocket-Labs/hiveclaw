@@ -1412,7 +1412,10 @@ def _build_permissions_context(request: InvocationRequest, runtime_config: Runti
         if (isinstance(source, PermissionContextSource) and source.matches(metadata, request.allowed_tool_names)
             and not getattr(runtime_config, "tenant_resolution_error", None)):
             sources = (source.reference,)
-        else:
+        elif not (
+            request.session_context is not None and request.session_context.source == "trigger"
+            or request.execution_identity is not None and request.execution_identity.identity_type == "agent_bot"
+        ):
             source_unbound.append("permission_configuration_sources_unbound")
     from app.runtime.context import ensure_runtime_assembly_state
 

@@ -180,6 +180,14 @@ async def _authorize_entry(db, *, tenant_id, agent_id, request, entry, receipt, 
 
 async def authorized_explicit_entries(*, tenant_id, agent_id, request, entries, session_factory=None, issue_observer=None):
     """Return only exact current versions; do not let previews bypass this boundary."""
+    from app.services.content_input_receipts import group_source_read
+
+    with group_source_read():
+        return await _authorized_explicit_entries(tenant_id=tenant_id, agent_id=agent_id, request=request,
+            entries=entries, session_factory=session_factory, issue_observer=issue_observer)
+
+
+async def _authorized_explicit_entries(*, tenant_id, agent_id, request, entries, session_factory, issue_observer):
     allowed = []
     async with tenant_scoped_session(tenant_id, session_factory=session_factory) as db:
         _principal, actor, _session = await _actor(db, tenant_id, request)
@@ -431,7 +439,7 @@ async def save_scoped_explicit_memory(request, *, data_root, session_factory=Non
     return await execute_memory_operation(request, data_root=data_root, session_factory=session_factory)
 
 
-async def validate_memory_model_sources(db, *, task, agent_id, session_id, dependencies):
+async def validate_memory_model_sources(db, *, task, agent_id, session_id, dependencies, principal=None):
     """Recheck source-bound recalled memory at the actual provider boundary."""
     from app.kernel.contracts import ExecutionAuthorityUnavailable
     from app.services.personal_knowledge_access import AgentRuntimePrincipal
@@ -454,17 +462,9 @@ async def validate_memory_model_sources(db, *, task, agent_id, session_id, depen
     try:
         if task is None:
             raise ContentInputReceiptError("explicit_memory_work_unavailable", "Restore the original memory reader.", 503)
-        principal = AgentRuntimePrincipal(agent_id=agent_id, requester_user_id=task.root_user_id,
+        principal = principal or AgentRuntimePrincipal(agent_id=agent_id, requester_user_id=task.root_user_id,
             session_id=str(session_id), runtime_task_id=str(task.id), purpose="interactive_session")
-        for source in sources:
-            if source["source_kind"] == "team_memory":
-                from app.services.team_memory_runtime import validate_dependency
-
-                await validate_dependency(db, task.tenant_id, source, runtime_request=principal)
-            elif source["source_kind"] in {"learned_skill_candidate", "agent_skill_file", "learned_skill_file", "skill_evolution_observation", "session_model_result"}:
-                await _validate_input_dependencies(db, task.tenant_id, [source], runtime_request=principal)
-            else:
-                await validate_explicit_memory_dependency(db, task.tenant_id, source, request=principal)
+        await _validate_input_dependencies(db, task.tenant_id, sources, runtime_request=principal)
     except ContentInputReceiptError as exc:
         raise ExecutionAuthorityUnavailable(code=exc.code, task=task, effect="model_request",
             status="denied" if exc.status_code in {401, 403, 404} else "unavailable") from exc

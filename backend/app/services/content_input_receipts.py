@@ -104,6 +104,13 @@ class _DisclosureSourceValidations:
     def __init__(self):
         self.active = True
         self.verified = {}
+        self.actors = {}
+
+
+def _runtime_reader_key(request):
+    from app.services.personal_knowledge_access import AgentRuntimePrincipal
+
+    return request if isinstance(request, AgentRuntimePrincipal) else id(request)
 
 
 @contextmanager
@@ -116,6 +123,7 @@ def group_source_read():
     finally:
         scope.active = False
         scope.verified.clear()
+        scope.actors.clear()
         _DISCLOSURE_SOURCE_VALIDATIONS.reset(token)
 
 
@@ -206,14 +214,14 @@ async def _validate_input_dependencies(
             id(db),
             tenant_id,
             id(user),
-            id(runtime_request),
+            _runtime_reader_key(runtime_request),
             recipient,
-            active_workspace_receipts,
             source_key,
         )
         if (
             not scope.active
             or reader_key not in scope.verified
+            or source_key[1] in {str(receipt) for receipt in active_workspace_receipts}
             or (source_key[0] == "session_tool_invocation" and source_key[1:] in _ACTIVE_GROUP_TOOL_SOURCES.get())
         ):
             await _validate_input_dependency_batch(db, tenant_id, [dependency], **context)
@@ -1469,6 +1477,21 @@ async def _authorize_session_input_source(
 
 
 async def _runtime_input_actor(db, tenant_id, request):
+    scope = _DISCLOSURE_SOURCE_VALIDATIONS.get()
+    if scope is None or not scope.active:
+        return await _load_runtime_input_actor(db, tenant_id, request)
+    key = (tenant_id, _runtime_reader_key(request))
+    if db not in scope.actors:
+        scope.actors[db] = {}
+    if key not in scope.actors[db]:
+        result = await _load_runtime_input_actor(db, tenant_id, request)
+        if scope.active:
+            scope.actors[db][key] = (request, result)
+        return result
+    return scope.actors[db][key][1]
+
+
+async def _load_runtime_input_actor(db, tenant_id, request):
     from fastapi import HTTPException
     from app.core.permissions import check_agent_access
     from app.models.agent import Agent

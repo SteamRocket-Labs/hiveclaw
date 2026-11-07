@@ -251,7 +251,7 @@ async def test_member_can_remember_own_request_with_incomplete_ambient_context(
 
 
 @pytest.mark.parametrize("source_state", ["owned", "another_member", "revoked"])
-async def test_created_profile_uses_its_confirming_members_memory_without_granting_raw_access(
+async def test_created_profile_keeps_memory_scoped_to_its_original_bot(
     shared_memory, owner_sessionmaker, app_user_sessionmaker, source_state,  # noqa: F811
 ):
     from app.models.agent import Agent
@@ -291,13 +291,9 @@ async def test_created_profile_uses_its_confirming_members_memory_without_granti
         await pin_rls_tenant_context(db, n.tenant)
         receipt = await latest_memory_receipt(db, n.tenant, n.agent, entry_id)
         dependency = source_dependency(receipt)
-        if source_state == "owned":
+        with pytest.raises(ContentInputReceiptError):
             await validate_creation_publication_inputs(db, draft=draft, dependencies=[dependency],
                 user=None, runtime_request=principal)
-        else:
-            with pytest.raises(ContentInputReceiptError):
-                await validate_creation_publication_inputs(db, draft=draft, dependencies=[dependency],
-                    user=None, runtime_request=principal)
         # Publishing the confirmed profile does not give the employee a raw
         # upstream memory read, even for the same owner.
         with pytest.raises(ContentInputReceiptError):

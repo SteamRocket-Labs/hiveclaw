@@ -95,21 +95,27 @@ def test_no_cleanup_pending_route_remains() -> None:
 
 
 @pytest.mark.asyncio
-async def test_deactivate_requires_administrator_role(monkeypatch) -> None:
-    import app.api.agents as agents_api
+async def test_deactivate_without_creation_undo_scope_requires_administrator(monkeypatch) -> None:
     from app.services import agent_retirement
 
-    member = SimpleNamespace(id=uuid4(), role="member", tenant_id=uuid4())
+    member = SimpleNamespace(id=uuid4(), role="member", tenant_id=uuid4(), is_active=True)
+    agent = SimpleNamespace(id=uuid4(), tenant_id=member.tenant_id, owner_user_id=member.id,
+                            creator_id=member.id, home_business_team_id=None)
+    rows = iter((agent, None))  # No canonical D1 creation belongs to this member.
 
-    async def fail_prepare(*_args, **_kwargs):
-        raise AssertionError("prepare must not run for a non-admin")
+    async def scalar(_statement):
+        return next(rows)
 
-    monkeypatch.setattr(agent_retirement, "prepare", fail_prepare)
+    async def load_actor(_db, _user_id):
+        return member
+
+    monkeypatch.setattr("app.services.runtime_user_identity.load_runtime_user", load_actor)
 
     with pytest.raises(HTTPException) as exc_info:
-        await agents_api.deactivate_agent(agent_id=uuid4(), current_user=member, db=_FakeDB())
+        await agent_retirement.prepare(SimpleNamespace(scalar=scalar), agent=agent, actor=member)
 
     assert exc_info.value.status_code == 403
+    assert exc_info.value.detail["code"] == "agent_retirement_administrator_required"
 
 
 # ─── 恢复 clears the deactivation; triggers stay off ────────────────────

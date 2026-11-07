@@ -474,6 +474,7 @@ def build_dynamic_prompt_suffix(
     continuity_context: str = "",
     runtime_metadata_context: str = "",
     permissions_context: str = "",
+    permissions_platform_constant: bool = False,
     session_learning_projection: str = "",
     system_prompt_suffix: str = "",
     system_prompt_suffix_sections: list[str] | None = None,
@@ -624,6 +625,7 @@ def build_dynamic_prompt_suffix(
         content=permissions_context,
         budget_key="permissions_context_chars",
         budget_chars=permissions_budget,
+        platform_constant=permissions_platform_constant,
     )
 
     tool_groups_budget = (
@@ -678,13 +680,19 @@ def build_dynamic_prompt_suffix(
     # in the dynamic suffix, next to the active tool groups it complements, so
     # adding/distilling a skill never busts the frozen prompt-cache boundary.
     skill_catalog_budget = getattr(budget_profile, "skill_catalog_budget_chars", None) if budget_profile else None
+    from app.runtime.prompt_sections.skills_catalog import SKILL_CATALOG_GUIDANCE
+
     add_candidate(
         candidate_id="dynamic:skill:skill_catalog",
         kind="skills",
         name="skill_catalog",
-        content=skill_catalog,
+        content=skill_catalog.removesuffix(SKILL_CATALOG_GUIDANCE).rstrip(),
         budget_key="skill_catalog_budget_chars",
         budget_chars=skill_catalog_budget,
+    )
+    add_candidate(
+        candidate_id="dynamic:skill:guidance", kind="skills", name="skill_guidance",
+        content=SKILL_CATALOG_GUIDANCE if skill_catalog else "", platform_constant=True,
     )
 
     knowledge = build_knowledge_section(retrieval_context, budget_chars=None) if retrieval_context else ""

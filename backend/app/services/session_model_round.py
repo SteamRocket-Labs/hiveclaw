@@ -430,6 +430,156 @@ def _committed_request_content_matches(result: SessionModelResult, snapshot: dic
     )
 
 
+def split_context_message(message, sections):
+    """Keep compiler-known input items separate before capturing model bindings."""
+    from app.runtime.context_candidates import ContextMessageOrigin
+    from app.services.llm_client import LLMMessage
+
+    origin = message.context_origin
+    remainder = message.content
+    sources, unbound = list(origin.sources), list(origin.unbound)
+    parts = []
+    for section in sections:
+        text = section["content"]
+        if not text:
+            continue
+        start = remainder.index(text)
+        remainder = remainder[:start] + remainder[start + len(text):]
+        refs, unknown = section["sources"], section["unbound"]
+        parts.append(LLMMessage(role=message.role, content=text, context_origin=ContextMessageOrigin.capture(
+            kind=origin.kind, role=message.role, content=text, sources=refs, unbound=unknown,
+            sections=[{"name": section["name"]}] if section.get("name") else [])))
+        sources = [ref for ref in sources if ref not in refs]
+        unbound = [reason for reason in unbound if reason not in unknown]
+    if remainder.strip():
+        parts.insert(0, LLMMessage(role=message.role, content=remainder, context_origin=ContextMessageOrigin.capture(
+            kind=origin.kind, role=message.role, content=remainder, sources=sources, unbound=unbound)))
+    return parts
+
+
+def _withhold_model_source(messages, wire_request, input_bindings, source, code, indexes=None):
+    from app.runtime.context_candidates import ContextMessageOrigin
+    from app.services.llm_client import LLMMessage
+
+    note = "有一项上下文暂时无法核实，已略过，请使用其余内容继续，需要时向用户询问。"
+    if indexes is None:
+        indexes = [entry["message_index"] for entry in input_bindings["messages"]
+            if source in entry.get("dependencies", [])]
+    if not indexes:
+        # Delegated instructions can inherit dependencies without inheriting their bodies.
+        indexes = [len(messages)]
+        messages.append(LLMMessage(role="system", content=note))
+        wire_request["messages"].append({"role": "system", "content": note})
+    wire_messages = wire_request["messages"]
+    attached = [ref for entry in input_bindings["messages"] for ref in entry.get("dependencies", [])]
+    unattached = [ref for ref in input_bindings["dependencies"] if ref not in attached]
+    indexes = set(indexes)
+    result_ids = {wire_messages[i].get("tool_call_id") for i in indexes if wire_messages[i].get("role") == "tool"}
+    partial = {}
+    for i, message in enumerate(wire_messages):
+        calls = message.get("tool_calls") or []
+        if i not in indexes and any(call.get("id") in result_ids for call in calls if call.get("id")):
+            remaining = [call for call in calls if call.get("id") not in result_ids]
+            if remaining:
+                partial[i] = {"role": "assistant", "content": note, "tool_calls": remaining}
+            else:
+                indexes.add(i)
+    call_ids = {call.get("id") for i in indexes for call in wire_messages[i].get("tool_calls") or [] if call.get("id")}
+    for i in list(indexes):
+        if any(not call.get("id") for call in wire_messages[i].get("tool_calls") or []):
+            for j in range(i + 1, len(wire_messages)):
+                if wire_messages[j].get("role") != "tool":
+                    break
+                indexes.add(j)
+    indexes.update(index for index, message in enumerate(wire_messages)
+        if message.get("role") == "tool" and message.get("tool_call_id") in call_ids)
+    for index, replacement in {**partial, **{i: {"role": "system", "content": note} for i in indexes}}.items():
+        origin = getattr(messages[index], "context_origin", None)
+        if isinstance(origin, ContextMessageOrigin) and any(section.get("name") == "skill_catalog" for section in origin.sections):
+            replacement["content"] = "技能目录内容暂时无法核实，已略过；请使用其余内容继续，需要时向用户询问。"
+        # Replacing the complete payload also removes arguments and private
+        # reasoning; unaffected sibling calls keep their own paired results.
+        wire_messages[index] = replacement
+        messages[index] = dict(replacement) if isinstance(messages[index], dict) else LLMMessage(**replacement)
+    for entry in input_bindings["messages"]:
+        if entry["message_index"] in indexes:
+            entry.update(status="withheld", code=code, dependencies=[], dependency_status="resolved")
+        elif entry["message_index"] in partial:
+            entry.update(code=code, message_hash=_sha256(partial[entry["message_index"]]))
+    retained = [*(ref for ref in unattached if ref != source),
+        *(ref for entry in input_bindings["messages"] for ref in entry.get("dependencies", []))]
+    input_bindings["dependencies"][:] = [ref for ref in input_bindings["dependencies"] if ref in retained]
+
+
+async def _validate_or_withhold_model_sources(db, *, tenant_id, agent_id, session_id, run_id,
+    input_bindings, messages, wire_request):
+    from app.kernel.contracts import ExecutionAuthorityUnavailable
+    from app.services.content_input_receipts import ContentInputReceiptError
+    from app.services.shared_group_authority import validate_shared_group_model_inputs
+    from app.services.trigger_read_sources import validate_native_trigger_model_sources
+    from app.services.team_task_context import validate_model_sources
+    from app.services.explicit_memory_authority import validate_memory_model_sources
+
+    task = await db.get(RuntimeTask, run_id)
+    # A selected team goal defines the work, rather than an optional source.
+    await validate_model_sources(db, task=task, dependencies=input_bindings["dependencies"], effect="model_request")
+    # Compiler-bound platform constants have resolved, empty dependencies;
+    # unbound data has no such proof, even when sent with the system role.
+    unbound = [entry["message_index"] for entry in input_bindings["messages"]
+        if entry.get("dependency_status") != "resolved"]
+    if unbound:
+        _withhold_model_source(messages, wire_request, input_bindings, None, "model_input_source_unbound", unbound)
+        input_bindings["status"] = "resolved"
+        input_bindings["dependency_coverage"]["complete"] = True
+    group_principal = await validate_shared_group_model_inputs(db, tenant_id=tenant_id, agent_id=agent_id,
+        session_id=session_id, run_id=run_id, input_bindings={**input_bindings, "dependencies": []})
+    from app.services.delegation_input_origin import delegated_instruction_memory_reader
+
+    memory_readers = {}
+    for entry in input_bindings["messages"]:
+        if not any(ref["source_kind"] == "explicit_memory" for ref in entry.get("dependencies", [])):
+            continue
+        reader = await delegated_instruction_memory_reader(db, task=task, agent_id=agent_id,
+            session_id=session_id, source_ref=entry.get("source_ref", ""))
+        if reader is not None:
+            memory_readers[entry["message_index"]] = reader
+    # Each dependency is checked once; an arbitrary retry cap must not turn the
+    # fourth unavailable item into a whole-turn failure.
+    for source in list(input_bindings["dependencies"]) or [None]:
+        if source is not None and source not in input_bindings["dependencies"]:
+            continue
+        dependencies = [source] if source is not None else []
+        try:
+            if group_principal is not None:
+                from app.services.content_input_receipts import _validate_input_dependencies, group_source_read
+
+                with group_source_read():
+                    await _validate_input_dependencies(db, tenant_id, dependencies, runtime_request=group_principal)
+            await validate_native_trigger_model_sources(db, task=task, dependencies=dependencies, effect="model_request")
+            if source is not None and source["source_kind"] == "explicit_memory" and memory_readers:
+                readers = {}
+                for entry in input_bindings["messages"]:
+                    if source in entry.get("dependencies", []):
+                        readers.setdefault(memory_readers.get(entry["message_index"]), []).append(entry["message_index"])
+                for reader, indexes in readers.items():
+                    try:
+                        await validate_memory_model_sources(db, task=task, agent_id=agent_id,
+                            session_id=session_id, dependencies=dependencies, principal=reader)
+                    except (ExecutionAuthorityUnavailable, ContentInputReceiptError) as exc:
+                        _withhold_model_source(messages, wire_request, input_bindings, source, exc.code, indexes)
+            else:
+                await validate_memory_model_sources(db, task=task, agent_id=agent_id,
+                    session_id=session_id, dependencies=dependencies)
+        except (ExecutionAuthorityUnavailable, ContentInputReceiptError) as exc:
+            if source is None or exc.code == "group_model_sources_unavailable":
+                raise
+            if group_principal is not None and not any(source in entry.get("dependencies", [])
+                for entry in input_bindings["messages"]):
+                raise ContentInputReceiptError("group_model_sources_unavailable",
+                    "这次对话暂时无法确认访问范围，请重试。", 503) from exc
+            _withhold_model_source(messages, wire_request, input_bindings, source, exc.code)
+
+
 async def prepare_model_request(
     db: AsyncSession,
     *,
@@ -457,7 +607,8 @@ async def prepare_model_request(
     result_id = _result_id(run_id, round_id)
     from app.services.session_model_inputs import build_model_input_bindings, capture_context_message_origins, message_snapshot
 
-    messages = list(messages)
+    if not isinstance(messages, list):
+        messages = list(messages)
     rows = await _bound_rows(
         db,
         tenant_id=tenant_id,
@@ -613,22 +764,16 @@ async def prepare_model_request(
         run_id=run_id, result_id=result_id, messages=messages)
     input_bindings = await build_model_input_bindings(db, tenant_id=tenant_id, agent_id=agent_id,
         session_id=session_id, messages=messages, wire_messages=list(canonical_wire_request.get("messages") or []))
-    from app.services.shared_group_authority import validate_shared_group_model_inputs
-
-    await validate_shared_group_model_inputs(db, tenant_id=tenant_id, agent_id=agent_id, session_id=session_id,
-        run_id=run_id, input_bindings=input_bindings)
-    from app.services.trigger_read_sources import validate_native_trigger_model_sources
-
-    await validate_native_trigger_model_sources(db, task=await db.get(RuntimeTask, run_id),
-        dependencies=input_bindings["dependencies"], effect="model_request")
-    from app.services.team_task_context import validate_model_sources
-
-    await validate_model_sources(db, task=await db.get(RuntimeTask, run_id),
-        dependencies=input_bindings["dependencies"], effect="model_request")
-    from app.services.explicit_memory_authority import validate_memory_model_sources
-
-    await validate_memory_model_sources(db, task=await db.get(RuntimeTask, run_id), agent_id=agent_id,
-        session_id=session_id, dependencies=input_bindings["dependencies"])
+    await _validate_or_withhold_model_sources(
+        db,
+        tenant_id=tenant_id,
+        agent_id=agent_id,
+        session_id=session_id,
+        run_id=run_id,
+        input_bindings=input_bindings,
+        messages=messages,
+        wire_request=canonical_wire_request,
+    )
     snapshot = {
         "provider": provider,
         "model": model,

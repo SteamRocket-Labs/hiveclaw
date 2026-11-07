@@ -145,6 +145,25 @@ describe('RunDisclosureBlock', () => {
     expect(markup).not.toContain('RAW FILE CONTENT');
   });
 
+  it('shows runtime notices while completed progress remains collapsed', () => {
+    const timeline = buildRunTimelineFromMessages([
+      {
+        role: 'assistant', content: 'A requested file could not be attached.',
+        sessionItem: { id: 'notice', kind: 'assistant_commentary', lifecycle: 'completed', terminal: true,
+          actor: { type: 'runtime' } } as Parameters<typeof buildRunTimelineFromMessages>[0][number]['sessionItem'],
+      },
+      {
+        role: 'assistant', content: 'Ordinary model progress.',
+        sessionItem: { id: 'progress', kind: 'assistant_commentary', lifecycle: 'completed', terminal: true,
+          actor: { type: 'assistant' } } as Parameters<typeof buildRunTimelineFromMessages>[0][number]['sessionItem'],
+      },
+    ]);
+    const markup = renderToStaticMarkup(<RunDisclosureBlock timeline={timeline} />);
+    expect(markup).toContain('aria-expanded="false"');
+    expect(markup).toContain('A requested file could not be attached.');
+    expect(markup).not.toContain('Ordinary model progress.');
+  });
+
   it('renders an interrupted historical turn with a frozen duration and an explicit next step, never as live processing', () => {
     // UI-004 regression: a turn whose transcript never reached a terminal mark
     // must show the typed interrupted state with the frozen duration — no live

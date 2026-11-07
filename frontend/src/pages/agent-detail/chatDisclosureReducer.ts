@@ -595,7 +595,7 @@ function buildStep(message: AgentChatMessage, index: number, allowLiveRunning: b
       summary,
       details: message.content || undefined,
       visibility: 'visible',
-      presentation: 'process',
+      presentation: message.sessionItem?.actor?.type === 'runtime' ? 'surface' : 'process',
     };
   }
 

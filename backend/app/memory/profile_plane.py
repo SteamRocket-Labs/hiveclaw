@@ -150,11 +150,12 @@ def load_resident_memory(
     )
 
 
-def with_explicit_memory_index(resident: ResidentMemory, entries, sources) -> ResidentMemory:
+def with_explicit_memory_index(resident: ResidentMemory, entries, sources, *, section_observer=None) -> ResidentMemory:
     """Attach a caller-authorized index with the exact shown source versions."""
     shown_sources = []
     index = _render_resident_explicit_index(entries,
-        source_observer=lambda entry: shown_sources.extend(sources.get(entry.entry_id, ())))
+        source_observer=lambda entry: shown_sources.extend(sources.get(entry.entry_id, ())),
+        section_observer=section_observer)
     if not index:
         return resident
     header = resident.text or "[Profile Plane — Resident Memory]"
@@ -163,7 +164,7 @@ def with_explicit_memory_index(resident: ResidentMemory, entries, sources) -> Re
         sections=(*resident.sections, "explicit_overlay"), source_refs=(*resident.source_refs, *shown_sources))
 
 
-def _render_resident_explicit_index(entries, *, source_observer=None) -> str:
+def _render_resident_explicit_index(entries, *, source_observer=None, section_observer=None) -> str:
     """Render the CC-style resident index without leaking sensitive previews."""
 
     active = [
@@ -190,6 +191,8 @@ def _render_resident_explicit_index(entries, *, source_observer=None) -> str:
         lines.append(line)
         if source_observer is not None:
             source_observer(entry)
+        if section_observer is not None:
+            section_observer(entry, line)
         shown += 1
     lines.append(f"Showing {shown} of {len(active)} active entries; search_memory covers the remainder.")
     rendered = "\n".join(lines)

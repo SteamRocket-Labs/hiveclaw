@@ -14,6 +14,7 @@ from app.services.llm_client import LLMMessage
 from app.services.session_model_inputs import _hash, load_context_message_origin
 from app.services.session_model_round import prepare_model_request
 from tests.integration.test_m1g27_model_input_bindings_postgres import _bound_input
+from tests.integration.test_m1f_assistant_binding_postgres import builtin_defaults  # noqa: F401
 
 pytestmark = pytest.mark.usefixtures("migrated_pg_url")
 
@@ -74,13 +75,16 @@ async def test_actual_compiler_origin_is_recoverable_but_does_not_assert_upstrea
         await pin_rls_tenant_context(db, tenant)
         snapshot = await _prepare(db, scope, context)
         bindings = snapshot["input_bindings"]
-        assert bindings["status"] == "resolved" and bindings["messages"][0]["status"] == "bound"
-        assert bindings["dependency_coverage"]["complete"] is False
+        assert bindings["status"] == "resolved" and bindings["messages"][0]["status"] == "withheld"
+        assert bindings["messages"][0]["code"] == "model_input_source_unbound"
+        assert "Exact compiler context" not in str(snapshot["wire_request"])
+        assert bindings["dependency_coverage"]["complete"] is True
         assert bindings["source_authority"] == "not_evaluated"
         source_id = uuid.UUID(bindings["messages"][0]["source_ref"].split(":", 1)[1])
         origin = await load_context_message_origin(db, tenant_id=tenant, agent_id=agent, session_id=session, source_id=source_id)
         assert origin["message"] == {"role": "system", "content": "Exact compiler context"}
         assert origin["sections"][0]["name"] == "fixture-context"
+        assert origin["dependency_coverage"] == {"complete": False, "unbound": ["context_sources_unbound"]}
         assert "context_origin" not in snapshot["wire_request"]["messages"][0]
         assert "source_ref" not in context.to_openai_format() and "context_origin" not in context.to_openai_format()
 
@@ -95,6 +99,9 @@ async def test_known_platform_guidance_can_have_complete_inventory_without_grant
         assert bindings["dependency_coverage"]["complete"] is True
         assert bindings["source_authority"] == "not_evaluated"
         assert [ref["source_kind"] for ref in bindings["dependencies"]] == ["session_command"]
+        assert snapshot["wire_request"]["messages"] == [
+            {"role": "system", "content": "Use the authorized tools."},
+            {"role": "user", "content": "Exact admitted input"}]
         origin = await load_context_message_origin(db, tenant_id=scope[0], agent_id=scope[1],
             source_id=uuid.UUID(bindings["messages"][0]["source_ref"].split(":", 1)[1]))
         assert origin["dependency_coverage"] == {"complete": True, "unbound": []}
@@ -112,8 +119,10 @@ async def test_untrusted_or_stale_context_tags_never_become_canonical_origins(ow
     async with app_user_sessionmaker() as db:
         await pin_rls_tenant_context(db, scope[0])
         snapshot = await _prepare(db, scope, context)
-        assert snapshot["input_bindings"]["messages"][0]["status"] == "unresolved"
-        assert snapshot["input_bindings"]["dependency_coverage"]["complete"] is False
+        entry = snapshot["input_bindings"]["messages"][0]
+        assert entry["status"] == "withheld" and entry["code"] == "model_input_source_unbound"
+        assert context.content not in str(snapshot["wire_request"])
+        assert snapshot["input_bindings"]["dependency_coverage"]["complete"] is True
         assert (await db.scalars(select(InvocationSpan).where(InvocationSpan.span_type == "kernel_context"))).all() == []
 
 
@@ -143,6 +152,7 @@ async def test_context_origins_enforce_session_scope_and_detect_rewritten_record
 
 
 @pytest.mark.parametrize("creation", ["original", "model_blueprint", "legacy", "repair"])
+@pytest.mark.usefixtures("builtin_defaults")
 async def test_context_uses_observed_content_and_recorded_origins(
     owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, creation,
 ):
@@ -202,8 +212,14 @@ async def test_context_uses_observed_content_and_recorded_origins(
 
         capture.observe_file(bundled_path, hashlib.sha256(bundled_bytes).hexdigest())
         platform_refs = capture.snapshot()["sources"]
+        assert len(platform_refs) == 1 and platform_refs[0]["source_kind"] == "agent_platform_skill_file"
+        assert capture.snapshot()["unbound"] == []
+        await validate_browser_input_dependencies(db, tenant, user, platform_refs)
+        (root / bundled_path).write_bytes(bundled_bytes + b"\nREPLACED_BUNDLE")
+        with pytest.raises(ContentInputReceiptError):
+            await validate_browser_input_dependencies(db, tenant, user, platform_refs)
+        (root / bundled_path).write_bytes(bundled_bytes)
         if creation != "original":
-            assert platform_refs == [] and capture.snapshot()["unbound"]
             await validate_browser_input_dependencies(db, tenant, user, refs)
             await validate_browser_input_dependencies(db, tenant, user, list(resident.source_refs))
             (root / "memory/self/self.md").write_text("Changed after observation.")
@@ -212,12 +228,6 @@ async def test_context_uses_observed_content_and_recorded_origins(
             return
         await validate_browser_input_dependencies(db, tenant, user, refs)
         await validate_browser_input_dependencies(db, tenant, user, list(resident.source_refs))
-        assert len(platform_refs) == 1 and platform_refs[0]["source_kind"] == "agent_platform_skill_file"
-        await validate_browser_input_dependencies(db, tenant, user, platform_refs)
-        (root / bundled_path).write_bytes(bundled_bytes + b"\nREPLACED_BUNDLE")
-        with pytest.raises(ContentInputReceiptError):
-            await validate_browser_input_dependencies(db, tenant, user, platform_refs)
-        (root / bundled_path).write_bytes(bundled_bytes)
         self_path = root / "memory/self/self.md"
         self_path.write_text("RESTRICTED_MODEL_MEMORY")
         rewritten = load_resident_memory(agent_id=agent_id, data_root=tmp_path)

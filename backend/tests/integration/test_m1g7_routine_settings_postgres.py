@@ -1115,7 +1115,7 @@ async def test_enabled_routine_uses_native_tool_edits_and_returns_once_to_its_so
             else 4
         )
     if read_fault:
-        expected_requests = 6 if fault == "context_kb_metadata_revoked" else 7
+        expected_requests = 7
     assert len(llm.requests) == expected_requests
     if fault == "context_kb_list_revoked":
         assert private_body not in json.dumps(llm.requests[5]["messages"])
@@ -1127,6 +1127,7 @@ async def test_enabled_routine_uses_native_tool_edits_and_returns_once_to_its_so
         assert private_body in json.dumps(llm.requests[6]["messages"])
     if fault == "context_kb_metadata_revoked":
         assert private_body in json.dumps(llm.requests[5]["messages"])
+        assert private_body not in json.dumps(llm.requests[6]["messages"])
     assert effects == (
         ["update_trigger", "read_personal_kb", "update_trigger", "list_triggers"]
         if read_fault and fault != "context_kb_metadata_revoked"
@@ -1222,6 +1223,7 @@ async def test_enabled_routine_uses_native_tool_edits_and_returns_once_to_its_so
             "context_kb_command",
             "context_kb_list_revoked",
             "context_kb_list",
+            "context_kb_metadata_revoked",
         }
         assert task.status == ("failed" if failed else "completed") and task.root_user_id == seed["user_id"]
         assert task.root_session_id == str(seed["session_id"])
@@ -1231,18 +1233,12 @@ async def test_enabled_routine_uses_native_tool_edits_and_returns_once_to_its_so
             "context_kb_revoked",
             "context_kb_command_revoked",
             "instruction_tamper",
-            "context_kb_metadata_revoked",
         }:
             from app.models.session_v2 import SessionModelResult
 
             blocked_models = list(
                 await db.scalars(select(SessionModelResult).where(SessionModelResult.run_id == successor))
             )
-            if fault == "context_kb_metadata_revoked":
-                sent = [model for model in blocked_models if "wire_request" in model.model_request_snapshot_json]
-                assert len(sent) == 1 and sent[0].state == "round_committed"
-                assert private_body in json.dumps(sent[0].model_request_snapshot_json["messages"])
-                blocked_models = [model for model in blocked_models if model not in sent]
             assert len(blocked_models) <= 1
             assert all(
                 model.model_request_snapshot_json.get("phase") == "awaiting_exact_snapshot"
@@ -1251,6 +1247,18 @@ async def test_enabled_routine_uses_native_tool_edits_and_returns_once_to_its_so
                 and model.seal_json is None
                 for model in blocked_models
             )
+        if fault == "context_kb_metadata_revoked":
+            from app.models.session_v2 import SessionModelResult, SessionToolInvocation
+            from tests.integration.source_withholding_helpers import assert_source_withheld
+
+            models = list(await db.scalars(select(SessionModelResult).where(
+                SessionModelResult.run_id == successor).order_by(SessionModelResult.round_id)))
+            assert len(models) == 2 and all(model.state == "round_committed" for model in models)
+            assert private_body in json.dumps(models[0].model_request_snapshot_json["wire_request"])
+            assert_source_withheld(models[1:], content=private_body, code="content_source_access_denied")
+            calls = list(await db.scalars(select(SessionToolInvocation).where(SessionToolInvocation.run_id == successor)))
+            assert len(calls) == 1 and calls[0].tool_name == "list_triggers"
+            assert calls[0].effect_state == "prepared_not_started"
         if not failed:
             assert any(e.item_kind == "assistant_final" and e.lifecycle == "completed" for e in events)
         else:
@@ -1304,8 +1312,8 @@ async def test_enabled_routine_uses_native_tool_edits_and_returns_once_to_its_so
                     )
                 )
             )
-            assert len(reads) == (0 if failed else 1)
-            if not failed:
+            assert len(reads) == (0 if failed or fault == "context_kb_metadata_revoked" else 1)
+            if not failed and fault != "context_kb_metadata_revoked":
                 models = list(
                     await db.scalars(select(SessionModelResult).where(SessionModelResult.run_id == successor))
                 )

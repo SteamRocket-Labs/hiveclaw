@@ -289,22 +289,26 @@ def _list_files(
 
     dir_count = 0
     file_count = 0
+    withheld_count = 0
 
     def visible(p):
-        if p.name.startswith("."):
-            return False
-        if enterprise_context and p.name not in COMPANY_CONTEXT_FILENAMES:
+        nonlocal withheld_count
+        if p.name.startswith(".") or (enterprise_context and p.name not in COMPANY_CONTEXT_FILENAMES):
             return False
         if not enterprise_context:
             relative = p.relative_to(ws.resolve()).as_posix()
             resolved = _resolved_workspace_path(ws, relative)
             if resolved is None or not _authority_allows_path(authority_scope,
                 resolved.relative_to(ws.resolve()).as_posix(), directory=p.is_dir()):
+                withheld_count += 1
                 return False
             parent = p.parent.relative_to(ws.resolve()).as_posix()
         else:
             parent = rel_path
-        return authority_scope is None or authority_scope.visible_child(parent, p.name, is_dir=p.is_dir())
+        allowed = authority_scope is None or authority_scope.visible_child(parent, p.name, is_dir=p.is_dir())
+        if not allowed:
+            withheld_count += 1
+        return allowed
 
     for p in sorted(target.iterdir()):
         if not visible(p):
@@ -318,6 +322,9 @@ def _list_files(
             size_bytes = p.stat().st_size
             size_str = f"{size_bytes}B" if size_bytes < 1024 else f"{size_bytes / 1024:.1f}KB"
             items.append(f"  📄 {p.name} ({size_str})")
+
+    if withheld_count:
+        items.append(f"  ⚠️ 有 {withheld_count} 项暂时无法显示，已略过。")
 
     if not items:
         result = _append_workspace_provenance_hint(

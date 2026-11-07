@@ -22,16 +22,19 @@ def _lines(label: str, values: list[str]) -> list[str]:
     return [f"{label}:"] + [f"- {value}" for value in values]
 
 
-def build_permissions_prompt(ctx: PermissionsPromptContext) -> str:
-    lines = [
-        "# Effective Runtime Permissions",
-        f"approval_policy: {ctx.approval_policy}",
-        f"network_access: {ctx.network_access}",
-        f"request_permission_tool_enabled: {str(ctx.request_permission_tool_enabled).lower()}",
-        *_lines("writable_roots", ctx.writable_roots),
-        *_lines("denied_reads", ctx.denied_reads),
-        *_lines("allowed_tools", ctx.allowed_tools),
-        *_lines("denied_actions", ctx.denied_actions),
-        "These instructions describe the current authority boundary; platform gates still enforce it mechanically.",
+def build_permissions_prompt(ctx: PermissionsPromptContext, *, sections: list | None = None) -> str:
+    parts = [
+        ("guidance", ["# Effective Runtime Permissions"]),
+        ("approval_policy", [f"approval_policy: {ctx.approval_policy}"]),
+        ("network_access", [f"network_access: {ctx.network_access}"]),
+        ("request_permission_tool_enabled", [f"request_permission_tool_enabled: {str(ctx.request_permission_tool_enabled).lower()}"]),
+        ("writable_roots", _lines("writable_roots", ctx.writable_roots)),
+        ("denied_reads", _lines("denied_reads", ctx.denied_reads)),
+        ("allowed_tools", _lines("allowed_tools", ctx.allowed_tools)),
+        ("denied_actions", _lines("denied_actions", ctx.denied_actions)),
+        ("guidance", ["These instructions describe the current authority boundary; platform gates still enforce it mechanically."]),
     ]
-    return "\n".join(lines) + "\n"
+    rendered = [{"name": name, "content": "\n".join(lines) + "\n"} for name, lines in parts]
+    if sections is not None:
+        sections.extend(rendered)
+    return "".join(part["content"] for part in rendered)

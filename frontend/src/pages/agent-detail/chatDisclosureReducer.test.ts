@@ -8,6 +8,21 @@ import {
 import type { AgentChatMessage } from './chatRuntime';
 
 describe('chatDisclosureReducer', () => {
+  it('keeps runtime completion notices outside collapsed progress', () => {
+    const notice: AgentChatMessage = {
+      role: 'assistant', content: 'A requested file could not be attached.',
+      eventType: 'assistant_commentary', eventStatus: 'completed',
+      sessionItem: {
+        id: 'runtime-notice', kind: 'assistant_commentary', lifecycle: 'completed', terminal: true,
+        actor: { type: 'runtime' },
+      } as AgentChatMessage['sessionItem'],
+    };
+    const timeline = buildRunTimelineFromMessages([notice]);
+    expect(timeline.steps).toEqual([expect.objectContaining({
+      kind: 'commentary', status: 'done', details: notice.content, presentation: 'surface',
+    })]);
+  });
+
   it('settles earlier workflow progress only from the same run and step terminal receipt', () => {
     const progress: AgentChatMessage[] = [
       { role: 'event', content: '', eventType: 'runtime_action_progress', eventStatus: 'pending', eventWorkflowRunId: 'wf-1' },

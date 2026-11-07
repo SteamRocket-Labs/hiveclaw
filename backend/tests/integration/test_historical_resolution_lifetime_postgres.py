@@ -18,6 +18,7 @@ from app.services.session_model_inputs import _origin_dependencies, capture_cont
 from app.services.session_model_round import prepare_model_request
 from tests.integration.test_m1g27_model_input_bindings_postgres import _bound_input
 from tests.integration.test_m1g46_historical_input_recovery_postgres import _catalog_notice
+from tests.integration.source_withholding_helpers import legacy_model_requests
 from tests.services.test_session_semantic_history import _seal_round
 
 pytestmark = pytest.mark.usefixtures("migrated_pg_url")
@@ -25,7 +26,7 @@ pytestmark = pytest.mark.usefixtures("migrated_pg_url")
 
 @pytest.mark.parametrize("entry", ["model", "context"])
 async def test_inherited_reader_rechecks_recovery_after_its_original_scope_ends(
-    owner_sessionmaker, app_user_sessionmaker, entry
+    owner_sessionmaker, app_user_sessionmaker, monkeypatch, entry
 ):
     tenant, agent, session, run, bound = await _bound_input(owner_sessionmaker)
     public = {
@@ -44,19 +45,20 @@ async def test_inherited_reader_rechecks_recovery_after_its_original_scope_ends(
     old_prefix = apply_cache_hints([LLMMessage(role="system", content="Exact original frozen prefix")], "minimax")[0]
     async with app_user_sessionmaker() as db:
         await pin_rls_tenant_context(db, tenant)
-        request = await prepare_model_request(
-            db,
-            tenant_id=tenant,
-            agent_id=agent,
-            session_id=session,
-            run_id=run,
-            turn_id=f"turn-{run.hex}",
-            round_index=1,
-            messages=[old_prefix, *_mid_run_items_to_user_messages(bound), old_notice],
-            tools=[],
-            provider="minimax",
-            model="synthetic-no-provider",
-        )
+        with legacy_model_requests(monkeypatch):
+            request = await prepare_model_request(
+                db,
+                tenant_id=tenant,
+                agent_id=agent,
+                session_id=session,
+                run_id=run,
+                turn_id=f"turn-{run.hex}",
+                round_index=1,
+                messages=[old_prefix, *_mid_run_items_to_user_messages(bound), old_notice],
+                tools=[],
+                provider="minimax",
+                model="synthetic-no-provider",
+            )
         await _seal_round(
             db,
             tenant_id=tenant,

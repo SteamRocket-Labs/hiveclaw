@@ -21,6 +21,7 @@ from app.services.session_model_inputs import (
 )
 from app.services.session_model_round import prepare_model_request
 from tests.services.test_session_input_control_v2 import _seed_session
+from tests.integration.source_withholding_helpers import assert_withheld_input
 
 pytestmark = pytest.mark.usefixtures("migrated_pg_url")
 
@@ -124,7 +125,10 @@ async def test_external_context_capture_preserves_sources_and_live_identity(
         )
         model = await db.scalar(select(SessionModelResult).where(SessionModelResult.provider_request_id == request))
         bindings = model.model_request_snapshot_json["input_bindings"]
-        assert bindings["dependency_coverage"]["complete"] is (not unbound), bindings
+        assert bindings["dependency_coverage"]["complete"] is True, bindings
+        if unbound:
+            await assert_withheld_input(db, run_id=run, snapshot=model.model_request_snapshot_json,
+                index=0, content="Platform compiler context")
         assert message.source_ref.startswith("session-kernel-context:")
         source_id = uuid.UUID(message.source_ref.split(":", 1)[1])
         proof = await load_context_message_origin(

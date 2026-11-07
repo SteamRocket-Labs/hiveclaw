@@ -24,6 +24,7 @@ x-application: &application
     SECRET_KEY: ${HIVE_INSTALL_SECRET_KEY:?Application secret is required}
     JWT_SECRET_KEY: ${HIVE_INSTALL_JWT_SECRET_KEY:?JWT secret is required}
     SECRETS_MASTER_KEY: ${HIVE_INSTALL_SECRETS_MASTER_KEY:?Credential encryption key is required}
+    INSTALL_TOKEN: ${HIVE_INSTALL_TOKEN:-}
     DEBUG: "false"
     RLS_RUNTIME_ROLE_ENFORCEMENT: strict
     CORS_ORIGINS: ${HIVE_INSTALL_CORS_ORIGINS:?Public origin is required}

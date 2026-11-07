@@ -154,6 +154,8 @@ async def test_backup_restore_restarts_real_auth_files_approvals_and_encrypted_c
         object_storage_profile=storage_profile,
     )
     values = installer.read_profile(profile)
+    if snapshot_layout == "legacy":
+        values.pop("HIVE_INSTALL_TOKEN")
     values["HIVE_INSTALL_SCHEMA_PASSWORD"] = source.password
     profile.write_text("".join(f"{key}='{value}'\n" for key, value in values.items()))
     password = "SyntheticRestorePass123!"

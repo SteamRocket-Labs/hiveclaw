@@ -35,6 +35,7 @@ def configure(directory: Path, *, public_origin: str, port: int, recovery_profil
     recovered = read_profile(recovery_profile) if recovery_profile is not None else {}
     values = {"HIVE_INSTALL_ID": "hive_" + uuid.uuid4().hex[:20], "HIVE_INSTALL_SOURCE_ROOT": str(ROOT),
         "HIVE_INSTALL_FRONTEND_PORT": str(port),
+        "HIVE_INSTALL_TOKEN": recovered.get("HIVE_INSTALL_TOKEN") or secrets.token_hex(32),
         "BLOB_STORAGE_PROVIDER": "filesystem",
         "HIVE_INSTALL_CORS_ORIGINS": json.dumps([public_origin.rstrip("/")]),
         **{key: recovered.get(key) or secrets.token_hex(32) for key in SECRET_KEYS}}

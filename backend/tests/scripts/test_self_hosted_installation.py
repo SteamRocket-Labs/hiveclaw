@@ -44,6 +44,7 @@ def test_private_profile_is_unique_and_cannot_replace_existing_keys(tmp_path):
     assert json.loads(values["HIVE_INSTALL_CORS_ORIGINS"]) == ["https://example.test"]
     keys = [key for key in values if key.endswith(("PASSWORD", "SECRET_KEY", "MASTER_KEY"))]
     assert len(keys) == 6 and all(len(values[key]) == 64 and values[key] != second[key] for key in keys)
+    assert len(values["HIVE_INSTALL_TOKEN"]) == 64 and values["HIVE_INSTALL_TOKEN"] != second["HIVE_INSTALL_TOKEN"]
     assert values["HIVE_INSTALL_ID"] != second["HIVE_INSTALL_ID"]
     with pytest.raises(FileExistsError):
         installer.configure(first.parent, public_origin="http://localhost:3008", port=9999)
@@ -95,7 +96,8 @@ def test_invalid_origin_writes_no_profile(tmp_path, origin):
     assert not (tmp_path / "invalid").exists()
 
 
-def test_actual_compose_parser_preserves_private_paths_and_separates_owner_credentials(tmp_path, monkeypatch):
+@pytest.mark.parametrize("legacy_profile", [False, True])
+def test_actual_compose_parser_preserves_private_paths_and_separates_owner_credentials(tmp_path, monkeypatch, legacy_profile):
     if not shutil.which("docker"):
         pytest.skip("Docker Compose CLI required, no daemon/container is used")
     source = tmp_path / "source's $literal"
@@ -105,6 +107,10 @@ def test_actual_compose_parser_preserves_private_paths_and_separates_owner_crede
     monkeypatch.setattr(installer, "ROOT", source)
     profile = installer.configure(tmp_path / "owner's $profile", public_origin="http://localhost:3008", port=3008)
     values = dotenv_values(profile)
+    if legacy_profile:
+        values.pop("HIVE_INSTALL_TOKEN")
+        profile.write_text("".join(line for line in profile.read_text().splitlines(keepends=True)
+            if not line.startswith("HIVE_INSTALL_TOKEN=")))
     compose = [shutil.which("docker-compose")] if shutil.which("docker-compose") else ["docker", "compose"]
     compose_env = {**os.environ, "SECRET_KEY": "AMBIENT_SECRET_MUST_NOT_OVERRIDE_PROFILE"}
     plugin_directory = Path(compose[0]).resolve().parent
@@ -127,6 +133,7 @@ def test_actual_compose_parser_preserves_private_paths_and_separates_owner_crede
         assert "SCHEMA_DATABASE_URL" not in env and "RLS_APP_PASSWORD" not in env
         assert env["RLS_RUNTIME_ROLE_ENFORCEMENT"] == "strict"
         assert env["SECRET_KEY"] == values["HIVE_INSTALL_SECRET_KEY"]
+        assert env["INSTALL_TOKEN"] == values.get("HIVE_INSTALL_TOKEN", "")
         assert make_url(env["DATABASE_URL"]).username == "app_rls"
         assert values["HIVE_INSTALL_SCHEMA_PASSWORD"] not in json.dumps(services[name])
         assert services[name]["depends_on"]["prepare"]["condition"] == "service_completed_successfully"
@@ -215,6 +222,7 @@ async def test_native_prepare_real_authentication_and_worker_without_owner_crede
         "REDIS_URL": f"redis://:{values['HIVE_INSTALL_REDIS_PASSWORD']}@127.0.0.1:{redis_port}/0",
         "SECRET_KEY": values["HIVE_INSTALL_SECRET_KEY"], "JWT_SECRET_KEY": values["HIVE_INSTALL_JWT_SECRET_KEY"],
         "SECRETS_MASTER_KEY": values["HIVE_INSTALL_SECRETS_MASTER_KEY"], "DEBUG": "false", "RLS_RUNTIME_ROLE_ENFORCEMENT": "strict",
+        "INSTALL_TOKEN": values["HIVE_INSTALL_TOKEN"],
         "CORS_ORIGINS": values["HIVE_INSTALL_CORS_ORIGINS"], "AGENT_DATA_DIR": str(tmp_path / "agents"),
         "AGENT_TEMPLATE_DIR": str(ROOT / "backend/agent_template"), "PYTHONUNBUFFERED": "1"}
     preparation = subprocess.run([sys.executable, "-B", "-m", "app.scripts.prepare_self_hosted"], cwd=ROOT / "backend",
@@ -263,12 +271,16 @@ async def test_native_prepare_real_authentication_and_worker_without_owner_crede
             origins[role] = f"http://127.0.0.1:{port}"
             await wait_ready(origins[role], process, path)
         async with httpx.AsyncClient(timeout=30, trust_env=False) as client:
+            denied = await client.post(origins["api"] + "/api/auth/register",
+                json={"username": "without-token", "email": "without-token@installation.example.com", "password": "SyntheticInstallPass123!"})
+            assert denied.status_code == 403, denied.text
             engine = create_async_engine(owner)
             try:
                 async with engine.begin() as blocker:
                     await blocker.execute(text("LOCK TABLE users IN SHARE MODE"))
                     requests = [asyncio.create_task(client.post(origins["api"] + "/api/auth/register",
-                        json={"username": name, "email": f"{name}@installation.example.com", "password": "SyntheticInstallPass123!"}))
+                        json={"username": name, "email": f"{name}@installation.example.com", "password": "SyntheticInstallPass123!",
+                            "install_token": values["HIVE_INSTALL_TOKEN"]}))
                         for name in ("install-owner", "install-colleague")]
                     for _ in range(100):
                         async with engine.connect() as control:

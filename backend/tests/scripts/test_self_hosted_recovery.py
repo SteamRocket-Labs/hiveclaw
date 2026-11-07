@@ -47,13 +47,20 @@ def bundle(tmp_path, recovery):
         fingerprint=recovery.digest(path / "manifest.json"))
 
 
-def test_recovery_profile_retains_keys_in_a_new_project_without_replacing_existing_profile(tmp_path, recovery):
+@pytest.mark.parametrize("legacy_profile", [False, True])
+def test_recovery_profile_retains_keys_in_a_new_project_without_replacing_existing_profile(tmp_path, recovery, legacy_profile):
     from configure_self_hosted import configure, read_profile, SECRET_KEYS
 
     source = configure(tmp_path / "source", public_origin="https://old.example.com", port=3008)
+    if legacy_profile:
+        source.write_text("".join(line for line in source.read_text().splitlines(keepends=True)
+            if not line.startswith("HIVE_INSTALL_TOKEN=")))
     target = configure(tmp_path / "target", public_origin="https://new.example.com", port=3010, recovery_profile=source)
     old, new = read_profile(source), read_profile(target)
     assert all(old[key] == new[key] for key in SECRET_KEYS)
+    assert len(new["HIVE_INSTALL_TOKEN"]) == 64
+    if not legacy_profile:
+        assert new["HIVE_INSTALL_TOKEN"] == old["HIVE_INSTALL_TOKEN"]
     assert old["HIVE_INSTALL_ID"] != new["HIVE_INSTALL_ID"]
     assert new["HIVE_INSTALL_FRONTEND_PORT"] == "3010"
     assert stat.S_IMODE(target.stat().st_mode) == 0o600

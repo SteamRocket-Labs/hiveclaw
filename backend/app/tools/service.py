@@ -1380,9 +1380,11 @@ class ToolRuntimeService:
                                 context=context, tool_name=tool_name, tool_call_id=tool_call_id, arguments=arguments,
                                 result=input_read, states={}, lineage=[], errors={}, native_read_denial=input_read.metadata["native_read_denial"])
                     return input_read
+                input_paths = getattr(context.workspace_authority_scope, "allowed_paths", frozenset())
                 input_denial = await authorize_workspace_execution_inputs(request)
                 if input_denial is not None:
                     return input_denial
+                omitted_paths = input_paths - getattr(context.workspace_authority_scope, "allowed_paths", frozenset())
                 from app.services.workspace_resource_authority import (
                     WorkspaceAuthorityError, WorkspaceAuthorityScope, WorkspaceOutputWrite, authorize_workspace_tool_path,
                 )
@@ -1426,6 +1428,12 @@ class ToolRuntimeService:
                     )
                 with native_clock_read_scope(request) as clock_read, native_directory_read_scope(request) as directory_read:
                     value = await self.backend.execute(request, _execute_request)
+                if omitted_paths:
+                    note = "\n\nFiles omitted from this execution because their sources could not be verified: " + _json.dumps(
+                        sorted(omitted_paths), ensure_ascii=False) + ". Continue with the remaining verified inputs."
+                    value = replace(value, text=value.text + note,
+                        model_visible_text=value.model_visible_text + note if value.model_visible_text is not None else None
+                    ) if isinstance(value, ToolContentEnvelope) else str(value) + note
                 async def _settle_backend_result():
                     nonlocal value
                     value, _redaction = self._redact_runtime_egress(

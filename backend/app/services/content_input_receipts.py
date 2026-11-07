@@ -1791,12 +1791,13 @@ async def _validate_workspace_receipt_inputs(
 
 
 async def authorize_workspace_execution_inputs(request):
-    """Bind known upstream inputs without denying access to working copies."""
+    """Exclude unprovable personal Web inputs from the execution workspace."""
     from dataclasses import replace
     from app.database import tenant_scoped_session
     from app.core.resource_authority import normalize_workspace_resource_path
     from app.services.session_tool_runtime import _sha256
     from app.services.workspace_resource_authority import WorkspaceAuthorityScope, WorkspaceInputRead
+    from app.models.runtime_task import RuntimeTask
     from sqlalchemy.exc import SQLAlchemyError
 
     context, scope = request.context, request.context.workspace_authority_scope
@@ -1813,17 +1814,28 @@ async def authorize_workspace_execution_inputs(request):
             if not isinstance(resources, list) or any(not isinstance(path, str) for path in resources):
                 raise ValueError("invalid Office resource paths")
             paths &= {normalize_workspace_resource_path(path) for path in [*([str(raw)] if raw else []), *resources]}
-        reads = []
+        reads, omitted = [], set()
         tenant_id = uuid.UUID(str(context.tenant_id))
         async with tenant_scoped_session(tenant_id) as db:
+            task = await db.get(RuntimeTask, uuid.UUID(str(context.runtime_task_id))) if context.runtime_task_id else None
             for path in sorted(paths):
                 receipt = await latest_workspace_receipt(db, tenant_id, context.agent_id, path)
                 if receipt is None and path not in scope.full_control_paths:
                     continue
+                if receipt is not None and task is not None and task.task_type == "web_chat_turn":
+                    try:
+                        await _validate_workspace_dependency(db, tenant_id, {
+                            "source_kind": "workspace_artifact", "source_id": str(receipt.id),
+                            "source_version": receipt.content_sha256,
+                        }, user=None, runtime_request=request, active_receipts=frozenset())
+                    except ContentInputReceiptError:
+                        omitted.add(path)
+                        continue
                 reads.append(WorkspaceInputRead(path=path, receipt_id=receipt.id if receipt else None,
                     revision=receipt.revision if receipt else 0, content_sha256=receipt.content_sha256 if receipt else "",
                     dependencies_hash=_sha256(receipt.dependencies_json if receipt else [])))
-        context.workspace_authority_scope = replace(scope, input_reads=tuple(reads))
+        context.workspace_authority_scope = replace(scope, input_reads=tuple(reads),
+            allowed_paths=scope.allowed_paths - omitted)
     except (ContentInputReceiptError, OSError, ValueError, SQLAlchemyError) as exc:
         code = exc.code if isinstance(exc, ContentInputReceiptError) else "content_source_unavailable"
         status = exc.status_code if isinstance(exc, ContentInputReceiptError) else 503

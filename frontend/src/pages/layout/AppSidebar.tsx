@@ -134,7 +134,7 @@ export default function AppSidebar({
   // Creation uses an ordinary conversation; the legacy HR system bot stays
   // outside the member's bot list.
   const sortedAgents = sortSidebarAgents(
-    agents.filter((agent) => agent.name !== '__system_hr__'), assistantAgentId,
+    agents.filter((agent) => agent.agent_class !== 'internal_system' || agent.name !== '__system_hr__'), assistantAgentId,
   );
 
   const canSeeControlPlane = user && ['platform_admin', 'org_admin'].includes(user.role);

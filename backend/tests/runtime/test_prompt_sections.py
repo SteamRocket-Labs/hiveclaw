@@ -114,10 +114,16 @@ class TestToneStyleSection:
         section = build_tone_style_section()
         assert section.count("same language the user uses") == 1
         assert "including progress notes between tool calls" in section
-        assert "internal identifiers, field names, tool names, error codes, raw errors, and workspace paths" in section
+        assert "internal identifiers, field names, tool names, error codes, raw errors" in section
         assert "unless the user asks for those technical details" in section
         assert "Keep the facts, explain failures and next steps" in section
         assert "Technical terms and code identifiers remain in their original form" not in section
+
+    def test_names_written_files_and_keeps_code_references(self) -> None:
+        section = build_tone_style_section()
+        assert "Name the files you wrote or changed for the user in plain language" in section
+        assert "and workspace paths" not in section
+        assert "When referencing specific functions or code, include `file_path:line_number`" in section
 
 
 class TestExecutingActionsContract:

@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import json
-
 from app.services.bootstrap_soul import project_bootstrap_soul_role
 
 
@@ -36,7 +34,6 @@ def build_identity_section(
     role_description: str | None = None,
     invocation_scope: str = "conversation",
     soul_text: str = "",
-    company_name: str | None = None,
 ) -> str:
     """Build the identity & mission section.
 
@@ -58,11 +55,5 @@ def build_identity_section(
         if role_description is not None:
             soul_text = project_bootstrap_soul_role(soul_text, role_description)
         parts.append(f"### Personality\n{soul_text}")
-
-    if company_name:
-        parts.append(
-            f"Current company name: {json.dumps(company_name, ensure_ascii=False)}. "
-            "This name takes precedence over company placeholders in your personality."
-        )
 
     return "\n\n".join(parts)

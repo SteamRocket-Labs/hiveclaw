@@ -72,7 +72,9 @@ def _render_agent_soul_from_blueprint(
     primary_users = [str(item) for item in blueprint.get("primary_users", []) if str(item).strip()]
     core_outputs = [str(item) for item in blueprint.get("core_outputs", []) if str(item).strip()]
     quality_standards = [str(q) for q in blueprint.get("quality_standards", []) if str(q).strip()]
-    company_name = str(blueprint.get("company_name") or "the company").strip() or "the company"
+    company_name = " ".join("".join(
+        char if char.isprintable() else " " for char in str(blueprint.get("company_name") or "")
+    ).split()) or "the company"
     owner_name = str(blueprint.get("owner_name") or creator_name).strip() or creator_name
     company_charter = blueprint.get("company_charter") if isinstance(blueprint.get("company_charter"), dict) else {}
     owner_agency_charter = (

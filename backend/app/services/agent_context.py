@@ -686,6 +686,12 @@ async def build_agent_context(
         build_tone_style_section,
     )
 
+    identity_section = build_identity_section(
+        agent_name=agent_name,
+        role_description=role_description,
+        invocation_scope=invocation_scope,
+        soul_text=soul,
+    )
     context_parts: list[str] = []
 
     # These previews and the on-demand tool share one loader, so no second
@@ -738,24 +744,6 @@ async def build_agent_context(
     )
     a2a_section = a2a_resource.content.strip()
 
-    company_name = None
-    if _agent_tenant_id is not None:
-        from sqlalchemy import select
-        from app.database import tenant_scoped_session
-        from app.models.tenant import Tenant
-
-        async with tenant_scoped_session(_agent_tenant_id, require_tenant=True) as db:
-            company_name = (
-                await db.execute(select(Tenant.name).where(Tenant.id == _agent_tenant_id))
-            ).scalar_one_or_none()
-    identity_section = build_identity_section(
-        agent_name=agent_name,
-        role_description=role_description,
-        invocation_scope=invocation_scope,
-        soul_text=soul,
-        company_name=company_name,
-    )
-
     # Operating contract via modular section
     operating_contract = build_executing_actions_section(invocation_scope)
     subagent_listing = build_subagent_listing_section(agent_id=agent_id, tenant_id=_agent_tenant_id,
@@ -795,11 +783,8 @@ async def build_agent_context(
     if source_refs is not None:
         from app.services.config_versioning import canonical_content_hash
 
-        identity_content = agent_identity_content(agent_name, role_description)
-        if company_name:
-            identity_content["company_name"] = company_name
         source_refs.append({"source_kind": "agent_identity", "source_id": f"{agent_id}\nidentity",
-            "source_version": canonical_content_hash(identity_content)})
+            "source_version": canonical_content_hash(agent_identity_content(agent_name, role_description))})
         for resource in (soul_resource, channels_resource, company_resource, organization_resource, a2a_resource):
             if resource.status == "ok" and resource.content.strip():
                 if resource.source_refs:

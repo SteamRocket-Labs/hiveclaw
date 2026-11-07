@@ -14,6 +14,7 @@ from app.services.llm_client import LLMMessage
 from app.services.session_model_inputs import _hash, load_context_message_origin
 from app.services.session_model_round import prepare_model_request
 from tests.integration.test_m1g27_model_input_bindings_postgres import _bound_input
+from tests.integration.test_m1f_assistant_binding_postgres import builtin_defaults  # noqa: F401
 
 pytestmark = pytest.mark.usefixtures("migrated_pg_url")
 
@@ -98,6 +99,9 @@ async def test_known_platform_guidance_can_have_complete_inventory_without_grant
         assert bindings["dependency_coverage"]["complete"] is True
         assert bindings["source_authority"] == "not_evaluated"
         assert [ref["source_kind"] for ref in bindings["dependencies"]] == ["session_command"]
+        assert snapshot["wire_request"]["messages"] == [
+            {"role": "system", "content": "Use the authorized tools."},
+            {"role": "user", "content": "Exact admitted input"}]
         origin = await load_context_message_origin(db, tenant_id=scope[0], agent_id=scope[1],
             source_id=uuid.UUID(bindings["messages"][0]["source_ref"].split(":", 1)[1]))
         assert origin["dependency_coverage"] == {"complete": True, "unbound": []}
@@ -148,6 +152,7 @@ async def test_context_origins_enforce_session_scope_and_detect_rewritten_record
 
 
 @pytest.mark.parametrize("creation", ["original", "model_blueprint", "legacy", "repair"])
+@pytest.mark.usefixtures("builtin_defaults")
 async def test_context_uses_observed_content_and_recorded_origins(
     owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, creation,
 ):

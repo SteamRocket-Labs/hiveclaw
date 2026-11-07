@@ -7,6 +7,7 @@ import pytest
 
 from app.database import pin_rls_tenant_context
 from tests.services.test_session_input_control_v2 import _seed_session
+from tests.integration.source_withholding_helpers import assert_withheld_input
 
 pytestmark = pytest.mark.usefixtures("migrated_pg_url")
 
@@ -109,7 +110,12 @@ async def test_real_knowledge_tool_version_survives_native_settlement_and_replay
         next_model = await db.scalar(select(SessionModelResult).where(SessionModelResult.provider_request_id == next_request))
         catalog = next_model.model_request_snapshot_json["input_bindings"]
         assert {"source_kind": "knowledge_document", "source_id": str(document.id), "source_version": version} in catalog["dependencies"]
-        assert catalog["dependency_coverage"]["complete"] is False  # Original plain provider input is not a public source.
+        assert catalog["dependency_coverage"]["complete"] is True
+        original_model = await db.scalar(select(SessionModelResult).where(SessionModelResult.provider_request_id == request_id))
+        await assert_withheld_input(db, run_id=run, snapshot=original_model.model_request_snapshot_json,
+            index=0, content="Read the authorized input")
+        assert next_model.model_request_snapshot_json["wire_request"]["messages"] == [
+            {"role": "tool", "content": replay, "tool_call_id": call}]
         assert "forged-from-document-metadata" not in json.dumps(catalog)
         retried = await complete_tool_invocation(db, tenant_id=tenant, agent_id=agent, session_id=session,
             invocation_id=invocation.id, provider_result_content="Changed late result", execution_evidence=_execution_evidence(trace))

@@ -14,6 +14,7 @@ from tests.integration.test_m1g24_workspace_artifact_authority_postgres import n
 from tests.integration.test_m1g27_model_input_bindings_postgres import _bound_input
 from tests.integration.test_m1g28_runtime_source_reads_postgres import _create
 from tests.integration.test_m1g29_workspace_input_evidence_postgres import _native_read
+from tests.integration.source_withholding_helpers import assert_withheld_input
 
 pytestmark = pytest.mark.usefixtures("migrated_pg_url")
 
@@ -45,7 +46,8 @@ async def test_bound_command_is_a_versioned_source_and_wire_claims_cannot_replac
         assert "source_ref" not in json.dumps(snapshot["wire_request"])
         assert "caller-claim" not in json.dumps(catalog)
         if corrupt_command:
-            assert catalog["dependency_coverage"]["complete"] is False and not catalog["dependencies"]
+            await assert_withheld_input(db, run_id=run, snapshot=snapshot, index=0, content="Exact admitted input")
+            assert not catalog["dependencies"]
         else:
             assert catalog["dependency_coverage"]["complete"] is True
             assert catalog["dependencies"] == [{"source_kind": "session_command", "source_id": str(command.id),
@@ -121,7 +123,16 @@ async def test_exact_native_carrier_remains_a_dependency_even_when_its_input_lis
             [LLMMessage(role="tool", tool_call_id=invocation.provider_tool_use_id, content=str(result),
                 source_ref=f"session-tool-result:{invocation.id}")], round_index=2)
         catalog = snapshot["input_bindings"]
-        assert catalog["dependency_coverage"]["complete"] is False  # The call's original plain input had no origin binding.
+        assert catalog["dependency_coverage"]["complete"] is True
+        original_model = await db.scalar(select(SessionModelResult).where(
+            SessionModelResult.provider_request_id == invocation.provider_request_id))
+        await assert_withheld_input(db, run_id=n.run, snapshot=original_model.model_request_snapshot_json,
+            index=0, content="Read the file")
         carriers = [d for d in catalog["dependencies"] if d["source_kind"] == "workspace_artifact"]
         assert carriers == ([] if tamper else [{"source_kind": "workspace_artifact", "source_id": str(receipt_id), "source_version": version}]), catalog
         assert "FORGED_NEW_DEPENDENCY" not in json.dumps(catalog)
+        if tamper:
+            await assert_withheld_input(db, run_id=n.run, snapshot=snapshot, index=0, content=str(result))
+        else:
+            assert snapshot["wire_request"]["messages"] == [{"role": "tool", "content": str(result),
+                "tool_call_id": invocation.provider_tool_use_id}]

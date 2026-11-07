@@ -17,6 +17,7 @@ from app.services.session_semantic_history import load_session_semantic_history
 from app.services.web_chat_runtime import conversation_from_history_messages
 from tests.integration.test_m1g27_model_input_bindings_postgres import _bound_input
 from tests.services.test_session_semantic_history import _seal_round
+from tests.integration.source_withholding_helpers import legacy_model_requests
 
 pytestmark = pytest.mark.usefixtures("migrated_pg_url")
 
@@ -29,7 +30,7 @@ def _catalog_notice(*, source, unbound=(), catalog="§ Skills\npublic-probe: Pub
 
 @pytest.mark.parametrize("alteration", [None, "prefix", "catalog", "private_skill", "unknown_gap", "foreign_session"])
 async def test_old_cache_and_catalog_inventory_recovers_only_exact_independent_sources(
-    owner_sessionmaker, app_user_sessionmaker, alteration,
+    owner_sessionmaker, app_user_sessionmaker, monkeypatch, alteration,
 ):
     scope = await _bound_input(owner_sessionmaker)
     tenant, agent, session, run, bound = scope
@@ -43,10 +44,11 @@ async def test_old_cache_and_catalog_inventory_recovers_only_exact_independent_s
     assert isinstance(old_prefix.content, list)
     async with app_user_sessionmaker() as db:
         await pin_rls_tenant_context(db, tenant)
-        request = await prepare_model_request(db, tenant_id=tenant, agent_id=agent, session_id=session,
-            run_id=run, turn_id=f"turn-{run.hex}", round_index=1,
-            messages=[old_prefix, *_mid_run_items_to_user_messages(bound), old_notice], tools=[],
-            provider="minimax", model="synthetic-no-provider")
+        with legacy_model_requests(monkeypatch):
+            request = await prepare_model_request(db, tenant_id=tenant, agent_id=agent, session_id=session,
+                run_id=run, turn_id=f"turn-{run.hex}", round_index=1,
+                messages=[old_prefix, *_mid_run_items_to_user_messages(bound), old_notice], tools=[],
+                provider="minimax", model="synthetic-no-provider")
         await _seal_round(db, tenant_id=tenant, agent_id=agent, session_id=session, run_id=run,
             turn_id=f"turn-{run.hex}", round_index=1, provider_request_id=request, content="Use the original facts.")
         old = await db.scalar(select(SessionModelResult).where(SessionModelResult.provider_request_id == request))
@@ -128,7 +130,7 @@ async def test_historical_assistant_cache_presentation_rechecks_canonical_bytes(
             return manifest
 
         # The old compiler writes its old manifest once. Recovery must never edit it.
-        with monkeypatch.context() as old_compiler:
+        with monkeypatch.context() as old_compiler, legacy_model_requests(monkeypatch):
             old_compiler.setattr(inputs, "build_model_input_bindings", legacy_inventory)
             request = await prepare_model_request(db, tenant_id=tenant, agent_id=agent, session_id=session,
                 run_id=run, turn_id=f"turn-{run.hex}", round_index=2, messages=selected, tools=[],
@@ -146,7 +148,7 @@ async def test_historical_assistant_cache_presentation_rechecks_canonical_bytes(
 @pytest.mark.parametrize("complete_inputs", [False, True])
 @pytest.mark.parametrize("alteration", [None, "missing_commit", "wrong_commit", "wrong_owner", "missing_seal"])
 async def test_canonical_committed_inputs_survive_legacy_prepare_reconciliation(
-    owner_sessionmaker, app_user_sessionmaker, complete_inputs, alteration,
+    owner_sessionmaker, app_user_sessionmaker, monkeypatch, complete_inputs, alteration,
 ):
     import uuid
     from app.models.chat_transcript_event import ChatTranscriptEvent
@@ -159,10 +161,11 @@ async def test_canonical_committed_inputs_survive_legacy_prepare_reconciliation(
     )[0]
     async with app_user_sessionmaker() as db:
         await pin_rls_tenant_context(db, tenant)
-        request = await prepare_model_request(db, tenant_id=tenant, agent_id=agent, session_id=session,
-            run_id=run, turn_id=f"turn-{run.hex}", round_index=1,
-            messages=[selected, *_mid_run_items_to_user_messages(bound)], tools=[],
-            provider="minimax", model="synthetic-no-provider")
+        with legacy_model_requests(monkeypatch):
+            request = await prepare_model_request(db, tenant_id=tenant, agent_id=agent, session_id=session,
+                run_id=run, turn_id=f"turn-{run.hex}", round_index=1,
+                messages=[selected, *_mid_run_items_to_user_messages(bound)], tools=[],
+                provider="minimax", model="synthetic-no-provider")
         await _seal_round(db, tenant_id=tenant, agent_id=agent, session_id=session, run_id=run,
             turn_id=f"turn-{run.hex}", round_index=1, provider_request_id=request, content="Committed answer")
         old = await db.scalar(select(SessionModelResult).where(SessionModelResult.provider_request_id == request))
@@ -205,6 +208,8 @@ async def test_canonical_committed_inputs_survive_legacy_prepare_reconciliation(
                 SessionModelResult.provider_request_id == current_request))
             bindings = current.model_request_snapshot_json["input_bindings"]
             assert bindings["dependency_coverage"]["complete"] is True
+            assert any(message.get("content") == "Committed answer"
+                for message in current.model_request_snapshot_json["wire_request"]["messages"])
             recovery = next(item for item in bindings["historical_source_recovery"]["models"]
                 if item["model_result_id"] == str(old.id))
             assert recovery["canonical_commit_ref"] == f"session-event:{frozen[4]}"

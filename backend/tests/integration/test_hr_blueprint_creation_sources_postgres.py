@@ -24,6 +24,7 @@ from app.tools.handlers.hr import preview_agent_blueprint
 from app.tools.runtime import ToolExecutionContext, ToolExecutionRequest
 from tests.integration.test_m1f_assistant_binding_postgres import builtin_defaults  # noqa: F401
 from tests.integration.test_web_chat_worker_restart_kernel_recovery import _seed_run
+from tests.integration.source_withholding_helpers import assert_withheld_input
 
 pytestmark = pytest.mark.usefixtures("migrated_pg_url")
 
@@ -179,8 +180,11 @@ async def test_preview_sources_require_real_confirmation_and_preserve_coverage(
         assert wrong_requester.value.code == "requester_mismatch"
         await _confirm(db, seed, draft)
         dependencies = await load_employee_creation_dependencies(db, draft=draft)
-        assert dependencies is not None and dependencies[1] is (not unbound)
+        assert dependencies is not None and dependencies[1] is True
         model = await db.scalar(select(SessionModelResult).where(SessionModelResult.run_id == seed["run_id"]))
+        if unbound:
+            await assert_withheld_input(db, run_id=seed["run_id"], snapshot=model.model_request_snapshot_json,
+                index=0, content="Preview the requested employee.")
         assert dependencies[0] == model.model_request_snapshot_json["input_bindings"]["dependencies"]
         assert dependencies[0]
         with pytest.raises(IntegrityError, match="confirmed HR blueprint is immutable"):
@@ -263,7 +267,24 @@ async def test_system_hr_captures_skill_sources_only_at_original_installation(
     capture = SkillInputCapture(hr_id)
     await load_skill_input_snapshot(capture, seed["tenant_id"])
     if existing:
-        assert capture.platform_files == {}
+        from app.services.skill_source_receipts import original_platform_skill_hashes
+
+        workspace = agent_manager._agent_dir(hr_id)
+        expected = original_platform_skill_hashes(workspace)
+        assert expected and set(capture.platform_files) == set(expected)
+        assert {path: value[1] for path, value in capture.platform_files.items()} == expected
+        path = "skills/create-employee/SKILL.md"
+        body = (workspace / path).read_bytes()
+        try:
+            (workspace / path).write_bytes(body + b"\nCHANGED_PLATFORM_SKILL")
+            changed = SkillInputCapture(hr_id)
+            await load_skill_input_snapshot(changed, seed["tenant_id"])
+            assert set(changed.platform_files) == set(expected) - {path}
+            changed.observe_file(path, hashlib.sha256((workspace / path).read_bytes()).hexdigest())
+            assert changed.snapshot()["sources"] == []
+            assert changed.snapshot()["unbound"] == [f"skill_file_unbound:{path}"]
+        finally:
+            (workspace / path).write_bytes(body)
     else:
         workspace = agent_manager._agent_dir(hr_id)
         files = sorted((workspace / "skills").glob("*/SKILL.md"))

@@ -13,6 +13,7 @@ from app.runtime.hooks import HookResult
 from app.services.llm_client import LLMMessage
 from app.services.session_model_round import bind_round_inputs, prepare_model_request
 from tests.services.test_session_input_control_v2 import _accepted_input, _authority, _seed_session
+from tests.integration.source_withholding_helpers import assert_withheld_input
 
 pytestmark = pytest.mark.usefixtures("migrated_pg_url")
 
@@ -91,22 +92,25 @@ async def test_actual_request_records_verified_origin_and_explicit_coverage_gaps
             provider="openai", model="synthetic-no-provider", wire_request=wire)
         result = await db.scalar(select(SessionModelResult).where(SessionModelResult.provider_request_id == request_id))
         snapshot = result.model_request_snapshot_json
-        assert snapshot["wire_request"] == original_wire
+        assert {key: value for key, value in snapshot["wire_request"].items() if key != "messages"} == {
+            key: value for key, value in original_wire.items() if key != "messages"}
         assert "source_ref" not in json.dumps(snapshot["wire_request"])
         bindings = snapshot["input_bindings"]
-        assert bindings["status"] == "incomplete"  # System context has no source authority receipt yet.
+        assert bindings["status"] == "resolved"
         assert bindings["source_authority"] == "not_evaluated"
-        assert bindings["messages"][0]["code"] == "source_origin_missing"
+        # An unannotated system message is data, not a platform constant.
+        await assert_withheld_input(db, run_id=run, snapshot=snapshot, index=0, content="Runtime system context")
         entry = bindings["messages"][1]
         if alteration is None:
             assert entry["status"] == "bound", bindings
             assert entry["source_ref"] == expected_ref
             assert entry["command_ref"].startswith("session-command:")
+            assert snapshot["wire_request"]["messages"][1] == original_wire["messages"][1]
         else:
-            assert entry["status"] == "unresolved", bindings
-            assert entry["code"] == {"body": "source_content_mismatch", "wire": "source_wire_mismatch",
-                "foreign-origin": "source_origin_unavailable", "missing": "source_origin_missing"}[alteration]
+            await assert_withheld_input(db, run_id=run, snapshot=snapshot, index=1,
+                content=original_wire["messages"][1]["content"])
             assert "source_ref" not in entry
+            assert not bindings["dependencies"]
 
 
 async def test_native_provider_alias_resolves_only_the_selected_canonical_tool(

@@ -7,6 +7,7 @@ from contextlib import asynccontextmanager
 from types import SimpleNamespace
 
 import pytest
+from sqlalchemy import select
 
 from app.database import pin_rls_tenant_context
 from app.kernel.engine import _mid_run_items_to_user_messages
@@ -14,6 +15,7 @@ from app.models.agent import Agent
 from app.models.channel_config import ChannelConfig
 from app.models.chat_session import ChatSession
 from app.models.user import User
+from app.models.session_v2 import SessionModelResult
 from app.services.content_input_receipts import (
     ContentInputReceiptError, validate_browser_input_dependencies, validate_runtime_input_dependencies,
 )
@@ -21,6 +23,7 @@ from app.services.llm_client import LLMMessage
 from app.tools.runtime import ToolExecutionContext, ToolExecutionRequest
 from tests.integration.test_m1g27_model_input_bindings_postgres import _bound_input
 from tests.integration.test_m1g30_model_dependencies_postgres import _snapshot
+from tests.integration.source_withholding_helpers import assert_withheld_input
 
 pytestmark = pytest.mark.usefixtures("migrated_pg_url")
 
@@ -120,8 +123,8 @@ async def test_partial_or_unproved_context_keeps_input_coverage_incomplete(
         await pin_rls_tenant_context(db, s.tenant)
         _, snapshot = await _snapshot(db, s.tenant, s.agent, s.session, s.run, [s.message], round_index=2)
         catalog = snapshot["input_bindings"]
-        assert catalog["dependency_coverage"]["complete"] is False
-        assert {row["source_kind"] for row in catalog["dependencies"]} == {"session_command", "session_tool_invocation"}
+        await assert_withheld_input(db, run_id=s.run, snapshot=snapshot, index=0, content=s.raw)
+        assert catalog["dependencies"] == []
 
 
 async def test_channel_fact_does_not_certify_unproved_parent_inputs_or_another_employee(
@@ -132,7 +135,13 @@ async def test_channel_fact_does_not_certify_unproved_parent_inputs_or_another_e
         await pin_rls_tenant_context(db, s.tenant)
         _, snapshot = await _snapshot(db, s.tenant, s.agent, s.session, s.run, [s.message], round_index=2)
         catalog = snapshot["input_bindings"]
-        assert catalog["dependency_coverage"]["complete"] is False
+        assert catalog["dependency_coverage"]["complete"] is True
+        original_model = await db.scalar(select(SessionModelResult).where(
+            SessionModelResult.run_id == s.run, SessionModelResult.round_id.like("%:round:1")))
+        await assert_withheld_input(db, run_id=s.run, snapshot=original_model.model_request_snapshot_json,
+            index=0, content="Legacy input without a source")
+        assert snapshot["wire_request"]["messages"] == [{"role": "tool", "content": s.raw,
+            "tool_call_id": s.message.tool_call_id}]
         dependency = next(row for row in catalog["dependencies"] if row["source_kind"] == "agent_context_resource")
         with pytest.raises(ContentInputReceiptError) as error:
             await validate_runtime_input_dependencies(db, s.request, [{**dependency, "source_id": f"{uuid.uuid4()}\nchannels"}])

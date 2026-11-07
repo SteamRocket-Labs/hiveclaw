@@ -14,6 +14,56 @@ from tests.services.test_session_input_control_v2 import _seed_session
 pytestmark = pytest.mark.usefixtures("migrated_pg_url")
 
 
+@pytest.mark.parametrize("status", ["completed", "failed", "killed", "skipped", "needs_reconciliation", "running"])
+async def test_web_cancel_finalizers_observe_settled_runs_but_reject_reclaimed_active_runs(
+    owner_sessionmaker, monkeypatch, status,
+):
+    from app.database import tenant_scoped_session
+    from app.models.chat_transcript_event import ChatTranscriptEvent
+    from app.services import web_chat_runtime as runtime
+    from app.services.runtime_task_fence import (
+        StaleRuntimeTaskFenceError, reset_runtime_task_fence, set_runtime_task_fence,
+    )
+
+    tenant_id, _, agent_id, session_id, run_id = await _seed_session(owner_sessionmaker, active_run=True)
+    async with owner_sessionmaker() as db:
+        run = await db.get(RuntimeTask, run_id)
+        run.status, run.claim_version, run.claimed_by = status, 2, "new-worker"
+        run.claim_expires_at = datetime.now(timezone.utc) + timedelta(minutes=10)
+        run.completed_at = None if status == "running" else datetime.now(timezone.utc)
+        run.result_summary = "Committed outcome"
+        run.metadata_json = {"terminal_reason": "original", "session_v2_reconciliation": {"delivery_state": "unknown"}}
+        await db.commit()
+        before = (run.status, dict(run.metadata_json), run.claim_version, run.completed_at, run.result_summary)
+
+    monkeypatch.setattr(runtime, "_async_session", owner_sessionmaker)
+    monkeypatch.setattr(runtime, "tenant_scoped_session",
+        lambda tenant_id, **kwargs: tenant_scoped_session(tenant_id,
+            **{**kwargs, "session_factory": owner_sessionmaker}))
+    calls = [
+        lambda: runtime._finalize_web_chat_run_without_assistant(run_uuid=run_id, agent_id=agent_id,
+            session_id=str(session_id), status="killed", result_summary="Stopped", metadata_json={"cancelled_by_user": True}),
+        lambda: runtime._update_runtime_task(run_id, status="killed", result_summary="Stopped",
+            metadata_json={"cancelled_by_user": True}),
+    ]
+    token = set_runtime_task_fence(task_id=run_id, claim_version=1, worker_id="old-worker")
+    try:
+        for call in calls:
+            if status == "running":
+                with pytest.raises(StaleRuntimeTaskFenceError):
+                    await call()
+            else:
+                assert not await call()
+    finally:
+        reset_runtime_task_fence(token)
+    async with owner_sessionmaker() as db:
+        run = await db.get(RuntimeTask, run_id)
+        assert (run.status, run.metadata_json, run.claim_version, run.completed_at, run.result_summary) == before
+        assert list(await db.scalars(select(ChatTranscriptEvent).where(ChatTranscriptEvent.run_id == run_id))) == []
+        assert list(await db.scalars(select(RuntimeTerminalBoundaryOutbox).where(
+            RuntimeTerminalBoundaryOutbox.runtime_task_id == run_id))) == []
+
+
 async def _prepare(db, common, provider_options):
     from app.services.session_model_round import bind_round_inputs, prepare_model_request
 

@@ -412,13 +412,15 @@ def build_result_integration_runtime_context(manifest: dict[str, Any]) -> str:
 def _build_result_runtime_action_payload(item: dict[str, Any]) -> dict[str, Any] | None:
     task_type = _text(item.get("task_type")) or "background_task"
     source_kind = _text(item.get("source_kind")) or "runtime_result"
-    if source_kind == "approval" or _task_notification_has_dedicated_projection(task_type, source_kind):
-        return None
     status = _text(item.get("terminal_status")).lower() or "completed"
+    if (source_kind == "approval" and status in {"completed", "done", "succeeded", "failed", "error",
+        "killed", "cancelled", "needs_reapproval"}) or _task_notification_has_dedicated_projection(task_type, source_kind):
+        return None
     source_run_id = _text(item.get("source_run_id"))
     size_bytes = max(0, int(item.get("result_size_bytes") or 0))
     payload: dict[str, Any] = {
-        "type": _TASK_RUNTIME_ACTION_STATUS_MAP.get(status, "runtime_action_progress"),
+        "type": _TASK_RUNTIME_ACTION_STATUS_MAP.get(status,
+            "runtime_action_blocked" if source_kind == "approval" else "runtime_action_progress"),
         "status": status,
         "message": {"completed": "已完成", "done": "已完成", "failed": "执行失败", "error": "执行失败",
             "killed": "已停止", "cancelled": "已停止", "needs_reconciliation": "需要人工核查",

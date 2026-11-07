@@ -24,8 +24,8 @@ it('continues the saved file in the original work without sending the preview by
   fireEvent.click(screen.getByRole('button', { name: 'Continue in this work' }));
   await waitFor(() => expect(send).toHaveBeenCalledTimes(1));
   const [content, options] = send.mock.calls[0];
-  expect(content).toContain('workspace/report.md');
-  expect(content).toContain('Revise the conclusion using my saved changes.');
+  expect(content).toBe('Revise the conclusion using my saved changes.');
+  expect(options.parts).toEqual([{ type: 'workspace_file_ref', agent_id: 'employee', path: 'workspace/report.md' }]);
   expect(content).not.toContain('Original delivery bytes');
   expect(options.expectedSessionId).toBe('original-work');
   expect(options.inputId).toMatch(/^[0-9a-f-]{36}$/);
@@ -140,7 +140,8 @@ it.each([false, true])('continues after an uncertain save is read back and expli
   fireEvent.click(submit);
   await waitFor(() => expect(send).toHaveBeenCalledTimes(1));
   expect(send.mock.calls[0][1].expectedSessionId).toBe('original-work');
-  expect(send.mock.calls[0][0]).toContain('"human_saved_hash":"' + 'b'.repeat(64) + '"');
+  expect(send.mock.calls[0][1].parts).toEqual([{ type: 'workspace_file_ref', agent_id: 'employee',
+    path: preview.artifact.path, human_saved_hash: 'b'.repeat(64) }]);
   expect(send.mock.calls[0][0]).not.toContain('Human revision');
 });
 
@@ -163,7 +164,8 @@ it('uses a new input for a newly acknowledged human file version after an uncert
   fireEvent.click(screen.getByRole('button', { name: 'Continue in this work' }));
   await waitFor(() => expect(send).toHaveBeenCalledTimes(2));
   expect(send.mock.calls[1][1].inputId).not.toBe(send.mock.calls[0][1].inputId);
-  expect(send.mock.calls[1][0]).toContain('"human_saved_hash":"' + 'b'.repeat(64) + '"');
+  expect(send.mock.calls[1][1].parts).toEqual([{ type: 'workspace_file_ref', agent_id: 'employee',
+    path: preview.artifact.path, human_saved_hash: 'b'.repeat(64) }]);
   expect(send.mock.calls[1][0]).not.toContain('New saved bytes');
 });
 

@@ -349,6 +349,9 @@ function projectCanonicalItem(
   }
   if (item.kind === 'human_input') {
     const firstPart = Array.isArray(item.payload.content_parts) ? recordValue(item.payload.content_parts[0]) : undefined;
+    const savedFile = Array.isArray(item.payload.content_parts) && item.payload.content_parts
+      .some(part => recordValue(part)?.type === 'workspace_file_ref');
+    const displayContent = firstPart?.display_content ?? firstPart?.text;
     const noticePart = Array.isArray(item.payload.content_parts) ? item.payload.content_parts
       .map(recordValue).find(part => part?.type === 'text'
         && typeof recordValue(part.metadata)?.pasted_credential_notice === 'boolean') : undefined;
@@ -356,7 +359,7 @@ function projectCanonicalItem(
     if (firstPart?.role === 'system') return null;
     return {
       role: 'user',
-      content: itemDisplayContent(item),
+      content: savedFile ? (typeof displayContent === 'string' ? displayContent : '') : itemDisplayContent(item),
       pastedCredentialNotice: recordValue(noticePart?.metadata)?.pasted_credential_notice as boolean | undefined,
       id: item.id,
       // Item identity and the durable checkpoint anchor are distinct: the

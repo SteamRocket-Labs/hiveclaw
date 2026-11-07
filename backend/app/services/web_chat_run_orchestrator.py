@@ -1230,8 +1230,19 @@ async def _bind_session_round_inputs(state: _WebChatRunState, round_index: int) 
             turn_id=_session_turn_id(state),
             round_index=round_index,
         )
+        from app.services.artifact_continuation import saved_file_context
+
+        selected, notices = await saved_file_context(db, tenant_id=state.agent.tenant_id,
+            agent_id=state.agent.id, session_id=uuid.UUID(str(state.session_id)), run_id=state.run_uuid,
+            user_id=state.actor_user_id, messages=messages)
         await db.commit()
-        return messages
+        for event in notices:
+            from app.models.session_v2 import SessionEventOutbox
+
+            envelope = await db.scalar(select(SessionEventOutbox.envelope_json).where(
+                SessionEventOutbox.event_id == event.id))
+            await state.ports.events.broadcast(state.agent.id, state.session_id, envelope)
+        return [*messages, *selected]
 
 
 async def _prepare_session_model_request(state: _WebChatRunState, **payload: Any) -> str | dict[str, Any]:

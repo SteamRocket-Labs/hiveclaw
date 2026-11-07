@@ -1053,6 +1053,7 @@ def input_parts_to_runtime_messages(rows: Iterable[SessionTurnInput], *, answer_
         from app.services.project_context import project_input_projection
 
         has_project = any(isinstance(part, dict) and part.get("type") == "project_ref" for part in parts)
+        has_saved_file = any(part.get("type") == "workspace_file_ref" for part in parts)
         parts = project_input_projection(parts, row.id)
         role = "user"
         if parts and isinstance(parts[0], dict):
@@ -1063,7 +1064,7 @@ def input_parts_to_runtime_messages(rows: Iterable[SessionTurnInput], *, answer_
             content: Any = (answer_projections or {}).get(str(row.id), parts[0]["text"])
         else:
             content = parts
-        if has_project or any(isinstance(part, dict) and (part.get("type") == "attachment_ref"
+        if has_project or has_saved_file or any(isinstance(part, dict) and (part.get("type") == "attachment_ref"
             or "team_task_source" in part) for part in parts):
             from app.services.session_user_checkpoint import render_human_input_content
 
@@ -1075,6 +1076,8 @@ def input_parts_to_runtime_messages(rows: Iterable[SessionTurnInput], *, answer_
                 "session_input_id": str(row.id),
                 "source_ref": f"session-input:{row.id}",
                 "bound_round_id": row.bound_round_id,
+                "workspace_file_refs": [part for part in row.content_parts_json or []
+                    if part.get("type") == "workspace_file_ref"],
             }
         )
     return messages

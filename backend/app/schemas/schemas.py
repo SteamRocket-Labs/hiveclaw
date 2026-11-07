@@ -20,6 +20,7 @@ class UserRegister(BaseModel):
     password: str = Field(min_length=6, max_length=128)
     display_name: str | None = None
     invitation_code: str | None = None
+    install_token: str | None = None
 
 
 class UserLogin(BaseModel):

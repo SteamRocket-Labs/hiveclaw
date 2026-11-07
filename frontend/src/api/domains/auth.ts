@@ -16,6 +16,7 @@ export interface RegisterParams {
   password: string;
   display_name?: string;
   invitation_code?: string;
+  install_token?: string;
 }
 
 export interface PasswordChangeParams {
@@ -33,6 +34,17 @@ export interface ProfileUpdateParams {
 
 export interface RegistrationConfig {
   invitation_code_required: boolean;
+  registration_enabled: boolean;
+  install_token_required: boolean;
+}
+
+export interface OidcConfig {
+  configured: boolean;
+  authorization_endpoint: string;
+  client_id: string;
+  scopes: string;
+  display_name: string;
+  tenant_id: string;
 }
 
 export interface FeishuSsoInitResponse {
@@ -97,6 +109,8 @@ export const authApi = {
   updateMe: (data: ProfileUpdateParams) => patch<User>('/auth/me', data),
   changePassword: (data: PasswordChangeParams) => put<void>('/auth/me/password', data),
   getRegistrationConfig: () => get<RegistrationConfig>('/auth/registration-config'),
+  getOidcConfig: (tenantSlug?: string) => get<OidcConfig>(`/auth/oidc/config${tenantSlug ? `?tenant_slug=${encodeURIComponent(tenantSlug)}` : ''}`),
+  oidcCallback: (data: { code: string; nonce: string; redirect_uri: string; tenant_id: string }) => post<TokenResponse>('/auth/oidc/callback', data),
   feishuSsoAvailable: () => get<{ available: boolean }>('/auth/feishu/sso/available'),
   feishuSsoInit: () => post<FeishuSsoInitResponse>('/auth/feishu/sso/init', {}),
   feishuSsoPoll: (sessionId: string) => get<FeishuSsoPollResponse>(`/auth/feishu/sso/poll?session_id=${sessionId}`),

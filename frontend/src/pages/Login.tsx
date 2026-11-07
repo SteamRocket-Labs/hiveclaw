@@ -1,18 +1,18 @@
-import { useState, useRef, useCallback } from 'react';
+import { useState, useRef, useCallback, useEffect } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { useAuthStore } from '../stores';
-import { authApi, feishuConflictMessage } from '../api/domains/auth';
+import { authApi, feishuConflictMessage, type RegistrationConfig, type OidcConfig } from '../api/domains/auth';
 import { ApiError } from '../api/core/errors';
 import { showAppToast } from '../components/AppDialogs';
 import { safePostLoginRedirect } from '../routing/authRedirect';
+import { prepareOidcLogin } from '../routing/oidcLogin';
 import { AuthShell } from './auth/AuthShell';
 
 type RegisterConflict = {
     field?: string;
     code?: string;
     suggest_login?: boolean;
-    default_password_hint?: boolean;
 };
 
 export default function Login() {
@@ -27,11 +27,26 @@ export default function Login() {
     const [loading, setLoading] = useState(false);
     const [feishuLoading, setFeishuLoading] = useState(false);
     const feishuPollRef = useRef(false);
+    const [registration, setRegistration] = useState<RegistrationConfig | null>(null);
+    const [oidc, setOidc] = useState<OidcConfig | null>(null);
+    const tenantSlug = searchParams.get('tenant_slug') || undefined;
+
+    useEffect(() => {
+        let active = true;
+        authApi.getRegistrationConfig().then(config => {
+            if (active) setRegistration(config);
+        }).catch(() => { if (active) setError(t('auth.serverUnreachable')); });
+        authApi.getOidcConfig(tenantSlug).then(config => {
+            if (active) setOidc(config);
+        }).catch(() => { /* Password sign-in remains available. */ });
+        return () => { active = false; };
+    }, [tenantSlug, t]);
 
     const [form, setForm] = useState({
         username: '',
         password: '',
         email: '',
+        install_token: '',
     });
     const isChinese = i18n.language?.toLowerCase().startsWith('zh');
 
@@ -96,8 +111,9 @@ export default function Login() {
             let res;
             if (isRegister) {
                 res = await authApi.register({
-                    ...form,
+                    username: form.username, email: form.email, password: form.password,
                     display_name: form.username,
+                    ...(registration?.install_token_required ? { install_token: form.install_token } : {}),
                 });
             } else {
                 res = await authApi.login({ username: form.username, password: form.password });
@@ -121,13 +137,7 @@ export default function Login() {
             // and offer "go log in" when the email is already taken.
             if (isRegister && err instanceof ApiError && err.status === 409) {
                 const detail = (err.data ?? {}) as RegisterConflict;
-                if (detail.code === 'email_linked_to_feishu') {
-                    setError(t(
-                        'auth.registerEmailFromFeishu',
-                        'This email was imported from Feishu. Log in with default password 123456 and change it right after.',
-                    ));
-                    setSuggestLogin(!!detail.suggest_login);
-                } else if (detail.code === 'email_taken') {
+                if (detail.code === 'email_taken') {
                     setError(t('auth.registerEmailTaken', 'This email is already registered.'));
                     setSuggestLogin(!!detail.suggest_login);
                 } else if (detail.code === 'username_taken') {
@@ -141,7 +151,13 @@ export default function Login() {
             // Server-returned error messages (e.g. disabled company, invalid credentials)
             if (msg && msg !== 'Failed to fetch' && !msg.includes('NetworkError') && !msg.includes('ERR_CONNECTION')) {
                 // Translate known error messages
-                if (msg.includes('company has been disabled')) {
+                if (msg === 'Public registration is closed. Sign in with an existing account or SSO.') {
+                    setError(t('auth.registrationClosed'));
+                } else if (msg === 'A valid install token is required for the first administrator.') {
+                    setError(t('auth.installTokenRequired'));
+                } else if (msg === 'Set INSTALL_TOKEN on the server before creating the first administrator.') {
+                    setError(t('auth.installNotReady'));
+                } else if (msg.includes('company has been disabled')) {
                     setError(t('auth.companyDisabled', 'Your company has been disabled. Please contact the platform administrator.'));
                 } else if (msg.includes('Invalid credentials')) {
                     setError(t('auth.invalidCredentials', 'Invalid username or password.'));
@@ -177,7 +193,7 @@ export default function Login() {
                         >
                             {t('auth.login')}
                         </button>
-                        <button
+                        {(registration?.registration_enabled || registration?.install_token_required) && <button
                             type="button"
                             role="tab"
                             aria-selected={isRegister}
@@ -189,7 +205,7 @@ export default function Login() {
                             }}
                         >
                             {t('auth.register')}
-                        </button>
+                        </button>}
                     </div>
 
                     <div className="login-form-header">
@@ -257,6 +273,15 @@ export default function Login() {
                             />
                         </div>
 
+                        {isRegister && registration?.install_token_required && (
+                            <div className="login-field">
+                                <label htmlFor="install-token">{t('auth.installToken')}</label>
+                                <input id="install-token" type="password" autoComplete="off"
+                                    value={form.install_token}
+                                    onChange={e => setForm({ ...form, install_token: e.target.value })} />
+                            </div>
+                        )}
+
                         <button className="login-submit" type="submit" disabled={loading}>
                             {loading ? (
                                 <span className="login-spinner" />
@@ -275,6 +300,19 @@ export default function Login() {
                         <span />
                     </div>
 
+                    {oidc?.configured && (
+                        <button type="button" className="login-submit login-submit-secondary" disabled={loading || feishuLoading}
+                            onClick={() => {
+                                try {
+                                    window.location.assign(prepareOidcLogin(oidc, postLoginRedirect, `/login?${searchParams.toString()}`));
+                                } catch {
+                                    setError(t('auth.oidc.failed'));
+                                }
+                            }}>
+                            {oidc.display_name}
+                        </button>
+                    )}
+
                     <button
                         type="button"
                         className="login-submit login-submit-secondary"
@@ -291,12 +329,12 @@ export default function Login() {
                         )}
                     </button>
 
-                    <div className="login-switch">
+                    {(isRegister || registration?.registration_enabled || registration?.install_token_required) && <div className="login-switch">
                         {isRegister ? t('auth.hasAccount') : t('auth.noAccount')}{' '}
                         <a href="#" onClick={(e) => { e.preventDefault(); setIsRegister(!isRegister); setError(''); }}>
                             {isRegister ? t('auth.goLogin') : t('auth.goRegister')}
                         </a>
-                    </div>
+                    </div>}
 
                     {isRegister && (
                         <p className="login-legal">

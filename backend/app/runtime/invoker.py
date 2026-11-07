@@ -14,6 +14,7 @@ import json
 import logging
 import re
 import uuid
+from functools import partial
 
 from app.runtime.message_presentation import apply_vision_transform as _apply_vision_transform
 from dataclasses import dataclass
@@ -1670,7 +1671,7 @@ def get_agent_kernel(request: AgentInvocationRequest | None = None) -> AgentKern
             create_client=_kernel_create_client,
             execute_tool=_kernel_execute_tool,
             persist_memory=persist_runtime_memory,
-            record_token_usage=record_token_usage,
+            record_token_usage=partial(record_token_usage, user_id=request.user_id) if request else record_token_usage,
             record_invocation_span=persist_invocation_span,
             get_max_tokens=get_max_tokens,
             extract_usage_tokens=extract_usage_tokens,

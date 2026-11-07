@@ -1,5 +1,6 @@
 """Authentication API routes."""
 
+import secrets
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -9,6 +10,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import create_access_token, get_current_user, hash_password, verify_password
+from app.config import get_settings
 from app.database import enter_rls_bypass, get_db, pin_rls_tenant_context
 from app.models.user import User
 from app.schemas.schemas import TokenResponse, UserLogin, UserOut, UserRegister, UserUpdate
@@ -16,20 +18,7 @@ from app.schemas.schemas import TokenResponse, UserLogin, UserOut, UserRegister,
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 
-def _email_taken_detail(existing_email_user: User | None = None) -> dict:
-    is_feishu_shadow = bool(
-        existing_email_user
-        and getattr(existing_email_user, "feishu_open_id", None)
-        and getattr(existing_email_user, "must_change_password", False)
-    )
-    if is_feishu_shadow:
-        return {
-            "code": "email_linked_to_feishu",
-            "field": "email",
-            "message": "This email was imported from Feishu. Log in with the default password 123456 and change it after signing in.",
-            "suggest_login": True,
-            "default_password_hint": True,
-        }
+def _email_taken_detail() -> dict:
     return {
         "code": "email_taken",
         "field": "email",
@@ -75,7 +64,13 @@ async def get_registration_config(db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(SystemSetting).where(SystemSetting.key == "invitation_code_enabled"))
     setting = result.scalar_one_or_none()
     enabled = setting.value.get("enabled", False) if setting else False
-    return {"invitation_code_required": enabled}
+    async with enter_rls_bypass(db, reason="public registration bootstrap status"):
+        user_count = (await db.execute(select(func.count()).select_from(User))).scalar()
+    return {
+        "invitation_code_required": enabled,
+        "registration_enabled": get_settings().PUBLIC_REGISTRATION_ENABLED,
+        "install_token_required": user_count == 0,
+    }
 
 
 @router.post("/register", response_model=TokenResponse, status_code=status.HTTP_201_CREATED)
@@ -87,6 +82,8 @@ async def register(data: UserRegister, db: AsyncSession = Depends(get_db)):
     without a company — they must create or join one via /tenants/self-create
     or /tenants/join.
     """
+    settings = get_settings()
+
     # Resolve tenant and role for first user only.
     tenant_uuid = None
     role = "member"
@@ -100,15 +97,24 @@ async def register(data: UserRegister, db: AsyncSession = Depends(get_db)):
     # one audited scope; exiting after the reads makes a subsequent tenantless
     # User/Participant flush fail closed under the production ``app_rls`` role.
     async with enter_rls_bypass(db, reason="public registration uniqueness and bootstrap checks"):
+        # Decide whether this entrance is open before disclosing identity clashes.
+        user_count = await db.execute(select(func.count()).select_from(User))
+        is_first_user = user_count.scalar() == 0
+        if is_first_user:
+            # Only cold bootstrap serializes; a committed account ends this privilege window.
+            await db.execute(text("SELECT pg_advisory_xact_lock(hashtextextended('hive.auth.first_admin.v1', 0))"))
+            user_count = await db.execute(select(func.count()).select_from(User))
+            is_first_user = user_count.scalar() == 0
+
+        if not is_first_user and not settings.PUBLIC_REGISTRATION_ENABLED:
+            raise HTTPException(status_code=403, detail="Public registration is closed. Sign in with an existing account or SSO.")
+
         email_hit = await db.execute(select(User).where(User.email == data.email))
         existing_email_user = email_hit.scalar_one_or_none()
         if existing_email_user:
-            # Shadow account created by Feishu org sync: username=feishu_*,
-            # feishu_open_id set, must_change_password=True, default pw "123456".
-            # Tell the user to log in with that default and rotate it.
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
-                detail=_email_taken_detail(existing_email_user),
+                detail=_email_taken_detail(),
             )
 
         username_hit = await db.execute(select(User).where(User.username == data.username))
@@ -118,16 +124,12 @@ async def register(data: UserRegister, db: AsyncSession = Depends(get_db)):
                 detail=_username_taken_detail(),
             )
 
-        # Check if this is the first user (→ platform admin + default company org_admin)
-        user_count = await db.execute(select(func.count()).select_from(User))
-        is_first_user = user_count.scalar() == 0
         if is_first_user:
-            # Only cold bootstrap serializes; a committed account ends this privilege window.
-            await db.execute(text("SELECT pg_advisory_xact_lock(hashtextextended('hive.auth.first_admin.v1', 0))"))
-            user_count = await db.execute(select(func.count()).select_from(User))
-            is_first_user = user_count.scalar() == 0
-
-        if is_first_user:
+            install_token = settings.INSTALL_TOKEN.strip()
+            if not install_token:
+                raise HTTPException(status_code=503, detail="Set INSTALL_TOKEN on the server before creating the first administrator.")
+            if not secrets.compare_digest((data.install_token or "").strip().encode(), install_token.encode()):
+                raise HTTPException(status_code=403, detail="A valid install token is required for the first administrator.")
             from app.models.tenant import Tenant
 
             default = await db.execute(select(Tenant).where(Tenant.slug == "default"))

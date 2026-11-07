@@ -7,6 +7,7 @@ OIDC configuration is stored per-tenant in TenantSetting(key="oidc_config").
 import secrets
 import time
 import uuid
+from urllib.parse import urlsplit
 
 import httpx
 from sqlalchemy import func, or_, select
@@ -39,6 +40,14 @@ async def discover_oidc(issuer_url: str) -> dict:
         metadata = resp.json()
         if metadata.get("issuer") != issuer_url:
             raise ValueError("OIDC discovery issuer does not match configured issuer")
+        authorization_endpoint = metadata.get("authorization_endpoint")
+        if not isinstance(authorization_endpoint, str) or "\\" in authorization_endpoint:
+            raise ValueError("OIDC authorization endpoint must be a URL string without backslashes")
+        authorization = urlsplit(authorization_endpoint)
+        if not authorization.hostname or not (authorization.scheme == "https" or (
+            authorization.scheme == "http" and authorization.hostname in {"localhost", "127.0.0.1"}
+        )):
+            raise ValueError("OIDC authorization endpoint must use HTTPS (HTTP is allowed only on localhost or 127.0.0.1)")
 
     _discovery_cache[issuer_url] = (metadata, time.time())
     return metadata

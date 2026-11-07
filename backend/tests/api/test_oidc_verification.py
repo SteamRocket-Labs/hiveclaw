@@ -42,6 +42,7 @@ def provider(monkeypatch, signing_keys):
     provider = SimpleNamespace(
         metadata={
             "issuer": ISSUER,
+            "authorization_endpoint": f"{ISSUER}/authorize",
             "token_endpoint": f"{ISSUER}/token",
             "jwks_uri": f"{ISSUER}/jwks",
             "userinfo_endpoint": f"{ISSUER}/userinfo",
@@ -95,6 +96,28 @@ def provider(monkeypatch, signing_keys):
     oidc_service._discovery_cache.clear()
     yield provider
     oidc_service._discovery_cache.clear()
+
+
+@pytest.mark.parametrize("endpoint", [
+    "javascript:alert(1)",
+    "http://remote.example/authorize",
+    "http://localhost.evil/authorize",
+    r"http://evil.com\@127.0.0.1/authorize",
+    r"http://evil.com\@localhost/authorize",
+    123,
+    ["https://idp.test/authorize"],
+])
+async def test_discovery_refuses_unsafe_authorization_endpoint(provider, endpoint):
+    provider.metadata["authorization_endpoint"] = endpoint
+    with pytest.raises(ValueError, match="authorization endpoint"):
+        await oidc_service.discover_oidc(ISSUER)
+    assert ISSUER not in oidc_service._discovery_cache
+
+
+@pytest.mark.parametrize("endpoint", ["https://remote.example/authorize", "http://localhost:18232/authorize", "http://127.0.0.1:18232/authorize"])
+async def test_discovery_allows_https_and_local_authorization_endpoints(provider, endpoint):
+    provider.metadata["authorization_endpoint"] = endpoint
+    assert (await oidc_service.discover_oidc(ISSUER))["authorization_endpoint"] == endpoint
 
 
 async def call_route(monkeypatch, route, nonce=NONCE, *, db=None, user=None, tenant_id=None):
@@ -220,6 +243,7 @@ async def test_valid_token_signs_in_with_verified_subject(monkeypatch, provider,
     result = response.json()
     if route == "callback":
         assert result["access_token"]
+        assert "set-cookie" not in response.headers
         assert db.committed
         audit.assert_awaited_once()
         lookup = db.statements[-1].compile().params
@@ -337,6 +361,28 @@ async def test_admin_save_refuses_discovery_issuer_mismatch(monkeypatch, provide
         })
     assert response.status_code == 400
     assert response.json() == {"detail": "OIDC discovery issuer does not match configured issuer"}
+    assert not db.statements
+    assert not db.committed
+
+
+async def test_admin_save_refuses_unsafe_authorization_endpoint_with_its_reason(monkeypatch, provider):
+    from app.api import enterprise
+    from app.core.security import get_current_admin
+
+    provider.metadata["authorization_endpoint"] = "http://remote.example/authorize"
+    db = _FakeDB([])
+    admin = _fake_user(tenant_id=uuid4())
+    monkeypatch.setattr(enterprise, "resolve_and_pin_tenant_scope", AsyncMock(return_value=admin.tenant_id))
+    app = FastAPI()
+    app.include_router(enterprise.router, prefix="/api")
+    app.dependency_overrides[get_db] = lambda: db
+    app.dependency_overrides[get_current_admin] = lambda: admin
+    async with AsyncClient(transport=httpx.ASGITransport(app=app, raise_app_exceptions=False), base_url="http://app.test") as client:
+        response = await client.put("/api/enterprise/oidc-config", json={
+            "issuer_url": ISSUER, "client_id": CLIENT_ID, "client_secret": "fake-client-secret",
+        })
+    assert response.status_code == 400
+    assert response.json() == {"detail": "OIDC authorization endpoint must use HTTPS (HTTP is allowed only on localhost or 127.0.0.1)"}
     assert not db.statements
     assert not db.committed
 

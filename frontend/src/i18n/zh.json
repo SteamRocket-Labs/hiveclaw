@@ -1173,6 +1173,18 @@
     "deletePost": "删除帖子"
   },
   "auth": {
+    "installToken": "安装口令",
+    "registrationClosed": "公开注册已关闭，请使用已有账号或公司登录。",
+    "installTokenRequired": "创建首位管理员需要有效的安装口令。",
+    "installNotReady": "首次管理员设置尚未就绪，请联系安装人员。",
+    "oidc": {
+      "title": "公司账号登录",
+      "accountConflict": "此公司账号与已有账号冲突，请联系公司管理员。",
+      "accessDenied": "此公司账号暂不能登录，请联系公司管理员。",
+      "unavailable": "公司登录暂不可用，请稍后重试。",
+      "stateMismatch": "登录请求已失效或不匹配，请返回登录页重新开始。",
+      "failed": "公司账号登录失败，请返回登录页重新开始。"
+    },
     "login": "登录",
     "register": "注册账号",
     "username": "用户名",
@@ -1190,7 +1202,6 @@
     "loginFailed": "登录失败",
     "registerEmailTaken": "该邮箱已被注册。",
     "registerUsernameTaken": "该用户名已被占用，请换一个。",
-    "registerEmailFromFeishu": "该邮箱已从飞书同步，请使用默认密码 123456 登录，进入后请尽快修改密码。",
     "passwordChangeReminder": "您正在使用默认密码，为保障账号安全，请进入「我的 → 修改密码」立即修改。",
     "brandTitleLine1": "让每个人都",
     "brandTitleLine2Prefix": "拥有一支",

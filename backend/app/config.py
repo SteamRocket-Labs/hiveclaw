@@ -55,6 +55,8 @@ class Settings(BaseSettings):
     DEBUG: bool = False
     SECRET_KEY: str = "change-me-in-production"
     API_PREFIX: str = "/api"
+    PUBLIC_REGISTRATION_ENABLED: bool = True
+    INSTALL_TOKEN: str = ""
 
     # Database
     DATABASE_URL: str = "postgresql+asyncpg://hive:hive@localhost:5432/hive"

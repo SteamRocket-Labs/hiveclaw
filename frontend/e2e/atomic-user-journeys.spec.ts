@@ -93,7 +93,8 @@ async function registerOrLogin(
 ): Promise<AuthState> {
   const password = 'AtomicPass123!';
   const registration = await publicApi.post('/api/auth/register', {
-    data: { username, email, password, display_name: username },
+    data: { username, email, password, display_name: username,
+      install_token: process.env.INSTALL_TOKEN || 'atomic-harness-install-token' },
   });
   if (registration.ok()) return registration.json() as Promise<AuthState>;
   expect(registration.status(), await registration.text()).toBe(409);

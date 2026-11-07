@@ -45,7 +45,7 @@ class _FakeResult:
 class _FakeDB(ActiveTransactionSessionStub):
     """Returns a prescribed user per SELECT call.
 
-    Register issues one SELECT for email then one for username.
+    Register checks the bootstrap count before the email and username.
     Provide the sequence of results as `results`.
     """
 
@@ -109,7 +109,7 @@ _PAYLOAD = {
 
 
 def test_register_409_on_email_clash_returns_suggest_login():
-    db = _FakeDB([_fake_user(email="new@example.com")])
+    db = _FakeDB([1, _fake_user(email="new@example.com")])
     client = _make_client(db)
 
     resp = client.post("/api/auth/register", json=_PAYLOAD)
@@ -122,7 +122,7 @@ def test_register_409_on_email_clash_returns_suggest_login():
 
 
 def test_register_uniqueness_preflight_uses_rls_bypass():
-    db = _FakeDB([_fake_user(email="new@example.com")])
+    db = _FakeDB([1, _fake_user(email="new@example.com")])
     client = _make_client(db)
 
     resp = client.post("/api/auth/register", json=_PAYLOAD)
@@ -140,10 +140,11 @@ def test_register_first_user_pins_bootstrap_tenant_before_user_insert(monkeypatc
     monkeypatch.setattr("app.services.agent_seeder.seed_default_agents", noop_seed_default_agents)
     monkeypatch.setattr(auth_api, "hash_password", lambda _password: "hash")
     monkeypatch.setattr(auth_api, "create_access_token", lambda *_args, **_kwargs: "jwt-stub")
-    db = _FakeDB([None, None, 0, 0, None])
+    monkeypatch.setattr(auth_api.get_settings(), "INSTALL_TOKEN", "fixture-install-token")
+    db = _FakeDB([0, 0, None, None, None])
     client = _make_client(db)
 
-    resp = client.post("/api/auth/register", json=_PAYLOAD)
+    resp = client.post("/api/auth/register", json={**_PAYLOAD, "install_token": "fixture-install-token"})
 
     assert resp.status_code == 201
     user = next(obj for obj in db.added if obj.__class__.__name__ == "User")
@@ -164,7 +165,7 @@ def test_register_tenantless_user_and_participant_stay_inside_audited_rls_bypass
 
     monkeypatch.setattr(auth_api, "hash_password", lambda _password: "hash")
     monkeypatch.setattr(auth_api, "create_access_token", lambda *_args, **_kwargs: "jwt-stub")
-    db = _FakeDB([None, None, 1])
+    db = _FakeDB([1, None, None])
     client = _make_client(db)
 
     resp = client.post("/api/auth/register", json=_PAYLOAD)
@@ -175,7 +176,7 @@ def test_register_tenantless_user_and_participant_stay_inside_audited_rls_bypass
 
 def test_register_409_on_username_clash_does_not_suggest_login():
     # email is free, username is taken
-    db = _FakeDB([None, _fake_user(username="newuser")])
+    db = _FakeDB([1, None, _fake_user(username="newuser")])
     client = _make_client(db)
 
     resp = client.post("/api/auth/register", json=_PAYLOAD)
@@ -189,7 +190,7 @@ def test_register_409_on_username_clash_does_not_suggest_login():
 
 def test_register_409_prefers_email_when_both_clash():
     """Email hint points the user to login/reset; username-only fix is less helpful."""
-    db = _FakeDB([_fake_user(email="new@example.com", username="newuser")])
+    db = _FakeDB([1, _fake_user(email="new@example.com", username="newuser")])
     client = _make_client(db)
 
     resp = client.post("/api/auth/register", json=_PAYLOAD)
@@ -198,32 +199,39 @@ def test_register_409_prefers_email_when_both_clash():
     assert resp.json()["detail"]["field"] == "email"
 
 
-def test_register_409_feishu_shadow_points_to_default_password():
-    """Shadow account from Feishu import needs a specific hint so the user
-    knows to log in with 123456 instead of trying another email."""
+def test_register_409_feishu_shadow_matches_ordinary_email_without_account_disclosure(monkeypatch):
+    """Round 5 item 4 (security: account disclosure): hide import and password hints."""
+    from app.api.auth import get_settings
+
+    monkeypatch.setattr(get_settings(), "PUBLIC_REGISTRATION_ENABLED", True)
     shadow = _fake_user(
         email="new@example.com",
         username="feishu_ou_xxx",
         feishu_open_id="ou_xxx",
         must_change_password=True,
     )
-    db = _FakeDB([shadow])
+    db = _FakeDB([1, shadow])
     client = _make_client(db)
 
     resp = client.post("/api/auth/register", json=_PAYLOAD)
 
     assert resp.status_code == 409
-    detail = resp.json()["detail"]
-    assert detail["code"] == "email_linked_to_feishu"
-    assert detail["default_password_hint"] is True
-    assert detail["suggest_login"] is True
-    # The message must surface the default password so the UI can show it verbatim
-    assert "123456" in detail["message"]
+    ordinary = _make_client(_FakeDB([1, _fake_user(email="new@example.com")])).post(
+        "/api/auth/register", json=_PAYLOAD,
+    )
+    assert ordinary.status_code == 409
+    # Round 5 item 4 (security: account disclosure) replaces the import-specific code and hint.
+    assert resp.json() == ordinary.json() == {"detail": {
+        "code": "email_taken", "field": "email", "message": "Email already registered", "suggest_login": True,
+    }}
+    # Round 5 item 4 (security: account disclosure) forbids revealing a password or account origin.
+    for forbidden in ("123456", "password", "feishu"):
+        assert forbidden not in resp.text.lower()
 
 
 def test_register_maps_email_unique_integrity_error_to_409():
     db = _FakeDB(
-        [None, None, 1],
+        [1, None, None],
         flush_side_effect=IntegrityError(
             "insert users",
             {},

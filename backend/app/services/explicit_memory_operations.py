@@ -155,7 +155,7 @@ async def _review_operation(request, operation_id, root, session_factory):
     refs = [str(ref) for ref in (args.get("source_refs") or [])]
     refs.append(f"session-tool-invocation:{row.authority_json['invocation_id']}")
     decision = await prepare_memory_write_with_llm(str(args["content"]), category=category,
-        evidence_refs=refs, tenant_id=tenant_id, agent_id=request.context.agent_id)
+        evidence_refs=refs, tenant_id=tenant_id, agent_id=request.context.agent_id, user_id=request.context.user_id)
     async with tenant_scoped_session(tenant_id, session_factory=session_factory) as db:
         await memory_effect_actor(db, tenant_id, request)
         await _writer_input(db, request)

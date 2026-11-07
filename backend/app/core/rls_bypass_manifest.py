@@ -841,8 +841,12 @@ def fingerprint_rls_bypass_scopes(app_root: Path) -> str:
 # B6 preserves settled cancellation and unknown approval outcomes; merging B6 with main keeps each entry from one side.
 # Merging A4c with B6 accepts the exact three-way module-source merge; no bypass scope changed on both sides.
 # G3: preview and inventory lifecycle source updates only; merging G3 with main keeps each entry from one side.
+# D4: one count-only bootstrap-status grant, token-only first admin and requester usage.
 # Merging A4c with G3 keeps each entry from one side.
-RLS_BYPASS_SCOPES_SHA256 = "56fbe17c706bb31a2c9076d470014965ac1a636672bb834d4fd239c3eb47a1d4"
+# Merging D4 with A4c keeps each entry from one side.
+# Merging D4 with R2 and R3 accepts the exact three-way module-source merge; no bypass scope changed on both sides.
+# D4 round 5 removes account disclosure and validates OIDC endpoint types; bypass grants and query shapes are unchanged.
+RLS_BYPASS_SCOPES_SHA256 = "0f2f7c453780b05ba3d9bc9dbf3eb2323707c8f0189ea149d83e97d12773bd32"
 
 
 def scan_rls_bypass_callsites(app_root: Path) -> list[RLSBypassCallsite]:
@@ -1045,9 +1049,17 @@ RLS_BYPASS_ALLOWLIST = (
     _grant(
         *(
             "app/api/auth.py",
+            "get_registration_config",
+            "'public registration bootstrap status'",
+            ("select:func.count()",),
+        )
+    ),
+    _grant(
+        *(
+            "app/api/auth.py",
             "register",
             "'public registration uniqueness and bootstrap checks'",
-            ("select:User", "select:func.count()", "select:Tenant"),
+            ("select:func.count()", "select:User", "select:Tenant"),
         )
     ),
     _grant(

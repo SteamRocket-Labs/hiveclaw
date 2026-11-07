@@ -68,6 +68,7 @@ export default defineConfig({
         SECRET_KEY: 'atomic-harness-secret',
         JWT_SECRET_KEY: 'atomic-harness-jwt-secret',
         SECRETS_MASTER_KEY: 'atomic-harness-master-secret-32bytes',
+        INSTALL_TOKEN: process.env.INSTALL_TOKEN || 'atomic-harness-install-token',
         HIVE_CODE_EXEC_PROVIDER: 'local',
         RLS_APP_PASSWORD: 'atomic-harness-app-rls',
         NO_PROXY: '127.0.0.1,localhost',

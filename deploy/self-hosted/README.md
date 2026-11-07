@@ -13,10 +13,11 @@ python3 scripts/configure_self_hosted.py ~/.local/share/hiveclaw/company \
 ```
 
 The command prints a configuration check and startup command using that exact
-private `installation.env`. It creates independent random database, Redis,
-application, JWT and encryption keys; the file is mode `0600`. An existing profile
-is never overwritten. Back it up securely: changing the encryption key loses access
-to stored credentials. Use the same profile/project ID when restarting.
+private `installation.env`. It creates an independent random install token and
+database, Redis, application, JWT and encryption keys; the file is mode `0600`.
+An existing profile is never overwritten. Back it up securely: changing the
+encryption key loses access to stored credentials. Use the same profile/project ID
+when restarting.
 
 Compose uses the explicit profile and dedicated named volumes. It never adopts
 this checkout's `.env`, development databases, source bind mounts or Docker socket.
@@ -40,9 +41,31 @@ recipe without printing resolved credentials.
 The frontend is published only on loopback; databases and backend ports are not
 published. Register the initial administrator locally before enabling a public
 TLS reverse proxy. Set `--public-origin` to the intended browser origin and choose
-`--port` if the loopback port is already occupied. Initial-owner protection belongs
-at this ingress boundary while registration uses the existing first-user policy;
-a future authenticated bootstrap can support a direct public-binding option.
+`--port` if the loopback port is already occupied. Read the install token from the
+private profile in your local terminal and enter its value in the first registration's
+install-token field:
+
+```bash
+PROFILE=~/.local/share/hiveclaw/company/installation.env
+sed -n "/^HIVE_INSTALL_TOKEN=/p" "$PROFILE"
+```
+
+Use the value inside the single quotes. Compose passes it to the backend as
+`INSTALL_TOKEN`; a first registration without the matching token is refused.
+After the first administrator exists, the normal public-registration policy applies.
+
+Older profiles without `HIVE_INSTALL_TOKEN` still prepare, upgrade and recover with
+their existing keys. If the installation already has an account, no token is needed.
+For an empty installation using an older profile, append a random token once:
+
+```bash
+printf "HIVE_INSTALL_TOKEN='%s'\n" "$(python3 -c 'import secrets; print(secrets.token_hex(32))')" >> "$PROFILE"
+docker compose --env-file "$PROFILE" -f deploy/self-hosted/compose.yml up -d backend-api backend
+```
+
+Then read it as above and register. Recovery into a new profile retains a saved
+install token or generates one when the backup predates it, preserving all existing
+database, Redis and encryption keys.
 
 After signing in, use **Control Plane → Get started with your company** to configure
 an approved model, create/select an employee and run the native readiness check.

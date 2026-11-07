@@ -1173,6 +1173,18 @@
     "messageWaitingApproval": "Waiting for owner approval: {{approvalId}}"
   },
   "auth": {
+    "installToken": "Install token",
+    "registrationClosed": "Public registration is closed. Sign in with an existing account or SSO.",
+    "installTokenRequired": "A valid install token is required for the first administrator.",
+    "installNotReady": "First-administrator setup is not ready. Contact the installer.",
+    "oidc": {
+      "title": "Company sign-in",
+      "accountConflict": "This company account conflicts with an existing account. Contact your company administrator.",
+      "accessDenied": "This company account cannot sign in. Contact your company administrator.",
+      "unavailable": "Company sign-in is temporarily unavailable. Try again later.",
+      "stateMismatch": "This sign-in attempt is missing or does not match. Start again from the login page.",
+      "failed": "Company sign-in failed. Start again from the login page."
+    },
     "login": "Sign In",
     "register": "Create Account",
     "username": "Username",
@@ -1190,7 +1202,6 @@
     "loginFailed": "Sign in failed",
     "registerEmailTaken": "This email is already registered.",
     "registerUsernameTaken": "This username is already taken. Please choose another.",
-    "registerEmailFromFeishu": "This email was imported from Feishu. Log in with default password 123456 and change it right after.",
     "passwordChangeReminder": "You are signed in with the default password. Please change it via Profile → Change Password for security.",
     "brandTitleLine1": "Give every person",
     "brandTitleLine2Prefix": "a team of ",

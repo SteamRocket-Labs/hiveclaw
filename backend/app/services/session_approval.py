@@ -71,7 +71,8 @@ async def session_approval_projection(approval, *, db, agent, user):
         "tool_name": approval.tool_name, "execution_status": approval.execution_status,
         **({"execution_kind": "browser_human"} if is_human_approval(approval) else {}),
         "details": details,
-        "execution_receipt": {"continuation_status": (approval.execution_receipt or {}).get("continuation_status")},
+        "execution_receipt": {key: (approval.execution_receipt or {}).get(key)
+            for key in ("continuation_status", "continuation_reason")},
         "can_resolve": approval.status == "pending" and await can_resolve_approval(db, agent=agent, user=user, approval=approval),
     }
 

@@ -80,7 +80,7 @@ export default function WorkspaceApprovalsSection({
             </div>
             {continuation ? (
               <div className={`badge badge-${continuation.tone}`} style={{ marginTop: '4px' }}>
-                {t(`approvalContinuation.${continuation.status}`, continuation.label)}
+                {t(`approvalContinuation.${continuation.reasonKey || continuation.status}`, continuation.label)}
               </div>
             ) : null}
             <ApprovalReviewerControls approval={approval} onChanged={() => { void list.refetch(); }} />

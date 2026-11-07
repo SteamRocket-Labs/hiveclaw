@@ -575,6 +575,7 @@ async def _finalize_model_response(
     tools_for_llm: list[dict[str, Any]],
     collected_parts: list[dict[str, Any]],
     last_model_result_receipt: dict[str, Any] | None,
+    max_rounds: int,
     _enforce_generated_source_permissions: Any,
     _flush_buffered_chunks: Any,
     _emit_event: Any,
@@ -591,6 +592,17 @@ async def _finalize_model_response(
     final_content, _source_permission_allowed = await _enforce_generated_source_permissions(final_content)
     if _source_permission_allowed:
         await _flush_buffered_chunks()
+    if (logical_round_index < max_rounds
+        and provider_request_id
+        and (last_model_result_receipt or {}).get("provider_request_id") == provider_request_id
+        and (last_model_result_receipt or {}).get("continuation", {}).get("verdict") == "continue"):
+        # A message can arrive after the provider's input snapshot. The sealed
+        # round already records that obligation; bind it on the next round.
+        api_messages.append(LLMMessage(role="assistant", content=final_content,
+            reasoning_content=response.reasoning_content,
+            reasoning_signature=getattr(response, "reasoning_signature", None),
+            source_ref=f"session-provider-result:{provider_request_id}"))
+        return None
     from app.runtime.hooks import HookEvent
 
     _session_source = request.session_context.source if request.session_context else "runtime"
@@ -1978,8 +1990,6 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
         # Intentionally persists across rounds — discovered tool schemas stay active once loaded.
         full_toolset = None
         try:
-            # A proven no-progress outcome reserves one final, tool-free model
-            # round so the model—not the harness—authors the explanation.
             initial_round_index = max(0, int(request.initial_round_index or 0))
             remaining_rounds = max(0, max_rounds - initial_round_index)
             for round_i in range(remaining_rounds + 1):
@@ -2773,6 +2783,7 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                         tools_for_llm=tools_for_llm,
                         collected_parts=collected_parts,
                         last_model_result_receipt=last_model_result_receipt,
+                        max_rounds=max_rounds,
                         _enforce_generated_source_permissions=_enforce_generated_source_permissions,
                         _flush_buffered_chunks=_flush_buffered_chunks,
                         _emit_event=_emit_event,
@@ -2781,7 +2792,6 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                     if final_result is not None:
                         return final_result
                     continue
-
                 # Tier 1-4: recover from DeepSeek-V4 style concatenated tool_call args
                 # so every payload becomes its own executable tool_call before history is
                 # frozen for the next round.
@@ -2797,7 +2807,6 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                         source_ref=f"session-provider-result:{provider_request_id}" if provider_request_id else None,
                     )
                 )
-
                 full_reasoning_content = response.reasoning_content or ""
 
                 # Parse all tool calls upfront

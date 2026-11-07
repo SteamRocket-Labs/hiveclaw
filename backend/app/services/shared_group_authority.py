@@ -26,6 +26,10 @@ def group_permission_execution(*, authority, invocation, control_id):
         _GROUP_PERMISSION_EXECUTION.reset(token)
 
 
+def group_permission_execution_matches(authority, invocation_id, run_id):
+    return (_GROUP_PERMISSION_EXECUTION.get() or ())[:3] == (authority, invocation_id, run_id)
+
+
 async def load_current_group_members(db, *, session):
     if (
         session.audience_kind != "group"

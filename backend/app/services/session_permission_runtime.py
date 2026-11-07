@@ -823,8 +823,15 @@ async def _resolve_session_tool_permission(
             }
         )
         from app.services.shared_group_authority import group_permission_execution
+        from app.services.execution_environments import EnvironmentCommandFrame, command_environment_context
+        from app.services.permission_command_environment import PermissionCommandBinding
 
-        with group_permission_execution(authority=authority, invocation=invocation, control_id=control_id):
+        command_frame = EnvironmentCommandFrame(authority.tenant_id, authority.agent_id, authority.principal_id,
+            invocation.run_id, PermissionCommandBinding(authority, invocation.id, invocation.run_id,
+                permission_request_id, invocation.provider_tool_use_id, execution_lease),
+            tool_call_id=invocation.provider_tool_use_id, session_id=authority.session_id)
+        with group_permission_execution(authority=authority, invocation=invocation, control_id=control_id), \
+                command_environment_context(command_frame):
             plan_token = None
             try:
                 from app.services.plan_mode_runtime_context import set_interactive_plan_mode

@@ -256,7 +256,8 @@ async def record_employee_creation_context(db, *, draft, agent, workspace, templ
     )
 
 
-async def load_employee_creation_context(db, *, tenant_id, agent_id, user, runtime_request):
+async def load_employee_creation_context(db, *, tenant_id, agent_id, user, runtime_request, allow_missing=False):
+    """Optionally return None for absent history; the caller must check access and observed bytes."""
     from app.services.content_input_receipts import ContentInputReceiptError
 
     revision = await db.scalar(
@@ -270,6 +271,24 @@ async def load_employee_creation_context(db, *, tenant_id, agent_id, user, runti
         )
         .execution_options(populate_existing=True)
     )
+    if revision is None and allow_missing:
+        prior = await db.scalar(
+            select(ConfigRevision.id).where(
+                ConfigRevision.tenant_id == tenant_id,
+                ConfigRevision.entity_id == agent_id,
+                ConfigRevision.entity_type.in_(("agent_bootstrap", "agent_hr_bootstrap")),
+            ).limit(1)
+        )
+        draft = await db.scalar(
+            select(HrCreationDraft.id).where(
+                HrCreationDraft.tenant_id == tenant_id,
+                HrCreationDraft.created_agent_id == agent_id,
+            ).limit(1)
+        )
+        # Missing history may use observation-time validation; invalid or
+        # inactive history must still pass the original source checks below.
+        if prior is None and draft is None:
+            return None
     content = revision.content if revision is not None and isinstance(revision.content, dict) else {}
     try:
         draft_id = uuid.UUID(content["draft_id"])

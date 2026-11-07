@@ -4,14 +4,14 @@ import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, expect, it, vi } from 'vitest';
 import WorkspaceAuditSection from './WorkspaceAuditSection';
 
-const mocks = vi.hoisted(() => ({ logs: vi.fn(), users: vi.fn() }));
+const mocks = vi.hoisted(() => ({ logs: vi.fn(), users: vi.fn(), security: vi.fn().mockResolvedValue({ items: [] }) }));
 vi.mock('../../api/domains/enterprise', () => ({ enterpriseApi: {
-  getAuditLogs: mocks.logs, getSecurityAuditEvents: async () => ({ items: [] }),
+  getAuditLogs: mocks.logs, getSecurityAuditEvents: mocks.security,
 } }));
 vi.mock('../../api/domains/users', () => ({ usersApi: { list: mocks.users } }));
 vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: (_key: string, fallback: any, values?: any) =>
   typeof fallback === 'string' ? fallback.replace(/\{\{(\w+)\}\}/g, (_, key) => values?.[key] ?? '') : _key }) }));
-afterEach(cleanup);
+afterEach(() => { cleanup(); mocks.security.mockResolvedValue({ items: [] }); });
 
 it('finds company offboarding and role changes and describes who, what, when and result', async () => {
   mocks.users.mockResolvedValue([{ id: 'admin', display_name: 'Company admin' },
@@ -67,4 +67,25 @@ it('describes a member already inactive without claiming a new completed handove
   await screen.findByText('Already inactive');
   expect(container.textContent).toContain('Former member was already inactive before this offboarding.');
   expect(container.textContent).not.toMatch(/Completed|handed to|already_inactive/);
+});
+
+it('G3f review 2: labels a named restore and omits duplicate lifecycle security rows', async () => {
+  mocks.users.mockResolvedValue([{ id: 'admin', display_name: 'Company admin' }]);
+  mocks.logs.mockResolvedValue(['agent:retirement_requested', 'agent:restored'].map(action => ({
+    id: action, user_id: 'admin', agent_id: 'bot', agent_name: 'Research assistant', action,
+    created_at: '2026-11-07T12:00:00Z', details: {},
+  })));
+  mocks.security.mockResolvedValue({ items: ['deactivate_agent', 'restore_agent', 'test_llm_model_completed'].map(action => ({
+    id: action, actor_id: 'admin', action, created_at: '2026-11-07T12:00:00Z', details: {},
+  })) });
+  const { container } = render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+    <WorkspaceAuditSection selectedTenantId="company" />
+  </QueryClientProvider>);
+  await screen.findByText('Digital employee restored');
+  expect(screen.getAllByText('Research assistant')).toHaveLength(2);
+  expect(screen.getByText('Digital employee deactivated')).toBeTruthy();
+  expect(screen.getByText('Model test')).toBeTruthy();
+  expect(screen.queryByText('Activity recorded')).toBeNull();
+  expect(container.querySelectorAll('article')).toHaveLength(3);
+  expect((await import('../../i18n/zh.json')).default.enterprise.audit.agentRestored).toBe('数字员工已恢复');
 });

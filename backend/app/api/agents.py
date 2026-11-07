@@ -1946,6 +1946,8 @@ async def deactivate_agent(
     from app.services.agent_retirement import prepare
 
     agent, _access = await check_agent_history_access(db, current_user, agent_id)
+    if agent.agent_class == "internal_system":
+        raise HTTPException(status_code=403, detail="The system HR assistant cannot be deactivated.")
     actor_id = current_user.id  # the rollback below expires loaded instances
     pending_error: HTTPException | None = None
     try:
@@ -2118,6 +2120,10 @@ async def restore_agent(
         actor_user_id=current_user.id,
         change_message="Agent restored",
     )
+    from app.models.audit import AuditLog
+
+    db.add(AuditLog(tenant_id=agent.tenant_id, agent_id=agent.id, user_id=current_user.id,
+        action="agent:restored", details={}))
     try:
         from app.core.policy import write_audit_event
 

@@ -93,7 +93,7 @@ class AuditLogSummaryOut(BaseModel):
         }.get(info.data.get("action"), ())
         if isinstance(value, dict):
             summary.update({key: value[key] for key in keys if key in value
-                and (key != "already_inactive" or isinstance(value[key], bool))})
+                and isinstance(value[key], bool if key == "already_inactive" else str)})
         return summary
 
     model_config = {"from_attributes": True}

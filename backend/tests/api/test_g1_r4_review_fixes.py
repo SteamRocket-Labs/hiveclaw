@@ -158,7 +158,7 @@ async def test_deactivated_prepare_outcome_still_commits_bookkeeping_then_settle
     tenant_id = uuid4()
     admin = SimpleNamespace(id=uuid4(), role="org_admin", tenant_id=tenant_id)
     agent = SimpleNamespace(
-        id=uuid4(), tenant_id=tenant_id, name="待停用", status="idle",
+        id=uuid4(), tenant_id=tenant_id, name="待停用", status="idle", agent_class="internal_tenant",  # G3f review 3: ordinary employee.
         deleted_at=None, deactivated_at=None, deactivation_reason=None,
     )
     order: list[str] = []
@@ -208,7 +208,7 @@ async def test_uncommitted_prepare_error_never_reaches_bookkeeping(monkeypatch) 
     tenant_id = uuid4()
     admin = SimpleNamespace(id=uuid4(), role="org_admin", tenant_id=tenant_id)
     agent = SimpleNamespace(
-        id=uuid4(), tenant_id=tenant_id, name="未被停用", status="idle",
+        id=uuid4(), tenant_id=tenant_id, name="未被停用", status="idle", agent_class="internal_tenant",  # G3f review 3: ordinary employee.
         deleted_at=None, deactivated_at=None, deactivation_reason=None,
     )
     async def failing_prepare(_db, *, agent, actor):

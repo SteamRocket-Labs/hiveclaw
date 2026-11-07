@@ -37,6 +37,7 @@ export default function WorkspaceAuditSection({ selectedTenantId }: WorkspaceAud
     'user:role_changed': t('enterprise.audit.roleChanged', 'Role changed'),
     'agent:handover': t('enterprise.audit.agentHandover', 'Digital employee owner changed'),
     'agent:retirement_requested': t('enterprise.audit.agentDeactivated', 'Digital employee deactivated'),
+    'agent:restored': t('enterprise.audit.agentRestored', 'Digital employee restored'),
     'agent:retirement_tracking_ended': t('enterprise.audit.agentTrackingEnded', 'Digital employee task tracking ended'),
     'agent:retirement_work_withdrawal': t('enterprise.audit.agentWorkWithdrawn', 'Digital employee work withdrawn'),
     schedule_tick: t('enterprise.audit.scheduleCheck', 'Scheduled task check'),
@@ -50,7 +51,8 @@ export default function WorkspaceAuditSection({ selectedTenantId }: WorkspaceAud
   };
   const combinedAuditLogs: AuditLog[] = [
     ...auditLogs,
-    ...(securityAuditEvents?.items || []).map((event) => ({ ...event, id: `security:${event.id}`, user_id: event.actor_id || undefined })),
+    ...(securityAuditEvents?.items || []).filter((event) => !['deactivate_agent', 'restore_agent'].includes(event.action))
+      .map((event) => ({ ...event, id: `security:${event.id}`, user_id: event.actor_id || undefined })),
   ].sort((left, right) => Date.parse(right.created_at) - Date.parse(left.created_at));
   const filteredAuditLogs = combinedAuditLogs.filter((log) => auditFilter === 'all'
     || BACKGROUND_ACTIONS.includes(log.action) === (auditFilter === 'background'));

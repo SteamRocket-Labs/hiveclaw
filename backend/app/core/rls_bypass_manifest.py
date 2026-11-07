@@ -838,8 +838,9 @@ def fingerprint_rls_bypass_scopes(app_root: Path) -> str:
 # G2b tool settings: reviewed shared assignment lock/permission helpers and
 # sorted startup assignments; no bypass call or exception is added.
 # B6 preserves settled cancellation and unknown approval outcomes; merging B6 with main keeps each entry from one side.
+# G3: preview and inventory lifecycle source updates only; merging G3 with main keeps each entry from one side.
 # D4: count-only bootstrap status, token-only first admin and requester usage; no additional bypass grant.
-RLS_BYPASS_SCOPES_SHA256 = "465e5072cef1ada0bc9d0079cc086df3029e0168fe188cbc95667d8d6d525cfb"
+RLS_BYPASS_SCOPES_SHA256 = "e504ba1ade390bf2112b985d7e4348e29cb0dc561a177258d53df14eb8ce2a16"
 
 
 def scan_rls_bypass_callsites(app_root: Path) -> list[RLSBypassCallsite]:

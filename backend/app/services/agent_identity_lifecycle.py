@@ -112,11 +112,11 @@ async def resolve_live_effect_principal(db: AsyncSession, agent: Any) -> LiveEff
     return LiveEffectPrincipal(user_id=owner_id, block_reason=None)
 
 
-def agent_lifecycle_active_clause():
+def agent_lifecycle_active_clause(*, include_deactivated: bool = False):
     """SQLAlchemy filter for rows that may be shown or autonomously executed."""
     return and_(
         Agent.deleted_at.is_(None),
-        Agent.deactivated_at.is_(None),
+        True if include_deactivated else Agent.deactivated_at.is_(None),
         # An Agent whose company is retired/missing is not shown or executed,
         # even when its own lifecycle fields look active.
         Agent.tenant_id.in_(select(Tenant.id).where(Tenant.is_active.is_(True))),

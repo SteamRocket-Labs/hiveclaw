@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
@@ -82,6 +82,8 @@ class UserOffboardingPreview:
     local_bridge_connections: int
     runtime_tasks: int
     pending_approvals: int
+    handover: dict
+    blockers: list[str] = field(default_factory=list)
 
 
 def _rowcount(result: object) -> int:
@@ -541,6 +543,16 @@ def _validate_successor(*, target_user: User, successor: User) -> None:
         raise HTTPException(status_code=400, detail="Successor must belong to the same company")
 
 
+OFFBOARDING_KNOWLEDGE_PROCESSING_MESSAGE = "知识仍在处理中，请一两分钟后重试。"
+
+
+async def _offboarding_knowledge_processing(db, *, tenant_id, user_ids) -> bool:
+    return bool((await db.scalars(select(KnowledgeIndexJob.id).where(
+        KnowledgeIndexJob.tenant_id == tenant_id, KnowledgeIndexJob.scope_type == "person",
+        KnowledgeIndexJob.scope_id.in_(user_ids),
+        KnowledgeIndexJob.status.in_(("queued", "claimed", "running"))).limit(1))).all())
+
+
 async def offboard_loaded_user(
     db: AsyncSession,
     *,
@@ -583,12 +595,10 @@ async def offboard_loaded_user(
             },
         )
 
-    if (await db.scalars(select(KnowledgeIndexJob.id).where(
-        KnowledgeIndexJob.tenant_id == target_user.tenant_id, KnowledgeIndexJob.scope_type == "person",
-        KnowledgeIndexJob.scope_id.in_([target_user.id, successor.id]),
-        KnowledgeIndexJob.status.in_(("queued", "claimed", "running"))).limit(1))).all():
+    if await _offboarding_knowledge_processing(db, tenant_id=target_user.tenant_id,
+        user_ids=[target_user.id, successor.id]):
         raise HTTPException(status_code=409, detail={"code": "offboarding_knowledge_processing", "retryable": True,
-            "message": "知识仍在处理中，请一两分钟后重试。"})
+            "message": OFFBOARDING_KNOWLEDGE_PROCESSING_MESSAGE})
 
     transferred_agent_ids: list[uuid.UUID] = []
     # Advisory (inside revoke) must be held before any Trigger row lock.
@@ -698,6 +708,7 @@ async def build_user_offboarding_preview(
     *,
     target_user: User,
     actor: User,
+    successor_user_id: uuid.UUID | None = None,
 ) -> UserOffboardingPreview:
     if target_user.tenant_id is None:
         raise HTTPException(status_code=409, detail="Target user has no company")
@@ -741,6 +752,15 @@ async def build_user_offboarding_preview(
     default_successor_id = actor.id if actor.tenant_id == tenant_id and actor.id != target_user.id else None
     if default_successor_id not in {user.id for user in successors}:
         default_successor_id = None
+    successor = next((user for user in successors if user.id == (successor_user_id or default_successor_id)), None)
+    if successor_user_id is not None and successor is None:
+        raise HTTPException(status_code=400, detail="Successor must be an active member of the same company")
+    from app.services.offboarding_notice import preview_handover
+
+    blockers = [] if successors else ["No active company member can receive ownership"]
+    if await _offboarding_knowledge_processing(db, tenant_id=tenant_id,
+        user_ids=[target_user.id, successor.id] if successor else [target_user.id]):
+        blockers.append(OFFBOARDING_KNOWLEDGE_PROCESSING_MESSAGE)
     return UserOffboardingPreview(
         user_id=target_user.id,
         display_name=target_user.display_name,
@@ -810,6 +830,8 @@ async def build_user_offboarding_preview(
             ApprovalRequest.requested_by == target_user.id,
             ApprovalRequest.status == "pending",
         ),
+        handover=await preview_handover(db, target_user=target_user, agents=agents, successor=successor),
+        blockers=blockers,
     )
 
 

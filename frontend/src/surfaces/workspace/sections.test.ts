@@ -13,9 +13,10 @@ describe('workspace section routing', () => {
     expect(WORKSPACE_DEFAULT_PATH).toBe('/enterprise/users');
   });
 
-  it('shows the five product areas in the navigation for both administrator roles', () => {
+  it('shows the six product areas in product order for administrators only', () => {
     const expectedPaths = [
       '/enterprise/users',
+      '/enterprise/digital-employees',
       '/enterprise/llm',
       '/enterprise/info',
       '/enterprise/approvals',
@@ -24,6 +25,7 @@ describe('workspace section routing', () => {
     expect(workspaceNavItemsForRole('org_admin').map((item) => item.to)).toEqual(expectedPaths);
     expect(workspaceNavItemsForRole('platform_admin').map((item) => item.to)).toEqual(expectedPaths);
     expect(workspaceNavItemsForRole('member')).toEqual([]);
+    expect(workspaceNavItemsForRole(undefined)).toEqual([]);
   });
 
   it('defines stable enterprise subroutes for the main workspace sections', () => {

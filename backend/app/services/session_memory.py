@@ -373,6 +373,7 @@ async def _run_session_memory_llm(
             source="session_memory_writer",
             agent_id=agent_id,
             tenant_id=tenant_id,
+            user_id=metadata.get("user_id"),
             metadata={"phase": "session_memory"},
         )
     )

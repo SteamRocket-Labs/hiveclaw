@@ -1,5 +1,6 @@
 """Governance cases missing from the existing floor acceptance matrix."""
 
+from datetime import datetime, timedelta, timezone
 from uuid import UUID, uuid4
 
 import httpx
@@ -104,19 +105,29 @@ async def test_role_changes_require_admin_and_are_visible_in_company_audit(floor
 
 
 async def test_delegated_requester_cannot_use_target_owners_private_knowledge(floor_api, owner_sessionmaker):
-    from app.services.personal_knowledge_access import AgentRuntimePrincipal, HumanBrowserPrincipal
+    from app.services.personal_knowledge_access import AgentRuntimePrincipal
     from app.services.personal_knowledge_service import PersonalKnowledgeService
 
     _, members, bots, _, docs, companies = floor_api
     owner, requester = members[0], members[3]
     service = PersonalKnowledgeService()
+    session_id, delegation_id = str(uuid4()), str(uuid4())
     async with owner_sessionmaker() as db:
+        grant = await service.create_personal_grant(db, tenant_id=companies[0].id,
+            owner_user_id=owner.id, current_user_id=owner.id, resource_type="scope", resource_id=owner.id,
+            document_id=None, grantee_type="agent", grantee_id=bots[0].id, permission="read",
+            requester_user_id=owner.id, session_id=session_id, delegation_id=delegation_id,
+            purpose="a2a_delegation", sensitivity_ceiling="PL3_sensitive",
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=1))
+        assert grant is not None
+        await db.commit()
         allowed = await service.search_personal_with_authority(db, tenant_id=companies[0].id,
-            owner_user_id=owner.id, principal=HumanBrowserPrincipal(user_id=owner.id), query="ORCHID42")
+            owner_user_id=owner.id, principal=AgentRuntimePrincipal(agent_id=bots[0].id,
+                requester_user_id=owner.id, session_id=session_id, delegation_id=delegation_id, purpose="a2a_delegation"), query="ORCHID42")
         assert allowed.status == "ok" and any("ORCHID42" in hit.snippet for hit in allowed.hits)
         denied = await service.search_personal_with_authority(db, tenant_id=companies[0].id,
             owner_user_id=owner.id, principal=AgentRuntimePrincipal(agent_id=bots[0].id,
-                requester_user_id=requester.id, session_id=str(uuid4()), delegation_id=str(uuid4()), purpose="a2a_delegation"), query="ORCHID42")
+                requester_user_id=requester.id, session_id=session_id, delegation_id=delegation_id, purpose="a2a_delegation"), query="ORCHID42")
         assert denied.status == "denied" and denied.hits == []
         assert denied.authority.deny_reason_code == "explicit_grant_required"
 

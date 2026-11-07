@@ -1179,6 +1179,9 @@
     "installNotReady": "First-administrator setup is not ready. Contact the installer.",
     "oidc": {
       "title": "Company sign-in",
+      "accountConflict": "This company account conflicts with an existing account. Contact your company administrator.",
+      "accessDenied": "This company account cannot sign in. Contact your company administrator.",
+      "unavailable": "Company sign-in is temporarily unavailable. Try again later.",
       "stateMismatch": "This sign-in attempt is missing or does not match. Start again from the login page.",
       "failed": "Company sign-in failed. Start again from the login page."
     },

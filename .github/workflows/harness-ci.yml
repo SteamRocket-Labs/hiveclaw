@@ -221,6 +221,7 @@ jobs:
       SECRET_KEY: atomic-harness-secret
       JWT_SECRET_KEY: atomic-harness-jwt-secret
       SECRETS_MASTER_KEY: atomic-harness-master-secret-32bytes
+      INSTALL_TOKEN: atomic-harness-install-token
     steps:
       - name: Checkout
         uses: actions/checkout@v4

@@ -110,6 +110,18 @@ async def register(data: UserRegister, db: AsyncSession = Depends(get_db)):
     # one audited scope; exiting after the reads makes a subsequent tenantless
     # User/Participant flush fail closed under the production ``app_rls`` role.
     async with enter_rls_bypass(db, reason="public registration uniqueness and bootstrap checks"):
+        # Decide whether this entrance is open before disclosing identity clashes.
+        user_count = await db.execute(select(func.count()).select_from(User))
+        is_first_user = user_count.scalar() == 0
+        if is_first_user:
+            # Only cold bootstrap serializes; a committed account ends this privilege window.
+            await db.execute(text("SELECT pg_advisory_xact_lock(hashtextextended('hive.auth.first_admin.v1', 0))"))
+            user_count = await db.execute(select(func.count()).select_from(User))
+            is_first_user = user_count.scalar() == 0
+
+        if not is_first_user and not settings.PUBLIC_REGISTRATION_ENABLED:
+            raise HTTPException(status_code=403, detail="Public registration is closed. Sign in with an existing account or SSO.")
+
         email_hit = await db.execute(select(User).where(User.email == data.email))
         existing_email_user = email_hit.scalar_one_or_none()
         if existing_email_user:
@@ -128,22 +140,11 @@ async def register(data: UserRegister, db: AsyncSession = Depends(get_db)):
                 detail=_username_taken_detail(),
             )
 
-        # Check if this is the first user (→ platform admin + default company org_admin)
-        user_count = await db.execute(select(func.count()).select_from(User))
-        is_first_user = user_count.scalar() == 0
         if is_first_user:
-            # Only cold bootstrap serializes; a committed account ends this privilege window.
-            await db.execute(text("SELECT pg_advisory_xact_lock(hashtextextended('hive.auth.first_admin.v1', 0))"))
-            user_count = await db.execute(select(func.count()).select_from(User))
-            is_first_user = user_count.scalar() == 0
-
-        if not is_first_user and not settings.PUBLIC_REGISTRATION_ENABLED:
-            raise HTTPException(status_code=403, detail="Public registration is closed. Sign in with an existing account or SSO.")
-
-        if is_first_user:
-            if not settings.INSTALL_TOKEN:
+            install_token = settings.INSTALL_TOKEN.strip()
+            if not install_token:
                 raise HTTPException(status_code=503, detail="Set INSTALL_TOKEN on the server before creating the first administrator.")
-            if not secrets.compare_digest((data.install_token or "").encode(), settings.INSTALL_TOKEN.encode()):
+            if not secrets.compare_digest((data.install_token or "").strip().encode(), install_token.encode()):
                 raise HTTPException(status_code=403, detail="A valid install token is required for the first administrator.")
             from app.models.tenant import Tenant
 

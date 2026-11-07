@@ -102,6 +102,89 @@ async def _seed_delegated_run(owner_sessionmaker, tmp_path):
     return {**seed, "owner_id": owner.id}
 
 
+async def test_delegated_kernel_charge_uses_requester_and_settlement_does_not_charge_twice(
+    owner_sessionmaker, monkeypatch, tmp_path,
+):
+    import app.runtime.invoker as invoker
+    import app.services.web_chat_runtime as runtime
+    from app.services.token_tracker import record_token_usage
+    from app.models.runtime_task import RuntimeTask
+    from tests.integration.test_web_chat_worker_restart_kernel_recovery import (
+        ScriptedLLMClient, _patch_invoker_seams, _patch_runtime_seams, _run_turn,
+    )
+    from tests.integration.test_web_chat_worker_restart_post_commit_accounting import _sealed_round
+
+    seed = await _seed_delegated_run(owner_sessionmaker, tmp_path)
+    _patch_runtime_seams(monkeypatch, seed, owner_sessionmaker)
+    client = ScriptedLLMClient([{"content": "Delegated result", "tool_calls": [], "finish_reason": "stop"}])
+    _patch_invoker_seams(monkeypatch, client, seed, owner_sessionmaker)
+    monkeypatch.setattr(invoker, "record_token_usage", record_token_usage)
+    result = await _run_turn(owner_sessionmaker, seed, client, initial_round_index=0)
+    assert result.content == "Delegated result"
+    row, usage = await _sealed_round(owner_sessionmaker, seed["run_id"])
+    assert row.state == "round_committed" and usage == {"prompt_tokens": 10, "completion_tokens": 5}
+    async with owner_sessionmaker() as db:
+        events = list(await db.scalars(select(TokenUsageEvent).where(TokenUsageEvent.agent_id == seed["agent_id"])))
+        assert len(events) == 1 and events[0].tokens == 15
+        assert events[0].user_id == seed["user_id"]
+        assert events[0].details["idempotency_key"] == row.provider_request_id
+        assert (await db.get(User, seed["user_id"])).tokens_used_total == 15
+        assert (await db.get(User, seed["owner_id"])).tokens_used_total == 0
+        task = await db.get(RuntimeTask, seed["run_id"])
+    settlement = await runtime._settle_committed_round_token_usage(task, [row])
+    assert settlement["already_recorded"] == 1 and settlement["settled"] == 0
+
+
+@pytest.mark.parametrize("source", ["session_memory_writer", "fast_reflection_learning_brain"])
+@pytest.mark.parametrize("has_requester", [True, False])
+async def test_post_turn_model_usage_charges_requester_or_existing_owner_fallback(
+    owner_sessionmaker, monkeypatch, tmp_path, source, has_requester,
+):
+    import json
+
+    import app.services.llm_client as llm
+    from app.services import fast_reflection_learning_brain, memory_service, session_memory
+
+    seed = await _seed_delegated_run(owner_sessionmaker, tmp_path)
+    config = {"provider": "openai", "model": "local-auxiliary", "api_key": "local-only"}
+
+    async def model_config(*args):
+        return config
+
+    class LocalAuxiliary:
+        async def complete(self, **kwargs):
+            content = {"current_state": "Complete"} if source == "session_memory_writer" else {
+                "signal_type": "low_signal", "lesson": "No new lesson", "confidence": 0.9,
+                "container": "none", "promotion_intent": "none", "rationale": "Routine work", "evidence_refs": ["message:0"],
+            }
+            return llm.LLMResponse(content=json.dumps(content), usage={"total_tokens": 7}, model="local-auxiliary")
+
+        stream = complete
+
+        async def close(self):
+            pass
+
+    monkeypatch.setattr(llm, "create_llm_client", lambda **kwargs: LocalAuxiliary())
+    monkeypatch.setattr(memory_service, "_get_summary_model_config", model_config)
+    metadata = {"session_id": str(seed["session_id"]), "user_id": str(seed["user_id"]) if has_requester else None}
+    messages = [{"role": "user", "content": "Finish this delegated work"}]
+    if source == "session_memory_writer":
+        payload = await session_memory.build_session_memory_payload_with_llm(messages, metadata=metadata,
+            agent_id=seed["agent_id"], tenant_id=seed["tenant_id"])
+        assert payload.current_state == "Complete"
+    else:
+        result = await fast_reflection_learning_brain.classify_fast_reflection_signal_with_learning_brain(
+            agent_id=seed["agent_id"], tenant_id=seed["tenant_id"], session_id=str(seed["session_id"]),
+            messages=messages, metadata=metadata)
+        assert result is not None
+    async with owner_sessionmaker() as db:
+        assert (await db.get(User, seed["user_id"])).tokens_used_total == (7 if has_requester else 0)
+        assert (await db.get(User, seed["owner_id"])).tokens_used_total == (0 if has_requester else 7)
+        events = list(await db.scalars(select(TokenUsageEvent).where(TokenUsageEvent.agent_id == seed["agent_id"])))
+        assert len(events) == 1 and events[0].source == source
+        assert events[0].user_id == (seed["user_id"] if has_requester else seed["owner_id"])
+
+
 @pytest.mark.parametrize("has_requester", [True, False])
 async def test_delegated_round_settlement_charges_requester_or_existing_owner_fallback(
     owner_sessionmaker, monkeypatch, tmp_path, has_requester,

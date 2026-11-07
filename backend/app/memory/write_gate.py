@@ -281,6 +281,7 @@ async def prepare_memory_write_with_llm(
     agent_id: uuid.UUID | str | None = None,
     threat_classifier: ThreatClassifier | None = None,
     model_config: dict[str, Any] | None = None,
+    user_id: uuid.UUID | str | None = None,
 ) -> MemoryWriteDecision:
     """LLM-primary memory write gate with observable regex fallback."""
 
@@ -294,6 +295,7 @@ async def prepare_memory_write_with_llm(
             tenant_id=tenant_id,
             agent_id=agent_id,
             model_config=model_config,
+            user_id=user_id,
         )
     except Exception as exc:  # noqa: BLE001 - fallback is the safety boundary
         logger.warning("[WriteGate] LLM threat classifier failed; using regex fallback: %s", exc)
@@ -327,6 +329,7 @@ async def classify_memory_write_threat_with_llm(
     tenant_id: uuid.UUID | str | None = None,
     agent_id: uuid.UUID | str | None = None,
     model_config: dict[str, Any] | None = None,
+    user_id: uuid.UUID | str | None = None,
 ) -> MemoryThreatAssessment | None:
     if not content.strip():
         return MemoryThreatAssessment(rejected=False, labels=[], method="llm_classifier", confidence=1.0)
@@ -355,6 +358,7 @@ async def classify_memory_write_threat_with_llm(
             source="memory_write_threat_classifier",
             agent_id=resolved_agent,
             tenant_id=resolved_tenant,
+            user_id=user_id,
         )
     )
     assessments: list[MemoryThreatAssessment] = []

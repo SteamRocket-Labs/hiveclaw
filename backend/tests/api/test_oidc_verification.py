@@ -42,6 +42,7 @@ def provider(monkeypatch, signing_keys):
     provider = SimpleNamespace(
         metadata={
             "issuer": ISSUER,
+            "authorization_endpoint": f"{ISSUER}/authorize",
             "token_endpoint": f"{ISSUER}/token",
             "jwks_uri": f"{ISSUER}/jwks",
             "userinfo_endpoint": f"{ISSUER}/userinfo",
@@ -95,6 +96,20 @@ def provider(monkeypatch, signing_keys):
     oidc_service._discovery_cache.clear()
     yield provider
     oidc_service._discovery_cache.clear()
+
+
+@pytest.mark.parametrize("endpoint", ["javascript:alert(1)", "http://remote.example/authorize", "http://localhost.evil/authorize"])
+async def test_discovery_refuses_unsafe_authorization_endpoint(provider, endpoint):
+    provider.metadata["authorization_endpoint"] = endpoint
+    with pytest.raises(ValueError, match="authorization endpoint"):
+        await oidc_service.discover_oidc(ISSUER)
+    assert ISSUER not in oidc_service._discovery_cache
+
+
+@pytest.mark.parametrize("endpoint", ["https://remote.example/authorize", "http://localhost:18232/authorize", "http://127.0.0.1:18232/authorize"])
+async def test_discovery_allows_https_and_local_authorization_endpoints(provider, endpoint):
+    provider.metadata["authorization_endpoint"] = endpoint
+    assert (await oidc_service.discover_oidc(ISSUER))["authorization_endpoint"] == endpoint
 
 
 async def call_route(monkeypatch, route, nonce=NONCE, *, db=None, user=None, tenant_id=None):

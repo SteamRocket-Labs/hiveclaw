@@ -12,12 +12,15 @@ export interface OidcAttempt {
 }
 
 export function prepareOidcLogin(config: OidcConfig, next: string, loginPath: string): string {
+  const url = new URL(config.authorization_endpoint);
+  if (url.protocol !== 'https:' && !(url.protocol === 'http:' && ['localhost', '127.0.0.1'].includes(url.hostname))) {
+    throw new Error('OIDC authorization endpoint must use HTTPS');
+  }
   const random = () => Array.from(crypto.getRandomValues(new Uint8Array(32)), byte => byte.toString(16).padStart(2, '0')).join('');
   const attempt: OidcAttempt = {
     state: random(), nonce: random(), tenant_id: config.tenant_id,
     redirect_uri: `${window.location.origin}/auth/oidc/callback`, next, loginPath,
   };
-  const url = new URL(config.authorization_endpoint);
   url.searchParams.set('response_type', 'code');
   url.searchParams.set('client_id', config.client_id);
   url.searchParams.set('scope', config.scopes);

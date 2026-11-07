@@ -5,15 +5,18 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { translateFromCatalog } from '../test/i18nMock';
 import en from '../i18n/en.json';
+import zh from '../i18n/zh.json';
+import { ApiError } from '../api/core/errors';
 import { OIDC_ATTEMPT_KEY, prepareOidcLogin } from '../routing/oidcLogin';
 import type { OidcConfig } from '../api/domains/auth';
 
 const { callback, setAuth } = vi.hoisted(() => ({ callback: vi.fn(), setAuth: vi.fn() }));
+const language = vi.hoisted(() => ({ value: 'en' }));
 vi.mock('../api/domains/auth', () => ({ authApi: { oidcCallback: callback } }));
 vi.mock('../stores', () => ({ useAuthStore: (selector: any) => selector({ setAuth }) }));
 vi.mock('react-i18next', () => ({ useTranslation: () => ({
-  t: (key: string, fallback?: any, options?: any) => translateFromCatalog(en, key, fallback, options),
-  i18n: { language: 'en', changeLanguage: vi.fn() },
+  t: (key: string, fallback?: any, options?: any) => translateFromCatalog(language.value === 'zh' ? zh : en, key, fallback, options),
+  i18n: { get language() { return language.value; }, changeLanguage: vi.fn() },
 }) }));
 import OidcCallback from './OidcCallback';
 
@@ -29,10 +32,37 @@ function mount(query: string) {
     <Route path="/projects" element={<p>Signed in product</p>} />
   </Routes></MemoryRouter></StrictMode>);
 }
-beforeEach(() => { vi.clearAllMocks(); sessionStorage.clear(); });
+beforeEach(() => { vi.clearAllMocks(); sessionStorage.clear(); language.value = 'en'; });
 afterEach(cleanup);
 
 describe('OIDC browser attempt', () => {
+  it.each(['javascript:alert(1)', 'http://remote.example/authorize', 'http://localhost.evil/authorize'])('refuses an unsafe authorization endpoint: %s', endpoint => {
+    expect(() => prepareOidcLogin({ ...config, authorization_endpoint: endpoint }, '/', '/login')).toThrow();
+    expect(sessionStorage.getItem(OIDC_ATTEMPT_KEY)).toBeNull();
+  });
+
+  it.each(['https://remote.example/authorize', 'http://localhost:18232/authorize', 'http://127.0.0.1:18232/authorize'])('allows HTTPS and local authorization endpoints: %s', endpoint => {
+    expect(new URL(prepareOidcLogin({ ...config, authorization_endpoint: endpoint }, '/', '/login')).origin).toBe(new URL(endpoint).origin);
+    expect(sessionStorage.getItem(OIDC_ATTEMPT_KEY)).not.toBeNull();
+  });
+
+  it.each([
+    [400, 'OIDC not configured for this tenant', '公司账号登录失败，请返回登录页重新开始。'],
+    [403, 'Auto-provisioning disabled', '此公司账号暂不能登录，请联系公司管理员。'],
+    [409, 'OIDC account conflicts with an existing account', '此公司账号与已有账号冲突，请联系公司管理员。'],
+    [503, 'Internal service unavailable', '公司登录暂不可用，请稍后重试。'],
+  ])('shows a Chinese callback refusal for status %s', async (status, detail, expected) => {
+    language.value = 'zh';
+    const { stored } = attempt();
+    callback.mockRejectedValue(new ApiError(status, detail));
+    mount(`?code=provider-code&state=${stored.state}`);
+    expect(await screen.findByRole('alert')).toHaveProperty('textContent', expected);
+    expect(callback).toHaveBeenCalledTimes(1);
+    expect(setAuth).not.toHaveBeenCalled();
+    expect(sessionStorage.getItem(OIDC_ATTEMPT_KEY)).toBeNull();
+    expect(screen.getByRole('link', { name: zh.auth.goLogin })).toBeTruthy();
+  });
+
   it('uses independent cryptographic state and nonce for each attempt', () => {
     const random = vi.spyOn(crypto, 'getRandomValues');
     const first = attempt();

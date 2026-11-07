@@ -6,6 +6,7 @@ import { useAuthStore } from '../stores';
 import { OIDC_ATTEMPT_KEY, type OidcAttempt } from '../routing/oidcLogin';
 import { safePostLoginRedirect } from '../routing/authRedirect';
 import { AuthShell } from './auth/AuthShell';
+import { ApiError } from '../api/core/errors';
 
 export default function OidcCallback() {
   const { t, i18n } = useTranslation();
@@ -42,7 +43,10 @@ export default function OidcCallback() {
         setAuth(result.user, result.access_token);
         navigate(result.needs_company_setup ? '/setup-company' : safePostLoginRedirect(attempt.next), { replace: true });
       } catch (err) {
-        setError(err instanceof Error && err.message !== 'OIDC authentication failed' ? err.message : t('auth.oidc.failed'));
+        const key = err instanceof ApiError
+          ? err.status === 409 ? 'accountConflict' : err.status === 403 ? 'accessDenied' : err.status >= 500 ? 'unavailable' : 'failed'
+          : 'failed';
+        setError(t(`auth.oidc.${key}`));
       }
     };
     void complete();

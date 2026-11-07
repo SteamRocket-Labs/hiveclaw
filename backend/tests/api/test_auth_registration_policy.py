@@ -23,7 +23,7 @@ def policy(monkeypatch):
 
 
 def test_registration_switch_is_read_for_each_request(policy):
-    db = _FakeDB([None, None, 1])
+    db = _FakeDB([1, None, None])
     client = _make_client(db)
     policy.PUBLIC_REGISTRATION_ENABLED = False
     denied = client.post("/api/auth/register", json=_PAYLOAD)
@@ -33,7 +33,7 @@ def test_registration_switch_is_read_for_each_request(policy):
     assert any("count(" in statement for statement in db.executed_statements)
     assert not any("pg_advisory_xact_lock" in statement for statement in db.executed_statements)
     policy.PUBLIC_REGISTRATION_ENABLED = True
-    allowed = _make_client(_FakeDB([None, None, 1])).post("/api/auth/register", json=_PAYLOAD)
+    allowed = _make_client(_FakeDB([1, None, None])).post("/api/auth/register", json=_PAYLOAD)
     assert allowed.status_code == 201
     assert allowed.json()["user"]["role"] == "member"
 
@@ -57,7 +57,7 @@ def test_registration_config_reports_policy_without_exposing_token(policy, count
 @pytest.mark.parametrize("enabled", [True, False])
 def test_first_admin_requires_matching_install_token(policy, supplied, enabled):
     policy.PUBLIC_REGISTRATION_ENABLED = enabled
-    db = _FakeDB([None, None, 0, 0, None])
+    db = _FakeDB([0, 0, None, None, None])
     body = {**_PAYLOAD, **({"install_token": supplied} if supplied is not None else {})}
     response = _make_client(db).post("/api/auth/register", json=body)
     assert response.status_code == 403
@@ -71,7 +71,7 @@ def test_first_admin_requires_matching_install_token(policy, supplied, enabled):
 def test_unconfigured_install_token_refuses_bootstrap(policy, enabled, supplied):
     policy.PUBLIC_REGISTRATION_ENABLED = enabled
     policy.INSTALL_TOKEN = ""
-    db = _FakeDB([None, None, 0, 0, None])
+    db = _FakeDB([0, 0, None, None, None])
     response = _make_client(db).post("/api/auth/register", json={**_PAYLOAD, "install_token": supplied})
     assert response.status_code == 503
     assert response.json()["detail"] == "Set INSTALL_TOKEN on the server before creating the first administrator."
@@ -82,7 +82,7 @@ def test_unconfigured_install_token_refuses_bootstrap(policy, enabled, supplied)
 @pytest.mark.parametrize("enabled", [True, False])
 def test_matching_install_token_bootstraps_once_and_is_ignored_afterward(policy, enabled):
     policy.PUBLIC_REGISTRATION_ENABLED = enabled
-    db = _FakeDB([None, None, 0, 0, None])
+    db = _FakeDB([0, 0, None, None, None])
     response = _make_client(db).post("/api/auth/register", json={**_PAYLOAD, "install_token": policy.INSTALL_TOKEN})
     assert response.status_code == 201
     assert response.json()["user"]["role"] == "platform_admin"
@@ -90,16 +90,25 @@ def test_matching_install_token_bootstraps_once_and_is_ignored_afterward(policy,
     assert any("pg_advisory_xact_lock" in statement for statement in db.executed_statements)
     policy.PUBLIC_REGISTRATION_ENABLED = True
     policy.INSTALL_TOKEN = ""
-    later = _make_client(_FakeDB([None, None, 1])).post("/api/auth/register", json={**_PAYLOAD, "install_token": "wrong"})
+    later = _make_client(_FakeDB([1, None, None])).post("/api/auth/register", json={**_PAYLOAD, "install_token": "wrong"})
     assert later.status_code == 201
     assert later.json()["user"]["role"] == "member"
+
+
+@pytest.mark.parametrize("configured", ["local-install-token", " \tlocal-install-token\n"])
+def test_install_token_comparison_ignores_surrounding_whitespace(policy, configured):
+    policy.INSTALL_TOKEN = configured
+    response = _make_client(_FakeDB([0, 0, None, None, None])).post("/api/auth/register",
+        json={**_PAYLOAD, "install_token": " \nlocal-install-token\t "})
+    assert response.status_code == 201
+    assert response.json()["user"]["role"] == "platform_admin"
 
 
 @pytest.mark.parametrize("enabled", [True, False])
 def test_account_created_during_bootstrap_lock_does_not_require_install_token(policy, enabled):
     policy.PUBLIC_REGISTRATION_ENABLED = enabled
     policy.INSTALL_TOKEN = ""
-    db = _FakeDB([None, None, 0, 1])
+    db = _FakeDB([0, 1, None, None])
     response = _make_client(db).post("/api/auth/register", json=_PAYLOAD)
     assert response.status_code == (201 if enabled else 403)
     if enabled:
@@ -116,7 +125,7 @@ def test_account_created_during_bootstrap_lock_does_not_require_install_token(po
 def test_existing_installation_applies_registration_policy_not_install_token(policy, enabled, configured, supplied):
     policy.PUBLIC_REGISTRATION_ENABLED = enabled
     policy.INSTALL_TOKEN = "local-install-token" if configured else ""
-    db = _FakeDB([None, None, 1])
+    db = _FakeDB([1, None, None])
     response = _make_client(db).post("/api/auth/register", json={**_PAYLOAD, "install_token": supplied})
     assert response.status_code == (201 if enabled else 403)
     if enabled:

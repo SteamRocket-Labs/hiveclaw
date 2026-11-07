@@ -40,6 +40,7 @@ export interface AuditLog {
   id: string;
   user_id?: string;
   agent_id?: string;
+  agent_name?: string | null;
   action: string;
   details: Record<string, any>;
   created_at: string;

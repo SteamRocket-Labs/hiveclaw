@@ -154,3 +154,13 @@
   color: var(--warning);
   font-size: var(--text-row);
 }
+
+@media (max-width: 720px) {
+  .ws-employees-head, .ws-employees-actions { flex-wrap: wrap; }
+  .ws-employees-table thead { display: none; }
+  .ws-employees-row { display: block; padding: 12px 0; border-bottom: 1px solid var(--border-subtle); }
+  .ws-employees-td, .ws-employees-td-right { display: block; padding: 4px 0; text-align: left; }
+  .ws-employees-td[data-label] { display: grid; grid-template-columns: 76px minmax(0, 1fr); gap: 8px; }
+  .ws-employees-td[data-label]::before { content: attr(data-label); color: var(--text-secondary); }
+  .ws-employees-name, .ws-employees-role { white-space: normal; overflow-wrap: anywhere; }
+}

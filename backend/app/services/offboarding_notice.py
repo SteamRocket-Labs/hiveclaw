@@ -26,6 +26,11 @@ from app.services.privacy_layer import max_sensitivity
 from app.services.tool_config_service import clear_agent_tool_config_secrets
 
 
+def _knowledge_handover_entry(document, match=None):
+    return {"id": str(match.id if match else document.id), "title": match.title if match else document.title,
+        **({"merged": True} if match else {})}
+
+
 async def _move_knowledge(db, target_user, successor):
     models = (KnowledgeDocument, KnowledgeSegment, KnowledgeEntity, KnowledgeAssertion, KnowledgeLink, KnowledgeIndexJob)
     rows, replacements, duplicates, documents = {}, {}, {}, []
@@ -101,8 +106,7 @@ async def _move_knowledge(db, target_user, successor):
                 replacements[row.id], replacements[str(row.id)] = replacement_id, str(replacement_id)
                 duplicates.setdefault(model, []).append(row.id)
             if model is KnowledgeDocument and row.scope_id == target_user.id:
-                documents.append({"id": str(match.id if match else row.id), "title": match.title if match else row.title,
-                    **({"merged": True} if match else {})})
+                documents.append(_knowledge_handover_entry(row, match))
                 if row.status != "archived" and (not match or leaver_wins):
                     rebuild_ids.add(match.id if match else row.id)
 
@@ -159,6 +163,35 @@ async def _move_knowledge(db, target_user, successor):
     return documents, provenance
 
 
+async def _offboarding_tasks(db, target_user):
+    return (await db.execute(select(Task, User.id).join(Agent, Agent.id == Task.agent_id)
+        .outerjoin(User, (User.id == func.coalesce(Agent.owner_user_id, Agent.creator_id)) & User.is_active
+            & (User.tenant_id == target_user.tenant_id)).where(
+        Task.tenant_id == target_user.tenant_id, Task.status.notin_(("done", "cancelled")),
+        Task.created_by == target_user.id))).all()
+
+
+async def preview_handover(db, *, target_user, agents, successor):
+    from app.services.trigger_resource_authority import trigger_owner_user_id
+
+    agent_ids = [agent.id for agent in agents]
+    documents = (await db.scalars(select(KnowledgeDocument).where(
+        KnowledgeDocument.tenant_id == target_user.tenant_id, KnowledgeDocument.scope_type == "person",
+        KnowledgeDocument.scope_id.in_([target_user.id, successor.id] if successor else [target_user.id])))).all()
+    receiver_documents = {doc.source_sha256: doc for doc in documents if successor and doc.scope_id == successor.id}
+    triggers = (await db.scalars(select(AgentTrigger).where(AgentTrigger.tenant_id == target_user.tenant_id,
+        AgentTrigger.agent_id.in_(agent_ids)))).all()
+    return {
+        "knowledge": [_knowledge_handover_entry(doc, receiver_documents.get(doc.source_sha256))
+            for doc in documents if doc.scope_id == target_user.id],
+        "work": [{"id": str(task.id), "title": task.title} for task, owner in await _offboarding_tasks(db, target_user)
+            if task.agent_id in agent_ids or owner is None or (successor and owner == successor.id)],
+        "triggers": [{"id": str(trigger.id), "name": trigger.name} for trigger in triggers
+            if trigger_owner_user_id(trigger) == target_user.id
+            and str((trigger.config or {}).get("authority_state") or "").strip().lower() != "quarantined"],
+    }
+
+
 async def transfer_knowledge_and_notify(db, *, target_user, successor, agents, handover_audits):
     from app.services.agent_tool_assignment_service import ensure_agent_tool_assignment
 
@@ -181,11 +214,7 @@ async def transfer_knowledge_and_notify(db, *, target_user, successor, agents, h
 
         await ensure_agent_tool_assignment(db, agent_id=assignment.agent_id, tool_id=tool.id,
             enabled=None, source=None, config=clear)
-    tasks = (await db.execute(select(Task, User.id).join(Agent, Agent.id == Task.agent_id)
-        .outerjoin(User, (User.id == func.coalesce(Agent.owner_user_id, Agent.creator_id)) & User.is_active
-            & (User.tenant_id == target_user.tenant_id)).where(
-        Task.tenant_id == target_user.tenant_id, Task.status.notin_(("done", "cancelled")),
-        Task.created_by == target_user.id))).all()
+    tasks = await _offboarding_tasks(db, target_user)
     work, originals = [], {}
     for task, bot_owner in tasks:
         owner = successor.id if task.agent_id in agent_ids else bot_owner

@@ -50,10 +50,10 @@ export const WORKSPACE_SETTINGS_SECTIONS = WORKSPACE_SECTIONS.filter(
     section.tab !== 'dashboard' && section.tab !== 'knowledge',
 );
 
-// The company admin navigation shows five product areas (B4). Every other
+// The company admin navigation shows six product areas (G3). Every other
 // section keeps its route and stays reachable by URL; the full section list
 // above remains the routing and access model.
-export type WorkspaceNavTab = Extract<WorkspaceSectionTab, 'users' | 'llm' | 'info' | 'approvals' | 'audit'>;
+export type WorkspaceNavTab = Extract<WorkspaceSectionTab, 'users' | 'digital_employees' | 'llm' | 'info' | 'approvals' | 'audit'>;
 
 export interface WorkspaceNavItem {
   tab: WorkspaceNavTab;
@@ -64,6 +64,7 @@ export interface WorkspaceNavItem {
 
 const WORKSPACE_NAV_ITEMS: WorkspaceNavItem[] = [
   { tab: 'users', to: '/enterprise/users', labelKey: 'enterprise.nav.membersAndLogin', fallbackLabel: 'Members & Login' },
+  { tab: 'digital_employees', to: '/enterprise/digital-employees', labelKey: 'enterprise.tabs.digitalEmployees', fallbackLabel: 'Digital Employees' },
   { tab: 'llm', to: '/enterprise/llm', labelKey: 'enterprise.nav.modelsAndBudget', fallbackLabel: 'Models & Budget' },
   { tab: 'info', to: '/enterprise/info', labelKey: 'enterprise.nav.companyConnections', fallbackLabel: 'Company Connections' },
   { tab: 'approvals', to: '/enterprise/approvals', labelKey: 'enterprise.nav.approvalRules', fallbackLabel: 'Approval Rules' },

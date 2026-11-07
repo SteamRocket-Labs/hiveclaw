@@ -4,6 +4,8 @@ import { describe, expect, it, vi } from 'vitest';
 
 import WorkspaceInfoSection from './WorkspaceInfoSection';
 
+vi.mock('react-router-dom', () => ({ Link: ({ to, children, className }: any) => <a href={to} className={className}>{children}</a> }));
+
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
     t: (key: string, fallback?: string) => fallback ?? key.split('.').pop() ?? key,

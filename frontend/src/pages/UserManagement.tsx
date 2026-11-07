@@ -39,11 +39,13 @@ export default function UserManagement() {
     const [page, setPage] = useState(1);
     const [offboardingTarget, setOffboardingTarget] = useState<ManagedUser | null>(null);
     const [offboardingPreview, setOffboardingPreview] = useState<UserOffboardingPreview | null>(null);
+    const [previewSuccessorId, setPreviewSuccessorId] = useState('');
     const [offboardingLoading, setOffboardingLoading] = useState(false);
     const [offboardingBusy, setOffboardingBusy] = useState(false);
     const [successorUserId, setSuccessorUserId] = useState('');
     const [offboardingReason, setOffboardingReason] = useState('');
     const [offboardingRequestId, setOffboardingRequestId] = useState('');
+    const previewMatchesSuccessor = previewSuccessorId === successorUserId;
 
     const selectedTenantId = () => localStorage.getItem('current_tenant_id') || '';
 
@@ -155,7 +157,13 @@ export default function UserManagement() {
         try {
             const preview = await usersApi.previewOffboarding(user.id, selectedTenantId() || undefined);
             setOffboardingPreview(preview);
-            setSuccessorUserId(preview.default_successor_id || preview.eligible_successors[0]?.id || '');
+            setPreviewSuccessorId(preview.default_successor_id || '');
+            const successorId = preview.default_successor_id || preview.eligible_successors[0]?.id || '';
+            if (successorId && successorId !== preview.default_successor_id) {
+                await changeOffboardingSuccessor(successorId, user);
+            } else {
+                setSuccessorUserId(successorId);
+            }
         } catch (error: any) {
             setOffboardingTarget(null);
             notify(error?.message || t('userManagement.offboardingPreviewFailed', 'Failed to load offboarding impact.'), true);
@@ -186,7 +194,7 @@ export default function UserManagement() {
             );
             notify(t(
                 'userManagement.offboardingComplete',
-                'Member deactivated and {{count}} Agent(s) transferred.',
+                'Member deactivated and {{count}} digital employee(s) transferred.',
                 { count: receipt.transferred_agent_count },
             ));
             setOffboardingTarget(null);
@@ -199,6 +207,25 @@ export default function UserManagement() {
             notify(error?.message || t('userManagement.offboardingFailed', 'Failed to deactivate member.'), retryable ? 'retryable' : true);
         } finally {
             setOffboardingBusy(false);
+        }
+    };
+
+    const changeOffboardingSuccessor = async (id: string, target = offboardingTarget) => {
+        if (!target) return;
+        if (!id) {
+            setSuccessorUserId('');
+            return;
+        }
+        setOffboardingLoading(true);
+        try {
+            const preview = await usersApi.previewOffboarding(target.id, selectedTenantId() || undefined, id);
+            setOffboardingPreview(preview);
+            setPreviewSuccessorId(id);
+            setSuccessorUserId(id);
+        } catch (error: any) {
+            notify(error?.message || t('userManagement.offboardingPreviewFailed', 'Failed to load offboarding impact.'), true);
+        } finally {
+            setOffboardingLoading(false);
         }
     };
 
@@ -459,7 +486,7 @@ export default function UserManagement() {
                         <p className="user-mgmt-offboard-summary">
                             {t(
                                 'userManagement.offboardingSummary',
-                                '{{name}} will be unable to sign in. {{count}} Agent(s) will move to the selected member.',
+                                '{{name}} will be unable to sign in. {{count}} digital employee(s) will move to the selected member.',
                                 { name: offboardingTarget?.display_name || offboardingTarget?.username, count: offboardingPreview.owned_agents.length },
                             )}
                         </p>
@@ -470,6 +497,18 @@ export default function UserManagement() {
                                 ))}
                             </div>
                         )}
+                        {successorUserId && previewMatchesSuccessor && <div className="user-mgmt-offboard-impact">
+                            {([
+                                ['knowledge', t('userManagement.handoverKnowledge', 'Uploaded knowledge'), offboardingPreview.handover.knowledge.map((item) =>
+                                    item.merged ? <><span>{item.title}</span> · <small>{t('handover.merged', 'Merged into the successor’s existing document')}</small></> : item.title)],
+                                ['work', t('userManagement.handoverWork', 'Unfinished work'), offboardingPreview.handover.work.map((item) => item.title)],
+                                ['triggers', t('userManagement.handoverSchedules', 'Schedules to review before resuming'), offboardingPreview.handover.triggers.map((item) => item.name)],
+                            ] as const).map(([key, label, names]) => <div key={key}>
+                                <strong>{names.length}</strong><span>{label}</span>
+                                <ul>{names.map((name, index) => <li key={index}>{name}</li>)}</ul>
+                            </div>)}
+                        </div>}
+                        <p>{t('userManagement.handoverCredentials', 'Personal connections and tool keys are revoked and are not passed to the receiving member.')}</p>
                         <div className="user-mgmt-offboard-impact">
                             <div><strong>{offboardingPreview.revocations.agent_permissions + offboardingPreview.revocations.resource_permissions}</strong><span>{t('userManagement.directPermissions', 'direct permissions')}</span></div>
                             <div><strong>{offboardingPreview.revocations.knowledge_grants}</strong><span>{t('userManagement.knowledgeGrants', 'knowledge grants')}</span></div>
@@ -477,7 +516,7 @@ export default function UserManagement() {
                             <div><strong>{offboardingPreview.revocations.external_principals + offboardingPreview.revocations.local_bridge_connections}</strong><span>{t('userManagement.identityBindings', 'identity bindings')}</span></div>
                             <div><strong>{offboardingPreview.revocations.runtime_tasks + offboardingPreview.revocations.pending_approvals}</strong><span>{t('userManagement.inFlightAuthority', 'in-flight tasks and approvals')}</span></div>
                         </div>
-                        {offboardingPreview.blockers.length > 0 && (
+                        {previewMatchesSuccessor && offboardingPreview.blockers.length > 0 && (
                             <div className="user-mgmt-offboard-blocker">{offboardingPreview.blockers.join(' · ')}</div>
                         )}
                         <div className="form-group">
@@ -486,7 +525,7 @@ export default function UserManagement() {
                                 id="offboarding-successor"
                                 className="form-input"
                                 value={successorUserId}
-                                onChange={(event) => setSuccessorUserId(event.target.value)}
+                                onChange={(event) => void changeOffboardingSuccessor(event.target.value)}
                             >
                                 <option value="">{t('userManagement.selectSuccessor', 'Select an active company member')}</option>
                                 {offboardingPreview.eligible_successors.map((successor) => (

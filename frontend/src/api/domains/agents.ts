@@ -175,9 +175,10 @@ export const agentApi = {
   ),
   deactivate: (id: string) => post<void>(`/agents/${id}/deactivate`),
   restore: (id: string) => post<void>(`/agents/${id}/restore`),
-  list: (tenantId?: string, options?: { summary?: boolean }) => {
+  list: (tenantId?: string, options?: { summary?: boolean; includeDeactivated?: boolean }) => {
     const params = new URLSearchParams();
     if (tenantId) params.set('tenant_id', tenantId);
+    if (options?.includeDeactivated) params.set('include_deactivated', 'true');
     if (options?.summary !== false) params.set('summary', 'true');
     const query = params.toString();
     return get<Agent[]>(`/agents/${query ? `?${query}` : ''}`);

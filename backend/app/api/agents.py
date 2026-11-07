@@ -403,6 +403,7 @@ async def list_agents(
     tenant_id: uuid.UUID | None = None,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
+    include_deactivated: bool = False,
 ):
     """List all agents the current user has access to."""
     # Scoped administrators manage the complete employee inventory of their
@@ -413,7 +414,7 @@ async def list_agents(
         stmt = _agent_list_summary_stmt().where(
             Agent.tenant_id == target_tenant_id,
             Agent.agent_class != "internal_system",
-            agent_lifecycle_active_clause(),
+            agent_lifecycle_active_clause(include_deactivated=include_deactivated),
         )
         result = await db.execute(stmt.order_by(Agent.created_at.desc()))
         rows = result.mappings().all()
@@ -1362,10 +1363,11 @@ async def get_agent_permissions(
 
     agent, access_level = await check_agent_history_access(db, current_user, agent_id)
     is_owner = effective_agent_owner_id(agent) == current_user.id
+    is_admin = is_scoped_business_admin(current_user, resource_tenant_id=agent.tenant_id)
     can_manage_permissions = access_level == "manage" and (
-        is_owner or is_scoped_business_admin(current_user, resource_tenant_id=getattr(agent, "tenant_id", None))
+        is_owner or is_admin
     )
-    if not can_manage_permissions:
+    if not (can_manage_permissions or is_admin):
         return {
             "scope_type": "effective",
             "scope_ids": [],
@@ -1384,7 +1386,7 @@ async def get_agent_permissions(
             "scope_ids": [],
             "access_level": access_level,
             "is_owner": is_owner,
-            "can_manage_permissions": True,
+            "can_manage_permissions": can_manage_permissions,
         }
 
     scope_type = perms[0].scope_type
@@ -1406,7 +1408,7 @@ async def get_agent_permissions(
         "scope_names": scope_names,
         "access_level": perm_access_level,
         "is_owner": is_owner,
-        "can_manage_permissions": True,
+        "can_manage_permissions": can_manage_permissions,
     }
 
 

@@ -28,6 +28,11 @@ export interface UserOffboardingPreview {
   display_name: string;
   is_active: boolean;
   owned_agents: Array<{ id: string; name: string; status: string; agent_class: string }>;
+  handover: {
+    knowledge: Array<{ id: string; title: string; merged?: boolean }>;
+    work: Array<{ id: string; title: string }>;
+    triggers: Array<{ id: string; name: string }>;
+  };
   eligible_successors: Array<{ id: string; display_name: string; email: string; role: string }>;
   default_successor_id?: string | null;
   revocations: {
@@ -63,8 +68,12 @@ export const usersApi = {
   updateQuota: (userId: string, data: UserQuotaUpdate) => patch<ManagedUser>(`/users/${userId}/quota`, data),
   updateRole: (userId: string, role: string, tenantId?: string) =>
     patch<ManagedUser>(`/users/${userId}/role${tenantQuery(tenantId)}`, { role }),
-  previewOffboarding: (userId: string, tenantId?: string) =>
-    get<UserOffboardingPreview>(`/users/${userId}/offboarding-preview${tenantQuery(tenantId)}`),
+  previewOffboarding: (userId: string, tenantId?: string, successorId?: string) => {
+    const params = new URLSearchParams();
+    if (tenantId) params.set('tenant_id', tenantId);
+    if (successorId) params.set('successor_user_id', successorId);
+    return get<UserOffboardingPreview>(`/users/${userId}/offboarding-preview${params.size ? `?${params}` : ''}`);
+  },
   offboard: (
     userId: string,
     data: { successor_user_id: string; expected_agent_ids: string[]; reason: string; request_id: string },

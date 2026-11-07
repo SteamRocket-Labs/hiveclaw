@@ -3,6 +3,7 @@ import { NavLink, Outlet, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 
 import { useAuthStore } from '../../stores';
+import './SurfaceLayout.css';
 
 export interface SurfaceNavItem {
   to: string;
@@ -29,7 +30,7 @@ export default function SurfaceLayout({
   const logout = useAuthStore((state) => state.logout);
 
   return (
-    <div className="app-layout">
+    <div className="app-layout admin-surface-layout">
       <nav className="sidebar">
         <div className="sidebar-top">
           <div className="sidebar-logo">

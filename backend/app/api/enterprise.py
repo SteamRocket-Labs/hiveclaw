@@ -1079,12 +1079,14 @@ async def list_audit_logs(
     db: AsyncSession = Depends(get_db),
 ):
     """List audit logs scoped to a tenant (admin only)."""
-    query = select(AuditLog).order_by(AuditLog.created_at.desc()).limit(limit)
     # Personnel rows carry tenant_id; legacy agent rows may only carry agent_id.
     target_tenant_id = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
-    query = query.where(enterprise_audit_log_scope(target_tenant_id, agent_id=agent_id))
+    query = select(AuditLog, Agent.name).outerjoin(Agent,
+        and_(Agent.id == AuditLog.agent_id, Agent.tenant_id == target_tenant_id)
+    ).where(enterprise_audit_log_scope(target_tenant_id, agent_id=agent_id)
+    ).order_by(AuditLog.created_at.desc()).limit(limit)
     result = await db.execute(query)
-    return [AuditLogSummaryOut.model_validate(log) for log in result.scalars().all()]
+    return [AuditLogSummaryOut.model_validate(log).model_copy(update={"agent_name": name}) for log, name in result.all()]
 
 
 # ─── Security Audit (SecurityAuditEvent table) ─────────

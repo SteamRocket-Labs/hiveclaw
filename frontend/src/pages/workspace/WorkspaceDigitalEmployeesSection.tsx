@@ -17,6 +17,23 @@ interface WorkspaceDigitalEmployeesSectionProps {
     selectedTenantId: string;
 }
 
+function EmployeeUsage({ agentId }: { agentId: string }) {
+    const { t } = useTranslation();
+    const { data, isError } = useQuery({
+        queryKey: ['agent-permissions', agentId],
+        queryFn: () => agentApi.getPermissions(agentId),
+    });
+    if (isError) return <span>{t('workspace.digitalEmployees.usageUnavailable', 'Usage access could not be loaded')}</span>;
+    if (!data) return <span>{t('common.loading', 'Loading...')}</span>;
+    return <span>{data.scope_type === 'company'
+        ? t('workspace.digitalEmployees.usageCompany', 'Everyone in the company')
+        : data.scope_type === 'user' ? t('workspace.digitalEmployees.usageOwner', 'Owner and company administrators')
+            : data.scope_type === 'department' ? t('workspace.digitalEmployees.usageDepartment', 'Owner, company administrators and authorized departments')
+                : t('workspace.digitalEmployees.usageUnavailable', 'Usage access could not be loaded')}
+        {data.scope_type === 'user' && data.scope_names?.length ? ` · ${data.scope_names.map((scope) => scope.name).join(', ')}` : ''}
+    </span>;
+}
+
 export default function WorkspaceDigitalEmployeesSection({ selectedTenantId }: WorkspaceDigitalEmployeesSectionProps) {
     const { t } = useTranslation();
     const queryClient = useQueryClient();
@@ -37,7 +54,7 @@ export default function WorkspaceDigitalEmployeesSection({ selectedTenantId }: W
 
     const { data: agents = [], isLoading: agentsLoading } = useQuery({
         queryKey: ['agents', selectedTenantId, 'admin-management'],
-        queryFn: () => agentApi.list(selectedTenantId || undefined),
+        queryFn: () => agentApi.list(selectedTenantId || undefined, { includeDeactivated: true }),
         enabled: canManageEmployees,
     });
 
@@ -104,7 +121,8 @@ export default function WorkspaceDigitalEmployeesSection({ selectedTenantId }: W
                 reason,
                 request_id: globalThis.crypto?.randomUUID?.() || `handover-${Date.now()}`,
             }),
-        onSuccess: async (receipt) => {
+        onSuccess: async (receipt, { agent }) => {
+            await queryClient.invalidateQueries({ queryKey: ['agent-permissions', agent.id] });
             await queryClient.invalidateQueries({ queryKey: ['agents'] });
             await queryClient.invalidateQueries({ queryKey: ['agents', selectedTenantId, 'admin-management'] });
             setOwnershipAgent(null);
@@ -272,8 +290,8 @@ export default function WorkspaceDigitalEmployeesSection({ selectedTenantId }: W
                                 <tr className="ws-employees-thead-row">
                                     <th className="ws-employees-th">{t('workspace.digitalEmployees.employeeName', 'Employee')}</th>
                                     <th className="ws-employees-th">{t('workspace.digitalEmployees.employeeOwner', 'Owner')}</th>
+                                    <th className="ws-employees-th">{t('workspace.digitalEmployees.employeeUsage', 'Who can use it')}</th>
                                     <th className="ws-employees-th">{t('workspace.digitalEmployees.employeeStatus', 'Status')}</th>
-                                    <th className="ws-employees-th">{t('workspace.digitalEmployees.employeeType', 'Type')}</th>
                                     <th className="ws-employees-th-right">{t('workspace.digitalEmployees.employeeActions', 'Actions')}</th>
                                 </tr>
                             </thead>
@@ -290,14 +308,16 @@ export default function WorkspaceDigitalEmployeesSection({ selectedTenantId }: W
                                                     {agent.role_description || t('employees.noRole', 'No role description yet')}
                                                 </div>
                                             </td>
-                                            <td className="ws-employees-td">
+                                            <td className="ws-employees-td" data-label={t('workspace.digitalEmployees.employeeOwner', 'Owner')}>
                                                 <div className="ws-employees-owner-name">
                                                     {owner?.display_name || owner?.email || t('workspace.digitalEmployees.ownerUnknown', 'Unknown user')}
                                                 </div>
                                                 {owner?.email && <div className="ws-employees-owner-email">{owner.email}</div>}
                                             </td>
-                                            <td className="ws-employees-td">{agent.status}</td>
-                                            <td className="ws-employees-td">{agent.agent_type || 'native'}</td>
+                                            <td className="ws-employees-td" data-label={t('workspace.digitalEmployees.employeeUsage', 'Who can use it')}><EmployeeUsage agentId={agent.id} /></td>
+                                            <td className="ws-employees-td" data-label={t('workspace.digitalEmployees.employeeStatus', 'Status')}>{agent.deactivated_at
+                                                ? t('workspace.digitalEmployees.inactive', 'Deactivated')
+                                                : t('workspace.digitalEmployees.active', 'Active')}</td>
                                             <td className="ws-employees-td-right">
                                                 <div className="ws-employees-actions">
                                                     <Link to={`/agents/${agent.id}`} className="btn btn-ghost">
@@ -310,7 +330,12 @@ export default function WorkspaceDigitalEmployeesSection({ selectedTenantId }: W
                                                     >
                                                         {t('workspace.digitalEmployees.changeOwner', 'Change owner')}
                                                     </button>
-                                                    {protectedAgent ? (
+                                                    {agent.deactivated_at ? (
+                                                        <button type="button" className="btn btn-ghost" disabled={restoreAgentMutation.isPending}
+                                                            onClick={() => restoreAgentMutation.mutate(agent.id)}>
+                                                            {t('workspace.digitalEmployees.restoreEmployeeButton', 'Restore')}
+                                                        </button>
+                                                    ) : protectedAgent ? (
                                                         <span className="ws-employees-protected">
                                                             {t('workspace.digitalEmployees.systemProtected', 'System protected')}
                                                         </span>
@@ -344,7 +369,7 @@ export default function WorkspaceDigitalEmployeesSection({ selectedTenantId }: W
                 onClose={() => {
                     if (!transferOwnerMutation.isPending) setOwnershipAgent(null);
                 }}
-                title={t('workspace.digitalEmployees.changeOwnerTitle', 'Change Agent owner')}
+                title={t('workspace.digitalEmployees.changeOwnerTitle', 'Change digital employee owner')}
                 width={520}
                 footer={(
                     <>

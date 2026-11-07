@@ -668,3 +668,26 @@ it.each(['reason', 'unmount'] as const)(
     );
   },
 );
+
+it.each(['owner', 'other_user', 'operator', 'read_grant'])('resolves first-task permissions only as its executing owner: %s', async (mode) => {
+  const base = props('Audit', mode === 'operator', 'first-task-session');
+  const resolve = vi.fn().mockResolvedValue({ status: 'resolved' });
+  const request = { permission_request_id: 'first-task-permission', tool_name: 'write_file',
+    requested_by_user_id: 'operator-user', session_id: 'first-task-session', runtime_task_id: 'first-task-run',
+    arguments: { path: 'workspace/report.md' }, allow_session_allowed: false };
+  const message = { id: 'permission-event', role: 'event' as const, content: 'Permission needed',
+    eventType: 'permission', eventStatus: 'session_permission_required', sessionPermissionRequest: request };
+  render(<AgentChatSection {...base} agent={{ ...base.agent, access_level: mode === 'read_grant' ? 'read' : 'use' }}
+    activeSession={{ ...base.activeSession, session_kind: 'delegation_run', user_id: 'operator-user',
+      operator_view: mode === 'operator' }} currentUser={{ id: mode === 'other_user' ? 'other-user' : 'operator-user' }}
+    historyMsgs={[message]} onResolveSessionPermission={resolve} />);
+  const allow = screen.queryByRole('button', { name: 'Allow once' });
+  if (mode !== 'owner') {
+    expect(allow).toBeNull();
+    expect(resolve).not.toHaveBeenCalled();
+    return;
+  }
+  expect(allow).not.toBeNull();
+  fireEvent.click(allow!);
+  await waitFor(() => expect(resolve).toHaveBeenCalledExactlyOnceWith(request, 'allow_once'));
+});

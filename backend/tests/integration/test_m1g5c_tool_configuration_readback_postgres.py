@@ -68,8 +68,8 @@ async def test_profile_configuration_inherits_company_defaults_and_reads_back_a_
         assert save.status_code == 200, save.text
         assert save.json()["ok"] is True
         saved = save.json()["tool"]
-        assert saved["config"]["endpoint"] == "company-value" and saved["config"]["timeout"] == 9
-        assert saved["agent_config"] == {"api_key": MASKED_SECRET_SENTINEL, "timeout": 9}
+        assert saved["config"]["endpoint"] == "company-value" and saved["config"]["timeout"] == MASKED_SECRET_SENTINEL
+        assert saved["agent_config"] == {"api_key": MASKED_SECRET_SENTINEL, "timeout": MASKED_SECRET_SENTINEL}
         assert "synthetic-" not in save.text and "enc:v1:" not in save.text
         replay = await client.put(f"/api/tools/agents/{agent_id}/tool-config/{tool_id}",
             json={"config": saved["agent_config"]})

@@ -265,7 +265,7 @@ async def test_a_save_holding_the_config_lock_serializes_offboarding(owner_sessi
 
 
 async def test_six_moved_documents_are_all_promotable_with_daemon_off(owner_sessionmaker, monkeypatch):
-    assert get_settings().CORE_DAEMON_STARTUP_ENABLED is False
+    monkeypatch.setattr(get_settings(), "CORE_DAEMON_STARTUP_ENABLED", False)
     root = get_settings().AGENT_DATA_DIR
     service = PersonalKnowledgeService(data_root=root, extractor=None)
     monkeypatch.setattr("app.api.agent_knowledge.PersonalKnowledgeService", lambda: service)

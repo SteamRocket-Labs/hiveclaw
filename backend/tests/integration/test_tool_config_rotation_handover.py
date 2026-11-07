@@ -38,6 +38,9 @@ async def test_storage_rotation_uses_the_post_handover_value(owner_sessionmaker,
                     def observe(statement, *args, **kwargs):
                         nonlocal config_reads
                         sql = str(statement.compile(dialect=postgresql.dialect()))
+                        # Keep inventory and rotation on this fixture's keyring and assignment.
+                        if sql in ("SELECT id, config FROM agent_tools", "SELECT agent_id, tool_id FROM agent_tools ORDER BY agent_id, tool_id"):
+                            statement = text(sql.replace("FROM agent_tools", "FROM agent_tools WHERE id = :fixture_id")).bindparams(fixture_id=assignment_id)
                         if "FROM agents" in sql and "FOR NO KEY UPDATE" in sql:
                             reached.set()
                         result = execute(statement, *args, **kwargs)

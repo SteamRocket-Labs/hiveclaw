@@ -140,6 +140,9 @@ async def test_background_or_email_write_waits_for_handover_and_merges_current_c
 
             async def observe(statement, *args, **kwargs):
                 sql = str(statement)
+                # Limit email lookup to this fixture when the suite leaves duplicate tools.
+                if "FROM tools" in sql:
+                    statement = statement.where(Tool.id == tool.id)
                 if "FROM agents" in sql and getattr(statement, "_for_update_arg", None) is not None:
                     reached.set()
                     return await execute(statement, *args, **kwargs)

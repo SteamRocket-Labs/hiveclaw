@@ -834,9 +834,9 @@ def fingerprint_rls_bypass_scopes(app_root: Path) -> str:
 # A4b outbox return: reviewed source/scope deltas are limited to notification
 # acknowledgements, approval projection and web runtime. Bypass calls are unchanged.
 # Round 3 includes bounded active-origin retries and the existing notification uniqueness key.
-# B6 preserves settled runs in model cancellation and business finalization.
-# Four named business/model entries change among 608; bypass grants are unchanged.
-RLS_BYPASS_SCOPES_SHA256 = "97a6021bb98dd8f92db1e76b61ad2ef4b8ac9ee7dd01b491cc185f6085d1c0f7"
+# Merging A4s with main: each digest entry equals the reviewed main or A4s entry; no entry changed on both sides.
+# B6 preserves settled cancellation and unknown approval outcomes; bypass grants are unchanged.
+RLS_BYPASS_SCOPES_SHA256 = "11b1d3e471905d9e595179d72bdb5204d491ac90b09507ff5586a5e1fca738c2"
 
 
 def scan_rls_bypass_callsites(app_root: Path) -> list[RLSBypassCallsite]:

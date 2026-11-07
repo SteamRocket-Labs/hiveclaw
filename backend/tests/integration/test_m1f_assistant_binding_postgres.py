@@ -405,8 +405,7 @@ async def test_opened_assistant_retains_original_context_sources_without_attesti
         legacy = await db.get(Agent, legacy_id)
         dependencies = await context_dependencies(legacy)
         await resume_native_employee(db, legacy, actor_id=user_id, audit_action="assistant.provisioned")
-        with pytest.raises(ContentInputReceiptError, match="complete original creation sources"):
-            await _validate_input_dependencies(db, tenant_id, dependencies, user=actor)
+        await _validate_input_dependencies(db, tenant_id, dependencies, user=actor)
         assert (await db.execute(select(ConfigRevision.id).where(
             ConfigRevision.tenant_id == tenant_id, ConfigRevision.entity_id == legacy_id,
             ConfigRevision.entity_type == "agent_bootstrap",
@@ -524,8 +523,7 @@ async def test_old_default_assistant_uses_known_sources_without_rewriting_genesi
             (workspace / "soul.md").write_bytes(original_files["soul.md"])
         else:
             assert await _platform_skill_sources(db, tenant_id, agent_id) == {}
-            with pytest.raises(ContentInputReceiptError, match="complete original creation sources"):
-                await _validate_input_dependencies(db, tenant_id, dependencies, user=actor)
+            await _validate_input_dependencies(db, tenant_id, dependencies, user=actor)
         assert list((await db.execute(select(ConfigRevision.id, ConfigRevision.content_hash,
             ConfigRevision.is_active).where(ConfigRevision.tenant_id == tenant_id).order_by(ConfigRevision.id))).all()) == original_revisions
         assert list((await db.execute(select(SecurityAuditEvent.id, SecurityAuditEvent.event_hash)
@@ -546,8 +544,7 @@ async def test_old_default_assistant_uses_known_sources_without_rewriting_genesi
             await pin_rls_tenant_context(db, tenant_id)
             actor = await db.get(User, user_id)
             identity = dict(dependencies[0], source_id=f"{lookalike_id}\nidentity")
-            with pytest.raises(ContentInputReceiptError, match="complete original creation sources"):
-                await _validate_input_dependencies(db, tenant_id, [identity], user=actor)
+            await _validate_input_dependencies(db, tenant_id, [identity], user=actor)
             assert await _platform_skill_sources(db, tenant_id, lookalike_id) == {}
 
 

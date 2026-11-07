@@ -1,3 +1,5 @@
+import { assistantNameForDisplay } from '../assistant/assistantScope';
+
 const BRANCH_MODES = new Set([
   'branch',
   'fork',
@@ -112,11 +114,15 @@ export function sessionTitleForUser(
   session: Record<string, unknown> | null | undefined,
   fallback: string,
   delegationLabel = 'Delegation',
+  assistantLabel = 'My Assistant',
 ): string {
   const source = recordValue(session);
   let rawTitle = String(source.title || source.name || '').trim() || fallback;
-  if ((source.session_kind === 'agent_chat' || source.runtime_source === 'delegation_run') && rawTitle.startsWith('Delegation: ')) {
-    rawTitle = `${delegationLabel}：${rawTitle.slice('Delegation: '.length)}`;
+  if (source.session_kind === 'agent_chat' || source.runtime_source === 'delegation_run') {
+    const legacyPrefix = rawTitle.startsWith('Delegation: ');
+    const names = legacyPrefix ? rawTitle.slice('Delegation: '.length) : rawTitle;
+    rawTitle = (legacyPrefix ? `${delegationLabel}：` : '')
+      + names.split(' ↔ ').map((name) => assistantNameForDisplay(name, assistantLabel)).join(' ↔ ');
   }
   if (!hasSessionBranchIdentity(source)) {
     // A runtime-JSON title recovers its member text or falls to the plain

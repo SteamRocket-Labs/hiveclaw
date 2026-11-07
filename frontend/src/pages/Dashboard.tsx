@@ -9,6 +9,8 @@ import { chatApi, type ChatSession } from '../api/domains/chat';
 import type { ToolFailureSummary } from '../api/domains/activity';
 import type { Agent } from '../types';
 import { activityDisplaySummary } from './agent-detail/activityDisplay';
+import { assistantNameForDisplay, assistantRoleForDisplay } from './assistant/assistantScope';
+import { sessionTitleForUser } from './session-workbench/sessionTitlePresentation';
 import {
     buildAssignmentHandoff,
     buildAssignmentSessionTitle,
@@ -254,7 +256,7 @@ function ActivityFeed({ activities, agents }: { activities: any[]; agents: Agent
                             {timeAgo(act.created_at, t)}
                         </span>
                         <span className="dashboard-tag">
-                            {agent?.name || t('dashboard.activity.unknownAgent', 'Digital employee')}
+                            {assistantNameForDisplay(agent?.name || '', t('assistant.title')) || t('dashboard.activity.unknownAgent', 'Digital employee')}
                         </span>
                         <span className="dashboard-activity-summary">
                             {activityDisplaySummary(act, t)}
@@ -371,8 +373,8 @@ export function DashboardHomeShell({
         .slice(0, 4);
     const inProgress = activeAgents.slice(0, 4).map(agent => ({
             id: agent.id,
-            title: agent.name,
-            detail: agent.role_description || t('employees.noRole', 'No role description yet'),
+            title: assistantNameForDisplay(agent.name, t('assistant.title')),
+            detail: assistantRoleForDisplay(agent.role_description, t('assistant.role')) || t('employees.noRole', 'No role description yet'),
             badge: statusLabel(agent.status, t),
             to: `/agents/${agent.id}`,
         }));
@@ -470,7 +472,7 @@ export function DashboardHomeShell({
                         <label className="workspace-assign-field">
                             <span>{t('dashboard.home.assignTo', 'Assign to')}</span>
                             <select value={assignAgentId} onChange={(event) => setAssignAgentId(event.target.value)}>
-                                {agents.map((agent) => <option key={agent.id} value={agent.id}>{agent.name}</option>)}
+                                {agents.map((agent) => <option key={agent.id} value={agent.id}>{assistantNameForDisplay(agent.name, t('assistant.title'))}</option>)}
                             </select>
                         </label>
                         <label className="workspace-assign-field">
@@ -525,8 +527,8 @@ export function DashboardHomeShell({
                                 <button key={session.id} type="button" className="workspace-list-row" onClick={() => onNavigate(`/agents/${session.agent_id}/sessions/${session.id}`)}>
                                     <span className="workspace-status-dot" />
                                     <span>
-                                        <strong>{session.title || t('agent.chat.session', 'Session')}</strong>
-                                        <small>{agents.find(agent => agent.id === session.agent_id)?.name || t('dashboard.home.digitalEmployee', 'Digital employee')}</small>
+                                        <strong>{sessionTitleForUser({ ...session }, t('agent.chat.session', 'Session'), t('agent.chat.delegation', 'Delegation'), t('assistant.title'))}</strong>
+                                        <small>{assistantNameForDisplay(agents.find(agent => agent.id === session.agent_id)?.name || '', t('assistant.title')) || t('dashboard.home.digitalEmployee', 'Digital employee')}</small>
                                     </span>
                                     <span className="workspace-row-badge">{timeAgo(session.updated_at, t)}</span>
                                 </button>
@@ -603,6 +605,7 @@ export function DashboardHomeShell({
 /* ────── Main Dashboard ────── */
 
 export default function Dashboard() {
+    const { t } = useTranslation();
     const navigate = useNavigate();
     const currentTenant = localStorage.getItem('current_tenant_id') || '';
 
@@ -629,7 +632,7 @@ export default function Dashboard() {
         .filter(agent => agentToolFailures[agent.id])
         .map(agent => ({
             agentId: agent.id,
-            agentName: agent.name,
+            agentName: assistantNameForDisplay(agent.name, t('assistant.title')),
             summary: agentToolFailures[agent.id],
         }));
 

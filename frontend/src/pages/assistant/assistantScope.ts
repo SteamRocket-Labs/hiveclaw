@@ -4,6 +4,15 @@ import { useSyncExternalStore } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { assistantApi } from '../../api/domains/assistant';
 
+/** Localize the platform default before the binding request has resolved. */
+export function assistantNameForDisplay(name: string, assistantLabel: string): string {
+  return name === 'My Assistant' ? assistantLabel : name;
+}
+
+export function assistantRoleForDisplay(role: string, assistantRoleLabel: string): string {
+  return role === "The user's assistant" ? assistantRoleLabel : role;
+}
+
 export function sidebarAgentLink(agent: { id: string; access_level?: string; agent_type?: string }): string {
   return agent.access_level === 'operator' ? `/agents/${agent.id}?manage=true#chat`
     : agent.agent_type === 'local_agent' ? `/agents/${agent.id}` : `/agents/${agent.id}#chat`;

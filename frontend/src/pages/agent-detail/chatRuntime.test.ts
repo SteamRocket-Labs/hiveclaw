@@ -2280,5 +2280,6 @@ it('streams an owned delegated first-task conversation while retaining its read-
   expect(shouldStreamSessionSurface(session, 'owner')).toBe(true);
   expect(shouldUseWritableSessionSurface(session, 'owner')).toBe(false);
   expect(shouldStreamSessionSurface(session, 'other-member')).toBe(false);
+  expect(shouldStreamSessionSurface({ ...session, session_kind: 'agent_chat' }, 'owner')).toBe(false);
   expect(shouldStreamSessionSurface({ ...session, operator_view: true }, 'owner')).toBe(false);
 });

@@ -596,7 +596,7 @@ export function shouldStreamSessionSurface(
 ): boolean {
   if (!session || session.operator_view || session.is_pending_session_lookup || isDraftHumanChatSession(session)) return false;
   return shouldUseWritableSessionSurface(session, currentUserId)
-    || (isA2ASession(session) && session.user_id != null && currentUserId != null
+    || (session.session_kind === 'delegation_run' && session.user_id != null && currentUserId != null
       && String(session.user_id) === String(currentUserId));
 }
 

@@ -60,7 +60,7 @@ export default function InlineApprovalCard({ agentId, sessionId, approvalId, aut
     <strong>{t('agent.chat.approval.title', 'Company approval')}</strong>
     <ApprovalRequestSummary approval={data} showDetails />
     <div role="status">{t(`approvalExecution.${execution.key}`, execution.label)}</div>
-    {continuation && <div>{t(`approvalContinuation.${continuation.status}`, continuation.label)}</div>}
+    {continuation && <div>{t(`approvalContinuation.${continuation.reasonKey || continuation.status}`, continuation.label)}</div>}
     {actionError && <div role="alert">{actionError}</div>}
     {query.isError && <div role="alert">
       {t('agent.chat.approval.loadFailed', 'Approval status could not load.')}

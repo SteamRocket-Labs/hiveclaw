@@ -379,6 +379,11 @@ class ApprovalService:
             )
 
             local_agent_resolution = await apply_local_agent_action_approval(db, approval=approval)
+            if approval.tool_name:
+                from app.services.approval_execution_runtime import _enqueue_origin_continuation
+
+                await _enqueue_origin_continuation(db, approval=approval, task=None,
+                    approval_status="rejected", execution_result=approval.execution_result)
             if before_commit is not None:
                 await before_commit(approval)
             await db.flush()

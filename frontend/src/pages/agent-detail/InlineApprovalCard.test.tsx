@@ -12,6 +12,26 @@ const api = vi.hoisted(() => ({ getApproval: vi.fn(), resolveApproval: vi.fn() }
 vi.mock('../../api/domains/chat', () => ({ chatApi: api }));
 afterEach(() => { cleanup(); vi.clearAllMocks(); vi.useRealTimers(); });
 
+it.each([
+  ['requester_inactive', 'This account is inactive. No changes were made.'],
+  ['user_prompt_submit_blocked', 'This input was blocked by a rule. Work did not continue.'],
+  ['admission_refused', 'This input was not accepted. Work did not continue.'],
+  ['agent_execute_denied', 'You do not have access to this employee.'],
+  ['origin_run_not_suspended', 'The conversation has stopped or ended. Work did not continue.'],
+  ['approval_origin_unavailable', 'The original conversation is unavailable. Work did not continue.'],
+  ['human_input_secret_boundary_unavailable', 'Credential protection is unavailable. Try again later.'],
+])('shows the known continuation failure %s on the card', async (reason, message) => {
+  api.getApproval.mockResolvedValue({ id: 'ticket', status: 'approved', tool_name: 'write_file',
+    execution_status: 'succeeded', can_resolve: false,
+    execution_receipt: { continuation_status: 'needs_reconciliation', continuation_reason: reason } });
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const normalized = normalizeToolCallResult('write_file', { status: 'approval_required', approval_id: 'ticket' });
+  render(<QueryClientProvider client={client}><StructuredToolResultBody agentId="agent" sessionId="work"
+    toolMeta={normalized.toolMeta} /></QueryClientProvider>);
+  await screen.findByText(message);
+  expect(screen.queryByText(reason)).toBeNull();
+});
+
 it('keeps company approval in the original work and reconciles a failed response before retry', async () => {
   const pending = { id: 'exact-ticket', status: 'pending', tool_name: 'delegate_to_agent',
     execution_status: 'pending', can_resolve: true, action_type: 'agent.message.send', details: { reason: 'Send the recorded first task' } };

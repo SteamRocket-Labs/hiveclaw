@@ -217,6 +217,7 @@ export function applyTranscriptToSessionRuntime(
     if (!canonicalRuntimePhase || !isActiveRuntime) return;
     const terminalUi = uiForPhase(canonicalRuntimePhase);
     refs.uiStates[key] = terminalUi;
+    if (refs.replayStates[key]) refs.replayStates[key] = { ...refs.replayStates[key], ui: terminalUi };
     deps.setActivePhase(terminalUi.phase);
     deps.setIsWaiting(terminalUi.isWaiting);
     deps.setIsStreaming(terminalUi.isStreaming);

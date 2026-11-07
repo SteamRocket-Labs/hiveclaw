@@ -24,6 +24,7 @@ import { listWorkflowDefinitions, type WorkflowDefinitionRecord } from '../api/d
 import type { Agent } from '../types';
 import { WorkspaceBusinessTeams } from './workspace/WorkspaceBusinessTeams';
 import { useAuthStore } from '../stores';
+import { assistantNameForDisplay, assistantRoleForDisplay } from './assistant/assistantScope';
 import {
   buildWakePolicyPayload,
   StaleWorkflowRefError,
@@ -251,7 +252,7 @@ const hubCopy: Record<HubKind, HubCopy> = {
     icon: <IconShieldCheck size={20} stroke={1.7} />,
   },
   team: {
-    title: 'A2A / Team',
+    title: 'Team collaboration',
     eyebrow: 'Delegation and collaboration',
     subtitle: 'Session-local team work, subagent definitions, governed A2A collaborators, and local-runtime agents stay visible without mixing their ownership boundaries.',
     icon: <IconRoute size={20} stroke={1.7} />,
@@ -939,10 +940,10 @@ export default function WorkspaceFeatureHub({ kind, initialAutomationCreateOpen 
                       : `/agents/${agent.id}#chat`;
               return (
                 <Link key={agent.id} to={target} className="feature-link-row">
-                  <span className="employee-avatar small">{(Array.from(agent.name || 'A')[0] as string || 'A').toUpperCase()}</span>
+                  <span className="employee-avatar small">{(Array.from(assistantNameForDisplay(agent.name, t('assistant.title')) || 'A')[0] as string || 'A').toUpperCase()}</span>
                   <span>
-                    <strong>{agent.name}</strong>
-                    <small>{agent.role_description || t('employees.noRole', 'No role description yet')}</small>
+                    <strong>{assistantNameForDisplay(agent.name, t('assistant.title'))}</strong>
+                    <small>{assistantRoleForDisplay(agent.role_description, t('assistant.role')) || t('employees.noRole', 'No role description yet')}</small>
                   </span>
                 </Link>
               );
@@ -1142,8 +1143,8 @@ export default function WorkspaceFeatureHub({ kind, initialAutomationCreateOpen 
               <div key={agent.id} className="workbench-aggregate-row">
                 <span className={`employee-status ${agent.status || 'idle'}`}>{agent.status || 'idle'}</span>
                 <span>
-                  <strong>{agent.name}</strong>
-                  <small>{agent.role_description || t('employees.noRole', 'No role description yet')}</small>
+                  <strong>{assistantNameForDisplay(agent.name, t('assistant.title'))}</strong>
+                  <small>{assistantRoleForDisplay(agent.role_description, t('assistant.role')) || t('employees.noRole', 'No role description yet')}</small>
                 </span>
                 <span className="feature-inline-actions">
                   <Link to={`/agents/${agent.id}#a2a`}>{t('featureHub.a2a', 'A2A')}</Link>

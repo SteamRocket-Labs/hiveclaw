@@ -5003,7 +5003,7 @@ async def test_cancelled_model_round_and_run_commit_atomically_and_cannot_be_rec
                 "reasoning": provider_options})
         await db.commit()
     state = SimpleNamespace(agent=SimpleNamespace(id=agent_id, tenant_id=tenant_id), session_id=str(session_id),
-        run_uuid=run_id, metadata={}, provider_reconciliation=None, ports=SimpleNamespace(runtime=SimpleNamespace(
+        run_uuid=run_id, metadata={}, cancel_event=asyncio.Event(), provider_reconciliation=None, ports=SimpleNamespace(runtime=SimpleNamespace(
             tenant_scoped_session=lambda _: owner_sessionmaker())))
     # Stop at the failure callback's commit: no later finalizer can repair a crash window.
     await _fail_session_model_request(state, round_index=1, provider_request_id=provider_request_id,

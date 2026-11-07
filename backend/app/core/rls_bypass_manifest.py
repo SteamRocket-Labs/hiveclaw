@@ -844,7 +844,8 @@ def fingerprint_rls_bypass_scopes(app_root: Path) -> str:
 # D4: count-only bootstrap status, token-only first admin and requester usage; no additional bypass grant.
 # Merging A4c with G3 keeps each entry from one side.
 # Merging D4 with A4c keeps each entry from one side.
-RLS_BYPASS_SCOPES_SHA256 = "a0638f923e5658a959e675e69252b3aaac60fcb48a908f111a6f19557e1ba947"
+# Merging D4 with R2 and R3 accepts the exact three-way module-source merge; no bypass scope changed on both sides.
+RLS_BYPASS_SCOPES_SHA256 = "cb2820a911dc87771d1ee2c86f6213816145e6c8e026bd117c1615611950a06d"
 
 
 def scan_rls_bypass_callsites(app_root: Path) -> list[RLSBypassCallsite]:

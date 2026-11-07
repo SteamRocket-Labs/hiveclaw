@@ -7,7 +7,7 @@ import { agentApi } from '../../api/domains/agents';
 import { AGENT_TAB_LABELS, AGENT_WORKBENCH_AREAS, isLocalAgentRuntimeType, type AgentDetailTab } from './agentDetailPolicy';
 import EmployeeRoleEditor from '../../components/EmployeeRoleEditor';
 import { useAuthStore } from '../../stores';
-import { useAssistantAgentId } from '../assistant/assistantScope';
+import { assistantNameForDisplay, assistantRoleForDisplay, useAssistantAgentId } from '../assistant/assistantScope';
 
 interface AgentDetailHeaderProps {
   agent: any;
@@ -20,10 +20,11 @@ interface AgentDetailHeaderProps {
 }
 
 export function AgentDetailSectionFallback() {
+  const { t } = useTranslation();
   return (
     <div className="agent-detail-section-fallback" role="status" aria-live="polite">
       <span className="agent-detail-section-fallback-dot" aria-hidden="true" />
-      Loading workspace…
+      {t('common.loading', 'Loading')}
     </div>
   );
 }
@@ -47,7 +48,8 @@ export default function AgentDetailHeader({
   const { t, i18n } = useTranslation();
   const user = useAuthStore((state) => state.user);
   const assistantAgentId = useAssistantAgentId(user);
-  const name = agentId === assistantAgentId ? t('assistant.title') : agent.name;
+  const name = agentId === assistantAgentId ? t('assistant.title') : assistantNameForDisplay(agent.name, t('assistant.title', 'My Assistant'));
+  const role = assistantRoleForDisplay(agent.role_description, t('assistant.role', "The user's assistant"));
   const queryClient = useQueryClient();
   const [editingRole, setEditingRole] = React.useState(false);
   const [editingName, setEditingName] = React.useState(false);
@@ -147,7 +149,7 @@ export default function AgentDetailHeader({
             <span className={`status-dot ${statusKey}`} />
             {t(`agent.status.${statusKey}`)}
             <span
-              title={agent.role_description || t('agent.roleSettings.title')}
+              title={role || t('agent.roleSettings.title')}
               onClick={() => { if (canManage) setEditingRole(true); }}
               role={canManage ? 'button' : undefined}
               tabIndex={canManage ? 0 : undefined}
@@ -158,7 +160,7 @@ export default function AgentDetailHeader({
               }}
               className={`agent-detail-role${canManage ? ' is-editable' : ''}`}
             >
-              {agent.role_description ? `· ${agent.role_description}` : canManage
+              {role ? `· ${role}` : canManage
                 ? <span className="agent-detail-role-placeholder">· {t('agent.fields.role', 'Click to add a description...')}</span> : null}
             </span>
             {agent.is_expired && (

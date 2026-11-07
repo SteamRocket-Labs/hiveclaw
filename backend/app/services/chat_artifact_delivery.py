@@ -1647,11 +1647,10 @@ async def materialize_declared_read_artifacts(db, *, task, model_result_id, path
     from app.models.organization_identity import ContentInputReceipt
     from app.models.session_v2 import SessionModelResult, SessionToolInvocation
     from app.services.session_model_inputs import _model_dependencies, _origin_dependencies
-    from app.services.session_terminal_outcome import TerminalReadArtifactSelectionNeedsReconciliation
     from app.services.web_chat_runtime import _ensure_tool_result_artifact_message
 
     model = await db.get(SessionModelResult, model_result_id)
-    dependencies, complete = _model_dependencies(model) if model else ([], False)
+    dependencies, _complete = _model_dependencies(model) if model else ([], False)
     if model is None or (model.tenant_id, model.session_id, model.run_id) != (
         task.tenant_id,
         uuid.UUID(task.parent_session_id),
@@ -1678,18 +1677,12 @@ async def materialize_declared_read_artifacts(db, *, task, model_result_id, path
         )
     )
     parts = []
-    attempted_paths = set()
     for invocation in invocations:
         arguments = invocation.effective_arguments_json or invocation.provider_arguments_json
         path = _safe_workspace_relative_path(str(arguments.get("path") or ""))
         if path is None or path.as_posix() not in paths:
             continue
-        if not complete:
-            raise TerminalReadArtifactSelectionNeedsReconciliation(
-                "the file's selecting model has incomplete input sources"
-            )
         path = path.as_posix()
-        attempted_paths.add(path)
         sources, bound = await _origin_dependencies(
             db, tenant_id=task.tenant_id, agent_id=task.parent_agent_id, ref=f"session-tool-result:{invocation.id}"
         )
@@ -1762,10 +1755,6 @@ async def materialize_declared_read_artifacts(db, *, task, model_result_id, path
             select(ChatArtifact.id).where(ChatArtifact.message_id == message_id).limit(1)
         ):
             await db.delete(anchor)
-    if attempted_paths - {part["path"] for part in parts}:
-        raise TerminalReadArtifactSelectionNeedsReconciliation(
-            "declared file read cannot be recovered for its original reader"
-        )
     return parts
 
 

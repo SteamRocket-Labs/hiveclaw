@@ -635,7 +635,6 @@ async def test_lost_worker_response_leaves_discoverable_owned_operation_without_
 async def test_next_provider_request_cannot_reuse_memory_after_its_historical_source_is_withdrawn(
     shared_memory, app_user_sessionmaker, owner_sessionmaker,
 ):
-    from app.kernel.contracts import ExecutionAuthorityUnavailable
     from app.models.session_v2 import SessionModelResult
 
     n = shared_memory.n
@@ -646,11 +645,15 @@ async def test_next_provider_request_cannot_reuse_memory_after_its_historical_so
     async with owner_sessionmaker() as db:
         (await db.get(ChatSession, n.session)).user_id = n.foreign
         await db.commit()
-    with pytest.raises(ExecutionAuthorityUnavailable) as blocked:
-        await memory_call(n, app_user_sessionmaker, "save_memory",
-            {"content": "Remember a note derived from the withdrawn release memory", "category": "project"},
-            session=session, run=run, include_history=True)
-    assert blocked.value.code == "content_source_access_denied"
+    await memory_call(n, app_user_sessionmaker, "save_memory",
+        {"content": "Remember a note derived from the withdrawn release memory", "category": "project"},
+        session=session, run=run, include_history=True)
     async with tenant_scoped_session(n.tenant, session_factory=app_user_sessionmaker) as db:
         rows = list((await db.scalars(select(SessionModelResult).where(SessionModelResult.run_id == run))).all())
-        assert len(rows) == 1, rows
+        assert len(rows) == 2, rows
+        current = max(rows, key=lambda row: row.round_id)
+        request = json.dumps(current.model_request_snapshot_json["messages"], ensure_ascii=False)
+        assert "ORCHID_PRIVATE_MARKER" not in request
+        assert "有一项上下文暂时无法核实" in request
+        assert "content_source_access_denied" not in request
+        assert "Remember a note derived from the withdrawn release memory" in request

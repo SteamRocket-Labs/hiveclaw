@@ -4407,7 +4407,7 @@ async def test_round_binding_consumes_only_admitted_inputs_in_fifo_order(owner_s
 
 
 async def test_model_round_persists_exact_snapshot_before_applying_bound_inputs(owner_sessionmaker) -> None:
-    from types import SimpleNamespace
+    from app.kernel.engine import _context_message, _mid_run_items_to_user_messages
 
     from app.models.chat_transcript_event import ChatTranscriptEvent
     from app.models.session_v2 import SessionModelResult, SessionTurnInput
@@ -4440,10 +4440,10 @@ async def test_model_round_persists_exact_snapshot_before_applying_bound_inputs(
                 session_id=session_id,
                 run_id=run_id,
                 kind="steer_current_turn",
+                content=text,
             )
             row = await db.get(SessionTurnInput, accepted.input_id)
             assert row is not None
-            row.content_parts_json = [{"type": "text", "text": text}]
             await run_user_prompt_admission(
                 db,
                 authority=authority,
@@ -4469,11 +4469,8 @@ async def test_model_round_persists_exact_snapshot_before_applying_bound_inputs(
             "second FIFO evidence",
         ]
 
-        provider_messages = [
-            SimpleNamespace(role="system", content="SYSTEM"),
-            SimpleNamespace(role="user", content="first FIFO evidence"),
-            SimpleNamespace(role="user", content="second FIFO evidence"),
-        ]
+        provider_messages = [_context_message(role="system", content="SYSTEM", kind="frozen_prompt", unbound=()),
+            *_mid_run_items_to_user_messages(bound_messages)]
         provider_request_id = await prepare_model_request(
             db,
             tenant_id=tenant_id,

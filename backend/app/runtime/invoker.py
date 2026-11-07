@@ -794,6 +794,7 @@ async def _resolve_memory_context(
     parts: list[str] = []
     source_refs: list[dict[str, str]] = []
     source_unbound: list[str] = []
+    memory_sections = ()
     session_id = request.memory_session_id
     if not session_id and request.session_context:
         session_id = request.session_context.session_id
@@ -846,6 +847,7 @@ async def _resolve_memory_context(
             duration_ms=memory_duration_ms,
         )
         runtime_memory_context = runtime_memory_result.content
+        memory_sections = runtime_memory_result.sections
         source_unbound.extend(runtime_memory_result.source_unbound)
         if runtime_memory_context:
             source_refs.extend(runtime_memory_result.source_refs)
@@ -869,7 +871,7 @@ async def _resolve_memory_context(
                     kind="memory_runtime_status",
                     source="memory_provider:degraded",
                     content=(
-                        f"[Memory runtime degraded: {runtime_memory_result.code}] "
+                        "[Memory runtime degraded] "
                         f"{runtime_memory_result.user_message} "
                         f"Authority context available: {runtime_memory_result.authority_context_available}. "
                         f"Durable writes available: {runtime_memory_result.durable_write_available}. "
@@ -940,7 +942,7 @@ async def _resolve_memory_context(
     from app.runtime.context import ensure_runtime_assembly_state
 
     ensure_runtime_assembly_state(request.session_context).record_context_sources(
-        agent_id=request.agent_id, content=content, sources=source_refs, unbound=source_unbound
+        agent_id=request.agent_id, content=content, sources=source_refs, unbound=source_unbound, sections=memory_sections
     )
     return content
 

@@ -491,7 +491,7 @@ async def test_native_frozen_identity_and_policy_sources_revalidate_current_auth
     from app.services import agent_tools
     from app.services.config_versioning import canonical_content_hash
     from app.services.content_input_receipts import ContentInputReceiptError, validate_runtime_input_dependencies
-    from app.services.session_model_inputs import load_context_message_origin
+    from app.services.session_model_inputs import _unique_dependencies, load_context_message_origin
     from app.tools.runtime import ToolExecutionRequest
 
     seed, _client, _bindings, _imported = await _run_native_skill_task(
@@ -531,13 +531,21 @@ async def test_native_frozen_identity_and_policy_sources_revalidate_current_auth
                 source_id=uuid.UUID(bindings["messages"][0]["source_ref"].split(":", 1)[1]),
             )
             assert origin["dependency_coverage"] == {"complete": True, "unbound": []}
-            dynamic = await load_context_message_origin(
-                db,
-                tenant_id=seed["tenant_id"],
-                agent_id=seed["agent_id"],
-                source_id=uuid.UUID(bindings["messages"][-1]["source_ref"].split(":", 1)[1]),
-            )
-            unknowns = set(dynamic["dependency_coverage"]["unbound"])
+            dynamics = []
+            for entry in bindings["messages"]:
+                if not entry.get("source_ref", "").startswith("session-kernel-context:"):
+                    continue
+                captured = await load_context_message_origin(
+                    db,
+                    tenant_id=seed["tenant_id"],
+                    agent_id=seed["agent_id"],
+                    source_id=uuid.UUID(entry["source_ref"].split(":", 1)[1]),
+                )
+                assert captured is not None
+                if captured["kind"] == "dynamic_prompt":
+                    dynamics.append(captured)
+            assert dynamics and all(dynamic["dependency_coverage"]["complete"] for dynamic in dynamics)
+            unknowns = {reason for dynamic in dynamics for reason in dynamic["dependency_coverage"]["unbound"]}
             assert not unknowns.intersection(
                 {
                     "dynamic_section_sources_unbound:plan_mode_guidance",
@@ -553,17 +561,18 @@ async def test_native_frozen_identity_and_policy_sources_revalidate_current_auth
                     "runtime_actor_identity_unavailable",
                 }
             )
-            actors = [ref for ref in dynamic["dependencies"] if ref["source_kind"] == "session_actor_identity"]
+            actors = _unique_dependencies([ref for dynamic in dynamics for ref in dynamic["dependencies"]
+                if ref["source_kind"] == "session_actor_identity"])
             assert len(actors) == 1
             await validate_runtime_input_dependencies(db, request, actors)
             inventory.append(
                 {
                     "round_id": str(row.round_id),
                     "frozen": origin["dependency_coverage"],
-                    "dynamic": dynamic["dependency_coverage"],
+                    "dynamic": [dynamic["dependency_coverage"] for dynamic in dynamics],
                     "sections": [
                         {key: section.get(key) for key in ("name", "selected", "kind")}
-                        for section in dynamic["sections"]
+                        for dynamic in dynamics for section in dynamic["sections"]
                     ],
                 }
             )

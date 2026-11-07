@@ -1700,7 +1700,6 @@ async def _commit_canonical_terminal_outcome(
     from app.services.session_terminal_outcome import (
         TerminalOutcomeIneligible,
         TerminalOutcomeNeedsReconciliation,
-        TerminalReadArtifactSelectionNeedsReconciliation,
         commit_terminal_outcome,
         prepare_and_seal_run_outcome,
     )
@@ -1773,11 +1772,7 @@ async def _commit_canonical_terminal_outcome(
             result_summary="Canonical terminal outcome requires reconciliation.",
             metadata_json={
                 "session_v2_reconciliation": {
-                    "reason": (
-                        "terminal_artifact_selection"
-                        if isinstance(exc, TerminalReadArtifactSelectionNeedsReconciliation)
-                        else "terminal_outcome_commit"
-                    ),
+                    "reason": "terminal_outcome_commit",
                     "result_id": str(result_id),
                     "error_class": type(exc).__name__,
                 }
@@ -1856,7 +1851,8 @@ async def _record_canonical_terminal_artifact_selection(
         for row in rows:
             newest_by_path.setdefault(row.path, row)
         selected = [newest_by_path[path] for path in selected_paths if path in newest_by_path]
-        missing_paths = [path for path in selected_paths if path not in newest_by_path]
+        missing_paths = [path for path in [*declared_paths, *selected_paths]
+            if _is_user_visible_terminal_artifact_path(path) and path not in newest_by_path]
         artifact_parts = [artifact_part_from_model(row) for row in selected]
         metadata = dict(task.metadata_json or {})
         metadata.update(

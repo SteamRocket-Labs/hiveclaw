@@ -429,7 +429,7 @@ async def test_old_default_assistant_uses_known_sources_without_rewriting_genesi
     from app.services.content_input_receipts import ContentInputReceiptError, _validate_input_dependencies
     from app.services.native_employee_provisioning import resume_native_employee
     from app.services import skill_seeder
-    from app.services.skill_source_receipts import _platform_skill_sources
+    from app.services.skill_source_receipts import _bundled_platform_skill_hashes, _platform_skill_sources
 
     tag = uuid.uuid4().hex[:8]
     tenant_id, user_id = uuid.uuid4(), uuid.uuid4()
@@ -502,7 +502,7 @@ async def test_old_default_assistant_uses_known_sources_without_rewriting_genesi
             changed_path = "skills/email-guide/SKILL.md"
             skill_bytes = (workspace / changed_path).read_bytes()
             (workspace / changed_path).write_bytes(skill_bytes + b"\nPrivate instructions\n")
-            with pytest.raises(ContentInputReceiptError, match="platform Skill lacks an original package witness"):
+            with pytest.raises(ContentInputReceiptError, match="canonical source bytes no longer match"):
                 await _validate_input_dependencies(db, tenant_id, [d for d in skill_dependencies
                     if d["source_id"].split("\n")[1] == changed_path], user=actor)
             await _validate_input_dependencies(db, tenant_id, dependencies[:1], user=actor)
@@ -522,7 +522,21 @@ async def test_old_default_assistant_uses_known_sources_without_rewriting_genesi
                 await _validate_input_dependencies(db, tenant_id, dependencies[1:2], user=actor)
             (workspace / "soul.md").write_bytes(original_files["soul.md"])
         else:
-            assert await _platform_skill_sources(db, tenant_id, agent_id) == {}
+            bundled = _bundled_platform_skill_hashes()
+            expected = {path: digest for path, digest in bundled.items()
+                if (workspace / path).is_file()
+                and hashlib.sha256((workspace / path).read_bytes()).hexdigest() == digest}
+            platform = await _platform_skill_sources(db, tenant_id, agent_id)
+            assert {path: digest for path, (_source, digest) in platform.items()} == expected
+            changed_path = "skills/email-guide/SKILL.md"
+            assert changed_path in expected
+            skill_bytes = (workspace / changed_path).read_bytes()
+            (workspace / changed_path).write_bytes(skill_bytes + b"\nPrivate instructions\n")
+            changed = await _platform_skill_sources(db, tenant_id, agent_id)
+            assert {path: digest for path, (_source, digest) in changed.items()} == {
+                path: digest for path, digest in expected.items() if path != changed_path}
+            assert changed_path not in changed
+            (workspace / changed_path).write_bytes(skill_bytes)
             await _validate_input_dependencies(db, tenant_id, dependencies, user=actor)
         assert list((await db.execute(select(ConfigRevision.id, ConfigRevision.content_hash,
             ConfigRevision.is_active).where(ConfigRevision.tenant_id == tenant_id).order_by(ConfigRevision.id))).all()) == original_revisions
@@ -545,7 +559,12 @@ async def test_old_default_assistant_uses_known_sources_without_rewriting_genesi
             actor = await db.get(User, user_id)
             identity = dict(dependencies[0], source_id=f"{lookalike_id}\nidentity")
             await _validate_input_dependencies(db, tenant_id, [identity], user=actor)
-            assert await _platform_skill_sources(db, tenant_id, lookalike_id) == {}
+            workspace = AgentManager()._agent_dir(lookalike_id)
+            expected = {path: digest for path, digest in _bundled_platform_skill_hashes().items()
+                if (workspace / path).is_file()
+                and hashlib.sha256((workspace / path).read_bytes()).hexdigest() == digest}
+            platform = await _platform_skill_sources(db, tenant_id, lookalike_id)
+            assert {path: digest for path, (_source, digest) in platform.items()} == expected
 
 
 async def test_open_is_stable_and_resume_does_not_duplicate(

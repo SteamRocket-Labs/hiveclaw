@@ -850,6 +850,7 @@ async def _resolve_origin_dependencies(db, *, tenant_id, agent_id, ref):
             ChatTranscriptEvent.agent_id == agent_id,
             ChatTranscriptEvent.session_id == invocation.session_id,
             ChatTranscriptEvent.run_id == invocation.run_id,
+            ChatTranscriptEvent.invocation_id == invocation.id,
         )
     )
     if event is None:
@@ -880,6 +881,12 @@ async def _resolve_origin_dependencies(db, *, tenant_id, agent_id, ref):
             "source_version": tool_result_source_hash(payload),
         },
     ]
+    # A runtime refusal contains no read source; retain its settled feedback.
+    if (invocation.effect_state == "prepared_not_started" and payload.get("outcome") in {"denied", "unavailable"}
+        and payload.get("content_or_error_ref") == invocation.receipt_ref
+        and event.content_hash == payload["content_hash"]
+        and str(invocation.receipt_ref or "").startswith("tool-decision:")):
+        return _unique_dependencies(dependencies), inherited_complete
     if (payload.get("metadata") or {}).get("native_tool_timeout_receipt") is not None:
         from app.services.runtime_tool_timeout_sources import native_tool_timeout_bound
 
@@ -1260,7 +1267,7 @@ async def _resolve_origin_dependencies(db, *, tenant_id, agent_id, ref):
             db, tenant_id=tenant_id, agent_id=agent_id, invocation=invocation
         )
         return _unique_dependencies([*dependencies, *sources]), inherited_complete and complete
-    metadata = payload.get("metadata")
+    metadata = payload.get("metadata", {})
     if not isinstance(metadata, dict):
         return _unique_dependencies(dependencies), False
     if invocation.tool_name in {"read_ledger", "list_files", "fs_list", "glob_search"}:
@@ -1375,7 +1382,15 @@ async def _resolve_origin_dependencies(db, *, tenant_id, agent_id, ref):
         except (ContentInputReceiptError, ValueError, TypeError, AttributeError):
             return _unique_dependencies(dependencies), False
     if invocation.tool_name not in KNOWLEDGE_TOOL_NAMES:
-        return _unique_dependencies(dependencies), False
+        # Connector and other ordinary tool results are already bound to their
+        # exact settled invocation. File and skill reads still need their leaves.
+        complete = (invocation.tool_name not in {"read_file", "read_document", "fs_read"}
+            and invocation.effect_state == "effect_committed" and payload.get("outcome") == "success"
+            and model is not None and event.result_id == model.id
+            and event.content_hash == payload["content_hash"]
+            and payload.get("content_or_error_ref") == invocation.receipt_ref
+            and invocation.receipt_ref == f"tool-frame:{payload['content_hash']}")
+        return _unique_dependencies(dependencies), inherited_complete and complete
     provenance = build_knowledge_provenance(invocation.tool_name, content)
     if not isinstance(provenance, dict) or metadata.get("knowledge_provenance") != provenance:
         return _unique_dependencies(dependencies), False

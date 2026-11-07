@@ -16,6 +16,7 @@ from app.services.content_input_receipts import ContentInputReceiptError, valida
 from app.services.invocation_trace import persist_invocation_span
 from tests.integration.test_m1g27_model_input_bindings_postgres import _bound_input
 from tests.integration.test_m1g30_model_dependencies_postgres import _snapshot
+from tests.integration.source_withholding_helpers import assert_withheld_input
 
 pytestmark = pytest.mark.usefixtures("migrated_pg_url")
 
@@ -127,7 +128,8 @@ async def test_unknown_or_changed_summary_origin_cannot_be_rebased_as_verified_i
     async with app_user_sessionmaker() as db:
         await pin_rls_tenant_context(db, s.tenant)
         _request, snapshot = await _snapshot(db, s.tenant, s.agent, s.session, s.run, _dicts_to_llm_messages([s.summary]))
-        assert snapshot["input_bindings"]["dependency_coverage"]["complete"] is False
+        await assert_withheld_input(db, run_id=s.run, snapshot=snapshot, index=0, content=s.summary["content"])
+        assert snapshot["input_bindings"]["dependencies"] == []
 
 
 async def test_summary_dependencies_still_require_current_upstream_authority(

@@ -654,6 +654,40 @@ async def test_native_question_and_successor_consume_the_chosen_account_in_origi
         final_ids = [row.id for row in final]
     for event_id in final_ids:
         await bridge_transcript_event_to_t0(transcript_event_id=event_id, attempts=1)
+    from copy import deepcopy
+    from app.models.session_v2 import SessionToolInvocation
+    from app.services.content_input_receipts import ContentInputReceiptError, validate_browser_input_dependencies
+    from app.services.session_model_inputs import _hash, _origin_dependencies
+
+    async with scoped() as db:
+        invocation = await db.scalar(select(SessionToolInvocation).where(
+            SessionToolInvocation.run_id == successor, SessionToolInvocation.tool_name == reader.name))
+        ref = f"session-tool-result:{invocation.id}"
+        dependencies, complete = await _origin_dependencies(db, tenant_id=seed["tenant_id"],
+            agent_id=seed["agent_id"], ref=ref)
+        assert complete
+        leaf = next(source for source in dependencies if source["source_kind"] == "session_tool_invocation"
+            and source["source_id"] == str(invocation.id))
+        outsider = User(id=uuid.uuid4(), tenant_id=seed["tenant_id"], username=uuid.uuid4().hex,
+            email=uuid.uuid4().hex + "@mailbox.test", display_name="Other member", password_hash="fixture", role="member")
+        db.add(outsider)
+        await db.flush()
+        with pytest.raises(ContentInputReceiptError) as denied:
+            await validate_browser_input_dependencies(db, seed["tenant_id"], outsider, [leaf])
+        assert denied.value.code == "content_source_access_denied"
+        event = await db.get(ChatTranscriptEvent, invocation.result_event_id)
+        original = deepcopy(event.metadata_json)
+        original_hash = event.content_hash
+        changed = deepcopy(original)
+        changed["v2_payload"].update(content="TAMPERED_CONNECTOR_RESULT", content_hash=_hash("TAMPERED_CONNECTOR_RESULT"))
+        event.metadata_json = changed
+        event.content_hash = changed["v2_payload"]["content_hash"]
+        await db.flush()
+        assert not (await _origin_dependencies(db, tenant_id=seed["tenant_id"], agent_id=seed["agent_id"], ref=ref))[1]
+        event.metadata_json = original
+        event.content_hash = original_hash
+        await db.flush()
+        assert (await _origin_dependencies(db, tenant_id=seed["tenant_id"], agent_id=seed["agent_id"], ref=ref))[1]
     assert (
         await drain_terminal_boundary_for_task(
             runtime_task_worker.drain_web_terminal_boundary_outbox_once,

@@ -1692,9 +1692,11 @@ async def _exercise_group_enterprise(seed, session_id, run_id, requester_id, ses
         from app.core.security import get_current_user
         from app.database import pin_rls_tenant_context
         from app.models.audit import ApprovalRequest
+        from app.models.chat_artifact import ChatArtifact
+        from app.models.chat_transcript_event import ChatTranscriptEvent
         from app.models.runtime_task import RuntimeTask
         from app.models.security_audit import ResourcePermission
-        from app.models.session_v2 import SessionToolInvocation
+        from app.models.session_v2 import SessionModelResult, SessionToolInvocation
         from app.models.user import User
 
         async with sessionmaker() as db:
@@ -1916,11 +1918,15 @@ async def _exercise_group_enterprise(seed, session_id, run_id, requester_id, ses
                     await pin_rls_tenant_context(db, seed["tenant_id"])
                     held = await recover_terminal_candidates_once(db, worker_id="company-read-recovery", run_id=next_run,
                         tenant_id=seed["tenant_id"])
-                    assert held == {"terminal_committed": 0, "held": 1}, held
+                    assert held == {"terminal_committed": 1, "held": 0}, held
                     current = await db.get(RuntimeTask, next_run)
-                    assert current.status == "needs_reconciliation"
-                    assert current.metadata_json["session_v2_reconciliation"]["reason"] == "terminal_artifact_selection"
+                    assert current.status == "completed"
+                    assert "workspace/shared-report.md" in current.metadata_json["rejected_artifact_paths"]
+                    assert "session_v2_reconciliation" not in current.metadata_json
                     assert not list(await db.scalars(select(ChatArtifact).where(ChatArtifact.runtime_task_id == next_run)))
+                    notices = list(await db.scalars(select(ChatTranscriptEvent).where(
+                        ChatTranscriptEvent.run_id == next_run, ChatTranscriptEvent.item_kind == "assistant_commentary")))
+                    assert any("未能附" in (event.content or "") for event in notices)
                     (await db.get(ExternalPrincipal, principal_id)).status = "active"
                     await db.commit()
                 assert (seed["agent_root"] / "workspace/shared-report.md").read_text() == report_content
@@ -1928,7 +1934,7 @@ async def _exercise_group_enterprise(seed, session_id, run_id, requester_id, ses
                 await pin_rls_tenant_context(db, seed["tenant_id"])
                 recovered = await recover_terminal_candidates_once(db, worker_id="company-read-recovery", run_id=next_run,
                     tenant_id=seed["tenant_id"])
-                assert recovered["terminal_committed"] == 1, recovered
+                assert recovered["terminal_committed"] == (0 if enterprise_case == "web_enterprise_recovery_revoked" else 1), recovered
             assert len(model_client.requests) == observed_requests
         else:
             await run_claimed_runtime_task(execute_web_chat_run(next_run), task_id=next_run,
@@ -1940,7 +1946,27 @@ async def _exercise_group_enterprise(seed, session_id, run_id, requester_id, ses
             if enterprise_case == "web_enterprise_recovery_revoked":
                 assert "session_v2_reconciliation" not in (successor.metadata_json or {})
             artifact_parts = (successor.metadata_json or {}).get("artifacts") or []
-            artifact_id = artifact_parts[0]["artifact_id"] if action == "approve" else None
+            if enterprise_case == "web_enterprise_recovery_revoked":
+                assert artifact_parts == []
+                assert not list(await db.scalars(select(ChatArtifact).where(ChatArtifact.runtime_task_id == next_run)))
+                assert "workspace/shared-report.md" in successor.metadata_json["rejected_artifact_paths"]
+            elif action == "approve":
+                assert artifact_parts
+            artifact_id = artifact_parts[0]["artifact_id"] if action == "approve" and artifact_parts else None
+            if enterprise_case in {"web_enterprise_source_revoked", "web_enterprise_private_selection"}:
+                from app.services.content_input_receipts import ContentInputReceiptError, validate_artifact_content_receipt
+
+                artifact = await db.get(ChatArtifact, UUID(artifact_id))
+                assert artifact is not None
+                with pytest.raises(ContentInputReceiptError) as held_artifact:
+                    await validate_artifact_content_receipt(db, seed["tenant_id"], await db.get(User, seed["user_id"]), artifact)
+                assert held_artifact.value.status_code == 403
+                requests = list(await db.scalars(select(SessionModelResult).where(SessionModelResult.session_id == session_id)))
+                assert requests
+                for model in requests:
+                    wire = json.dumps(model.model_request_snapshot_json["wire_request"])
+                    if report_content in wire or "PRIVATE_GROUP_NOTE_CANARY" in wire:
+                        assert (await db.get(RuntimeTask, model.run_id)).root_user_id == requester_id
         tool_messages = [message for request in model_client.requests for message in request["messages"]
             if message.get("role") == "tool" and message.get("tool_call_id") == "company-result"]
         assert tool_messages, model_client.requests
@@ -2051,9 +2077,9 @@ async def _exercise_group_enterprise(seed, session_id, run_id, requester_id, ses
                         await validate_artifact_content_receipt(db, seed["tenant_id"], await db.get(User, seed["user_id"]), artifact)
                     assert held_artifact.value.status_code == 403
         else:
-            assert outcome["delivered"] == 1 and len(sends) == (2 if action == "approve" else 1), outcome
+            assert outcome["delivered"] == 1 and len(sends) == (2 if artifact_id else 1), outcome
             assert sends[0]["reply_target"]["receive_id"] == "oc_native_group" and expected in sends[0]["text"]
-            if action == "approve":
+            if artifact_id:
                 assert sends[1]["file_content"] == report_content and sends[1]["artifact_id"] is not None
                 assert not sends[1]["file_path"].exists()
         if saved_browser:
@@ -2199,9 +2225,12 @@ async def _exercise_group_enterprise(seed, session_id, run_id, requester_id, ses
                     await pin_rls_tenant_context(db, seed["tenant_id"])
                     fresh_run = await db.get(RuntimeTask, fresh_run_id)
                     if enterprise_case == "web_enterprise_saved_unbound":
-                        assert fresh_run.status == "needs_reconciliation", (fresh_run.status, fresh_run.metadata_json)
-                        assert fresh_run.metadata_json["session_v2_reconciliation"]["reason"] == "terminal_artifact_selection"
+                        assert fresh_run.status == "completed", (fresh_run.status, fresh_run.metadata_json)
+                        assert "session_v2_reconciliation" not in fresh_run.metadata_json
                         assert not fresh_run.metadata_json.get("artifact_ids")
+                        notices = list(await db.scalars(select(ChatTranscriptEvent).where(
+                            ChatTranscriptEvent.run_id == fresh_run_id, ChatTranscriptEvent.item_kind == "assistant_commentary")))
+                        assert any("未能附" in (event.content or "") for event in notices)
                         assert (seed["agent_root"] / "workspace/shared-report.md").read_text() == "USER_EDITED_SAVED_REPORT"
                         return
                     assert fresh_run.status == "completed", (fresh_run.status, fresh_run.metadata_json)

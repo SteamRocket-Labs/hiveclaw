@@ -46,7 +46,10 @@ async def record_native_trigger_input(db, *, agent, session, wrapper_id, input_i
     for trigger in triggers:
         ref = await capture_trigger_context(db, trigger=trigger, session_id=session.id, runtime_task_id=wrapper.id)
         if ref is None:
-            complete = False
+            pointer = await db.get(InvocationSpan, uuid.uuid5(trigger.id, "trigger-configuration-pointer"))
+            config = trigger.config or {}
+            complete = complete and pointer is None and config.get("command") in {
+                "loop", "schedule_create", "schedule_once"} and config.get("created_by") == str(session.user_id)
             continue
         snapshot = await db.get(InvocationSpan, uuid.UUID(ref["source_id"]))
         _dependencies, known = await trigger_field_dependencies(db, agent.tenant_id, agent.id,
@@ -92,8 +95,8 @@ async def native_trigger_input_sources(db, *, tenant_id, agent_id, row, command)
             or any(proof.get(key) != origin[key] for key in ("wrapper_id", "input_id", "command_id", "request_hash", "target_hash", "input_sha256", "trigger_ids"))
             or not isinstance(proof.get("configuration_sources"), list)):
             raise ValueError("scheduled_input_source_changed")
-        if proof.get("complete") is not True:
-            return [_reference(span, proof)], False
+        if proof.get("complete") is not True or not proof["configuration_sources"]:
+            return [_reference(span, proof)], proof.get("complete") is True
         if len(proof["configuration_sources"]) != len(origin["trigger_ids"]):
             raise ValueError("scheduled_input_sources_missing")
         for trigger_id, ref in zip(origin["trigger_ids"], proof["configuration_sources"]):

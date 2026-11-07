@@ -15,7 +15,7 @@ from sqlalchemy import select
 from app.database import pin_rls_tenant_context
 from app.models.chat_transcript_event import ChatTranscriptEvent
 from app.models.runtime_task import RuntimeTask
-from app.models.session_v2 import SessionModelResult, SessionTurnInput
+from app.models.session_v2 import SessionModelResult, SessionToolInvocation, SessionTurnInput
 from tests.integration.test_m1g7_routine_settings_postgres import scoped_runtime_factories  # noqa: F401
 
 pytestmark = pytest.mark.usefixtures("migrated_pg_url")
@@ -610,7 +610,7 @@ async def test_exact_native_scheduled_answer_keeps_model_tools_budget_and_origin
             "actual_provider_requests": len(state.llm.requests),
         }
         (tmp_path / "native-question-continuation.json").write_text(json.dumps(observed, indent=2))
-        if fault in {"source_revoked", "binding_tamper", "knowledge_revoked", "question_missing"}:
+        if fault in {"source_revoked", "binding_tamper", "question_missing"}:
             assert successor.status == "failed" and len(state.llm.requests) == state.provider_requests_before_answer
             assert (
                 successor.metadata_json["error_code"]
@@ -618,7 +618,6 @@ async def test_exact_native_scheduled_answer_keeps_model_tools_budget_and_origin
                     {
                         "source_revoked": "trigger_input_origin_unavailable",
                         "binding_tamper": "native_trigger_answer_unavailable",
-                        "knowledge_revoked": "content_source_access_denied",
                         "question_missing": "native_trigger_answer_unavailable",
                     }[fault]
                 )
@@ -626,12 +625,13 @@ async def test_exact_native_scheduled_answer_keeps_model_tools_budget_and_origin
             assert successor.metadata_json["blocked_effect"]["effect_state"] == "not_started"
         else:
             assert successor.status == "completed"
-        if fault in {"source_revoked", "binding_tamper", "knowledge_revoked", "question_missing"}:
+        if fault in {"source_revoked", "binding_tamper", "question_missing"}:
             await state.boundary(successor_id)
             return
         assert state.receipts[-1]["model_id"] == str(state.pinned_id)
         assert state.receipts[-1]["identity"] == "agent_bot" and state.receipts[-1]["locked"] is True
-        assert state.receipts[-1]["allowed"] == ["ask_user_question", "list_triggers"]
+        assert state.receipts[-1]["allowed"] == ["ask_user_question", "list_triggers",
+            *(["read_personal_kb"] if fault == "knowledge_revoked" else [])]
         assert state.receipts[-1]["excluded"] == ["read_file"] and state.receipts[-1]["fallback"] is False
         assert successor.metadata_json["trigger_origin"] == state.original_origin
         assert successor.budget_run_id == state.original_budget and successor.root_runtime_task_id == state.wrapper_id
@@ -639,6 +639,14 @@ async def test_exact_native_scheduled_answer_keeps_model_tools_budget_and_origin
         assert successor.metadata_json["session_v2_rolled_over_input_id"] == str(answer.id)
         assert answer.rolled_over_to_turn_id == successor.metadata_json["turn_id"]
         models = list(await db.scalars(select(SessionModelResult).where(SessionModelResult.run_id == successor_id)))
+        if fault == "knowledge_revoked":
+            from tests.integration.source_withholding_helpers import assert_source_withheld
+
+            assert_source_withheld(models, content=state.private_body, code="content_source_access_denied")
+            assert all(state.private_body not in json.dumps(request["messages"])
+                for request in state.llm.requests[state.provider_requests_before_answer:])
+            calls = list(await db.scalars(select(SessionToolInvocation).where(SessionToolInvocation.run_id == successor_id)))
+            assert calls and all(call.tool_name == "list_triggers" for call in calls)
         assert models and all(
             model.model_request_snapshot_json["input_bindings"]["dependency_coverage"]["complete"] for model in models
         )

@@ -14,6 +14,7 @@ from tests.integration.test_m1g24_workspace_artifact_authority_postgres import (
     native_workspace, _prepare_write, _admitted_write_messages,  # noqa: F401
 )
 from tests.integration.test_m1g28_runtime_source_reads_postgres import _create
+from tests.integration.source_withholding_helpers import legacy_model_requests
 
 # Shared integration fixture imported above.
 # ruff: noqa: F811
@@ -405,8 +406,10 @@ async def test_incomplete_successor_remains_owned_but_cannot_leave(native_worksp
         messages = await _admitted_write_messages(db, n, content="Read D and write report")
         read = await _read_document(n, db, document, messages)
         assert read.complete and dependency in read.sources
-        written = await _step(n, db, "write_file", {"path": path, "content": "PRIVATE_DOCUMENT_D"},
-            [*messages, read.message, LLMMessage(role="system", content="Unbound external input")], 2)
+        # Exercise successors of historical incomplete requests, before ingress withholding existed.
+        with legacy_model_requests(monkeypatch):
+            written = await _step(n, db, "write_file", {"path": path, "content": "PRIVATE_DOCUMENT_D"},
+                [*messages, read.message, LLMMessage(role="system", content="Unbound external input")], 2)
         receipt = await latest_workspace_receipt(db, n.tenant, n.agent, path)
         assert receipt is not None, "INCOMPLETE_BOT_WRITE_HAS_NO_RECEIPT"
         model = await db.scalar(select(SessionModelResult).where(SessionModelResult.provider_request_id == written.invocation.provider_request_id))

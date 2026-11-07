@@ -19,8 +19,9 @@ from app.services.content_input_receipts import ContentInputReceiptError
 
 
 @pytest.mark.parametrize("package_kind", ["pack", "builtin"])
+@pytest.mark.parametrize("witness", ["bootstrap", "known_defaults", "exact_bytes"])
 async def test_single_platform_dependency_preserves_bytes_lineage_and_full_inventory(
-    owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, package_kind
+    owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, package_kind, witness
 ):
     tenant_id, user_id, agent_id, revision_id = (uuid.uuid4() for _ in range(4))
     monkeypatch.setattr(get_settings(), "AGENT_DATA_DIR", str(tmp_path))
@@ -44,6 +45,11 @@ async def test_single_platform_dependency_preserves_bytes_lineage_and_full_inven
     )
     folder = source_path.split("/")[1]
     content = {"schema": "hive.agent_platform_skills.v1", "files": files}
+    if witness == "known_defaults":
+        from unittest.mock import AsyncMock
+
+        monkeypatch.setattr("app.services.employee_creation_sources.load_known_native_default_context",
+            AsyncMock(return_value={"source_revision_id": str(revision_id)}))
     async with owner_sessionmaker() as db:
         db.add(Tenant(id=tenant_id, name="Dependency reader", slug=f"dependency-reader-{tenant_id.hex}"))
         await db.flush()
@@ -59,19 +65,28 @@ async def test_single_platform_dependency_preserves_bytes_lineage_and_full_inven
         )
         await db.flush()
         db.add(Agent(id=agent_id, tenant_id=tenant_id, name="Dependency reader", creator_id=user_id))
-        db.add(
-            ConfigRevision(
-                id=revision_id,
-                entity_type="agent_platform_skill_bootstrap",
-                entity_id=agent_id,
-                tenant_id=tenant_id,
-                version=1,
-                content=content,
-                content_hash=canonical_content_hash(content),
-                change_source="platform_init",
+        if witness == "bootstrap":
+            db.add(
+                ConfigRevision(
+                    id=revision_id,
+                    entity_type="agent_platform_skill_bootstrap",
+                    entity_id=agent_id,
+                    tenant_id=tenant_id,
+                    version=1,
+                    content=content,
+                    content_hash=canonical_content_hash(content),
+                    change_source="platform_init",
+                )
             )
-        )
         await db.commit()
+    if witness != "bootstrap":
+        async with app_user_sessionmaker() as db:
+            await pin_rls_tenant_context(db, tenant_id)
+            inventory = await sources._platform_skill_sources(db, tenant_id, agent_id)
+            observed_id = inventory[source_path][0]
+            if witness == "known_defaults":
+                assert observed_id == str(revision_id)
+            revision_id = observed_id
     dependency = {
         "source_kind": "agent_platform_skill_file",
         "source_id": f"{agent_id}\n{source_path}\n{revision_id}",

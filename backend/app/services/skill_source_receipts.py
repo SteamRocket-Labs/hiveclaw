@@ -303,9 +303,9 @@ async def _platform_skill_sources(db, tenant_id, agent_id, *, source_path=None):
             from app.services.employee_creation_sources import load_known_native_default_context
 
             known = await load_known_native_default_context(db, tenant_id=tenant_id, agent_id=agent_id, ref="identity")
-            if known is None:
-                return {}
-            files, source_revision_id = {}, known["source_revision_id"]
+            # Exact application bytes need no employee-creation history.
+            files, source_revision_id = {}, (
+                known["source_revision_id"] if known else str(uuid.uuid5(agent_id, "bundled-platform-skills")))
         else:
             files, source_revision_id = content["files"], str(revision.id)
     else:
@@ -585,11 +585,11 @@ async def validate_skill_file_dependency(db, tenant_id, dependency, *, user, run
         ) from exc
     if dependency["source_kind"] == "agent_platform_skill_file":
         sources = await _platform_skill_sources(db, tenant_id, agent_id, source_path=path)
+        _validate_source_bytes(Path(get_settings().AGENT_DATA_DIR) / str(agent_id) / path, dependency["source_version"])
         if sources.get(path) != (str(revision_id), dependency["source_version"]):
             raise ContentInputReceiptError(
                 "content_source_unavailable", "The platform Skill lacks an original package witness.", 503
             )
-        _validate_source_bytes(Path(get_settings().AGENT_DATA_DIR) / str(agent_id) / path, dependency["source_version"])
         return
     latest = await db.scalar(
         select(ConfigRevision)

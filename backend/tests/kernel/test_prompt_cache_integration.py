@@ -36,6 +36,11 @@ def _make_model():
     )
 
 
+def _dynamic_text(call):
+    return "\n\n".join(message.content for message in call["messages"]
+        if message.context_origin is not None and message.context_origin.kind == "dynamic_prompt")
+
+
 @pytest.mark.asyncio
 async def test_kernel_verifies_frozen_prefix_and_refreshes_dynamic_retrieval():
     from app.kernel.contracts import InvocationRequest, RuntimeConfig
@@ -106,8 +111,8 @@ async def test_kernel_verifies_frozen_prefix_and_refreshes_dynamic_retrieval():
 
     first_system = fake_client.calls[0]["messages"][0].content
     second_system = fake_client.calls[1]["messages"][0].content
-    first_dynamic = fake_client.calls[0]["messages"][-1].content
-    second_dynamic = fake_client.calls[1]["messages"][-1].content
+    first_dynamic = _dynamic_text(fake_client.calls[0])
+    second_dynamic = _dynamic_text(fake_client.calls[1])
 
     assert "SNAPSHOT_BLOCK" not in first_system
     assert "RETRIEVAL_1" not in first_system
@@ -280,7 +285,7 @@ async def test_kernel_routes_runtime_metadata_outside_knowledge_section():
         )
     )
 
-    dynamic_prompt = fake_client.calls[0]["messages"][-1].content
+    dynamic_prompt = _dynamic_text(fake_client.calls[0])
     assert "## Runtime Metadata\nACTIVE_TRIGGER" in dynamic_prompt
     assert "## Knowledge" in dynamic_prompt
     assert dynamic_prompt.index("## Runtime Metadata") < dynamic_prompt.index("## Knowledge")
@@ -439,7 +444,7 @@ async def test_tool_expansion_rebuild_preserves_dynamic_memory_and_effective_suf
     ]
 
     expanded_system = fake_client.calls[1]["messages"][0].content
-    expanded_dynamic = fake_client.calls[1]["messages"][-1].content
+    expanded_dynamic = _dynamic_text(fake_client.calls[1])
     assert "SNAPSHOT_BLOCK" not in expanded_system
     assert "RETRIEVAL_BLOCK" not in expanded_system
     assert "SNAPSHOT_BLOCK" in expanded_dynamic
@@ -497,7 +502,7 @@ async def test_coordinator_and_delegation_suffixes_have_independent_budgets(monk
     )
 
     system_prompt = fake_client.calls[0]["messages"][0].content
-    dynamic_prompt = fake_client.calls[0]["messages"][-1].content
+    dynamic_prompt = _dynamic_text(fake_client.calls[0])
     assert "DELEGATION_SUFFIX_START" not in system_prompt
     assert "COORDINATOR_SUFFIX_START" not in system_prompt
     assert "DELEGATION_SUFFIX_START" in dynamic_prompt
@@ -557,7 +562,7 @@ async def test_prompt_too_long_retry_preserves_dynamic_context_blocks(tmp_path):
 
     assert result.content == "done"
     retry_system = fake_client.calls[1]["messages"][0].content
-    retry_dynamic = fake_client.calls[1]["messages"][-1].content
+    retry_dynamic = _dynamic_text(fake_client.calls[1])
     assert "SNAPSHOT_BLOCK" not in retry_system
     assert "RETRIEVAL_BLOCK" not in retry_system
     assert "SNAPSHOT_BLOCK" in retry_dynamic

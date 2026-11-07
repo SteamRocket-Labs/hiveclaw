@@ -14,7 +14,7 @@ from app.models.chat_session import ChatSession
 from app.models.invocation_span import InvocationSpan
 from app.models.session_v2 import SessionModelResult, SessionToolInvocation
 from app.runtime.context_candidates import ContextMessageOrigin
-from app.services.session_model_inputs import _hash, _model_dependencies
+from app.services.session_model_inputs import _hash, _model_dependencies, _model_snapshot_dependencies
 from app.tools.runtime import ToolExecutionContext
 
 
@@ -395,7 +395,7 @@ async def load_delegation_instruction_origin(db, *, request, tenant_id, content)
         or source_id != uuid.uuid5(invocation.id, f"delegation-instruction:{pointer['source_hash']}")
     ):
         return None
-    dependencies, complete = _model_dependencies(model)
+    dependencies, complete = _model_snapshot_dependencies(model)
     return ContextMessageOrigin.capture(
         kind="delegated_instruction",
         role="user",
@@ -404,6 +404,61 @@ async def load_delegation_instruction_origin(db, *, request, tenant_id, content)
         sections=[{"kind": "parent_tool_call", "source_id": str(source_id), "source_hash": pointer["source_hash"]}],
         unbound=() if complete else ("delegation_parent_inputs_unbound",),
     )
+
+
+async def delegated_instruction_memory_reader(db, *, task, agent_id, session_id, source_ref):
+    """Attest only memory inherited by this exact instruction, as its parent reader."""
+    from types import SimpleNamespace
+    from app.models.runtime_task import RuntimeTask
+    from app.services.personal_knowledge_access import AgentRuntimePrincipal
+    from app.services.session_model_inputs import load_context_message_origin
+
+    if (not isinstance(source_ref, str) or not source_ref.startswith("session-kernel-context:")
+        or task is None or task.task_type != "delegation" or task.child_agent_id != agent_id
+        or task.root_user_id is None
+    ):
+        return None
+    try:
+        child_session = uuid.UUID(str(task.child_session_id))
+        source_id = uuid.UUID(source_ref.split(":", 1)[1])
+        uuid.UUID(str(task.parent_agent_id))
+        uuid.UUID(str(task.parent_session_id))
+    except (ValueError, TypeError):
+        return None
+    if child_session != session_id:
+        return None
+    proof = await load_context_message_origin(db, tenant_id=task.tenant_id, agent_id=agent_id,
+        session_id=session_id, source_id=source_id)
+    if (not isinstance(proof, dict) or proof.get("kind") != "delegated_instruction"
+        or not isinstance(proof.get("message"), dict) or proof["message"].get("content") != task.prompt
+        or not isinstance(proof.get("sections"), list) or not isinstance(proof.get("dependencies"), list)):
+        return None
+    metadata = task.metadata_json
+    conversation = metadata.get("conversation_messages") if isinstance(metadata, dict) else None
+    if not isinstance(conversation, list) or len(conversation) != 1 or not isinstance(conversation[0], dict):
+        return None
+    request = SimpleNamespace(conversation_messages=conversation,
+        parent_agent_id=task.parent_agent_id, parent_session_id=task.parent_session_id,
+        owner_id=task.root_user_id, target=SimpleNamespace(id=agent_id))
+    origin = await load_delegation_instruction_origin(db, request=request, tenant_id=task.tenant_id, content=task.prompt)
+    if (origin is None or origin.unbound or not origin.sections or list(origin.sections) != proof["sections"]
+        or list(origin.sources) != proof["dependencies"]):
+        return None
+    section = origin.sections[0]
+    if not isinstance(section, dict) or not isinstance(section.get("source_id"), str):
+        return None
+    try:
+        receipt_id = uuid.UUID(section["source_id"])
+    except (ValueError, TypeError):
+        return None
+    receipt = await db.get(InvocationSpan, receipt_id, populate_existing=True)
+    if receipt is None:
+        return None
+    parent = await db.get(RuntimeTask, receipt.runtime_task_id, populate_existing=True)
+    if parent is None or parent.tenant_id != task.tenant_id or parent.root_user_id != task.root_user_id:
+        return None
+    return AgentRuntimePrincipal(agent_id=task.parent_agent_id, requester_user_id=parent.root_user_id,
+        session_id=task.parent_session_id, runtime_task_id=str(parent.id), purpose="interactive_session")
 
 
 async def authorize_delegation_instruction(invocation, request):

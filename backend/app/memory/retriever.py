@@ -97,6 +97,13 @@ class MemoryRetriever:
         self.last_selection_coverage_path: str | None = None
         self.last_episodic_source_status = "ready"
         self.last_team_source_status = "ready"
+        self.last_withheld: dict[str, dict] = {}
+
+    def _note_withheld(self, layer: str, count: int | None, code: str) -> None:
+        """Record per-layer recall withholding; ``count=None`` means the whole layer."""
+        if count is None or count > 0:
+            previous = self.last_withheld.get(layer, {}).get("count", 0)
+            self.last_withheld[layer] = {"count": None if count is None or previous is None else previous + count, "code": code}
 
     async def retrieve(
         self,
@@ -121,6 +128,7 @@ class MemoryRetriever:
         """
         del limit, retrieval_profile  # compatibility-only; never semantic cutoffs
         self.last_episodic_source_status = "ready"
+        self.last_withheld = {}
         items = await self._gather_authorized_candidates(
             agent_id,
             query,
@@ -167,6 +175,7 @@ class MemoryRetriever:
                 request=self._team_principal(agent_id=agent_id, session_id=session_id,
                     activation_context=activation_context, runtime_task_id=runtime_task_id))
             self.last_team_source_status = "partial" if issues else "ready"
+            self._note_withheld("team_memory", len(issues), "team_memory_source_partial")
             return [MemoryItem(kind=MemoryKind.SEMANTIC, content=render_entry(entry), score=0.5,
                 source=memory_id(entry), metadata={"source_type": "team_memory", "entry_id": memory_id(entry),
                     "title": entry.title, "description": entry.content}, source_refs=(source_dependency(receipt),))
@@ -174,6 +183,7 @@ class MemoryRetriever:
         except Exception as exc:
             logger.warning("Team memory source authority unavailable: %s", type(exc).__name__)
             self.last_team_source_status = "unavailable"
+            self._note_withheld("team_memory", None, "team_memory_source_unavailable")
             return []
 
     async def _filter_team_sources(self, items, *, agent_id, tenant_id, session_id, activation_context, runtime_task_id):
@@ -192,6 +202,7 @@ class MemoryRetriever:
         except Exception as exc:
             logger.warning("Selected team source authority unavailable: %s", type(exc).__name__)
         result = []
+        team_dropped = 0
         for item in items:
             if item.metadata.get("source_type") != "team_memory":
                 result.append(item)
@@ -200,7 +211,9 @@ class MemoryRetriever:
             if entry is not None and item.content == render_entry(entry) and item.source_refs == (source_dependency(receipt),):
                 result.append(item)
             else:
+                team_dropped += 1
                 self.last_team_source_status = "partial"
+        self._note_withheld("team_memory", team_dropped, "team_memory_source_partial")
         return result
 
     async def _filter_explicit_sources(self, items, *, agent_id, tenant_id, session_id, activation_context, runtime_task_id=None):
@@ -225,7 +238,9 @@ class MemoryRetriever:
             self.last_explicit_source_status = "partial" if issues else "ready"
         except Exception as exc:
             logger.warning("Explicit memory source authority unavailable: %s", type(exc).__name__)
+            self._note_withheld("explicit_memory", None, "explicit_memory_source_unavailable")
         result = []
+        explicit_dropped = 0
         for item in items:
             if item.metadata.get("source_type") != "explicit_overlay":
                 result.append(item)
@@ -235,8 +250,12 @@ class MemoryRetriever:
                 dependency = source_dependency(receipt)
                 previous = [ref for ref in item.source_refs if ref.get("source_kind") == "explicit_memory"]
                 if previous and previous != [dependency]:
+                    explicit_dropped += 1
                     continue
                 result.append(replace(item, source_refs=(dependency,)))
+            else:
+                explicit_dropped += 1
+        self._note_withheld("explicit_memory", explicit_dropped, "explicit_memory_source_partial")
         return result
 
     async def _filter_episodic_sources(self, items, *, agent_id, tenant_id, session_id, activation_context):
@@ -270,6 +289,7 @@ class MemoryRetriever:
                     or_(ChatSession.audience_kind.is_(None), ChatSession.audience_kind == "private")))
                 if requester is None or worker is None:
                     self.last_episodic_source_status = "unavailable"
+                    self._note_withheld("episodic", len(episodic), "episodic_source_unavailable")
                     return other
                 await check_agent_access(db, requester, agent_id)
                 # Shared-source recall needs a live audience reader; browser administration is not a native read grant.
@@ -282,9 +302,12 @@ class MemoryRetriever:
         except Exception as exc:
             logger.warning("Episodic source authority unavailable: %s", type(exc).__name__)
             self.last_episodic_source_status = "unavailable"
+            self._note_withheld("episodic", len(episodic), "episodic_source_unavailable")
             return other
-        return [item for item in items if item.kind != MemoryKind.EPISODIC
+        kept = [item for item in items if item.kind != MemoryKind.EPISODIC
             or source_ids.get(item.metadata.get("session_id")) in allowed]
+        self._note_withheld("episodic", len(items) - len(kept), "episodic_source_partial")
+        return kept
 
     async def _gather_authorized_candidates(
         self,

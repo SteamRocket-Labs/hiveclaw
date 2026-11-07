@@ -8,6 +8,33 @@ import pytest
 from app.runtime.session import SessionContext
 
 
+async def test_prepared_withholding_reaches_the_actual_provider_messages(monkeypatch):
+    from app.kernel import InvocationResult
+    from app.runtime.invoker import AgentInvocationRequest, invoke_agent
+    from app.services.llm_client import LLMMessage
+
+    async def prepare(**payload):
+        payload["messages"][1] = LLMMessage(role="system", content="One context item was withheld.")
+        return "prepared-request"
+
+    class Kernel:
+        async def handle(self, request):
+            messages = [LLMMessage(role="user", content="Keep the member command."),
+                LLMMessage(role="user", content="UNBOUND_PROVIDER_SECRET")]
+            assert await request.model_request_prepare(messages=messages) == "prepared-request"
+            assert messages[0].content == "Keep the member command."
+            assert "UNBOUND_PROVIDER_SECRET" not in str([message.content for message in messages])
+            return InvocationResult(content="done", parts=[])
+
+    monkeypatch.setattr("app.runtime.invoker._resolve_kernel_for_request", lambda request: Kernel())
+    result = await invoke_agent(AgentInvocationRequest(
+        model=SimpleNamespace(provider="openai", model="synthetic", api_key="synthetic-model-key", base_url=None),
+        messages=[{"role": "user", "content": "Keep the member command."}],
+        agent_name="A4c boundary agent", role_description="Synthetic boundary test",
+        agent_id=uuid4(), user_id=uuid4(), model_request_prepare=prepare))
+    assert result.content == "done"
+
+
 class _FakeClient:
     def __init__(self, responses: list[SimpleNamespace]) -> None:
         self._responses = list(responses)
@@ -2515,15 +2542,17 @@ async def test_invoke_agent_composes_system_prompt_once(monkeypatch):
     assert "## System" in system_prompt
     assert "__PROMPT_DYNAMIC_BOUNDARY__" not in system_prompt
     assert "MEMORY_CONTEXT" not in system_prompt
-    dynamic_notice = fake_client.calls[0]["messages"][-1]
-    assert dynamic_notice.role == "user"
-    assert "[System Notice]" in dynamic_notice.content
-    assert "## Your Memory System" in dynamic_notice.content
-    assert "MEMORY_CONTEXT" in dynamic_notice.content
-    assert "search_memory" in dynamic_notice.content
-    assert "memory_provider:recall" not in dynamic_notice.content
-    assert 'kind="memory_recall"' not in dynamic_notice.content
-    assert "KB_CONTEXT" not in dynamic_notice.content
+    dynamic_messages = [message for message in fake_client.calls[0]["messages"]
+        if message.context_origin is not None and message.context_origin.kind == "dynamic_prompt"]
+    assert len(dynamic_messages) > 1 and all(message.role == "user" for message in dynamic_messages)
+    dynamic_notice = "".join(message.content for message in dynamic_messages)
+    assert "[System Notice]" in dynamic_notice
+    assert "## Your Memory System" in dynamic_notice
+    assert "MEMORY_CONTEXT" in dynamic_notice
+    assert "search_memory" in dynamic_notice
+    assert "memory_provider:recall" not in dynamic_notice
+    assert 'kind="memory_recall"' not in dynamic_notice
+    assert "KB_CONTEXT" not in dynamic_notice
 
 
 @pytest.mark.asyncio
@@ -2592,7 +2621,8 @@ async def test_invoke_agent_writes_prompt_assembly_manifest_from_actual_prompt(m
     manifest = session_context.metadata["runtime_assembly_state"]["prompt_assembly_manifest"]
     assert "prompt_assembly_manifest" not in session_context.metadata
     system_prompt = fake_client.calls[0]["messages"][0].content
-    dynamic_notice = fake_client.calls[0]["messages"][-1].content
+    dynamic_notice = "".join(message.content for message in fake_client.calls[0]["messages"]
+        if message.context_origin is not None and message.context_origin.kind == "dynamic_prompt")
 
     assert manifest["schema"] == "hive.ccplus.prompt_assembly_manifest.v1"
     assert manifest["source_of_truth"] == "runtime_prompt_assembly"

@@ -1944,9 +1944,9 @@ async def test_later_work_rechecks_learned_inputs_before_the_next_model_request(
     learned_skill, app_user_sessionmaker, owner_sessionmaker,
 ):
     from sqlalchemy import select
-    from app.kernel.contracts import ExecutionAuthorityUnavailable
     from app.models.chat_session import ChatSession
-    from app.models.session_v2 import SessionModelResult
+    from app.models.session_v2 import SessionModelResult, SessionToolInvocation
+    from tests.integration.source_withholding_helpers import assert_source_withheld
     from tests.integration.test_m4c_explicit_memory_scope_postgres import memory_call, new_owner_work
 
     s, _submission = learned_skill
@@ -1958,11 +1958,19 @@ async def test_later_work_rechecks_learned_inputs_before_the_next_model_request(
     async with owner_sessionmaker() as db:
         (await db.get(ChatSession, n.session)).user_id = n.foreign
         await db.commit()
-    with pytest.raises(ExecutionAuthorityUnavailable) as blocked:
-        await memory_call(n, app_user_sessionmaker, "save_memory",
-            {"content": "Use the method whose original inputs were withdrawn", "category": "strategy"},
-            session=session, run=run, include_history=True)
-    assert blocked.value.status == "denied" and blocked.value.code == "content_source_access_denied"
+    saved, invocation = await memory_call(n, app_user_sessionmaker, "save_memory",
+        {"content": "Use the method whose original inputs were withdrawn", "category": "strategy"},
+        session=session, run=run, include_history=True)
+    assert "Saved to explicit memory overlay" in saved and "EVIDENCE_METHOD_VERSION_ONE" not in saved
+    denied = str(await n.service.execute("load_skill", {"name": "Evidence Review"}, agent_id=n.agent,
+        user_id=n.user, session_id=str(session), runtime_task_id=str(run), emit_runtime_hooks=False))
+    assert "EVIDENCE_METHOD_VERSION_ONE" not in denied, denied
     async with tenant_scoped_session(n.tenant, session_factory=app_user_sessionmaker) as db:
         models = list(await db.scalars(select(SessionModelResult).where(SessionModelResult.run_id == run)))
-        assert len(models) == 1, models
+        assert len(models) == 2, models
+        later = [model for model in models if model.provider_request_id == invocation.provider_request_id]
+        assert_source_withheld(later, content="EVIDENCE_METHOD_VERSION_ONE", code="content_source_access_denied")
+        assert all(ref["source_kind"] != "learned_skill_file" for model in later
+            for ref in model.model_request_snapshot_json["input_bindings"]["dependencies"])
+        assert set(await db.scalars(select(SessionToolInvocation.tool_name).where(
+            SessionToolInvocation.run_id == run))) == {"load_skill", "save_memory"}

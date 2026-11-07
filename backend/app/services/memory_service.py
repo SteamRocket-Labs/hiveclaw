@@ -66,6 +66,7 @@ class MemoryContextResult:
     selection_receipt: str | None = None
     source_refs: tuple[dict[str, str], ...] = ()
     source_unbound: tuple[str, ...] = ("memory_source_inventory_missing",)
+    sections: tuple[dict, ...] = ()
 
 
 # ============================================================================
@@ -103,6 +104,14 @@ async def build_memory_snapshot(
         current_user_id=current_user_id,
         current_user_name=current_user_name,
     )
+
+
+def _render_withheld_note(withheld: dict | None) -> str:
+    """A typed note naming what recall withheld, so partial recall is never silent."""
+    if not withheld:
+        return ""
+    count = sum(info["count"] or 0 for info in withheld.values())
+    return f"有{str(count) + ' 条' if all(info['count'] is not None for info in withheld.values()) else '部分'}记忆暂时无法核实，已略过，可继续使用其余内容。"
 
 
 async def build_memory_context(
@@ -334,6 +343,7 @@ async def _build_memory_context_result(
 
     # Selection can await a provider. Resolve the resident index only after
     # that boundary so stale previews cannot bypass the scoped full loader.
+    base_resident, overlay_sections = resident, []
     if not legacy_compatibility:
         try:
             from app.memory.explicit_overlay import load_explicit_overlay_entries
@@ -348,8 +358,10 @@ async def _build_memory_context_result(
                 entries=load_explicit_overlay_entries(data_root, agent_id), issue_observer=issues)
             if issues or getattr(retriever, "last_explicit_source_status", "ready") != "ready":
                 degraded_components.append("explicit_memory_source_authority")
-            resident = with_explicit_memory_index(resident, [entry for entry, _receipt in authorized],
-                {entry.entry_id: (source_dependency(receipt),) for entry, receipt in authorized})
+            overlay_sources = {entry.entry_id: (source_dependency(receipt),) for entry, receipt in authorized}
+            resident = with_explicit_memory_index(resident, [entry for entry, _receipt in authorized], overlay_sources,
+                section_observer=lambda entry, text: overlay_sections.append({
+                    "content": text, "sources": overlay_sources[entry.entry_id], "unbound": ()}))
         except Exception as exc:
             logger.warning("Resident explicit source authority unavailable: %s", type(exc).__name__)
             degraded_components.append("explicit_memory_source_authority")
@@ -419,6 +431,8 @@ async def _build_memory_context_result(
         retrieval_budget = max(0, int(retrieval_profile.memory_budget_chars - resident.chars))
         assembled_sources = []
         assembled_unbound = []
+        sections = ([{"content": base_resident.text, "sources": base_resident.source_refs,
+            "unbound": resident_unbound}] if base_resident.text else []) + overlay_sections
 
         def observe_memory_source(item):
             refs = getattr(item, "source_refs", ())
@@ -435,6 +449,10 @@ async def _build_memory_context_result(
                 assemble_kwargs["source_observer"] = observe_memory_source
             elif items:
                 assembled_unbound.append("recalled_memory_source_observer_unavailable")
+            if "section_observer" in parameters:
+                assemble_kwargs["section_observer"] = lambda item, text: sections.append({
+                    "content": text, "sources": item.source_refs,
+                    "unbound": () if item.source_refs else (f"recalled_memory_source_unbound:{item.source}",)})
             return assembler.assemble(presented_items, **assemble_kwargs) or ""
 
         surfacing = surface_with_session_budget(
@@ -466,6 +484,9 @@ async def _build_memory_context_result(
         )
 
     content = f"{resident.text}\n\n{assembled}" if resident.text and assembled else (resident.text or assembled)
+    withheld_note = _render_withheld_note(getattr(retriever, "last_withheld", None))
+    if withheld_note:
+        content = f"{content}\n\n{withheld_note}" if content else withheld_note
     common_surfacing = {
         "auto_surfaced_bytes": surfacing.surfaced_bytes,
         "auto_surface_total_bytes": surfacing.total_surfaced_bytes,
@@ -474,6 +495,7 @@ async def _build_memory_context_result(
         "selection_receipt": selection_receipt,
         "source_refs": (*resident.source_refs, *assembled_sources),
         "source_unbound": (*resident_unbound, *dict.fromkeys(assembled_unbound)),
+        "sections": tuple(sections),
     }
     if selection_status in {"model_unavailable", "failed"}:
         return MemoryContextResult(

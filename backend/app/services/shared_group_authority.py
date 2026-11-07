@@ -560,6 +560,7 @@ async def validate_shared_group_model_inputs(db, *, tenant_id, agent_id, session
         await _validate_input_dependencies(
             db, tenant_id, input_bindings.get("dependencies"), user=None, runtime_request=principal
         )
+    return principal
 
 
 async def bind_shared_group_permission_source(db, *, task, session, invocation):

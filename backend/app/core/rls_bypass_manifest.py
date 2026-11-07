@@ -837,9 +837,12 @@ def fingerprint_rls_bypass_scopes(app_root: Path) -> str:
 # Merging A4s with main: each digest entry equals the reviewed main or A4s entry; no entry changed on both sides.
 # G2b tool settings: reviewed shared assignment lock/permission helpers and
 # sorted startup assignments; no bypass call or exception is added.
+# Merging A4c with G2b preserves both reviewed entry sets; no entry changed on both sides.
 # B6 preserves settled cancellation and unknown approval outcomes; merging B6 with main keeps each entry from one side.
+# Merging A4c with B6 accepts the exact three-way module-source merge; no bypass scope changed on both sides.
 # G3: preview and inventory lifecycle source updates only; merging G3 with main keeps each entry from one side.
-RLS_BYPASS_SCOPES_SHA256 = "1f0ca6d14f5485fa8ce48a98bdd1449595e608e2581912f431e7456f3cee6069"
+# Merging A4c with G3 keeps each entry from one side.
+RLS_BYPASS_SCOPES_SHA256 = "aaab1b8ea488dbcddda16f3c2b3833dd6b2d07a5a9153cfc974e8e80d53aef83"
 
 
 def scan_rls_bypass_callsites(app_root: Path) -> list[RLSBypassCallsite]:

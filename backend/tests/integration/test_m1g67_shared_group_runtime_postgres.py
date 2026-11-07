@@ -1251,6 +1251,9 @@ async def _exercise_group_cancel(seed, session_id, run_id, requester_id, session
             worker = runtime._TASKS[run_id.hex]
             await asyncio.wait_for(entered.wait(), 30)
             if recover_cancel:
+                async def unavailable_cancel_bus(**_kwargs):
+                    raise ConnectionError("Synthetic cross-process cancel transport unavailable")
+                monkeypatch.setattr("app.services.runtime_control_bus.publish_web_chat_cancel", unavailable_cancel_bus)
                 async def crash_before_begin(*_args, **_kwargs):
                     raise RuntimeError("Synthetic ingress crash after acceptance")
                 with monkeypatch.context() as patch:

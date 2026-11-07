@@ -11,6 +11,17 @@ import { useAuthStore } from '../../stores';
 import { runtimeBudgetApi } from '../../api/domains/runtimeBudgets';
 import { agentApi } from '../../api/domains/agents';
 import { assistantApi } from '../../api/domains/assistant';
+import { dashboardApi } from '../../api/domains/dashboard';
+import { hrCreationApi } from '../../api/domains/hrCreation';
+import { businessTeamsApi } from '../../api/domains/businessTeams';
+import { a2aApi } from '../../api/domains/a2a';
+import { machineIdentitiesApi } from '../../api/domains/machineIdentities';
+import { remoteA2AApi } from '../../api/domains/remoteA2A';
+import DigitalEmployees from '../DigitalEmployees';
+import Dashboard from '../Dashboard';
+import AssistantPanel from '../assistant/AssistantPanel';
+import WorkspaceFeatureHub from '../WorkspaceFeatureHub';
+import AgentA2ASection from './AgentA2ASection';
 import AgentChatSection from './AgentChatSection';
 import AgentStatusSection from './AgentStatusSection';
 import AgentDetailHeader, { AgentDetailNavigation } from './AgentDetailHeader';
@@ -143,4 +154,119 @@ it('gives the conversation the phone width while keeping the existing sidebar to
   expect(phone).toMatch(/\.main-content\s*\{[^}]*margin-left:\s*0/);
   expect(phone).toMatch(/\.sidebar\.collapsed\s*\{[^}]*width:\s*0/);
   expect(phone).toMatch(/\.sidebar\.collapsed \.sidebar-collapse-btn\s*\{[^}]*visibility:\s*visible/);
+});
+
+const storedAssistant = { id: 'bot', name: 'My Assistant', role_description: "The user's assistant",
+  status: 'idle', creator_id: 'member', is_owner: true, created_at: '2026-11-07T00:00:00Z' };
+const untranslatedMemberText = /My Assistant|The user's assistant|A2A|Team|Subagents?/;
+
+function memberAgentList() {
+  useAuthStore.setState({ user: { id: 'member', role: 'member', tenant_id: 'company' } as never });
+  vi.spyOn(agentApi, 'list').mockResolvedValue([storedAssistant] as never);
+}
+
+it('renders the stored assistant name, role, avatar and team action in the member directory in Chinese', async () => {
+  memberAgentList();
+  vi.spyOn(hrCreationApi, 'listMine').mockResolvedValue([]);
+  const { container } = mount(<DigitalEmployees />);
+  await screen.findByRole('heading', { name: '我的助理' });
+  expect.soft(container.querySelector('.employee-avatar')?.textContent).toBe('我');
+  expect.soft(screen.getByText('为你处理工作的助理')).toBeTruthy();
+  expect.soft(screen.getByRole('link', { name: '团队协作' }).getAttribute('href')).toBe('/agents/bot#a2a');
+  expect(container.textContent).not.toMatch(untranslatedMemberText);
+});
+
+it('localizes the dashboard work card, activity, failure summary and employee selection without changing ids', async () => {
+  memberAgentList();
+  vi.spyOn(dashboardApi, 'getOverview').mockResolvedValue({ recent_sessions: [{ id: 'pair', agent_id: 'bot',
+    title: 'My Assistant ↔ 周报助手', session_kind: 'agent_chat', updated_at: '2026-11-07T00:00:00Z' }], session_count: 1,
+    query_evidence: { failure_rows_truncated: false },
+    recent_activities: [{ id: 'activity', agent_id: 'bot', summary: '已整理资料', created_at: '2026-11-07T00:00:00Z' }],
+    tool_failures: { bot: { total_errors: 1, by_tool: [], by_provider: [], by_error_class: [], by_http_status: [], recent_errors: [] } },
+  } as never);
+  const { container } = mount(<Dashboard />);
+  await screen.findByText('为你处理工作的助理');
+  await waitFor(() => expect(container.querySelector('.dashboard-pill-btn')?.textContent).toContain('我的助理'));
+  expect.soft(container.querySelector('.dashboard-tag')?.textContent).toBe('我的助理');
+  expect.soft(container.querySelector('.workspace-list-row strong')?.textContent).toBe('我的助理 ↔ 周报助手');
+  expect.soft(container.querySelector('.workspace-list-row small')?.textContent).toBe('我的助理');
+  fireEvent.click(screen.getByRole('button', { name: new RegExp(zh.dashboard.home.assignWork) }));
+  expect.soft(screen.getByRole('option', { name: '我的助理' }).getAttribute('value')).toBe('bot');
+  expect.soft(storedAssistant.name).toBe('My Assistant');
+  expect(container.textContent).not.toMatch(untranslatedMemberText);
+});
+
+it('localizes the assistant settings identity and candidates while preserving custom names', () => {
+  const payload = { state: 'active', agent: storedAssistant, entry: { kind: 'employee', agent_id: 'bot' },
+    candidates: [storedAssistant, { id: 'custom', name: '周报助手' }] };
+  const { container } = mount(<AssistantPanel payload={payload as never} loading={false}
+    onOpen={vi.fn()} onSelect={vi.fn()} onRetry={vi.fn()} />);
+  expect.soft(container.querySelector('strong')?.textContent).toBe('我的助理');
+  expect.soft(screen.getByRole('radio', { name: '我的助理' }).getAttribute('value')).toBe('bot');
+  expect.soft(screen.getByRole('radio', { name: '周报助手' })).toBeTruthy();
+  expect(container.textContent).not.toMatch(untranslatedMemberText);
+});
+
+it('renders the team hub title, subtitle, cards, employee identity and actions in Chinese', async () => {
+  memberAgentList();
+  vi.spyOn(businessTeamsApi, 'list').mockResolvedValue({ tenant_id: 'company', teams: [],
+    caller: { user_id: 'member', role: 'member' } } as never);
+  const { container } = mount(<WorkspaceFeatureHub kind="team" />);
+  await waitFor(() => expect(screen.getAllByText('为你处理工作的助理')).toHaveLength(2));
+  expect.soft(screen.getByRole('heading', { level: 1, name: '团队协作' })).toBeTruthy();
+  expect.soft(container.querySelector('.workbench-page .page-subtitle')?.textContent).toBe(zh.featureHub.team.subtitle);
+  expect.soft(screen.getAllByText('我的助理')).toHaveLength(2);
+  expect.soft(container.querySelector('.employee-avatar')?.textContent).toBe('我');
+  expect(container.textContent).not.toMatch(untranslatedMemberText);
+});
+
+it.each([false, true])('renders the selected team sub-tab and its member collaboration copy in Chinese (owner: %s)', async (canManage) => {
+  useAuthStore.setState({ user: { id: 'member', role: 'member', tenant_id: 'company' } as never });
+  vi.spyOn(a2aApi, 'listCollaborators').mockResolvedValue({ same_owner_agents: [], public_agents: [], collaboration_groups: [] });
+  vi.spyOn(a2aApi, 'getManagement').mockResolvedValue({ groups: [] });
+  vi.spyOn(machineIdentitiesApi, 'list').mockResolvedValue({ agent_id: 'bot', can_issue: false, identities: [] } as never);
+  vi.spyOn(remoteA2AApi, 'get').mockResolvedValue({ agent_id: 'bot', state: 'not_configured', can_configure: false,
+    allowed_networks: [], runtime_activation: 'not_activated' } as never);
+  const { container } = mount(<><AgentDetailNavigation visibleTabs={['status', 'a2a', 'tasks']}
+    activeTab="a2a" onSelectTab={vi.fn()} /><AgentA2ASection agentId="bot" canManage={canManage} /></>);
+  await screen.findByText('暂无同归属协作对象。');
+  if (canManage) {
+    await screen.findByText('员工仍使用原先的执行方式。');
+    expect.soft(container.textContent).toContain('协议版本: 1.0');
+  }
+  expect.soft(container.querySelector('.agent-workbench-subtab.active')?.textContent).toBe('协作对象');
+  expect(container.textContent).not.toMatch(untranslatedMemberText);
+});
+
+it.each([false, true])('localizes the assistant bubble name and avatar in %s history mode without mutating sender identity', (readOnly) => {
+  const message = { id: 'reply', role: 'assistant', content: '报告已经整理好了。', sender_name: 'My Assistant', participant_id: 'assistant-participant' };
+  const session = { ...own, read_only: readOnly };
+  const { container } = mount(chat({ activeSession: session, sessions: [session],
+    chatMessages: [message], historyMsgs: [message] }));
+  expect.soft(container.querySelector('.session-tui-message-sender')?.textContent).toBe('我的助理');
+  expect.soft(container.querySelector('.session-tui-message-avatar')?.textContent).toBe('我');
+  expect.soft(message.sender_name).toBe('My Assistant');
+  expect(container.textContent).not.toMatch(untranslatedMemberText);
+});
+
+it('keeps delegated bubble alignment based on the stored sender identity', () => {
+  const session = { ...own, title: 'My Assistant ↔ 周报助手', read_only: true, session_kind: 'agent_chat' };
+  const historyMsgs = [
+    { id: 'self', role: 'assistant', content: '请整理周报。', sender_name: 'My Assistant', participant_id: 'self' },
+    { id: 'peer', role: 'assistant', content: '周报已经整理好了。', sender_name: '周报助手', participant_id: 'peer' },
+  ];
+  const { container } = mount(chat({ activeSession: session, sessions: [session], historyMsgs }));
+  expect.soft(container.querySelector('[data-session-message-id="self"]')?.className).toContain('session-tui-message-row-user');
+  expect(container.querySelector('[data-session-message-id="peer"]')?.className).toContain('session-tui-message-row-assistant');
+});
+
+it('offsets the collapsed phone toggle by the notice bar height', () => {
+  const css = readFileSync('src/index.css', 'utf8');
+  const phone = css.match(/@media\s*\(max-width:\s*600px\)\s*\{([\s\S]*?)\n\}/)?.[1] || '';
+  const normalTop = phone.match(/\.sidebar\.collapsed \.sidebar-collapse-btn\s*\{[^}]*top:\s*(\d+)px/)?.[1];
+  const noticeHeight = css.match(/\.notification-bar\s*\{[^}]*height:\s*(\d+)px/)?.[1];
+  const noticeTop = phone.match(/\.has-notification-bar \.sidebar\.collapsed \.sidebar-collapse-btn\s*\{[^}]*top:\s*(\d+)px/)?.[1];
+  expect(normalTop).toBe('8');
+  expect(noticeHeight).toBe('32');
+  expect(Number(noticeTop)).toBe(Number(normalTop) + Number(noticeHeight));
 });

@@ -830,6 +830,7 @@ const ChatMessageItem = React.memo(function ChatMessageItem({
   collapseAssistantContent = false,
   viewerUserId,
 }: ChatMessageItemProps) {
+  const senderName = assistantNameForDisplay(msg.sender_name || '', t('assistant.title', 'My Assistant'));
   const extension = msg.fileName?.split('.').pop()?.toLowerCase() ?? '';
   const fileIcon =
     extension === 'pdf'
@@ -885,12 +886,12 @@ const ChatMessageItem = React.memo(function ChatMessageItem({
       className={`session-tui-render-cell session-tui-message-row ${isLeft ? 'session-tui-message-row-assistant' : 'session-tui-message-row-user'}`}
     >
       <div className="session-tui-message-avatar">
-        {isLeft ? (msg.sender_name ? msg.sender_name[0] : 'A') : 'U'}
+        {isLeft ? (senderName ? senderName[0] : 'A') : 'U'}
       </div>
       <div className="session-tui-message-bubble">
         {isLeft && msg.sender_name && (
           <div className="session-tui-message-sender">
-            {msg.sender_name}
+            {senderName}
           </div>
         )}
         {isImage ? (

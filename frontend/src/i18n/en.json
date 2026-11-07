@@ -8,6 +8,7 @@
     "permissionRequired": "Choose at least one permission.",
     "agentCard": "Agent Card endpoint",
     "taskEndpoint": "Task endpoint",
+    "protocolVersion": "A2A-Version",
     "title": "Machine access",
     "scope": "Choose separate permissions for the employee description, task execution, results, and cancellation.",
     "unknown": "The access or request outcome could not be confirmed. Refresh before acting again.",
@@ -1496,6 +1497,7 @@
     },
     "tabs": {
       "status": "Overview",
+      "a2a": "Collaborators",
       "tasks": "Assignments",
       "aware": "Awareness",
       "awareTooltip": "What this employee is currently focused on, plus triggers and action history",

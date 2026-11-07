@@ -5260,6 +5260,7 @@ describe('AgentDetail extracted sections', () => {
               },
             ],
           },
+          { role: 'user', content: 'Continue the report.' },
         ]}
         chatMessagesSessionId="runtime-panel-session"
         runtimeSummary={{
@@ -5608,7 +5609,8 @@ describe('AgentDetail extracted sections', () => {
         onScrollHistoryToBottom={vi.fn()}
         chatContainerRef={React.createRef<HTMLDivElement>()}
         onChatScroll={vi.fn()}
-        chatMessages={[{ role: 'assistant', content: 'Member evidence.' }]}
+        chatMessages={[{ role: 'assistant', content: 'Member evidence.' },
+          { role: 'user', content: 'Continue reviewing the report.' }]}
         chatMessagesSessionId="member-session-1"
         runtimeSummary={null}
         transportNotice={null}

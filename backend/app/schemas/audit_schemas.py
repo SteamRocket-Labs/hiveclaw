@@ -92,7 +92,8 @@ class AuditLogSummaryOut(BaseModel):
             "user:role_changed": ("target_user_id", "from_role", "to_role"),
         }.get(info.data.get("action"), ())
         if isinstance(value, dict):
-            summary.update({key: value[key] for key in keys if key in value})
+            summary.update({key: value[key] for key in keys if key in value
+                and (key != "already_inactive" or isinstance(value[key], bool))})
         return summary
 
     model_config = {"from_attributes": True}

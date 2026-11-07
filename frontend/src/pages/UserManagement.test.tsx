@@ -100,11 +100,33 @@ it('loads the initially shown receiver when the preview has no default receiver'
 });
 
 it('clearing the receiver hides the previous handover list without requesting a default receiver', async () => {
+  const message = '知识仍在处理中，请一两分钟后重试。';
+  vi.mocked(usersApi.previewOffboarding).mockResolvedValueOnce({
+    ...await defaultPreview!('leaver'), blockers: [message],
+  });
   render(<UserManagement />);
   fireEvent.click(await screen.findByRole('button', { name: 'userManagement.deactivateMember' }));
   await screen.findByText('Company guide');
+  expect(screen.getByText(message)).toBeTruthy();
   fireEvent.change(screen.getByLabelText('userManagement.successorAdmin'), { target: { value: '' } });
   await waitFor(() => expect((screen.getByLabelText('userManagement.successorAdmin') as HTMLSelectElement).value).toBe(''));
+  expect(screen.queryByText('Company guide')).toBeNull();
+  expect(screen.queryByText('Pending report')).toBeNull();
+  expect(screen.queryByText('Daily report')).toBeNull();
+  expect(screen.queryByText(message)).toBeNull();
+  expect(usersApi.previewOffboarding).toHaveBeenCalledTimes(1);
+  expect(screen.getByRole('button', { name: 'userManagement.confirmDeactivate' }).hasAttribute('disabled')).toBe(true);
+});
+
+it('keeps the no-active-receiver blocker when the preview was computed without a receiver', async () => {
+  const message = '没有可接手的在职成员。';
+  vi.mocked(usersApi.previewOffboarding).mockResolvedValueOnce({
+    ...await defaultPreview!('leaver'), default_successor_id: null, eligible_successors: [], blockers: [message],
+  });
+  render(<UserManagement />);
+  fireEvent.click(await screen.findByRole('button', { name: 'userManagement.deactivateMember' }));
+  await screen.findByText(message);
+  expect((screen.getByLabelText('userManagement.successorAdmin') as HTMLSelectElement).value).toBe('');
   expect(screen.queryByText('Company guide')).toBeNull();
   expect(screen.queryByText('Pending report')).toBeNull();
   expect(screen.queryByText('Daily report')).toBeNull();

@@ -27,3 +27,10 @@ def test_offboarding_audit_preserves_the_actual_inactive_outcome(already_inactiv
     log = AuditLogSummaryOut(id=uuid4(), action="user:offboarded", created_at=datetime.now(timezone.utc),
         details={"already_inactive": already_inactive, "probe_id": "private-probe", "schema": "private"})
     assert log.details == {"already_inactive": already_inactive, "probe_id": "private-probe"}
+
+
+@pytest.mark.parametrize("already_inactive", [None, 0, 1, "true", "false", [], {}, {"private": "payload"}])
+def test_offboarding_audit_drops_non_boolean_inactive_outcomes(already_inactive):
+    log = AuditLogSummaryOut(id=uuid4(), action="user:offboarded", created_at=datetime.now(timezone.utc),
+        details={"already_inactive": already_inactive, "status": "completed"})
+    assert log.details == {"status": "completed"}

@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, EmailStr, Field, field_serializer, model_validator
+from pydantic import BaseModel, EmailStr, Field, field_serializer, field_validator, model_validator
 
 from app.services.llm_client import ABSOLUTE_MAX_OUTPUT_TOKENS
 
@@ -77,6 +77,12 @@ AgentClass = Literal["internal_system", "internal_tenant", "external_gateway", "
 AgentExecutionMode = Literal["standard", "coordinator", "coordinator_strict"]
 
 
+def _user_agent_class(value: str | None) -> str | None:
+    if value == "internal_system":
+        raise ValueError("Only the platform can create a system HR assistant.")
+    return value
+
+
 class SmartModelRoutingConfig(BaseModel):
     enabled: bool = False
     max_simple_chars: int = Field(default=160, ge=32, le=500)
@@ -107,6 +113,7 @@ class AgentCreate(BaseModel):
     tenant_id: uuid.UUID | None = None
     # Classification
     agent_class: AgentClass = "internal_tenant"
+    _validate_agent_class = field_validator("agent_class")(_user_agent_class)
     security_zone: str = "standard"  # public | standard | restricted
     execution_mode: AgentExecutionMode = "standard"
     smart_model_routing: SmartModelRoutingConfig | None = None
@@ -184,6 +191,7 @@ class AgentUpdate(BaseModel):
     webhook_rate_limit: int | None = None
     timezone: str | None = None
     agent_class: AgentClass | None = None
+    _validate_agent_class = field_validator("agent_class")(_user_agent_class)
     security_zone: str | None = None
     execution_mode: AgentExecutionMode | None = None
     default_session_permission_mode: Literal["default", "auto", "bypassPermissions"] | None = None

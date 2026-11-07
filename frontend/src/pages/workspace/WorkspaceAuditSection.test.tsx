@@ -89,3 +89,31 @@ it('G3f review 2: labels a named restore and omits duplicate lifecycle security 
   expect(container.querySelectorAll('article')).toHaveLength(3);
   expect((await import('../../i18n/zh.json')).default.enterprise.audit.agentRestored).toBe('数字员工已恢复');
 });
+
+it('G3f round 2 item 2: names asset operations and member logins with the supplied employee', async () => {
+  mocks.users.mockResolvedValue([{ id: 'admin', display_name: 'Company admin' }]);
+  mocks.logs.mockResolvedValue(['ai_asset.create', 'ai_asset.update', 'ai_asset.revoke'].map(action => ({
+    id: action, action, user_id: 'admin', agent_id: 'bot', agent_name: 'Research assistant',
+    created_at: '2026-11-07T12:00:00Z', details: {},
+  })));
+  mocks.security.mockResolvedValue({ items: ['login', 'login', 'assistant.provisioned'].map((action, id) => ({
+    id: `security-${id}`, action, actor_id: 'admin', created_at: '2026-11-07T12:00:00Z', details: {} })) });
+  const { container } = render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+    <WorkspaceAuditSection selectedTenantId="company" />
+  </QueryClientProvider>);
+  // Item 2: an asset's agent_id may name its acting bot, not its resource type.
+  await screen.findByText('Resource created');
+  expect(screen.getByText('Resource updated')).toBeTruthy();
+  expect(screen.getByText('Resource deactivated')).toBeTruthy();
+  expect(screen.getByText('Personal assistant created')).toBeTruthy();
+  expect(screen.getAllByText('Member signed in')).toHaveLength(2);
+  expect(screen.getAllByText('Research assistant')).toHaveLength(3);
+  expect(screen.queryByText('Activity recorded')).toBeNull();
+  expect(container.querySelectorAll('article')).toHaveLength(6);
+  const labels = (await import('../../i18n/zh.json')).default.enterprise.audit;
+  expect(labels.assetCreated).toBe('创建资源');
+  expect(labels.assetUpdated).toBe('更新资源');
+  expect(labels.assetRevoked).toBe('停用资源');
+  expect(labels.assistantCreated).toBe('创建个人助手');
+  expect(labels.login).toBe('成员登录');
+});

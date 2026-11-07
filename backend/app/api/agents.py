@@ -1792,6 +1792,13 @@ async def update_agent(
 
     update_data = data.model_dump(exclude_unset=True)
 
+    from app.domain.agent_lifecycle import validate_system_agent_identity
+
+    try:
+        validate_system_agent_identity(agent, update_data)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
     expected_role_revision = update_data.pop("expected_role_revision", None)
     if expected_role_revision is not None:
         from app.services.agent_role_settings import role_revision

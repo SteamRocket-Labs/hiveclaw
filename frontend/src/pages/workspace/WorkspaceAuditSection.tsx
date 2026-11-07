@@ -48,6 +48,11 @@ export default function WorkspaceAuditSection({ selectedTenantId }: WorkspaceAud
     heartbeat_error: t('enterprise.audit.periodicError', 'Periodic work failed'),
     server_startup: t('enterprise.audit.startup', 'Service started'),
     test_llm_model_completed: t('enterprise.audit.modelTest', 'Model test'),
+    login: t('enterprise.audit.login', 'Member signed in'),
+    'assistant.provisioned': t('enterprise.audit.assistantCreated', 'Personal assistant created'),
+    'ai_asset.create': t('enterprise.audit.assetCreated', 'Resource created'),
+    'ai_asset.update': t('enterprise.audit.assetUpdated', 'Resource updated'),
+    'ai_asset.revoke': t('enterprise.audit.assetRevoked', 'Resource deactivated'),
   };
   const combinedAuditLogs: AuditLog[] = [
     ...auditLogs,

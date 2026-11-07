@@ -515,9 +515,7 @@ def _sync_runtime_session_permission_metadata(runtime_session_context: Any, meta
 
 def _is_web_origin_turn(metadata: dict[str, Any], runtime_session_context: Any) -> bool:
     source = str(metadata.get("source") or getattr(runtime_session_context, "source", None) or "web").strip().lower()
-    return source in {"", "web", "web_chat", "websocket"} or (
-        source in {"websocket_message", "session_input_api", "legacy_rest_create_session_run", "legacy_rest_start_session_run"}
-        and (getattr(runtime_session_context, "metadata", None) or {}).get("source_channel") == "web")
+    return source in {"", "web", "web_chat"}
 
 
 def _explicit_channel_delivery_requested(metadata: dict[str, Any], prompt: str | None = None) -> bool:
@@ -5570,6 +5568,20 @@ async def _update_runtime_task(
             metadata = dict(task.metadata_json or {})
             metadata.update(metadata_json)
             task.metadata_json = metadata
+        if status == "suspended" and result_summary == "awaiting_company_approval":
+            from app.services.approval_ticket import ApprovalTicketError
+            from app.services.session_approval import rearm_decided_company_approval_returns
+
+            try:
+                await rearm_decided_company_approval_returns(db, task=task)
+            except ApprovalTicketError:
+                from app.services.runtime_terminal_settlement import settle_and_enqueue_runtime_task_terminal
+
+                task.status, task.result_summary, task.completed_at = "failed", "approval_return_unavailable", datetime.now(timezone.utc)
+                await settle_and_enqueue_runtime_task_terminal(db, task,
+                    terminal_source="company_approval_return", root_reason_code="approval_return_unavailable")
+                await _enqueue_web_terminal_boundary(db, task)
+                return "failed"
         if channel_delivery_text:
             merged_metadata = dict(task.metadata_json or {})
             if task.parent_agent_id is None or not task.parent_session_id:

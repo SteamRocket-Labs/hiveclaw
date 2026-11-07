@@ -14,6 +14,42 @@ from app.services.enterprise_approval_visibility import is_visible_enterprise_ap
 
 logger = logging.getLogger(__name__)
 _enterprise_permission_after_id: uuid.UUID | None = None
+APPROVAL_CONTINUATION_REASONS = frozenset({
+    "requester_inactive", "agent_execute_denied", "user_prompt_submit_blocked", "user_prompt_submit_prevented",
+    "admission_refused", "approval_return_admission_refused", "origin_run_not_suspended",
+    "approval_origin_unavailable", "approval_return_unavailable", "origin_session_authority_unresolved",
+})
+
+
+async def rearm_decided_company_approval_returns(db, *, task):
+    """A late suspension reuses the ticket's existing delivery page."""
+    from app.models.runtime_notification_outbox import RuntimeNotificationOutbox
+    from app.services.runtime_notification_outbox import RuntimeNotificationOutboxService
+
+    tickets = await db.scalars(select(ApprovalRequest).where(
+        ApprovalRequest.tenant_id == task.tenant_id, ApprovalRequest.agent_id == task.parent_agent_id,
+        ApprovalRequest.execution_envelope["runtime_task_id"].astext.in_((str(task.id), task.id.hex)),
+        ApprovalRequest.execution_status.in_(("succeeded", "failed", "rejected", "needs_reapproval", "needs_reconciliation"))))
+    for ticket in tickets:
+        row = await db.scalar(select(RuntimeNotificationOutbox).where(
+            RuntimeNotificationOutbox.tenant_id == task.tenant_id,
+            RuntimeNotificationOutbox.parent_session_id == uuid.UUID(task.parent_session_id),
+            RuntimeNotificationOutbox.parent_agent_id == task.parent_agent_id,
+            RuntimeNotificationOutbox.source_kind == "approval",
+            RuntimeNotificationOutbox.metadata_json["approval_id"].astext == str(ticket.id)))
+        if row is None or (row.status == "dead_letter" and row.integration_page_id is None):
+            ticket.execution_receipt = {**(ticket.execution_receipt or {}),
+                "continuation_status": "needs_reconciliation", "continuation_reason": "approval_return_unavailable"}
+            raise ApprovalTicketError("approval_return_unavailable")
+        if row.status == "dead_letter":
+            try:
+                await RuntimeNotificationOutboxService().redrive_dead_letter_page(db=db,
+                    tenant_id=task.tenant_id, page_id=row.integration_page_id, actor_user_id=task.root_user_id,
+                    reason="company approval origin suspended after delivery exhaustion")
+            except (LookupError, ValueError) as exc:
+                ticket.execution_receipt = {**(ticket.execution_receipt or {}),
+                    "continuation_status": "needs_reconciliation", "continuation_reason": "approval_return_unavailable"}
+                raise ApprovalTicketError("approval_return_unavailable") from exc
 
 
 async def load_session_approval(db, *, session, approval_id, for_update=False):
@@ -71,8 +107,11 @@ async def session_approval_projection(approval, *, db, agent, user):
         "tool_name": approval.tool_name, "execution_status": approval.execution_status,
         **({"execution_kind": "browser_human"} if is_human_approval(approval) else {}),
         "details": details,
-        "execution_receipt": {key: (approval.execution_receipt or {}).get(key)
-            for key in ("continuation_status", "continuation_reason")},
+        "execution_receipt": {
+            "continuation_status": (approval.execution_receipt or {}).get("continuation_status"),
+            "continuation_reason": ((approval.execution_receipt or {}).get("continuation_reason")
+                if (approval.execution_receipt or {}).get("continuation_reason") in APPROVAL_CONTINUATION_REASONS else None),
+        },
         "can_resolve": approval.status == "pending" and await can_resolve_approval(db, agent=agent, user=user, approval=approval),
     }
 

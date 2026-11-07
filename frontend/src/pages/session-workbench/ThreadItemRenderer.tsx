@@ -261,7 +261,9 @@ export function ThreadItemRenderer({
     : runtimeFailure
     ? translateRuntimeFailure(t, runtimeFailure)
     : item.metadata?.runtime_action_from_result_integration === true && item.event_type === 'runtime_action_blocked'
-    ? t('approvalExecution.needs_reconciliation', 'Needs admin attention')
+    ? item.metadata?.notification_source === 'approval' && item.metadata?.status === 'blocked'
+      ? t('approvalExecution.declined', 'Approval declined')
+      : t('approvalExecution.needs_reconciliation', 'Needs admin attention')
     : item.metadata?.runtime_action_from_result_integration === true && item.event_type === 'runtime_action_failed'
     ? t('approvalExecution.failed', 'Failed')
     : item.item_type === 'approval_request'

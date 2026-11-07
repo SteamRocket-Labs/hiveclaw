@@ -153,6 +153,93 @@ async def test_unsealable_model_failure_runs_real_result_finalizer(
             assert run.metadata_json["terminal_reason"] == "provider_error"
 
 
+@pytest.mark.parametrize("provider_options", [
+    {}, {"mcp_servers": [{"name": "local"}]}, {"tools": [{"type": "web_search"}]},
+])
+@pytest.mark.parametrize("stopped", [False, True])
+async def test_unsealable_unknown_delivery_observes_stop_after_failure_transaction(
+    owner_sessionmaker, monkeypatch, provider_options, stopped,
+):
+    from app.services import session_model_round
+
+    events = []
+
+    async def broadcast(_agent_id, _session_id, payload):
+        events.append(payload)
+
+    monkeypatch.setattr(runtime, "broadcast_web_chat_event", broadcast)
+    state, common = await _state(owner_sessionmaker, monkeypatch)
+    async with owner_sessionmaker() as db:
+        request_id = await _prepare(db, common, provider_options)
+        result = await db.scalar(select(SessionModelResult).where(SessionModelResult.run_id == state.run_uuid))
+        result.state = "failed"
+        await db.commit()
+    fail = session_model_round.fail_model_request
+    returned = []
+
+    async def record_failure(db, **kwargs):
+        value = await fail(db, **kwargs)
+        returned.append(value)
+        return value
+
+    async def invoke(*_args):
+        await orchestrator._fail_session_model_request(state, round_index=1, provider_request_id=request_id,
+            error_class="provider_error", delivery_state="unknown", retry_safe=False)
+        assert returned == [None]
+        assert state.provider_reconciliation is not None
+        async with owner_sessionmaker() as db:
+            run = await db.get(RuntimeTask, state.run_uuid)
+            assert run.status == "running"
+            assert (run.metadata_json or {}).get("cancel_state") not in {"cancelling", "cancelled"}
+        if stopped:
+            # The fail transaction is committed and reconciliation is armed.
+            # A different process now commits Stop before the terminal lock.
+            await _stop(owner_sessionmaker, state)
+        return SimpleNamespace(content="Provider failed", terminal_reason=TerminalReason.PROVIDER_ERROR)
+
+    async def noop(*_args, **_kwargs):
+        pass
+
+    monkeypatch.setattr(session_model_round, "fail_model_request", record_failure)
+    for name in ("_load_web_chat_context", "_configure_runtime_session", "_prepare_pending_suffix",
+        "_handle_budget_unavailable_before_model", "_handle_pre_invocation_terminal", "_consume_resumed_plan_submission"):
+        monkeypatch.setattr(orchestrator, name, noop)
+    monkeypatch.setattr(orchestrator, "_invoke_model", invoke)
+    # Keep the reconciliation handler, terminal lock and settlement real.
+    await orchestrator._run_web_chat_stages(state)
+    if stopped and not provider_options:
+        await _assert_stopped(owner_sessionmaker, state.run_uuid)
+        assert state.terminal_phase_hint.value == "cancelled"
+        assert not any(event.get("type") == "runtime_reconciliation_required" for event in events)
+    else:
+        async with owner_sessionmaker() as db:
+            run = await db.get(RuntimeTask, state.run_uuid)
+            assert run.status == "needs_reconciliation"
+            assert run.metadata_json["terminal_reason"] == "provider_send_ambiguous"
+        assert state.terminal_phase_hint.value == "failed"
+        assert any(event.get("type") == "runtime_reconciliation_required" for event in events)
+
+
+@pytest.mark.parametrize("round_state", ["missing", "request_mismatch"])
+async def test_unknown_request_without_exact_snapshot_keeps_reconciliation(
+    owner_sessionmaker, monkeypatch, round_state,
+):
+    state, common = await _state(owner_sessionmaker, monkeypatch)
+    request_id = "missing-request"
+    if round_state == "request_mismatch":
+        async with owner_sessionmaker() as db:
+            request_id = await _prepare(db, common, {}) + "-mismatch"
+    await orchestrator._fail_session_model_request(state, round_index=1, provider_request_id=request_id,
+        error_class="provider_error", delivery_state="unknown", retry_safe=False)
+    assert state.provider_reconciliation is not None
+    await _stop(owner_sessionmaker, state)
+    await orchestrator._handle_provider_reconciliation_required(state, state.provider_reconciliation)
+    async with owner_sessionmaker() as db:
+        run = await db.get(RuntimeTask, state.run_uuid)
+        assert run.status == "needs_reconciliation"
+        assert run.metadata_json["terminal_reason"] == "provider_send_ambiguous"
+
+
 @pytest.mark.parametrize("summary", ["awaiting_user_clarification", "awaiting_session_permission"])
 async def test_tool_card_observes_cross_process_stop_at_terminal_write(owner_sessionmaker, monkeypatch, summary):
     state, _ = await _state(owner_sessionmaker, monkeypatch)

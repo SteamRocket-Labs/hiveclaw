@@ -5497,7 +5497,7 @@ async def _update_runtime_task(
     result_summary: str | None = None,
     metadata_json: dict[str, Any] | None = None,
     channel_delivery_text: str | None = None,
-) -> None:
+) -> str | None:
     tenant_id = await resolve_tenant_for_runtime_task(
         run_uuid,
         session_factory=_async_session,
@@ -5532,6 +5532,23 @@ async def _update_runtime_task(
             task = result.scalar_one_or_none()
             if task is None:
                 return
+        recovery = (metadata_json or {}).get("session_v2_reconciliation") or {}
+        if status == "needs_reconciliation" and recovery.get("reason") == "ambiguous_provider_send" and (
+            task.metadata_json or {}
+        ).get("cancel_state") in {"cancelling", "cancelled"}:
+            from app.models.session_v2 import SessionModelResult
+            from app.services.session_model_round import provider_request_has_effect
+
+            # An unsealable failure may have committed before Stop. Decide
+            # from this exact request's existing snapshot under the run lock.
+            snapshot = await db.scalar(select(SessionModelResult.model_request_snapshot_json).where(
+                SessionModelResult.tenant_id == tenant_id, SessionModelResult.run_id == run_uuid,
+                SessionModelResult.provider_request_id == recovery.get("provider_request_id"),
+            ))
+            wire = (snapshot or {}).get("wire_request")
+            if isinstance(wire, dict) and not provider_request_has_effect(wire):
+                status, metadata_json = "killed", {"terminal_reason": "user_cancel", "cancelled_by_user": True}
+                result_summary = "Generation stopped by user."
         status, metadata_json = _terminal_status_with_cancel(task, status, metadata_json)
         if status in _TERMINAL_STATUSES:
             await _apply_terminal_task_update_and_settle(
@@ -5543,7 +5560,7 @@ async def _update_runtime_task(
                 terminal_source="runtime_status_update",
             )
             await _enqueue_web_terminal_boundary(db, task)
-            return
+            return status
         task.status = status
         if status == "suspended":
             task.claimed_by = task.claim_expires_at = None

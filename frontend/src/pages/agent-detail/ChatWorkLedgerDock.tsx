@@ -88,7 +88,7 @@ export default function ChatWorkLedgerDock({
   operatorReason,
 }: ChatWorkLedgerDockProps) {
   const { t } = useTranslation();
-  live = live && !(runStatus && ['stopped', 'failed', 'done'].includes(runtimeStatusKey(runStatus)));
+  live = live && !(runStatus && runStatus !== 'idle' && ['stopped', 'failed', 'done'].includes(runtimeStatusKey(runStatus)));
   const sessionQuery = useQuery({
     queryKey: ['chat-session-work-ledger', agentId, sessionId, operatorView ? operatorReason : 'owner'],
     queryFn: () => autonomyApi.getSessionWorkLedger(

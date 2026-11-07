@@ -1569,6 +1569,14 @@ async def commit_model_response(
     return seal
 
 
+def provider_request_has_effect(wire: dict[str, Any]) -> bool:
+    provider_request = {**wire, **dict(wire.get("reasoning") or {})}
+    tools = provider_request.get("tools", [])
+    return bool(provider_request.get("mcp_servers")) or not isinstance(tools, list) or any(
+        not isinstance(tool, dict) or tool.get("type") != "function" for tool in tools
+    )
+
+
 async def fail_model_request(
     db: AsyncSession,
     *,
@@ -1616,12 +1624,7 @@ async def fail_model_request(
         or result.state not in {"prepared", "streaming"}
     ):
         return
-    wire = dict((result.model_request_snapshot_json or {}).get("wire_request") or {})
-    provider_request = {**wire, **dict(wire.get("reasoning") or {})}
-    tools = provider_request.get("tools", [])
-    provider_effect = bool(provider_request.get("mcp_servers")) or not isinstance(tools, list) or any(
-        not isinstance(tool, dict) or tool.get("type") != "function" for tool in tools
-    )
+    provider_effect = provider_request_has_effect(dict((result.model_request_snapshot_json or {}).get("wire_request") or {}))
     if error_class == "cancelled" or (run_task is not None and
         (run_task.metadata_json or {}).get("cancel_state") in {"cancelling", "cancelled"}):
         error_class = "cancelled"

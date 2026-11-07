@@ -2089,12 +2089,16 @@ async def _handle_provider_reconciliation_required(
                 "error_class": exc.error_class,
             },
         }
-        await state.ports.terminal.update_runtime_task(
+        settled_status = await state.ports.terminal.update_runtime_task(
             state.run_uuid,
             status="needs_reconciliation",
             result_summary="Provider send outcome is ambiguous; operator reconciliation is required.",
             metadata_json=metadata,
         )
+        if settled_status == "killed":
+            state.cancel_event.set()
+            state.terminal_phase_hint = RuntimePhase.CANCELLED
+            return
     if state.agent is None or not state.session_id:
         return
     await state.ports.events.broadcast(

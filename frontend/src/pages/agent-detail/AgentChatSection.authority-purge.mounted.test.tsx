@@ -13,6 +13,7 @@ const noticeLocale = vi.hoisted(() => ({ language: 'en' }));
 const harness = vi.hoisted(() => ({
   ledger: undefined as RuntimeWorkLedgerView | undefined,
   activeRun: undefined as { id: string; status: string } | undefined,
+  ledgerQuery: undefined as { refetchInterval?: number | false } | undefined,
   readArtifact: vi.fn(),
   downloadArtifact: vi.fn(),
   createObjectURL: vi.fn(),
@@ -42,9 +43,11 @@ vi.mock('react-i18next', () => ({
 }));
 
 vi.mock('@tanstack/react-query', () => ({
-  useQuery: ({ queryKey, enabled }: { queryKey: unknown[]; enabled?: boolean }) => {
+  useQuery: (options: { queryKey: unknown[]; enabled?: boolean; refetchInterval?: number | false }) => {
+    const { queryKey, enabled } = options;
     if (enabled === false) return { data: undefined, isLoading: false, refetch: vi.fn() };
     if (queryKey[0] === 'chat-session-work-ledger') {
+      harness.ledgerQuery = options;
       return { data: harness.ledger, isLoading: false, refetch: vi.fn() };
     }
     if (queryKey[0] === 'chat-session-workbench') {
@@ -408,6 +411,7 @@ function downloadProps(operatorReason: string) {
 beforeEach(() => {
   harness.ledger = undefined;
   harness.activeRun = undefined;
+  harness.ledgerQuery = undefined;
   noticeLocale.language = 'en';
   harness.readArtifact.mockReset();
   harness.readArtifact.mockResolvedValue({ content: 'PRIVATE ARTIFACT CONTENT' });
@@ -489,6 +493,45 @@ it('stops the todo with the header while the cached workbench run is still runni
   expect(screen.getByTestId('chat-work-ledger-summary').textContent).toContain('已停止');
   expect(screen.getByTestId('chat-work-ledger-dock').textContent).not.toContain('正在');
 });
+
+it('keeps the todo live when an empty transcript leaves the header idle', () => {
+  harness.activeRun = { id: 'current-run', status: 'running' };
+  harness.ledger = {
+    schema: 'agent_work_ledger_view.v1', runtime_task_id: 'current-run', status: 'in_progress',
+    todo_items: [{ id: '1', title: 'Write the report', activeForm: 'Writing the report',
+      status: 'in_progress', required: true }],
+    counts: { todos_total: 1, todos_complete: 0, todos_open: 1 },
+  };
+  render(<AgentChatSection {...noticeProps()} activeRunId={null} activeRunStatus={null} chatMessages={[]} />);
+  expect(screen.getByTestId('chat-work-ledger-dock').classList.contains('is-live')).toBe(true);
+  expect(screen.getByText('Writing the report...')).toBeTruthy();
+  expect(harness.ledgerQuery?.refetchInterval).toBe(5000);
+});
+
+it.each(['cancelled', 'failed', 'completed'] as const)(
+  'keeps a different unfinished run live after a previous %s run', (lifecycle) => {
+    harness.activeRun = { id: 'current-run', status: 'running' };
+    harness.ledger = {
+      schema: 'agent_work_ledger_view.v1', runtime_task_id: 'current-run', status: 'in_progress',
+      todo_items: [{ id: '1', title: 'Write the report', activeForm: 'Writing the report',
+        status: 'in_progress', required: true }],
+      counts: { todos_total: 1, todos_complete: 0, todos_open: 1 },
+    };
+    render(<AgentChatSection {...noticeProps()} activeRunId={null} activeRunStatus={null} chatMessages={[
+      { id: 'previous-input', role: 'user', content: 'Previous task', timestamp: '2026-11-07T00:00:00Z' },
+      { id: 'previous-terminal', role: 'event', content: '', timestamp: '2026-11-07T00:00:01Z', sessionItem: {
+        id: 'previous-run', terminal: true, revision: 1, content: '', payload: {}, actor: { type: 'runtime' },
+        visibility: { audience: 'direct_user' }, occurredAt: '2026-11-07T00:00:01Z', first_sequence: 1, last_sequence: 1,
+        kind: 'run', lifecycle, scope: { level: 'run', session_id: 'original-work', thread_id: 'original-work',
+          turn_id: 'previous-turn', run_id: 'previous-run' },
+      } },
+    ]} />);
+    expect(screen.getByTestId('session-workbench-header').textContent).toContain('Running');
+    expect(screen.getByTestId('chat-work-ledger-dock').classList.contains('is-live')).toBe(true);
+    expect(screen.getByText('Writing the report...')).toBeTruthy();
+    expect(harness.ledgerQuery?.refetchInterval).toBe(5000);
+  },
+);
 
 it.each([
   ['en', 'Hidden key', 'The key you pasted was hidden. It will not be saved or sent to the model.'],

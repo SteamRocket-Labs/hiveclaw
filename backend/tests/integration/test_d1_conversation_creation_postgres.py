@@ -173,9 +173,11 @@ async def test_d1_company_approval_resumes_creation_in_place(
     monkeypatch.setattr('app.tools.resolver.async_session', app_user_sessionmaker)
     monkeypatch.setattr('app.tools.governance_resolver.async_session', app_user_sessionmaker)
     monkeypatch.setattr(agent_tools, '_TOOL_RUNTIME_SERVICE', None)
+    context = await creation._seal_direct_call(context, _direct_arguments())
     blocked = await agent_tools._get_tool_runtime_service().execute(
         'create_employee_from_request', _direct_arguments(), agent_id=context.agent_id, user_id=user.id,
-        session_id=context.session_id, runtime_task_id=context.runtime_task_id, emit_runtime_hooks=False)
+        session_id=context.session_id, runtime_task_id=context.runtime_task_id,
+        tool_call_id=context.tool_call_id, emit_runtime_hooks=False)
     assert json.loads(str(blocked))['status'] == 'approval_required', str(blocked)
     async with owner_sessionmaker() as db:
         assert list(await db.scalars(select(HrCreationDraft).where(HrCreationDraft.tenant_id == user.tenant_id))) == []

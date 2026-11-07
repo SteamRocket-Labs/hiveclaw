@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 import json
 import os
 from datetime import datetime, timezone
@@ -35,6 +36,7 @@ async def direct_origin(origin, owner_sessionmaker, app_user_sessionmaker, monke
     from app.models.llm import LLMModel
     from app.models.session_v2 import SessionCommand, SessionTurnInput
     from app.models.tenant_setting import TenantSetting
+    from app.services.session_model_inputs import _hash
 
     user, context = origin
     command_id, input_id, model_id = (uuid.uuid4() for _ in range(3))
@@ -73,8 +75,8 @@ async def direct_origin(origin, owner_sessionmaker, app_user_sessionmaker, monke
                 namespace="human_input",
                 command_kind="start_turn",
                 idempotency_key=str(input_id),
-                request_hash="a" * 64,
-                target_hash="b" * 64,
+                request_hash=_hash({"command_kind": "start_turn", "request": {"content": "Create a research employee"}}),
+                target_hash=_hash({"runtime_metadata": {"source": "session_input_api"}}),
                 request_json={"content": "Create a research employee"},
                 target_json={"runtime_metadata": {"source": "session_input_api"}},
                 status="applied",
@@ -136,15 +138,63 @@ def _direct_arguments(**overrides):
 async def _direct_call(context, **overrides):
     from app.tools.handlers.hr import create_employee_from_request
 
+    arguments = _direct_arguments(**overrides)
+    context = await _seal_direct_call(context, arguments)
     return json.loads(
         await create_employee_from_request(
             ToolExecutionRequest(
                 tool_name="create_employee_from_request",
                 context=context,
-                arguments=_direct_arguments(**overrides),
+                arguments=arguments,
             )
         )
     )
+
+
+async def _seal_direct_call(context, arguments, *, extra_messages=(), unbound=(), tool_name="create_employee_from_request"):
+    """Exercise the real sealed request/invocation boundary used by the kernel."""
+    from app.database import tenant_scoped_session
+    from app.models.session_v2 import SessionCommand, SessionModelResult, SessionTurnInput
+    from app.runtime.context_candidates import ContextMessageOrigin
+    from app.services.llm_client import LLMMessage
+    from app.services.session_model_round import prepare_model_request, seal_model_response, commit_sealed_model_round
+    from app.services.session_tool_runtime import prepare_tool_invocation, mark_tool_effect_started
+    from sqlalchemy import func
+
+    tenant_id, session_id, run_id = [uuid.UUID(str(value)) for value in
+                                    (context.tenant_id, context.session_id, context.runtime_task_id)]
+    call_id = context.tool_call_id or f"create-{uuid.uuid4()}"
+    async with tenant_scoped_session(tenant_id) as db:
+        run = await db.get(RuntimeTask, run_id)
+        row_id = (run.metadata_json or {}).get("session_v2_input_id")
+        row = await db.get(SessionTurnInput, uuid.UUID(row_id)) if row_id else None
+        command = await db.get(SessionCommand, row.command_id) if row else None
+        if command is None or run.status == "completed":
+            return context
+        index = 1 + (await db.scalar(select(func.count()).select_from(SessionModelResult).where(
+            SessionModelResult.run_id == run_id)))
+        content = str(command.request_json.get("content") or "Create a research employee")
+        message = LLMMessage(role="user", content=content, context_origin=ContextMessageOrigin.capture(
+            kind="human_input", role="user", content=content, sources=({
+                "source_kind": "session_command", "source_id": str(command.id),
+                "source_version": command.request_hash,
+            },), unbound=unbound))
+        scope = dict(tenant_id=tenant_id, agent_id=context.agent_id, session_id=session_id,
+                     run_id=run_id, turn_id=f"turn-{run_id.hex}", round_index=index)
+        request_id = await prepare_model_request(db, **scope, messages=[message, *extra_messages],
+            tools=[], provider="openai", model="synthetic-no-network")
+        await seal_model_response(db, **scope, provider_request_id=request_id, response={
+            "content": None, "tool_calls": [{"id": call_id, "type": "function", "function": {
+                "name": tool_name, "arguments": json.dumps(arguments)}}],
+            "finish_reason": "tool_calls"})
+        await commit_sealed_model_round(db, **scope, provider_request_id=request_id)
+        invocation = await prepare_tool_invocation(db, tenant_id=tenant_id, agent_id=context.agent_id,
+            session_id=session_id, run_id=run_id, provider_request_id=request_id,
+            provider_tool_use_id=call_id, tool_name=tool_name, arguments=arguments)
+        await mark_tool_effect_started(db, tenant_id=tenant_id, agent_id=context.agent_id,
+            session_id=session_id, invocation_id=invocation.id)
+        await db.commit()
+    return replace(context, tool_call_id=call_id)
 
 
 async def test_direct_request_queues_canonical_job_once_without_fake_confirmation(direct_origin, owner_sessionmaker):
@@ -234,6 +284,8 @@ async def test_direct_creation_from_mapped_feishu_requires_its_durable_ingress(
         row = await db.get(SessionTurnInput, input_id)
         command = await db.get(SessionCommand, row.command_id)
         command.target_json = {"runtime_metadata": {"source": "feishu", "channel_ingress_event_id": str(input_id)}}
+        from app.services.session_model_inputs import _hash
+        command.target_hash = _hash(command.target_json)
         if has_ingress:
             db.add(
                 ChannelIngressEvent(
@@ -549,6 +601,20 @@ async def _execute_with_session_permission(
             "tools": [{"type": "function", "function": {"name": tool_name}}],
             "max_tokens": 8192,
         }
+        messages = wire["messages"]
+        if tool_name == "create_employee_from_request":
+            from app.models.session_v2 import SessionCommand, SessionTurnInput
+            from app.services.llm_client import LLMMessage
+            from app.runtime.context_candidates import ContextMessageOrigin
+
+            run = await db.get(RuntimeTask, run_id)
+            row = await db.get(SessionTurnInput, uuid.UUID(run.metadata_json["session_v2_input_id"]))
+            command = await db.get(SessionCommand, row.command_id)
+            content = command.request_json["content"]
+            wire["messages"] = [{"role": "user", "content": content}]
+            messages = [LLMMessage(role="user", content=content, context_origin=ContextMessageOrigin.capture(
+                kind="human_input", role="user", content=content, sources=({"source_kind": "session_command",
+                    "source_id": str(command.id), "source_version": command.request_hash},), unbound=()))]
         request_id = await prepare_model_request(
             db,
             tenant_id=tenant_id,
@@ -558,7 +624,7 @@ async def _execute_with_session_permission(
             turn_id=turn_id,
             round_index=1,
             continuation_index=0,
-            messages=wire["messages"],
+            messages=messages,
             tools=wire["tools"],
             provider="openai",
             model="synthetic-no-network",

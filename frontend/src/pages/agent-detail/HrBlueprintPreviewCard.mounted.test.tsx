@@ -106,6 +106,16 @@ it('recovers a requested first task on the existing employee without confirming 
 });
 
 describe('HrBlueprintPreviewCard revision UX', () => {
+  it('shows the preserved company reason when the first task is blocked', async () => {
+    const cardPreview = { ...preview, status: 'completed', authorizationMode: 'policy_direct',
+      explicitFirstTask: 'Draft a comparison' };
+    hrMocks.get.mockResolvedValue({ blueprint_id: 'draft-1', draft_status: 'completed', blueprint: {},
+      created_agent_id: 'employee', provisioning: { first_task: { status: 'blocked', error: 'capability_denied',
+        message: '公司暂停首任务，请联系管理员。' } } });
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(<QueryClientProvider client={client}><HrBlueprintPreviewCard agentId="source" preview={cardPreview} /></QueryClientProvider>);
+    expect(await screen.findByText('公司暂停首任务，请联系管理员。')).toBeTruthy();
+  });
   it('collects the requested change locally instead of sending an agent prompt on click', () => {
     const onSendMessage = vi.fn().mockResolvedValue(undefined);
     renderCard(onSendMessage);
@@ -253,7 +263,7 @@ it('shows a compact created bot card with conversation and undo actions', async 
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(<QueryClientProvider client={client}><HrBlueprintPreviewCard agentId="source" preview={direct} /></QueryClientProvider>);
   const open = await screen.findByRole('link', { name: 'Talk to it' });
-  expect(open.getAttribute('href')).toBe('/agents/weekly-assistant?session_id=first-work#chat');
+  expect(open.getAttribute('href')).toBe('/agents/weekly-assistant#chat');
   expect(screen.getByRole('button', { name: 'Undo' })).toBeTruthy();
   expect(screen.getAllByRole('button')).toHaveLength(1);
   expect(screen.getByText('周报助手')).toBeTruthy();

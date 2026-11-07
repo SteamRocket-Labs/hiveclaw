@@ -415,6 +415,9 @@ async def check_capability(
         # Private creation is authorized by the member's current message.
         # Explicit company/agent deny and approval policies still win above.
         if tool_name == "create_employee_from_request":
+            if await _resolve_tenant_tool_enabled(db, tenant_id=tenant_id, tool_name=tool_name) is False:
+                return CapabilityCheckResult(allowed=False, denied=True, capability=capability,
+                    reason=f"Tool '{tool_name}' is disabled in workspace tool settings", policy_found=False)
             return CapabilityCheckResult(allowed=True, capability=capability, policy_found=False)
         if await _is_hr_system_agent_default_capability(
             db,

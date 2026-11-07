@@ -590,16 +590,6 @@ export function shouldUseWritableSessionSurface(
   return !isReadOnlySessionForCurrentUser(session, currentUserId);
 }
 
-export function shouldStreamSessionSurface(
-  session: AgentOwnedSession | null | undefined,
-  currentUserId: string | number | null | undefined,
-): boolean {
-  if (!session || session.operator_view || session.is_pending_session_lookup || isDraftHumanChatSession(session)) return false;
-  return shouldUseWritableSessionSurface(session, currentUserId)
-    || (session.session_kind === 'delegation_run' && session.user_id != null && currentUserId != null
-      && String(session.user_id) === String(currentUserId));
-}
-
 export function shouldPreserveActiveSessionForRequestedId(
   session: AgentOwnedSession | null | undefined,
   requestedSessionId: string | number | null | undefined,

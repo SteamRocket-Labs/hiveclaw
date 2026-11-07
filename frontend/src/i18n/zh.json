@@ -2670,6 +2670,7 @@
         "undoCreation": "撤销",
         "createdBotStopped": "已停用",
         "creationFailed": "创建失败，请重试。",
+        "creationRefused": "暂时无法创建助手，请联系管理员。",
         "undoCreationFailed": "暂时无法撤销，请重试。",
         "retryFirstTask": "重试首任务",
         "firstTaskDenied": "公司策略阻止这项任务，具备所需权限后才能重试。",

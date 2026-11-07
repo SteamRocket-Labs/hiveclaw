@@ -39,7 +39,7 @@ function originalCard() {
 it.each(['running', 'resumable', 'suspended'])('opens the bot conversation for %s first task progress', (status) => {
   state.draft!.first_task_work!.status = status;
   const markup = originalCard();
-  expect(markup).toContain('href="/agents/employee?session_id=child-1#chat"');
+  expect(markup).toContain('href="/agents/employee#chat"');
   expect(markup).not.toContain('authorized report');
   expect(markup).not.toContain('private-model-reference');
   expect(markup).not.toContain('private-event-reference');

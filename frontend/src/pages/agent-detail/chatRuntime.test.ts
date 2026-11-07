@@ -22,7 +22,6 @@ import {
   isDraftHumanChatSession,
   isReadOnlySessionForCurrentUser,
   shouldUseWritableSessionSurface,
-  shouldStreamSessionSurface,
   shouldPreserveActiveSessionForRequestedId,
   normalizeStoredChatMessage,
   normalizeRuntimeEventMessage,
@@ -2274,12 +2273,11 @@ it.each(['sending', 'failed'] as const)('preserves %s and retry on a matching du
   expect(result.pending).toHaveLength(1);
 });
 
-it('streams an owned delegated first-task conversation while retaining its read-only surface', () => {
+it('keeps delegated first-task conversations read-only for every reader', () => {
   const session = { id: 'first-work', session_kind: 'delegation_run', source_channel: 'agent',
     user_id: 'owner', read_only: true };
-  expect(shouldStreamSessionSurface(session, 'owner')).toBe(true);
   expect(shouldUseWritableSessionSurface(session, 'owner')).toBe(false);
-  expect(shouldStreamSessionSurface(session, 'other-member')).toBe(false);
-  expect(shouldStreamSessionSurface({ ...session, session_kind: 'agent_chat' }, 'owner')).toBe(false);
-  expect(shouldStreamSessionSurface({ ...session, operator_view: true }, 'owner')).toBe(false);
+  expect(shouldUseWritableSessionSurface(session, 'other-member')).toBe(false);
+  expect(shouldUseWritableSessionSurface({ ...session, session_kind: 'agent_chat' }, 'owner')).toBe(false);
+  expect(shouldUseWritableSessionSurface({ ...session, operator_view: true }, 'owner')).toBe(false);
 });

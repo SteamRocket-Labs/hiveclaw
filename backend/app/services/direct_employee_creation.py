@@ -38,7 +38,7 @@ def _refused(code: str, message: str):
 async def _human_request(db, *, tenant_id, user_id, agent_id, session_id, run_id, input_id=None):
     user = await load_creation_requester(db, user_id)
     if user is None:
-        _refused("source_execute_denied", "The authenticated requester is unavailable.")
+        _refused("source_execute_denied", "当前账号暂时无法使用，请重新登录后重试。")
     agent = await load_creation_source_agent(db, user, agent_id, require_execute=True)
     session = await db.get(ChatSession, session_id)
     run = await db.get(RuntimeTask, run_id)
@@ -53,7 +53,7 @@ async def _human_request(db, *, tenant_id, user_id, agent_id, session_id, run_id
         or run.parent_session_id != str(session_id) or run.child_session_id != str(session_id)
         or run.root_session_id != str(session_id)
     ):
-        _refused("source_execute_denied", "Creation requires the requester's original direct work.")
+        _refused("source_execute_denied", "请在自己的对话中提出创建请求。")
     if run.task_type != "web_chat_turn":
         _refused("direct_human_input_required", "请在当前对话中亲自提出创建请求，转交或后台任务不能创建数字员工。")
     principal_type, principal_id = "user", user_id
@@ -65,22 +65,22 @@ async def _human_request(db, *, tenant_id, user_id, agent_id, session_id, run_id
         from app.services.session_v2_persistence import resolve_session_mutation_authority
 
         if session.source_channel != "feishu" or session.runtime_source != "channel_chat" or session.actor_type != "external_principal":
-            _refused("source_execute_denied", "Creation requires the requester's verified direct channel work.")
+            _refused("source_execute_denied", "请在已关联本人账号的对话中提出创建请求。")
         try:
             actor = await load_external_runtime_actor(db, tenant_id=tenant_id,
                 principal_id=session.external_principal_id, expected_user_id=user_id)
             authority = await resolve_session_mutation_authority(db, user=actor, agent_id=agent_id,
                 session_id=session_id, action="mutate_session_input", audit=False)
         except (HTTPException, LookupError, PermissionError, ValueError) as exc:
-            raise HrCreationConflict("source_execute_denied", "The original channel identity is no longer authorized.") from exc
+            raise HrCreationConflict("source_execute_denied", "当前账号关联已失效，请重新关联后重试。") from exc
         if actor.id != user_id or not actor.authority_bound:
-            _refused("source_execute_denied", "An explicitly bound active user is required for creation.")
+            _refused("source_execute_denied", "请先关联有效的本人账号，再提出创建请求。")
         principal_type, principal_id = authority.principal_type, authority.principal_id
         external_principal = await db.get(ExternalPrincipal, principal_id)
         if external_principal is None:
-            _refused("source_execute_denied", "The original channel identity is unavailable.")
+            _refused("source_execute_denied", "当前账号关联暂时无法使用，请稍后重试。")
     elif session.actor_type != "user":
-        _refused("source_execute_denied", "Creation requires the requester's original direct work.")
+        _refused("source_execute_denied", "请在自己的对话中提出创建请求。")
     metadata = run.metadata_json or {}
     raw_input = metadata.get("session_v2_input_id") or metadata.get("session_v2_rolled_over_input_id")
     try:
@@ -101,7 +101,7 @@ async def _human_request(db, *, tenant_id, user_id, agent_id, session_id, run_id
         or command.namespace != "human_input" or command.status not in {"accepted", "applied"}
         or str(command.id) != str(metadata.get("session_v2_command_id"))
     ):
-        _refused("direct_human_input_required", "Creation requires a recoverable authenticated human input.")
+        _refused("direct_human_input_required", "请直接告诉我要建什么样的助手。")
     source = (command.target_json or {}).get("runtime_metadata", {}).get("source")
     if session.source_channel == "web" and session.runtime_source == "web_chat" and source in WEB_INPUT_SOURCES:
         return row, run
@@ -119,7 +119,7 @@ async def _human_request(db, *, tenant_id, user_id, agent_id, session_id, run_id
                     and ingress.handler_key == "feishu.event"
                     and (ingress.external_principal_id == external_principal.id or ingress.status == "processing")))):
             return row, run
-    _refused("direct_human_input_required", "Relayed briefs and background work cannot authorize direct creation.")
+    _refused("direct_human_input_required", "请直接告诉我要建什么样的助手。")
 
 
 async def _approval_valid(db, evidence, *, tenant_id, agent_id, user_id, input_hash, tool_name=TOOL_NAME):
@@ -170,7 +170,7 @@ async def _require_policy(db, evidence):
     if not approved and (capability.escalate_to_l3 or not capability.allowed) and not (
         not capability.policy_found and session_grant
     ):
-        _refused("approval_required", "Scoped authorization is required before employee creation.")
+        _refused("approval_required", "创建助手需要先获得批准。")
     await require_local_write(db, evidence, approved=approved or exact_grant)
 
 
@@ -179,9 +179,9 @@ async def require_local_write(db, evidence, *, approved: bool):
                                           agent_id=uuid.UUID(evidence["source_agent_id"]), create_default=False)
     zone = policy.zone_for(ACTION_LOCAL_WRITE).value
     if not policy.valid or zone == "never_do":
-        _refused("capability_denied", "The current Owner policy denies this local write.")
+        _refused("capability_denied", "当前权限设置不允许创建助手。")
     if zone != "full_authority" and not approved:
-        _refused("approval_required", "The Owner requires confirmation of this local write.")
+        _refused("approval_required", "当前权限设置要求先批准创建助手。")
 
 
 async def validate_direct_creation(db, draft, *, check_creation_policy: bool = True):
@@ -189,14 +189,14 @@ async def validate_direct_creation(db, draft, *, check_creation_policy: bool = T
 
     evidence = direct_creation_authorization(draft)
     if evidence is None:
-        _refused("missing_confirmation_evidence", "Direct creation authorization is missing or changed.")
+        _refused("missing_confirmation_evidence", "创建请求已失效，请重新提出请求。")
     # Human-turn authority was established on admission. Recovery retains the
     # canonical job/blueprint binding instead of replaying the input proof.
     if check_creation_policy:
         try:
             await _require_policy(db, evidence)
         except SQLAlchemyError as exc:
-            raise HrCreationConflict("capability_unavailable", "Creation policy is temporarily unavailable.") from exc
+            raise HrCreationConflict("capability_unavailable", "暂时无法读取公司的创建规则，请稍后重试。") from exc
     return evidence
 
 
@@ -221,7 +221,36 @@ async def create_from_request(db, request):
     if existing is not None:
         return hr_creation_draft_payload(existing), False
     if run.status not in SESSION_TARGETABLE_RUN_STATUSES:
-        _refused("source_execute_denied", "The originating user turn has ended.")
+        _refused("source_execute_denied", "这次对话已结束，请重新提出创建请求。")
+    from app.services.delegation_input_origin import _parent_call
+    from app.services.session_model_inputs import _model_dependencies
+
+    parent = await _parent_call(db, tenant_id=tenant_id, agent_id=agent_id, session_id=session_id,
+                                run_id=run_id, call_id=context.tool_call_id, tool_name=TOOL_NAME)
+    dependencies, complete = _model_dependencies(parent[1] if parent else None)
+    command = await db.get(SessionCommand, row.command_id)
+    current_input = {"source_kind": "session_command", "source_id": str(command.id),
+                     "source_version": command.request_hash}
+    fixed_context = {
+        "agent_identity": {"identity"}, "agent_context_resource": {"soul", "channels", "a2a-collaborators"},
+        "agent_resident_memory": {"memory/self/self.md"},
+        "owner_action_policy": None, "agent_platform_skill_file": None,
+    }
+    def is_direct_input(source):
+        # Fixed native prompt snapshots are distinct from a read tool's result,
+        # which also carries its session_tool_invocation dependency.
+        if source == current_input or source["source_kind"] in {"session_actor_identity", "agent_directory_observation"}:
+            return True
+        kind, _, resource = source["source_id"].partition("\n")
+        allowed = fixed_context.get(source["source_kind"], set())
+        return (source["source_kind"] in fixed_context and kind == str(agent_id)
+                and bool(resource) and (allowed is None or resource in allowed))
+
+    if (not complete or current_input not in dependencies or any(not is_direct_input(source) for source in dependencies)
+            or parent[2] != request.arguments
+            or any(message.get("status") != "bound" for message in parent[1].model_request_snapshot_json["input_bindings"]["messages"])
+            or any(part.get("type") != "text" for part in row.content_parts_json or [])):
+        _refused("direct_human_input_required", "请直接告诉我要建什么样的助手。")
     policy = await load_owner_action_policy(db, tenant_id=tenant_id, agent_id=agent_id, create_default=False)
     evidence = {
         "schema": AUTHORIZATION_SCHEMA, "mode": "policy_direct", "package": "private_native_employee.v1",

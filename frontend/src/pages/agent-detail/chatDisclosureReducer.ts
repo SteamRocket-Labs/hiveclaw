@@ -210,6 +210,7 @@ const DEDICATED_TOOL_CARD_META_KINDS = new Set([
   'dynamic_workflow_proposal',
   'hr_creation_handoff',
   'hr_preview',
+  'employee_creation_refused',
   'plan_mode_request',
   'plan_proposal',
   'user_clarification',

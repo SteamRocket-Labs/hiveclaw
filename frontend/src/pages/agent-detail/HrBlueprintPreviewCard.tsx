@@ -157,7 +157,7 @@ export function HrBlueprintPreviewCard({ agentId, preview, onSendMessage }: HrBl
     || canonicalPreview.deferredCapabilities.length > 0
     || canonicalPreview.knowledgeDebt.length > 0;
   const durableAction = draft?.recovery?.can_retry ? 'retry' : hrCreationActionForStatus(status);
-  const firstTask = draft?.provisioning?.first_task as { status?: string; session_id?: string; error?: string } | undefined;
+  const firstTask = draft?.provisioning?.first_task as { status?: string; session_id?: string; error?: string; message?: string } | undefined;
   const work = !loadFailed && canLoad && viewerId && draft?.requested_by_user_id === viewerId ? draft.first_task_work : null;
   const question = work?.question ? normalizeToolCallResult('ask_user_question', work.question.payload).toolMeta : null;
 
@@ -244,16 +244,14 @@ export function HrBlueprintPreviewCard({ agentId, preview, onSendMessage }: HrBl
   const openEmployee = createdAgentId && durableAction !== 'retry';
 
   if (canonicalPreview.authorizationMode === 'policy_direct') {
-    const conversation = createdAgentId && (!canonicalPreview.explicitFirstTask || firstTask?.session_id
-      || firstTask?.status === 'blocked' || firstTask?.status === 'unknown')
-      ? `/agents/${createdAgentId}${firstTask?.session_id ? `?session_id=${encodeURIComponent(firstTask.session_id)}` : ''}#chat`
-      : null;
+    const conversation = createdAgentId ? `/agents/${createdAgentId}#chat` : null;
     return <article className="hr-blueprint-card">
       <header><div><h3>{canonicalPreview.name}</h3></div>
         <span className="hr-blueprint-status">{undoMutation.isSuccess ? t('agent.chat.toolResults.createdBotStopped', 'Stopped') : statusLabel}</span>
       </header>
       {canonicalPreview.mission && <p className="hr-blueprint-mission">{canonicalPreview.mission}</p>}
       {status === 'failed' && <p role="alert">{t('agent.chat.toolResults.creationFailed', 'Creation failed. Please retry.')}</p>}
+      {firstTask?.status === 'blocked' && <p role="alert">{firstTask.message || t('agent.chat.toolResults.firstTaskDenied', 'Company policy blocks this task. Restore the required permission before retrying.')}</p>}
       {undoMutation.isError && <p role="alert">{t('agent.chat.toolResults.undoCreationFailed', 'Could not undo creation. Please retry.')}</p>}
       <footer>
         {conversation && <a className="btn btn-primary" href={conversation}>{t('agent.chat.toolResults.talkToCreatedBot', 'Talk to it')}</a>}
@@ -297,8 +295,8 @@ export function HrBlueprintPreviewCard({ agentId, preview, onSendMessage }: HrBl
           {work?.progress && ['running', 'resumable', 'suspended'].includes(work.status) && (
             <div aria-live="polite"><MarkdownRenderer content={work.progress.text} /></div>
           )}
-          {firstTask?.error === 'capability_denied' && <p>{t('agent.chat.toolResults.firstTaskDenied', 'Company policy blocks this task. Restore the required permission before retrying.')}</p>}
-          {firstTask?.error === 'approval_required' && <p>{t('agent.chat.toolResults.firstTaskApproval', 'This task needs scoped authorization before retrying.')}</p>}
+          {firstTask?.error === 'capability_denied' && <p>{firstTask.message || t('agent.chat.toolResults.firstTaskDenied', 'Company policy blocks this task. Restore the required permission before retrying.')}</p>}
+          {firstTask?.error === 'approval_required' && <p>{firstTask.message || t('agent.chat.toolResults.firstTaskApproval', 'This task needs scoped authorization before retrying.')}</p>}
           {work && question?.kind === 'user_clarification' && work.question && (
             <StructuredToolResultBody key={work.question.item_id} toolName="ask_user_question" toolMeta={question}
               agentId={work.agent_id} sessionId={work.session_id} questionItemId={work.question.item_id}

@@ -45,7 +45,7 @@ function originalCard() {
 
 it('opens the first task in its own conversation for native permission controls', () => {
   const markup = originalCard();
-  expect(markup).toContain('href="/agents/employee?session_id=child-1#chat"');
+  expect(markup).toContain('href="/agents/employee#chat"');
   expect(markup).not.toContain('workspace/report.md');
   expect(markup).not.toContain('Allow once');
   expect(markup).not.toContain('Allow for this session');

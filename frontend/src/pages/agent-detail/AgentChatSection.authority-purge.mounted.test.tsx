@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
 import React from 'react';
+import { normalizeToolCallResult } from './toolResultEnvelope';
 import { useAuthStore } from '../../stores';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -250,6 +251,20 @@ function deferred<T>() {
   });
   return { promise, resolve };
 }
+
+it('shows a refused creation reason once in the member timeline without raw tool data', () => {
+  const base = props('Audit', false, 'own-session');
+  const normalized = normalizeToolCallResult('create_employee_from_request', {
+    status: 'error', error: 'capability_denied', message: '公司暂停新建助手，请联系管理员。',
+  });
+  render(<AgentChatSection {...base} agent={{ ...base.agent, access_level: 'use' }}
+    currentUser={{ id: 'operator-user' }} activeSession={{ ...base.activeSession, user_id: 'operator-user',
+      operator_view: false, read_only: false }} historyMsgs={[]} chatMessagesSessionId="own-session" chatMessages={[{ id: 'refused-create', role: 'tool_call', content: '',
+        toolName: 'create_employee_from_request', toolMeta: normalized.toolMeta,
+        toolResult: normalized.displayResult, toolRawResult: normalized.raw }]} />);
+  expect(screen.getAllByText('公司暂停新建助手，请联系管理员。')).toHaveLength(1);
+  expect(screen.queryByText(/capability_denied|create_employee_from_request|"status"/)).toBeNull();
+});
 
 const operatorThreadItem = {
   schema: 'hive.thread_item.v1',

@@ -51,7 +51,7 @@ it('replaces the blocked first-task state on the already mounted original card',
   expect(hr.get).toHaveBeenCalledWith('original-source', 'same-draft');
 });
 
-it.each([true, false])('opens the first-task conversation for questions (can answer: %s)', async (canAnswer) => {
+it.each([true, false])('opens a normal conversation with the employee (first task can answer: %s)', async (canAnswer) => {
   const draft = { status: 'preview', blueprint_id: 'same-draft', draft_status: 'completed',
     requested_by_user_id: 'owner', created_agent_id: 'created-employee', blueprint: { name: 'Research colleague' },
     creation_authorization: { mode: 'policy_direct', first_task: 'Draft a comparison' },
@@ -68,7 +68,7 @@ it.each([true, false])('opens the first-task conversation for questions (can ans
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(<QueryClientProvider client={client}><HrBlueprintPreviewCard agentId="original-source" preview={preview} /></QueryClientProvider>);
   expect((await screen.findByRole('link', { name: 'Talk to it' })).getAttribute('href'))
-    .toBe('/agents/created-employee?session_id=child-session#chat');
+    .toBe('/agents/created-employee#chat');
   expect(screen.queryByText('Which audience?')).toBeNull();
   expect(screen.queryByRole('button', { name: /Submit/ })).toBeNull();
   expect(chat.answerQuestion).not.toHaveBeenCalled();

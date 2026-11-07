@@ -1385,6 +1385,8 @@
       "saveAndReview": "Save and review responsibilities"
     },
     "configuration": {
+      "configContent": "Configuration",
+      "valuePlaceholder": "Enter a value",
       "editChannel": "Edit channel configuration",
       "channelTitle": "Configure channel for this work",
       "companyChannel": "Existing company channel",
@@ -4593,6 +4595,9 @@
     }
   },
   "handover": {
+    "hrAgentName": "HR assistant",
+    "toolsNeedCredentials": "Tools needing new credentials",
+    "enterCredentialsAgain": "The previous owner's keys were cleared. Enter your own keys before using these tools.",
     "merged": "Merged into the successor’s existing document",
     "needsAdmin": "Needs a company administrator",
     "effect": {

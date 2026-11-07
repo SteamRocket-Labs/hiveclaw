@@ -2,6 +2,7 @@
 
 import json
 
+from fastapi import HTTPException
 from sqlalchemy import String, UniqueConstraint, delete, func, or_, select, update
 
 from app.database import Base
@@ -15,10 +16,14 @@ from app.models.notification import Notification
 from app.models.runtime_task import RuntimeTask
 from app.models.session_v2 import SessionToolInvocation
 from app.models.task import Task
+from app.models.tool import AgentTool, Tool
 from app.models.trigger import AgentTrigger
 from app.models.user import User
-from app.services.personal_knowledge_service import _merge_source_refs, _merge_unique_strings
+from app.services.personal_knowledge_service import (
+    PersonalKnowledgeJobConflict, PersonalKnowledgeService, _merge_source_refs, _merge_unique_strings,
+)
 from app.services.privacy_layer import max_sensitivity
+from app.services.tool_config_service import clear_agent_tool_config_secrets
 
 
 def _knowledge_handover_entry(document, match=None):
@@ -29,6 +34,7 @@ def _knowledge_handover_entry(document, match=None):
 async def _move_knowledge(db, target_user, successor):
     models = (KnowledgeDocument, KnowledgeSegment, KnowledgeEntity, KnowledgeAssertion, KnowledgeLink, KnowledgeIndexJob)
     rows, replacements, duplicates, documents = {}, {}, {}, []
+    rebuild_ids = set()
     provenance = {model.__tablename__.removeprefix("knowledge_"): [] for model in models}
     losing_documents, deleted_segments, segment_counts = {}, {}, {}
 
@@ -101,6 +107,8 @@ async def _move_knowledge(db, target_user, successor):
                 duplicates.setdefault(model, []).append(row.id)
             if model is KnowledgeDocument and row.scope_id == target_user.id:
                 documents.append(_knowledge_handover_entry(row, match))
+                if row.status != "archived" and (not match or leaver_wins):
+                    rebuild_ids.add(match.id if match else row.id)
 
     provenance["segments"] = [{"document_id": str(document_id), "dropped_segment_count": count}
         for document_id, count in segment_counts.items()]
@@ -143,6 +151,15 @@ async def _move_knowledge(db, target_user, successor):
     await db.execute(update(PersonalKnowledgeProposal).where(PersonalKnowledgeProposal.tenant_id == target_user.tenant_id,
         PersonalKnowledgeProposal.owner_user_id == target_user.id, PersonalKnowledgeProposal.status == "pending")
         .values(owner_user_id=successor.id))
+    await db.flush()
+    service = PersonalKnowledgeService()
+    try:
+        for document_id in rebuild_ids:
+            await service.queue_rebuild_personal_document_index(db, tenant_id=target_user.tenant_id,
+                owner_user_id=successor.id, document_id=document_id, current_user_id=successor.id)
+    except PersonalKnowledgeJobConflict as exc:
+        raise HTTPException(status_code=409, detail={"code": "offboarding_knowledge_processing", "retryable": True,
+            "message": "知识仍在处理中，请一两分钟后重试。"}) from exc
     return documents, provenance
 
 
@@ -176,9 +193,27 @@ async def preview_handover(db, *, target_user, agents, successor):
 
 
 async def transfer_knowledge_and_notify(db, *, target_user, successor, agents, handover_audits):
+    from app.services.agent_tool_assignment_service import ensure_agent_tool_assignment
+
     with db.no_autoflush:
         documents, provenance = await _move_knowledge(db, target_user, successor)
     agent_ids = [agent.id for agent in agents]
+    tools_needing_credentials = []
+    assignments = (await db.execute(select(AgentTool, Tool).join(Tool, Tool.id == AgentTool.tool_id).where(
+        AgentTool.tenant_id == target_user.tenant_id, AgentTool.agent_id.in_(agent_ids))
+        .order_by(AgentTool.agent_id, Tool.name))).all()
+    agent_names = {agent.id: agent.name for agent in agents}
+    for assignment, tool in assignments:
+        def clear(stored):
+            cleared = clear_agent_tool_config_secrets(stored, tool.config_schema,
+                platform_tool=tool.type == "builtin" and tool.tenant_id is None)
+            if cleared != stored:
+                tools_needing_credentials.append({"agent_id": str(assignment.agent_id),
+                    "agent_name": agent_names[assignment.agent_id], "name": tool.display_name or tool.name})
+            return cleared
+
+        await ensure_agent_tool_assignment(db, agent_id=assignment.agent_id, tool_id=tool.id,
+            enabled=None, source=None, config=clear)
     tasks = await _offboarding_tasks(db, target_user)
     work, originals = [], {}
     for task, bot_owner in tasks:
@@ -212,6 +247,7 @@ async def transfer_knowledge_and_notify(db, *, target_user, successor, agents, h
         AgentTrigger.agent_id.in_(agent_ids), AgentTrigger.id.in_(trigger_ids)))).all()
     if agents or documents or work or triggers:
         payload = {"agents": [{"id": str(agent.id), "name": agent.name} for agent in agents], "knowledge": documents,
+            "tools_needing_credentials": tools_needing_credentials,
             "work": work, "triggers": [{"id": str(trigger.id), "agent_id": str(trigger.agent_id), "name": trigger.name}
                 for trigger in triggers]}
         db.add(Notification(user_id=successor.id, type="offboarding_handover", title="工作交接",

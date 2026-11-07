@@ -5,7 +5,7 @@ from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
-from fastapi import HTTPException
+from fastapi import BackgroundTasks, HTTPException
 
 
 class _ScalarResult:
@@ -128,6 +128,7 @@ async def test_offboarding_route_passes_preview_snapshot_to_atomic_service(monke
     db = _FakeDB([successor])
 
     result = await users_api.offboard_user(
+        background_tasks=BackgroundTasks(),
         user_id=target.id,
         data=users_api.UserOffboardingRequest(
             successor_user_id=successor.id,
@@ -195,6 +196,7 @@ async def test_offboarding_route_returns_committed_idempotent_replay(monkeypatch
 
     db = _FakeDB()
     result = await users_api.offboard_user(
+        background_tasks=BackgroundTasks(),
         user_id=target.id,
         data=users_api.UserOffboardingRequest(
             successor_user_id=successor_id,
@@ -235,6 +237,7 @@ async def test_offboarding_route_rejects_self_offboarding_before_any_effect(monk
     db = _FakeDB()
     with pytest.raises(HTTPException) as exc:
         await users_api.offboard_user(
+            background_tasks=BackgroundTasks(),
             user_id=actor.id,
             data=users_api.UserOffboardingRequest(
                 successor_user_id=uuid4(),

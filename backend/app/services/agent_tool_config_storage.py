@@ -229,20 +229,18 @@ def migrate_agent_tool_config_rows(
     if not apply:
         return {**before, "mode": "dry_run", "rewritten_rows": 0}
 
+    from app.services.agent_tool_assignment_service import _write_agent_tool_config
+    from app.models.agent import Agent
+    from sqlalchemy import select
+
     rewritten_rows = 0
-    rows = list(bind.execute(text("SELECT id, config FROM agent_tools")).mappings())
+    rows = list(bind.execute(text("SELECT agent_id, tool_id FROM agent_tools ORDER BY agent_id, tool_id")).mappings())
+    agents = {row.id: row for row in bind.execute(select(Agent.__table__.c.id)
+        .where(Agent.id.in_({row["agent_id"] for row in rows})).order_by(Agent.id).with_for_update(key_share=True))}
     for row in rows:
-        config = row["config"] or {}
-        if not config:
-            continue
-        encrypted = encrypt_agent_tool_config(config, provider=provider)
-        if encrypted == config:
-            continue
-        bind.execute(
-            text("UPDATE agent_tools SET config = CAST(:config AS json) WHERE id = :id"),
-            {"config": json.dumps(encrypted), "id": row["id"]},
-        )
-        rewritten_rows += 1
+        _assignment, _created, changed = _write_agent_tool_config(bind, agent_id=row["agent_id"],
+            tool_id=row["tool_id"], provider=provider, agent=agents.get(row["agent_id"]))
+        rewritten_rows += int(changed)
 
     after = inspect_agent_tool_config_rows(bind, current_key_id=provider.key_id)
     totals = after["totals"]

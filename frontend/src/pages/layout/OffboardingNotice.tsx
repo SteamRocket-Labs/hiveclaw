@@ -14,6 +14,7 @@ interface Handover {
   agents: Array<{ id: string; name: string }>;
   knowledge: Array<{ id: string; title: string; merged?: boolean }>;
   work: HandoverWork[]; triggers: HandoverTrigger[];
+  tools_needing_credentials?: Array<{ agent_id: string; agent_name: string; name: string }>;
 }
 
 function WorkDecision({ work, onNavigate }: { work: HandoverWork; onNavigate: () => void }) {
@@ -65,13 +66,19 @@ function WorkDecision({ work, onNavigate }: { work: HandoverWork; onNavigate: ()
 
 export default function OffboardingNotice({ body, onNavigate }: { body: string; onNavigate: () => void }) {
   const { t } = useTranslation();
+  const agentName = (name: string) => name === '__system_hr__' ? t('handover.hrAgentName') : name;
   const handover = useMemo((): Handover | null => { try { return JSON.parse(body); } catch { return null; } }, [body]);
   if (!handover) return <p role="alert">{t('handover.unavailable')}</p>;
   return <div className="offboarding-notice">
     {handover.agents.length > 0 && <><h4>{t('handover.bots')}</h4>
-    <ul>{handover.agents.map(agent => <li key={agent.id}><Link to={`/agents/${agent.id}#chat`} onClick={onNavigate}>{agent.name}</Link></li>)}</ul></>}
+    <ul>{handover.agents.map(agent => <li key={agent.id}><Link to={`/agents/${agent.id}#chat`} onClick={onNavigate}>{agentName(agent.name)}</Link></li>)}</ul></>}
     {handover.knowledge.length > 0 && <><h4>{t('handover.knowledge')}</h4>
     <ul>{handover.knowledge.map(document => <li key={document.id}>{document.title}{document.merged && ` · ${t('handover.merged')}`}</li>)}</ul></>}
+    {!!handover.tools_needing_credentials?.length && <><h4>{t('handover.toolsNeedCredentials')}</h4>
+    <p>{t('handover.enterCredentialsAgain')}</p>
+    <ul>{handover.tools_needing_credentials.map((tool, index) => <li key={index}>
+      <Link to={`/agents/${tool.agent_id}#tools`} onClick={onNavigate}>{agentName(tool.agent_name)} · {tool.name}</Link>
+    </li>)}</ul></>}
     {handover.work.length > 0 && <><h4>{t('handover.work')}</h4>
     <ul>{handover.work.map(work => <WorkDecision key={work.id} work={work} onNavigate={onNavigate} />)}</ul></>}
     {handover.triggers.length > 0 && <><h4>{t('handover.triggers')}</h4>

@@ -140,6 +140,8 @@ async def resolve_mcp_api_key(db, *, tool, tenant_id, agent_config: dict, oauth_
     if oauth_bearer:
         return oauth_bearer
     if "api_key" in agent_config:
+        if not str(agent_config["api_key"] or "").strip():
+            raise MCPStoredCredentialRequired("MCP tool needs a new employee API key; configure it before use.")
         return agent_config["api_key"]
     if not (tool.config or {}).get("api_key"):
         return None

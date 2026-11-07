@@ -526,8 +526,6 @@ async def _load_company_result_sources(db, result):
         office = approval.tool_name in FEISHU_RESULT_TOOLS
         workspace_office = approval.tool_name in {"office_document_create", "office_document_apply"}
         machine = approval.requested_by is None and approval.requested_by_external_principal_id is not None
-        if session.audience_kind != "group" and not machine and not office and not workspace_office:
-            return False
         row = await db.get(RuntimeNotificationOutbox, uuid.UUID(approval.execution_receipt["continuation_outbox_id"]))
         if (
             row is None
@@ -564,7 +562,9 @@ async def _load_company_result_sources(db, result):
             db, tenant_id=result.tenant_id, agent_id=session.agent_id, ref=f"session-tool-result:{invocation.id}"
         )
         task = await db.get(RuntimeTask, approval.execution_task_id) if approval.execution_task_id else origin
-        expected_summary = str(approval.execution_result or (task.result_summary if task else None) or "")
+        expected_summary = str(
+            approval.execution_result or (task.result_summary if task and approval.execution_task_id else None) or ""
+        )
         if payload["metadata"].get("result_semantics") == "approval_status":
             expected_summary = approval_notification_summary(
                 approval.execution_status, expected_summary, approval.execution_receipt
@@ -577,7 +577,7 @@ async def _load_company_result_sources(db, result):
             or task.parent_agent_id != session.agent_id
             or approval.execution_status
             not in {"succeeded", "failed", "needs_reapproval", "needs_reconciliation", "rejected"}
-            or payload["summary"] != expected_summary
+            or payload["summary"] != (expected_summary or f"Approval execution {approval.execution_status}.")
         ):
             raise ValueError("ticket_execution_unresolved")
         receipt_ids = set()
@@ -596,12 +596,6 @@ async def _load_company_result_sources(db, result):
         ):
             if await load_approved_feishu_result(db, approval=approval) is None:
                 raise ValueError("ticket_office_result_unverified")
-        elif (
-            session.audience_kind != "group"
-            and not machine
-            and payload["metadata"].get("result_semantics") != "approval_status"
-        ):
-            raise ValueError("ticket_office_status_unverified")
         return task, dependencies, receipt_ids
     except (ApprovalTicketError, ValueError, KeyError, TypeError, AttributeError) as exc:
         raise ContentInputReceiptError(

@@ -1385,6 +1385,8 @@
       "saveAndReview": "保存并核查职责"
     },
     "configuration": {
+      "configContent": "配置内容",
+      "valuePlaceholder": "输入配置值",
       "editChannel": "编辑渠道配置",
       "channelTitle": "为当前工作配置渠道",
       "companyChannel": "已有公司渠道",

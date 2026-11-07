@@ -1385,6 +1385,8 @@
       "saveAndReview": "Save and review responsibilities"
     },
     "configuration": {
+      "configContent": "Configuration",
+      "valuePlaceholder": "Enter a value",
       "editChannel": "Edit channel configuration",
       "channelTitle": "Configure channel for this work",
       "companyChannel": "Existing company channel",

@@ -84,7 +84,7 @@ export default function ToolConfigurationForm({ tool, onSave, onCancel, submitLa
                     autoComplete="new-password"
                     className="form-input"
                     value={data[field.key] ?? ''}
-                    placeholder={field.placeholder || 'Leave blank to use global default'}
+                    placeholder={field.placeholder || t('agent.configuration.valuePlaceholder', 'Enter a value')}
                     onChange={(event) => setData((previous) => ({ ...previous, [field.key]: event.target.value }))}
                   />
                 ) : field.type === 'select' ? (
@@ -115,7 +115,7 @@ export default function ToolConfigurationForm({ tool, onSave, onCancel, submitLa
                     disabled={saving}
                     className="form-input"
                     value={data[field.key] ?? ''}
-                    placeholder={field.placeholder || 'Leave blank to use global default'}
+                    placeholder={field.placeholder || t('agent.configuration.valuePlaceholder', 'Enter a value')}
                     onChange={(event) => setData((previous) => ({ ...previous, [field.key]: event.target.value }))}
                   />
                 )}
@@ -125,7 +125,7 @@ export default function ToolConfigurationForm({ tool, onSave, onCancel, submitLa
       </div>
     ) : (
       <div>
-        <label className="tools-manager-field-label" htmlFor={formId}>Config JSON (Agent Override)</label>
+        <label className="tools-manager-field-label" htmlFor={formId}>{t('agent.configuration.configContent', 'Configuration')}</label>
         <textarea
           disabled={saving}
           id={formId}

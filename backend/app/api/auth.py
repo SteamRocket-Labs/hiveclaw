@@ -18,20 +18,7 @@ from app.schemas.schemas import TokenResponse, UserLogin, UserOut, UserRegister,
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 
-def _email_taken_detail(existing_email_user: User | None = None) -> dict:
-    is_feishu_shadow = bool(
-        existing_email_user
-        and getattr(existing_email_user, "feishu_open_id", None)
-        and getattr(existing_email_user, "must_change_password", False)
-    )
-    if is_feishu_shadow:
-        return {
-            "code": "email_linked_to_feishu",
-            "field": "email",
-            "message": "This email was imported from Feishu. Log in with the default password 123456 and change it after signing in.",
-            "suggest_login": True,
-            "default_password_hint": True,
-        }
+def _email_taken_detail() -> dict:
     return {
         "code": "email_taken",
         "field": "email",
@@ -125,12 +112,9 @@ async def register(data: UserRegister, db: AsyncSession = Depends(get_db)):
         email_hit = await db.execute(select(User).where(User.email == data.email))
         existing_email_user = email_hit.scalar_one_or_none()
         if existing_email_user:
-            # Shadow account created by Feishu org sync: username=feishu_*,
-            # feishu_open_id set, must_change_password=True, default pw "123456".
-            # Tell the user to log in with that default and rotate it.
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
-                detail=_email_taken_detail(existing_email_user),
+                detail=_email_taken_detail(),
             )
 
         username_hit = await db.execute(select(User).where(User.username == data.username))

@@ -1378,13 +1378,11 @@ async def update_oidc_config(
     from app.services.oidc_service import discover_oidc
 
     try:
-        metadata = await discover_oidc(data.issuer_url)
-        if "authorization_endpoint" not in metadata:
-            raise HTTPException(status_code=400, detail="Invalid OIDC issuer: missing authorization_endpoint")
+        await discover_oidc(data.issuer_url)
     except httpx.HTTPError as e:
         raise HTTPException(status_code=400, detail=f"Cannot reach OIDC issuer: {e}")
-    except ValueError:
-        raise HTTPException(status_code=400, detail="OIDC discovery issuer does not match configured issuer")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     from app.models.tenant_setting import TenantSetting
 

@@ -251,7 +251,7 @@ async def classify_fast_reflection_signal_with_learning_brain(
                 source="fast_reflection_learning_brain",
                 agent_id=agent_id,
                 tenant_id=tenant_id,
-                **({"user_id": metadata["user_id"]} if metadata.get("user_id") else {}),
+                user_id=metadata.get("user_id"),
                 metadata={
                     "session_id": session_id,
                     "learning_brain_mode": "full_context_auxiliary_pass",

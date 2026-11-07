@@ -223,7 +223,7 @@ async def test_learning_brain_uses_auxiliary_floor_budget_and_audit_metadata(mon
         async def close(self):
             return None
 
-    def fake_with_context(config, *, source, agent_id, tenant_id, metadata):
+    def fake_with_context(config, *, source, agent_id, tenant_id, metadata, user_id=None):
         captured["usage_context"] = {
             "config": config,
             "source": source,

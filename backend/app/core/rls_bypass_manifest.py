@@ -845,7 +845,8 @@ def fingerprint_rls_bypass_scopes(app_root: Path) -> str:
 # Merging A4c with G3 keeps each entry from one side.
 # Merging D4 with A4c keeps each entry from one side.
 # Merging D4 with R2 and R3 accepts the exact three-way module-source merge; no bypass scope changed on both sides.
-RLS_BYPASS_SCOPES_SHA256 = "03466e121ca1c82072c4c776290d7d137ce0271a3eefb27875b5bd0af23d2826"
+# D4 round 5 removes account disclosure and validates OIDC endpoint types; bypass grants and query shapes are unchanged.
+RLS_BYPASS_SCOPES_SHA256 = "0f2f7c453780b05ba3d9bc9dbf3eb2323707c8f0189ea149d83e97d12773bd32"
 
 
 def scan_rls_bypass_callsites(app_root: Path) -> list[RLSBypassCallsite]:

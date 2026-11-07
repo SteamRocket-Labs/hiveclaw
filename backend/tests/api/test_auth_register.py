@@ -199,9 +199,11 @@ def test_register_409_prefers_email_when_both_clash():
     assert resp.json()["detail"]["field"] == "email"
 
 
-def test_register_409_feishu_shadow_points_to_default_password():
-    """Shadow account from Feishu import needs a specific hint so the user
-    knows to log in with 123456 instead of trying another email."""
+def test_register_409_feishu_shadow_matches_ordinary_email_without_account_disclosure(monkeypatch):
+    """Round 5 item 4 (security: account disclosure): hide import and password hints."""
+    from app.api.auth import get_settings
+
+    monkeypatch.setattr(get_settings(), "PUBLIC_REGISTRATION_ENABLED", True)
     shadow = _fake_user(
         email="new@example.com",
         username="feishu_ou_xxx",
@@ -214,12 +216,17 @@ def test_register_409_feishu_shadow_points_to_default_password():
     resp = client.post("/api/auth/register", json=_PAYLOAD)
 
     assert resp.status_code == 409
-    detail = resp.json()["detail"]
-    assert detail["code"] == "email_linked_to_feishu"
-    assert detail["default_password_hint"] is True
-    assert detail["suggest_login"] is True
-    # The message must surface the default password so the UI can show it verbatim
-    assert "123456" in detail["message"]
+    ordinary = _make_client(_FakeDB([1, _fake_user(email="new@example.com")])).post(
+        "/api/auth/register", json=_PAYLOAD,
+    )
+    assert ordinary.status_code == 409
+    # Round 5 item 4 (security: account disclosure) replaces the import-specific code and hint.
+    assert resp.json() == ordinary.json() == {"detail": {
+        "code": "email_taken", "field": "email", "message": "Email already registered", "suggest_login": True,
+    }}
+    # Round 5 item 4 (security: account disclosure) forbids revealing a password or account origin.
+    for forbidden in ("123456", "password", "feishu"):
+        assert forbidden not in resp.text.lower()
 
 
 def test_register_maps_email_unique_integrity_error_to_409():

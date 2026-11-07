@@ -13,7 +13,6 @@ type RegisterConflict = {
     field?: string;
     code?: string;
     suggest_login?: boolean;
-    default_password_hint?: boolean;
 };
 
 export default function Login() {
@@ -138,13 +137,7 @@ export default function Login() {
             // and offer "go log in" when the email is already taken.
             if (isRegister && err instanceof ApiError && err.status === 409) {
                 const detail = (err.data ?? {}) as RegisterConflict;
-                if (detail.code === 'email_linked_to_feishu') {
-                    setError(t(
-                        'auth.registerEmailFromFeishu',
-                        'This email was imported from Feishu. Log in with default password 123456 and change it right after.',
-                    ));
-                    setSuggestLogin(!!detail.suggest_login);
-                } else if (detail.code === 'email_taken') {
+                if (detail.code === 'email_taken') {
                     setError(t('auth.registerEmailTaken', 'This email is already registered.'));
                     setSuggestLogin(!!detail.suggest_login);
                 } else if (detail.code === 'username_taken') {

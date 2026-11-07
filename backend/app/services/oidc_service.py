@@ -40,7 +40,10 @@ async def discover_oidc(issuer_url: str) -> dict:
         metadata = resp.json()
         if metadata.get("issuer") != issuer_url:
             raise ValueError("OIDC discovery issuer does not match configured issuer")
-        authorization = urlsplit(metadata.get("authorization_endpoint") or "")
+        authorization_endpoint = metadata.get("authorization_endpoint")
+        if not isinstance(authorization_endpoint, str) or "\\" in authorization_endpoint:
+            raise ValueError("OIDC authorization endpoint must be a URL string without backslashes")
+        authorization = urlsplit(authorization_endpoint)
         if not authorization.hostname or not (authorization.scheme == "https" or (
             authorization.scheme == "http" and authorization.hostname in {"localhost", "127.0.0.1"}
         )):

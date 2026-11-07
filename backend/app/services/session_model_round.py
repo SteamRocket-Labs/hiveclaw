@@ -481,8 +481,10 @@ def _withhold_model_source(messages, wire_request, input_bindings, source, code,
         if message.get("role") == "tool":
             if message.get("tool_call_id") in active_calls:
                 pairs[i] = active_calls[message["tool_call_id"]]
-        else:
+        elif message.get("role") == "assistant":
             active_calls = {call["id"]: i for call in message.get("tool_calls") or [] if call.get("id")}
+        elif message.get("role") == "user":
+            active_calls = {}
     partial = {}
     for i, message in enumerate(wire_messages):
         calls = message.get("tool_calls") or []

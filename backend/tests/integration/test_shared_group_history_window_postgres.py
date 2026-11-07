@@ -1,4 +1,4 @@
-"""Recheck revocation across a complete history disclosure."""
+"""Recheck a complete history disclosure without repeating its shared sources."""
 
 import pytest
 
@@ -12,6 +12,7 @@ pytestmark = pytest.mark.usefixtures("migrated_pg_url")
 async def test_history_window_rechecks_revocation_across_native_protocol_groups(
     owner_sessionmaker,
     app_user_sessionmaker,
+    monkeypatch,
     group_memory,  # noqa: F811
 ):
     from fastapi import HTTPException
@@ -55,11 +56,23 @@ async def test_history_window_rechecks_revocation_across_native_protocol_groups(
         groups = {message.group_id for message in history.messages if message.id in {first_ref, second_ref}}
         assert len(groups) == 2
         messages = [message for message in history.messages if message.group_id in groups]
+        reads = []
+        original = receipts._validate_input_dependency_batch
+
+        async def observe(*args, **kwargs):
+            sources = args[2] if len(args) > 2 else kwargs["dependencies"]
+            if kwargs.get("runtime_request") is not None and not kwargs.get("active_workspace_receipts"):
+                reads.extend(row for row in sources if row == command)
+            return await original(*args, **kwargs)
+
+        monkeypatch.setattr(receipts, "_validate_input_dependency_batch", observe)
+
         async def expose():
             return await read_shared_group_history(db, session=session, messages=messages, run_id=g.runs[g.n.user])
 
         allowed, held = await expose()
         assert allowed == messages and held == []
+        first_reads = len(reads)
         async with owner_sessionmaker() as writer:
             current = await writer.get(SessionToolInvocation, first_call.id)
             result_event = current.result_event_id
@@ -72,12 +85,16 @@ async def test_history_window_rechecks_revocation_across_native_protocol_groups(
         async with owner_sessionmaker() as writer:
             (await writer.get(SessionToolInvocation, first_call.id)).result_event_id = result_event
             await writer.commit()
+        reads.clear()
         allowed, held = await expose()
         assert allowed == messages and held == []
+        restored_reads = len(reads)
         g.members.remove("memory-author")
         with pytest.raises((HTTPException, receipts.ContentInputReceiptError)) as departed:
             await expose()
         assert departed.value.status_code == 403
         g.members.add("memory-author")
+        reads.clear()
         allowed, held = await expose()
         assert allowed == messages and held == []
+        assert [first_reads, restored_reads, len(reads)] == [1, 1, 1]

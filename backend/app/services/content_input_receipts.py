@@ -3,7 +3,7 @@
 import hashlib
 import json
 import uuid
-from contextlib import contextmanager, nullcontext
+from contextlib import contextmanager
 from contextvars import ContextVar
 from pathlib import Path
 
@@ -13,6 +13,7 @@ from app.models.organization_identity import ContentInputReceipt
 from app.services.team_memory import _safe_component, _slugify
 
 _ACTIVE_GROUP_TOOL_SOURCES = ContextVar("active_group_tool_sources", default=frozenset())
+_DISCLOSURE_SOURCE_VALIDATIONS = ContextVar("disclosure_source_validations", default=None)
 _NATIVE_CLOCK_READ = ContextVar("native_clock_read", default=None)
 _NATIVE_DIRECTORY_READ = ContextVar("native_directory_read", default=None)
 
@@ -99,8 +100,23 @@ def observe_native_directory_read(tool_name, content, *, outcome):
         }
 
 
-# Preserve the existing group-reader API; every source read now revalidates.
-group_source_read = nullcontext
+class _DisclosureSourceValidations:
+    def __init__(self):
+        self.active = True
+        self.verified = {}
+
+
+@contextmanager
+def group_source_read():
+    """Reuse successful exact source checks only inside one reader disclosure."""
+    scope = _DisclosureSourceValidations()
+    token = _DISCLOSURE_SOURCE_VALIDATIONS.set(scope)
+    try:
+        yield
+    finally:
+        scope.active = False
+        scope.verified.clear()
+        _DISCLOSURE_SOURCE_VALIDATIONS.reset(token)
 
 
 class ContentInputReceiptError(ValueError):
@@ -170,8 +186,40 @@ async def _validate_input_dependencies(
         raise ContentInputReceiptError(
             "content_source_recipient_mismatch", "The source reader changed its recipient purpose.", 403
         )
+    scope = _DISCLOSURE_SOURCE_VALIDATIONS.get()
     context = {"user": user, "runtime_request": runtime_request, "active_workspace_receipts": active_workspace_receipts}
-    return await _validate_input_dependency_batch(db, tenant_id, dependencies, **context)
+    if (
+        scope is None
+        or not scope.active
+        or not isinstance(dependencies, list)
+        or any(
+            not isinstance(row, dict)
+            or set(row) != {"source_kind", "source_id", "source_version"}
+            or any(not isinstance(value, str) or not value for value in row.values())
+            for row in dependencies
+        )
+    ):
+        return await _validate_input_dependency_batch(db, tenant_id, dependencies, **context)
+    for dependency in dependencies:
+        source_key = (dependency["source_kind"], dependency["source_id"], dependency["source_version"])
+        reader_key = (
+            id(db),
+            tenant_id,
+            id(user),
+            id(runtime_request),
+            recipient,
+            active_workspace_receipts,
+            source_key,
+        )
+        if (
+            not scope.active
+            or reader_key not in scope.verified
+            or (source_key[0] == "session_tool_invocation" and source_key[1:] in _ACTIVE_GROUP_TOOL_SOURCES.get())
+        ):
+            await _validate_input_dependency_batch(db, tenant_id, [dependency], **context)
+            if scope.active:
+                # Keep identity keys bound to their objects until this disclosure ends.
+                scope.verified[reader_key] = (db, user, runtime_request)
 
 
 async def _validate_input_dependency_batch(

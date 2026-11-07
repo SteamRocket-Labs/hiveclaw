@@ -10,10 +10,11 @@ pytestmark = pytest.mark.usefixtures("migrated_pg_url")
 
 
 @pytest.mark.parametrize("entry", ["model", "history"])
-async def test_native_disclosure_rechecks_changes_and_rejects_cycles(
+async def test_native_disclosure_rechecks_changes_without_repeating_exact_sources(
     group_memory,  # noqa: F811
     owner_sessionmaker,
     app_user_sessionmaker,
+    monkeypatch,
     entry,
 ):
     from fastapi import HTTPException
@@ -46,6 +47,7 @@ async def test_native_disclosure_rechecks_changes_and_rejects_cycles(
             ref=reference,
         )
         assert complete
+        command = next(row for row in dependencies if row["source_kind"] == "session_command")
         tool = next(row for row in dependencies if row["source_kind"] == "session_tool_invocation")
         assert tool["source_id"] == str(invocation.id)
         history = await load_session_semantic_history(
@@ -58,6 +60,20 @@ async def test_native_disclosure_rechecks_changes_and_rejects_cycles(
         assert len(group_ids) == 1
         messages = [message for message in history.messages if message.group_id in group_ids]
         assert messages
+        reads, receipt_reads = [], []
+        original = receipts._validate_input_dependency_batch
+
+        async def observe(*args, **kwargs):
+            sources = args[2] if len(args) > 2 else kwargs["dependencies"]
+            if kwargs.get("runtime_request") is not None:
+                observed = (
+                    reads if kwargs.get("active_workspace_receipts", frozenset()) == frozenset() else receipt_reads
+                )
+                observed.extend(row for row in sources if row == command)
+            return await original(*args, **kwargs)
+
+        monkeypatch.setattr(receipts, "_validate_input_dependency_batch", observe)
+
         async def expose():
             if entry == "model":
                 await validate_shared_group_model_inputs(
@@ -81,6 +97,8 @@ async def test_native_disclosure_rechecks_changes_and_rejects_cycles(
 
         allowed, held = await expose()
         assert allowed == messages and held == []
+        assert receipt_reads  # An active receipt has its own source-read context.
+        first_reads = len(reads)
         async with owner_sessionmaker() as writer:
             current = await writer.get(SessionToolInvocation, invocation.id)
             result_event = current.result_event_id
@@ -97,17 +115,21 @@ async def test_native_disclosure_rechecks_changes_and_rejects_cycles(
         async with owner_sessionmaker() as writer:
             (await writer.get(SessionToolInvocation, invocation.id)).result_event_id = result_event
             await writer.commit()
+        reads.clear()
         allowed, held = await expose()
         assert allowed == messages and held == []
+        restored_reads = len(reads)
         g.members.remove("memory-author")
         with pytest.raises((HTTPException, receipts.ContentInputReceiptError)) as departed:
             await expose()
         assert departed.value.status_code == 403
         g.members.add("memory-author")
+        reads.clear()
         allowed, held = await expose()
         assert allowed == messages and held == []
+        next_reads = len(reads)
 
-        # A successful sibling cannot hide a cyclic dependency.
+        # A successful sibling cannot hide a back-edge in the same disclosure.
         principal = AgentRuntimePrincipal(
             agent_id=g.n.agent,
             requester_user_id=g.n.user,
@@ -133,3 +155,4 @@ async def test_native_disclosure_rechecks_changes_and_rejects_cycles(
                 assert cycle.value.status_code == 503
             finally:
                 receipts._ACTIVE_GROUP_TOOL_SOURCES.reset(token)
+        assert [first_reads, restored_reads, next_reads] == [1, 1, 1]

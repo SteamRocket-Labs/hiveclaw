@@ -1836,6 +1836,7 @@ async def _settle_committed_round_token_usage(
                 agent_id,
                 amount,
                 tenant_id=runtime_task.tenant_id,
+                user_id=runtime_task.root_user_id,
                 idempotency_key=row.provider_request_id,
             )
         except Exception as exc:

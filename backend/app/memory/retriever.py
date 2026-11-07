@@ -140,6 +140,7 @@ class MemoryRetriever:
             tenant_id=tenant_id,
             query=query,
             model_config=rerank_model_config,
+            user_id=_activation_current_user_id(activation_context),
         )
         # Selection can await a provider; recheck before releasing bodies to the main prompt.
         selected = await self._filter_episodic_sources(selected, agent_id=agent_id, tenant_id=tenant_id,
@@ -389,6 +390,7 @@ class MemoryRetriever:
         tenant_id: str | None,
         query: str,
         model_config: dict | None,
+        user_id: str | None = None,
     ) -> list[MemoryItem]:
         """Apply model-owned semantic selection with a ref-only failure path."""
 
@@ -420,6 +422,7 @@ class MemoryRetriever:
                 query=query,
                 model_config=model_config,
                 selection_run_id=selection_run_id,
+                user_id=user_id,
             )
             if not isinstance(selected_ids, list) or any(not isinstance(value, str) for value in selected_ids):
                 raise ValueError("memory selector selected_ids must be a string list")
@@ -513,6 +516,7 @@ class MemoryRetriever:
         query: str,
         model_config: dict,
         selection_run_id: str,
+        user_id: str | None = None,
     ) -> tuple[list[str], str]:
         from app.services.llm_client import LLMMessage, create_llm_client_from_config, with_llm_usage_context
         from app.services.semantic_input_coverage import prepare_covered_semantic_input
@@ -522,6 +526,7 @@ class MemoryRetriever:
             source="memory_semantic_selection",
             agent_id=agent_id,
             tenant_id=tenant_id,
+            user_id=user_id,
         )
         client = create_llm_client_from_config(configured)
         try:

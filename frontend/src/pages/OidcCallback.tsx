@@ -42,7 +42,7 @@ export default function OidcCallback() {
         setAuth(result.user, result.access_token);
         navigate(result.needs_company_setup ? '/setup-company' : safePostLoginRedirect(attempt.next), { replace: true });
       } catch (err) {
-        setError(err instanceof Error ? err.message : t('auth.oidc.failed'));
+        setError(err instanceof Error && err.message !== 'OIDC authentication failed' ? err.message : t('auth.oidc.failed'));
       }
     };
     void complete();

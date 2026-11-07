@@ -78,11 +78,11 @@ describe('OIDC browser attempt', () => {
     expect(sessionStorage.getItem(OIDC_ATTEMPT_KEY)).toBeNull();
   });
 
-  it('shows the backend refusal, consumes the attempt, and offers login', async () => {
+  it('translates the known backend refusal, consumes the attempt, and offers login', async () => {
     const { stored } = attempt();
     callback.mockRejectedValue(new Error('OIDC authentication failed'));
     mount(`?code=altered-token&state=${stored.state}`);
-    expect(await screen.findByRole('alert')).toHaveProperty('textContent', 'OIDC authentication failed');
+    expect(await screen.findByRole('alert')).toHaveProperty('textContent', en.auth.oidc.failed);
     expect(callback).toHaveBeenCalledTimes(1);
     expect(sessionStorage.getItem(OIDC_ATTEMPT_KEY)).toBeNull();
     expect(screen.getByRole('link', { name: 'Sign In' })).toBeTruthy();

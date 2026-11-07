@@ -158,7 +158,13 @@ export default function Login() {
             // Server-returned error messages (e.g. disabled company, invalid credentials)
             if (msg && msg !== 'Failed to fetch' && !msg.includes('NetworkError') && !msg.includes('ERR_CONNECTION')) {
                 // Translate known error messages
-                if (msg.includes('company has been disabled')) {
+                if (msg === 'Public registration is closed. Sign in with an existing account or SSO.') {
+                    setError(t('auth.registrationClosed'));
+                } else if (msg === 'A valid install token is required for the first administrator.') {
+                    setError(t('auth.installTokenRequired'));
+                } else if (msg === 'Set INSTALL_TOKEN on the server before creating the first administrator.') {
+                    setError(t('auth.installNotReady'));
+                } else if (msg.includes('company has been disabled')) {
                     setError(t('auth.companyDisabled', 'Your company has been disabled. Please contact the platform administrator.'));
                 } else if (msg.includes('Invalid credentials')) {
                     setError(t('auth.invalidCredentials', 'Invalid username or password.'));
@@ -194,7 +200,7 @@ export default function Login() {
                         >
                             {t('auth.login')}
                         </button>
-                        {registration?.registration_enabled && <button
+                        {(registration?.registration_enabled || registration?.install_token_required) && <button
                             type="button"
                             role="tab"
                             aria-selected={isRegister}
@@ -330,7 +336,7 @@ export default function Login() {
                         )}
                     </button>
 
-                    {(isRegister || registration?.registration_enabled) && <div className="login-switch">
+                    {(isRegister || registration?.registration_enabled || registration?.install_token_required) && <div className="login-switch">
                         {isRegister ? t('auth.hasAccount') : t('auth.noAccount')}{' '}
                         <a href="#" onClick={(e) => { e.preventDefault(); setIsRegister(!isRegister); setError(''); }}>
                             {isRegister ? t('auth.goLogin') : t('auth.goRegister')}

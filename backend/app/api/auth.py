@@ -96,8 +96,6 @@ async def register(data: UserRegister, db: AsyncSession = Depends(get_db)):
     or /tenants/join.
     """
     settings = get_settings()
-    if not settings.PUBLIC_REGISTRATION_ENABLED:
-        raise HTTPException(status_code=403, detail="Public registration is closed. Sign in with an existing account or SSO.")
 
     # Resolve tenant and role for first user only.
     tenant_uuid = None
@@ -138,6 +136,9 @@ async def register(data: UserRegister, db: AsyncSession = Depends(get_db)):
             await db.execute(text("SELECT pg_advisory_xact_lock(hashtextextended('hive.auth.first_admin.v1', 0))"))
             user_count = await db.execute(select(func.count()).select_from(User))
             is_first_user = user_count.scalar() == 0
+
+        if not is_first_user and not settings.PUBLIC_REGISTRATION_ENABLED:
+            raise HTTPException(status_code=403, detail="Public registration is closed. Sign in with an existing account or SSO.")
 
         if is_first_user:
             if not settings.INSTALL_TOKEN:

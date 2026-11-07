@@ -1172,6 +1172,9 @@
   },
   "auth": {
     "installToken": "Install token",
+    "registrationClosed": "Public registration is closed. Sign in with an existing account or SSO.",
+    "installTokenRequired": "A valid install token is required for the first administrator.",
+    "installNotReady": "First-administrator setup is not ready. Contact the installer.",
     "oidc": {
       "title": "Company sign-in",
       "stateMismatch": "This sign-in attempt is missing or does not match. Start again from the login page.",

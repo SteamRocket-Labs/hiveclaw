@@ -26,11 +26,13 @@ async function openWork(token) {
 }
 try {
   const reader = await openWork(fixture.readerToken);
-  await expect(page.getByText('Company approval', { exact: true })).toBeVisible({ timeout: 30000 });
-  await expect(page.getByText('Write a workspace file', { exact: true })).toBeVisible();
-  await expect(page.getByTestId('chat-inline-plan-tool-call').getByText('workspace/shared-report.md', { exact: true })).toBeVisible();
-  await expect(page.getByText('Waiting for the responsible approver.', { exact: true })).toBeVisible();
-  await expect(page.getByText('Waiting for approval', { exact: true }).first()).toBeVisible();
+  const waiting = page.getByRole('status').filter({ hasText: 'Waiting for the responsible approver.' });
+  await expect(waiting).toHaveCount(1);
+  await expect(waiting).toHaveText('Waiting for the responsible approver.');
+  await expect(waiting).toBeVisible({ timeout: 30000 });
+  await expect(page.getByText('Company approval', { exact: true })).toHaveCount(0);
+  await expect(page.getByText('Write a workspace file', { exact: true })).toHaveCount(0);
+  await expect(page.getByTestId('chat-inline-plan-tool-call').getByText('workspace/shared-report.md', { exact: true })).toHaveCount(0);
   await expect(page.getByTestId('run-disclosure-block').filter({ hasText: 'Thinking' })).toHaveCount(0);
   await expect(page.locator('[data-testid="run-disclosure-block"][data-status="running"]')).toHaveCount(0);
   await expect(page.locator('[data-testid="active-tail-status"]:not([data-phase="awaiting_approval"])')).toHaveCount(0);

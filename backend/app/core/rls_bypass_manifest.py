@@ -838,7 +838,8 @@ def fingerprint_rls_bypass_scopes(app_root: Path) -> str:
 # G2b tool settings: reviewed shared assignment lock/permission helpers and
 # sorted startup assignments; no bypass call or exception is added.
 # B6 preserves settled cancellation and unknown approval outcomes; merging B6 with main keeps each entry from one side.
-RLS_BYPASS_SCOPES_SHA256 = "37808e441356922ba3def73725ae0dc3adfc70faddba15711b68732f83d452b9"
+# D4 exposes only the global bootstrap count and checks the install token under the existing lock.
+RLS_BYPASS_SCOPES_SHA256 = "908583295166f5bbdabda20cba661a1415b515ed81dd0b857495a750fc1bc7c7"
 
 
 def scan_rls_bypass_callsites(app_root: Path) -> list[RLSBypassCallsite]:
@@ -1036,6 +1037,14 @@ RLS_BYPASS_ALLOWLIST = (
                 "select:Agent.name,Tenant.name.label('company'),agent_tokens.label('tokens')",
                 "select:Tenant.name,sqla_func.coalesce(sqla_func.sum(Agent.tokens_used_total), 0).label('tokens')",
             ),
+        )
+    ),
+    _grant(
+        *(
+            "app/api/auth.py",
+            "get_registration_config",
+            "'public registration bootstrap status'",
+            ("select:func.count()",),
         )
     ),
     _grant(

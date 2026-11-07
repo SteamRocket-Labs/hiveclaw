@@ -1,5 +1,6 @@
 """Authentication API routes."""
 
+import secrets
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -9,6 +10,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import create_access_token, get_current_user, hash_password, verify_password
+from app.config import get_settings
 from app.database import enter_rls_bypass, get_db, pin_rls_tenant_context
 from app.models.user import User
 from app.schemas.schemas import TokenResponse, UserLogin, UserOut, UserRegister, UserUpdate
@@ -75,7 +77,13 @@ async def get_registration_config(db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(SystemSetting).where(SystemSetting.key == "invitation_code_enabled"))
     setting = result.scalar_one_or_none()
     enabled = setting.value.get("enabled", False) if setting else False
-    return {"invitation_code_required": enabled}
+    async with enter_rls_bypass(db, reason="public registration bootstrap status"):
+        user_count = (await db.execute(select(func.count()).select_from(User))).scalar()
+    return {
+        "invitation_code_required": enabled,
+        "registration_enabled": get_settings().PUBLIC_REGISTRATION_ENABLED,
+        "install_token_required": user_count == 0,
+    }
 
 
 @router.post("/register", response_model=TokenResponse, status_code=status.HTTP_201_CREATED)
@@ -87,6 +95,10 @@ async def register(data: UserRegister, db: AsyncSession = Depends(get_db)):
     without a company — they must create or join one via /tenants/self-create
     or /tenants/join.
     """
+    settings = get_settings()
+    if not settings.PUBLIC_REGISTRATION_ENABLED:
+        raise HTTPException(status_code=403, detail="Public registration is closed. Sign in with an existing account or SSO.")
+
     # Resolve tenant and role for first user only.
     tenant_uuid = None
     role = "member"
@@ -128,6 +140,10 @@ async def register(data: UserRegister, db: AsyncSession = Depends(get_db)):
             is_first_user = user_count.scalar() == 0
 
         if is_first_user:
+            if not settings.INSTALL_TOKEN:
+                raise HTTPException(status_code=503, detail="Set INSTALL_TOKEN on the server before creating the first administrator.")
+            if not secrets.compare_digest((data.install_token or "").encode(), settings.INSTALL_TOKEN.encode()):
+                raise HTTPException(status_code=403, detail="A valid install token is required for the first administrator.")
             from app.models.tenant import Tenant
 
             default = await db.execute(select(Tenant).where(Tenant.slug == "default"))

@@ -220,6 +220,7 @@ async def test_valid_token_signs_in_with_verified_subject(monkeypatch, provider,
     result = response.json()
     if route == "callback":
         assert result["access_token"]
+        assert "set-cookie" not in response.headers
         assert db.committed
         audit.assert_awaited_once()
         lookup = db.statements[-1].compile().params

@@ -16,6 +16,7 @@ import { WORKSPACE_SETTINGS_SECTIONS } from './surfaces/workspace/sections';
 import AppDialogs from './components/AppDialogs';
 
 const Login = lazy(() => import('./pages/Login'));
+const OidcCallback = lazy(() => import('./pages/OidcCallback'));
 const DesignGallery = import.meta.env.DEV
     ? lazy(() => import('./pages/DesignGallery'))
     : null;
@@ -165,6 +166,7 @@ export default function App() {
                 <Routes>
                     {/* ─── Public surface ─── */}
                     <Route path="/login" element={<Login />} />
+                    <Route path="/auth/oidc/callback" element={<OidcCallback />} />
                     <Route path="/sso/entry" element={<SsoEntry />} />
                     <Route path="/setup-company" element={<CompanySetup />} />
                     {/* 设计基线验收面仅供本地开发；生产路径回到认证应用入口。 */}

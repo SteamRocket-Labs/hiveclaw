@@ -47,6 +47,7 @@ bash setup.sh --dev
 The script installs dependencies, prepares `.env`, configures the database, and seeds initial data. Run it against a development environment, not an existing production database. Review [`.env.example`](.env.example) and your generated `.env` before starting; keep secrets out of Git.
 
 Replace the `SECRET_KEY` and `JWT_SECRET_KEY` placeholders. Back up the generated `SECRETS_MASTER_KEY`: it encrypts stored provider and channel credentials.
+Set `INSTALL_TOKEN` to a private random value before starting an empty installation (for example, generate one with `openssl rand -hex 32`). The first registration requires it; after any account exists, it is ignored. Set `PUBLIC_REGISTRATION_ENABLED=false` to close public registration. Existing accounts and configured OIDC SSO, including its auto-provisioning, can still sign in. Restart the backend after changing environment values.
 
 ```bash
 bash restart.sh --source
@@ -58,7 +59,7 @@ Office document tools and their native integration tests require [OfficeCLI v1.0
 
 ### Meet your first employee
 
-1. Register an account. The first registered user becomes the platform administrator.
+1. Register an account using the install token. The first registered user becomes the platform administrator.
 2. In the admin settings, configure a model provider and make a model available. Bring your own provider credentials; model usage may incur charges.
 3. Ask **My Assistant** to create an employee, or choose **New digital employee**. Approved defaults can be used directly; review any missing configuration or authorization the work requires.
 4. Open the employee's conversation, give it a small task, and add tools or knowledge access as needed.

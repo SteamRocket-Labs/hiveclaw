@@ -1171,6 +1171,12 @@
     "deletePost": "删除帖子"
   },
   "auth": {
+    "installToken": "安装口令",
+    "oidc": {
+      "title": "公司账号登录",
+      "stateMismatch": "登录请求已失效或不匹配，请返回登录页重新开始。",
+      "failed": "公司账号登录失败，请返回登录页重新开始。"
+    },
     "login": "登录",
     "register": "注册账号",
     "username": "用户名",

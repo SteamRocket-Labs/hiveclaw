@@ -140,10 +140,11 @@ def test_register_first_user_pins_bootstrap_tenant_before_user_insert(monkeypatc
     monkeypatch.setattr("app.services.agent_seeder.seed_default_agents", noop_seed_default_agents)
     monkeypatch.setattr(auth_api, "hash_password", lambda _password: "hash")
     monkeypatch.setattr(auth_api, "create_access_token", lambda *_args, **_kwargs: "jwt-stub")
+    monkeypatch.setattr(auth_api.get_settings(), "INSTALL_TOKEN", "fixture-install-token")
     db = _FakeDB([None, None, 0, 0, None])
     client = _make_client(db)
 
-    resp = client.post("/api/auth/register", json=_PAYLOAD)
+    resp = client.post("/api/auth/register", json={**_PAYLOAD, "install_token": "fixture-install-token"})
 
     assert resp.status_code == 201
     user = next(obj for obj in db.added if obj.__class__.__name__ == "User")

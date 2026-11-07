@@ -2267,6 +2267,7 @@ function AgentChatSection({
                   sessionId={String(activeSession.id)}
                   runtimeTaskId={activeRuntimeTaskId || undefined}
                   live={sessionWorkLedgerLive}
+                  runStatus={threadTimelineModel?.header.status ?? liveRunStatus}
                   operatorView={Boolean(activeSession.operator_view)} operatorReason={operatorReason}
                 />
               )}

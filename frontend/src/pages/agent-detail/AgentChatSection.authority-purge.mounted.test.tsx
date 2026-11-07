@@ -6,10 +6,12 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import en from '../../i18n/en.json';
 import zh from '../../i18n/zh.json';
+import type { RuntimeWorkLedgerView } from '../../api/domains/autonomy';
 
 const noticeLocale = vi.hoisted(() => ({ language: 'en' }));
 
 const harness = vi.hoisted(() => ({
+  ledger: undefined as RuntimeWorkLedgerView | undefined,
   readArtifact: vi.fn(),
   downloadArtifact: vi.fn(),
   createObjectURL: vi.fn(),
@@ -40,6 +42,9 @@ vi.mock('react-i18next', () => ({
 vi.mock('@tanstack/react-query', () => ({
   useQuery: ({ queryKey, enabled }: { queryKey: unknown[]; enabled?: boolean }) => {
     if (enabled === false) return { data: undefined, isLoading: false, refetch: vi.fn() };
+    if (queryKey[0] === 'chat-session-work-ledger') {
+      return { data: harness.ledger, isLoading: false, refetch: vi.fn() };
+    }
     if (queryKey[0] === 'chat-session-workbench') {
       return {
         data: {
@@ -398,6 +403,7 @@ function downloadProps(operatorReason: string) {
 }
 
 beforeEach(() => {
+  harness.ledger = undefined;
   noticeLocale.language = 'en';
   harness.readArtifact.mockReset();
   harness.readArtifact.mockResolvedValue({ content: 'PRIVATE ARTIFACT CONTENT' });
@@ -437,6 +443,25 @@ function noticeProps() {
       is_current_user_session: true, operator_view: false },
     historyMsgs: [], chatMessagesSessionId: 'original-work' };
 }
+
+it('uses the settled transcript status for the todo after the active run clears', () => {
+  harness.ledger = {
+    schema: 'agent_work_ledger_view.v1', runtime_task_id: 'stopped-run', status: 'in_progress',
+    todo_items: [{ id: '1', title: 'Write the report', activeForm: 'Writing the report', status: 'in_progress', required: true }],
+    counts: { todos_total: 1, todos_complete: 0, todos_open: 1 },
+  };
+  render(<AgentChatSection {...noticeProps()} activeRunId={null} activeRunStatus={null} chatMessages={[
+    { id: 'input', role: 'user', content: 'Write the report', timestamp: '2026-11-07T00:00:00Z' },
+    { id: 'stopped', role: 'event', content: '', timestamp: '2026-11-07T00:00:01Z', sessionItem: {
+      id: 'stopped-run', terminal: true, revision: 1, content: '', payload: {}, actor: { type: 'runtime' },
+      visibility: { audience: 'direct_user' }, occurredAt: '2026-11-07T00:00:01Z', first_sequence: 1, last_sequence: 1,
+      kind: 'run', lifecycle: 'cancelled', scope: { level: 'run', session_id: 'original-work', thread_id: 'original-work',
+        turn_id: 'stopped-turn', run_id: 'stopped-run' },
+    } },
+  ]} />);
+  expect(screen.getByTestId('chat-work-ledger-summary').textContent).toContain('Stopped');
+  expect(screen.queryByText('Writing the report')).toBeNull();
+});
 
 it.each([
   ['en', 'Hidden key', 'The key you pasted was hidden. It will not be saved or sent to the model.'],

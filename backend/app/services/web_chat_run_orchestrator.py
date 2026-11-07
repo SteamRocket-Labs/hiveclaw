@@ -21,6 +21,7 @@ from app.kernel.contracts import (
     ToolLifecyclePersistenceError,
 )
 from app.runtime.invoker import AgentInvocationRequest
+from app.models.runtime_task import RuntimeTask
 from app.runtime.runtime_phase import RunPhaseEmitter, RuntimePhase
 from app.services.llm_client import LLMError
 from app.services.runtime_budget_failover import runtime_budget_model_notice, runtime_budget_payload
@@ -199,6 +200,7 @@ async def run_web_chat_task(
     try:
         await _run_web_chat_stages(state)
     except Exception as exc:
+        await _observe_cancel_request(state)
         await _handle_web_chat_failure(state, exc)
     finally:
         await _cleanup_web_chat_run(state)
@@ -216,6 +218,7 @@ async def _run_web_chat_stages(state: _WebChatRunState) -> None:
         return
     pending_suffix = await _prepare_pending_suffix(state)
     result = await _invoke_model(state, callbacks, pending_suffix)
+    await _observe_cancel_request(state)
     if state.provider_reconciliation is not None:
         state.terminal_phase_hint = RuntimePhase.FAILED
         await _handle_provider_reconciliation_required(state, state.provider_reconciliation)
@@ -224,6 +227,18 @@ async def _run_web_chat_stages(state: _WebChatRunState) -> None:
         return
     await callbacks.flush()
     await _finalize_invocation_result(state, result)
+
+
+async def _observe_cancel_request(state: _WebChatRunState) -> None:
+    if state.cancel_event.is_set() or state.agent is None:
+        return
+    async with state.ports.runtime.tenant_scoped_session(state.agent.tenant_id) as db:
+        metadata = await db.scalar(select(RuntimeTask.metadata_json).where(
+            RuntimeTask.id == state.run_uuid, RuntimeTask.tenant_id == state.agent.tenant_id,
+        ))
+    # The durable user request can precede its advisory cross-process signal.
+    if (metadata or {}).get("cancel_state") in {"cancelling", "cancelled"}:
+        state.cancel_event.set()
 
 
 async def _load_web_chat_context(state: _WebChatRunState) -> None:
@@ -1432,6 +1447,9 @@ async def _commit_session_model_response(state: _WebChatRunState, **payload: Any
 async def _fail_session_model_request(state: _WebChatRunState, **payload: Any) -> None:
     from app.services.session_model_round import fail_model_request
 
+    await _observe_cancel_request(state)
+    if state.cancel_event.is_set():
+        payload = {**payload, "error_class": "cancelled", "retry_safe": False}
     async with state.ports.runtime.tenant_scoped_session(state.agent.tenant_id) as db:
         result_state = await fail_model_request(
             db,
@@ -1944,15 +1962,16 @@ async def _handle_tool_lifecycle_persistence_failure(
 async def _handle_web_chat_failure(state: _WebChatRunState, exc: Exception) -> None:
     state.ports.runtime.logger.exception("[WebChatRun] Run {} failed", state.run_uuid.hex)
     provider_reconciliation = getattr(state, "provider_reconciliation", None)
+    cancelled = state.cancel_event.is_set()
+    if cancelled and provider_reconciliation is None:
+        state.terminal_phase_hint = RuntimePhase.CANCELLED
+        await _handle_cancelled_failure(state)
+        return
     if provider_reconciliation is not None or isinstance(exc, ProviderRequestNeedsReconciliation):
         state.terminal_phase_hint = RuntimePhase.FAILED
         await _handle_provider_reconciliation_required(state, provider_reconciliation or exc)
         return
-    cancelled = state.cancel_event.is_set()
-    state.terminal_phase_hint = RuntimePhase.CANCELLED if cancelled else RuntimePhase.FAILED
-    if cancelled:
-        await _handle_cancelled_failure(state)
-        return
+    state.terminal_phase_hint = RuntimePhase.FAILED
     if isinstance(exc, ToolLifecyclePersistenceError):
         await _handle_tool_lifecycle_persistence_failure(state, exc)
         return
@@ -2163,7 +2182,7 @@ async def _handle_cancelled_failure(state: _WebChatRunState) -> None:
         state.run_uuid,
         status="killed",
         result_summary="Generation stopped by user.",
-        metadata_json={"cancelled_by_user": True},
+        metadata_json={"cancelled_by_user": True, "terminal_reason": TerminalReason.USER_CANCEL.value},
     )
     if state.agent is None or not state.session_id:
         return

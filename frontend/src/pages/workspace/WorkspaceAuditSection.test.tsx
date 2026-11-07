@@ -39,3 +39,32 @@ it('finds company offboarding and role changes and describes who, what, when and
   expect(screen.getByText('Role changed')).toBeTruthy();
   expect(mocks.logs).toHaveBeenCalledWith('limit=200&tenant_id=company');
 });
+
+it('names the digital employee and existing handover and deactivation actions without internal payloads', async () => {
+  mocks.users.mockResolvedValue([{ id: 'admin', display_name: 'Company admin' }]);
+  const actions = ['agent:handover', 'agent:retirement_requested', 'agent:retirement_tracking_ended', 'agent:retirement_work_withdrawal'];
+  mocks.logs.mockResolvedValue(actions.map((action) => ({ id: action, user_id: 'admin', agent_id: 'bot', agent_name: 'Research assistant', action,
+    created_at: '2026-11-06T12:00:00Z', details: { probe_id: 'probe-private', schema: 'private-schema' } })));
+  const { container } = render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+    <WorkspaceAuditSection selectedTenantId="company" />
+  </QueryClientProvider>);
+  await screen.findByText('Digital employee owner changed');
+  expect(screen.getByText('Digital employee deactivated')).toBeTruthy();
+  expect(screen.getByText('Digital employee task tracking ended')).toBeTruthy();
+  expect(screen.getByText('Digital employee work withdrawn')).toBeTruthy();
+  expect(screen.getAllByText('Research assistant')).toHaveLength(4);
+  expect(container.textContent).not.toMatch(/agent:|probe_id|probe-private|schema/);
+});
+
+it('describes a member already inactive without claiming a new completed handover', async () => {
+  mocks.users.mockResolvedValue([{ id: 'leaver', display_name: 'Former member' },
+    { id: 'receiver', display_name: 'Receiving member' }]);
+  mocks.logs.mockResolvedValue([{ id: 'inactive', action: 'user:offboarded', created_at: '2026-11-06T12:00:00Z',
+    details: { target_user_id: 'leaver', successor_user_id: 'receiver', already_inactive: true } }]);
+  const { container } = render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+    <WorkspaceAuditSection selectedTenantId="company" />
+  </QueryClientProvider>);
+  await screen.findByText('Already inactive');
+  expect(container.textContent).toContain('Former member was already inactive before this offboarding.');
+  expect(container.textContent).not.toMatch(/Completed|handed to|already_inactive/);
+});

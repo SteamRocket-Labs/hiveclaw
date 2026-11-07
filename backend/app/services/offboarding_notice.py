@@ -171,7 +171,7 @@ async def preview_handover(db, *, target_user, agents, successor):
             if task.agent_id in agent_ids or owner is None or (successor and owner == successor.id)],
         "triggers": [{"id": str(trigger.id), "name": trigger.name} for trigger in triggers
             if trigger_owner_user_id(trigger) == target_user.id
-            and (trigger.config or {}).get("authority_state") != "quarantined"],
+            and str((trigger.config or {}).get("authority_state") or "").strip().lower() != "quarantined"],
     }
 
 

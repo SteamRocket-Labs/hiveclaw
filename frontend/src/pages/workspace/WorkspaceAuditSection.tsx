@@ -35,6 +35,10 @@ export default function WorkspaceAuditSection({ selectedTenantId }: WorkspaceAud
   const actionLabels: Record<string, string> = {
     'user:offboarded': t('enterprise.audit.offboarded', 'Member offboarded'),
     'user:role_changed': t('enterprise.audit.roleChanged', 'Role changed'),
+    'agent:handover': t('enterprise.audit.agentHandover', 'Digital employee owner changed'),
+    'agent:retirement_requested': t('enterprise.audit.agentDeactivated', 'Digital employee deactivated'),
+    'agent:retirement_tracking_ended': t('enterprise.audit.agentTrackingEnded', 'Digital employee task tracking ended'),
+    'agent:retirement_work_withdrawal': t('enterprise.audit.agentWorkWithdrawn', 'Digital employee work withdrawn'),
     schedule_tick: t('enterprise.audit.scheduleCheck', 'Scheduled task check'),
     schedule_fire: t('enterprise.audit.scheduleRun', 'Scheduled task run'),
     schedule_error: t('enterprise.audit.scheduleError', 'Scheduled task failed'),
@@ -65,16 +69,19 @@ export default function WorkspaceAuditSection({ selectedTenantId }: WorkspaceAud
       {filteredAuditLogs.map((log) => {
         const details = log.details || {};
         const management = log.action === 'user:offboarded' || log.action === 'user:role_changed';
+        const alreadyInactive = log.action === 'user:offboarded' && details.already_inactive === true;
         const failed = details.success === false || ['failed', 'error', 'denied'].includes(details.status) || log.action.endsWith('_error');
         const completed = management || details.success === true || ['completed', 'succeeded', 'success'].includes(details.status);
         return <article key={log.id} style={{ padding: 12, borderBottom: '1px solid var(--border-subtle)' }}>
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12, alignItems: 'center' }}>
             <time dateTime={log.created_at} style={{ color: 'var(--text-tertiary)', fontSize: 12 }}>{new Date(log.created_at).toLocaleString()}</time>
             <strong>{actionLabels[log.action] || t('enterprise.audit.activity', 'Activity recorded')}</strong>
-            <span>{failed ? t('enterprise.audit.failed', 'Failed') : completed ? t('enterprise.audit.completed', 'Completed') : t('enterprise.audit.recorded', 'Recorded')}</span>
+            <span>{alreadyInactive ? t('enterprise.audit.alreadyInactive', 'Already inactive') : failed ? t('enterprise.audit.failed', 'Failed') : completed ? t('enterprise.audit.completed', 'Completed') : t('enterprise.audit.recorded', 'Recorded')}</span>
           </div>
           <p>{t('enterprise.audit.actor', 'By {{name}}', { name: userName(log.user_id) })}</p>
-          {log.action === 'user:offboarded' && <p>{t('enterprise.audit.offboardingResult', '{{member}} left; company work handed to {{successor}}.',
+          {log.agent_id && <p>{log.agent_name || t('enterprise.audit.unknownEmployee', 'Unknown digital employee')}</p>}
+          {log.action === 'user:offboarded' && <p>{alreadyInactive ? t('enterprise.audit.alreadyInactiveResult', '{{member}} was already inactive before this offboarding.',
+            { member: userName(details.target_user_id) }) : t('enterprise.audit.offboardingResult', '{{member}} left; company work handed to {{successor}}.',
             { member: userName(details.target_user_id), successor: userName(details.successor_user_id) })}</p>}
           {log.action === 'user:role_changed' && <p>{userName(details.target_user_id)} · {roleName(details.from_role)} → {roleName(details.to_role)}</p>}
           {!management && <p>{[details.provider, details.model].filter((value) => typeof value === 'string').join(' · ')}</p>}

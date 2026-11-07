@@ -52,6 +52,7 @@ async def test_offboarding_preview_exposes_agents_successors_and_revocation_impa
                 {"id": str(successor_id), "display_name": "Admin", "email": "admin@example.com", "role": "org_admin"}
             ],
             default_successor_id=successor_id,
+            blockers=[],
             agent_permissions=2,
             resource_permissions=1,
             knowledge_grants=3,

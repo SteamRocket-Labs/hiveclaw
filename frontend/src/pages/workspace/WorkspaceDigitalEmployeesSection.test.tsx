@@ -104,7 +104,9 @@ vi.mock('@tanstack/react-query', () => ({
       };
     }
     if (String(queryKey[0]) === 'agent-permissions') {
-      return { data: { scope_type: 'company', scope_names: [] } };
+      return { data: queryKey[1] === 'inactive-employee'
+        ? { scope_type: 'user', scope_names: [{ id: 'allowed-member', name: 'Authorized analyst' }] }
+        : { scope_type: 'company', scope_names: [] } };
     }
     if (String(queryKey[0]) === 'agent-retirement-pending') {
       return {
@@ -178,6 +180,9 @@ describe('WorkspaceDigitalEmployeesSection', () => {
     expect(inactive).toContain('Agent Owner');
     expect(inactive).toContain('Deactivated');
     expect(inactive).toContain('Restore');
+    expect(inactive).toContain('Owner and company administrators');
+    expect(inactive).toContain('Authorized analyst');
+    expect(inactive).not.toContain('Everyone in the company');
   });
 
   it('offers retry deactivation only for deactivated rows with unconfirmed outward work, and links to the employee page', () => {

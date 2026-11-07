@@ -26,7 +26,11 @@ vi.mock('../api/domains/users', () => ({ usersApi: {
       external_principals: 0, local_bridge_connections: 0, runtime_tasks: 0, pending_approvals: 0 }, blockers: [] }),
   offboard: vi.fn(),
 } }));
-afterEach(() => { cleanup(); vi.clearAllMocks(); });
+const defaultPreview = vi.mocked(usersApi.previewOffboarding).getMockImplementation();
+afterEach(() => {
+  cleanup(); vi.clearAllMocks();
+  vi.mocked(usersApi.previewOffboarding).mockReset().mockImplementation(defaultPreview!);
+});
 
 it('shows processing as retryable and keeps the same offboarding form for retry', async () => {
   const message = '知识仍在处理中，请一两分钟后重试。';
@@ -69,11 +73,52 @@ it('refreshes the handover list for the chosen receiving member before submittin
   await screen.findByText('Original copy');
   fireEvent.change(screen.getByLabelText('userManagement.successorAdmin'), { target: { value: 'receiver' } });
   await screen.findByText('Receiver copy');
+  expect(screen.getByText(/handover.merged/)).toBeTruthy();
   expect(screen.queryByText('Original copy')).toBeNull();
   expect(usersApi.previewOffboarding).toHaveBeenLastCalledWith('leaver', undefined, 'receiver');
   fireEvent.change(screen.getByLabelText('userManagement.offboardingReason'), { target: { value: 'Employment ended' } });
   fireEvent.click(screen.getByRole('button', { name: 'userManagement.confirmDeactivate' }));
   await waitFor(() => expect(usersApi.offboard).toHaveBeenCalledWith('leaver', expect.objectContaining({ successor_user_id: 'receiver' }), undefined));
+});
+
+it('loads the initially shown receiver when the preview has no default receiver', async () => {
+  const preview = { owned_agents: [{ id: 'bot', name: 'Company bot' }],
+    eligible_successors: [{ id: 'receiver', display_name: 'Receiver' }], default_successor_id: null, blockers: [],
+    revocations: { agent_permissions: 0, resource_permissions: 0, knowledge_grants: 0, refresh_tokens: 0,
+      external_principals: 0, local_bridge_connections: 0, runtime_tasks: 0, pending_approvals: 0 },
+    handover: { knowledge: [{ id: 'source', title: 'Unassigned copy' }], work: [], triggers: [] } };
+  let finish: (value: any) => void = () => {};
+  vi.mocked(usersApi.previewOffboarding).mockResolvedValueOnce(preview as any)
+    .mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+  render(<UserManagement />);
+  fireEvent.click(await screen.findByRole('button', { name: 'userManagement.deactivateMember' }));
+  await waitFor(() => expect(usersApi.previewOffboarding).toHaveBeenCalledWith('leaver', undefined, 'receiver'));
+  expect(screen.queryByText('Unassigned copy')).toBeNull();
+  finish({ ...preview, handover: { ...preview.handover, knowledge: [{ id: 'existing', title: 'Receiver copy' }] } });
+  await screen.findByText('Receiver copy');
+  expect((screen.getByLabelText('userManagement.successorAdmin') as HTMLSelectElement).value).toBe('receiver');
+});
+
+it('clearing the receiver hides the previous handover list without requesting a default receiver', async () => {
+  render(<UserManagement />);
+  fireEvent.click(await screen.findByRole('button', { name: 'userManagement.deactivateMember' }));
+  await screen.findByText('Company guide');
+  fireEvent.change(screen.getByLabelText('userManagement.successorAdmin'), { target: { value: '' } });
+  await waitFor(() => expect((screen.getByLabelText('userManagement.successorAdmin') as HTMLSelectElement).value).toBe(''));
+  expect(screen.queryByText('Company guide')).toBeNull();
+  expect(screen.queryByText('Pending report')).toBeNull();
+  expect(screen.queryByText('Daily report')).toBeNull();
+  expect(usersApi.previewOffboarding).toHaveBeenCalledTimes(1);
+  expect(screen.getByRole('button', { name: 'userManagement.confirmDeactivate' }).hasAttribute('disabled')).toBe(true);
+});
+
+it('uses digital employee and responsible person terms in Chinese management copy', async () => {
+  const zh = (await import('../i18n/zh.json')).default;
+  expect(zh.workspace.digitalEmployees).toMatchObject({ changeOwnerTitle: '更换数字员工负责人', newOwner: '新负责人' });
+  for (const copy of [zh.userManagement.offboardingComplete, zh.userManagement.offboardingSummary,
+    zh.userManagement.offboardingRecovery, ...Object.values(zh.workspace.digitalEmployees)]) {
+    expect(copy).not.toMatch(/Agent|Owner|Creator|Sponsor/);
+  }
 });
 
 it('labels the existing handover action as offboarding rather than deletion', async () => {

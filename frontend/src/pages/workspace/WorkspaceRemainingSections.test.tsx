@@ -76,6 +76,7 @@ vi.mock('@tanstack/react-query', () => ({
             action: 'schedule_tick',
             created_at: '2026-03-27T09:00:00Z',
             agent_id: 'agent-12345678',
+            agent_name: 'Schedule assistant',
             details: {
               status: 'completed',
               job_id: 'job-private',
@@ -196,6 +197,7 @@ describe('Workspace remaining sections', () => {
     expect(approvalsMarkup).not.toContain('secret-token');
     expect(approvalsMarkup).not.toContain('execution_envelope');
     expect(auditMarkup).toContain('Scheduled task check');
+    expect(auditMarkup).toContain('Schedule assistant');
     expect(auditMarkup).toContain('Model test');
     expect(auditMarkup).toContain('glm-5.3');
     expect(auditMarkup).toContain('Completed');

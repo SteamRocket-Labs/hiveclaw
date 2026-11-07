@@ -155,7 +155,12 @@ export default function UserManagement() {
         try {
             const preview = await usersApi.previewOffboarding(user.id, selectedTenantId() || undefined);
             setOffboardingPreview(preview);
-            setSuccessorUserId(preview.default_successor_id || preview.eligible_successors[0]?.id || '');
+            const successorId = preview.default_successor_id || preview.eligible_successors[0]?.id || '';
+            if (successorId && successorId !== preview.default_successor_id) {
+                await changeOffboardingSuccessor(successorId, user);
+            } else {
+                setSuccessorUserId(successorId);
+            }
         } catch (error: any) {
             setOffboardingTarget(null);
             notify(error?.message || t('userManagement.offboardingPreviewFailed', 'Failed to load offboarding impact.'), true);
@@ -186,7 +191,7 @@ export default function UserManagement() {
             );
             notify(t(
                 'userManagement.offboardingComplete',
-                'Member deactivated and {{count}} Agent(s) transferred.',
+                'Member deactivated and {{count}} digital employee(s) transferred.',
                 { count: receipt.transferred_agent_count },
             ));
             setOffboardingTarget(null);
@@ -202,11 +207,15 @@ export default function UserManagement() {
         }
     };
 
-    const changeOffboardingSuccessor = async (id: string) => {
-        if (!offboardingTarget) return;
+    const changeOffboardingSuccessor = async (id: string, target = offboardingTarget) => {
+        if (!target) return;
+        if (!id) {
+            setSuccessorUserId('');
+            return;
+        }
         setOffboardingLoading(true);
         try {
-            const preview = await usersApi.previewOffboarding(offboardingTarget.id, selectedTenantId() || undefined, id);
+            const preview = await usersApi.previewOffboarding(target.id, selectedTenantId() || undefined, id);
             setOffboardingPreview(preview);
             setSuccessorUserId(id);
         } catch (error: any) {
@@ -473,7 +482,7 @@ export default function UserManagement() {
                         <p className="user-mgmt-offboard-summary">
                             {t(
                                 'userManagement.offboardingSummary',
-                                '{{name}} will be unable to sign in. {{count}} Agent(s) will move to the selected member.',
+                                '{{name}} will be unable to sign in. {{count}} digital employee(s) will move to the selected member.',
                                 { name: offboardingTarget?.display_name || offboardingTarget?.username, count: offboardingPreview.owned_agents.length },
                             )}
                         </p>
@@ -484,16 +493,17 @@ export default function UserManagement() {
                                 ))}
                             </div>
                         )}
-                        <div className="user-mgmt-offboard-impact">
+                        {successorUserId && <div className="user-mgmt-offboard-impact">
                             {([
-                                ['knowledge', t('userManagement.handoverKnowledge', 'Uploaded knowledge'), offboardingPreview.handover.knowledge.map((item) => item.title)],
+                                ['knowledge', t('userManagement.handoverKnowledge', 'Uploaded knowledge'), offboardingPreview.handover.knowledge.map((item) =>
+                                    item.merged ? <><span>{item.title}</span> · <small>{t('handover.merged', 'Merged into the successor’s existing document')}</small></> : item.title)],
                                 ['work', t('userManagement.handoverWork', 'Unfinished work'), offboardingPreview.handover.work.map((item) => item.title)],
                                 ['triggers', t('userManagement.handoverSchedules', 'Schedules to review before resuming'), offboardingPreview.handover.triggers.map((item) => item.name)],
                             ] as const).map(([key, label, names]) => <div key={key}>
                                 <strong>{names.length}</strong><span>{label}</span>
                                 <ul>{names.map((name, index) => <li key={index}>{name}</li>)}</ul>
                             </div>)}
-                        </div>
+                        </div>}
                         <p>{t('userManagement.handoverCredentials', 'Personal connections and tool keys are revoked and are not passed to the receiving member.')}</p>
                         <div className="user-mgmt-offboard-impact">
                             <div><strong>{offboardingPreview.revocations.agent_permissions + offboardingPreview.revocations.resource_permissions}</strong><span>{t('userManagement.directPermissions', 'direct permissions')}</span></div>

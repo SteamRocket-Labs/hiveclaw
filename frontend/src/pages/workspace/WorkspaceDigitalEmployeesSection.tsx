@@ -369,7 +369,7 @@ export default function WorkspaceDigitalEmployeesSection({ selectedTenantId }: W
                 onClose={() => {
                     if (!transferOwnerMutation.isPending) setOwnershipAgent(null);
                 }}
-                title={t('workspace.digitalEmployees.changeOwnerTitle', 'Change Agent owner')}
+                title={t('workspace.digitalEmployees.changeOwnerTitle', 'Change digital employee owner')}
                 width={520}
                 footer={(
                     <>

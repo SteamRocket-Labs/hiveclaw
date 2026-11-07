@@ -20,3 +20,10 @@ def test_other_audit_events_do_not_gain_access_to_management_person_fields():
     log = AuditLogSummaryOut(id=uuid4(), action="another_action", created_at=datetime.now(timezone.utc),
         details={"target_user_id": str(uuid4()), "from_role": "member", "status": "completed"})
     assert log.details == {"status": "completed"}
+
+
+@pytest.mark.parametrize("already_inactive", [True, False])
+def test_offboarding_audit_preserves_the_actual_inactive_outcome(already_inactive):
+    log = AuditLogSummaryOut(id=uuid4(), action="user:offboarded", created_at=datetime.now(timezone.utc),
+        details={"already_inactive": already_inactive, "probe_id": "private-probe", "schema": "private"})
+    assert log.details == {"already_inactive": already_inactive, "probe_id": "private-probe"}

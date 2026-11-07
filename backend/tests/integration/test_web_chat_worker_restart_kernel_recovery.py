@@ -424,6 +424,9 @@ async def _run_turn(
     state = SimpleNamespace(
         agent=SimpleNamespace(id=seed["agent_id"], tenant_id=seed["tenant_id"]),
         user=SimpleNamespace(id=seed["user_id"], machine_credential_id=None),
+        # The real run state sets actor_user_id from the human user (_WebChatRunState);
+        # D3's saved-file context reads it on every round.
+        actor_user_id=seed["user_id"],
         session_id=str(seed["session_id"]),
         run_uuid=seed["run_id"],
         metadata=metadata,

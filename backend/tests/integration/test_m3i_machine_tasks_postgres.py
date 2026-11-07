@@ -1185,7 +1185,8 @@ async def test_machine_company_approval_executes_once_and_returns_to_original_ta
         if revoke_at == "after_effect":
             service = RuntimeNotificationOutboxService(session_factory=app_user_sessionmaker)
             claimed = await service.claim_batch(worker_id="revoked-machine-return", limit=100)
-            pages = await service.prepare_integration_pages(worker_id="revoked-machine-return", claimed=claimed)
+            pages = await service.prepare_integration_pages(worker_id="revoked-machine-return",
+                claimed=[row for row in claimed if row.tenant_id == seed["tenant"]])
             assert len(pages) == 1
             from fastapi import HTTPException
 
@@ -1224,7 +1225,8 @@ async def test_machine_company_approval_executes_once_and_returns_to_original_ta
         )
     service = RuntimeNotificationOutboxService(session_factory=app_user_sessionmaker)
     claimed = await service.claim_batch(worker_id="machine-approval-return", limit=100)
-    pages = await service.prepare_integration_pages(worker_id="machine-approval-return", claimed=claimed)
+    pages = await service.prepare_integration_pages(worker_id="machine-approval-return",
+        claimed=[row for row in claimed if row.tenant_id == seed["tenant"]])
     assert len(pages) == 1 and pages[0].parent_user_id is None
     receipt = await service._deliver_page(pages[0])
     assert receipt.get("ok") is True, receipt

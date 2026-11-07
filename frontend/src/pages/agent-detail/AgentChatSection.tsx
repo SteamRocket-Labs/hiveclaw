@@ -22,7 +22,7 @@ import MarkdownRenderer from '../../components/MarkdownRenderer';
 import AuthenticatedImage from '../../components/AuthenticatedImage';
 import ThinkingDisclosure from './ThinkingDisclosure';
 import type { AgentPermissions } from '../../api/domains/agents';
-import { useAssistantAgentId } from '../assistant/assistantScope';
+import { assistantNameForDisplay, useAssistantAgentId } from '../assistant/assistantScope';
 import AskUserQuestionCard from './AskUserQuestionCard';
 import PlanModeRequestCard from './PlanModeRequestCard';
 import CopyMessageButton from './CopyMessageButton';
@@ -831,6 +831,7 @@ const ChatMessageItem = React.memo(function ChatMessageItem({
   collapseAssistantContent = false,
   viewerUserId,
 }: ChatMessageItemProps) {
+  const senderName = assistantNameForDisplay(msg.sender_name || '', t('assistant.title', 'My Assistant'));
   const extension = msg.fileName?.split('.').pop()?.toLowerCase() ?? '';
   const fileIcon =
     extension === 'pdf'
@@ -886,12 +887,12 @@ const ChatMessageItem = React.memo(function ChatMessageItem({
       className={`session-tui-render-cell session-tui-message-row ${isLeft ? 'session-tui-message-row-assistant' : 'session-tui-message-row-user'}`}
     >
       <div className="session-tui-message-avatar">
-        {isLeft ? (msg.sender_name ? msg.sender_name[0] : 'A') : 'U'}
+        {isLeft ? (senderName ? senderName[0] : 'A') : 'U'}
       </div>
       <div className="session-tui-message-bubble">
         {isLeft && msg.sender_name && (
           <div className="session-tui-message-sender">
-            {msg.sender_name}
+            {senderName}
           </div>
         )}
         {isImage ? (
@@ -1178,7 +1179,7 @@ function AgentChatSection({
     : '';
   const agentDisplayName = (agent as any)?.agent_class === 'internal_system' || agent?.name === '__system_hr__'
     ? t('agentCreate.hrAgentName', 'HR Agent')
-    : effectiveAgentId === assistantAgentId ? t('assistant.title') : agent?.name || '';
+    : effectiveAgentId === assistantAgentId ? t('assistant.title') : assistantNameForDisplay(agent?.name || '', t('assistant.title', 'My Assistant'));
   const permissionModeLabel = getSessionPermissionModeLabel(sessionPermissionMode, t);
   const permissionModeVisible = sessionPermissionModeVisible(agent, sessionPermissionMode, planModeRequested, goalModeRequested);
   const projectContextAvailable = !operatorView && !isDraftSession && activeSession?.audience_kind !== 'group' && Boolean(currentUser?.id && activeSessionId);
@@ -2002,7 +2003,7 @@ function AgentChatSection({
                         className="detail-session-row-main"
                         onClick={() => onSelectSession(session)}
                       >
-                        <span className="detail-session-row-title">{sessionTitleForUser(session, t('agent.chat.session', 'Session'))}</span>
+                        <span className="detail-session-row-title">{sessionTitleForUser(session, t('agent.chat.session', 'Session'), t('agent.chat.delegation', 'Delegation'), t('assistant.title', 'My Assistant'))}</span>
                         <span className="detail-session-row-meta">
                           {(session.username || sourceLabel) ? `${session.username || sourceLabel} · ` : ''}
                           {formatDetailSessionTime(session)}
@@ -2013,7 +2014,7 @@ function AgentChatSection({
                         <button
                           type="button"
                           className="detail-session-row-action"
-                          aria-label={t('chat.removeNamedSession', 'Remove conversation from list: {{name}}', { name: sessionTitleForUser(session, t('agent.chat.session', 'Session')) })}
+                          aria-label={t('chat.removeNamedSession', 'Remove conversation from list: {{name}}', { name: sessionTitleForUser(session, t('agent.chat.session', 'Session'), t('agent.chat.delegation', 'Delegation'), t('assistant.title', 'My Assistant')) })}
                           title={t('chat.removeSession', 'Remove from list')}
                           onClick={() => onDeleteSession(String(session.id))}
                         >
@@ -2030,7 +2031,7 @@ function AgentChatSection({
       <div className="session-tui-center">
         {operatorReadEnabled && (
           <SessionWorkbenchHeader
-            model={{ ...threadTimelineModel.header, title: sessionTitleForUser(activeSession, threadTimelineModel.header.title, t('agent.chat.delegation', 'Delegation')) }}
+            model={{ ...threadTimelineModel.header, title: sessionTitleForUser(activeSession, threadTimelineModel.header.title, t('agent.chat.delegation', 'Delegation'), t('assistant.title', 'My Assistant')) }}
             history={effectiveAgentId && agent?.access_level !== 'operator' ? {
               // 历史 (B3): the bot's own conversations live behind one header
               // entry; the app sidebar no longer lists sessions. The merged
@@ -2043,6 +2044,8 @@ function AgentChatSection({
                 ? { ...session, status: threadTimelineModel.header.status === 'idle' ? null : threadTimelineModel.header.status } : session),
               loading: sessionsLoading,
               activeSessionId: activeSession?.id ? String(activeSession.id) : null,
+              currentUserId: currentUser?.id ? String(currentUser.id) : null,
+              onRemoveSession: isAdmin ? undefined : onDeleteSession,
               // 设置 (B5): the one management entry, for people who can already manage this bot.
               manageHref: (agent as any)?.action_capabilities?.can_manage === true
                 ? `/agents/${effectiveAgentId}?manage=true#status`
@@ -2100,7 +2103,7 @@ function AgentChatSection({
                       display: 'inline-block',
                     }}
                   >
-                    {isA2ASession(activeSession as any) ? `🤖 ${t('agent.chat.delegatedConversation', 'Delegated conversation')} · ${sessionTitleForUser({ ...activeSession, title: activeSession.username || activeSession.title }, t('agent.chat.session', 'Session'), t('agent.chat.delegation', 'Delegation'))}` : t('agent.chat.readOnlyConversation', 'Read-only · {{name}}', { name: activeSession.username || t('common.user', 'User') })}
+                    {isA2ASession(activeSession as any) ? `🤖 ${t('agent.chat.delegatedConversation', 'Delegated conversation')} · ${sessionTitleForUser(activeSession, t('agent.chat.session', 'Session'), t('agent.chat.delegation', 'Delegation'), t('assistant.title', 'My Assistant'))}` : t('agent.chat.readOnlyConversation', 'Read-only · {{name}}', { name: activeSession.username || t('common.user', 'User') })}
                   </div>
                   {operatorReadEnabled && focusedWorkflow ? (
                     <WorkflowRunFocusPanel
@@ -2181,7 +2184,7 @@ function AgentChatSection({
                     <SessionHydratingState label={t('agent.chat.transport.initializing', 'Loading durable session history...')} />
                   ) : visibleChatMessages.length === 0 && (
                     <div style={{ textAlign: 'center', padding: '60px 20px', color: 'var(--text-tertiary)' }}>
-                      <div style={{ fontSize: '13px', marginBottom: '4px' }}>{sessionTitleForUser(activeSession, t('agent.chat.startChat'))}</div>
+                      <div style={{ fontSize: '13px', marginBottom: '4px' }}>{sessionTitleForUser(activeSession, t('agent.chat.startChat'), t('agent.chat.delegation', 'Delegation'), t('assistant.title', 'My Assistant'))}</div>
                       <div style={{ fontSize: '12px' }}>{t('agent.chat.startConversation', { name: agentDisplayName })}</div>
                       <div style={{ fontSize: '11px', marginTop: '4px', opacity: 0.7 }}>{t('agent.chat.fileSupport')}</div>
                     </div>
@@ -2269,6 +2272,7 @@ function AgentChatSection({
                   sessionId={String(activeSession.id)}
                   runtimeTaskId={activeRuntimeTaskId || undefined}
                   live={sessionWorkLedgerLive}
+                  runStatus={threadTimelineModel?.header.status ?? liveRunStatus}
                   operatorView={Boolean(activeSession.operator_view)} operatorReason={operatorReason}
                 />
               )}

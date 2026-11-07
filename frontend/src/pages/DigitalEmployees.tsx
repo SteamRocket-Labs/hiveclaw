@@ -18,6 +18,7 @@ import { isAdministratorRole, isManagedEmployeeAgent } from '../roles';
 import { useAuthStore } from '../stores';
 import type { Agent } from '../types';
 import HrCreationRecoveryPanel from './employee-directory/HrCreationRecoveryPanel';
+import { assistantNameForDisplay, assistantRoleForDisplay } from './assistant/assistantScope';
 
 function formatAgentStatus(status: Agent['status'] | string | undefined) {
   if (!status) return 'idle';
@@ -156,14 +157,14 @@ export default function DigitalEmployees() {
               <div className="employee-card-body">
                 <div className="employee-card-header">
                   <span className="employee-avatar">
-                    {(Array.from(agent.name || 'A')[0] as string || 'A').toUpperCase()}
+                    {(Array.from(assistantNameForDisplay(agent.name, t('assistant.title')) || 'A')[0] as string || 'A').toUpperCase()}
                   </span>
                   <div className="employee-card-copy">
                     <div className="employee-card-title-row">
-                      <h2>{agent.name}</h2>
+                      <h2>{assistantNameForDisplay(agent.name, t('assistant.title'))}</h2>
                       <span className={`employee-status ${formatAgentStatus(agent.status)}`}>{formatAgentStatus(agent.status)}</span>
                     </div>
-                    <p>{agent.role_description || t('employees.noRole', 'No role description yet')}</p>
+                    <p>{assistantRoleForDisplay(agent.role_description, t('assistant.role')) || t('employees.noRole', 'No role description yet')}</p>
                     <div className="employee-chip-row">
                       <span>
                         {isOwnedAgent(agent)

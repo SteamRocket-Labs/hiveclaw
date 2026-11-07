@@ -290,6 +290,41 @@ async def test_frozen_context_uses_pinned_tenant_session_for_channel_and_company
 
 
 @pytest.mark.asyncio
+async def test_existing_soul_keeps_files_and_name_role_identity(monkeypatch, tmp_path):
+    from app.services import agent_context
+    from app.services.config_versioning import canonical_content_hash
+
+    agent_id, tenant_id = uuid4(), uuid4()
+    root = tmp_path / str(agent_id)
+    root.mkdir()
+    soul_path = root / "soul.md"
+    original = b"# Soul\nI am an employee of the company.\n"
+    soul_path.write_bytes(original)
+    sessions = [_FakeSession([[]]), _FakeSession([None, None, None])]
+    monkeypatch.setattr("app.database.tenant_scoped_session", lambda *_a, **_k: sessions.pop(0))
+    monkeypatch.setattr(agent_context, "TOOL_WORKSPACE", tmp_path)
+    monkeypatch.setattr(agent_context, "PERSISTENT_DATA", tmp_path)
+
+    async def no_a2a(*_a, **_k):
+        return ""
+
+    monkeypatch.setattr(agent_context, "_build_a2a_collaborators_context", no_a2a)
+    sources = []
+    prompt = await agent_context.build_agent_context(
+        agent_id, "My Assistant", tenant_id=tenant_id, include_skill_catalog=False, source_refs=sources,
+    )
+    assert "Current company name:" not in prompt
+    assert prompt.count("same language the user uses") == 1
+    assert prompt.count("including progress notes between tool calls") == 1
+    assert soul_path.read_bytes() == original
+    assert set(root.iterdir()) == {soul_path}
+    identity = next(source for source in sources if source["source_kind"] == "agent_identity")
+    assert identity["source_version"] == canonical_content_hash(
+        agent_context.agent_identity_content("My Assistant", None),
+    )
+
+
+@pytest.mark.asyncio
 async def test_unreadable_existing_soul_is_a_required_context_failure(tmp_path, monkeypatch) -> None:
     from pathlib import Path
 

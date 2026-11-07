@@ -1503,7 +1503,10 @@ function getHeaderStatus(
 
 function currentHeaderRun(
   cells: ThreadTimelineCell[], sessionId: string | null, activeRunId: string | null, activeRunStatus?: string | null,
+  workbenchRun?: Record<string, unknown> | null,
 ): { runId: string | null; lifecycle: string } | null {
+  const workbenchRunId = readString(workbenchRun ?? {}, ['runtime_task_id', 'id'], '');
+  const workbenchRunStatus = readString(workbenchRun ?? {}, ['status'], '');
   for (let index = cells.length - 1; index >= 0; index -= 1) {
     const cell = cells[index];
     if (cell.kind === 'user_turn') break;
@@ -1512,6 +1515,11 @@ function currentHeaderRun(
     if ((item?.kind === 'run' || item?.kind === 'runtime_failure') && item.scope?.level === 'run'
       && item.scope.session_id === sessionId
       && (!activeRunId || isSameSessionRunId(item.scope.run_id, activeRunId))) {
+      if ((item.kind === 'runtime_failure' || CANONICAL_RUN_TERMINAL_LIFECYCLES.has(item.lifecycle))
+        && workbenchRunId && !isSameSessionRunId(item.scope.run_id, workbenchRunId)
+        && ['running', 'waiting'].includes(runtimeStatusKey(workbenchRunStatus))) {
+        return { runId: workbenchRunId, lifecycle: workbenchRunStatus };
+      }
       return { runId: item.scope.run_id, lifecycle: item.kind === 'runtime_failure' ? 'failed'
         : CANONICAL_RUN_TERMINAL_LIFECYCLES.has(item.lifecycle) || item.lifecycle === 'waiting'
           ? item.lifecycle : activeRunStatus || item.lifecycle };
@@ -2137,7 +2145,8 @@ export function buildThreadTimeline(input: BuildThreadTimelineInput): ThreadTime
   const latestAnsweredRunId = latestTurnAnswered
     ? messageRunId([...input.messages].reverse().find(isRenderableAssistantAnswer))
     : null;
-  const currentRun = currentHeaderRun(cells, getSessionId(input.activeSession), normalizeSessionRunId(input.activeRunId), input.activeRunStatus);
+  const currentRun = currentHeaderRun(cells, getSessionId(input.activeSession), normalizeSessionRunId(input.activeRunId),
+    input.activeRunStatus, input.sessionWorkbench?.active_run);
   const activeRunId = normalizeSessionRunId(input.activeRunId) || normalizeSessionRunId(currentRun?.runId);
   const terminalAnswerOwnsActiveRun = Boolean(
     latestAnsweredRunId && activeRunId && isSameSessionRunId(latestAnsweredRunId, activeRunId),

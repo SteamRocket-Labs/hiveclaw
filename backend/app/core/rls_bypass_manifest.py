@@ -843,7 +843,8 @@ def fingerprint_rls_bypass_scopes(app_root: Path) -> str:
 # G3: preview and inventory lifecycle source updates only; merging G3 with main keeps each entry from one side.
 # Merging A4c with G3 keeps each entry from one side.
 # D1: limited private-creation Undo in the existing lifecycle; bypass calls and queries are unchanged.
-RLS_BYPASS_SCOPES_SHA256 = "bb2d39788f6d94e84908b67b55e11c904593d5134bc6b2be34d486dd889ed225"
+# Merging D1 with main keeps each reviewed entry from one side; no entry changed on both sides.
+RLS_BYPASS_SCOPES_SHA256 = "7ca23b09851c040a8564e5fa0b383eb06fb8c97a6bebd7f940707e8bd9f364d6"
 
 
 def scan_rls_bypass_callsites(app_root: Path) -> list[RLSBypassCallsite]:

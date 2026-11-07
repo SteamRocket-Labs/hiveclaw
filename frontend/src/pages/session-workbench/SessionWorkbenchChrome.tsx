@@ -2,7 +2,7 @@ import { runtimeStatusLabel } from '../agent-detail/runtimeStatus';
 import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Link, useInRouterContext, useNavigate } from 'react-router-dom';
-import { IconChevronDown, IconPlus } from '@tabler/icons-react';
+import { IconChevronDown, IconPlus, IconTrash } from '@tabler/icons-react';
 
 import type { SessionWorkbenchHeaderModel } from './timelineModel';
 import { sessionTitleForUser } from './sessionTitlePresentation';
@@ -51,6 +51,8 @@ export interface SessionHistoryMenuProps {
   activeSessionId?: string | null;
   /** Management entry (B5): set only for people who can manage this bot. */
   manageHref?: string | null;
+  currentUserId?: string | null;
+  onRemoveSession?: (sessionId: string) => void;
 }
 
 /** The menu routes between conversations, so it needs a Router; mounted
@@ -60,7 +62,7 @@ function SessionHistoryMenuWithRouter(props: SessionHistoryMenuProps) {
   return <SessionHistoryMenu {...props} />;
 }
 
-function SessionHistoryMenu({ agentId, sessions, loading, activeSessionId }: SessionHistoryMenuProps) {
+function SessionHistoryMenu({ agentId, sessions, loading, activeSessionId, currentUserId, onRemoveSession }: SessionHistoryMenuProps) {
   const { t, i18n } = useTranslation();
   const navigate = useNavigate();
   const [open, setOpen] = useState(false);
@@ -120,9 +122,10 @@ function SessionHistoryMenu({ agentId, sessions, loading, activeSessionId }: Ses
                 const id = String(session.id ?? '');
                 const isActive = Boolean(activeSessionId) && (id === String(activeSessionId)
                   || String(session.chat_session_id || '') === String(activeSessionId));
+                const title = sessionTitleForUser(session, t('agent.chat.session', 'Session'), t('agent.chat.delegation', 'Delegation'), t('assistant.title', 'My Assistant'));
                 return (
+                  <div key={id} className="swb-history-row">
                   <Link
-                    key={id}
                     to={`/agents/${agentId}?session_id=${encodeURIComponent(id)}#chat`}
                     role="option"
                     aria-selected={isActive}
@@ -130,10 +133,19 @@ function SessionHistoryMenu({ agentId, sessions, loading, activeSessionId }: Ses
                     onClick={() => setOpen(false)}
                   >
                     <span className="swb-history-item-title">
-                      <PastedCredentialText content={sessionTitleForUser(session, t('agent.chat.session', 'Session'), t('agent.chat.delegation', 'Delegation'))} />
+                      <PastedCredentialText content={title} />
                     </span>
                     <span className="swb-history-item-meta">{[session.status ? runtimeStatusLabel(session.status, t) : '', historyTime(session, locale)].filter(Boolean).join(' · ')}</span>
                   </Link>
+                  {onRemoveSession && currentUserId && String(session.user_id || '') === currentUserId && !session.operator_view && (
+                    <button type="button" className="swb-history-remove"
+                      aria-label={t('chat.removeNamedSession', 'Remove conversation from list: {{name}}', { name: title })}
+                      title={t('chat.removeSession', 'Remove from list')}
+                      onClick={() => { setOpen(false); onRemoveSession(id); }}>
+                      <IconTrash size={13} stroke={1.8} />
+                    </button>
+                  )}
+                  </div>
                 );
               })
             )}

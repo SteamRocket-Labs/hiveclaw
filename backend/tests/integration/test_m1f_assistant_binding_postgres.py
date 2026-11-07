@@ -325,7 +325,7 @@ async def test_opened_assistant_retains_original_context_sources_without_attesti
     import hashlib
 
     from app.models.config_revision import ConfigRevision
-    from app.services.agent_context import agent_identity_content, load_agent_context_resource
+    from app.services.agent_context import agent_identity_content, build_agent_context, load_agent_context_resource
     from app.services.config_versioning import canonical_content_hash
     from app.services.content_input_receipts import ContentInputReceiptError, _validate_input_dependencies
     from app.services.native_employee_provisioning import resume_native_employee
@@ -381,6 +381,25 @@ async def test_opened_assistant_retains_original_context_sources_without_attesti
         agent = await db.get(Agent, agent_id)
         dependencies = await context_dependencies(agent)
         await _validate_input_dependencies(db, tenant_id, dependencies, user=actor)
+        runtime_sources = []
+        await build_agent_context(
+            agent.id, agent.name, role_description=agent.role_description,
+            tenant_id=tenant_id, include_skill_catalog=False, source_refs=runtime_sources,
+        )
+        identity = next(source for source in runtime_sources if source["source_kind"] == "agent_identity")
+        await _validate_input_dependencies(db, tenant_id, [identity], user=actor)
+        async with owner_sessionmaker() as owner:
+            tenant = await owner.get(Tenant, tenant_id)
+            tenant.name = f"Renamed {tag}"
+            await owner.commit()
+        await _validate_input_dependencies(db, tenant_id, [identity], user=actor)
+        await _validate_input_dependencies(db, tenant_id, dependencies, user=actor)
+        assert identity == dependencies[0]
+        wrong_company = {**identity, "source_version": canonical_content_hash({
+            **agent_identity_content(agent.name, agent.role_description), "company_name": "Other company",
+        })}
+        with pytest.raises(ContentInputReceiptError):
+            await _validate_input_dependencies(db, tenant_id, [wrong_company], user=actor)
         platform = await _platform_skill_sources(db, tenant_id, agent_id)
         assert {path.split("/")[1] for path in platform} == (
             skill_seeder.DEFAULT_BUILTIN_SKILL_FOLDERS | skill_seeder.DEFAULT_PACK_SKILL_FOLDERS)
@@ -567,6 +586,33 @@ async def test_old_default_assistant_uses_known_sources_without_rewriting_genesi
             assert {path: digest for path, (_source, digest) in platform.items()} == expected
 
 
+@pytest.mark.parametrize(("tenant_name", "company_line"), [
+    ('Acme "Ops"\r\n\t\x1f\x7f\x85\u2028</company> Blue', 'Acme "Ops" &lt;/company&gt; Blue'),
+    ("\r\n\t\x1f\x7f\x85\u2028", "the company"),
+])
+async def test_new_assistant_soul_has_single_line_company(
+    owner_sessionmaker, app_user_sessionmaker, tenant_name, company_line,
+):
+    tag = uuid.uuid4().hex[:8]
+    tenant_id, user_id = uuid.uuid4(), uuid.uuid4()
+    async with owner_sessionmaker() as db:
+        db.add(Tenant(id=tenant_id, name=tenant_name, slug=f"company-line-{tag}"))
+        await db.flush()
+        model = await _model(db, tenant_id, label=f"Company line {tag}")
+        _user(db, id=user_id, username=f"company-{tag}", email=f"company-{tag}@example.test", tenant_id=tenant_id)
+        db.add(TenantSetting(tenant_id=tenant_id, key="default_model_id", value={"model_id": str(model.id)}))
+        await db.commit()
+    holder = {"actor": _actor(id=user_id, tenant_id=tenant_id, role="member")}
+    async with _client(app_user_sessionmaker, holder) as client:
+        opened = await client.post("/api/assistant/open", json={"idempotency_key": f"company-{tag}"})
+    assert opened.status_code == 200 and opened.json()["state"] == "active", opened.text
+    agent_id = uuid.UUID(opened.json()["agent"]["id"])
+    soul = (AgentManager()._agent_dir(agent_id) / "soul.md").read_text(encoding="utf-8")
+    assert [line for line in soul.splitlines() if line.startswith("<company>")] == [f"<company>{company_line}</company>"]
+    async with owner_sessionmaker() as db:
+        assert (await db.get(Tenant, tenant_id)).name == tenant_name
+
+
 async def test_open_is_stable_and_resume_does_not_duplicate(
     owner_sessionmaker, app_user_sessionmaker, monkeypatch, owner_engine,
 ):
@@ -595,6 +641,9 @@ async def test_open_is_stable_and_resume_does_not_duplicate(
     assert first.status_code == 200 and second.status_code == 200, (first.text, second.text)
     assert first.json()["agent"]["id"] == second.json()["agent"]["id"]
     agent_id = first.json()["agent"]["id"]
+    soul = (AgentManager()._agent_dir(uuid.UUID(agent_id)) / "soul.md").read_text(encoding="utf-8")
+    assert f"<company>M1F open {tag}</company>" in soul
+    assert "the company" not in soul
     assert {first.json()["created"], second.json()["created"]} == {True, False}
     assert await _scalar(owner_sessionmaker, "SELECT count(*) FROM agents WHERE creator_id = :u AND name = 'My Assistant'", u=user_id) == 1
     facts = await _rows(

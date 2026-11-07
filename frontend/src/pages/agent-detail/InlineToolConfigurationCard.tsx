@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { assistantNameForDisplay } from '../assistant/assistantScope';
 import { toolsApi, type SessionToolConfiguration } from '../../api/domains/tools';
 import ToolConfigurationForm from './ToolConfigurationForm';
 import ToolAccounts from './ToolAccounts';
@@ -52,7 +53,7 @@ export default function InlineToolConfigurationCard({ agentId, sessionId, questi
   if (answered || submitted || !onAnswer) return <p>{question} · {t('agent.configuration.recorded', 'Configuration request recorded')}</p>;
   return <section className="card" aria-label={t('agent.configuration.title', 'Configure for this work')}>
     <p>{question}</p>
-    {configuration && <p><strong>{configuration.target_agent_name === 'My Assistant' ? t('assistant.title', 'My Assistant') : configuration.target_agent_name}</strong> · {approvalActionFor(configuration.tool.name) ? approvalActionLabel(configuration.tool.name, t) : configuration.tool.display_name}</p>}
+    {configuration && <p><strong>{assistantNameForDisplay(configuration.target_agent_name, t('assistant.title', 'My Assistant'))}</strong> · {approvalActionFor(configuration.tool.name) ? approvalActionLabel(configuration.tool.name, t) : configuration.tool.display_name}</p>}
     <p>{t('agent.configuration.private', 'Save account settings here. Credentials are not sent to the conversation.')}</p>
     {loading && <p>{t('common.loading')}</p>}
     {error && <p role="alert">{error}</p>}

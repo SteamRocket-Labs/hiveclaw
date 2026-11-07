@@ -131,8 +131,8 @@ import {
 } from './agent-detail/useOperatorAuthorityLifecycle';
 import AgentOperatorReason from './agent-detail/AgentOperatorReason';
 import AgentDetailHeader, { AgentDetailSectionFallback, AgentDetailNavigation, AgentCreatedNotice, agentStatusKey } from './agent-detail/AgentDetailHeader';
+import { sessionTitleForUser } from './session-workbench/sessionTitlePresentation';
 import './AgentDetail.css';
-
 const AgentApprovalsSection = lazy(() => import('./agent-detail/AgentApprovalsSection'));
 const AgentChatSection = lazy(() => import('./agent-detail/AgentChatSection'));
 const AgentWorkflowsSection = lazy(() => import('./agent-detail/AgentWorkflowsSection'));
@@ -1268,9 +1268,8 @@ function AgentDetailInner() {
 
     const deleteSession = async (sessionId: string) => {
         const target = [...sessions, ...allSessions].find((session: any) => String(session.id) === String(sessionId));
-        setDeleteSessionConfirm({ sessionId, title: target?.title || t('agent.chat.session', 'Session') });
+        setDeleteSessionConfirm({ sessionId, title: sessionTitleForUser(target, t('agent.chat.session', 'Session'), t('agent.chat.delegation', 'Delegation'), t('assistant.title', 'My Assistant')) });
     };
-
     const confirmDeleteSession = async () => {
         if (!deleteSessionConfirm) return;
         const sessionId = deleteSessionConfirm.sessionId;
@@ -1278,7 +1277,7 @@ function AgentDetailInner() {
         try {
             await chatApi.deleteSession(id!, sessionId);
             if (id) closeSessionSocket(buildSessionRuntimeKey(id, sessionId), true);
-            // If deleted the active session, clear it
+            // Leave the removed conversation's URL so it cannot reselect itself.
             if (activeSession?.id === sessionId) {
                 activeSessionIdRef.current = null;
                 setActiveSession(null);
@@ -1290,6 +1289,7 @@ function AgentDetailInner() {
                 resetActiveTransportState();
                 setIsStreaming(false);
                 setIsWaiting(false);
+                navigate(`/agents/${id}#chat`, { replace: true });
             }
             await fetchMySessions(false, id);
             await fetchAllSessions();

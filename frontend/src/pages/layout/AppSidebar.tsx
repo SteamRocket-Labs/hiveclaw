@@ -20,7 +20,7 @@ import {
 import { type HrAgentInfo } from '../../api/domains/agents';
 import { isActiveCompany } from '../../api/domains/admin';
 import { isManagedEmployeeAgent } from '../../roles';
-import { sidebarAgentLink, sortSidebarAgents, useAssistantAgentId } from '../assistant/assistantScope';
+import { assistantNameForDisplay, sidebarAgentLink, sortSidebarAgents, useAssistantAgentId } from '../assistant/assistantScope';
 
 const sidebarIcons = {
   user: <IconUser size={16} stroke={1.5} />,
@@ -235,7 +235,7 @@ export default function AppSidebar({
           {sortedAgents.map((agent) => {
             const badge = getAgentBadgeStatus(agent);
             const sourceBadge = getAgentSourceBadge(agent, t, user);
-            const name = String(agent.id) === assistantAgentId ? t('assistant.title') : agent.name;
+            const name = String(agent.id) === assistantAgentId ? t('assistant.title') : assistantNameForDisplay(agent.name, t('assistant.title', 'My Assistant'));
             const avatarChar = ((Array.from(name || '?')[0] as string) || '?').toUpperCase();
             const isAgentRowActive = String(activeAgentId || '') === String(agent.id);
             // B5: opening a bot opens its conversation (#chat is the workbench),

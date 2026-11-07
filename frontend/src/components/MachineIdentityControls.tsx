@@ -149,7 +149,7 @@ function Access({ agentId, actorId, tenantId }: { agentId: string; actorId: stri
       </div>}
       <p>{t('machineAccess.endpoint', 'Employee description endpoint')}: <code>{machineIdentitiesApi.descriptionPath(agentId)}</code></p>
       <p>{t('machineAccess.agentCard', 'Agent Card endpoint')}: <code>{machineIdentitiesApi.cardPath(agentId)}</code></p>
-      <p>{t('machineAccess.taskEndpoint', 'Task endpoint')}: <code>{machineIdentitiesApi.taskPath(agentId)}</code> · A2A-Version: 1.0</p>
+      <p>{t('machineAccess.taskEndpoint', 'Task endpoint')}: <code>{machineIdentitiesApi.taskPath(agentId)}</code> · {t('machineAccess.protocolVersion', 'A2A-Version')}: 1.0</p>
       {query.data.identities.map((identity) => <div key={identity.credential_id}>
         <p>{identity.name} · {statusLabels[identity.status] || identity.status}</p>
         <p>{t('machineAccess.permissions', 'Permissions')}: <code>{identity.scopes.join(', ')}</code></p>

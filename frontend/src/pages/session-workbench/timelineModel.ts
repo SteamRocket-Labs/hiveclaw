@@ -60,6 +60,7 @@ export interface SessionWorkbenchHeaderModel {
   title: string;
   status: SessionWorkbenchStatus;
   modelLabel: string | null;
+  guidance?: string;
 }export interface ThreadTimelineModel {
   cells: ThreadTimelineCell[];
   header: SessionWorkbenchHeaderModel;
@@ -1356,12 +1357,14 @@ export function buildSessionRightPanelModel({
   sessionWorkbench,
   activeSession,
   activeRunStatus,
+  activeRunId,
   presentationStatus,
 }: {
   messages: AgentChatMessage[];
   sessionWorkbench?: SessionWorkbench | Record<string, unknown> | null;
   activeSession?: Record<string, unknown> | null;
   activeRunStatus?: string | null;
+  activeRunId?: string | null;
   presentationStatus?: SessionWorkbenchStatus | null;
 }): SessionRightPanelModel {
   const workbenchRecord = asRecord(sessionWorkbench) ?? null;
@@ -1371,62 +1374,23 @@ export function buildSessionRightPanelModel({
     runtimeSectionsFromMessages(messages),
     canonicalRuntimeSections,
   );
-  const presentationRunStatus = presentationStatus === 'waiting'
-    ? 'waiting'
-    : presentationStatus === 'running' || presentationStatus === 'streaming'
-      ? 'running'
-      : null;
+  const presentationRunStatus = presentationStatus && presentationStatus !== 'idle' ? presentationStatus : null;
   const selectedSession = activeSession ?? asRecord(workbenchRecord?.session);
   const selectedSessionId = readString(selectedSession ?? {}, ['id', 'chat_session_id', 'session_id'], 'session');
   const durableSessionWindow = buildSessionWindowModel(selectedSession, activeRunStatus);
-  // The final answer and empty active-run registry are the presentation commit.
-  // Retire a lagging main-run row only in this disposable read model; `raw`
-  // keeps the durable status and independently-running child sections stay live.
-  const durableRuntimeSections = presentationStatus === 'complete'
-    && durableSessionWindow?.kind === 'main'
-    && normalizedActiveRunStatus(activeRunStatus) === null
-    ? buildRuntimeSectionsSummary({
-        agentTeams: evidenceRuntimeSections.agentTeams,
-        peerA2A: evidenceRuntimeSections.peerA2A,
-        subagents: evidenceRuntimeSections.subagents,
-        workflows: evidenceRuntimeSections.workflows,
-        background: evidenceRuntimeSections.background,
-        notifications: evidenceRuntimeSections.notifications,
-        runs: evidenceRuntimeSections.runs.map((run) => (
-          isRunningRuntimeItem(run)
-            ? { ...run, status: 'completed', state: 'completed' }
-            : run
-        )),
-        raw: evidenceRuntimeSections.raw,
-      })
-    : evidenceRuntimeSections;
-  const presentationRun: RuntimeSectionItemModel | null = presentationRunStatus
-    && selectedSession
-    && durableSessionWindow?.kind === 'main'
-    && !hasActiveRuntimeItem(durableRuntimeSections.runs)
-    ? {
-        id: `${selectedSessionId}:presentation-run`,
-        label: readString(selectedSession, ['title', 'name'], selectedSessionId),
-        status: presentationRunStatus,
-        state: presentationRunStatus,
-        runtimeKind: 'session_run',
-        summary: '',
-        childSessionId: null,
-        enterable: false,
-        metrics: {
-          elapsedSeconds: null,
-          elapsedLabel: null,
-          tokenCount: null,
-          tokenLabel: null,
-          toolUseCount: null,
-          toolUseLabel: null,
-          lastActivityLabel: null,
-        },
-        members: [],
-        steps: [],
-        leafCalls: [],
-        raw: { presentation_only: true, session_id: selectedSessionId },
-      }
+  const currentRunId = normalizeSessionRunId(activeRunId);
+  const durableRuntimeSections = buildRuntimeSectionsSummary({ ...evidenceRuntimeSections,
+    runs: evidenceRuntimeSections.runs.map(run => presentationRunStatus && currentRunId
+      && isSameSessionRunId(readString(run.raw, ['runtime_task_id', 'id'], run.id), currentRunId)
+      ? { ...run, status: presentationRunStatus === 'complete' ? 'completed' : presentationRunStatus,
+      state: presentationRunStatus, userBlocker: presentationRunStatus === 'waiting' ? run.userBlocker : null } : run),
+  });
+  const presentationRun = presentationRunStatus && selectedSession && durableSessionWindow?.kind === 'main'
+    && ['running', 'waiting'].includes(runtimeStatusKey(presentationRunStatus))
+    && durableRuntimeSections.runs.length === 0
+    ? normalizeRuntimeSectionItem({ id: `${selectedSessionId}:presentation-run`,
+        label: readString(selectedSession, ['title', 'name'], selectedSessionId), status: presentationRunStatus,
+        runtime_kind: 'session_run', enterable: false, presentation_only: true, session_id: selectedSessionId }, 0, 'session_run')
     : null;
   const runtimeSections = presentationRun
     ? buildRuntimeSectionsSummary({
@@ -1537,19 +1501,24 @@ function getHeaderStatus(
   return 'idle';
 }
 
-function currentHeaderRunLifecycle(
+function currentHeaderRun(
   cells: ThreadTimelineCell[], sessionId: string | null, activeRunId: string | null, activeRunStatus?: string | null,
-): string | null {
+): { runId: string | null; lifecycle: string } | null {
   for (let index = cells.length - 1; index >= 0; index -= 1) {
     const cell = cells[index];
     if (cell.kind === 'user_turn') break;
     if (cell.kind !== 'boundary') continue;
     const item = cell.message.sessionItem;
-    if (item?.kind === 'run' && item.scope?.level === 'run'
+    if ((item?.kind === 'run' || item?.kind === 'runtime_failure') && item.scope?.level === 'run'
       && item.scope.session_id === sessionId
-      && (!activeRunId || isSameSessionRunId(item.scope.run_id, activeRunId))) return item.lifecycle;
+      && (!activeRunId || isSameSessionRunId(item.scope.run_id, activeRunId))) {
+      return { runId: item.scope.run_id, lifecycle: item.kind === 'runtime_failure' ? 'failed'
+        : CANONICAL_RUN_TERMINAL_LIFECYCLES.has(item.lifecycle) || item.lifecycle === 'waiting'
+          ? item.lifecycle : activeRunStatus || item.lifecycle };
+    }
   }
-  return normalizedActiveRunStatus(activeRunStatus);
+  return activeRunStatus && (activeRunId || runtimeStatusKey(activeRunStatus) === 'failed')
+    ? { runId: activeRunId, lifecycle: activeRunStatus } : null;
 }
 
 function normalizedActiveRunStatus(status?: string | null): string | null {
@@ -1814,7 +1783,7 @@ function ensureOpenRunDisclosureContinuity(
   }
 }
 
-function buildCells(messages: AgentChatMessage[]): ThreadTimelineCell[] {
+function buildCells(messages: AgentChatMessage[], runtimePhase?: string | null): ThreadTimelineCell[] {
   const cells: ThreadTimelineCell[] = [];
   const pendingRun: Array<{ message: AgentChatMessage; index: number }> = [];
   const answeredRuns = new Map<string, Extract<ThreadTimelineCell, { kind: 'active_run' }>>();
@@ -1906,6 +1875,11 @@ function buildCells(messages: AgentChatMessage[]): ThreadTimelineCell[] {
     }
 
     if (message.role === 'event') {
+      if (message.sessionItem?.kind === 'run' && CANONICAL_RUN_TERMINAL_LIFECYCLES.has(message.sessionItem.lifecycle)
+        && (runtimePhase !== 'idle' || ['cancelled', 'killed', 'canceled'].includes(message.sessionItem.lifecycle))
+        && !cells.some(cell => cell.kind === 'active_run' && isSameSessionRunId(cell.runId, messageRunId(message)))) {
+        cells.push(buildRunCell(runIndex++, [{ message, index }], undefined, false, turnStartedAt));
+      }
       cells.push({
         kind: 'boundary',
         id: messageId(message, `boundary-${index}`),
@@ -2014,11 +1988,13 @@ function coalesceProcessCellsByUserTurn(
   return coalesced;
 }
 
-const CANONICAL_RUN_TERMINAL_LIFECYCLES = new Set(['completed', 'failed', 'cancelled', 'needs_reconciliation']);
+const CANONICAL_RUN_TERMINAL_LIFECYCLES = new Set(['completed', 'failed', 'killed', 'cancelled', 'needs_reconciliation']);
 
 function applyCanonicalRunTerminalEvidence(
   cells: ThreadTimelineCell[],
   messages: AgentChatMessage[],
+  activeRunId?: string | null,
+  activeRunStatus?: string | null,
 ): ThreadTimelineCell[] {
   const terminalByRunId = new Map<string, { completedAtMs: number; status: RunTimelineSnapshot['status'] }>();
   messages.forEach((message) => {
@@ -2029,31 +2005,33 @@ function applyCanonicalRunTerminalEvidence(
     if (!runId || !Number.isFinite(completedAtMs)) return;
     const status: RunTimelineSnapshot['status'] = item.lifecycle === 'failed' || item.lifecycle === 'needs_reconciliation'
       ? 'failed'
-      : item.lifecycle === 'cancelled'
+      : item.lifecycle === 'cancelled' || item.lifecycle === 'killed'
         ? 'cancelled'
         : 'done';
     terminalByRunId.set(runId, { completedAtMs, status });
   });
-  if (terminalByRunId.size === 0) return cells;
-
   return cells.map((cell) => {
     if (cell.kind !== 'active_run' || !cell.runId) return cell;
     const terminal = terminalByRunId.get(cell.runId);
-    if (!terminal) return cell;
+    const liveStatus = activeRunStatus && activeRunId && isSameSessionRunId(cell.runId, activeRunId)
+      ? runtimeStatusKey(activeRunStatus) : null;
+    const status = terminal?.status ?? (liveStatus === 'waiting' ? 'blocked' : liveStatus === 'stopped' ? 'cancelled'
+      : liveStatus === 'done' ? 'done' : liveStatus);
+    if (!status) return cell;
+    if (status === 'running' || status === 'blocked') return { ...cell, timeline: { ...cell.timeline, status } };
     const currentCompletedAtMs = Date.parse(cell.timeline.completedAt || '');
-    const completedAtMs = Number.isFinite(currentCompletedAtMs)
-      ? Math.max(currentCompletedAtMs, terminal.completedAtMs)
-      : terminal.completedAtMs;
+    const completedAtMs = terminal?.completedAtMs ?? currentCompletedAtMs;
     const startedAtMs = Date.parse(cell.timeline.startedAt || '');
-    const durationMs = Number.isFinite(startedAtMs)
+    const durationMs = Number.isFinite(startedAtMs) && Number.isFinite(completedAtMs)
       ? Math.max(cell.timeline.durationMs ?? 0, completedAtMs - startedAtMs, 0)
       : cell.timeline.durationMs;
     return {
       ...cell,
+      phase: undefined,
       timeline: {
         ...cell.timeline,
-        status: terminal.status,
-        completedAt: new Date(completedAtMs).toISOString(),
+        status,
+        completedAt: Number.isFinite(completedAtMs) ? new Date(completedAtMs).toISOString() : undefined,
         durationMs,
       },
     };
@@ -2152,14 +2130,15 @@ export function createThreadTimelineCache(): ThreadTimelineCache {
 
 export function buildThreadTimeline(input: BuildThreadTimelineInput): ThreadTimelineModel {
   const cells = applyCanonicalRunTerminalEvidence(
-    coalesceProcessCellsByUserTurn(buildCells(input.messages), input.messages),
+    coalesceProcessCellsByUserTurn(buildCells(input.messages, input.runtimePhase), input.messages),
     input.messages,
   );
   const latestTurnAnswered = hasAssistantAnswerAfterLatestUser(input.messages);
   const latestAnsweredRunId = latestTurnAnswered
     ? messageRunId([...input.messages].reverse().find(isRenderableAssistantAnswer))
     : null;
-  const activeRunId = normalizeSessionRunId(input.activeRunId);
+  const currentRun = currentHeaderRun(cells, getSessionId(input.activeSession), normalizeSessionRunId(input.activeRunId), input.activeRunStatus);
+  const activeRunId = normalizeSessionRunId(input.activeRunId) || normalizeSessionRunId(currentRun?.runId);
   const terminalAnswerOwnsActiveRun = Boolean(
     latestAnsweredRunId && activeRunId && isSameSessionRunId(latestAnsweredRunId, activeRunId),
   );
@@ -2176,9 +2155,10 @@ export function buildThreadTimeline(input: BuildThreadTimelineInput): ThreadTime
     && !input.isStreaming
     && !activeRunStatus
     && (!runtimePhaseValue || runtimePhaseValue === 'idle');
-  const pendingRunCell = terminalAnswerOwnsActiveRun
+  const pendingRunCell = terminalAnswerOwnsActiveRun || CANONICAL_RUN_TERMINAL_LIFECYCLES.has(currentRun?.lifecycle || '')
     ? null
-    : buildPendingRunCell(input, activeRunStatus, unresolvedUserTurn, interruptedUserTurn);
+    : buildPendingRunCell({ ...input, activeRunId }, runtimePhaseValue === 'idle' && !input.activeRunId
+      ? activeRunStatus : currentRun?.lifecycle || activeRunStatus, unresolvedUserTurn, interruptedUserTurn);
   if (pendingRunCell && !retainedProcessRun && !hasOpenRunCell(cells)) {
     cells.push(pendingRunCell);
   }
@@ -2201,11 +2181,14 @@ export function buildThreadTimeline(input: BuildThreadTimelineInput): ThreadTime
   const sessionIndex = input.sessionIndex && !Array.isArray(input.sessionIndex) ? input.sessionIndex : null;
   const sessionWorkbench = input.sessionWorkbench && !Array.isArray(input.sessionWorkbench) ? input.sessionWorkbench : null;
   const runtimeSummary = input.runtimeSummary || null;
-  const needsReconciliation = currentHeaderRunLifecycle(
-    cells, getSessionId(input.activeSession), activeRunId, input.activeRunStatus,
-  ) === 'needs_reconciliation';
-  const headerStatus = needsReconciliation
-    ? 'failed'
+  const runLifecycle = currentRun?.lifecycle;
+  const blockedRun = sessionWorkbench?.runtime_tasks?.find(task => isSameSessionRunId(
+    readString(task, ['runtime_task_id', 'id'], ''), currentRun?.runId));
+  const guidance = runLifecycle === 'needs_reconciliation'
+    ? readString(asRecord(blockedRun?.user_blocker) ?? {}, ['next_action'], '') : '';
+  const runDisplay = runLifecycle ? runtimeStatusKey(runLifecycle) : null;
+  const headerStatus = runDisplay
+    ? runDisplay === 'done' ? 'complete' : runDisplay === 'stopped' ? 'cancelled' : runDisplay
     : livePhase
     ? livePhaseHeaderStatus(livePhase)
     : terminalDeliveryPending
@@ -2215,11 +2198,12 @@ export function buildThreadTimeline(input: BuildThreadTimelineInput): ThreadTime
         : getHeaderStatus(cells, input.isWaiting, input.isStreaming, activeRunStatus, input.runtimePhase);
 
   return {
-    cells,
+    cells: applyCanonicalRunTerminalEvidence(cells, input.messages, activeRunId, runLifecycle),
     header: {
       title: getSessionTitle(input.activeSession),
       status: headerStatus,
       modelLabel: runtimeSummary?.model?.label || runtimeSummary?.model?.name || null,
+      ...(guidance ? { guidance } : {}),
     },
   };
 }

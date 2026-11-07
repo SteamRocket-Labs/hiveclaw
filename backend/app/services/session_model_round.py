@@ -1438,7 +1438,7 @@ async def fail_model_request(
     delivery_state: str = "unknown",
     retry_safe: bool,
     continuation_index: int = 0,
-) -> None:
+) -> str | None:
     round_id = _round_id(run_id, round_index, continuation_index)
     result = await db.scalar(
         select(SessionModelResult)
@@ -1455,14 +1455,31 @@ async def fail_model_request(
         or result.state not in {"prepared", "streaming"}
     ):
         return
-    result.state = "failed" if retry_safe else "needs_reconciliation"
+    wire = dict((result.model_request_snapshot_json or {}).get("wire_request") or {})
+    provider_request = {**wire, **dict(wire.get("reasoning") or {})}
+    tools = provider_request.get("tools", [])
+    provider_effect = bool(provider_request.get("mcp_servers")) or not isinstance(tools, list) or any(
+        not isinstance(tool, dict) or tool.get("type") != "function" for tool in tools
+    )
+    cancelled = error_class == "cancelled" and not provider_effect
+    if error_class == "cancelled":
+        retry_safe = False
+    result.state = "failed" if retry_safe or cancelled else "needs_reconciliation"
     result.seal_json = {
         "delivery_state": str(delivery_state),
         "error_class": str(error_class),
         "retry_safe": bool(retry_safe),
     }
-    result.reconciliation_owner = None if retry_safe else "session_model_round:ambiguous_failure"
+    result.reconciliation_owner = None if retry_safe or cancelled else "session_model_round:ambiguous_failure"
     result.version = int(result.version) + 1
+    failure = {
+        "reason": "user_cancel" if cancelled else "ambiguous_provider_send",
+        "provider_request_id": provider_request_id,
+        "model_result_id": str(result.id),
+        "round_id": round_id,
+        "error_class": str(error_class),
+        "delivery_state": str(delivery_state),
+    }
     run_task: RuntimeTask | None = None
     if not retry_safe:
         from app.services.chat_transcript import lock_transcript_session
@@ -1472,33 +1489,37 @@ async def fail_model_request(
         # advisory); locking the RuntimeTask row first would invert the
         # order. Reentrant when the calling round flow already holds it.
         await lock_transcript_session(db, session_id=session_id)
-        run_task = await db.scalar(
-            select(RuntimeTask)
-            .where(
-                RuntimeTask.id == run_id,
-                RuntimeTask.tenant_id == tenant_id,
+        from app.services.runtime_task_fence import assert_runtime_task_fence, clear_runtime_task_fence, reset_runtime_task_fence
+
+        token = clear_runtime_task_fence()
+        try:
+            run_task = await db.scalar(select(RuntimeTask).where(
+                RuntimeTask.id == run_id, RuntimeTask.tenant_id == tenant_id,
                 or_(and_(RuntimeTask.parent_agent_id == agent_id, RuntimeTask.parent_session_id == str(session_id)),
                     and_(RuntimeTask.task_type.in_(("delegation", "business_task")), RuntimeTask.child_agent_id == agent_id,
                         func.replace(func.lower(RuntimeTask.child_session_id), "-", "") == session_id.hex)),
-            )
-            .with_for_update()
-        )
+            ).with_for_update())
+        finally:
+            reset_runtime_task_fence(token)
+        from app.services.runtime_terminal_settlement import TERMINAL_SETTLEMENT_STATUSES
+
+        if run_task is not None and run_task.status in TERMINAL_SETTLEMENT_STATUSES:
+            result.state = "needs_reconciliation" if provider_effect else "failed"
+            result.reconciliation_owner = "session_model_round:ambiguous_failure" if provider_effect else None
+            return result.state
         if run_task is not None:
-            recovery = {
-                "reason": "ambiguous_provider_send",
-                "provider_request_id": provider_request_id,
-                "model_result_id": str(result.id),
-                "round_id": round_id,
-                "error_class": str(error_class),
-                "delivery_state": str(delivery_state),
-            }
+            assert_runtime_task_fence(run_task)
             metadata = dict(run_task.metadata_json or {})
-            metadata["session_v2_reconciliation"] = recovery
-            run_task.status = "needs_reconciliation"
-            run_task.result_summary = "Provider send outcome is ambiguous; operator reconciliation is required."
+            if cancelled:
+                metadata["terminal_reason"] = "user_cancel"
+            else:
+                metadata["session_v2_reconciliation"] = failure
+            run_task.status = "killed" if cancelled else "needs_reconciliation"
+            run_task.result_summary = "Generation stopped." if cancelled else "Provider send outcome is ambiguous; operator reconciliation is required."
             run_task.metadata_json = metadata
             run_task.completed_at = datetime.now(timezone.utc)
             run_task.claim_version = int(run_task.claim_version or 0) + 1
+    if not retry_safe and not cancelled:
         try:
             from app.services.session_fork_input import settle_fork_input_provider_delivery
 
@@ -1511,58 +1532,27 @@ async def fail_model_request(
         except ValueError as exc:
             if str(exc) != "fork_input_for_run_not_found":
                 raise
-    await append_session_events(
-        db,
-        tenant_id=tenant_id,
-        agent_id=agent_id,
-        session_id=session_id,
-        drafts=[
-            SessionEventDraft(
-                item_id=result.id,
-                item_kind="result_commit",
-                lifecycle=result.state,
-                scope=_scope(session_id, turn_id, run_id, round_id),
-                actor={"type": "runtime"},
-                payload={
-                    "provider_request_id": provider_request_id,
-                    "error_class": str(error_class),
-                    "delivery_state": str(delivery_state),
-                    "retry_safe": bool(retry_safe),
-                },
-                result_id=result.id,
-            ),
-            *(
-                [
-                    SessionEventDraft(
-                        item_id=run_id,
-                        item_kind="run",
-                        lifecycle="needs_reconciliation",
-                        scope=_run_scope(session_id, turn_id, run_id),
-                        actor={"type": "runtime"},
-                        payload={
-                            "reason": "ambiguous_provider_send",
-                            "provider_request_id": provider_request_id,
-                            "model_result_id": str(result.id),
-                            "round_id": round_id,
-                            "error_class": str(error_class),
-                            "delivery_state": str(delivery_state),
-                        },
-                    )
-                ]
-                if run_task is not None
-                else []
-            ),
-        ],
-    )
+    drafts = [SessionEventDraft(
+        item_id=result.id, item_kind="result_commit", lifecycle=result.state,
+        scope=_scope(session_id, turn_id, run_id, round_id), actor={"type": "runtime"},
+        payload=dict(result.seal_json), result_id=result.id,
+    )]
+    if run_task is not None:
+        drafts.append(SessionEventDraft(
+            item_id=run_id, item_kind="run", lifecycle="cancelled" if cancelled else "needs_reconciliation",
+            scope=_run_scope(session_id, turn_id, run_id), actor={"type": "runtime"}, payload=failure,
+        ))
+    await append_session_events(db, tenant_id=tenant_id, agent_id=agent_id, session_id=session_id, drafts=drafts)
     if run_task is not None:
         from app.services.runtime_terminal_settlement import settle_and_enqueue_runtime_task_terminal
 
         await settle_and_enqueue_runtime_task_terminal(
             db,
             run_task,
-            terminal_source="session_model_round:ambiguous_provider_send",
-            root_reason_code="ambiguous_provider_send_terminal",
+            terminal_source="session_model_round:cancelled" if cancelled else "session_model_round:ambiguous_provider_send",
+            root_reason_code="user_cancel" if cancelled else "ambiguous_provider_send_terminal",
         )
+    return result.state
 
 
 async def recover_sealed_model_rounds_once(

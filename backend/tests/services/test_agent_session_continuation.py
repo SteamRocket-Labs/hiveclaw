@@ -6,6 +6,29 @@ from uuid import uuid4
 import pytest
 
 
+@pytest.mark.parametrize("status", ["completed", "failed", "killed"])
+def test_approval_result_keeps_its_existing_approval_card_instead_of_another_run_error(status):
+    from app.services.agent_session_continuation import _build_result_runtime_action_payload
+
+    assert _build_result_runtime_action_payload({
+        'source_kind': 'approval', 'task_type': 'approval_execution',
+        'terminal_status': status, 'source_run_id': str(uuid4()),
+    }) is None
+
+
+@pytest.mark.parametrize("status", ["needs_reconciliation", "blocked", "suspended", "unknown"])
+def test_approval_result_without_a_complete_card_projection_keeps_its_blocked_record(status):
+    from app.services.agent_session_continuation import _build_result_runtime_action_payload
+
+    payload = _build_result_runtime_action_payload({
+        'source_kind': 'approval', 'task_type': 'approval_execution',
+        'terminal_status': status, 'source_run_id': str(uuid4()), 'result_ref': 'runtime-result://unknown',
+    })
+    assert payload['type'] == 'runtime_action_blocked'
+    assert payload['status'] == status and payload['result_ref'] == 'runtime-result://unknown'
+    assert payload['message'] == ('需要人工核查' if status == 'needs_reconciliation' else '需要处理')
+
+
 def test_task_notification_runtime_context_includes_full_canonical_model_context():
     from app.services.agent_session_continuation import build_task_notification_runtime_context
 

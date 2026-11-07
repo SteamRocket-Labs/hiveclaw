@@ -49,12 +49,12 @@ try {
   const receipt = await response.json();
   assert.equal(receipt.status, 'applying');
   assert.equal(receipt.accepted, true);
-  await expect(page.getByText('Stop request recorded. Waiting for the run to settle.', { exact: true })).toBeVisible();
+  await expect(page.getByText('Stop requested. Waiting for this run to finish.', { exact: true })).toBeVisible();
   await expect(requester.stop).toBeVisible();
   await writeFile(fixture.receiptPath, JSON.stringify(receipt, null, 2));
   process.stdout.write(JSON.stringify({ event: 'cancel_recorded' }) + String.fromCharCode(10));
   await expect(requester.stop).toHaveCount(0, { timeout: 30000 });
-  await expect(page.getByText('Stop request recorded. Waiting for the run to settle.', { exact: true })).toHaveCount(0);
+  await expect(page.getByText('Stop requested. Waiting for this run to finish.', { exact: true })).toHaveCount(0);
   await page.reload();
   await expect(page.getByText(/^(cancelled|stopped)$/i).first()).toBeVisible({ timeout: 20000 });
   await expect(page.getByTestId('session-composer-stop')).toHaveCount(0);

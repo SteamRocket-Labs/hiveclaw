@@ -112,7 +112,6 @@ import {
 import { useArtifactPreview } from './useArtifactPreview';
 import type { SessionMessageOptions } from './ArtifactContinuation';
 import {
-  ActiveTailStatusLine,
   isRuntimeRecord,
   isTeamMemberSession,
   runtimeItemDisplayLabel,
@@ -1508,9 +1507,6 @@ function AgentChatSection({
         return;
       }
       if (cell.kind === 'active_run') {
-        const runningStep = cell.phase === 'tool_running'
-          ? [...cell.timeline.steps].reverse().find((step) => step.status === 'running')
-          : null;
         nodes.push(
           <div
             key={cell.id}
@@ -1524,13 +1520,6 @@ function AgentChatSection({
                 ? `${activeSessionId}:${cell.runId || cell.timeline.startedAt}`
                 : null}
             />
-            {cell.phase ? (
-              <ActiveTailStatusLine
-                phase={cell.phase}
-                detail={runningStep?.title || null}
-                startedAt={cell.timeline.startedAt || null}
-              />
-            ) : null}
             {cell.sourceMessages.map((entry) => (
               entry.message.role === 'event'
                 ? renderEventMessage(entry.message, entry.index)
@@ -2048,7 +2037,8 @@ function AgentChatSection({
               sessions: sessions.filter((session: any, index: number) => (
                 !session.is_draft
                 && sessions.findIndex((other: any) => String(other?.id) === String(session.id)) === index
-              )),
+              )).map((session: any) => String(session.id) === activeSessionId
+                ? { ...session, status: threadTimelineModel.header.status === 'idle' ? null : threadTimelineModel.header.status } : session),
               loading: sessionsLoading,
               activeSessionId: activeSession?.id ? String(activeSession.id) : null,
               // 设置 (B5): the one management entry, for people who can already manage this bot.
@@ -2372,6 +2362,7 @@ function AgentChatSection({
           activeSession={activeSession as Record<string, unknown> | null}
           agent={agent as Record<string, unknown> | null}
           activeRunStatus={activeRunStatus}
+          activeRunId={activeRunId}
           presentationStatus={threadTimelineModel.header.status}
           collapsed={runtimePanelCollapsed}
           onToggleCollapsed={() => setRuntimePanelCollapsed((value) => !value)}

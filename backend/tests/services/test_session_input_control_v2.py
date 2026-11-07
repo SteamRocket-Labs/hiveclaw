@@ -4972,6 +4972,94 @@ async def test_committed_round_is_immutable_under_repeat_and_stale_prepare(owner
         assert (row.state, row.version, row.provider_request_id, row.seal_json, row.round_committed_event_id) == before
 
 
+@pytest.mark.parametrize("provider_options,expected_status", [
+    ({}, "killed"),
+    ({"mcp_servers": [{"type": "url", "url": "http://127.0.0.1/mcp", "name": "local"}]}, "needs_reconciliation"),
+    ({"tools": [{"type": "web_search_20250305", "name": "web_search"}]}, "needs_reconciliation"),
+    ({"tools": [{"google_search": {}}]}, "needs_reconciliation"),
+    ({"tools": {"google_search": {}}}, "needs_reconciliation"),
+    ({"tools": [None]}, "needs_reconciliation"),
+    ({"tools": "unknown"}, "needs_reconciliation"),
+    ({"tools": {}}, "needs_reconciliation"),
+    ({"tools": [{"type": "function", "function": {"name": "read_file"}}]}, "killed"),
+])
+async def test_cancelled_model_round_and_run_commit_atomically_and_cannot_be_reclaimed(
+    owner_sessionmaker, provider_options, expected_status,
+) -> None:
+    from types import SimpleNamespace
+
+    from app.models.chat_transcript_event import ChatTranscriptEvent
+    from app.models.runtime_task import RuntimeTask
+    from app.models.runtime_terminal_boundary_outbox import RuntimeTerminalBoundaryOutbox
+    from app.models.session_v2 import SessionModelResult
+    from app.services.runtime_task_claim_service import build_runtime_task_claim_candidate_statement
+    from app.services.session_model_round import bind_round_inputs, prepare_model_request
+    from app.services.web_chat_run_orchestrator import _fail_session_model_request
+
+    tenant_id, _, agent_id, session_id, run_id = await _seed_session(owner_sessionmaker, active_run=True)
+    common = dict(tenant_id=tenant_id, agent_id=agent_id, session_id=session_id, run_id=run_id,
+        turn_id=f"turn-{run_id.hex}", round_index=1)
+    async with owner_sessionmaker() as db:
+        messages = await bind_round_inputs(db, **common)
+        provider_request_id = await prepare_model_request(db, **common, messages=messages, tools=[],
+            provider="anthropic", model="local", wire_request={"messages": messages, "tools": [],
+                "reasoning": provider_options})
+        await db.commit()
+    state = SimpleNamespace(agent=SimpleNamespace(id=agent_id, tenant_id=tenant_id), session_id=str(session_id),
+        run_uuid=run_id, metadata={}, provider_reconciliation=None, ports=SimpleNamespace(runtime=SimpleNamespace(
+            tenant_scoped_session=lambda _: owner_sessionmaker())))
+    # Stop at the failure callback's commit: no later finalizer can repair a crash window.
+    await _fail_session_model_request(state, round_index=1, provider_request_id=provider_request_id,
+        error_class="cancelled", retry_safe=False)
+    async with owner_sessionmaker() as restarted:
+        result = await restarted.scalar(select(SessionModelResult).where(SessionModelResult.run_id == run_id))
+        task = await restarted.get(RuntimeTask, run_id)
+        assert task.status == expected_status
+        assert result.state == ("failed" if expected_status == "killed" else "needs_reconciliation")
+        assert result.seal_json == {"error_class": "cancelled", "delivery_state": "unknown", "retry_safe": False}
+        assert (result.reconciliation_owner is None) == (expected_status == "killed")
+        assert (state.provider_reconciliation is None) == (expected_status == "killed")
+        transaction_ids = (await restarted.execute(text(
+            "SELECT r.xmin::text, t.xmin::text FROM session_model_results r "
+            "JOIN runtime_tasks t ON t.id = r.run_id WHERE r.run_id = :run_id"
+        ), {"run_id": run_id})).one()
+        assert transaction_ids[0] == transaction_ids[1]
+        assert task.metadata_json["terminal_committed_status"] == expected_status
+        boundary = await restarted.scalar(select(RuntimeTerminalBoundaryOutbox).where(
+            RuntimeTerminalBoundaryOutbox.runtime_task_id == run_id))
+        assert boundary.terminal_status == expected_status
+        assert await restarted.scalar(build_runtime_task_claim_candidate_statement().where(RuntimeTask.id == run_id)) is None
+        events = list((await restarted.execute(select(ChatTranscriptEvent.event_type).where(
+            ChatTranscriptEvent.session_id == session_id))).scalars())
+        assert ("run.cancelled" if expected_status == "killed" else "run.needs_reconciliation") in events
+
+
+@pytest.mark.parametrize("task_type", ["web_chat_turn", "delegation"])
+async def test_session_list_uses_bound_peer_or_delegation_run(owner_sessionmaker, task_type) -> None:
+    from types import SimpleNamespace
+
+    from app.api.chat_sessions import SessionOut, _with_run_status
+    from app.models.agent import Agent
+    from app.models.chat_session import ChatSession
+    from app.models.runtime_task import RuntimeTask
+
+    tenant_id, user_id, agent_id, session_id, run_id = await _seed_session(owner_sessionmaker, active_run=True)
+    async with owner_sessionmaker() as db:
+        peer_id = uuid.uuid4()
+        db.add(Agent(id=peer_id, tenant_id=tenant_id, name="Peer", creator_id=user_id))
+        await db.flush()
+        task = await db.get(RuntimeTask, run_id)
+        task.parent_agent_id, task.parent_session_id, task.task_type = peer_id, str(uuid.uuid4()), task_type
+        task.status = "killed"
+        session = await db.get(ChatSession, session_id)
+        session.runtime_task_id, session.peer_agent_id = run_id, peer_id
+        await db.commit()
+        rows = await _with_run_status(db, [SessionOut(id=str(session_id), title="Peer", source_channel="agent",
+            agent_id=str(agent_id), user_id=str(user_id), created_at=datetime.now(timezone.utc).isoformat(),
+            runtime_task_id=str(run_id))], SimpleNamespace(id=agent_id, tenant_id=tenant_id))
+        assert [row.status for row in rows] == ["killed"]
+
+
 async def test_ambiguous_provider_failure_fences_result_run_and_event_chain(owner_sessionmaker) -> None:
     from app.models.chat_transcript_event import ChatTranscriptEvent
     from app.models.runtime_task import RuntimeTask

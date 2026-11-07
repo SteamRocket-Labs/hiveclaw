@@ -217,6 +217,11 @@ const USER_CONVERSATION_ITEM_TYPES = new Set<ThreadItemType>(['approval_request'
 const NON_BLOCKING_STATUS_EVENTS = new Set(['memory_context_degraded']);
 
 export function shouldRenderThreadItemInConversation(item: ThreadItem, operatorView: boolean): boolean {
+  if (!operatorView && item.item_type === 'approval_request'
+    && (item.metadata?.approval_id || (item.event_type === 'permission_request'
+      && !item.metadata?.permission_request_id && !item.user_action?.token))) return false;
+  if (!operatorView && item.metadata?.runtime_action_from_result_integration === true
+    && item.metadata?.notification_source === 'approval') return false;
   if (operatorView && item.audience === 'operator') return true;
   if (item.audience === 'operator') return false;
   if (NON_BLOCKING_STATUS_EVENTS.has(item.event_type)) return false;

@@ -3172,8 +3172,18 @@ def _spawn_async_delegation_task(
                     logger.warning("[Orchestrator] Failed to persist terminal evidence %s: %s", task_id, exc)
                 await _settle_delegation_budget(request=request, task_id=task_id, status=terminal_status)
             else:
-                delegation_result.failed = True
-                delegation_result.content = (
+                from app.services.runtime_display_status import runtime_display_status
+                from app.services.runtime_terminal_settlement import TERMINAL_SETTLEMENT_STATUSES
+                from app.services.runtime_task_fence import clear_runtime_task_fence, reset_runtime_task_fence
+
+                token = clear_runtime_task_fence()
+                try:
+                    committed = await get_runtime_task_record(task_id)
+                finally:
+                    reset_runtime_task_fence(token)
+                committed_status = str((committed or {}).get("status") or "")
+                delegation_result.failed = committed_status != "completed"
+                delegation_result.content = runtime_display_status(committed_status) if committed_status in TERMINAL_SETTLEMENT_STATUSES else (
                     "Delegation terminal output was dropped because its RuntimeTask authority changed; "
                     "read the durable task state for the canonical outcome."
                 )

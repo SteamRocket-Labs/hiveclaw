@@ -844,7 +844,7 @@ def fingerprint_rls_bypass_scopes(app_root: Path) -> str:
 # Merging A4c with G3 keeps each entry from one side.
 # D3 resolves saved workspace selections with the existing scoped source readers;
 # no bypass callsite, grant, predicate or authority boundary is added.
-RLS_BYPASS_SCOPES_SHA256 = "3644d5f0c0b6529c66fa2faa00e977758506d0b2e7fc31d0b9b993a9c1c5087c"
+RLS_BYPASS_SCOPES_SHA256 = "b27c8c2af050f4bb168a2c76883ae1e9b6a786ed7749e4fedb1f619f27b77ec4"
 
 
 def scan_rls_bypass_callsites(app_root: Path) -> list[RLSBypassCallsite]:

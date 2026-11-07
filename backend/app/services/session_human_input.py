@@ -1076,8 +1076,8 @@ def input_parts_to_runtime_messages(rows: Iterable[SessionTurnInput], *, answer_
                 "session_input_id": str(row.id),
                 "source_ref": f"session-input:{row.id}",
                 "bound_round_id": row.bound_round_id,
-                "workspace_file_refs": [part for part in row.content_parts_json or []
-                    if part.get("type") == "workspace_file_ref"],
+                **({"workspace_file_refs": [part for part in row.content_parts_json or []
+                    if part.get("type") == "workspace_file_ref"]} if has_saved_file else {}),
             }
         )
     return messages

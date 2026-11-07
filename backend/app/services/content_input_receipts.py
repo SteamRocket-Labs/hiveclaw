@@ -705,9 +705,16 @@ async def _validate_agent_context_dependency(db, tenant_id, dependency, *, user,
 
             current = agent_identity_content(source.name, source.role_description)
             if canonical_content_hash(current) != dependency["source_version"]:
-                raise ContentInputReceiptError(
-                    "content_source_changed", "The employee identity has changed since observation.", 403
-                )
+                from app.models.tenant import Tenant
+
+                company_name = await db.scalar(select(Tenant.name).where(Tenant.id == tenant_id))
+                if (
+                    not company_name
+                    or canonical_content_hash({**current, "company_name": company_name}) != dependency["source_version"]
+                ):
+                    raise ContentInputReceiptError(
+                        "content_source_changed", "The employee identity has changed since observation.", 403
+                    )
             if content is not None and content.get("identity") != current:
                 raise ContentInputReceiptError(
                     "content_source_unavailable", "The identity labels lack an exact original witness.", 503

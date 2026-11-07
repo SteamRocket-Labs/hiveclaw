@@ -381,6 +381,15 @@ async def test_opened_assistant_retains_original_context_sources_without_attesti
         agent = await db.get(Agent, agent_id)
         dependencies = await context_dependencies(agent)
         await _validate_input_dependencies(db, tenant_id, dependencies, user=actor)
+        current_identity = {**dependencies[0], "source_version": canonical_content_hash({
+            **agent_identity_content(agent.name, agent.role_description), "company_name": f"Source {tag}",
+        })}
+        await _validate_input_dependencies(db, tenant_id, [current_identity], user=actor)
+        wrong_company = {**current_identity, "source_version": canonical_content_hash({
+            **agent_identity_content(agent.name, agent.role_description), "company_name": "Other company",
+        })}
+        with pytest.raises(ContentInputReceiptError):
+            await _validate_input_dependencies(db, tenant_id, [wrong_company], user=actor)
         platform = await _platform_skill_sources(db, tenant_id, agent_id)
         assert {path.split("/")[1] for path in platform} == (
             skill_seeder.DEFAULT_BUILTIN_SKILL_FOLDERS | skill_seeder.DEFAULT_PACK_SKILL_FOLDERS)
@@ -595,6 +604,9 @@ async def test_open_is_stable_and_resume_does_not_duplicate(
     assert first.status_code == 200 and second.status_code == 200, (first.text, second.text)
     assert first.json()["agent"]["id"] == second.json()["agent"]["id"]
     agent_id = first.json()["agent"]["id"]
+    soul = (AgentManager()._agent_dir(uuid.UUID(agent_id)) / "soul.md").read_text(encoding="utf-8")
+    assert f"<company>M1F open {tag}</company>" in soul
+    assert "the company" not in soul
     assert {first.json()["created"], second.json()["created"]} == {True, False}
     assert await _scalar(owner_sessionmaker, "SELECT count(*) FROM agents WHERE creator_id = :u AND name = 'My Assistant'", u=user_id) == 1
     facts = await _rows(

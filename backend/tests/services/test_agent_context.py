@@ -49,6 +49,7 @@ async def test_build_agent_context_preserves_every_complete_authorized_resource(
     sessions = [
         _FakeSession([[]]),
         _FakeSession([SimpleNamespace(value={"content": company})]),
+        _FakeSession(["Acme"]),
     ]
 
     def fake_tenant_scoped_session(*_args, **_kwargs):
@@ -260,6 +261,7 @@ async def test_frozen_context_uses_pinned_tenant_session_for_channel_and_company
     sessions = [
         _FakeSession([[SimpleNamespace(channel_type="slack")]]),
         _FakeSession([None, None, None]),
+        _FakeSession(["Acme"]),
     ]
 
     def fake_tenant_scoped_session(requested_tenant_id, **_kwargs):
@@ -285,8 +287,45 @@ async def test_frozen_context_uses_pinned_tenant_session_for_channel_and_company
         include_skill_catalog=False,
     )
 
-    assert tenant_calls == [tenant_id, tenant_id]
+    assert tenant_calls == [tenant_id, tenant_id, tenant_id]
     assert "You have slack channel(s) configured" in prompt
+    assert 'Current company name: "Acme"' in prompt
+
+
+@pytest.mark.asyncio
+async def test_existing_soul_uses_current_company_without_rewriting_files(monkeypatch, tmp_path):
+    from app.services import agent_context
+    from app.services.config_versioning import canonical_content_hash
+
+    agent_id, tenant_id = uuid4(), uuid4()
+    root = tmp_path / str(agent_id)
+    root.mkdir()
+    soul_path = root / "soul.md"
+    original = b"# Soul\nI am an employee of the company.\n"
+    soul_path.write_bytes(original)
+    sessions = [_FakeSession([[]]), _FakeSession([None, None, None]), _FakeSession(["蓝鲸公司"])]
+    monkeypatch.setattr("app.database.tenant_scoped_session", lambda *_a, **_k: sessions.pop(0))
+    monkeypatch.setattr(agent_context, "TOOL_WORKSPACE", tmp_path)
+    monkeypatch.setattr(agent_context, "PERSISTENT_DATA", tmp_path)
+
+    async def no_a2a(*_a, **_k):
+        return ""
+
+    monkeypatch.setattr(agent_context, "_build_a2a_collaborators_context", no_a2a)
+    sources = []
+    prompt = await agent_context.build_agent_context(
+        agent_id, "My Assistant", tenant_id=tenant_id, include_skill_catalog=False, source_refs=sources,
+    )
+    assert 'Current company name: "蓝鲸公司"' in prompt
+    assert "takes precedence over company placeholders" in prompt
+    assert prompt.count("same language the user uses") == 1
+    assert prompt.count("including progress notes between tool calls") == 1
+    assert soul_path.read_bytes() == original
+    assert set(root.iterdir()) == {soul_path}
+    identity = next(source for source in sources if source["source_kind"] == "agent_identity")
+    assert identity["source_version"] == canonical_content_hash({
+        **agent_context.agent_identity_content("My Assistant", None), "company_name": "蓝鲸公司",
+    })
 
 
 @pytest.mark.asyncio

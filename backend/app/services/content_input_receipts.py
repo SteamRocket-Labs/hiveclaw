@@ -695,7 +695,8 @@ async def _validate_agent_context_dependency(db, tenant_id, dependency, *, user,
             content = await load_known_native_default_context(db, tenant_id=tenant_id, agent_id=agent_id, ref=ref)
             if content is None:
                 content = await load_employee_creation_context(
-                    db, tenant_id=tenant_id, agent_id=agent_id, user=user, runtime_request=runtime_request
+                    db, tenant_id=tenant_id, agent_id=agent_id, user=user, runtime_request=runtime_request,
+                    allow_missing=True,
                 )
         from app.config import get_settings
 
@@ -707,19 +708,18 @@ async def _validate_agent_context_dependency(db, tenant_id, dependency, *, user,
                 raise ContentInputReceiptError(
                     "content_source_changed", "The employee identity has changed since observation.", 403
                 )
-            if content.get("identity") != current:
+            if content is not None and content.get("identity") != current:
                 raise ContentInputReceiptError(
                     "content_source_unavailable", "The identity labels lack an exact original witness.", 503
                 )
             return
         if resident:
-            sources = content.get("resident_sources", {})
-            version = sources.get(ref) if isinstance(sources, dict) else None
-            if version != dependency["source_version"]:
+            sources = content.get("resident_sources", {}) if content is not None else None
+            if content is not None and (not isinstance(sources, dict) or sources.get(ref) != dependency["source_version"]):
                 raise ContentInputReceiptError(
                     "content_source_unavailable", "The resident source lacks an exact bootstrap witness.", 503
                 )
-            _validate_source_bytes(Path(get_settings().AGENT_DATA_DIR) / str(agent_id) / ref, version)
+            _validate_source_bytes(Path(get_settings().AGENT_DATA_DIR) / str(agent_id) / ref, dependency["source_version"])
             return
 
 

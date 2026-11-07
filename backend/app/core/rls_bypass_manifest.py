@@ -834,9 +834,10 @@ def fingerprint_rls_bypass_scopes(app_root: Path) -> str:
 # A4b outbox return: reviewed source/scope deltas are limited to notification
 # acknowledgements, approval projection and web runtime. Bypass calls are unchanged.
 # Round 3 includes bounded active-origin retries and the existing notification uniqueness key.
+# Merging A4s with main: each digest entry equals the reviewed main or A4s entry; no entry changed on both sides.
 # G2b tool settings: reviewed shared assignment lock/permission helpers and
 # sorted startup assignments; no bypass call or exception is added.
-RLS_BYPASS_SCOPES_SHA256 = "c2a72e880b4244c64ca9f4ada18db9c1b3a0d3f4a7c5f581f7411d2dafa08317"
+RLS_BYPASS_SCOPES_SHA256 = "4f1a4ceb9e080dea8fc93f44d63df0870a9f926a16858b1d6b176e8935fc8b1f"
 
 
 def scan_rls_bypass_callsites(app_root: Path) -> list[RLSBypassCallsite]:

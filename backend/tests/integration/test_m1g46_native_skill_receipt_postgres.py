@@ -607,11 +607,11 @@ async def test_native_frozen_identity_and_policy_sources_revalidate_current_auth
                 {"name": agent.name, "role_description": agent.role_description or ""}
             ),
         }
-        with pytest.raises(ContentInputReceiptError) as missing:
-            await validate_runtime_input_dependencies(
-                db, ToolExecutionRequest(tool_name="read_file", arguments={}, context=legacy_context), [source]
-            )
-        assert missing.value.status_code == 503
+        legacy_request = ToolExecutionRequest(tool_name="read_file", arguments={}, context=legacy_context)
+        await validate_runtime_input_dependencies(db, legacy_request, [source])
+        with pytest.raises(ContentInputReceiptError) as changed:
+            await validate_runtime_input_dependencies(db, legacy_request, [{**source, "source_version": "f" * 64}])
+        assert changed.value.status_code == 403 and changed.value.code == "content_source_changed"
 
 
 async def test_native_actor_observation_rejects_rehash_and_current_owner_loss(

@@ -5,6 +5,7 @@ import { useTranslation } from 'react-i18next';
 import { IconAlertTriangle, IconChevronLeft, IconChevronRight, IconFileText, IconLoader, IconX } from '@tabler/icons-react';
 import { useAuthStore } from '../../stores';
 import { isAdministratorRole } from '../../roles';
+import { assistantNameForDisplay } from '../assistant/assistantScope';
 import { canOpenWorkBrowser } from '../session-workbench/workBrowserState';
 
 import { SessionGoalPanel } from '../session-workbench/SessionGoalPanel';
@@ -670,7 +671,7 @@ export function SessionRuntimePanel({
 
   const renderDocumentRow = (doc: WorkspaceDocumentModel) => {
     const contributor = artifactContributorLabel(doc.artifact, agent);
-    const contributorLabel = contributor === 'My Assistant' ? t('assistant.title', 'My Assistant') : contributor;
+    const contributorLabel = assistantNameForDisplay(contributor, t('assistant.title', 'My Assistant'));
     return (
       <button
         key={doc.key}

@@ -125,7 +125,19 @@
   background: transparent;
   cursor: pointer;
   text-align: start;
+  min-width: 0;
 }
+
+.swb-history-row { display: flex; align-items: center; }
+.swb-history-remove {
+  flex-shrink: 0;
+  padding: 8px;
+  border: 0;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+.swb-history-remove:hover { color: var(--error); }
 
 .swb-history-item:hover {
   background: var(--bg-secondary);

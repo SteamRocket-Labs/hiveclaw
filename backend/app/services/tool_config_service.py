@@ -10,10 +10,10 @@ across tenants.
 
 from __future__ import annotations
 
-from copy import deepcopy
 import logging
 import re
 import uuid
+from urllib.parse import parse_qsl, urlsplit
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -81,29 +81,39 @@ def mask_tool_config_secrets(config: dict | None, config_schema: dict | None) ->
     return masked
 
 
-def _is_masked_secret_value(value: object) -> bool:
-    rows = _split_multiline_secret_rows(value)
-    return bool(rows) and all(row == MASKED_SECRET_SENTINEL for row in rows)
+def is_safe_agent_tool_setting(key: str, value: object, config_schema: dict | None, *, platform_tool: bool) -> bool:
+    """Only platform-declared non-credential scalars may be shown or handed over."""
+    field = _schema_fields_by_key(config_schema).get(key)
+    normalized = re.sub(r"[^a-z0-9]", "", key.casefold())
+    if (not platform_tool or field is None or not isinstance(value, (str, int, float, bool, type(None)))
+            or value == MASKED_SECRET_SENTINEL or field.get("type") in {"password", "object", "array"}
+            or field.get("format") == "password" or field.get("writeOnly") or is_agent_tool_credential_key(key)
+            or normalized in {"headers", "auth", "env", "environment", "envvars", "authorization"}
+            or normalized.endswith("headers")):
+        return False
+    if isinstance(value, str):
+        try:
+            url = urlsplit(value)
+            if url.username is not None or url.password is not None:
+                return False
+            if any(is_agent_tool_credential_key(name) or name.casefold() in {"key", "auth", "authorization", "signature", "sig"}
+                    for name, _ in parse_qsl(url.query, keep_blank_values=True)):
+                return False
+        except ValueError:
+            return False
+    return True
 
 
-def mask_agent_tool_config_secrets(config: dict | None, config_schema: dict | None) -> dict:
-    """Mask schema-declared and structurally named AgentTool credentials."""
+def mask_agent_tool_config_secrets(config: dict | None, config_schema: dict | None, *, platform_tool: bool = True) -> dict:
+    """Mask each unsafe non-empty setting as a whole, including containers."""
+    return {key: value if value in (None, "", {}, []) or is_safe_agent_tool_setting(key, value, config_schema, platform_tool=platform_tool)
+        else MASKED_SECRET_SENTINEL for key, value in config.items()} if isinstance(config, dict) else {}
 
-    def mask(item: object) -> object:
-        if isinstance(item, dict):
-            protected: dict[str, object] = {}
-            for key, child in item.items():
-                if is_agent_tool_credential_key(key) and child:
-                    protected[key] = child if _is_masked_secret_value(child) else MASKED_SECRET_SENTINEL
-                else:
-                    protected[key] = mask(child)
-            return protected
-        if isinstance(item, list):
-            return [mask(child) for child in item]
-        return item
 
-    schema_masked = mask_tool_config_secrets(config, config_schema)
-    return mask(schema_masked)  # type: ignore[return-value]
+def clear_agent_tool_config_secrets(config: dict | None, config_schema: dict | None, *, platform_tool: bool = True) -> dict:
+    """Empty every setting that cannot safely pass the disclosure boundary."""
+    return {key: value if is_safe_agent_tool_setting(key, value, config_schema, platform_tool=platform_tool) else ""
+        for key, value in config.items()} if isinstance(config, dict) else {}
 
 
 def merge_tool_config_secrets(
@@ -151,37 +161,16 @@ def merge_agent_tool_config_secrets(
     incoming: dict | None,
     stored: dict | None,
     config_schema: dict | None,
+    *,
+    platform_tool: bool = True,
 ) -> dict:
-    """Preserve stored AgentTool credentials when a masked API value returns."""
-
-    schema_merged = merge_tool_config_secrets(incoming, stored, config_schema)
-    stored = stored if isinstance(stored, dict) else {}
-
-    def merge(item: object, previous: object) -> object:
-        if isinstance(previous, dict):
-            output = deepcopy(item) if isinstance(item, dict) else {}
-            for key, old_child in previous.items():
-                if is_agent_tool_credential_key(key):
-                    if key not in output or _is_masked_secret_value(output.get(key)):
-                        output[key] = deepcopy(old_child)
-                    continue
-                if isinstance(old_child, (dict, list)):
-                    candidate = merge(output.get(key), old_child)
-                    if candidate not in ({}, []) or key in output:
-                        output[key] = candidate
-            return output
-        if isinstance(previous, list):
-            current = list(item) if isinstance(item, list) else []
-            output: list[object] = []
-            for index, old_child in enumerate(previous):
-                new_child = current[index] if index < len(current) else None
-                output.append(merge(new_child, old_child))
-            if len(current) > len(previous):
-                output.extend(deepcopy(current[len(previous) :]))
-            return output
-        return deepcopy(item)
-
-    return merge(schema_merged, stored)  # type: ignore[return-value]
+    """A sentinel keeps current storage; every other submitted value is new input."""
+    merged = dict(stored) if isinstance(stored, dict) else {}
+    for key, value in (incoming or {}).items():
+        if not is_safe_agent_tool_setting(key, value, config_schema, platform_tool=platform_tool) and value == MASKED_SECRET_SENTINEL:
+            continue
+        merged[key] = value
+    return merged
 
 
 _ENCRYPTED_SECRET_PREFIX = "enc:v1:"

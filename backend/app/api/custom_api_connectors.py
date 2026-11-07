@@ -346,6 +346,7 @@ async def create_custom_api_connector(
             config={},
             source="system",
             merge_config=False,
+            current_user=current_user,
         )
     await db.commit()
     await db.refresh(tool)

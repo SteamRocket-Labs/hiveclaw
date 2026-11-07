@@ -12,11 +12,12 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.permissions import check_agent_access, require_agent_manage_access
+from app.core.permissions import check_agent_access
 from app.core.security import get_current_user
 from app.database import get_db
 from app.models.tool import Tool, AgentTool
 from app.models.user import User
+from app.services.agent_tool_assignment_service import ensure_agent_tool_assignment, lock_agent_tool_config_write
 
 router = APIRouter(tags=["email-channel"])
 
@@ -155,7 +156,7 @@ async def configure_email_channel(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    agent = await require_agent_manage_access(db, current_user, agent_id)
+    await lock_agent_tool_config_write(db, agent_id, current_user=current_user)
 
     email_config = {
         "email_provider": data.get("email_provider", "gmail"),
@@ -169,22 +170,8 @@ async def configure_email_channel(
         tool = r.scalar_one_or_none()
         if not tool:
             continue
-        at_r = await db.execute(select(AgentTool).where(AgentTool.agent_id == agent_id, AgentTool.tool_id == tool.id))
-        at = at_r.scalar_one_or_none()
-        if at:
-            if at.tenant_id is None:
-                at.tenant_id = agent.tenant_id
-            at.config = {**(at.config or {}), **email_config}
-        else:
-            db.add(
-                AgentTool(
-                    agent_id=agent_id,
-                    tenant_id=agent.tenant_id,
-                    tool_id=tool.id,
-                    enabled=True,
-                    config=email_config,
-                )
-            )
+        await ensure_agent_tool_assignment(db, agent_id=agent_id, tool_id=tool.id,
+            enabled=None, source=None, config=email_config, current_user=current_user)
     await db.flush()
 
     return {
@@ -230,15 +217,12 @@ async def delete_email_channel(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    await require_agent_manage_access(db, current_user, agent_id)
+    await lock_agent_tool_config_write(db, agent_id, current_user=current_user)
     for tool_name in ("send_email", "read_emails", "reply_email"):
         r = await db.execute(select(Tool).where(Tool.name == tool_name))
         tool = r.scalar_one_or_none()
         if not tool:
             continue
-        at_r = await db.execute(select(AgentTool).where(AgentTool.agent_id == agent_id, AgentTool.tool_id == tool.id))
-        at = at_r.scalar_one_or_none()
-        if at and at.config:
-            at.config = {
-                k: v for k, v in at.config.items() if k not in ("email_provider", "email_address", "auth_code")
-            }
+        await ensure_agent_tool_assignment(db, agent_id=agent_id, tool_id=tool.id, enabled=None, source=None,
+            config=lambda stored: {k: v for k, v in stored.items() if k not in ("email_provider", "email_address", "auth_code")},
+            current_user=current_user, create=False)

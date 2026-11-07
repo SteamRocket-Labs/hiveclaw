@@ -536,6 +536,8 @@
   position: sticky;
   top: var(--space-4);
   display: grid;
+  min-width: 0;
+  grid-template-columns: minmax(0, 1fr);
   gap: var(--space-3);
   padding: var(--space-4);
 }
@@ -552,6 +554,10 @@
 .personal-kb-evidence {
   display: grid;
   gap: var(--space-2);
+}
+
+.personal-kb-evidence {
+  overflow-wrap: anywhere;
 }
 
 .personal-kb-preview-title {

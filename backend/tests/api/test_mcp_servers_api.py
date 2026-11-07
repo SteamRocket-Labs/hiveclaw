@@ -343,7 +343,7 @@ def test_put_agent_mcp_server_upserts_with_agent_tenant(monkeypatch):
         return SimpleNamespace(id=agent_id, tenant_id=agent_tenant), "manage"
 
     async def fake_set(
-        db_session, tenant_id, target_agent_id, target_server_id, *, enabled, default_tool_mode, always_load
+        db_session, tenant_id, target_agent_id, target_server_id, *, enabled, default_tool_mode, always_load, current_user
     ):
         captured.update(
             tenant_id=tenant_id,
@@ -352,6 +352,7 @@ def test_put_agent_mcp_server_upserts_with_agent_tenant(monkeypatch):
             enabled=enabled,
             default_tool_mode=default_tool_mode,
             always_load=always_load,
+            current_user=current_user,
         )
         return {
             "id": str(uuid4()),
@@ -377,6 +378,7 @@ def test_put_agent_mcp_server_upserts_with_agent_tenant(monkeypatch):
     assert captured["enabled"] is True
     assert captured["default_tool_mode"] == "approval"
     assert captured["always_load"] is True
+    assert captured["current_user"] is current_user
     assert resp.json()["enabled"] is True
     assert resp.json()["always_load"] is True
 
@@ -391,10 +393,11 @@ def test_put_agent_mcp_server_defaults_tool_mode_auto(monkeypatch):
         return SimpleNamespace(id=agent_id, tenant_id=current_user.tenant_id), "manage"
 
     async def fake_set(
-        db_session, tenant_id, target_agent_id, target_server_id, *, enabled, default_tool_mode, always_load
+        db_session, tenant_id, target_agent_id, target_server_id, *, enabled, default_tool_mode, always_load, current_user
     ):
         captured["default_tool_mode"] = default_tool_mode
         captured["always_load"] = always_load
+        captured["current_user"] = current_user
         return {
             "id": str(uuid4()),
             "agent_id": str(target_agent_id),
@@ -412,6 +415,7 @@ def test_put_agent_mcp_server_defaults_tool_mode_auto(monkeypatch):
     assert resp.status_code == 200
     assert captured["default_tool_mode"] == "auto"
     assert captured["always_load"] is False
+    assert captured["current_user"] is current_user
 
 
 def test_put_agent_mcp_server_rejects_invalid_default_mode():

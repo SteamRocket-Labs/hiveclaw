@@ -835,8 +835,10 @@ def fingerprint_rls_bypass_scopes(app_root: Path) -> str:
 # acknowledgements, approval projection and web runtime. Bypass calls are unchanged.
 # Round 3 includes bounded active-origin retries and the existing notification uniqueness key.
 # Merging A4s with main: each digest entry equals the reviewed main or A4s entry; no entry changed on both sides.
-# B6 preserves settled cancellation and unknown approval outcomes; bypass grants are unchanged.
-RLS_BYPASS_SCOPES_SHA256 = "11b1d3e471905d9e595179d72bdb5204d491ac90b09507ff5586a5e1fca738c2"
+# G2b tool settings: reviewed shared assignment lock/permission helpers and
+# sorted startup assignments; no bypass call or exception is added.
+# B6 preserves settled cancellation and unknown approval outcomes; merging B6 with main keeps each entry from one side.
+RLS_BYPASS_SCOPES_SHA256 = "37808e441356922ba3def73725ae0dc3adfc70faddba15711b68732f83d452b9"
 
 
 def scan_rls_bypass_callsites(app_root: Path) -> list[RLSBypassCallsite]:

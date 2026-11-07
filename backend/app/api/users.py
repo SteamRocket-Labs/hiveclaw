@@ -2,7 +2,7 @@
 
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -16,6 +16,7 @@ from app.models.audit import AuditLog
 from app.models.local_bridge import LocalAgentBridgePairingSession
 from app.models.user import User
 from app.services.external_principal_service import platform_member_user_predicate
+from app.api.agent_knowledge import _schedule_personal_import_worker
 from app.services.user_offboarding_service import (
     build_user_offboarding_preview,
     find_user_offboarding_replay,
@@ -294,6 +295,7 @@ async def preview_user_offboarding(
 async def offboard_user(
     user_id: uuid.UUID,
     data: UserOffboardingRequest,
+    background_tasks: BackgroundTasks,
     tenant_id: str | None = None,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
@@ -331,6 +333,8 @@ async def offboard_user(
     )
     if replay is not None:
         await db.commit()
+        _schedule_personal_import_worker(background_tasks, tenant_id=pinned_tenant_id,
+            owner_user_id=data.successor_user_id)
         await publish_user_offboarding_runtime_cancellations(replay)
         return _offboarding_response(replay)
     successor = (
@@ -353,6 +357,8 @@ async def offboard_user(
     # signals are published. The RuntimeTask status + claim-version fence is
     # authoritative even when Redis is unavailable.
     await db.commit()
+    _schedule_personal_import_worker(background_tasks, tenant_id=pinned_tenant_id,
+        owner_user_id=data.successor_user_id)
     await publish_user_offboarding_runtime_cancellations(receipt)
     return _offboarding_response(receipt)
 

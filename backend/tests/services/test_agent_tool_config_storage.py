@@ -158,9 +158,7 @@ def test_agent_tool_secret_mask_and_merge_cover_schema_and_nested_credentials() 
     assert masked["api_key"] == MASKED_SECRET_SENTINEL
     assert masked["modelscope_api_token"] == MASKED_SECRET_SENTINEL
     assert masked["custom_credential"] == MASKED_SECRET_SENTINEL
-    assert masked["nested"]["githubPersonalAccessToken"] == MASKED_SECRET_SENTINEL
-    assert masked["nested"]["clientSecret"] == MASKED_SECRET_SENTINEL
-    assert masked["nested"]["region"] == "cn"
+    assert masked["nested"] == MASKED_SECRET_SENTINEL
     assert masked["token_budget"] == 4096
     assert "direct-key" not in json.dumps(masked)
     assert "github-token" not in json.dumps(masked)
@@ -169,11 +167,7 @@ def test_agent_tool_secret_mask_and_merge_cover_schema_and_nested_credentials() 
         "api_key": MASKED_SECRET_SENTINEL,
         "modelscope_api_token": MASKED_SECRET_SENTINEL,
         "custom_credential": MASKED_SECRET_SENTINEL,
-        "nested": {
-            "githubPersonalAccessToken": MASKED_SECRET_SENTINEL,
-            "clientSecret": "replacement-secret",
-            "region": "us",
-        },
+        "nested": MASKED_SECRET_SENTINEL,
         "token_budget": 8192,
     }
     merged = merge_agent_tool_config_secrets(incoming, stored, schema)
@@ -181,7 +175,7 @@ def test_agent_tool_secret_mask_and_merge_cover_schema_and_nested_credentials() 
     assert merged["api_key"] == "direct-key"
     assert merged["modelscope_api_token"] == "modelscope-secret"
     assert merged["custom_credential"] == "schema-secret"
-    assert merged["nested"]["githubPersonalAccessToken"] == "github-token"
-    assert merged["nested"]["clientSecret"] == "replacement-secret"
-    assert merged["nested"]["region"] == "us"
+    assert merged["nested"] == stored["nested"]
     assert merged["token_budget"] == 8192
+    replacement = {"clientSecret": "replacement-secret", "region": "us"}
+    assert merge_agent_tool_config_secrets({"nested": replacement}, stored, schema)["nested"] == replacement

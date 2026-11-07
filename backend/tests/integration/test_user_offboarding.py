@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
-from fastapi import HTTPException
+from fastapi import BackgroundTasks, HTTPException
 from sqlalchemy import func, select
 
 from app.api.users import UserOffboardingRequest, offboard_user
@@ -531,6 +531,7 @@ async def test_offboarding_and_exchange_serialize_on_pairing_locks_without_deadl
 
             db.execute = execute  # type: ignore[method-assign]
             return await offboard_user(
+                background_tasks=BackgroundTasks(),
                 user_id=target_id,
                 data=UserOffboardingRequest(
                     successor_user_id=successor_id,
@@ -651,6 +652,7 @@ async def test_offboarding_first_leaves_no_claimable_pairing_for_exchange(
 
     async with app_user_sessionmaker() as db:
         receipt = await offboard_user(
+            background_tasks=BackgroundTasks(),
             user_id=target_id,
             data=UserOffboardingRequest(
                 successor_user_id=successor_id,
@@ -810,6 +812,7 @@ async def test_fresh_unbound_approval_cannot_bind_offboarded_identity(
 
             db.execute = execute  # type: ignore[method-assign]
             return await offboard_user(
+                background_tasks=BackgroundTasks(),
                 user_id=target_id,
                 data=UserOffboardingRequest(
                     successor_user_id=successor_id,
@@ -939,6 +942,7 @@ async def test_fresh_approval_before_offboarding_is_rejected_by_offboarding(
 
     async with app_user_sessionmaker() as db:
         receipt = await offboard_user(
+            background_tasks=BackgroundTasks(),
             user_id=target_id,
             data=UserOffboardingRequest(
                 successor_user_id=successor_id,

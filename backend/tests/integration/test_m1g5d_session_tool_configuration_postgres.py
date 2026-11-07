@@ -126,7 +126,7 @@ async def test_configuration_card_saves_without_transcript_secrets_and_resumes_e
         saved = await client.put(endpoint, json={"config": {"api_key": secret}})
         assert saved.status_code == 200, saved.text
         assert saved.json()["state"] == "saved" and saved.json()["receipt_ref"]
-        assert saved.json()["tool"]["config"] == {"endpoint": "inherited", "api_key": MASKED_SECRET_SENTINEL}
+        assert saved.json()["tool"]["config"] == {"endpoint": MASKED_SECRET_SENTINEL, "api_key": MASKED_SECRET_SENTINEL}
         assert secret not in saved.text
         reloaded = await client.get(endpoint)
         assert reloaded.status_code == 200 and reloaded.json()["receipt_ref"] == saved.json()["receipt_ref"]

@@ -96,7 +96,7 @@ async def seed_builtin_tools():
         if new_tool_ids:
             agents_result = await db.execute(select(Agent.id))
             agent_ids = [row[0] for row in agents_result.fetchall()]
-            for agent_id in agent_ids:
+            for agent_id in sorted(agent_ids):
                 for tool_id in new_tool_ids:
                     await ensure_agent_tool_assignment(
                         db,

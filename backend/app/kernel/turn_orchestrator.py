@@ -2127,11 +2127,14 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                     if dynamic_notice is not None:
                         from app.services.session_model_round import split_context_message
 
-                        memory_sections = ensure_runtime_assembly_state(session_ctx).context_sections_for(
-                            agent_id=request.agent_id, content=resolved_memory_context)
                         for part in split_context_message(dynamic_notice, _dynamic_message_sections()):
-                            stream_messages.extend(split_context_message(part, memory_sections)
-                                if memory_sections and resolved_memory_context in part.content else [part])
+                            sections = ()
+                            for content in (resolved_memory_context, resolved_permissions_context):
+                                if content and content in part.content:
+                                    sections = ensure_runtime_assembly_state(session_ctx).context_sections_for(
+                                        agent_id=request.agent_id, content=content)
+                                    break
+                            stream_messages.extend(split_context_message(part, sections) if sections else [part])
                     if self._deps.apply_vision_transform:
                         stream_messages = self._deps.apply_vision_transform(
                             stream_messages,

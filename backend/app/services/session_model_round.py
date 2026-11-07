@@ -512,15 +512,6 @@ def _withhold_model_source(messages, wire_request, input_bindings, source, code,
 
 async def _validate_or_withhold_model_sources(db, *, tenant_id, agent_id, session_id, run_id,
     input_bindings, messages, wire_request):
-    from app.services.content_input_receipts import group_source_read
-
-    with group_source_read():
-        return await _validate_model_sources(db, tenant_id=tenant_id, agent_id=agent_id, session_id=session_id,
-            run_id=run_id, input_bindings=input_bindings, messages=messages, wire_request=wire_request)
-
-
-async def _validate_model_sources(db, *, tenant_id, agent_id, session_id, run_id,
-    input_bindings, messages, wire_request):
     from app.kernel.contracts import ExecutionAuthorityUnavailable
     from app.services.content_input_receipts import ContentInputReceiptError
     from app.services.shared_group_authority import validate_shared_group_model_inputs

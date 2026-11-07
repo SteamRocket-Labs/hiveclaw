@@ -1384,6 +1384,7 @@ def _build_permissions_context(request: InvocationRequest, runtime_config: Runti
         denied_actions.append("tool_execution_without_tenant")
     from app.runtime.prompts.permissions import PermissionsPromptContext, build_permissions_prompt
 
+    permission_sections = []
     permissions_prompt = build_permissions_prompt(
         PermissionsPromptContext(
             approval_policy=approval_policy,
@@ -1397,11 +1398,12 @@ def _build_permissions_context(request: InvocationRequest, runtime_config: Runti
                 or metadata.get("request_permission_tool_enabled")
                 or "request_permission" in set(allowed_tools)
             ),
-        )
+        ), sections=permission_sections,
     )
     handoff_context = _render_pending_skill_handoffs(metadata)
     if handoff_context:
         permissions_prompt += "\n" + handoff_context
+        permission_sections.append({"name": "pending_skill_handoffs", "content": handoff_context})
     from app.services.delegation_context_sources import PermissionContextSource, PERMISSION_INPUT_KEYS
 
     contributor_keys = PERMISSION_INPUT_KEYS
@@ -1412,15 +1414,32 @@ def _build_permissions_context(request: InvocationRequest, runtime_config: Runti
         if (isinstance(source, PermissionContextSource) and source.matches(metadata, request.allowed_tool_names)
             and not getattr(runtime_config, "tenant_resolution_error", None)):
             sources = (source.reference,)
-        elif not (
-            request.session_context is not None and request.session_context.source == "trigger"
-            or request.execution_identity is not None and request.execution_identity.identity_type == "agent_bot"
-        ):
-            source_unbound.append("permission_configuration_sources_unbound")
+        else:
+            platform_lane = (
+                request.session_context is not None and request.session_context.source == "trigger"
+                or request.execution_identity is not None and request.execution_identity.identity_type == "agent_bot"
+            )
+            computed = {"approval_policy", "network_access", "allowed_tools", "request_permission_tool_enabled"}
+            for section in permission_sections:
+                name = section["name"]
+                constant = (name == "guidance" or platform_lane and name in computed
+                    and not (metadata.get("skill_execution_plans") and name in {"allowed_tools", "request_permission_tool_enabled"}))
+                if platform_lane and name in {"writable_roots", "denied_reads", "denied_actions"}:
+                    constant = section["content"] == f"{name}: none\n"
+                section["unbound"] = () if constant else ("permission_configuration_sources_unbound",)
+            if any(section["unbound"] for section in permission_sections):
+                source_unbound.append("permission_configuration_sources_unbound")
+    for section in permission_sections:
+        section["sources"] = sources
+        section.setdefault("unbound", tuple(source_unbound))
+    # Dynamic candidates trim their outer whitespace before assembly.
+    permissions_prompt = permissions_prompt.strip()
+    permission_sections[-1]["content"] = permission_sections[-1]["content"].rstrip()
     from app.runtime.context import ensure_runtime_assembly_state
 
     ensure_runtime_assembly_state(request.session_context).record_context_sources(
-        agent_id=request.agent_id, content=permissions_prompt, sources=sources, unbound=source_unbound)
+        agent_id=request.agent_id, content=permissions_prompt, sources=sources, unbound=source_unbound,
+        sections=permission_sections)
     return permissions_prompt
 
 

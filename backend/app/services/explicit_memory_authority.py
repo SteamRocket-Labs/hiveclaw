@@ -180,14 +180,6 @@ async def _authorize_entry(db, *, tenant_id, agent_id, request, entry, receipt, 
 
 async def authorized_explicit_entries(*, tenant_id, agent_id, request, entries, session_factory=None, issue_observer=None):
     """Return only exact current versions; do not let previews bypass this boundary."""
-    from app.services.content_input_receipts import group_source_read
-
-    with group_source_read():
-        return await _authorized_explicit_entries(tenant_id=tenant_id, agent_id=agent_id, request=request,
-            entries=entries, session_factory=session_factory, issue_observer=issue_observer)
-
-
-async def _authorized_explicit_entries(*, tenant_id, agent_id, request, entries, session_factory, issue_observer):
     allowed = []
     async with tenant_scoped_session(tenant_id, session_factory=session_factory) as db:
         _principal, actor, _session = await _actor(db, tenant_id, request)

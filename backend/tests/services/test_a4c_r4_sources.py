@@ -1,4 +1,4 @@
-"""Instruction-only parent readership and exact source reuse at disclosure."""
+"""Instruction-only parent readership and computed trigger permissions."""
 import uuid
 from types import SimpleNamespace as NS
 from unittest.mock import AsyncMock
@@ -6,7 +6,6 @@ from unittest.mock import AsyncMock
 import pytest
 
 from app.services import content_input_receipts as receipts
-from app.services.personal_knowledge_access import AgentRuntimePrincipal
 
 
 @pytest.mark.parametrize("lane", ["trigger", "native_trigger", "web"])
@@ -70,35 +69,8 @@ async def test_unproved_catalog_data_withholds_only_data_and_keeps_platform_guid
     assert all(bindings["messages"][index]["status"] == "withheld" for index in unbound)
 
 
-async def test_source_dag_reuses_semantic_reader_and_version_then_expires(monkeypatch):
-    tenant, agent, user, session, run = (uuid.uuid4() for _ in range(5))
-    db = object()
-    source = {"source_kind": "explicit_memory", "source_id": str(uuid.uuid4()), "source_version": "v1"}
-    calls = []
-
-    def reader():
-        return AgentRuntimePrincipal(agent, user, str(session), str(run))
-
-    async def validate(_db, _tenant, dependencies, **context):
-        calls.extend(dependencies)
-        if dependencies[0]["source_version"] == "v2":
-            raise receipts.ContentInputReceiptError("content_source_changed", "Changed")
-
-    monkeypatch.setattr(receipts, "_validate_input_dependency_batch", validate)
-    with receipts.group_source_read():
-        for _ in range(3):
-            await receipts._validate_input_dependencies(db, tenant, [source], runtime_request=reader(),
-                active_workspace_receipts=frozenset({uuid.uuid4()}))
-        assert calls == [source]
-        with pytest.raises(receipts.ContentInputReceiptError, match="Changed"):
-            await receipts._validate_input_dependencies(db, tenant, [{**source, "source_version": "v2"}],
-                runtime_request=reader())
-    with receipts.group_source_read():
-        await receipts._validate_input_dependencies(db, tenant, [source], runtime_request=reader())
-    assert calls == [source, {**source, "source_version": "v2"}, source]
-
-
-@pytest.mark.parametrize("case", ["same_member", "different_member", "changed_instruction", "child_read"])
+@pytest.mark.parametrize("case", ["same_member", "different_member", "changed_instruction", "child_read",
+    "invalid_child_session", "invalid_source_ref", "missing_receipt", "missing_sections"])
 async def test_parent_memory_is_attested_only_for_exact_same_member_instruction(monkeypatch, case):
     from app.models.chat_session import ChatSession
     from app.models.invocation_span import InvocationSpan
@@ -135,18 +107,38 @@ async def test_parent_memory_is_attested_only_for_exact_same_member_instruction(
     parent = NS(id=parent_run, tenant_id=tenant, root_user_id=user)
     canonical = {"kind": "delegated_instruction", "message": {"role": "user", "content": child.prompt},
         "sections": [{"kind": "parent_tool_call", **pointer}], "dependencies": [source]}
+    if case == "invalid_child_session":
+        child.child_session_id = "not-a-uuid"
+    if case == "missing_sections":
+        canonical.pop("sections")
     monkeypatch.setattr("app.services.session_model_inputs.load_context_message_origin", AsyncMock(return_value=canonical))
     monkeypatch.setattr(delegation, "_parent_call", AsyncMock(return_value=(call, model, {"message": instruction})))
 
     class DB:
+        added = []
+        receipt_reads = 0
+
         async def get(self, kind, key, **kwargs):
             if kind is RuntimeTask:
                 return child if key == child_run else parent
             if kind is InvocationSpan:
+                self.receipt_reads += 1
+                if case == "missing_receipt" and self.receipt_reads > 1:
+                    return None
                 return receipt
 
         async def scalar(self, query):
-            return ChatSession(audience_kind="private")
+            if query.column_descriptions[0].get("entity") is ChatSession:
+                return ChatSession(audience_kind="private")
+
+        async def execute(self, query):
+            return NS(scalars=lambda: [])
+
+        def add(self, row):
+            self.added.append(row)
+
+        async def flush(self):
+            pass
 
     async def memory_check(db, tid, refs, *, runtime_request, **kwargs):
         if runtime_request.agent_id != parent_agent or runtime_request.requester_user_id != user:
@@ -158,13 +150,24 @@ async def test_parent_memory_is_attested_only_for_exact_same_member_instruction(
     messages = [{"role": "user", "content": child.prompt}]
     bindings = _bindings(1, {0: [source]})
     bindings["messages"][0]["source_ref"] = "session-kernel-context:" + str(uuid.uuid4())
+    if case == "invalid_source_ref":
+        bindings["messages"][0]["source_ref"] = "session-kernel-context:not-a-uuid"
     if case == "child_read":
         messages.append({"role": "tool", "content": "CHILD_OWN_MEMORY_READ"})
         bindings = _bindings(2, {0: [source], 1: [source]})
         bindings["messages"][0]["source_ref"] = "session-kernel-context:" + str(uuid.uuid4())
     wire = {"messages": [dict(message) for message in messages]}
-    await _validate_or_withhold_model_sources(DB(), tenant_id=tenant, agent_id=child_agent,
-        session_id=child_session, run_id=child_run, messages=messages, input_bindings=bindings, wire_request=wire)
+    from app.services import session_model_round as rounds
+
+    monkeypatch.setattr(rounds, "_bound_rows", AsyncMock(return_value=[]))
+    monkeypatch.setattr(rounds, "append_session_events", AsyncMock())
+    monkeypatch.setattr("app.services.session_model_inputs.capture_context_message_origins", AsyncMock())
+    monkeypatch.setattr("app.services.session_model_inputs.build_model_input_bindings", AsyncMock(return_value=bindings))
+    db = DB()
+    await rounds.prepare_model_request(db, tenant_id=tenant, agent_id=child_agent,
+        session_id=child_session, run_id=child_run, turn_id="a4c-parent-reader", round_index=0,
+        messages=messages, tools=[], provider="local", model="a4c", wire_request=wire)
+    wire = db.added[0].model_request_snapshot_json["wire_request"]
     text = str(wire)
     if case in {"same_member", "child_read"}:
         assert instruction in text

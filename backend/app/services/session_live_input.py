@@ -39,14 +39,15 @@ from app.services.session_tool_runtime import assert_session_tool_effects_settle
 def shape_human_input_parts(parts, *, pasted_credential_notice=False) -> list[dict[str, Any]]:
     """Keep supported input fields; only the server can attach the paste notice."""
     fields = {"type", "text", "display_content", "file_name", "role", "attachment",
-              "project_id", "entry_ids", "team_task_source", "agent_id", "path", "human_saved_hash"}
+              "project_id", "entry_ids", "team_task_source"}
     attachment_fields = {"name", "path", "size", "mime_type", "is_image", "has_image_data",
                          "conversion", "original_attachment"}
     result = []
     for part in parts:
         if not isinstance(part, dict):
             continue
-        item = {key: value for key, value in part.items() if key in fields}
+        allowed = {"type", "agent_id", "path", "human_saved_hash"} if part.get("type") == "workspace_file_ref" else fields
+        item = {key: value for key, value in part.items() if key in allowed}
         if isinstance(item.get("attachment"), dict):
             item["attachment"] = {key: value for key, value in item["attachment"].items() if key in attachment_fields}
         result.append(item)

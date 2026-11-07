@@ -962,7 +962,8 @@ async def test_regenerate_from_v2_assistant_final_uses_latest_v2_user_prompt(mon
 
 
 @pytest.mark.asyncio
-async def test_branch_draft_renders_single_part_content_key_exact_bytes(monkeypatch):
+@pytest.mark.parametrize("with_file", [False, True])
+async def test_branch_draft_renders_single_part_content_key_exact_bytes(monkeypatch, with_file):
     from app.services.conversation_branch_service import create_conversation_branch
 
     agent_id = uuid4()
@@ -972,7 +973,10 @@ async def test_branch_draft_renders_single_part_content_key_exact_bytes(monkeypa
     anchor = _v2_event(
         session_id=source_session_id,
         sequence=1,
-        content_parts=[{"type": "text", "content": "exact-api-bytes"}],
+        content_parts=[{"type": "text", "content": "exact-api-bytes"}] + ([{
+            "type": "workspace_file_ref", "agent_id": str(agent_id),
+            "path": "workspace/private-report.md", "human_saved_hash": "a" * 64,
+        }] if with_file else []),
     )
     db = _FakeDB(anchor=anchor, prefix=[])
 

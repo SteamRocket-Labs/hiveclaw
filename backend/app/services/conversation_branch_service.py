@@ -101,7 +101,7 @@ def _prefix_includes_anchor(mode: str, *, anchor: ChatTranscriptEvent | None = N
 def _draft_content_for_anchor(mode: str, anchor: ChatTranscriptEvent) -> str:
     if _event_role(anchor) == "user" and mode in {"fork", "branch"}:
         if is_human_input_checkpoint(anchor):
-            return user_checkpoint_content(anchor)
+            return user_checkpoint_content(anchor, draft=True)
         return (getattr(anchor, "content", None) or "").strip()
     return ""
 

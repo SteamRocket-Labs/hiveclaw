@@ -343,7 +343,7 @@ def _checkpoint_payload(event: ChatTranscriptEvent | T0SessionEvent, *, turn_ind
     payload["turn_index"] = turn_index
     payload["checkpoint_type"] = "user_message"
     payload["role"] = "user"
-    payload["content"] = user_checkpoint_content(event)
+    payload["content"] = user_checkpoint_content(event, draft=True)
     return payload
 
 

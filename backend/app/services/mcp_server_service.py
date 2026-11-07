@@ -419,8 +419,10 @@ async def set_agent_mcp_assignment(
         for tool, existing in rows:
             if existing is None:
                 approved = is_mcp_metadata_runtime_approved(tool)
-                db.add(AgentTool(tenant_id=tenant_id, agent_id=agent_id, tool_id=tool.id, enabled=approved,
-                    mcp_trust_requested_enabled=None if approved else True, source="system", config={}))
+                from app.services.agent_tool_assignment_service import ensure_agent_tool_assignment
+
+                await ensure_agent_tool_assignment(db, tenant_id=tenant_id, agent_id=agent_id, tool_id=tool.id,
+                    enabled=approved, quarantine_for_mcp_trust=not approved)
     await db.commit()
     return {
         "id": str(assignment.id),
@@ -1151,7 +1153,7 @@ async def import_and_register(
             server_name_for_records = tool.mcp_server_name or "MCP Server"
             server_url_for_records = tool.mcp_server_url or ""
         runtime_enabled = bool(tool is not None and is_mcp_metadata_runtime_approved(tool))
-        for agent_id in agent_ids:
+        for agent_id in sorted(agent_ids):
             await ensure_agent_tool_assignment(
                 db,
                 agent_id=agent_id,

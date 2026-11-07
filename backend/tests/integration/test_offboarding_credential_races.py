@@ -96,15 +96,14 @@ async def test_undeclared_credentials_are_removed_and_listed_on_the_card(owner_s
         assignment = AgentTool(tenant_id=state.tenant.id, agent_id=state.bot.id, tool_id=state.tool.id, config=original)
         db.add(assignment)
         await db.flush()
-        # Pre-existing display masking defect, intentionally not repaired here.
+        # Undeclared and third-party settings are masked before a form opens.
         before = await list_agent_tools_with_config(agent_id=state.bot.id, db=db, current_user=state.leaver)
         displayed = next(tool for tool in before if tool["id"] == str(state.tool.id))
-        assert displayed["agent_config"]["headers"]["Authorization"] == original["headers"]["Authorization"]
-        assert displayed["agent_config"]["vendor_pin"] == original["vendor_pin"]
+        from app.services.tool_config_service import MASKED_SECRET_SENTINEL
+        assert displayed["agent_config"] == dict.fromkeys(original, MASKED_SECRET_SENTINEL)
         await offboard(state)
         await db.refresh(assignment)
-        assert assignment.config == {key: value if key in {"region", "timeout"} else ""
-            for key, value in original.items()}
+        assert assignment.config == dict.fromkeys(original, "")
         card = await db.scalar(select(Notification).where(Notification.user_id == state.successor.id))
         assert json.loads(card.body)["tools_needing_credentials"] == [{"agent_id": str(state.bot.id),
             "agent_name": state.bot.name, "name": state.tool.display_name}]
@@ -118,6 +117,7 @@ async def test_save_started_before_offboarding_rechecks_authority_and_stored_con
     owner_sessionmaker, monkeypatch, endpoint, caller,
 ):
     from app.api import tools as tools_api
+    from app.services import agent_tool_assignment_service as assignments
     from app.services.tool_config_service import MASKED_SECRET_SENTINEL
 
     async with owner_sessionmaker() as db:
@@ -131,20 +131,20 @@ async def test_save_started_before_offboarding_rechecks_authority_and_stored_con
         await db.commit()
         assignment_id, bot_id, caller_id = assignment.id, state.bot.id, getattr(state, caller).id
         checked, resume = asyncio.Event(), asyncio.Event()
-        original = tools_api._require_manage_access
+        original = assignments.lock_agent_tool_config_write
         save_db = None
         stale_configs = []
 
-        async def pause_after_permission(session, user, agent_id):
-            result = await original(session, user, agent_id)
+        async def pause_before_lock(session, agent_id, *, current_user=None):
             if session is save_db and not checked.is_set():
+                await tools_api._require_manage_access(session, current_user, agent_id)
                 # The real session retains the old encrypted config in its identity map.
                 stale_configs.append(await session.get(AgentTool, assignment_id))
                 checked.set()
                 await resume.wait()
-            return result
+            return await original(session, agent_id, current_user=current_user)
 
-        monkeypatch.setattr(tools_api, "_require_manage_access", pause_after_permission)
+        monkeypatch.setattr(assignments, "lock_agent_tool_config_write", pause_before_lock)
 
         async def save():
             nonlocal save_db
@@ -175,7 +175,7 @@ async def test_save_started_before_offboarding_rechecks_authority_and_stored_con
             assert not isinstance(result, HTTPException), result
         stored = await db.get(AgentTool, assignment_id, populate_existing=True)
         assert stored.config["api_key"] == ""
-        assert stored.config["timeout"] == (1 if caller == "leaver" else 2)
+        assert stored.config["timeout"] == ("" if caller == "leaver" else 2)
 
 
 @pytest.mark.parametrize("empty", ["", "   ", None])

@@ -531,7 +531,7 @@ async def advanced_web_fetch(arguments: dict) -> str:
                 {
                     "key": "mcp_url",
                     "label": "Exa MCP URL",
-                    "type": "text",
+                    "type": "password",
                     "default": "https://mcp.exa.ai/mcp",
                 },
                 {
@@ -599,7 +599,7 @@ async def exa_search(arguments: dict) -> str:
                     ],
                     "default": "auto",
                 },
-                {"key": "mcp_url", "label": "Exa MCP URL", "type": "text", "default": "https://mcp.exa.ai/mcp"},
+                {"key": "mcp_url", "label": "Exa MCP URL", "type": "password", "default": "https://mcp.exa.ai/mcp"},
             ]
         },
     )
@@ -908,7 +908,7 @@ async def web_fetch(arguments: dict) -> str:
                 {
                     "key": "base_url",
                     "label": "Firecrawl API Base URL",
-                    "type": "text",
+                    "type": "password",
                     "default": "https://api.firecrawl.dev",
                 },
                 {
@@ -1022,7 +1022,7 @@ async def firecrawl_search(arguments: dict) -> str:
                 {
                     "key": "base_url",
                     "label": "Firecrawl API Base URL",
-                    "type": "text",
+                    "type": "password",
                     "default": "https://api.firecrawl.dev",
                 },
             ]

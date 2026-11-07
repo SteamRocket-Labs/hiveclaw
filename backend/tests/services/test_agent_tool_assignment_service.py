@@ -20,6 +20,8 @@ class _FakeDB:
         self.added = []
 
     async def execute(self, _stmt):
+        if "FROM agents" in str(_stmt):
+            return _ScalarResult(SimpleNamespace(tenant_id=getattr(self._existing, "tenant_id", uuid4())))
         return _ScalarResult(self._existing)
 
     def add(self, value):

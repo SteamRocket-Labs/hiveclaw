@@ -160,18 +160,22 @@ async def _move_knowledge(db, target_user, successor):
 
 
 async def transfer_knowledge_and_notify(db, *, target_user, successor, agents, handover_audits):
+    from app.services.agent_tool_assignment_service import ensure_agent_tool_assignment
+
     with db.no_autoflush:
         documents, provenance = await _move_knowledge(db, target_user, successor)
     agent_ids = [agent.id for agent in agents]
     tools_needing_credentials = []
     assignments = (await db.execute(select(AgentTool, Tool).join(Tool, Tool.id == AgentTool.tool_id).where(
         AgentTool.tenant_id == target_user.tenant_id, AgentTool.agent_id.in_(agent_ids))
-        .order_by(AgentTool.agent_id, Tool.name).with_for_update(of=AgentTool))).all()
+        .order_by(AgentTool.agent_id, Tool.name))).all()
     agent_names = {agent.id: agent.name for agent in agents}
     for assignment, tool in assignments:
-        cleared = clear_agent_tool_config_secrets(assignment.config, tool.config_schema)
-        if cleared != assignment.config:
-            assignment.config = cleared
+        previous = assignment.config
+        await ensure_agent_tool_assignment(db, agent_id=assignment.agent_id, tool_id=tool.id,
+            enabled=None, source=None, config=lambda stored: clear_agent_tool_config_secrets(stored, tool.config_schema,
+                platform_tool=tool.type == "builtin" and tool.tenant_id is None))
+        if assignment.config != previous:
             tools_needing_credentials.append({"agent_id": str(assignment.agent_id),
                 "agent_name": agent_names[assignment.agent_id], "name": tool.display_name or tool.name})
     tasks = (await db.execute(select(Task, User.id).join(Agent, Agent.id == Task.agent_id)

@@ -2598,6 +2598,7 @@ async def _smithery_auto_recover(
 ) -> str | None:
     try:
         from app.models.tool import AgentTool, Tool
+        from app.services.agent_tool_assignment_service import ensure_agent_tool_assignment
         from app.services.resource_discovery import _ensure_smithery_connection
 
         display_name = connection_id.replace("-", " ").title() if connection_id else "MCP Server"
@@ -2626,7 +2627,8 @@ async def _smithery_auto_recover(
                         )
                         at = at_r.scalar_one_or_none()
                         if at:
-                            at.config = {**(at.config or {}), **new_config}
+                            await ensure_agent_tool_assignment(db, agent_id=agent_id, tool_id=tool.id,
+                                enabled=None, source=None, config=new_config)
                     await db.commit()
             except Exception as e:
                 logger.debug("Suppressed: %s", e)

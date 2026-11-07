@@ -115,21 +115,20 @@ async def test_moved_tool_credentials_are_cleared_but_company_and_peer_configs_s
         await db.flush()
         await offboard(state)
         await db.refresh(assignment)
-        assert assignment.config == {**config, "api_key": "", "vendor_pin": "",
-            "nested": "", "empty": "", "label": ""}
+        assert assignment.config == dict.fromkeys(config, "")
         for row in untouched:
             await db.refresh(row)
             assert row.config == config
         await db.refresh(company)
         assert company.config == {"api_key": "sk-e2e-fake-company", "region": "company"}
         await db.refresh(managed_assignment)
-        assert managed_assignment.config == {"region": "managed"}
+        assert managed_assignment.config == {"region": ""}
         resolved = await resolve_tool_config(managed_tool.name, state.tenant.id, agent_id=state.bot.id, db=db)
         assert resolved["api_key"] == "sk-e2e-fake-company-managed"
         assert state.tool.config == payload.tool_config
         card = await db.scalar(select(Notification).where(Notification.user_id == state.successor.id))
         assert json.loads(card.body)["tools_needing_credentials"] == [{"agent_id": str(state.bot.id),
-            "agent_name": state.bot.name, "name": state.tool.display_name}]
+            "agent_name": state.bot.name, "name": tool.display_name} for tool in sorted([state.tool, managed_tool], key=lambda tool: tool.name)]
         assert "sk-e2e-fake" not in card.body
         from app.api.tools import list_agent_tools_with_config
         with pytest.raises(HTTPException) as denied:
@@ -152,7 +151,7 @@ async def test_tool_revocation_rolls_back_with_offboarding(owner_sessionmaker):
         assignment_id, leaver_id = assignment.id, state.leaver.id
         await offboard(state)
         await db.refresh(assignment)
-        assert assignment.config == {"token": "", "timeout": 9}
+        assert assignment.config == {"token": "", "timeout": ""}
         await db.rollback()
         restored = await db.get(AgentTool, assignment_id, populate_existing=True)
         assert restored.config == {"token": "sk-e2e-fake-rollback", "timeout": 9}

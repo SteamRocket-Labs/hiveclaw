@@ -463,7 +463,8 @@ async def import_mcp_from_smithery(
     agent_tenant_id = await _resolve_agent_tenant_id(agent_id)
 
     # Extract smithery_api_key from config (user-provided) or fallback to stored
-    api_key = config.pop("smithery_api_key", None) or await _get_smithery_api_key(agent_id)
+    explicit_key = config.pop("smithery_api_key", None)
+    api_key = explicit_key or await _get_smithery_api_key(agent_id)
     if not api_key:
         return _result((
             "❌ Smithery API key is required to import MCP servers.\n\n"
@@ -478,30 +479,14 @@ async def import_mcp_from_smithery(
     # so it shows up in the Config dialog
     try:
         async with tenant_scoped_session(agent_tenant_id) as db:
-            for tool_name in ("discover_resources", "import_mcp_server"):
-                r = await db.execute(select(Tool).where(Tool.name == tool_name, Tool.tenant_id.is_(None)))
-                tool = r.scalar_one_or_none()
-                if not tool:
-                    continue
-                at_r = await db.execute(
-                    select(AgentTool).where(
-                        AgentTool.agent_id == agent_id,
-                        AgentTool.tool_id == tool.id,
-                    )
-                )
-                at = at_r.scalar_one_or_none()
-                if at:
-                    at.config = {**(at.config or {}), "smithery_api_key": api_key}
-                else:
-                    await ensure_agent_tool_assignment(
-                        db,
-                        agent_id=agent_id,
-                        tool_id=tool.id,
-                        enabled=True,
-                        source="system",
-                        config={"smithery_api_key": api_key},
-                    )
-            await db.commit()
+            # A fallback key is read-only input, never a new credential to save.
+            if explicit_key:
+                for tool_name in ("discover_resources", "import_mcp_server"):
+                    tool = await db.scalar(select(Tool).where(Tool.name == tool_name, Tool.tenant_id.is_(None)))
+                    if tool:
+                        await ensure_agent_tool_assignment(db, agent_id=agent_id, tool_id=tool.id,
+                            enabled=None, source=None, config={"smithery_api_key": explicit_key})
+                await db.commit()
     except Exception as exc:
         logger.debug(f"[ResourceDiscovery] Could not persist Smithery API key to AgentTool: {exc}")
 

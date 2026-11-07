@@ -443,7 +443,8 @@ def _serialize_tool(tool: Tool, *, enabled: bool | None = None, config: dict | N
         "icon": tool.icon,
         "parameters_schema": tool.parameters_schema or {},
         "config": mask_agent_tool_config_secrets(
-            _public_tool_config(tool, config if config is not None else tool.config), tool.config_schema or {}
+            _public_tool_config(tool, config if config is not None else tool.config), tool.config_schema or {},
+            platform_tool=tool.type == "builtin" and tool.tenant_id is None,
         ),
         "config_schema": tool.config_schema or {},
         "mcp_server_url": tool.mcp_server_url,
@@ -501,22 +502,10 @@ async def _require_manage_access(db: AsyncSession, current_user: User, agent_id:
     return agent
 
 
-async def _lock_agent_tool_config_write(db: AsyncSession, current_user: User, agent_id: uuid.UUID) -> Agent:
-    from app.services.runtime_user_identity import load_runtime_user
-
-    # Match offboarding's Agent -> AgentTool order and NO KEY UPDATE strength.
-    await db.execute(select(Agent).where(Agent.id == agent_id).with_for_update(key_share=True)
-        .execution_options(populate_existing=True))
-    actor = await load_runtime_user(db, current_user.id)
-    if actor is None:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Manage access required")
-    return await _require_manage_access(db, actor, agent_id)
-
-
 async def _get_tenant_agent_ids(db: AsyncSession, tenant_id: uuid.UUID | None) -> list[uuid.UUID]:
     if not tenant_id:
         return []
-    result = await db.execute(select(Agent.id).where(Agent.tenant_id == tenant_id))
+    result = await db.execute(select(Agent.id).where(Agent.tenant_id == tenant_id).order_by(Agent.id))
     return [getattr(row, "id", row) for row in result.scalars().all()]
 
 
@@ -576,9 +565,11 @@ def _serialize_agent_tool_row(tool: Tool, agent_tool: AgentTool | None, *, base_
         ),
         "agent_tool_id": str(agent_tool.id) if agent_tool else None,
         "source": agent_tool.source if agent_tool else "system",
-        "global_config": mask_agent_tool_config_secrets(_public_tool_config(tool, defaults), tool.config_schema or {}),
+        "global_config": mask_agent_tool_config_secrets(_public_tool_config(tool, defaults), tool.config_schema or {},
+            platform_tool=tool.type == "builtin" and tool.tenant_id is None),
         "agent_config": mask_agent_tool_config_secrets(
-            _public_tool_config(tool, agent_config), tool.config_schema or {}
+            _public_tool_config(tool, agent_config), tool.config_schema or {},
+            platform_tool=tool.type == "builtin" and tool.tenant_id is None,
         ),
     }
 
@@ -590,6 +581,7 @@ async def _upsert_tenant_tool_assignments(
     *,
     enabled: bool | None = None,
     config: dict | None = None,
+    current_user: User,
 ) -> None:
     for agent_id in await _get_tenant_agent_ids(db, tenant_id):
         await ensure_agent_tool_assignment(
@@ -600,6 +592,7 @@ async def _upsert_tenant_tool_assignments(
             config=config if config is not None else None,
             source="system",
             merge_config=False,
+            current_user=current_user,
         )
 
 
@@ -791,6 +784,7 @@ async def create_tool(
             # defaults into employee overrides that survive company rotation.
             config={} if tool.type == "mcp" else data.config or {},
             source="system",
+            current_user=current_user,
             merge_config=False,
         )
 
@@ -860,6 +854,7 @@ async def update_global_tool(
             tool,
             enabled=data.enabled,
             config=(ttc.config if data.config is not None else None),
+            current_user=current_user,
         )
     else:
         # Tenant-scoped tool (e.g. MCP): owning tenant can modify directly
@@ -1074,6 +1069,7 @@ async def update_agent_tools(
             tool_id=tool.id,
             enabled=update_item.enabled,
             source="system",
+            current_user=current_user,
         )
     await db.commit()
     return {"ok": True}
@@ -1098,7 +1094,8 @@ async def get_category_config(
         return {"config": {}}
     agent_tool, tool = rows[0]
     effective_config = {**(tool.config or {}), **(agent_tool.config or {})}
-    return {"config": mask_agent_tool_config_secrets(effective_config, tool.config_schema or {})}
+    return {"config": mask_agent_tool_config_secrets(effective_config, tool.config_schema or {},
+        platform_tool=tool.type == "builtin" and tool.tenant_id is None)}
 
 
 @router.get("/tools/agents/{agent_id}/runtime/feishu-status")
@@ -1123,25 +1120,22 @@ async def update_category_config(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    await _require_manage_access(db, current_user, agent_id)
-    agent = await _lock_agent_tool_config_write(db, current_user, agent_id)
+    from app.services.agent_tool_assignment_service import lock_agent_tool_config_write
+
+    agent = await lock_agent_tool_config_write(db, agent_id, current_user=current_user)
     rows_result = await db.execute(
         select(AgentTool, Tool)
         .join(Tool, Tool.id == AgentTool.tool_id)
         .where(AgentTool.agent_id == agent_id, Tool.category == category)
         .order_by(AgentTool.agent_id, Tool.name)
-        .with_for_update(of=AgentTool)
-        .execution_options(populate_existing=True)
     )
     rows = [row for row in rows_result.all() if is_tool_allowed_for_agent(row[1], agent)]
     for assignment, tool in rows:
-        assignment.config = merge_agent_tool_config_secrets(
-            data.config,
-            assignment.config,
-            tool.config_schema or {},
-        )
+        await ensure_agent_tool_assignment(db, agent_id=agent_id, tool_id=tool.id,
+            enabled=None, source=None, config=data.config, current_user=current_user)
     await db.commit()
-    response_config = mask_agent_tool_config_secrets(rows[0][0].config, rows[0][1].config_schema or {}) if rows else {}
+    response_config = mask_agent_tool_config_secrets(rows[0][0].config, rows[0][1].config_schema or {},
+        platform_tool=rows[0][1].type == "builtin" and rows[0][1].tenant_id is None) if rows else {}
     return {"ok": True, "config": response_config}
 
 
@@ -1187,30 +1181,17 @@ async def update_tool_config(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    agent = await _require_manage_access(db, current_user, agent_id)
+    from app.services.agent_tool_assignment_service import lock_agent_tool_config_write
+
+    agent = await lock_agent_tool_config_write(db, agent_id, current_user=current_user)
     tool = await _get_visible_agent_tool(db, agent, tool_id)
     if not tool:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tool not found")
-    agent = await _lock_agent_tool_config_write(db, current_user, agent_id)
-    assignment = await _write_agent_tool_config(db, agent_id=agent_id, tool=tool, config=data.config)
+    assignment, _ = await ensure_agent_tool_assignment(db, agent_id=agent_id, tool_id=tool.id,
+        config=data.config, current_user=current_user)
     await db.commit()
     defaults, _enabled = await resolve_tool_config_for_tenant_display(db, tool, agent.tenant_id)
     return {"ok": True, "tool": _serialize_agent_tool_row(tool, assignment, base_config=defaults)}
-
-
-async def _write_agent_tool_config(db, *, agent_id, tool, config):
-    assignment = (await db.execute(select(AgentTool).where(AgentTool.agent_id == agent_id,
-        AgentTool.tool_id == tool.id).with_for_update().execution_options(populate_existing=True))).scalar_one_or_none()
-    if assignment is None:
-        assignment, _ = await ensure_agent_tool_assignment(db, agent_id=agent_id, tool_id=tool.id,
-            enabled=True, config=None, source="system", merge_config=False)
-    assignment.enabled = True
-    assignment.config = merge_agent_tool_config_secrets(
-        config,
-        assignment.config,
-        tool.config_schema or {},
-    )
-    return assignment
 
 
 async def _configuration_question_context(
@@ -1219,6 +1200,7 @@ async def _configuration_question_context(
     from app.services.chat_transcript import lock_transcript_session
     from app.services.session_user_question import load_configuration_question, question_payload
     from app.services.session_v2_persistence import resolve_session_mutation_authority
+    from app.services.agent_tool_assignment_service import lock_agent_tool_config_write
 
     authority = await resolve_session_mutation_authority(
         db, user=current_user, agent_id=agent_id, session_id=session_id, action="mutate_session_input"
@@ -1226,17 +1208,17 @@ async def _configuration_question_context(
     if lock_target:
         question = await load_configuration_question(db, authority=authority, item_id=question_id)
         target_id = uuid.UUID(question_payload(question)["configuration_request"]["target_agent_id"])
-        await _require_manage_access(db, current_user, target_id)
-        await _lock_agent_tool_config_write(db, current_user, target_id)
+        target = await lock_agent_tool_config_write(db, target_id, current_user=current_user)
     await lock_transcript_session(db, session_id=session_id)
     question = await load_configuration_question(db, authority=authority, item_id=question_id)
     descriptor = question_payload(question)["configuration_request"]
-    if target_management_required:
-        target = await _require_manage_access(db, current_user, uuid.UUID(descriptor["target_agent_id"]))
-    else:
-        target, access = await check_agent_access(db, current_user, uuid.UUID(descriptor["target_agent_id"]))
-        if access not in {"use", "manage"}:
-            raise HTTPException(status_code=403, detail="Employee use access required")
+    if not lock_target:
+        if target_management_required:
+            target = await _require_manage_access(db, current_user, uuid.UUID(descriptor["target_agent_id"]))
+        else:
+            target, access = await check_agent_access(db, current_user, uuid.UUID(descriptor["target_agent_id"]))
+            if access not in {"use", "manage"}:
+                raise HTTPException(status_code=403, detail="Employee use access required")
     if target.tenant_id != authority.tenant_id:
         raise HTTPException(status_code=404, detail="Configuration target not found")
     return authority, question, target, descriptor
@@ -1258,7 +1240,7 @@ async def _configuration_request_context(db, current_user, agent_id, session_id,
     tool = await _get_visible_agent_tool(db, target, tool_id) if tool_id else None
     if tool is None:
         raise HTTPException(status_code=404, detail="Configuration tool not found")
-    if tool.name != "send_email" and tool.type != "custom_api":
+    if not lock_target and tool.name != "send_email" and tool.type != "custom_api":
         await _require_manage_access(db, current_user, target.id)
     if tool.type == "mcp" or (not (tool.config_schema or {}).get("fields") and tool.name != "send_email"):
         raise HTTPException(
@@ -1329,13 +1311,13 @@ async def save_session_tool_configuration(
     authority, question, target, tool = await _configuration_request_context(
         db, current_user, agent_id, session_id, question_id, lock_target=True
     )
-    await _require_manage_access(db, current_user, target.id)
     payload = question_payload(question)
     if payload.get("configuration_saved") and tool.name != "send_email" and tool.type != "custom_api":
         return await _configuration_request_response(db, question=question, target=target, tool=tool, replayed=True)
     if question.lifecycle not in {"created", "waiting"}:
         raise HTTPException(status_code=409, detail="Configuration request is no longer waiting")
-    await _write_agent_tool_config(db, agent_id=target.id, tool=tool, config=data.config)
+    await ensure_agent_tool_assignment(db, agent_id=target.id, tool_id=tool.id,
+        config=data.config, current_user=current_user)
     events = await append_session_events(
         db,
         tenant_id=authority.tenant_id,
@@ -1524,8 +1506,8 @@ def _role_configuration_response(question, target, *, replayed=False):
     }
 
 
-async def _session_role_context(db, current_user, agent_id, session_id, question_id):
-    context = await _configuration_question_context(db, current_user, agent_id, session_id, question_id)
+async def _session_role_context(db, current_user, agent_id, session_id, question_id, *, lock_target=False):
+    context = await _configuration_question_context(db, current_user, agent_id, session_id, question_id, lock_target=lock_target)
     if context[3].get("employee_setting") != "role":
         raise HTTPException(status_code=409, detail="Use the requested employee settings")
     return context
@@ -1559,17 +1541,11 @@ async def confirm_session_role_configuration(
     from app.services.session_v2_persistence import SessionEventDraft, append_session_events
 
     authority, question, target, _descriptor = await _session_role_context(
-        db, current_user, agent_id, session_id, question_id
+        db, current_user, agent_id, session_id, question_id, lock_target=True
     )
     if question.lifecycle not in {"created", "waiting"}:
         raise HTTPException(status_code=409, detail="Configuration request is no longer waiting")
-    target = await db.scalar(
-        select(Agent)
-        .where(Agent.id == target.id, Agent.tenant_id == authority.tenant_id)
-        .with_for_update()
-        .execution_options(populate_existing=True)
-    )
-    if target is None or role_revision(target.role_description) != data.role_revision:
+    if role_revision(target.role_description) != data.role_revision:
         raise HTTPException(
             status_code=409,
             detail={
@@ -1577,7 +1553,6 @@ async def confirm_session_role_configuration(
                 "message": "Responsibilities changed. Review the current settings before continuing.",
             },
         )
-    await _require_manage_access(db, current_user, target.id)
     payload = question_payload(question)
     if (payload.get("configuration_ready") or {}).get("role_revision") == data.role_revision:
         return _role_configuration_response(question, target, replayed=True)

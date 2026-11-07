@@ -458,6 +458,7 @@ def split_context_message(message, sections):
 
 
 def _withhold_model_source(messages, wire_request, input_bindings, source, code, indexes=None):
+    from app.runtime.context_candidates import ContextMessageOrigin
     from app.services.llm_client import LLMMessage
 
     note = "有一项上下文暂时无法核实，已略过，请使用其余内容继续，需要时向用户询问。"
@@ -494,7 +495,7 @@ def _withhold_model_source(messages, wire_request, input_bindings, source, code,
         if message.get("role") == "tool" and message.get("tool_call_id") in call_ids)
     for index, replacement in {**partial, **{i: {"role": "system", "content": note} for i in indexes}}.items():
         origin = getattr(messages[index], "context_origin", None)
-        if origin is not None and any(section.get("name") == "skill_catalog" for section in origin.sections):
+        if isinstance(origin, ContextMessageOrigin) and any(section.get("name") == "skill_catalog" for section in origin.sections):
             replacement["content"] = "技能目录内容暂时无法核实，已略过；请使用其余内容继续，需要时向用户询问。"
         # Replacing the complete payload also removes arguments and private
         # reasoning; unaffected sibling calls keep their own paired results.

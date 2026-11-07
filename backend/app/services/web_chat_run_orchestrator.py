@@ -1816,8 +1816,7 @@ async def _record_canonical_terminal_artifact_selection(
             db,
             task=task,
             model_result_id=terminal_result_id,
-            paths=[path for path in declared_paths
-                if path not in selected_paths and _is_user_visible_terminal_artifact_path(path)],
+            paths=[path for path in declared_paths if _is_user_visible_terminal_artifact_path(path)],
         )
         read_paths = [part["path"] for part in read_parts]
         selected_paths = list(dict.fromkeys([*selected_paths, *read_paths]))

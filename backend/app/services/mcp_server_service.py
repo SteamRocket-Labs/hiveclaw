@@ -384,6 +384,7 @@ async def set_agent_mcp_assignment(
     enabled: bool,
     default_tool_mode: str = "auto",
     always_load: bool = False,
+    current_user=None,
 ) -> dict:
     """Upsert one agent↔MCP server assignment (unique per tenant+agent+server)."""
     default_tool_mode = _validate_tool_mode(default_tool_mode, field_name="default_tool_mode")
@@ -422,7 +423,7 @@ async def set_agent_mcp_assignment(
                 from app.services.agent_tool_assignment_service import ensure_agent_tool_assignment
 
                 await ensure_agent_tool_assignment(db, tenant_id=tenant_id, agent_id=agent_id, tool_id=tool.id,
-                    enabled=approved, quarantine_for_mcp_trust=not approved)
+                    enabled=approved, quarantine_for_mcp_trust=not approved, current_user=current_user)
     await db.commit()
     return {
         "id": str(assignment.id),

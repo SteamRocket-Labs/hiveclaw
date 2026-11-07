@@ -283,6 +283,7 @@ async def update_agent_mcp_server(
             enabled=data.enabled,
             default_tool_mode=data.default_tool_mode,
             always_load=data.always_load,
+            current_user=current_user,
         )
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc))

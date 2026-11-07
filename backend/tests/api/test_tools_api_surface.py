@@ -37,11 +37,17 @@ class _FakeDB(ActiveTransactionSessionStub):
         self.committed = False
 
     async def execute(self, _stmt):
+        return self._execute(_stmt)
+
+    def _execute(self, _stmt):
         if "SET LOCAL app.current_tenant_id" in str(_stmt):
             return _ScalarResult(None)
         if not self._results:
             raise AssertionError("Unexpected execute() call")
         return self._results.pop(0)
+
+    async def run_sync(self, function, **kwargs):
+        return function(SimpleNamespace(execute=self._execute, add=self.add), **kwargs)
 
     def add(self, value):
         self.added.append(value)
@@ -201,10 +207,10 @@ def test_serialize_agent_tool_row_masks_schema_less_mcp_credentials() -> None:
     payload = tools_api._serialize_agent_tool_row(tool, assignment)
 
     assert payload["config"]["api_key"] == MASKED_SECRET_SENTINEL
-    assert payload["config"]["nested"]["githubPersonalAccessToken"] == MASKED_SECRET_SENTINEL
+    assert payload["config"]["nested"] == MASKED_SECRET_SENTINEL
     assert payload["agent_config"]["api_key"] == MASKED_SECRET_SENTINEL
-    assert payload["agent_config"]["nested"]["githubPersonalAccessToken"] == MASKED_SECRET_SENTINEL
-    assert payload["agent_config"]["smithery_namespace"] == "safe-namespace"
+    assert payload["agent_config"]["nested"] == MASKED_SECRET_SENTINEL
+    assert payload["agent_config"]["smithery_namespace"] == MASKED_SECRET_SENTINEL
     assert "direct-mcp-secret" not in str(payload)
     assert "nested-mcp-secret" not in str(payload)
 
@@ -242,9 +248,13 @@ async def test_category_config_masks_credentials_and_preserves_them_on_sentinel_
         current_user=current_user,
         db=read_db,
     )
-    assert payload == {"config": {"api_key": MASKED_SECRET_SENTINEL, "region": "cn"}}
+    assert payload == {"config": {"api_key": MASKED_SECRET_SENTINEL, "region": MASKED_SECRET_SENTINEL}}
 
-    write_db = _FakeDB([_ListResult([(assignment, tool)])])
+    async def locked_manage_access(db, target_agent_id, *, current_user=None):
+        return await tools_api._require_manage_access(db, current_user, target_agent_id)
+
+    monkeypatch.setattr("app.services.agent_tool_assignment_service.lock_agent_tool_config_write", locked_manage_access)
+    write_db = _FakeDB([_ListResult([(assignment, tool)]), _ScalarResult(assignment)])
     updated = await tools_api.update_category_config(
         agent_id=agent_id,
         category="mcp",
@@ -256,7 +266,7 @@ async def test_category_config_masks_credentials_and_preserves_them_on_sentinel_
     assert assignment.config == {"api_key": "stored-secret", "region": "us"}
     assert updated == {
         "ok": True,
-        "config": {"api_key": MASKED_SECRET_SENTINEL, "region": "us"},
+        "config": {"api_key": MASKED_SECRET_SENTINEL, "region": MASKED_SECRET_SENTINEL},
     }
     assert write_db.committed is True
 
@@ -549,7 +559,7 @@ async def test_update_global_tool_builtin_toggle_is_runtime_authority(monkeypatc
         ttc.enabled = bool(enabled)
         return ttc
 
-    async def fake_upsert_assignments(db_session, tenant, updated_tool, *, enabled, config):
+    async def fake_upsert_assignments(db_session, tenant, updated_tool, *, enabled, config, current_user):
         calls["assignments"] = {
             "db": db_session,
             "tenant_id": tenant,
@@ -687,6 +697,11 @@ async def test_update_tool_config_rejects_hr_only_tool_for_regular_agent(monkeyp
     monkeypatch.setattr(tools_api, "_require_manage_access", fake_require_manage_access)
     monkeypatch.setattr(tools_api, "ensure_agent_tool_assignment", fail_ensure_assignment)
 
+    async def locked_manage_access(db_session, target_agent_id, *, current_user=None):
+        return await fake_require_manage_access(db_session, current_user, target_agent_id)
+
+    monkeypatch.setattr("app.services.agent_tool_assignment_service.lock_agent_tool_config_write", locked_manage_access)
+
     with pytest.raises(HTTPException) as exc:
         await tools_api.update_tool_config(
             agent_id=agent_id,
@@ -701,17 +716,29 @@ async def test_update_tool_config_rejects_hr_only_tool_for_regular_agent(monkeyp
 
 
 @pytest.mark.asyncio
-async def test_create_tool_assigns_new_tool_to_current_tenant_agents():
+async def test_create_tool_assigns_new_tool_to_current_tenant_agents(monkeypatch):
     import app.api.tools as tools_api
 
     tenant_id = uuid4()
     current_user = SimpleNamespace(id=uuid4(), role="org_admin", tenant_id=tenant_id)
     agent_one = SimpleNamespace(id=uuid4(), tenant_id=tenant_id)
     agent_two = SimpleNamespace(id=uuid4(), tenant_id=tenant_id)
+    async def load_actor(_db, user_id):
+        assert user_id == current_user.id
+        return current_user
+
+    async def require_manage(_db, actor, agent_id):
+        assert actor is current_user
+        return next(agent for agent in (agent_one, agent_two) if agent.id == agent_id)
+
+    monkeypatch.setattr("app.services.runtime_user_identity.load_runtime_user", load_actor)
+    monkeypatch.setattr("app.core.permissions.require_agent_manage_access", require_manage)
     db = _FakeDB(
         [
             _ListResult([agent_one, agent_two]),
+            _ScalarResult(agent_one),
             _ScalarResult(None),
+            _ScalarResult(agent_two),
             _ScalarResult(None),
         ]
     )

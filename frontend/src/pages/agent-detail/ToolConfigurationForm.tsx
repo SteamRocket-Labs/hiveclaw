@@ -4,6 +4,8 @@ import type { AgentTool } from '../../api/domains/tools';
 import { useAuthStore } from '../../stores';
 import './ToolsManager.css';
 
+const MASKED_SECRET = '__HIVE_SECRET_SET__';
+
 export default function ToolConfigurationForm({ tool, onSave, onCancel, submitLabel }: {
   tool: AgentTool;
   onSave: (config: Record<string, unknown>) => Promise<void>;
@@ -13,7 +15,11 @@ export default function ToolConfigurationForm({ tool, onSave, onCancel, submitLa
   const { t } = useTranslation();
   const formId = useId();
   const fields = tool.config_schema?.fields || [];
+  const inherited = { ...tool.global_config, ...tool.agent_config };
+  const structuredFields = (fields as any[]).filter((field: any) => ['object', 'array'].includes(field.type));
+  const structuredValue = (field: any) => [MASKED_SECRET, ''].includes(inherited[field.key] as string) ? '' : JSON.stringify(inherited[field.key] ?? (field.type === 'array' ? [] : {}), null, 2);
   const [data, setData] = useState<Record<string, any>>(() => ({ ...tool.global_config, ...tool.agent_config }));
+  const [structured, setStructured] = useState<Record<string, string>>(() => Object.fromEntries(structuredFields.map((field: any) => [field.key, structuredValue(field)])));
   const [json, setJson] = useState(() => JSON.stringify(tool.agent_config || {}, null, 2));
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
@@ -29,6 +35,9 @@ export default function ToolConfigurationForm({ tool, onSave, onCancel, submitLa
         const inherited = { ...tool.global_config, ...tool.agent_config };
         for (const [key, value] of Object.entries(data)) {
           if (!Object.is(value, inherited[key])) payload[key] = value;
+        }
+        for (const field of structuredFields) {
+          if (structured[field.key] !== structuredValue(field)) payload[field.key] = JSON.parse(structured[field.key] || '""');
         }
       }
       await onSave(payload);
@@ -58,7 +67,16 @@ export default function ToolConfigurationForm({ tool, onSave, onCancel, submitLa
                   {field.label}
                   {isReadOnly && <span className="tools-manager-field-note">(Admin only)</span>}
                 </label>
-                {field.type === 'password' ? (
+                {['object', 'array'].includes(field.type) ? (
+                  <textarea
+                    id={`${formId}-${field.key}`}
+                    disabled={saving}
+                    className="form-input tools-manager-json-input"
+                    value={structured[field.key]}
+                    placeholder={data[field.key] === MASKED_SECRET ? '••••••' : field.placeholder || '{}'}
+                    onChange={(event) => setStructured((previous) => ({ ...previous, [field.key]: event.target.value }))}
+                  />
+                ) : field.type === 'password' || field.format === 'password' || field.writeOnly ? (
                   <input
                     id={`${formId}-${field.key}`}
                     type="password"
@@ -66,11 +84,12 @@ export default function ToolConfigurationForm({ tool, onSave, onCancel, submitLa
                     autoComplete="new-password"
                     className="form-input"
                     value={data[field.key] ?? ''}
-                    placeholder={field.placeholder || 'Leave blank to use global default'}
+                    placeholder={field.placeholder || t('agent.configuration.valuePlaceholder', 'Enter a value')}
                     onChange={(event) => setData((previous) => ({ ...previous, [field.key]: event.target.value }))}
                   />
                 ) : field.type === 'select' ? (
                   <select id={`${formId}-${field.key}`} disabled={saving} className="form-input" value={data[field.key] ?? field.default ?? ''} onChange={(event) => setData((previous) => ({ ...previous, [field.key]: event.target.value }))}>
+                    {data[field.key] === MASKED_SECRET && <option value={MASKED_SECRET}>••••••</option>}
                     {(field.options || []).map((option: any) => (
                       <option key={option.value} value={option.value}>
                         {option.label}
@@ -80,11 +99,11 @@ export default function ToolConfigurationForm({ tool, onSave, onCancel, submitLa
                 ) : field.type === 'number' ? (
                   <input
                     id={`${formId}-${field.key}`}
-                    type="number"
+                    type={data[field.key] === MASKED_SECRET ? 'text' : 'number'}
                     disabled={saving}
                     className="form-input"
-                    value={data[field.key] ?? field.default ?? ''}
-                    placeholder={field.placeholder || ''}
+                    value={data[field.key] === MASKED_SECRET ? '' : data[field.key] ?? field.default ?? ''}
+                    placeholder={data[field.key] === MASKED_SECRET ? '••••••' : field.placeholder || ''}
                     min={field.min}
                     max={field.max}
                     onChange={(event) => setData((previous) => ({ ...previous, [field.key]: event.target.value ? Number(event.target.value) : '' }))}
@@ -92,11 +111,11 @@ export default function ToolConfigurationForm({ tool, onSave, onCancel, submitLa
                 ) : (
                   <input
                     id={`${formId}-${field.key}`}
-                    type="text"
+                    type={data[field.key] === MASKED_SECRET ? 'password' : 'text'}
                     disabled={saving}
                     className="form-input"
                     value={data[field.key] ?? ''}
-                    placeholder={field.placeholder || 'Leave blank to use global default'}
+                    placeholder={field.placeholder || t('agent.configuration.valuePlaceholder', 'Enter a value')}
                     onChange={(event) => setData((previous) => ({ ...previous, [field.key]: event.target.value }))}
                   />
                 )}
@@ -106,7 +125,7 @@ export default function ToolConfigurationForm({ tool, onSave, onCancel, submitLa
       </div>
     ) : (
       <div>
-        <label className="tools-manager-field-label" htmlFor={formId}>Config JSON (Agent Override)</label>
+        <label className="tools-manager-field-label" htmlFor={formId}>{t('agent.configuration.configContent', 'Configuration')}</label>
         <textarea
           disabled={saving}
           id={formId}

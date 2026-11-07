@@ -1385,6 +1385,8 @@
       "saveAndReview": "保存并核查职责"
     },
     "configuration": {
+      "configContent": "配置内容",
+      "valuePlaceholder": "输入配置值",
       "editChannel": "编辑渠道配置",
       "channelTitle": "为当前工作配置渠道",
       "companyChannel": "已有公司渠道",
@@ -4564,6 +4566,9 @@
     "deleteCompanyConfirm": "确定删除此公司及其全部数据吗？此操作无法撤销。"
   },
   "handover": {
+    "hrAgentName": "人事助理",
+    "toolsNeedCredentials": "需要重新填写密钥的工具",
+    "enterCredentialsAgain": "原负责人的密钥已清除，请填写自己的密钥后再使用。",
     "merged": "已合并到接手人已有的资料",
     "needsAdmin": "需要公司管理员处理",
     "effect": {

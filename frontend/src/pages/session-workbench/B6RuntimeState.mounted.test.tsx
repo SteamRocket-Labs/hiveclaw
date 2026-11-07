@@ -116,7 +116,7 @@ it('keeps a stopped main run distinct from a later approval-result notification 
   const { messages } = model('cancelled');
   const panel = buildSessionRightPanelModel({ messages: [...messages, { role: 'event', content: '',
     eventType: 'runtime_action_blocked', eventRuntimeTaskId: 'approval-task' }], activeSession: session,
-    presentationStatus: 'cancelled', sessionWorkbench: { runtime_sections: {
+    activeRunId: 'run-1', presentationStatus: 'cancelled', sessionWorkbench: { runtime_sections: {
       runs: [{ id: 'run-1', status: 'running' }],
     } } });
   expect(panel.runtimeSections.runs[0].status).toBe('cancelled');
@@ -156,6 +156,18 @@ it('does not apply the current run presentation to an older stopped run', () => 
     ] } } });
   expect(panel.runtimeSections.runs.map(run => [run.id, run.status])).toEqual([
     ['run-1', 'killed'], ['run-2', 'running'],
+  ]);
+});
+
+it('keeps each run state while the next input is queued without an active run id', () => {
+  const { messages } = model('killed');
+  const panel = buildSessionRightPanelModel({ messages, activeSession: session,
+    activeRunId: null, activeRunStatus: 'queued', presentationStatus: 'running',
+    sessionWorkbench: { runtime_sections: { runs: [
+      { id: 'run-1', status: 'killed' }, { id: 'run-2', status: 'suspended' },
+    ] } } });
+  expect(panel.runtimeSections.runs.map(run => [run.id, run.status])).toEqual([
+    ['run-1', 'killed'], ['run-2', 'suspended'],
   ]);
 });
 

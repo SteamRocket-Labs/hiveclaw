@@ -305,7 +305,8 @@ def test_pending_company_approval_is_waiting_in_generic_projections() -> None:
         metadata={"status": "approval_required"}) == "waiting_user"
     for audience in ("user", "operator"):
         item = build_thread_item(_event(event_type="permission_request", item_type="approval_request",
-            item_status="succeeded", metadata_json={"status": "approval_required"}), audience=audience)
+            item_status="succeeded", metadata_json={"status": "approval_required", "approval_id": str(uuid.uuid4())}),
+            audience=audience, approval_status="pending")
         assert item["item_status"] == "waiting_user"
 
 

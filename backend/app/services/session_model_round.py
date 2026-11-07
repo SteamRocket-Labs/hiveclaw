@@ -1457,8 +1457,9 @@ async def fail_model_request(
         return
     wire = dict((result.model_request_snapshot_json or {}).get("wire_request") or {})
     provider_request = {**wire, **dict(wire.get("reasoning") or {})}
-    provider_effect = bool(provider_request.get("mcp_servers")) or any(
-        tool.get("type") not in {None, "function"} for tool in provider_request.get("tools") or []
+    tools = provider_request.get("tools", [])
+    provider_effect = bool(provider_request.get("mcp_servers")) or not isinstance(tools, list) or any(
+        not isinstance(tool, dict) or tool.get("type") != "function" for tool in tools
     )
     cancelled = error_class == "cancelled" and not provider_effect
     if error_class == "cancelled":
@@ -1488,18 +1489,26 @@ async def fail_model_request(
         # advisory); locking the RuntimeTask row first would invert the
         # order. Reentrant when the calling round flow already holds it.
         await lock_transcript_session(db, session_id=session_id)
-        run_task = await db.scalar(
-            select(RuntimeTask)
-            .where(
-                RuntimeTask.id == run_id,
-                RuntimeTask.tenant_id == tenant_id,
+        from app.services.runtime_task_fence import assert_runtime_task_fence, clear_runtime_task_fence, reset_runtime_task_fence
+
+        token = clear_runtime_task_fence()
+        try:
+            run_task = await db.scalar(select(RuntimeTask).where(
+                RuntimeTask.id == run_id, RuntimeTask.tenant_id == tenant_id,
                 or_(and_(RuntimeTask.parent_agent_id == agent_id, RuntimeTask.parent_session_id == str(session_id)),
                     and_(RuntimeTask.task_type.in_(("delegation", "business_task")), RuntimeTask.child_agent_id == agent_id,
                         func.replace(func.lower(RuntimeTask.child_session_id), "-", "") == session_id.hex)),
-            )
-            .with_for_update()
-        )
+            ).with_for_update())
+        finally:
+            reset_runtime_task_fence(token)
+        from app.services.runtime_terminal_settlement import TERMINAL_SETTLEMENT_STATUSES
+
+        if run_task is not None and run_task.status in TERMINAL_SETTLEMENT_STATUSES:
+            result.state = "needs_reconciliation" if provider_effect else "failed"
+            result.reconciliation_owner = "session_model_round:ambiguous_failure" if provider_effect else None
+            return result.state
         if run_task is not None:
+            assert_runtime_task_fence(run_task)
             metadata = dict(run_task.metadata_json or {})
             if cancelled:
                 metadata["terminal_reason"] = "user_cancel"

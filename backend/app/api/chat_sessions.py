@@ -966,7 +966,7 @@ def _compact_transcript_metadata(metadata: Any, truncations: list[dict[str, Any]
     return compact
 
 
-def _serialize_transcript_event(event: ChatTranscriptEvent, *, audience: str = "operator") -> dict:
+def _serialize_transcript_event(event: ChatTranscriptEvent, *, audience: str = "operator", approval_status: str | None = None) -> dict:
     from app.services.thread_items import build_thread_item
 
     truncations: list[dict[str, Any]] = []
@@ -1011,6 +1011,7 @@ def _serialize_transcript_event(event: ChatTranscriptEvent, *, audience: str = "
         metadata=metadata,
         role=_transcript_role_for_event(event),
         audience="operator" if audience == "operator" else "user",
+        approval_status=approval_status,
         preserve_user_content=(
             projected_content is not None
             or event_type in {"user_message", "assistant_message", "response_repair", "summary_turn"}
@@ -2723,14 +2724,31 @@ async def get_session_transcript(
                 .limit(limit)
             )
             rows = list(events_result.scalars().all())
+        from app.models.audit import ApprovalRequest
+
+        approval_ids = {}
+        for event in rows:
+            try:
+                approval_ids[event.id] = uuid.UUID(str((event.metadata_json or {}).get("approval_id")))
+            except ValueError:
+                pass
+        approval_statuses = dict((await db.execute(select(ApprovalRequest.id, ApprovalRequest.status).where(
+            ApprovalRequest.id.in_(approval_ids.values()), ApprovalRequest.tenant_id == session.tenant_id,
+            ApprovalRequest.agent_id == session.agent_id,
+        ))).all()) if approval_ids else {}
+
+        def serialize(event):
+            return _serialize_transcript_event(event, audience=audience,
+                approval_status=approval_statuses.get(approval_ids.get(event.id)))
+
         if group_history:
             from app.services.shared_group_history import group_event_access, legacy_source_hold
 
             access = await group_event_access(db, session=session, events=rows, user=current_user)
             payload = [legacy_source_hold(event, access[event.id]) if access[event.id] is not None
-                else _serialize_transcript_event(event, audience=audience) for event in rows]
+                else serialize(event) for event in rows]
         else:
-            payload = [_serialize_transcript_event(event, audience=audience) for event in rows]
+            payload = [serialize(event) for event in rows]
     if group_history:
         from app.services.shared_group_history import mark_reader_projection
 

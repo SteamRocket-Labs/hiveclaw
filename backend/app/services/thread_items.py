@@ -975,6 +975,7 @@ def build_thread_item(
     role: str | None = None,
     audience: ThreadItemAudience = "operator",
     preserve_user_content: bool = False,
+    approval_status: str | None = None,
 ) -> dict[str, Any]:
     event_type = str(getattr(event, "event_type", None) or "event")
     clean_parts = list(parts if parts is not None else (getattr(event, "parts_json", None) or []))
@@ -1006,8 +1007,9 @@ def build_thread_item(
             if persisted_status in {"running", "waiting_user", "succeeded", "failed", "cancelled"}
             else classify_thread_item_status(item_type=item_type, event_type=event_type, metadata=clean_metadata)
         )  # type: ignore[assignment]
-    if item_type == "approval_request" and clean_metadata.get("status") == "approval_required":
-        item_status = "waiting_user"
+    if (item_type == "approval_request" and clean_metadata.get("approval_id")
+        and lifecycle_status not in {"succeeded", "failed", "cancelled"} and approval_status is not None):
+        item_status = {"pending": "waiting_user", "approved": "succeeded", "rejected": "cancelled"}[approval_status]
     merged = _merged_data(clean_metadata, clean_parts)
     evidence_refs = clean_metadata.get("evidence_refs")
     clean_evidence_refs = (

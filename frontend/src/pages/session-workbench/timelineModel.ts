@@ -1378,13 +1378,11 @@ export function buildSessionRightPanelModel({
   const selectedSession = activeSession ?? asRecord(workbenchRecord?.session);
   const selectedSessionId = readString(selectedSession ?? {}, ['id', 'chat_session_id', 'session_id'], 'session');
   const durableSessionWindow = buildSessionWindowModel(selectedSession, activeRunStatus);
-  const currentRunId = normalizeSessionRunId(activeRunId)
-    || messageRunId([...messages].reverse().find(message => message.sessionItem?.kind === 'run'));
+  const currentRunId = normalizeSessionRunId(activeRunId);
   const durableRuntimeSections = buildRuntimeSectionsSummary({ ...evidenceRuntimeSections,
-    runs: evidenceRuntimeSections.runs.map(run => presentationRunStatus && (
-      currentRunId ? isSameSessionRunId(readString(run.raw, ['runtime_task_id', 'id'], run.id), currentRunId)
-        : isRunningRuntimeItem(run)
-    ) ? { ...run, status: presentationRunStatus === 'complete' ? 'completed' : presentationRunStatus,
+    runs: evidenceRuntimeSections.runs.map(run => presentationRunStatus && currentRunId
+      && isSameSessionRunId(readString(run.raw, ['runtime_task_id', 'id'], run.id), currentRunId)
+      ? { ...run, status: presentationRunStatus === 'complete' ? 'completed' : presentationRunStatus,
       state: presentationRunStatus, userBlocker: presentationRunStatus === 'waiting' ? run.userBlocker : null } : run),
   });
   const presentationRun = presentationRunStatus && selectedSession && durableSessionWindow?.kind === 'main'

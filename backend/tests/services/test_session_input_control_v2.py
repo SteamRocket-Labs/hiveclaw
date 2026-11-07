@@ -4976,6 +4976,11 @@ async def test_committed_round_is_immutable_under_repeat_and_stale_prepare(owner
     ({}, "killed"),
     ({"mcp_servers": [{"type": "url", "url": "http://127.0.0.1/mcp", "name": "local"}]}, "needs_reconciliation"),
     ({"tools": [{"type": "web_search_20250305", "name": "web_search"}]}, "needs_reconciliation"),
+    ({"tools": [{"google_search": {}}]}, "needs_reconciliation"),
+    ({"tools": {"google_search": {}}}, "needs_reconciliation"),
+    ({"tools": [None]}, "needs_reconciliation"),
+    ({"tools": "unknown"}, "needs_reconciliation"),
+    ({"tools": {}}, "needs_reconciliation"),
     ({"tools": [{"type": "function", "function": {"name": "read_file"}}]}, "killed"),
 ])
 async def test_cancelled_model_round_and_run_commit_atomically_and_cannot_be_reclaimed(

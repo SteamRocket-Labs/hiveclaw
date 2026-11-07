@@ -553,6 +553,7 @@
     "workerUnknown": "Worker availability has not been verified",
     "actionFailed": "Could not complete this action. Please try again.",
     "title": "My Assistant",
+    "role": "The user's assistant",
     "loading": "Loading your assistant",
     "setupByAdmin": "Ask your company admin to set up an assistant.",
     "connectionFailed": "Could not reach your assistant. Please try again.",
@@ -886,7 +887,7 @@
       "subtitle": "Sensitive, external-visible, or high-risk actions stay behind confirmation, approval, and audit surfaces."
     },
     "team": {
-      "title": "A2A / Team",
+      "title": "Team collaboration",
       "eyebrow": "Delegation and collaboration",
       "subtitle": "Session-local team work, subagent definitions, peer relationships, and local-runtime agents stay visible without mixing their ownership boundaries."
     },

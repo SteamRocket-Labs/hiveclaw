@@ -528,6 +528,7 @@
     "workerUnknown": "暂时无法确认运行服务是否就绪",
     "actionFailed": "操作未完成，请重试。",
     "title": "我的助理",
+    "role": "为你处理工作的助理",
     "loading": "正在读取助理",
     "setupByAdmin": "请联系公司管理员设置助理。",
     "connectionFailed": "暂时无法连接助理，请重试。",
@@ -861,7 +862,7 @@
       "subtitle": "敏感、对外可见或高风险动作都保留确认、审批和审计面。"
     },
     "team": {
-      "title": "A2A / Team",
+      "title": "团队协作",
       "eyebrow": "委派与协作",
       "subtitle": "会话内 Team、Subagent 定义、Peer 关系和本地运行时 Agent 都可见，但不会混淆各自归属边界。"
     },
@@ -1489,7 +1490,7 @@
       "conversation": "对话与任务",
       "capabilities": "能力",
       "memory": "记忆与知识",
-      "team": "A2A / Team",
+      "team": "团队协作",
       "documents": "文档与工作区",
       "permissions": "权限与设置"
     },
@@ -1528,9 +1529,9 @@
     "businessTasks": {
       "eyebrow": "持久任务",
       "title": "业务交办",
-      "subtitle": "创建、查看、停止并安全重试交给这个 Agent 的工作。",
+      "subtitle": "创建、查看、停止并重试交给这位数字员工的工作。",
       "boundaryTitle": "两种任务不是一回事",
-      "boundaryBody": "业务交办是用户交给 Agent 的持久执行任务；Work Ledger 是 Agent 在单次对话中的私有步骤清单，本身不会触发执行。",
+      "boundaryBody": "业务交办是你交给数字员工的任务；对话中的步骤清单用于整理这次工作，本身不会开始执行。",
       "planQueue": "等待你决定的计划",
       "assignments": "交办事项",
       "newAssignment": "新建交办",

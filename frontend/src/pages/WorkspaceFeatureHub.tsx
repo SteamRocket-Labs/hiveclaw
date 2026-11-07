@@ -251,7 +251,7 @@ const hubCopy: Record<HubKind, HubCopy> = {
     icon: <IconShieldCheck size={20} stroke={1.7} />,
   },
   team: {
-    title: 'A2A / Team',
+    title: 'Team collaboration',
     eyebrow: 'Delegation and collaboration',
     subtitle: 'Session-local team work, subagent definitions, governed A2A collaborators, and local-runtime agents stay visible without mixing their ownership boundaries.',
     icon: <IconRoute size={20} stroke={1.7} />,

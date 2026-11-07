@@ -286,7 +286,7 @@ describe('WorkspaceFeatureHub', () => {
   it('renders A2A and Team as a real front-end surface over A2A collaborators, subagents, and local channel entry points', () => {
     const markup = renderToStaticMarkup(<WorkspaceFeatureHub kind="team" />);
 
-    expect(markup).toContain('A2A / Team');
+    expect(markup).toContain('Team collaboration');
     expect(markup).toContain('Research Lead');
     expect(markup).toContain('Session-local team');
     expect(markup).toContain('A2A collaborators');

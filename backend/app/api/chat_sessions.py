@@ -12,6 +12,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import String, or_, select, func, text
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.permissions import (
@@ -2767,15 +2768,15 @@ async def _cancel_session_run_v2(
     current_user: User,
     db: AsyncSession,
 ) -> dict[str, Any]:
-    session, agent, _authority_source = await _get_run_session_and_agent(
-        db=db,
-        agent_id=agent_id,
-        session_id=session_id,
-        current_user=current_user,
-        action="cancel_session_run",
-        require_writable=True,
-    )
     try:
+        session, agent, _authority_source = await _get_run_session_and_agent(
+            db=db,
+            agent_id=agent_id,
+            session_id=session_id,
+            current_user=current_user,
+            action="cancel_session_run",
+            require_writable=True,
+        )
         receipt = await submit_live_cancel_input(
             db=db,
             agent=agent,
@@ -2801,6 +2802,14 @@ async def _cancel_session_run_v2(
                 "receipt_ref": exc.receipt_ref,
             },
         ) from exc
+    except DBAPIError as exc:
+        await db.rollback()
+        if getattr(exc.orig, "sqlstate", None) not in {"57014", "55P03"}:
+            raise
+        raise HTTPException(status_code=503, detail={
+            "code": "cancel_temporarily_unavailable", "retryable": True,
+            "run_id": str(run_id),
+        }) from exc
 
 
 @router.post("/{agent_id}/sessions/{session_id}/runs/{run_id}/cancel")

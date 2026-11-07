@@ -6,10 +6,14 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import en from '../../i18n/en.json';
 import zh from '../../i18n/zh.json';
+import type { RuntimeWorkLedgerView } from '../../api/domains/autonomy';
 
 const noticeLocale = vi.hoisted(() => ({ language: 'en' }));
 
 const harness = vi.hoisted(() => ({
+  ledger: undefined as RuntimeWorkLedgerView | undefined,
+  activeRun: undefined as { id: string; status: string } | undefined,
+  ledgerQuery: undefined as { refetchInterval?: number | false } | undefined,
   readArtifact: vi.fn(),
   downloadArtifact: vi.fn(),
   createObjectURL: vi.fn(),
@@ -20,7 +24,8 @@ const harness = vi.hoisted(() => ({
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
     t: (_key: string, fallback?: string | Record<string, unknown>, values?: Record<string, unknown>) => {
-      if (_key === 'agent.chat.pastedCredentialNotice' || _key === 'agent.chat.hiddenCredential') {
+      if (_key === 'agent.chat.pastedCredentialNotice' || _key === 'agent.chat.hiddenCredential'
+        || _key.startsWith('agent.runtimeStatus.')) {
         const catalog = noticeLocale.language === 'zh' ? zh : en;
         return _key.split('.').reduce<any>((value, key) => value?.[key], catalog) ?? _key;
       }
@@ -38,14 +43,20 @@ vi.mock('react-i18next', () => ({
 }));
 
 vi.mock('@tanstack/react-query', () => ({
-  useQuery: ({ queryKey, enabled }: { queryKey: unknown[]; enabled?: boolean }) => {
+  useQuery: (options: { queryKey: unknown[]; enabled?: boolean; refetchInterval?: number | false }) => {
+    const { queryKey, enabled } = options;
     if (enabled === false) return { data: undefined, isLoading: false, refetch: vi.fn() };
+    if (queryKey[0] === 'chat-session-work-ledger') {
+      harness.ledgerQuery = options;
+      return { data: harness.ledger, isLoading: false, refetch: vi.fn() };
+    }
     if (queryKey[0] === 'chat-session-workbench') {
       return {
         data: {
           schema: 'session_workbench.v1',
           agent_id: 'agent-1',
           session: { id: String(queryKey[2]), title: 'Private session' },
+          active_run: harness.activeRun,
           runtime_sections: {
             workflows: [{
               id: 'private-workflow',
@@ -398,6 +409,9 @@ function downloadProps(operatorReason: string) {
 }
 
 beforeEach(() => {
+  harness.ledger = undefined;
+  harness.activeRun = undefined;
+  harness.ledgerQuery = undefined;
   noticeLocale.language = 'en';
   harness.readArtifact.mockReset();
   harness.readArtifact.mockResolvedValue({ content: 'PRIVATE ARTIFACT CONTENT' });
@@ -437,6 +451,87 @@ function noticeProps() {
       is_current_user_session: true, operator_view: false },
     historyMsgs: [], chatMessagesSessionId: 'original-work' };
 }
+
+it('uses the settled transcript status for the todo after the active run clears', () => {
+  harness.ledger = {
+    schema: 'agent_work_ledger_view.v1', runtime_task_id: 'stopped-run', status: 'in_progress',
+    todo_items: [{ id: '1', title: 'Write the report', activeForm: 'Writing the report', status: 'in_progress', required: true }],
+    counts: { todos_total: 1, todos_complete: 0, todos_open: 1 },
+  };
+  render(<AgentChatSection {...noticeProps()} activeRunId={null} activeRunStatus={null} chatMessages={[
+    { id: 'input', role: 'user', content: 'Write the report', timestamp: '2026-11-07T00:00:00Z' },
+    { id: 'stopped', role: 'event', content: '', timestamp: '2026-11-07T00:00:01Z', sessionItem: {
+      id: 'stopped-run', terminal: true, revision: 1, content: '', payload: {}, actor: { type: 'runtime' },
+      visibility: { audience: 'direct_user' }, occurredAt: '2026-11-07T00:00:01Z', first_sequence: 1, last_sequence: 1,
+      kind: 'run', lifecycle: 'cancelled', scope: { level: 'run', session_id: 'original-work', thread_id: 'original-work',
+        turn_id: 'stopped-turn', run_id: 'stopped-run' },
+    } },
+  ]} />);
+  expect(screen.getByTestId('chat-work-ledger-summary').textContent).toContain('Stopped');
+  expect(screen.queryByText('Writing the report')).toBeNull();
+});
+
+it('stops the todo with the header while the cached workbench run is still running', () => {
+  noticeLocale.language = 'zh';
+  harness.activeRun = { id: 'stopped-run', status: 'running' };
+  harness.ledger = {
+    schema: 'agent_work_ledger_view.v1', runtime_task_id: 'stopped-run', status: 'in_progress',
+    todo_items: [{ id: '1', title: '委派行业综述初稿撰写', activeForm: '正在委派行业综述初稿撰写',
+      status: 'in_progress', required: true }],
+    counts: { todos_total: 1, todos_complete: 0, todos_open: 1 },
+  };
+  render(<AgentChatSection {...noticeProps()} activeRunId={null} activeRunStatus={null} chatMessages={[
+    { id: 'input', role: 'user', content: 'Write the report', timestamp: '2026-11-07T00:00:00Z' },
+    { id: 'stopped', role: 'event', content: '', timestamp: '2026-11-07T00:00:01Z', sessionItem: {
+      id: 'stopped-run', terminal: true, revision: 1, content: '', payload: {}, actor: { type: 'runtime' },
+      visibility: { audience: 'direct_user' }, occurredAt: '2026-11-07T00:00:01Z', first_sequence: 1, last_sequence: 1,
+      kind: 'run', lifecycle: 'cancelled', scope: { level: 'run', session_id: 'original-work', thread_id: 'original-work',
+        turn_id: 'stopped-turn', run_id: 'stopped-run' },
+    } },
+  ]} />);
+  expect(screen.getByTestId('session-workbench-header').textContent).toContain('已停止');
+  expect(screen.getByTestId('chat-work-ledger-summary').textContent).toContain('已停止');
+  expect(screen.getByTestId('chat-work-ledger-dock').textContent).not.toContain('正在');
+});
+
+it('keeps the todo live when an empty transcript leaves the header idle', () => {
+  harness.activeRun = { id: 'current-run', status: 'running' };
+  harness.ledger = {
+    schema: 'agent_work_ledger_view.v1', runtime_task_id: 'current-run', status: 'in_progress',
+    todo_items: [{ id: '1', title: 'Write the report', activeForm: 'Writing the report',
+      status: 'in_progress', required: true }],
+    counts: { todos_total: 1, todos_complete: 0, todos_open: 1 },
+  };
+  render(<AgentChatSection {...noticeProps()} activeRunId={null} activeRunStatus={null} chatMessages={[]} />);
+  expect(screen.getByTestId('chat-work-ledger-dock').classList.contains('is-live')).toBe(true);
+  expect(screen.getByText('Writing the report...')).toBeTruthy();
+  expect(harness.ledgerQuery?.refetchInterval).toBe(5000);
+});
+
+it.each(['cancelled', 'failed', 'completed'] as const)(
+  'keeps a different unfinished run live after a previous %s run', (lifecycle) => {
+    harness.activeRun = { id: 'current-run', status: 'running' };
+    harness.ledger = {
+      schema: 'agent_work_ledger_view.v1', runtime_task_id: 'current-run', status: 'in_progress',
+      todo_items: [{ id: '1', title: 'Write the report', activeForm: 'Writing the report',
+        status: 'in_progress', required: true }],
+      counts: { todos_total: 1, todos_complete: 0, todos_open: 1 },
+    };
+    render(<AgentChatSection {...noticeProps()} activeRunId={null} activeRunStatus={null} chatMessages={[
+      { id: 'previous-input', role: 'user', content: 'Previous task', timestamp: '2026-11-07T00:00:00Z' },
+      { id: 'previous-terminal', role: 'event', content: '', timestamp: '2026-11-07T00:00:01Z', sessionItem: {
+        id: 'previous-run', terminal: true, revision: 1, content: '', payload: {}, actor: { type: 'runtime' },
+        visibility: { audience: 'direct_user' }, occurredAt: '2026-11-07T00:00:01Z', first_sequence: 1, last_sequence: 1,
+        kind: 'run', lifecycle, scope: { level: 'run', session_id: 'original-work', thread_id: 'original-work',
+          turn_id: 'previous-turn', run_id: 'previous-run' },
+      } },
+    ]} />);
+    expect(screen.getByTestId('session-workbench-header').textContent).toContain('Running');
+    expect(screen.getByTestId('chat-work-ledger-dock').classList.contains('is-live')).toBe(true);
+    expect(screen.getByText('Writing the report...')).toBeTruthy();
+    expect(harness.ledgerQuery?.refetchInterval).toBe(5000);
+  },
+);
 
 it.each([
   ['en', 'Hidden key', 'The key you pasted was hidden. It will not be saved or sent to the model.'],

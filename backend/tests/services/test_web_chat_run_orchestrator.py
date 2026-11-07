@@ -618,6 +618,9 @@ async def test_production_invocation_request_wires_session_v2_round_callbacks(mo
         async def commit(self):
             calls.append(("db.commit", {}))
 
+        async def scalar(self, _statement):
+            return {}
+
         async def execute(self, _statement):
             return SimpleNamespace(scalars=lambda: [visible_envelope])
 
@@ -699,7 +702,7 @@ async def test_production_invocation_request_wires_session_v2_round_callbacks(mo
         run_uuid=run_id,
         runtime_task=SimpleNamespace(claimed_by="worker-1", claim_version=3, attempt_count=2),
         stream_batcher=None,
-        cancel_event=SimpleNamespace(),
+        cancel_event=asyncio.Event(),
         metadata={
             "turn_id": "turn-live",
             "session_resume_round_index": 2,

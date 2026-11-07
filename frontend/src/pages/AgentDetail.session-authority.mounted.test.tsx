@@ -29,6 +29,7 @@ const mocks = vi.hoisted(() => ({
   startSessionRun: vi.fn(),
   createSessionRun: vi.fn(),
   cancelSessionRun: vi.fn(),
+  deleteSession: vi.fn(),
   upload: vi.fn(),
   activeSessionRun: null as null | { run_id: string; status: string },
   chatProps: null as any,
@@ -122,6 +123,7 @@ vi.mock('../api/domains/chat', () => ({
     startSessionRun: mocks.startSessionRun,
     createSessionRun: mocks.createSessionRun,
     cancelSessionRun: mocks.cancelSessionRun,
+    deleteSession: mocks.deleteSession,
   },
 }));
 
@@ -148,7 +150,8 @@ vi.mock('./agent-detail/useSessionTransportController', () => ({
   },
 }));
 
-vi.mock('../components/ConfirmModal', () => ({ default: () => null }));
+vi.mock('../components/ConfirmModal', () => ({ default: ({ open, confirmLabel, message, onConfirm }: any) => open
+  ? <div role="dialog">{message}<button onClick={onConfirm}>{confirmLabel}</button></div> : null }));
 vi.mock('./agent-detail/AgentApprovalsSection', () => ({ default: () => null }));
 vi.mock('./agent-detail/AgentActivityLogSection', () => ({ default: () => null }));
 vi.mock('./agent-detail/AgentAwareSection', () => ({ default: () => null }));
@@ -210,6 +213,7 @@ function deferred<T>() {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mocks.navigate.mockReset();
   mocks.queryCalls.length = 0;
   mocks.sessionId = 'foreign-session';
   mocks.search = '';
@@ -230,6 +234,7 @@ beforeEach(() => {
   mocks.startSessionRun.mockReset();
   mocks.createSessionRun.mockReset();
   mocks.cancelSessionRun.mockReset();
+  mocks.deleteSession.mockReset();
   mocks.activeSessionRun = null;
 });
 
@@ -244,6 +249,27 @@ async function mountOwnedArtifactWork() {
   await waitFor(() => expect(mocks.chatProps?.activeSession?.id).toBe(mocks.sessionId));
   return mocks.chatProps.onSendMessage as (text: string, options: { expectedSessionId: string; inputId: string; displayContent?: string }) => Promise<unknown>;
 }
+
+it('confirms member removal through the existing API and refreshes their conversation list', async () => {
+  mocks.userRole = 'member';
+  mocks.sessionId = 'owned-removal';
+  let sessions = [{ id: mocks.sessionId, agent_id: 'agent-1', user_id: 'platform-admin-1',
+    title: 'Member report', session_kind: 'human_chat', read_only: false, operator_view: false }];
+  mocks.listSessions.mockImplementation(async (_agentId, scope) => scope === 'mine' ? sessions : []);
+  mocks.getSessionTranscript.mockResolvedValue([]);
+  mocks.deleteSession.mockImplementation(async () => { sessions = []; });
+  mocks.navigate.mockImplementation(() => { mocks.sessionId = undefined; });
+  render(<AgentDetail />);
+  await waitFor(() => expect(mocks.chatProps?.sessions).toHaveLength(1));
+  await act(async () => { await mocks.chatProps.onDeleteSession('owned-removal'); });
+  expect(screen.getByRole('dialog').textContent).toContain('Its records are kept');
+  expect(mocks.deleteSession).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole('button', { name: 'Remove from list' }));
+  await waitFor(() => expect(mocks.deleteSession).toHaveBeenCalledExactlyOnceWith('agent-1', 'owned-removal'));
+  await waitFor(() => expect(mocks.chatProps.sessions.filter((session: any) => !session.is_draft)).toHaveLength(0));
+  expect(mocks.navigate).toHaveBeenCalledWith('/agents/agent-1#chat', { replace: true });
+  expect(mocks.chatProps.activeSession?.id).not.toBe('owned-removal');
+});
 
 it.each(['suspended', 'resumable'])('restores the exact %s run as the cancellation target after a reload', async (status) => {
   mocks.activeSessionRun = { run_id: 'paused-original-run', status };

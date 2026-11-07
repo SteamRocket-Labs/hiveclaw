@@ -21,6 +21,7 @@ from app.kernel.contracts import (
     ToolLifecyclePersistenceError,
 )
 from app.runtime.invoker import AgentInvocationRequest
+from app.models.runtime_task import RuntimeTask
 from app.runtime.runtime_phase import RunPhaseEmitter, RuntimePhase
 from app.services.llm_client import LLMError
 from app.services.runtime_budget_failover import runtime_budget_model_notice, runtime_budget_payload
@@ -1443,6 +1444,8 @@ async def _commit_session_model_response(state: _WebChatRunState, **payload: Any
 async def _fail_session_model_request(state: _WebChatRunState, **payload: Any) -> None:
     from app.services.session_model_round import fail_model_request
 
+    if state.cancel_event.is_set():
+        payload = {**payload, "error_class": "cancelled", "retry_safe": False}
     async with state.ports.runtime.tenant_scoped_session(state.agent.tenant_id) as db:
         result_state = await fail_model_request(
             db,
@@ -1458,8 +1461,16 @@ async def _fail_session_model_request(state: _WebChatRunState, **payload: Any) -
             retry_safe=bool(payload.get("retry_safe")),
             continuation_index=int(payload.get("continuation_index") or 0),
         )
+        # fail_model_request holds the run lock even when no round can seal.
+        metadata = await db.scalar(select(RuntimeTask.metadata_json).where(
+            RuntimeTask.id == state.run_uuid, RuntimeTask.tenant_id == state.agent.tenant_id,
+        ).with_for_update())
         await db.commit()
-    if result_state == "needs_reconciliation" or (result_state is None and not bool(payload.get("retry_safe"))):
+    if (metadata or {}).get("cancel_state") in {"cancelling", "cancelled"}:
+        state.cancel_event.set()
+    if result_state == "needs_reconciliation" or (
+        result_state is None and not bool(payload.get("retry_safe")) and not state.cancel_event.is_set()
+    ):
         state.provider_reconciliation = ProviderRequestNeedsReconciliation(
             provider_request_id=str(payload["provider_request_id"]),
             error_class=str(payload.get("error_class") or "provider_error"),
@@ -1955,15 +1966,16 @@ async def _handle_tool_lifecycle_persistence_failure(
 async def _handle_web_chat_failure(state: _WebChatRunState, exc: Exception) -> None:
     state.ports.runtime.logger.exception("[WebChatRun] Run {} failed", state.run_uuid.hex)
     provider_reconciliation = getattr(state, "provider_reconciliation", None)
+    cancelled = state.cancel_event.is_set()
+    if cancelled and provider_reconciliation is None:
+        state.terminal_phase_hint = RuntimePhase.CANCELLED
+        await _handle_cancelled_failure(state)
+        return
     if provider_reconciliation is not None or isinstance(exc, ProviderRequestNeedsReconciliation):
         state.terminal_phase_hint = RuntimePhase.FAILED
         await _handle_provider_reconciliation_required(state, provider_reconciliation or exc)
         return
-    cancelled = state.cancel_event.is_set()
-    state.terminal_phase_hint = RuntimePhase.CANCELLED if cancelled else RuntimePhase.FAILED
-    if cancelled:
-        await _handle_cancelled_failure(state)
-        return
+    state.terminal_phase_hint = RuntimePhase.FAILED
     if isinstance(exc, ToolLifecyclePersistenceError):
         await _handle_tool_lifecycle_persistence_failure(state, exc)
         return
@@ -2088,12 +2100,16 @@ async def _handle_provider_reconciliation_required(
                 "error_class": exc.error_class,
             },
         }
-        await state.ports.terminal.update_runtime_task(
+        settled_status = await state.ports.terminal.update_runtime_task(
             state.run_uuid,
             status="needs_reconciliation",
             result_summary="Provider send outcome is ambiguous; operator reconciliation is required.",
             metadata_json=metadata,
         )
+        if settled_status == "killed":
+            state.cancel_event.set()
+            state.terminal_phase_hint = RuntimePhase.CANCELLED
+            return
     if state.agent is None or not state.session_id:
         return
     await state.ports.events.broadcast(
@@ -2174,7 +2190,7 @@ async def _handle_cancelled_failure(state: _WebChatRunState) -> None:
         state.run_uuid,
         status="killed",
         result_summary="Generation stopped by user.",
-        metadata_json={"cancelled_by_user": True},
+        metadata_json={"cancelled_by_user": True, "terminal_reason": TerminalReason.USER_CANCEL.value},
     )
     if state.agent is None or not state.session_id:
         return

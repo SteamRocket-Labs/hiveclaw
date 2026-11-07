@@ -3,7 +3,7 @@ import { useQuery } from '@tanstack/react-query';
 import { IconCheck, IconChevronRight, IconSquare, IconSquareFilled } from '@tabler/icons-react';
 
 import { autonomyApi, type RuntimeWorkLedgerItem, type RuntimeWorkLedgerView } from '../../api/domains/autonomy';
-import { runtimeStatusLabel } from './runtimeStatus';
+import { runtimeStatusKey, runtimeStatusLabel } from './runtimeStatus';
 
 interface ChatWorkLedgerDockProps {
   agentId: string;
@@ -88,6 +88,7 @@ export default function ChatWorkLedgerDock({
   operatorReason,
 }: ChatWorkLedgerDockProps) {
   const { t } = useTranslation();
+  live = live && !(runStatus && ['stopped', 'failed', 'done'].includes(runtimeStatusKey(runStatus)));
   const sessionQuery = useQuery({
     queryKey: ['chat-session-work-ledger', agentId, sessionId, operatorView ? operatorReason : 'owner'],
     queryFn: () => autonomyApi.getSessionWorkLedger(

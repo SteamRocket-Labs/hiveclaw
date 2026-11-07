@@ -1584,6 +1584,22 @@ async def fail_model_request(
     retry_safe: bool,
     continuation_index: int = 0,
 ) -> str | None:
+    from app.services.chat_transcript import lock_transcript_session
+    from app.services.runtime_task_fence import assert_runtime_task_fence, clear_runtime_task_fence, reset_runtime_task_fence
+
+    # Choose cancellation and provider failure under the same advisory → row
+    # locks as the terminal write, including failures without a sealable round.
+    await lock_transcript_session(db, session_id=session_id)
+    token = clear_runtime_task_fence()
+    try:
+        run_task = await db.scalar(select(RuntimeTask).where(
+            RuntimeTask.id == run_id, RuntimeTask.tenant_id == tenant_id,
+            or_(and_(RuntimeTask.parent_agent_id == agent_id, RuntimeTask.parent_session_id == str(session_id)),
+                and_(RuntimeTask.task_type.in_(("delegation", "business_task")), RuntimeTask.child_agent_id == agent_id,
+                    func.replace(func.lower(RuntimeTask.child_session_id), "-", "") == session_id.hex)),
+        ).with_for_update().execution_options(populate_existing=True))
+    finally:
+        reset_runtime_task_fence(token)
     round_id = _round_id(run_id, round_index, continuation_index)
     result = await db.scalar(
         select(SessionModelResult)
@@ -1606,9 +1622,11 @@ async def fail_model_request(
     provider_effect = bool(provider_request.get("mcp_servers")) or not isinstance(tools, list) or any(
         not isinstance(tool, dict) or tool.get("type") != "function" for tool in tools
     )
-    cancelled = error_class == "cancelled" and not provider_effect
-    if error_class == "cancelled":
+    if error_class == "cancelled" or (run_task is not None and
+        (run_task.metadata_json or {}).get("cancel_state") in {"cancelling", "cancelled"}):
+        error_class = "cancelled"
         retry_safe = False
+    cancelled = error_class == "cancelled" and not provider_effect
     result.state = "failed" if retry_safe or cancelled else "needs_reconciliation"
     result.seal_json = {
         "delivery_state": str(delivery_state),
@@ -1625,27 +1643,7 @@ async def fail_model_request(
         "error_class": str(error_class),
         "delivery_state": str(delivery_state),
     }
-    run_task: RuntimeTask | None = None
     if not retry_safe:
-        from app.services.chat_transcript import lock_transcript_session
-
-        # Advisory → row: the ambiguous-send failure below appends session
-        # events and settles the run terminally (both take this session's
-        # advisory); locking the RuntimeTask row first would invert the
-        # order. Reentrant when the calling round flow already holds it.
-        await lock_transcript_session(db, session_id=session_id)
-        from app.services.runtime_task_fence import assert_runtime_task_fence, clear_runtime_task_fence, reset_runtime_task_fence
-
-        token = clear_runtime_task_fence()
-        try:
-            run_task = await db.scalar(select(RuntimeTask).where(
-                RuntimeTask.id == run_id, RuntimeTask.tenant_id == tenant_id,
-                or_(and_(RuntimeTask.parent_agent_id == agent_id, RuntimeTask.parent_session_id == str(session_id)),
-                    and_(RuntimeTask.task_type.in_(("delegation", "business_task")), RuntimeTask.child_agent_id == agent_id,
-                        func.replace(func.lower(RuntimeTask.child_session_id), "-", "") == session_id.hex)),
-            ).with_for_update())
-        finally:
-            reset_runtime_task_fence(token)
         from app.services.runtime_terminal_settlement import TERMINAL_SETTLEMENT_STATUSES
 
         if run_task is not None and run_task.status in TERMINAL_SETTLEMENT_STATUSES:
@@ -1664,6 +1662,8 @@ async def fail_model_request(
             run_task.metadata_json = metadata
             run_task.completed_at = datetime.now(timezone.utc)
             run_task.claim_version = int(run_task.claim_version or 0) + 1
+    else:
+        run_task = None
     if not retry_safe and not cancelled:
         try:
             from app.services.session_fork_input import settle_fork_input_provider_delivery

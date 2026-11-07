@@ -83,6 +83,18 @@ describe('ChatWorkLedgerDock', () => {
     queryHarness.runtimeError = false;
   });
 
+  it.each(['killed', 'failed', 'completed'])('uses terminal %s even when live is stale', (runStatus) => {
+    queryHarness.sessionData = ledger('task-current', 'Write the report');
+    queryHarness.sessionData.todo_items[0].activeForm = 'Writing the report';
+    const markup = renderToStaticMarkup(
+      <ChatWorkLedgerDock agentId="agent-1" sessionId="session-1" runtimeTaskId="task-current" live runStatus={runStatus} />,
+    );
+    expect(markup).toContain('Write the report');
+    expect(markup).not.toContain('Writing the report');
+    expect(markup).not.toContain('is-running');
+    expect(markup).not.toContain('is-live');
+  });
+
   it('shows the stopped run and keeps unfinished todos without ongoing activity', () => {
     queryHarness.sessionData = ledger('task-current', 'Write the report');
     queryHarness.sessionData.todo_items[0].activeForm = 'Writing the report';

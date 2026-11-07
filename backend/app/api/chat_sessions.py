@@ -2804,6 +2804,8 @@ async def _cancel_session_run_v2(
         ) from exc
     except DBAPIError as exc:
         await db.rollback()
+        if getattr(exc.orig, "sqlstate", None) not in {"57014", "55P03"}:
+            raise
         raise HTTPException(status_code=503, detail={
             "code": "cancel_temporarily_unavailable", "retryable": True,
             "run_id": str(run_id),

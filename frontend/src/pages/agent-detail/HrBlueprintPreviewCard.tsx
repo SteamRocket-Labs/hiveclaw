@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 
 import { hrCreationApi, type HrCreationDraft } from '../../api/domains/hrCreation';
+import { agentApi } from '../../api/domains/agents';
 import { normalizeToolCallResult, parsePreviewAgentBlueprintResult, type HrPreviewToolResult } from './toolResultEnvelope';
 import { chatApi } from '../../api/domains/chat';
 import { StructuredToolResultBody } from './StructuredToolResult';
@@ -179,6 +180,10 @@ export function HrBlueprintPreviewCard({ agentId, preview, onSendMessage }: HrBl
     mutationFn: () => hrCreationApi.cancel(agentId!, preview.blueprintId!),
     onSuccess: (nextDraft) => queryClient.setQueryData(queryKey, nextDraft),
   });
+  const undoMutation = useMutation({
+    mutationFn: () => agentApi.deactivate(createdAgentId!),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['agents'] }),
+  });
 
   const runDurableAction = async () => {
     setActionError(null);
@@ -237,6 +242,30 @@ export function HrBlueprintPreviewCard({ agentId, preview, onSendMessage }: HrBl
   const canReviseOrReject = canLoad && status === 'awaiting_confirmation';
   const canCancel = canLoad && ['confirmed', 'creating', 'provisioning'].includes(status);
   const openEmployee = createdAgentId && durableAction !== 'retry';
+
+  if (canonicalPreview.authorizationMode === 'policy_direct') {
+    const conversation = createdAgentId && (!canonicalPreview.explicitFirstTask || firstTask?.session_id
+      || firstTask?.status === 'blocked' || firstTask?.status === 'unknown')
+      ? `/agents/${createdAgentId}${firstTask?.session_id ? `?session_id=${encodeURIComponent(firstTask.session_id)}` : ''}#chat`
+      : null;
+    return <article className="hr-blueprint-card">
+      <header><div><h3>{canonicalPreview.name}</h3></div>
+        <span className="hr-blueprint-status">{undoMutation.isSuccess ? t('agent.chat.toolResults.createdBotStopped', 'Stopped') : statusLabel}</span>
+      </header>
+      {canonicalPreview.mission && <p className="hr-blueprint-mission">{canonicalPreview.mission}</p>}
+      {status === 'failed' && <p role="alert">{t('agent.chat.toolResults.creationFailed', 'Creation failed. Please retry.')}</p>}
+      {undoMutation.isError && <p role="alert">{t('agent.chat.toolResults.undoCreationFailed', 'Could not undo creation. Please retry.')}</p>}
+      <footer>
+        {conversation && <a className="btn btn-primary" href={conversation}>{t('agent.chat.toolResults.talkToCreatedBot', 'Talk to it')}</a>}
+        {createdAgentId && <button type="button" className="btn btn-ghost"
+          disabled={undoMutation.isPending || undoMutation.isSuccess}
+          onClick={() => undoMutation.mutate()}>{t('agent.chat.toolResults.undoCreation', 'Undo')}</button>}
+        {durableAction === 'retry' && <button type="button" className="btn btn-secondary"
+          disabled={busy} onClick={runDurableAction}>{firstTask
+            ? t('agent.chat.toolResults.retryFirstTask', 'Retry first task') : t('common.retry', 'Retry')}</button>}
+      </footer>
+    </article>;
+  }
 
   return (
     <article className="hr-blueprint-card">

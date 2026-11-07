@@ -56,7 +56,7 @@ def direct_creation_authorization(draft: HrCreationDraft) -> dict[str, Any] | No
     if any(evidence.get(key) != value for key, value in bindings.items()):
         return None
     if not all(isinstance(evidence.get(key), str) and evidence[key] for key in (
-        "source_run_id", "input_id", "input_hash", "tool_input_hash", "approved_model_id", "owner_policy_hash",
+        "source_run_id", "input_id", "approved_model_id",
     )):
         return None
     if not isinstance(evidence.get("tool_arguments"), dict):

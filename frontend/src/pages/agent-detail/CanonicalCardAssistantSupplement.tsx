@@ -3,6 +3,13 @@ import React from 'react';
 import StreamingMarkdown from '../../components/StreamingMarkdown';
 import type { AgentChatMessage } from './chatRuntime';
 
+export function isSupersededCreationCard(messages: AgentChatMessage[], index: number): boolean {
+  const card = messages[index]?.toolMeta;
+  if (card?.kind !== 'hr_preview' || card.authorizationMode !== 'policy_direct' || !card.blueprintId) return false;
+  return messages.slice(index + 1).some((message) => message.toolMeta?.kind === 'hr_preview'
+    && message.toolMeta.blueprintId === card.blueprintId);
+}
+
 export function assistantReplyForDisplay(content: string): string {
   return content.replace(/^\s*DELIVERABLE:[^\r\n]*(?:\r?\n|$)/gm, '');
 }

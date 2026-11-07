@@ -30,7 +30,6 @@ const CompanyKnowledgeLibrary = lazy(() => import('./pages/CompanyKnowledgeLibra
 const CompanyKnowledgeControlPlane = lazy(() => import('./pages/CompanyKnowledgeControlPlane'));
 const Plaza = lazy(() => import('./pages/Plaza'));
 const AgentDetail = lazy(() => import('./pages/AgentDetail'));
-const AgentCreate = lazy(() => import('./pages/AgentCreate'));
 const LocalAgents = lazy(() => import('./pages/LocalAgents'));
 const Chat = lazy(() => import('./pages/Chat'));
 const Messages = lazy(() => import('./pages/Messages'));
@@ -196,7 +195,7 @@ export default function App() {
                         <Route path="plaza" element={<CompanyBusinessGuard><Plaza /></CompanyBusinessGuard>} />
                         <Route path="local-agents" element={<LocalAgents />} />
                         <Route path="local-bridge/activate" element={<LocalAgents />} />
-                        <Route path="agents/new" element={<AgentCreate />} />
+                        <Route path="agents/new" element={<Navigate to="/" replace />} />
                         <Route path="agents/:id" element={<AgentDetail />} />
                         {/* §8.4: the Active Session Workbench is a real route, not a
                             query-string disguise inside Agent Detail. */}

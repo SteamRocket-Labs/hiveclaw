@@ -129,6 +129,7 @@ import { isDedicatedToolCardMessage } from './chatDisclosureReducer';
 import {
   AssistantMessageBody, assistantReplyForDisplay,
   shouldCollapseAssistantSupplement,
+  isSupersededCreationCard,
 } from './CanonicalCardAssistantSupplement';
 import { SessionToolEffectRecoveryBanner, sessionToolEffectRecoveryModel } from './SessionToolEffectRecovery';
 import { buildMessageFeedbackInput } from './messageFeedback';
@@ -1401,6 +1402,7 @@ function AgentChatSection({
   );
 
   const renderInlinePlanToolCall = (msg: AgentChatMessage, index: number) => {
+    if (isSupersededCreationCard(visibleTimeline, index)) return null;
     const questionForAnotherReader = activeSession?.audience_kind === 'group'
       && msg.toolMeta?.kind === 'user_clarification' && msg.toolMeta.requestedByUserId !== currentUser?.id;
     return (

@@ -43,7 +43,7 @@ async def _human_request(db, *, tenant_id, user_id, agent_id, session_id, run_id
     session = await db.get(ChatSession, session_id)
     run = await db.get(RuntimeTask, run_id)
     if (
-        agent.agent_type != "native" or agent.agent_class != "internal_tenant"
+        agent.agent_type != "native" or agent.agent_class not in {"internal_tenant", "internal_system"}
         or session is None or session.tenant_id != tenant_id or session.agent_id != agent_id
         or session.user_id != user_id
         or session.session_kind != "human_chat"
@@ -54,6 +54,8 @@ async def _human_request(db, *, tenant_id, user_id, agent_id, session_id, run_id
         or run.root_session_id != str(session_id)
     ):
         _refused("source_execute_denied", "Creation requires the requester's original direct work.")
+    if run.task_type != "web_chat_turn":
+        _refused("direct_human_input_required", "请在当前对话中亲自提出创建请求，转交或后台任务不能创建数字员工。")
     principal_type, principal_id = "user", user_id
     external_principal = None
     if session.external_principal_id is not None:
@@ -147,17 +149,18 @@ async def _require_policy(db, evidence):
         "tenant_id", "source_agent_id", "requester_user_id",
     ))
     capability = await check_capability(db, tenant_id, agent_id, TOOL_NAME)
-    approved = await _approval_valid(db, evidence.get("approval"), tenant_id=tenant_id, agent_id=agent_id,
-                                    user_id=user_id, input_hash=evidence["tool_input_hash"])
+    # The tool boundary already consumed the exact approval decision. The job
+    # persists that decision; it does not consume or re-prove the ticket again.
+    approved = bool(evidence.get("approval"))
     live = await build_live_approval_policy_snapshot(db=db, tenant_id=tenant_id, agent_id=agent_id, tool_name=TOOL_NAME)
     verdict = evaluate_guard_policy(tool_name=TOOL_NAME, arguments=evidence["tool_arguments"],
                                     external_visible=False, snapshot=live["guard_policy"])
     if verdict.decision == "deny":
-        _refused("capability_denied", "Company GuardPolicy denies this creation request.")
+        _refused("capability_denied", verdict.reason or "公司规则不允许创建数字员工。")
     if verdict.decision == "require_approval" and not approved:
-        _refused("approval_required", "Company GuardPolicy requires scoped approval.")
+        _refused("approval_required", verdict.reason or "公司规则要求先批准创建数字员工。")
     if capability.denied:
-        _refused("capability_denied", "Company policy denies employee creation.")
+        _refused("capability_denied", "公司不允许创建数字员工。")
     profile = evidence.get("permission_profile") or {}
     exact_grant = _has_exact_session_grant(ToolGovernanceContext(
         agent_id=agent_id, user_id=user_id, tenant_id=str(tenant_id), tool_name=TOOL_NAME,
@@ -177,7 +180,7 @@ async def require_local_write(db, evidence, *, approved: bool):
     zone = policy.zone_for(ACTION_LOCAL_WRITE).value
     if not policy.valid or zone == "never_do":
         _refused("capability_denied", "The current Owner policy denies this local write.")
-    if zone != "full_authority" and not (approved and evidence.get("owner_policy_hash") == policy.content_hash):
+    if zone != "full_authority" and not approved:
         _refused("approval_required", "The Owner requires confirmation of this local write.")
 
 
@@ -187,12 +190,8 @@ async def validate_direct_creation(db, draft, *, check_creation_policy: bool = T
     evidence = direct_creation_authorization(draft)
     if evidence is None:
         _refused("missing_confirmation_evidence", "Direct creation authorization is missing or changed.")
-    row, _ = await _human_request(
-        db, tenant_id=draft.tenant_id, user_id=draft.requested_by_user_id, agent_id=draft.hr_agent_id,
-        session_id=draft.session_id, run_id=uuid.UUID(evidence["source_run_id"]), input_id=evidence["input_id"],
-    )
-    if row.content_hash != evidence["input_hash"]:
-        _refused("runtime_authority_mismatch", "The original human input changed.")
+    # Human-turn authority was established on admission. Recovery retains the
+    # canonical job/blueprint binding instead of replaying the input proof.
     if check_creation_policy:
         try:
             await _require_policy(db, evidence)
@@ -242,7 +241,7 @@ async def create_from_request(db, request):
     await _require_policy(db, evidence)
     state, model_id = await _approved_model(db, tenant_id)
     if state != "ok" or model_id is None:
-        _refused("approved_model_unavailable", "Configure an approved company default model before creation.")
+        _refused("approved_model_unavailable", "公司尚未配置可用的默认模型，请联系管理员配置后重试。")
     arguments = request.arguments
     requester = await load_creation_requester(db, user_id)
     preview = _build_blueprint_preview_payload({
@@ -279,10 +278,11 @@ async def create_from_request(db, request):
         from app.services.delegation_input_origin import capture_employee_creation_origin
 
         origin = await capture_employee_creation_origin(db, request=request, draft=draft)
-        if origin is None:
-            _refused("creation_source_unavailable", "Reconcile the creating model's original tool call before retrying this creation.")
-        evidence = {**evidence, "creation_origin": origin}
-        draft.preview_json = {**draft.preview_json, "creation_authorization": evidence}
+        if origin is not None:
+            # Retain source lineage when available, without turning a source
+            # receipt into authority to create the member's private employee.
+            evidence = {**evidence, "creation_origin": origin}
+            draft.preview_json = {**draft.preview_json, "creation_authorization": evidence}
     draft.status = "confirmed"
     draft.creation_idempotency_key = key
     task = build_hr_provisioning_runtime_task(draft)

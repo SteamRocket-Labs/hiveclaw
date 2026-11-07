@@ -412,6 +412,10 @@ async def check_capability(
             policy = company_policy
 
     if not policy:
+        # Private creation is authorized by the member's current message.
+        # Explicit company/agent deny and approval policies still win above.
+        if tool_name == "create_employee_from_request":
+            return CapabilityCheckResult(allowed=True, capability=capability, policy_found=False)
         if await _is_hr_system_agent_default_capability(
             db,
             tenant_id=tenant_id,

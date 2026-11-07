@@ -439,11 +439,8 @@ async def dispatch_first_task(db, draft, *, execution_context=None, arguments=No
                 raise HrCreationConflict("capability_denied", "Company policy denies the first task delegation.")
             if capability.policy_found and capability.escalate_to_l3 and not (approved and tool_name == "delegate_to_agent"):
                 raise HrCreationConflict("approval_required", "The first task delegation requires approval.")
-            profile = policy_evidence.get("permission_profile") or {}
-            if not capability.policy_found and not capability.allowed and not (
-                approved or session_granted or profile.get("mode") == "bypass_permissions" or "delegate_to_agent" in profile.get("allowed_tools", [])
-            ):
-                raise HrCreationConflict("approval_required", "The first task delegation needs scoped authorization.")
+            # The member already requested this work for their own new bot.
+            # Only an explicit company policy can require another approval.
             live = await build_live_approval_policy_snapshot(db=db, tenant_id=draft.tenant_id,
                                                            agent_id=draft.hr_agent_id, tool_name="delegate_to_agent")
             guard = evaluate_guard_policy(tool_name="delegate_to_agent",

@@ -88,9 +88,9 @@ export default function DigitalEmployees() {
             {t('employees.subtitle', 'Manage employee identity, sessions, memory, capabilities, workflow, delegation, and workspace from one directory.')}
           </p>
         </div>
-        <Link to="/agents/new" className="btn btn-primary employee-directory-create">
+        <Link to="/" className="btn btn-primary employee-directory-create">
           <IconPlus size={16} stroke={1.7} />
-          {t('employees.createViaHr', 'Create via HR')}
+          {t('nav.newDigitalEmployee', 'New digital employee')}
         </Link>
       </div>
 

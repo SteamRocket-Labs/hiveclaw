@@ -97,8 +97,8 @@ it('recovers a requested first task on the existing employee without confirming 
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(<QueryClientProvider client={client}><HrBlueprintPreviewCard agentId="source" preview={directPreview} /></QueryClientProvider>);
   await waitFor(() => expect((screen.getByRole('button', { name: 'Retry first task' }) as HTMLButtonElement).disabled).toBe(false));
-  expect(screen.getByText('Authorized from your request using approved private defaults.')).toBeTruthy();
-  expect(screen.getByText('Draft a comparison')).toBeTruthy();
+  expect(screen.getByRole('link', { name: 'Talk to it' }).getAttribute('href')).toBe('/agents/existing-employee#chat');
+  expect(screen.queryByText('Authorized from your request using approved private defaults.')).toBeNull();
   expect(screen.queryByText('Prepare three checks.')).toBeNull();
   fireEvent.click(screen.getByRole('button', { name: 'Retry first task' }));
   await waitFor(() => expect(hrMocks.retry).toHaveBeenCalledWith('source', 'draft-1'));
@@ -242,4 +242,22 @@ describe('HrBlueprintPreviewCard decision hierarchy', () => {
     expect(screen.getByRole('button', { name: 'Go to Detail Page' }).getAttribute('disabled')).toBeNull();
     expect(screen.queryByRole('button', { name: 'Provisioned' })).toBeNull();
   });
+});
+
+it('shows a compact created bot card with conversation and undo actions', async () => {
+  const direct = { ...preview, status: 'completed', name: '周报助手', mission: '整理每周工作要点',
+    authorizationMode: 'policy_direct', explicitFirstTask: '先列三条本周要点' };
+  hrMocks.get.mockResolvedValue({ blueprint_id: direct.blueprintId, blueprint_version: 1,
+    blueprint_hash: direct.blueprintHash, draft_status: 'completed', blueprint: {},
+    created_agent_id: 'weekly-assistant', provisioning: { first_task: { status: 'dispatched', session_id: 'first-work' } } });
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  render(<QueryClientProvider client={client}><HrBlueprintPreviewCard agentId="source" preview={direct} /></QueryClientProvider>);
+  const open = await screen.findByRole('link', { name: 'Talk to it' });
+  expect(open.getAttribute('href')).toBe('/agents/weekly-assistant?session_id=first-work#chat');
+  expect(screen.getByRole('button', { name: 'Undo' })).toBeTruthy();
+  expect(screen.getAllByRole('button')).toHaveLength(1);
+  expect(screen.getByText('周报助手')).toBeTruthy();
+  expect(screen.getByText('整理每周工作要点')).toBeTruthy();
+  expect(screen.queryByText('Primary users')).toBeNull();
+  expect(screen.queryByText(/Authorized from your request/)).toBeNull();
 });

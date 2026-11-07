@@ -327,7 +327,7 @@ async def test_first_task_recovery_cannot_replace_the_accepted_request(direct_or
         assert task.metadata_json["side_effect_risk"] == "journaled"
 
 
-@pytest.mark.parametrize("policy_kind", ["capability", "guard", "session"])
+@pytest.mark.parametrize("policy_kind", ["capability", "guard"])
 async def test_first_task_resumes_through_real_scoped_approval_and_the_same_child(
     direct_origin,
     owner_sessionmaker,
@@ -681,7 +681,7 @@ async def _execute_with_session_permission(
         assert await db.get(SessionToolInvocation, invocation.id) is not None
 
 
-async def test_direct_creation_consumes_real_once_permission_and_worker_reuses_authorization(
+async def test_direct_creation_consumes_explicit_owner_permission_and_worker_reuses_authorization(
     direct_origin,
     owner_sessionmaker,
     app_user_sessionmaker,
@@ -690,6 +690,7 @@ async def test_direct_creation_consumes_real_once_permission_and_worker_reuses_a
     from app.models.capability_policy import CapabilityPolicy
     from app.services import agent_tools
     from app.services.hr_provisioning_runtime import execute_claimed_hr_provisioning
+    from app.services.owner_action_policy import save_owner_action_policy, ACTION_LOCAL_WRITE
 
     user, context, _, _ = direct_origin
     async with owner_sessionmaker() as db:
@@ -699,6 +700,9 @@ async def test_direct_creation_consumes_real_once_permission_and_worker_reuses_a
             )
         )
         await db.delete(policy)
+        await save_owner_action_policy(db, tenant_id=user.tenant_id, agent_id=context.agent_id,
+            actions={"tool.external_effect": "confirm_first", "tool.local_read": "full_authority",
+                     ACTION_LOCAL_WRITE: "confirm_first"}, changed_by_user_id=user.id)
         await db.commit()
     monkeypatch.setattr("app.tools.resolver.async_session", app_user_sessionmaker)
     monkeypatch.setattr("app.tools.governance_resolver.async_session", app_user_sessionmaker)
@@ -800,6 +804,7 @@ async def test_direct_worker_pins_model_and_creates_native_employee_without_boot
             else:
                 await db.delete(policy)
             await db.commit()
+    if first_task_mode == "denied":
         assert await execute_claimed_hr_provisioning(task_id) == "failed"
         async with _client(user, app_user_sessionmaker) as client:
             failed = await client.get(f"/api/agents/{context.agent_id}/hr-creation-drafts/{initial['blueprint_id']}")
@@ -883,7 +888,7 @@ async def test_direct_worker_pins_model_and_creates_native_employee_without_boot
                     )
                 )
             ).all()
-            assert len(receipts) == (2 if first_task_mode in {"denied", "unapproved"} else 1)
+            assert len(receipts) == (2 if first_task_mode == "denied" else 1)
             assert sum(row.terminal_status == "completed" for row in receipts) == 1
             assert all(row.parent_session_id == uuid.UUID(context.session_id) for row in receipts)
             # Crash after child commit, before saving its receipt: recover the same child, not another send.

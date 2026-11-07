@@ -25,6 +25,7 @@ beforeEach(() => {
     blueprint: { name: 'Researcher' }, requested_by_user_id: 'owner', hr_agent_id: 'original-agent',
     session_id: 'original-work', created_agent_id: 'employee',
     creation_authorization: { mode: 'policy_direct', first_task: 'Draft the report' },
+    provisioning: { first_task: { status: 'dispatched', session_id: 'child-1' } },
     first_task_work: { runtime_task_id: 'run-1', agent_id: 'employee', session_id: 'child-1', status: 'suspended',
       question: null, can_answer: false,
       permissions: [{ session_id: 'child-1', can_resolve: true, request: {
@@ -42,12 +43,11 @@ function originalCard() {
   return renderToStaticMarkup(<HrBlueprintPreviewCard agentId="original-agent" preview={preview} />);
 }
 
-it('shows the exact native operation and existing once-only controls in the original creation card', () => {
+it('opens the first task in its own conversation for native permission controls', () => {
   const markup = originalCard();
-  expect(markup).toContain('workspace/report.md');
-  expect(markup).toContain('Allow once');
-  expect(markup).toContain('Deny');
-  expect(markup).toContain('Delete actions can only be allowed once.');
+  expect(markup).toContain('href="/agents/employee?session_id=child-1#chat"');
+  expect(markup).not.toContain('workspace/report.md');
+  expect(markup).not.toContain('Allow once');
   expect(markup).not.toContain('Allow for this session');
 });
 

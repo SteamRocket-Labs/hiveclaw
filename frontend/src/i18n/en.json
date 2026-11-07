@@ -2663,6 +2663,11 @@
         "retainedOriginal": "Inspect retained original"
       },
       "toolResults": {
+        "talkToCreatedBot": "Talk to it",
+        "undoCreation": "Undo",
+        "createdBotStopped": "Stopped",
+        "creationFailed": "Creation failed. Please retry.",
+        "undoCreationFailed": "Could not undo creation. Please retry.",
         "retryFirstTask": "Retry first task",
         "firstTaskDenied": "Company policy blocks this task. Restore the required permission before retrying.",
         "firstTaskApproval": "This task needs scoped authorization before retrying.",

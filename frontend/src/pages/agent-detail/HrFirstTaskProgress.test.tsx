@@ -21,6 +21,7 @@ beforeEach(() => {
     blueprint: { name: 'Researcher' }, requested_by_user_id: 'owner', hr_agent_id: 'original-agent',
     session_id: 'original-work', created_agent_id: 'employee',
     creation_authorization: { mode: 'policy_direct', first_task: 'Draft the report' },
+    provisioning: { first_task: { status: 'dispatched', session_id: 'child-1' } },
     first_task_work: { runtime_task_id: 'run-1', agent_id: 'employee', session_id: 'child-1', status: 'running',
       question: null, can_answer: false, permissions: [],
       progress: { model_result_id: 'private-model-reference', event_id: 'private-event-reference',
@@ -35,10 +36,11 @@ function originalCard() {
   return renderToStaticMarkup(<HrBlueprintPreviewCard agentId="original-agent" preview={preview} />);
 }
 
-it.each(['running', 'resumable', 'suspended'])('renders committed progress in the original %s first task', (status) => {
+it.each(['running', 'resumable', 'suspended'])('opens the bot conversation for %s first task progress', (status) => {
   state.draft!.first_task_work!.status = status;
   const markup = originalCard();
-  expect(markup).toContain('I am preparing the <strong>authorized report</strong>.');
+  expect(markup).toContain('href="/agents/employee?session_id=child-1#chat"');
+  expect(markup).not.toContain('authorized report');
   expect(markup).not.toContain('private-model-reference');
   expect(markup).not.toContain('private-event-reference');
 });

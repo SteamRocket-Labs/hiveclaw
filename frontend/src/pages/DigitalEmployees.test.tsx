@@ -123,7 +123,8 @@ describe('DigitalEmployees page', () => {
     const markup = renderToStaticMarkup(<DigitalEmployees />);
 
     expect(markup).toContain('Digital Employees');
-    expect(markup).toContain('Create via HR');
+    expect(markup).toContain('New digital employee');
+    expect(markup).toContain('href="/" class="btn btn-primary employee-directory-create"');
     expect(markup).toContain('employee-directory-create');
     expect(markup).toContain('class="employee-grid employee-grid-flat"');
     expect(markup).toContain('Research Lead');

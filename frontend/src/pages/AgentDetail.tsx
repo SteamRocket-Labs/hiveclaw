@@ -34,6 +34,7 @@ import {
     sessionBelongsToAgent,
     shouldPreserveActiveSessionForRequestedId,
     shouldUseWritableSessionSurface,
+    shouldStreamSessionSurface,
     shouldIgnoreObservedActiveRun,
     shouldClearStaleRuntimeState,
     reconcileSessionTranscriptSafely,
@@ -375,11 +376,7 @@ function AgentDetailInner() {
         agentId: id,
         token,
         activeSession,
-        writableSession: Boolean(
-            activeSession
-            && shouldUseWritableSessionSurface(activeSession, currentUser?.id)
-            && !isDraftHumanChatSession(activeSession),
-        ),
+        writableSession: shouldStreamSessionSurface(activeSession, currentUser?.id),
         isRunActive: (key) => Boolean(activeRunStateRef.current[key]),
         shouldKeepalive: (key) => {
             const uiState = sessionUiStateRef.current[key];
@@ -518,9 +515,12 @@ function AgentDetailInner() {
         markActiveRunTerminal,
         isTerminalTranscriptToolMessage,
         mergePendingMessages: mergePendingForSession,
-        setChatMessagesSessionId,
-        enqueueChatMessagesUpdate: enqueueChatMessagesUpdateForSession,
-        setChatMessagesAfterQueued: setChatMessagesAfterQueuedForSession,
+        setChatMessagesSessionId: (sessionId) => isWritableSession(activeSession)
+            ? setChatMessagesSessionId(sessionId) : setHistoryMessagesSessionId(sessionId),
+        enqueueChatMessagesUpdate: (sessionId, update) => isWritableSession(activeSession)
+            ? enqueueChatMessagesUpdateForSession(sessionId, update) : updateHistoryMsgs(update),
+        setChatMessagesAfterQueued: (sessionId, update) => isWritableSession(activeSession)
+            ? setChatMessagesAfterQueuedForSession(sessionId, update) : updateHistoryMsgs(update),
         setActivePhase,
         setIsWaiting,
         setIsStreaming,
@@ -713,7 +713,7 @@ function AgentDetailInner() {
         setSessionPermissionMode(sessionPermissionModeFromSession(sess));
         setActiveSession(sess);
         setAgentExpired(false);
-        syncActiveSocketState(sess, targetAgentId, writableSession && !draftSession);
+        syncActiveSocketState(sess, targetAgentId, shouldStreamSessionSurface(sess, currentUser?.id));
 
         if (draftSession) {
             sessionMsgAbortRef.current?.abort();

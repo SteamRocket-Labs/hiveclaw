@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode, type RefObject } from 'react';
+import { useEffect, useRef, type ReactNode, type RefObject } from 'react';
 import { NavLink, useLocation, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import {
@@ -17,10 +17,9 @@ import {
   IconUser,
   IconWorld,
 } from '@tabler/icons-react';
-import { agentApi, type HrAgentInfo } from '../../api/domains/agents';
+import { type HrAgentInfo } from '../../api/domains/agents';
 import { isActiveCompany } from '../../api/domains/admin';
 import { isManagedEmployeeAgent } from '../../roles';
-import { buildNewSessionDraftNavigation } from '../agent-detail/newSessionNavigation';
 import { sidebarAgentLink, sortSidebarAgents, useAssistantAgentId } from '../assistant/assistantScope';
 
 const sidebarIcons = {
@@ -121,27 +120,21 @@ export default function AppSidebar({
   onOpenAccountSettings,
   onLogout,
   versionDisplay,
-  hrAgent: providedHrAgent,
 }: AppSidebarProps) {
   const { t } = useTranslation();
   const location = useLocation();
   const navigate = useNavigate();
   const activeAgentId = getActiveAgentId(location.pathname);
-  const isCreateAgentRoute = location.pathname === '/agents/new';
-  const [resolvedHrAgent, setResolvedHrAgent] = useState<HrAgentInfo | null>(providedHrAgent ?? null);
-  const createAgentId = resolvedHrAgent?.id ? String(resolvedHrAgent.id) : null;
-  const isCreateAgentActive = isCreateAgentRoute || (!!createAgentId && activeAgentId === createAgentId);
 
   // The bot is the way in (B3): My Assistant's own binding decides which bot
   // leads the list. The read shares the assistant cache the entry route uses,
   // so it adds no request once that page has loaded.
   const assistantAgentId = useAssistantAgentId(user, currentTenant || (user?.role === 'platform_admin' ? '' : user?.tenant_id) || '');
 
-  // 我的助理 first, then the rest by most recent activity. The HR creation
-  // Agent is the creation flow, not a workspace entry, so it stays out of the
-  // list (the "New digital employee" action below opens it).
+  // Creation uses an ordinary conversation; the legacy HR system bot stays
+  // outside the member's bot list.
   const sortedAgents = sortSidebarAgents(
-    agents.filter((agent) => !createAgentId || String(agent.id) !== createAgentId), assistantAgentId,
+    agents.filter((agent) => agent.name !== '__system_hr__'), assistantAgentId,
   );
 
   const canSeeControlPlane = user && ['platform_admin', 'org_admin'].includes(user.role);
@@ -193,32 +186,6 @@ export default function AppSidebar({
     accountMenuLocationRef.current = accountMenuLocationKey;
     if (showAccountMenu) onCloseAccountMenuRef.current?.();
   }, [accountMenuLocationKey, showAccountMenu]);
-
-  useEffect(() => {
-    if (providedHrAgent !== undefined) {
-      setResolvedHrAgent(providedHrAgent);
-      return;
-    }
-    // PDEC-013: both administrator roles use the canonical HR flow. The only
-    // prerequisite is a valid company context — for a platform administrator
-    // that is the authenticated selected company; without one the server
-    // answers with a typed selection error and no HR Agent is resolved here.
-    if (!user || (user.role === 'platform_admin' && !currentTenant)) {
-      setResolvedHrAgent(null);
-      return;
-    }
-    let cancelled = false;
-    agentApi.getHrAgent()
-      .then((agent) => {
-        if (!cancelled) setResolvedHrAgent(agent);
-      })
-      .catch(() => {
-        if (!cancelled) setResolvedHrAgent(null);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [providedHrAgent, user, currentTenant]);
 
   return (
     <nav className={`sidebar ${isSidebarCollapsed ? 'collapsed' : ''}`}>
@@ -305,14 +272,9 @@ export default function AppSidebar({
             <div className="sidebar-create-agent-block" data-testid="sidebar-create-agent-block">
               <button
                 type="button"
-                className={`sidebar-item sidebar-create-agent-link ${isCreateAgentActive ? 'active' : ''}`}
+                className="sidebar-item sidebar-create-agent-link"
                 title={t('nav.newDigitalEmployee', 'New digital employee')}
-                onClick={() => {
-                  if (createAgentId) {
-                    const request = buildNewSessionDraftNavigation(createAgentId);
-                    navigate(request.to, { state: request.state });
-                  } else navigate('/agents/new');
-                }}
+                onClick={() => navigate('/')}
               >
                 <span className="sidebar-item-icon sidebar-item-icon-centered">
                   <IconPlus size={15} stroke={1.8} />

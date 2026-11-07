@@ -4679,3 +4679,53 @@ async def test_spawn_async_delegation_task_defers_parent_projection_to_terminal_
             "coordination_gateway": None,
         }
     ]
+
+
+@pytest.mark.parametrize("committed_status,label", [
+    ("killed", "已停止"), ("needs_reconciliation", "失败"),
+    ("completed", "完成"), ("failed", "失败"), ("running", None),
+])
+async def test_delegation_parent_receives_committed_terminal_state_after_late_write(
+    monkeypatch, committed_status, label,
+):
+    from app.agents import orchestrator
+
+    task_id = uuid4().hex
+    request = orchestrator.AgentDelegationRequest(
+        target=SimpleNamespace(id=uuid4(), name="Worker", tenant_id=uuid4()),
+        target_model=SimpleNamespace(), conversation_messages=[{"role": "user", "content": "go"}],
+        owner_id=uuid4(), session_id=uuid4().hex, parent_agent_id=uuid4(),
+        parent_session_id=uuid4().hex, trace_id="b6-late-terminal", depth=1, tenant_id=uuid4(),
+        runtime_task_id=task_id,
+    )
+
+    async def delegate(_request):
+        return orchestrator.AgentDelegationResult(content="uncommitted cancelled output",
+            child_session_id=request.session_id, trace_id=request.trace_id,
+            depth=1, failed=True, terminal_reason="user_cancel")
+
+    async def refused(*_args, **_kwargs):
+        return False
+
+    async def committed(_task_id):
+        assert _task_id == task_id
+        return {"status": committed_status, "tenant_id": str(request.tenant_id),
+            "parent_agent_id": str(request.parent_agent_id), "child_session_id": request.session_id,
+            "metadata": {"terminal_reason": "user_cancel"}}
+
+    monkeypatch.setattr(orchestrator, "_delegate", delegate)
+    monkeypatch.setattr(orchestrator, "update_runtime_task_record", refused)
+    monkeypatch.setattr(orchestrator, "get_runtime_task_record", committed)
+    orchestrator._spawn_async_delegation_task(task_id=task_id, request=request, trace_id=request.trace_id)
+    state = orchestrator._async_tasks[task_id]
+    try:
+        result = await state.task
+        if label is None:
+            assert "authority changed" in result.content
+        else:
+            assert label in result.content and "authority changed" not in result.content
+            assert result.failed is (committed_status != "completed")
+    finally:
+        orchestrator._async_tasks.pop(task_id, None)
+        orchestrator._async_task_parent_ids.pop(task_id, None)
+        orchestrator._async_task_fallback_records.pop(task_id, None)

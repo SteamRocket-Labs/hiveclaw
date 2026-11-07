@@ -5,6 +5,8 @@ import {
   type ThreadItemType,
 } from '../../api/domains/threadItems.generated';
 import type { AgentChatMessage, SessionPermissionRequest } from '../agent-detail/chatRuntime';
+import i18n from 'i18next';
+import zh from '../../i18n/zh.json';
 
 export const THREAD_ITEM_TYPES: readonly ThreadItemType[] = [
   'user_message',
@@ -36,7 +38,7 @@ const THREAD_ITEM_STATUS_SET = new Set<string>([
   'cancelled',
 ]);
 const RUNNING_STATUSES = new Set(['pending', 'queued', 'running', 'started', 'executing', 'in_progress']);
-const WAITING_STATUSES = new Set(['awaiting_confirmation', 'awaiting_approval', 'session_permission_required', 'waiting_user']);
+const WAITING_STATUSES = new Set(['awaiting_confirmation', 'awaiting_approval', 'approval_required', 'session_permission_required', 'waiting_user']);
 const FAILED_STATUSES = new Set(['failed', 'error', 'blocked', 'denied', 'capability_denied']);
 const CANCELLED_STATUSES = new Set(['killed', 'cancelled', 'canceled']);
 const EVENT_TITLES: Readonly<Record<string, string>> = {
@@ -261,21 +263,18 @@ function legacyUserSummary(
   data: Record<string, unknown>,
   content: string,
 ): string {
-  const toolName = text(data.tool_display_name || data.tool_name || data.name) || 'this tool';
-  if (itemType === 'approval_decision') return 'Your decision was recorded.';
-  if (itemType === 'tool_call') return `Using ${toolName}…`;
-  if (itemType === 'tool_result') return `${toolName} finished.`;
-  if (itemType === 'reasoning') return 'The agent is organizing its reasoning.';
+  const t = (key: string, fallback: string) => i18n.t(key) || fallback;
+  const toolName = text(data.tool_display_name || data.tool_name || data.name) || t('sessionWorkbench.threadItem.thisTool', zh.sessionWorkbench.threadItem.thisTool);
+  if (itemType === 'approval_decision') return t('sessionWorkbench.rightPanel.decisionOutcomes.recorded', zh.sessionWorkbench.rightPanel.decisionOutcomes.recorded);
+  if (itemType === 'tool_call') return i18n.t('agent.chat.disclosure.toolRunning', { tool: toolName }) || zh.agent.chat.disclosure.toolRunning.replace('{{tool}}', toolName);
+  if (itemType === 'tool_result') return i18n.t('agent.chat.disclosure.toolCompleted', { tools: toolName }) || zh.agent.chat.disclosure.toolCompleted.replace('{{tools}}', toolName);
+  if (itemType === 'reasoning') return t('agent.chat.thinking', zh.agent.chat.thinking);
   if (itemType === 'error') {
-    return data.retryable === true
-      ? 'The connection or service is temporarily unavailable. This turn can be retried safely.'
-      : 'The task stopped because it needs attention.';
+    const key = data.retryable === true ? 'retryable' : 'unavailable';
+    return t(`sessionWorkbench.threadItem.failure.${key}`, zh.sessionWorkbench.threadItem.failure[key]);
   }
-  if (itemType === 'context_compaction') return 'Conversation context was organized and the task can continue.';
-  if (itemType === 'subagent_activity') return 'Sub-agent status updated.';
-  if (itemType === 'agent_team_activity') return 'Agent Team status updated.';
-  if (itemType === 'peer_a2a_activity') return 'A2A digital employee status updated.';
-  if (itemType === 'event') return 'Runtime status updated.';
+  if (itemType === 'context_compaction') return t('agent.chat.disclosure.contextCompacted', zh.agent.chat.disclosure.contextCompacted);
+  if (['subagent_activity', 'agent_team_activity', 'peer_a2a_activity', 'event'].includes(itemType)) return t(`sessionWorkbench.threadItem.type.${itemType}`, zh.sessionWorkbench.threadItem.type[itemType]);
   return content;
 }
 

@@ -9,6 +9,7 @@ from uuid import uuid4
 import pytest
 from fastapi import HTTPException
 from pydantic import ValidationError
+from sqlalchemy.dialects.postgresql import dialect
 
 
 def test_session_permission_inputs_reject_unknown_mode() -> None:
@@ -443,6 +444,7 @@ class _QueryAwareDB:
         user_message_counts=None,
         users=None,
         agent_names=None,
+        run_statuses=None,
     ):
         self.agent = agent
         self.sessions = sessions or []
@@ -454,6 +456,7 @@ class _QueryAwareDB:
         self.user_message_counts = {str(key): value for key, value in (user_message_counts or {}).items()}
         self.users = users or {}
         self.agent_names = agent_names or {}
+        self.run_statuses = run_statuses or {}
         self.statements = []
         self.added = []
         self.deleted = []
@@ -461,7 +464,9 @@ class _QueryAwareDB:
 
     async def execute(self, stmt):
         self.statements.append(stmt)
-        sql = str(stmt)
+        sql = str(stmt.compile(dialect=dialect()))
+        if "SELECT DISTINCT ON" in sql and "runtime_tasks.parent_session_id, runtime_tasks.status" in sql:
+            return _ListResult(list(self.run_statuses.items()))
         if "FROM runtime_tasks" in sql:
             return _ScalarResult(None)
         if "FROM session_tool_invocations" in sql or "FROM storage_blob_refs" in sql:
@@ -513,6 +518,32 @@ class _QueryAwareDB:
 
     async def refresh(self, _value):
         return None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('status', ['running', 'suspended', 'needs_reconciliation', 'killed', 'completed', 'failed'])
+async def test_session_list_returns_the_latest_recorded_run_state(monkeypatch, status):
+    from app.api import chat_sessions as api
+
+    agent = SimpleNamespace(id=uuid4(), tenant_id=uuid4(), deactivated_at=None)
+    member = SimpleNamespace(id=uuid4(), role='member')
+    session = SimpleNamespace(id=uuid4(), agent_id=agent.id, user_id=member.id, source_channel='web',
+        session_kind='human_chat', title='Work', created_at=datetime.now(timezone.utc),
+        last_message_at=None, peer_agent_id=None, transcript_metadata_json={})
+    db = _QueryAwareDB(agent=agent, sessions=[session], run_statuses={str(session.id): status})
+
+    async def access(*_args):
+        return agent, 'use'
+
+    monkeypatch.setattr(api, 'check_agent_history_access', access)
+    result = await api.list_sessions(agent_id=agent.id, scope='mine', current_user=member, db=db)
+    assert len(result) == 1
+    assert result[0].status == status
+    query = next(str(stmt.compile(dialect=dialect())) for stmt in db.statements
+        if 'runtime_tasks.status' in str(stmt.compile(dialect=dialect())))
+    assert 'runtime_tasks.tenant_id' in query
+    assert 'runtime_tasks.parent_agent_id' in query
+    assert 'runtime_tasks.created_at DESC' in query
 
 
 @pytest.mark.asyncio
@@ -895,7 +926,8 @@ async def test_list_sessions_mine_includes_owned_a2a_peer_sessions(monkeypatch):
     )
 
     assert "chat_sessions.peer_agent_id" in str(db.statements[0])
-    count_statements = [str(stmt) for stmt in db.statements if "count(chat_messages.id)" in str(stmt)]
+    count_statements = [str(stmt.compile(dialect=dialect())) for stmt in db.statements
+        if "count(chat_messages.id)" in str(stmt.compile(dialect=dialect()))]
     assert len(count_statements) == 2
     a2a_user_message_count_sql = count_statements[0]
     a2a_total_count_sql = count_statements[1]
@@ -966,7 +998,8 @@ async def test_list_sessions_mine_batches_message_counts_for_multiple_sessions(m
         db=db,
     )
 
-    count_statements = [str(stmt) for stmt in db.statements if "count(chat_messages.id)" in str(stmt)]
+    count_statements = [str(stmt.compile(dialect=dialect())) for stmt in db.statements
+        if "count(chat_messages.id)" in str(stmt.compile(dialect=dialect()))]
     assert len(count_statements) == 2
     assert all("GROUP BY chat_messages.conversation_id" in sql for sql in count_statements)
     assert [item.message_count for item in result] == [2, 3, 4]

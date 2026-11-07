@@ -33,6 +33,19 @@ import {
   type SessionEventV2,
 } from '../session-workbench/sessionEventStore';
 import { normalizeThreadItemPayload } from '../session-workbench/threadItemReducer';
+
+it.each(['cancelled', 'needs_reconciliation', 'completed', 'failed'])(
+  'updates the same run item to its recorded %s state when sealing the live tail', lifecycle => {
+    const pending = { id: 'run-1', role: 'event', content: '', sessionItem: {
+      id: 'run-1', kind: 'run', lifecycle: 'cancelling', scope: { level: 'run', run_id: 'run-1' },
+    } } as AgentChatMessage;
+    const terminal = { ...pending, sessionItem: { ...pending.sessionItem!, lifecycle } };
+    const input = { id: 'input', role: 'user', content: 'Keep my message' } as AgentChatMessage;
+    const merged = mergeCanonicalTerminalMessages([input, pending], [input, terminal], 'run-1');
+    expect(merged.filter(message => message.sessionItem?.kind === 'run')).toEqual([terminal]);
+    expect(merged.filter(message => message.role === 'user')).toEqual([input]);
+  },
+);
 import { shouldRenderThreadItemInConversation } from '../session-workbench/ThreadItemRenderer';
 
 function event(sequence: number, lifecycle: 'started' | 'delta' | 'completed'): SessionEventV2 {

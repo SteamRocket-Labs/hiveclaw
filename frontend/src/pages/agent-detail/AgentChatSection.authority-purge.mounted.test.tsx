@@ -109,6 +109,20 @@ vi.mock('../../components/MarkdownRenderer', () => ({
 import AgentChatSection from './AgentChatSection';
 import { projectsApi } from '../../api/domains/projects';
 
+it('shows the waiting state once for one approval in the real conversation timeline', () => {
+  const base = props('', false, 'waiting-work');
+  render(<AgentChatSection {...base} agent={{ ...base.agent, access_level: 'use' }}
+    currentUser={{ id: 'member', tenant_id: 'company' }}
+    activeSession={{ ...base.activeSession, user_id: 'member', read_only: false, operator_view: false }}
+    historyMsgs={[]} chatMessagesSessionId="waiting-work"
+    chatMessages={[{ id: 'input', role: 'user', content: 'Please check first' },
+      { id: 'question', role: 'tool_call', content: '', toolName: 'ask_user_question', toolStatus: 'done',
+        toolMeta: { kind: 'user_clarification', blocking: true, questions: [], nextAction: null } }]}
+    activeRunId="waiting-run" activeRunStatus="suspended" runtimePhase="awaiting_approval"
+    isWaiting={false} isStreaming={false} />);
+  expect(screen.getByTestId('active-run-cell').textContent?.match(/Waiting for you/g)).toHaveLength(1);
+});
+
 it.each(['awaiting_approval', 'awaiting_budget', 'idle'] as const)(
   'keeps Stop available for the owned suspended run after stream flags clear: %s', (phase) => {
     const base = props('', false, 'original-work');

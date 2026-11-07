@@ -758,6 +758,9 @@ async def test_production_invocation_request_wires_session_v2_round_callbacks(mo
         "session_id": str(session_id),
         "envelope": visible_envelope,
     }
+    await request.model_request_fail(round_index=2, provider_request_id="unconfirmed-request",
+        error_class="LLMError", retry_safe=False)
+    assert state.provider_reconciliation.provider_request_id == "unconfirmed-request"
 
 
 @pytest.mark.asyncio

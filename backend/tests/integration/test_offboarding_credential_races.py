@@ -9,6 +9,7 @@ from fastapi import FastAPI, HTTPException
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select, text, update
 from sqlalchemy.exc import DBAPIError
+from sqlalchemy.util.concurrency import await_only
 
 from app.config import get_settings
 from app.models.agent import Agent
@@ -229,16 +230,16 @@ async def test_a_save_holding_the_config_lock_serializes_offboarding(owner_sessi
         async def save():
             async with owner_sessionmaker() as session:
                 user = await session.get(User, caller_id)
-                execute = session.execute
+                execute = session.sync_session.execute
 
-                async def pause_on_config(statement, *args, **kwargs):
-                    result = await execute(statement, *args, **kwargs)
+                def pause_on_config(statement, *args, **kwargs):
+                    result = execute(statement, *args, **kwargs)
                     if "FROM agent_tools" in str(statement) and not read_config.is_set():
                         read_config.set()
-                        await resume.wait()
+                        await_only(resume.wait())
                     return result
 
-                monkeypatch.setattr(session, "execute", pause_on_config)
+                monkeypatch.setattr(session.sync_session, "execute", pause_on_config)
                 kwargs = dict(agent_id=bot_id, db=session, current_user=user,
                     data=tools_api.CategoryConfigIn(config={"api_key": "sk-e2e-fake-just-saved"}))
                 if endpoint == "category":

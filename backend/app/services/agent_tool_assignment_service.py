@@ -5,7 +5,7 @@ from __future__ import annotations
 import uuid
 from collections.abc import Callable
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.agent import Agent
@@ -50,7 +50,43 @@ async def ensure_agent_tool_assignment(
     if tenant_id is None:
         tenant_id = agent.tenant_id
 
-    result = await db.execute(
+    assignment, created, _changed = await db.run_sync(
+        _write_agent_tool_config, agent_id=agent_id, tool_id=tool_id, agent=agent,
+        tenant_id=tenant_id, enabled=enabled, source=source, installed_by_agent_id=installed_by_agent_id,
+        config=config, merge_config=merge_config, quarantine_for_mcp_trust=quarantine_for_mcp_trust, create=create,
+    )
+    return assignment, created
+
+
+def _write_agent_tool_config(
+    db, *, agent_id, tool_id, agent=None, tenant_id=None, enabled=True, source="system",
+    installed_by_agent_id=None, config=None, merge_config=True, quarantine_for_mcp_trust=False, create=True,
+    provider=None,
+) -> tuple[AgentTool | None, bool, bool]:
+    """The sole config mutator, shared by AsyncSession and legacy storage rotation.
+
+    A live request supplies its already locked, authorized Agent. The existing
+    synchronous migration/rotation connection takes the same Agent lock here.
+    Returns assignment, created, changed; storage-only rotation has no ORM row.
+    """
+    if agent is None:
+        db.execute(select(Agent.__table__.c.id).where(Agent.id == agent_id).with_for_update(key_share=True))
+    if provider is not None:
+        import json
+        from app.services.agent_tool_config_storage import encrypt_agent_tool_config
+
+        row = db.execute(text("SELECT id, config FROM agent_tools WHERE agent_id = :agent_id AND tool_id = :tool_id FOR UPDATE")
+            .execution_options(populate_existing=True), {"agent_id": agent_id, "tool_id": tool_id}).mappings().one_or_none()
+        if row is None:
+            return None, False, False
+        encrypted = encrypt_agent_tool_config(row["config"], provider=provider)
+        changed = encrypted != row["config"]
+        if changed:
+            db.execute(text("UPDATE agent_tools SET config = CAST(:config AS json) WHERE id = :id"),
+                {"config": json.dumps(encrypted), "id": row["id"]})
+        return None, False, changed
+
+    result = db.execute(
         select(AgentTool).where(
             AgentTool.agent_id == agent_id,
             AgentTool.tool_id == tool_id,
@@ -59,7 +95,7 @@ async def ensure_agent_tool_assignment(
     assignment = result.scalar_one_or_none()
     created = assignment is None
     if created and not create:
-        return None, False
+        return None, False, False
 
     if assignment is None:
         assignment = AgentTool(
@@ -84,6 +120,7 @@ async def ensure_agent_tool_assignment(
         assignment.source = source
     if installed_by_agent_id is not None:
         assignment.installed_by_agent_id = installed_by_agent_id
+    previous = assignment.config
     if config is not None:
         if callable(config):
             assignment.config = config(dict(assignment.config or {}))
@@ -92,4 +129,4 @@ async def ensure_agent_tool_assignment(
 
             merged = merge_agent_tool_config_secrets(config, assignment.config, {}, platform_tool=False)
             assignment.config = merged if merge_config else {key: merged[key] for key in config if key in merged}
-    return assignment, created
+    return assignment, created, created or assignment.config != previous

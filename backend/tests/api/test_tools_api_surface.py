@@ -37,11 +37,17 @@ class _FakeDB(ActiveTransactionSessionStub):
         self.committed = False
 
     async def execute(self, _stmt):
+        return self._execute(_stmt)
+
+    def _execute(self, _stmt):
         if "SET LOCAL app.current_tenant_id" in str(_stmt):
             return _ScalarResult(None)
         if not self._results:
             raise AssertionError("Unexpected execute() call")
         return self._results.pop(0)
+
+    async def run_sync(self, function, **kwargs):
+        return function(SimpleNamespace(execute=self._execute, add=self.add), **kwargs)
 
     def add(self, value):
         self.added.append(value)

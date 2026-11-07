@@ -132,7 +132,7 @@ function SessionHistoryMenu({ agentId, sessions, loading, activeSessionId }: Ses
                     <span className="swb-history-item-title">
                       <PastedCredentialText content={sessionTitleForUser(session, t('agent.chat.session', 'Session'), t('agent.chat.delegation', 'Delegation'))} />
                     </span>
-                    <span className="swb-history-item-meta">{historyTime(session, locale)}</span>
+                    <span className="swb-history-item-meta">{[session.status ? runtimeStatusLabel(session.status, t) : '', historyTime(session, locale)].filter(Boolean).join(' · ')}</span>
                   </Link>
                 );
               })
@@ -158,13 +158,12 @@ export function SessionWorkbenchHeader({ model, history, manageHref }: {
   // you, done, failed, stopped). Unconfirmed-outcome sessions surface through
   // their underlying status, not a dedicated chip (product definition P3).
   // A conversation with no run yet (idle) shows no run status at all.
-  // Failed runs show no "see below" line: the failure card speaks for itself
-  // and a member must never be promised steps that are not there (B2).
+  // Failed runs show only guidance supplied by their recorded blocker (B6).
   const showRunStatus = model.status !== 'idle';
   const statusLabel = runtimeStatusLabel(model.status, t);
-  const guidance = model.status === 'waiting'
+  const guidance = model.guidance || (model.status === 'waiting'
     ? t('sessionWorkbench.waitingGuidance', 'Review the request below and choose the next action.')
-    : null;
+    : null);
   const managementHref = manageHref ?? history?.manageHref ?? null;
   return (
     <div data-testid="session-workbench-header" className="swb-header">

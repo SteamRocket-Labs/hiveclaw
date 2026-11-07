@@ -229,7 +229,7 @@ def apply_business_task_outcome(
     runtime_task: RuntimeTask,
     outcome: TaskExecutionOutcome,
     completed_at: datetime | None = None,
-) -> None:
+) -> TaskExecutionOutcome:
     """Mutate both projections and their final log inside one transaction."""
 
     metadata = dict(runtime_task.metadata_json or {})
@@ -237,7 +237,18 @@ def apply_business_task_outcome(
         raise BusinessTaskInvariantError("runtime task business_task_id mismatch")
     if task.active_runtime_task_id != runtime_task.id:
         raise BusinessTaskInvariantError("task active runtime pointer mismatch")
-    finished_at = completed_at or datetime.now(timezone.utc)
+    already_terminal = runtime_task.status in _RUNTIME_STATUS_BY_OUTCOME.values()
+    if already_terminal:
+        outcome = TaskExecutionOutcome(
+            status=next(status for status, runtime_status in _RUNTIME_STATUS_BY_OUTCOME.items()
+                if runtime_status == runtime_task.status),
+            summary=str(runtime_task.result_summary or ""),
+            error_code=metadata.get("terminal_reason"),
+            reflection_session_id=runtime_task.child_session_id,
+        )
+        if task.status == outcome.task_status and task.last_execution_status == outcome.status.value:
+            return outcome
+    finished_at = runtime_task.completed_at if already_terminal else completed_at or datetime.now(timezone.utc)
     task.status = outcome.task_status
     task.last_execution_status = outcome.status.value
     task.last_result = outcome.result or outcome.summary if outcome.is_success else None
@@ -248,19 +259,14 @@ def apply_business_task_outcome(
     )
     task.completed_at = finished_at
 
-    runtime_task.status = outcome.runtime_status
-    runtime_task.result_summary = outcome.summary
-    runtime_task.completed_at = finished_at
-    if outcome.reflection_session_id:
-        runtime_task.child_session_id = outcome.reflection_session_id
-    metadata.update(
-        {
-            "phase": "terminal",
-            "outcome": outcome.to_dict(),
-            "terminal_at": finished_at.isoformat(),
-        }
-    )
-    runtime_task.metadata_json = metadata
+    if not already_terminal:
+        runtime_task.status = outcome.runtime_status
+        runtime_task.result_summary = outcome.summary
+        runtime_task.completed_at = finished_at
+        if outcome.reflection_session_id:
+            runtime_task.child_session_id = outcome.reflection_session_id
+        metadata.update({"phase": "terminal", "outcome": outcome.to_dict(), "terminal_at": finished_at.isoformat()})
+        runtime_task.metadata_json = metadata
 
     icon = {
         TaskExecutionStatus.SUCCEEDED: "✅",
@@ -276,6 +282,7 @@ def apply_business_task_outcome(
             content=f"{icon} {outcome.summary}" + (f"\n\n{outcome.result}" if outcome.result else ""),
         )
     )
+    return outcome
 
 
 def _runtime_binding_matches(task: Task, runtime_task: RuntimeTask) -> bool:
@@ -695,14 +702,21 @@ async def finalize_business_task_execution(
     tenant_id = row[0]
     async with tenant_scoped_session(tenant_id) as db:
         from app.services.runtime_terminal_settlement import lock_runtime_task_with_session_authority
+        from app.services.runtime_task_fence import assert_runtime_task_fence, clear_runtime_task_fence, reset_runtime_task_fence
 
         # Advisory → row: finalization settles the run through the shared
         # terminal boundary, which acquires the session advisory; locking the
         # RuntimeTask row first is the demonstrated row → advisory edge
         # against an in-flight transcript append of the same session.
-        runtime_task = await lock_runtime_task_with_session_authority(db, task_id=runtime_task_id)
+        token = clear_runtime_task_fence()
+        try:
+            runtime_task = await lock_runtime_task_with_session_authority(db, task_id=runtime_task_id)
+        finally:
+            reset_runtime_task_fence(token)
         if runtime_task is None:
             return None
+        if runtime_task.status in _ACTIVE_RUNTIME_STATUSES:
+            assert_runtime_task_fence(runtime_task)
         metadata = dict(runtime_task.metadata_json or {})
         try:
             task_id = uuid.UUID(str(metadata["business_task_id"]))
@@ -732,7 +746,8 @@ async def finalize_business_task_execution(
         ).scalar_one_or_none()
         if task is None:
             raise BusinessTaskInvariantError("business Task not found during finalization")
-        if isinstance(outcome, BusinessTaskExecutionPause):
+        already_terminal = runtime_task.status in _RUNTIME_STATUS_BY_OUTCOME.values()
+        if isinstance(outcome, BusinessTaskExecutionPause) and not already_terminal:
             from app.services.business_task_waits import apply_business_task_permission_wait
             from app.services.runtime_task_fence import finish_current_runtime_task_claim
 
@@ -748,16 +763,17 @@ async def finalize_business_task_execution(
                 summary='Review the native task input request before continuing.',
                 error_code='business_native_wait_unavailable', reflection_session_id=runtime_task.child_session_id,
                 retryable=False)
-        apply_business_task_outcome(db=db, task=task, runtime_task=runtime_task, outcome=outcome)
+        outcome = apply_business_task_outcome(db=db, task=task, runtime_task=runtime_task, outcome=outcome)
         from app.services.business_task_artifacts import capture_business_task_artifacts
 
-        await capture_business_task_artifacts(db, runtime_task)
-        await _enqueue_business_task_channel_delivery(db=db, runtime_task=runtime_task, outcome=outcome)
-        await enqueue_business_task_terminal_boundary(db, runtime_task)
+        if not already_terminal:
+            await capture_business_task_artifacts(db, runtime_task)
+            await _enqueue_business_task_channel_delivery(db=db, runtime_task=runtime_task, outcome=outcome)
+            await enqueue_business_task_terminal_boundary(db, runtime_task)
         await db.commit()
         return BusinessTaskFinalizationReceipt(
             committed=True,
-            terminal_transitioned=True,
+            terminal_transitioned=not already_terminal,
             runtime_task_id=runtime_task_id,
             business_task_id=task_id,
             agent_id=agent_id,

@@ -779,6 +779,9 @@ export function mergeCanonicalTerminalMessages(
   canonical: AgentChatMessage[],
   terminalRunId: string | null,
 ): AgentChatMessage[] {
+  const runStates = new Map(canonical.filter(message => message.sessionItem?.kind === 'run')
+    .map(message => [message.sessionItem!.id, message]));
+  previous = previous.map(message => runStates.get(message.sessionItem?.id || '') || message);
   let latestUserIndex = -1;
   for (let index = previous.length - 1; index >= 0; index -= 1) {
     if (previous[index]?.role === 'user') {

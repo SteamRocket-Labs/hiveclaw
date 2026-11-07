@@ -2187,7 +2187,7 @@ describe('session workbench timeline model', () => {
         },
       },
       activeRunStatus: null,
-      presentationStatus: 'complete',
+      activeRunId: 'run-1', presentationStatus: 'complete',
     });
 
     expect(rightPanel.runtimeConsole.activity.runs).toEqual([

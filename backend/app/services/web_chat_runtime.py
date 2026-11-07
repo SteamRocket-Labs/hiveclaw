@@ -192,18 +192,30 @@ async def _lock_runtime_task_for_session_mutation(
     agent_uuid = agent_id if isinstance(agent_id, uuid.UUID) else uuid.UUID(str(agent_id))
     session_uuid = session_id if isinstance(session_id, uuid.UUID) else uuid.UUID(str(session_id))
     await _lock_session_runtime_mutation(db, session_id=session_uuid)
-    result = await db.execute(
-        select(RuntimeTask)
-        .where(
-            RuntimeTask.id == run_uuid,
-            RuntimeTask.task_type.in_(EXECUTABLE_CHAT_TASK_TYPES),
-            RuntimeTask.tenant_id == tenant_uuid,
-            RuntimeTask.parent_agent_id == agent_uuid,
-            RuntimeTask.parent_session_id == str(session_uuid),
+    from app.services.runtime_task_fence import assert_runtime_task_fence, clear_runtime_task_fence, reset_runtime_task_fence
+
+    # Observe settled rows so finalizers can decline a second write. Active
+    # rows still require the original worker claim under the same lock.
+    token = clear_runtime_task_fence()
+    try:
+        result = await db.execute(
+            select(RuntimeTask)
+            .where(
+                RuntimeTask.id == run_uuid,
+                RuntimeTask.task_type.in_(EXECUTABLE_CHAT_TASK_TYPES),
+                RuntimeTask.tenant_id == tenant_uuid,
+                RuntimeTask.parent_agent_id == agent_uuid,
+                RuntimeTask.parent_session_id == str(session_uuid),
+            )
+            .with_for_update()
+            .execution_options(populate_existing=True)
         )
-        .with_for_update()
-    )
-    return result.scalar_one_or_none()
+    finally:
+        reset_runtime_task_fence(token)
+    task = result.scalar_one_or_none()
+    if task is not None and task.status not in _TERMINAL_STATUSES:
+        assert_runtime_task_fence(task)
+    return task
 
 
 async def _create_runtime_budget_root_run_for_chat(
@@ -5484,15 +5496,28 @@ async def _update_runtime_task(
         require_tenant=True,
         source="durable_web_run_status_update",
     ) as db:
-        result = await db.execute(
-            select(RuntimeTask).where(
-                RuntimeTask.id == run_uuid,
-                RuntimeTask.tenant_id == tenant_id,
+        if status == "killed":
+            from app.services.runtime_task_fence import assert_runtime_task_fence, clear_runtime_task_fence, reset_runtime_task_fence
+            from app.services.runtime_terminal_settlement import lock_runtime_task_with_session_authority
+
+            token = clear_runtime_task_fence()
+            try:
+                task = await lock_runtime_task_with_session_authority(db, task_id=run_uuid)
+            finally:
+                reset_runtime_task_fence(token)
+            if task is None or task.status in _TERMINAL_STATUSES:
+                return
+            assert_runtime_task_fence(task)
+        else:
+            result = await db.execute(
+                select(RuntimeTask).where(
+                    RuntimeTask.id == run_uuid,
+                    RuntimeTask.tenant_id == tenant_id,
+                )
             )
-        )
-        task = result.scalar_one_or_none()
-        if task is None:
-            return
+            task = result.scalar_one_or_none()
+            if task is None:
+                return
         if status in _TERMINAL_STATUSES:
             await _apply_terminal_task_update_and_settle(
                 db,

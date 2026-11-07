@@ -17,7 +17,7 @@ pytestmark = [pytest.mark.usefixtures("migrated_pg_url"), pytest.mark.skipif(pla
     reason="Native macOS context gate; Linux delivery is deferred.")]
 
 
-@pytest.mark.parametrize("mutation", [None, "forged_actor", "unlinked", "private_source", "private_recipient", "unknown_recipient", "queued_member", "same_sender", "explicit_other", "private_context", "shared_context", "web_member", "web_socket", "web_browser", "web_question", "web_question_browser", "web_cancel", "web_cancel_recovery", "web_cancel_unknown", "web_cancel_browser", "web_permission", "web_permission_session", "web_permission_deny", "web_permission_browser", "web_enterprise", "web_enterprise_reject", "web_enterprise_revoked", "web_enterprise_browser", "web_enterprise_saved_browser", "web_enterprise_saved_unbound", "web_enterprise_private_source", "web_enterprise_source_revoked", "web_enterprise_private_selection", "web_enterprise_recovery", "web_enterprise_recovery_revoked", "web_enterprise_selection_reentry"])
+@pytest.mark.parametrize("mutation", [None, "forged_actor", "unlinked", "private_source", "private_recipient", "unknown_recipient", "queued_member", "same_sender", "explicit_other", "private_context", "shared_context", "web_member", "web_socket", "web_browser", "web_question", "web_question_browser", "web_cancel", "web_cancel_recovery", "web_cancel_unknown", "web_cancel_model", "web_cancel_browser", "web_permission", "web_permission_session", "web_permission_deny", "web_permission_browser", "web_enterprise", "web_enterprise_reject", "web_enterprise_revoked", "web_enterprise_browser", "web_enterprise_saved_browser", "web_enterprise_saved_unbound", "web_enterprise_private_source", "web_enterprise_source_revoked", "web_enterprise_private_selection", "web_enterprise_recovery", "web_enterprise_recovery_revoked", "web_enterprise_selection_reentry"])
 async def test_shared_work_runs_with_its_original_sender_and_real_tool_sources(
     owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, mutation,
 ):
@@ -65,8 +65,9 @@ async def test_shared_work_runs_with_its_original_sender_and_real_tool_sources(
     web_question = mutation in {"web_question", "web_question_browser"}
     cancel_recovery = mutation == "web_cancel_recovery"
     cancel_unknown = mutation == "web_cancel_unknown"
+    cancel_model = mutation == "web_cancel_model"
     cancel_browser = mutation == "web_cancel_browser"
-    web_cancel = mutation in {"web_cancel", "web_cancel_recovery", "web_cancel_unknown", "web_cancel_browser"}
+    web_cancel = mutation in {"web_cancel", "web_cancel_recovery", "web_cancel_unknown", "web_cancel_model", "web_cancel_browser"}
     if web_question or web_cancel or web_permission or web_enterprise:
         mutation = "private_context" if enterprise_case in {"web_enterprise_private_source", "web_enterprise_source_revoked"} else None
     web_browser = mutation == "web_browser"
@@ -98,6 +99,10 @@ async def test_shared_work_runs_with_its_original_sender_and_real_tool_sources(
         model = await db.get(LLMModel, agent.primary_model_id)
         model.api_key_encrypted = get_secrets_provider().encrypt("synthetic-group-provider-only")
         model.max_input_tokens = 256_000
+        if cancel_unknown:
+            model.provider, model.model = "anthropic", "claude-sonnet-4-5"
+            model.provider_options = {"mcp_servers": [{"type": "url", "name": "shared-provider-tools",
+                "url": "https://mcp.example.test/sse"}]}
         if not web_permission:
             db.add(CapabilityPolicy(tenant_id=seed["tenant_id"], capability="workspace.file.write", allowed=True,
                 requires_approval=False))
@@ -360,7 +365,7 @@ async def test_shared_work_runs_with_its_original_sender_and_real_tool_sources(
             await db.commit()
     if web_cancel:
         await _exercise_group_cancel(seed, shared_id, run_id, member.id, app_user_sessionmaker, monkeypatch, tmp_path,
-            recover_cancel=cancel_recovery, unknown_cancel=cancel_unknown, browser_cancel=cancel_browser)
+            recover_cancel=cancel_recovery, unknown_cancel=cancel_unknown, model_cancel=cancel_model, browser_cancel=cancel_browser)
         return
     responses = [
         {"tool_calls": [{"id": "shared-write", "type": "function", "function": {"name": "write_file",
@@ -1158,7 +1163,7 @@ async def _exercise_group_question(seed, session_id, run_id, user_id, sessionmak
                 listener.close()
 
 
-async def _exercise_group_cancel(seed, session_id, run_id, requester_id, sessionmaker, monkeypatch, tmp_path, *, recover_cancel=False, unknown_cancel=False, browser_cancel=False):
+async def _exercise_group_cancel(seed, session_id, run_id, requester_id, sessionmaker, monkeypatch, tmp_path, *, recover_cancel=False, unknown_cancel=False, model_cancel=False, browser_cancel=False):
     import asyncio
     from fastapi import FastAPI
     from httpx import ASGITransport, AsyncClient
@@ -1168,7 +1173,7 @@ async def _exercise_group_cancel(seed, session_id, run_id, requester_id, session
     from app.database import pin_rls_tenant_context
     from app.models.chat_transcript_event import ChatTranscriptEvent
     from app.models.runtime_task import RuntimeTask
-    from app.models.session_v2 import SessionCommand, SessionControlInput
+    from app.models.session_v2 import SessionCommand, SessionControlInput, SessionModelResult
     from app.models.user import User
     from app.services.feishu_service import FeishuService
     from app.services.session_control_input import recover_stale_cancel_control_inputs_once
@@ -1195,11 +1200,19 @@ async def _exercise_group_cancel(seed, session_id, run_id, requester_id, session
     entered, release = asyncio.Event(), asyncio.Event()
     class HoldingClient(ScriptedLLMClient):
         async def stream(self, **kwargs):
+            self.requests.append({"tools": kwargs.get("tools"), "mcp_servers": kwargs.get("mcp_servers", [])})
+            (tmp_path / "holding-model-request.json").write_text(json.dumps(self.requests[-1], indent=2))
             entered.set()
-            await release.wait()
+            try:
+                await release.wait()
+            except asyncio.CancelledError:
+                if model_cancel:
+                    # Observe replay while the cancelled transport is still unwinding.
+                    await release.wait()
+                raise
             return await super().stream(**kwargs)
-    client_class = HoldingClient if unknown_cancel else ScriptedLLMClient
-    if not unknown_cancel:
+    client_class = HoldingClient if unknown_cancel or model_cancel else ScriptedLLMClient
+    if not (unknown_cancel or model_cancel):
         import app.kernel.engine as engine
         actual_tool_call = engine._execute_tool_call_with_cancel
         async def held_before_tool(*args, **kwargs):
@@ -1250,7 +1263,23 @@ async def _exercise_group_cancel(seed, session_id, run_id, requester_id, session
             assert runtime.dispatch_web_chat_run(run_id, claim_version=1, worker_id="shared-worker")
             worker = runtime._TASKS[run_id.hex]
             await asyncio.wait_for(entered.wait(), 30)
+            if unknown_cancel or model_cancel:
+                assert len(model.requests) == 1
+                held = model.requests[0]
+                assert held["tools"] and all(tool["type"] == "function" for tool in held["tools"])
+                assert held["mcp_servers"] == ([{"type": "url", "name": "shared-provider-tools",
+                    "url": "https://mcp.example.test/sse"}] if unknown_cancel else [])
+                async with sessionmaker() as db:
+                    await pin_rls_tenant_context(db, seed["tenant_id"])
+                    result = (await db.scalars(select(SessionModelResult).where(SessionModelResult.run_id == run_id))).one()
+                    wire = result.model_request_snapshot_json["wire_request"]
+                    assert wire["tools"] == held["tools"]
+                    assert wire["reasoning"].get("mcp_servers", []) == held["mcp_servers"]
+                    (tmp_path / "held-wire-request.json").write_text(json.dumps(wire, indent=2))
             if recover_cancel:
+                async def unavailable_cancel_bus(**_kwargs):
+                    raise ConnectionError("Synthetic cross-process cancel transport unavailable")
+                monkeypatch.setattr("app.services.runtime_control_bus.publish_web_chat_cancel", unavailable_cancel_bus)
                 async def crash_before_begin(*_args, **_kwargs):
                     raise RuntimeError("Synthetic ingress crash after acceptance")
                 with monkeypatch.context() as patch:

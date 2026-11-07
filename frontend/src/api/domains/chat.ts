@@ -21,6 +21,7 @@ export interface ChatSession {
   agent_id: string;
   user_id?: string | null;
   title: string;
+  status?: string | null;
   created_at: string;
   updated_at: string;
   parent_session_id?: string | null;

@@ -38,7 +38,11 @@ try {
   assert(socketFrames.some(frame => frame.type === 'session.ready' && frame.active_run_id === fixture.activeRunId));
   await expect(page.getByText('Runtime error', { exact: true })).toHaveCount(0);
   await expect(page.getByTestId('thread-item-retry-turn')).toHaveCount(0);
-  await expect(page.getByText('Source access', { exact: true }).first()).toBeVisible();
+  for (const run of await page.locator('[data-testid="run-disclosure-block"][data-status="done"]').all()) {
+    await run.getByRole('button', { expanded: false }).click();
+  }
+  await expect(page.getByText('Some source content is not available to this reader.', { exact: true }).first()).toBeVisible();
+  assert(!await page.locator('body').innerText().then(text => text.includes(fixture.privateCanary)));
   await page.screenshot({ path: fixture.entryScreenshot, fullPage: true });
 
   const responsePromise = page.waitForResponse(response => response.request().method() === 'POST'
@@ -51,7 +55,7 @@ try {
   assert.equal(receipt.schema, 'hive.human_input_receipt');
   assert.equal(receipt.intent, 'queue_next_turn');
   assert.equal(receipt.run, null);
-  await expect(page.getByText(/Your input is recorded|补充已入账/).first()).toBeVisible();
+  await expect(page.getByText('Got your message. It will join the current task.', { exact: true }).first()).toBeVisible();
   await expect(page.locator('textarea:visible')).toHaveValue('');
   assert(!await page.locator('body').innerText().then(text => text.includes(fixture.privateCanary)));
   await writeFile(fixture.receiptPath, JSON.stringify(receipt, null, 2));

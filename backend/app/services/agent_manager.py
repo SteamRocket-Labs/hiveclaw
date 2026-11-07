@@ -72,7 +72,9 @@ def _render_agent_soul_from_blueprint(
     primary_users = [str(item) for item in blueprint.get("primary_users", []) if str(item).strip()]
     core_outputs = [str(item) for item in blueprint.get("core_outputs", []) if str(item).strip()]
     quality_standards = [str(q) for q in blueprint.get("quality_standards", []) if str(q).strip()]
-    company_name = str(blueprint.get("company_name") or "the company").strip() or "the company"
+    company_name = " ".join("".join(
+        char if char.isprintable() else " " for char in str(blueprint.get("company_name") or "")
+    ).split()) or "the company"
     owner_name = str(blueprint.get("owner_name") or creator_name).strip() or creator_name
     company_charter = blueprint.get("company_charter") if isinstance(blueprint.get("company_charter"), dict) else {}
     owner_agency_charter = (
@@ -306,6 +308,13 @@ class AgentManager:
         creator = result.scalar_one_or_none()
         creator_name = creator.display_name if creator else "Unknown"
 
+        soul_blueprint = dict(blueprint or {})
+        if not soul_blueprint.get("company_name") and agent.tenant_id is not None:
+            from app.models.tenant import Tenant
+
+            company_name = await db.scalar(select(Tenant.name).where(Tenant.id == agent.tenant_id))
+            soul_blueprint["company_name"] = company_name
+
         soul_content = _render_agent_soul_from_blueprint(
             agent_name=agent.name,
             role_description=agent.role_description or "通用助手",
@@ -313,7 +322,7 @@ class AgentManager:
             created_at=datetime.now(timezone.utc).strftime("%Y-%m-%d"),
             personality=personality,
             boundaries=boundaries,
-            blueprint=blueprint,
+            blueprint=soul_blueprint,
         )
         soul_path.write_text(soul_content, encoding="utf-8")
 

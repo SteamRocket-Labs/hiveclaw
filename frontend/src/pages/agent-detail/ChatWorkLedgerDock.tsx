@@ -3,12 +3,14 @@ import { useQuery } from '@tanstack/react-query';
 import { IconCheck, IconChevronRight, IconSquare, IconSquareFilled } from '@tabler/icons-react';
 
 import { autonomyApi, type RuntimeWorkLedgerItem, type RuntimeWorkLedgerView } from '../../api/domains/autonomy';
+import { runtimeStatusKey, runtimeStatusLabel } from './runtimeStatus';
 
 interface ChatWorkLedgerDockProps {
   agentId: string;
   runtimeTaskId?: string | null;
   sessionId?: string | null;
   live?: boolean;
+  runStatus?: string | null;
   operatorView?: boolean;
   operatorReason?: string;
 }
@@ -81,10 +83,12 @@ export default function ChatWorkLedgerDock({
   runtimeTaskId,
   sessionId,
   live = false,
+  runStatus,
   operatorView = false,
   operatorReason,
 }: ChatWorkLedgerDockProps) {
   const { t } = useTranslation();
+  live = live && !(runStatus && runStatus !== 'idle' && ['stopped', 'failed', 'done'].includes(runtimeStatusKey(runStatus)));
   const sessionQuery = useQuery({
     queryKey: ['chat-session-work-ledger', agentId, sessionId, operatorView ? operatorReason : 'owner'],
     queryFn: () => autonomyApi.getSessionWorkLedger(
@@ -143,10 +147,10 @@ export default function ChatWorkLedgerDock({
     return null;
   }
   const counts = taskCounts(displayItems);
-  const countLabel = taskProgressLabel(displayItems, t);
+  const countLabel = !live && runStatus ? runtimeStatusLabel(runStatus, t) : taskProgressLabel(displayItems, t);
   const summary = (
     <span data-testid="chat-work-ledger-summary" className="chat-work-ledger-summary" aria-live="polite">
-      <span className={`chat-work-ledger-dot ${counts.inProgress > 0 ? 'is-running' : ''}`} aria-hidden="true" />
+      <span className={`chat-work-ledger-dot ${live && counts.inProgress > 0 ? 'is-running' : ''}`} aria-hidden="true" />
       <span className="chat-work-ledger-heading">{t('agent.chat.workLedger.todoTitle', 'Todo')}</span>
       <span className="chat-work-ledger-progress">{countLabel}</span>
     </span>
@@ -214,7 +218,7 @@ function TaskList({
           const status = taskStatus(item.status);
           const blockedBy = item.blockedBy ?? [];
           const isCompleted = status === 'completed';
-          const isInProgress = status === 'in_progress';
+          const isInProgress = prioritizeActive && status === 'in_progress';
           const isBlocked = blockedBy.length > 0 && !isCompleted;
           return (
             <div

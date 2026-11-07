@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import type { AssistantBinding } from '../../api/domains/assistant';
+import { assistantNameForDisplay } from './assistantScope';
 import './assistant.css';
 
 interface AssistantPanelProps {
@@ -84,7 +85,7 @@ export default function AssistantPanel({
           <p>
             <span>{t('assistant.identity')}</span>
             {' '}
-            <strong>{payload.agent.name}</strong>
+            <strong>{assistantNameForDisplay(payload.agent.name, t('assistant.title'))}</strong>
           </p>
         ) : null}
       </div>
@@ -101,7 +102,7 @@ export default function AssistantPanel({
                 checked={chosen === candidate.id}
                 onChange={() => setChosen(candidate.id)}
               />
-              <span>{candidate.name}</span>
+              <span>{assistantNameForDisplay(candidate.name, t('assistant.title'))}</span>
             </label>
           ))}
         </fieldset>

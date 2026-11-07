@@ -12,10 +12,35 @@ from sqlalchemy.dialects import postgresql
 
 from app.models.agent import Agent
 from app.models.chat_transcript_event import ChatTranscriptEvent
+from app.models.notification import Notification
 from app.models.tool import AgentTool, Tool
 from app.models.user import User
 from app.services.tool_config_service import MASKED_SECRET_SENTINEL
 from tests.integration.test_offboarding_member_handover import offboard, seed_handover
+
+
+async def test_handover_card_uses_the_locked_value_instead_of_a_stale_identity_map(owner_sessionmaker):
+    from app.api.tools import CategoryConfigIn, update_tool_config
+    import json
+
+    async with owner_sessionmaker() as db:
+        state = await seed_handover(db)
+        assignment = AgentTool(tenant_id=state.tenant.id, agent_id=state.bot.id, tool_id=state.tool.id,
+            config={"api_key": ""})
+        db.add(assignment)
+        await db.commit()
+        async with owner_sessionmaker() as editor:
+            user = await editor.get(User, state.leaver.id)
+            await update_tool_config(state.bot.id, state.tool.id,
+                CategoryConfigIn(config={"api_key": "sk-e2e-fake-newer-save"}), user, editor)
+        assert assignment.config == {"api_key": ""}
+        await offboard(state)
+        await db.commit()
+        await db.refresh(assignment)
+        assert assignment.config == {"api_key": ""}
+        card = await db.scalar(select(Notification).where(Notification.user_id == state.successor.id))
+        assert json.loads(card.body)["tools_needing_credentials"] == [{"agent_id": str(state.bot.id),
+            "agent_name": state.bot.name, "name": state.tool.display_name}]
 
 
 async def test_unmoved_bot_masks_unknown_and_container_settings_and_allows_replacement(owner_sessionmaker):

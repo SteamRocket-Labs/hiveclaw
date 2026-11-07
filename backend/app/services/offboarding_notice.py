@@ -171,13 +171,16 @@ async def transfer_knowledge_and_notify(db, *, target_user, successor, agents, h
         .order_by(AgentTool.agent_id, Tool.name))).all()
     agent_names = {agent.id: agent.name for agent in agents}
     for assignment, tool in assignments:
-        previous = assignment.config
+        def clear(stored):
+            cleared = clear_agent_tool_config_secrets(stored, tool.config_schema,
+                platform_tool=tool.type == "builtin" and tool.tenant_id is None)
+            if cleared != stored:
+                tools_needing_credentials.append({"agent_id": str(assignment.agent_id),
+                    "agent_name": agent_names[assignment.agent_id], "name": tool.display_name or tool.name})
+            return cleared
+
         await ensure_agent_tool_assignment(db, agent_id=assignment.agent_id, tool_id=tool.id,
-            enabled=None, source=None, config=lambda stored: clear_agent_tool_config_secrets(stored, tool.config_schema,
-                platform_tool=tool.type == "builtin" and tool.tenant_id is None))
-        if assignment.config != previous:
-            tools_needing_credentials.append({"agent_id": str(assignment.agent_id),
-                "agent_name": agent_names[assignment.agent_id], "name": tool.display_name or tool.name})
+            enabled=None, source=None, config=clear)
     tasks = (await db.execute(select(Task, User.id).join(Agent, Agent.id == Task.agent_id)
         .outerjoin(User, (User.id == func.coalesce(Agent.owner_user_id, Agent.creator_id)) & User.is_active
             & (User.tenant_id == target_user.tenant_id)).where(

@@ -88,15 +88,16 @@ async def test_native_empty_discovery_retains_complete_next_round_sources(
             ref = f"session-tool-result:{calls[0].id}"
             assert (await _origin_dependencies(db, tenant_id=s["tenant_id"], agent_id=s["agent_id"], ref=ref))[1]
             event = await db.get(ChatTranscriptEvent, calls[0].result_event_id)
-            pointer = event.metadata_json["v2_payload"]["metadata"]["native_empty_read_receipt"]
+            receipt_kind = "native_directory_read" if tool_name == "list_files" else "native_empty_read"
+            pointer = event.metadata_json["v2_payload"]["metadata"][receipt_kind + "_receipt"]
             evidence_id = UUID(pointer["evidence_ref"].split(":", 1)[1])
             retained = await db.get(InvocationSpan, evidence_id)
             assert retained is not None
             async with owner_sessionmaker() as writer:
                 proof = await writer.get(InvocationSpan, evidence_id)
                 proof.metadata_json = {
-                    "native_empty_read_evidence": {
-                        **proof.metadata_json["native_empty_read_evidence"],
+                    receipt_kind + "_evidence": {
+                        **proof.metadata_json[receipt_kind + "_evidence"],
                         "tool_result_hash": "0" * 64,
                     }
                 }

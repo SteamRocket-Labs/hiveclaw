@@ -264,8 +264,8 @@ async def test_group_recipient_inspection_is_not_a_private_source_grant_and_real
 async def test_next_provider_request_stops_after_team_membership_is_withdrawn(
     readable_team_memory, app_user_sessionmaker, owner_sessionmaker,
 ):
-    from app.kernel.contracts import ExecutionAuthorityUnavailable
-    from app.models.session_v2 import SessionModelResult
+    from app.models.session_v2 import SessionModelResult, SessionToolInvocation
+    from tests.integration.source_withholding_helpers import assert_source_withheld
     from tests.integration.test_m4c_explicit_memory_scope_postgres import memory_call
 
     s, workspace, _source = readable_team_memory
@@ -274,15 +274,23 @@ async def test_next_provider_request_stops_after_team_membership_is_withdrawn(
         {"ids": [f"team_memory:{workspace}:report"]}, user=n.foreign, session=s.second_session, run=s.second_run)
     assert "TEAM_PROJECT_RELEASE_MARKER" in loaded, loaded
     await leave_team(owner_sessionmaker, workspace, n.foreign)
-    with pytest.raises(ExecutionAuthorityUnavailable) as blocked:
-        await memory_call(n, app_user_sessionmaker, "save_memory",
-            {"content": "Remember a note derived from the team's release cadence", "category": "project"},
-            user=n.foreign, session=s.second_session, run=s.second_run, include_history=True)
-    assert blocked.value.code == "team_memory_workspace_denied"
-    assert blocked.value.status == "denied"
+    saved, invocation = await memory_call(n, app_user_sessionmaker, "save_memory",
+        {"content": "Remember a note derived from the team's release cadence", "category": "project"},
+        user=n.foreign, session=s.second_session, run=s.second_run, include_history=True)
+    assert "Saved to explicit memory overlay" in saved and "TEAM_PROJECT_RELEASE_MARKER" not in saved
+    denied = str(await n.service.execute("load_memory", {"ids": [f"team_memory:{workspace}:report"]},
+        agent_id=n.agent, user_id=n.foreign, session_id=str(s.second_session), runtime_task_id=str(s.second_run),
+        emit_runtime_hooks=False))
+    assert "TEAM_PROJECT_RELEASE_MARKER" not in denied, denied
     async with tenant_scoped_session(n.tenant, session_factory=app_user_sessionmaker) as db:
         rows = list(await db.scalars(select(SessionModelResult).where(SessionModelResult.run_id == s.second_run)))
-        assert len(rows) == 1, rows
+        assert len(rows) == 2, rows
+        later = [row for row in rows if row.provider_request_id == invocation.provider_request_id]
+        assert_source_withheld(later, content="TEAM_PROJECT_RELEASE_MARKER", code="team_memory_workspace_denied")
+        assert all(ref["source_kind"] != "team_memory" for row in later
+            for ref in row.model_request_snapshot_json["input_bindings"]["dependencies"])
+        assert set(await db.scalars(select(SessionToolInvocation.tool_name).where(
+            SessionToolInvocation.run_id == s.second_run))) == {"load_memory", "save_memory"}
 
 
 async def test_ordinary_team_correction_preserves_historical_provenance_and_new_reads_use_current_body(

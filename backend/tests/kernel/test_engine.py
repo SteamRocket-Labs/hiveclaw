@@ -3623,12 +3623,12 @@ async def test_agent_kernel_handles_tool_round_and_collects_parts(with_origins):
         assert len(prepared_requests) == 2
         dynamic = [message.context_origin for message in prepared_requests[0]["messages"]
             if message.context_origin is not None and message.context_origin.kind == "dynamic_prompt"]
-        assert len(dynamic) == 1 and not dynamic[0].sources
-        suffixes = [section for section in dynamic[0].sections
-            if section.get("selected") and section["name"] == "system_prompt_suffix"]
+        assert dynamic and all(not origin.sources for origin in dynamic)
+        suffixes = [origin for origin in dynamic if any(
+            section["name"] == "system_prompt_suffix" for section in origin.sections)]
         # The fake environment and each runtime attachment lack source inventories.
-        assert suffixes and dynamic[0].unbound == ("context_source_inventory_missing",) * (len(suffixes) + 1), (
-            suffixes, dynamic[0].unbound)
+        assert suffixes and tuple(reason for origin in dynamic for reason in origin.unbound) == (
+            "context_source_inventory_missing",) * (len(suffixes) + 1)
         assert prepared_requests[0]["messages"][1].source_ref == input_origin
         assistants = [m for m in prepared_requests[1]["messages"] if m.role == "assistant" and m.tool_calls]
         tools = [m for m in prepared_requests[1]["messages"] if m.role == "tool" and m.tool_call_id == "call_1"]

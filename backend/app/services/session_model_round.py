@@ -521,6 +521,8 @@ async def _validate_or_withhold_model_sources(db, *, tenant_id, agent_id, sessio
     from app.services.explicit_memory_authority import validate_memory_model_sources
 
     task = await db.get(RuntimeTask, run_id)
+    # A selected team goal defines the work, rather than an optional source.
+    await validate_model_sources(db, task=task, dependencies=input_bindings["dependencies"], effect="model_request")
     # Compiler-bound platform constants have resolved, empty dependencies;
     # unbound data has no such proof, even when sent with the system role.
     unbound = [entry["message_index"] for entry in input_bindings["messages"]
@@ -554,7 +556,6 @@ async def _validate_or_withhold_model_sources(db, *, tenant_id, agent_id, sessio
                 with group_source_read():
                     await _validate_input_dependencies(db, tenant_id, dependencies, runtime_request=group_principal)
             await validate_native_trigger_model_sources(db, task=task, dependencies=dependencies, effect="model_request")
-            await validate_model_sources(db, task=task, dependencies=dependencies, effect="model_request")
             if source is not None and source["source_kind"] == "explicit_memory" and memory_readers:
                 readers = {}
                 for entry in input_bindings["messages"]:

@@ -23,6 +23,20 @@ async def assert_withheld_input(db, *, run_id, snapshot, index, content):
         assert encoded not in json.dumps(model.model_request_snapshot_json["wire_request"], ensure_ascii=False)
 
 
+def assert_source_withheld(models, *, content, code):
+    """Check later requests after an individual source loses read authority."""
+    assert models and content
+    entries = []
+    for model in models:
+        snapshot = model.model_request_snapshot_json
+        assert snapshot["input_bindings"]["source_authority"] == "not_evaluated"
+        assert content not in json.dumps(snapshot["wire_request"], ensure_ascii=False)
+        entries.extend(snapshot["input_bindings"]["messages"])
+    withheld = [entry for entry in entries if entry.get("status") == "withheld" and entry.get("code") == code]
+    assert withheld, entries
+    assert all(entry["dependencies"] == [] and entry["dependency_status"] == "resolved" for entry in withheld)
+
+
 @contextmanager
 def legacy_model_requests(monkeypatch):
     """Seed old persisted requests; restore the current boundary before reading them."""

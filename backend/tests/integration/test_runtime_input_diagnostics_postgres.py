@@ -22,7 +22,7 @@ from tests.services.test_session_semantic_history import _seal_round
 pytestmark = pytest.mark.usefixtures("migrated_pg_url")
 
 
-async def _input_diagnostic_app(owner_sessionmaker, app_user_sessionmaker, *, extension=False, changed_catalog=False):
+async def _input_diagnostic_app(owner_sessionmaker, app_user_sessionmaker, monkeypatch, *, extension=False, changed_catalog=False):
     from app.api.admin import router
     from app.core.security import get_current_user
     from app.models.chat_session import ChatSession
@@ -31,6 +31,7 @@ async def _input_diagnostic_app(owner_sessionmaker, app_user_sessionmaker, *, ex
     from app.services.session_model_inputs import _hash, capture_context_message_origins
     from app.services.skill_source_receipts import _bundled_platform_skill_hashes
     from tests.integration.test_m1g46_historical_input_recovery_postgres import _catalog_notice
+    from tests.integration.source_withholding_helpers import legacy_model_requests
 
     tenant, agent, session, run, bound = await _bound_input(owner_sessionmaker)
     private = "PRIVATE-PROMPT-" + uuid.uuid4().hex
@@ -48,10 +49,12 @@ async def _input_diagnostic_app(owner_sessionmaker, app_user_sessionmaker, *, ex
         await db.commit()
     async with app_user_sessionmaker() as db:
         await pin_rls_tenant_context(db, tenant)
-        request = await prepare_model_request(db, tenant_id=tenant, agent_id=agent, session_id=session,
-            run_id=run, turn_id=f"turn-{run.hex}", round_index=1, messages=messages, tools=[],
-            provider="minimax", model="synthetic-no-provider",
-            wire_request={"messages": [message_snapshot(m) for m in cached], "tools": []})
+        # Inspect an immutable pre-withholding request with a cache-wire mismatch.
+        with legacy_model_requests(monkeypatch):
+            request = await prepare_model_request(db, tenant_id=tenant, agent_id=agent, session_id=session,
+                run_id=run, turn_id=f"turn-{run.hex}", round_index=1, messages=messages, tools=[],
+                provider="minimax", model="synthetic-no-provider",
+                wire_request={"messages": [message_snapshot(m) for m in cached], "tools": []})
         await _seal_round(db, tenant_id=tenant, agent_id=agent, session_id=session, run_id=run,
             turn_id=f"turn-{run.hex}", round_index=1, provider_request_id=request, content=private + "-RESPONSE")
         model = await db.scalar(select(SessionModelResult).where(SessionModelResult.provider_request_id == request))
@@ -105,10 +108,10 @@ async def _input_diagnostic_app(owner_sessionmaker, app_user_sessionmaker, *, ex
 @pytest.mark.parametrize("extension", [False, True])
 @pytest.mark.parametrize("changed_catalog", [False, True])
 async def test_admin_input_source_detail_is_opt_in_scoped_and_read_only(
-    owner_sessionmaker, app_user_sessionmaker, extension, changed_catalog,
+    owner_sessionmaker, app_user_sessionmaker, monkeypatch, extension, changed_catalog,
 ):
     app, tenant, run, model_id, private, frozen = await _input_diagnostic_app(
-        owner_sessionmaker, app_user_sessionmaker, extension=extension, changed_catalog=changed_catalog)
+        owner_sessionmaker, app_user_sessionmaker, monkeypatch, extension=extension, changed_catalog=changed_catalog)
     async with AsyncClient(transport=ASGITransport(app), base_url="http://test") as client:
         default = await client.get(f"/admin/runtime-reconciliation/{run}", params={"tenant_id": str(tenant)})
         assert default.status_code == 200 and "input_sources" not in default.json()

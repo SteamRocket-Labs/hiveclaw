@@ -403,6 +403,7 @@ async def list_agents(
     tenant_id: uuid.UUID | None = None,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
+    include_deactivated: bool = False,
 ):
     """List all agents the current user has access to."""
     # Scoped administrators manage the complete employee inventory of their
@@ -413,7 +414,7 @@ async def list_agents(
         stmt = _agent_list_summary_stmt().where(
             Agent.tenant_id == target_tenant_id,
             Agent.agent_class != "internal_system",
-            agent_lifecycle_active_clause(),
+            Agent.deleted_at.is_(None) if include_deactivated else agent_lifecycle_active_clause(),
         )
         result = await db.execute(stmt.order_by(Agent.created_at.desc()))
         rows = result.mappings().all()

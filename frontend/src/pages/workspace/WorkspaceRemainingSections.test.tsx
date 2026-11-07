@@ -28,6 +28,7 @@ vi.mock('react-i18next', () => ({
 vi.mock('@tanstack/react-query', () => ({
   useQuery: ({ queryKey }: { queryKey: unknown[] }) => {
     const key = String(queryKey[0]);
+    if (key === 'users') return { data: [] };
     if (key === 'approvals') {
       return {
         data: [
@@ -194,15 +195,13 @@ describe('Workspace remaining sections', () => {
     expect(approvalsMarkup).not.toContain('user-internal-123');
     expect(approvalsMarkup).not.toContain('secret-token');
     expect(approvalsMarkup).not.toContain('execution_envelope');
-    expect(auditMarkup).toContain('schedule_tick');
-    expect(auditMarkup).toContain('test_llm_model_completed');
-    expect(auditMarkup).toContain('llm_model.test_completed');
-    expect(auditMarkup).toContain('model-12');
-    expect(auditMarkup).toContain('probe_id=probe-safe');
-    expect(auditMarkup).toContain('status=completed');
+    expect(auditMarkup).toContain('Scheduled task check');
+    expect(auditMarkup).toContain('Model test');
+    expect(auditMarkup).toContain('glm-5.3');
+    expect(auditMarkup).toContain('Completed');
     expect(auditMarkup).toContain('records:3');
-    expect(auditMarkup).toContain('user:offboarded');
-    expect(auditMarkup).toContain('user-876');
+    expect(auditMarkup).toContain('Member offboarded');
+    expect(auditMarkup).not.toMatch(/schedule_tick|test_llm_model_completed|llm_model.test_completed|probe_id=|user:offboarded|user-876/);
     expect(auditMarkup).not.toContain('job-private');
     expect(auditMarkup).not.toContain('session-private');
     expect(auditMarkup).not.toContain('customer recovery note');

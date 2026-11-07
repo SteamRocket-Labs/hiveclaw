@@ -4535,7 +4535,25 @@
       "filterAll": "All",
       "filterBackground": "System",
       "filterActions": "User Actions",
-      "records": "{{count}} records"
+      "records": "{{count}} records",
+      "unknownMember": "Unknown member",
+      "unknownRole": "Unknown role",
+      "offboarded": "Member offboarded",
+      "roleChanged": "Role changed",
+      "scheduleCheck": "Scheduled task check",
+      "scheduleRun": "Scheduled task run",
+      "scheduleError": "Scheduled task failed",
+      "periodicCheck": "Periodic check",
+      "periodicRun": "Periodic work",
+      "periodicError": "Periodic work failed",
+      "startup": "Service started",
+      "modelTest": "Model test",
+      "activity": "Activity recorded",
+      "failed": "Failed",
+      "completed": "Completed",
+      "recorded": "Recorded",
+      "actor": "By {{name}}",
+      "offboardingResult": "{{member}} left; company work handed to {{successor}}."
     },
     "notificationBar": {
       "title": "Announcement Banner",
@@ -4561,7 +4579,11 @@
       "title": "Broadcast Notification",
       "titlePlaceholder": "Notification title"
     },
-    "deleteCompanyConfirm": "Are you sure you want to delete this company and ALL its data? This cannot be undone."
+    "deleteCompanyConfirm": "Are you sure you want to delete this company and ALL its data? This cannot be undone.",
+    "companyKnowledge": {
+      "title": "Company knowledge",
+      "open": "Upload and import"
+    }
   },
   "handover": {
     "merged": "Merged into the successor’s existing document",
@@ -4646,7 +4668,7 @@
     "dailyTokenLimit": "Daily token limit",
     "monthlyTokenLimit": "Monthly token limit",
     "unlimited": "Unlimited",
-    "deactivateMember": "Deactivate",
+    "deactivateMember": "Offboard member",
     "resolveOffboarding": "Resolve ownership",
     "deactivateMemberTitle": "Deactivate member",
     "confirmDeactivate": "Transfer and deactivate",
@@ -4681,7 +4703,11 @@
     "externalPrincipalUnlinkTitle": "Unlink external identity",
     "externalPrincipalUnlinkConfirm": "The external sender will immediately lose the linked member authority. Continue?",
     "externalPrincipalUnlinked": "External identity unlinked",
-    "externalPrincipalUnlinkFailed": "Failed to unlink identity."
+    "externalPrincipalUnlinkFailed": "Failed to unlink identity.",
+    "handoverKnowledge": "Uploaded knowledge",
+    "handoverWork": "Unfinished work",
+    "handoverSchedules": "Schedules to review before resuming",
+    "handoverCredentials": "Personal connections and tool keys are revoked and are not passed to the receiving member."
   },
   "account": {
     "title": "Account Settings",
@@ -4771,7 +4797,14 @@
       "systemProtected": "System protected",
       "noEmployees": "No digital employees found.",
       "retryDeactivateButton": "Retry deactivation",
-      "restoreWorkPending": "Outward work is not yet confirmed. Review the recall, then restore."
+      "restoreWorkPending": "Outward work is not yet confirmed. Review the recall, then restore.",
+      "employeeUsage": "Who can use it",
+      "usageCompany": "Everyone in the company",
+      "usageOwner": "Owner and company administrators",
+      "usageUnavailable": "Usage access could not be loaded",
+      "active": "Active",
+      "inactive": "Deactivated",
+      "usageDepartment": "Owner, company administrators and authorized departments"
     },
     "quotas": {
       "tokenQuotas": "Usage Quotas",

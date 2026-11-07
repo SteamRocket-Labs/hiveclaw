@@ -47,6 +47,7 @@ async def test_offboarding_preview_exposes_agents_successors_and_revocation_impa
             display_name="Bob",
             is_active=True,
             owned_agents=[{"id": str(agent_id), "name": "Agent A", "status": "idle", "agent_class": "internal_tenant"}],
+            handover={"knowledge": [], "work": [], "triggers": []},
             eligible_successors=[
                 {"id": str(successor_id), "display_name": "Admin", "email": "admin@example.com", "role": "org_admin"}
             ],
@@ -72,6 +73,7 @@ async def test_offboarding_preview_exposes_agents_successors_and_revocation_impa
     )
 
     assert result["owned_agents"][0]["id"] == str(agent_id)
+    assert result["handover"] == {"knowledge": [], "work": [], "triggers": []}
     assert result["default_successor_id"] == str(successor_id)
     assert result["revocations"]["refresh_tokens"] == 4
     assert result["revocations"]["runtime_tasks"] == 2

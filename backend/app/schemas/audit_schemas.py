@@ -3,7 +3,7 @@
 import uuid
 from datetime import datetime
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, ValidationInfo, field_validator
 
 
 ADMIN_AUDIT_DETAIL_KEYS = frozenset(
@@ -82,6 +82,16 @@ class AuditLogSummaryOut(BaseModel):
     details: dict = Field(default_factory=dict)
     created_at: datetime
 
-    _project_details = field_validator("details", mode="before")(project_admin_audit_details)
+    @field_validator("details", mode="before")
+    @classmethod
+    def project_details(cls, value: object, info: ValidationInfo) -> dict:
+        summary = project_admin_audit_details(value)
+        keys = {
+            "user:offboarded": ("target_user_id", "successor_user_id"),
+            "user:role_changed": ("target_user_id", "from_role", "to_role"),
+        }.get(info.data.get("action"), ())
+        if isinstance(value, dict):
+            summary.update({key: value[key] for key in keys if key in value})
+        return summary
 
     model_config = {"from_attributes": True}

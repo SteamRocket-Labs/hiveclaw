@@ -53,6 +53,10 @@ vi.mock('@tanstack/react-query', () => ({
             agent_type: 'native',
           },
           {
+            id: 'inactive-employee', name: 'Resting analyst', status: 'stopped',
+            creator_id: 'admin-1', owner_user_id: 'owner-2', deactivated_at: '2026-11-06T00:00:00Z',
+          },
+          {
             id: 'agent-1',
             name: 'AI Product Manager',
             role_description: 'Product analysis',
@@ -98,6 +102,9 @@ vi.mock('@tanstack/react-query', () => ({
         isLoading: false,
         error: null,
       };
+    }
+    if (String(queryKey[0]) === 'agent-permissions') {
+      return { data: { scope_type: 'company', scope_names: [] } };
     }
     if (String(queryKey[0]) === 'agent-retirement-pending') {
       return {
@@ -160,6 +167,17 @@ describe('WorkspaceDigitalEmployeesSection', () => {
 
     expect(markup).toContain('review and deactivate tenant digital employees');
     expect(markup).not.toContain('review and remove');
+  });
+
+  it('shows usage scope, lifecycle and owner for active and deactivated employees', () => {
+    const markup = renderToStaticMarkup(<WorkspaceDigitalEmployeesSection selectedTenantId="tenant-1" />);
+    expect(markup).toContain('Who can use it');
+    expect(markup).toContain('Everyone in the company');
+    expect(markup).toContain('Active');
+    const inactive = markup.split('Resting analyst')[1].split('</tr>')[0];
+    expect(inactive).toContain('Agent Owner');
+    expect(inactive).toContain('Deactivated');
+    expect(inactive).toContain('Restore');
   });
 
   it('offers retry deactivation only for deactivated rows with unconfirmed outward work, and links to the employee page', () => {

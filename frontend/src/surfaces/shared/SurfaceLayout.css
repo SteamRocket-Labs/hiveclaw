@@ -1,0 +1,23 @@
+@media (max-width: 720px) {
+  .admin-surface-layout { flex-direction: column; }
+  .admin-surface-layout > .sidebar {
+    position: static;
+    width: 100%;
+    height: auto;
+    max-height: none;
+    border-right: 0;
+    border-bottom: 1px solid var(--border-subtle);
+  }
+  .admin-surface-layout .sidebar-section {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .admin-surface-layout .sidebar-section-title { grid-column: 1 / -1; }
+  .admin-surface-layout > .main-content {
+    margin-left: 0;
+    width: 100%;
+    max-width: 100%;
+    min-height: 0;
+    padding: 16px;
+  }
+}

@@ -255,6 +255,7 @@ async def preview_user_offboarding(
     tenant_id: str | None = None,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
+    successor_user_id: uuid.UUID | None = None,
 ):
     """Return the exact impact and eligible successor set before offboarding."""
     _require_org_admin(current_user)
@@ -268,12 +269,14 @@ async def preview_user_offboarding(
         raise HTTPException(status_code=400, detail="Platform administrators cannot be offboarded from a tenant")
     if target.id == current_user.id:
         raise HTTPException(status_code=400, detail="Administrators cannot offboard their own account")
-    preview = await build_user_offboarding_preview(db, target_user=target, actor=current_user)
+    preview = await build_user_offboarding_preview(db, target_user=target, actor=current_user,
+        successor_user_id=successor_user_id)
     return {
         "user_id": str(preview.user_id),
         "display_name": preview.display_name,
         "is_active": preview.is_active,
         "owned_agents": preview.owned_agents,
+        "handover": preview.handover,
         "eligible_successors": preview.eligible_successors,
         "default_successor_id": str(preview.default_successor_id) if preview.default_successor_id else None,
         "revocations": {

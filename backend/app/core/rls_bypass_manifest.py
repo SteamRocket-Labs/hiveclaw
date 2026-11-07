@@ -835,7 +835,10 @@ def fingerprint_rls_bypass_scopes(app_root: Path) -> str:
 # acknowledgements, approval projection and web runtime. Bypass calls are unchanged.
 # Round 3 includes bounded active-origin retries and the existing notification uniqueness key.
 # Merging A4s with main: each digest entry equals the reviewed main or A4s entry; no entry changed on both sides.
-RLS_BYPASS_SCOPES_SHA256 = "458594493d6317f01272bd30a2fac383bf6962f6f7c730b939a55b2cee83ae9b"
+# G3: only user_offboarding_service.py's module-source entry changes: the
+# read-only preview now includes handover items and validates the selected active
+# company member. All 783 entries and bypass callsites remain unchanged.
+RLS_BYPASS_SCOPES_SHA256 = "f325cb6d4d64693ffcd746973edbaaeda3bfe930fb1b02b74e0145cf30adcd01"
 
 
 def scan_rls_bypass_callsites(app_root: Path) -> list[RLSBypassCallsite]:

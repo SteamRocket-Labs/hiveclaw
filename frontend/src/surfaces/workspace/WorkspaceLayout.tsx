@@ -7,6 +7,7 @@ import { workspaceNavItemsForRole, type WorkspaceNavTab } from './sections';
 
 const NAV_ICONS: Record<WorkspaceNavTab, ReactNode> = {
   users: <IconUsers size={16} stroke={1.5} />,
+  digital_employees: <IconRobot size={16} stroke={1.5} />,
   llm: <IconRobot size={16} stroke={1.5} />,
   info: <IconPlugConnected size={16} stroke={1.5} />,
   approvals: <IconShieldCheck size={16} stroke={1.5} />,

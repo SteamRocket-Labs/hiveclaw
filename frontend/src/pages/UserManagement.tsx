@@ -202,6 +202,20 @@ export default function UserManagement() {
         }
     };
 
+    const changeOffboardingSuccessor = async (id: string) => {
+        if (!offboardingTarget) return;
+        setOffboardingLoading(true);
+        try {
+            const preview = await usersApi.previewOffboarding(offboardingTarget.id, selectedTenantId() || undefined, id);
+            setOffboardingPreview(preview);
+            setSuccessorUserId(id);
+        } catch (error: any) {
+            notify(error?.message || t('userManagement.offboardingPreviewFailed', 'Failed to load offboarding impact.'), true);
+        } finally {
+            setOffboardingLoading(false);
+        }
+    };
+
     const roleBadge = (role: string) => {
         if (role === 'platform_admin') {
             return <span className="user-mgmt-role-badge is-platform-admin">{t('userManagement.rolePlatformAdmin')}</span>;
@@ -471,6 +485,17 @@ export default function UserManagement() {
                             </div>
                         )}
                         <div className="user-mgmt-offboard-impact">
+                            {([
+                                ['knowledge', t('userManagement.handoverKnowledge', 'Uploaded knowledge'), offboardingPreview.handover.knowledge.map((item) => item.title)],
+                                ['work', t('userManagement.handoverWork', 'Unfinished work'), offboardingPreview.handover.work.map((item) => item.title)],
+                                ['triggers', t('userManagement.handoverSchedules', 'Schedules to review before resuming'), offboardingPreview.handover.triggers.map((item) => item.name)],
+                            ] as const).map(([key, label, names]) => <div key={key}>
+                                <strong>{names.length}</strong><span>{label}</span>
+                                <ul>{names.map((name, index) => <li key={index}>{name}</li>)}</ul>
+                            </div>)}
+                        </div>
+                        <p>{t('userManagement.handoverCredentials', 'Personal connections and tool keys are revoked and are not passed to the receiving member.')}</p>
+                        <div className="user-mgmt-offboard-impact">
                             <div><strong>{offboardingPreview.revocations.agent_permissions + offboardingPreview.revocations.resource_permissions}</strong><span>{t('userManagement.directPermissions', 'direct permissions')}</span></div>
                             <div><strong>{offboardingPreview.revocations.knowledge_grants}</strong><span>{t('userManagement.knowledgeGrants', 'knowledge grants')}</span></div>
                             <div><strong>{offboardingPreview.revocations.refresh_tokens}</strong><span>{t('userManagement.loginSessions', 'refresh tokens')}</span></div>
@@ -486,7 +511,7 @@ export default function UserManagement() {
                                 id="offboarding-successor"
                                 className="form-input"
                                 value={successorUserId}
-                                onChange={(event) => setSuccessorUserId(event.target.value)}
+                                onChange={(event) => void changeOffboardingSuccessor(event.target.value)}
                             >
                                 <option value="">{t('userManagement.selectSuccessor', 'Select an active company member')}</option>
                                 {offboardingPreview.eligible_successors.map((successor) => (

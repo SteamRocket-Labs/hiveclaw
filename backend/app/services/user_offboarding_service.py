@@ -82,6 +82,7 @@ class UserOffboardingPreview:
     local_bridge_connections: int
     runtime_tasks: int
     pending_approvals: int
+    handover: dict
 
 
 def _rowcount(result: object) -> int:
@@ -698,6 +699,7 @@ async def build_user_offboarding_preview(
     *,
     target_user: User,
     actor: User,
+    successor_user_id: uuid.UUID | None = None,
 ) -> UserOffboardingPreview:
     if target_user.tenant_id is None:
         raise HTTPException(status_code=409, detail="Target user has no company")
@@ -741,6 +743,11 @@ async def build_user_offboarding_preview(
     default_successor_id = actor.id if actor.tenant_id == tenant_id and actor.id != target_user.id else None
     if default_successor_id not in {user.id for user in successors}:
         default_successor_id = None
+    successor = next((user for user in successors if user.id == (successor_user_id or default_successor_id)), None)
+    if successor_user_id is not None and successor is None:
+        raise HTTPException(status_code=400, detail="Successor must be an active member of the same company")
+    from app.services.offboarding_notice import preview_handover
+
     return UserOffboardingPreview(
         user_id=target_user.id,
         display_name=target_user.display_name,
@@ -810,6 +817,7 @@ async def build_user_offboarding_preview(
             ApprovalRequest.requested_by == target_user.id,
             ApprovalRequest.status == "pending",
         ),
+        handover=await preview_handover(db, target_user=target_user, agents=agents, successor=successor),
     )
 
 

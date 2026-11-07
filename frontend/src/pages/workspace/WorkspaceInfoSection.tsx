@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react';
 
 import { useTranslation } from 'react-i18next';
+import { Link } from 'react-router-dom';
 
 import './WorkspaceInfoSection.css';
 import WorkspaceStorageSection from './WorkspaceStorageSection';
@@ -49,6 +50,12 @@ export default function WorkspaceInfoSection({
 
       {canManageCompanyContent ? (
         <>
+          <div className="card ws-info-card">
+            <h3 className="ws-info-heading">{t('enterprise.companyKnowledge.title', 'Company knowledge')}</h3>
+            <Link className="btn btn-secondary" to="/enterprise/knowledge">
+              {t('enterprise.companyKnowledge.open', 'Upload and import')}
+            </Link>
+          </div>
           {canEditCompanyIntro && (
             <>
               <h3 className="ws-info-heading">{t('enterprise.companyIntro.title', 'Company Intro')}</h3>

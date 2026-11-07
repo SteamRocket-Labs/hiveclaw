@@ -27,6 +27,7 @@ from app.services.governance_capability_taxonomy import capability_descriptor_fo
 from app.services.mcp_client import MCPClient
 from app.services.tool_config_service import (
     encrypt_tool_config_secrets,
+    is_safe_agent_tool_setting,
     mask_agent_tool_config_secrets,
     merge_agent_tool_config_secrets,
     merge_tool_config_secrets,
@@ -1188,7 +1189,11 @@ async def update_tool_config(
     if not tool:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tool not found")
     assignment, _ = await ensure_agent_tool_assignment(db, agent_id=agent_id, tool_id=tool.id,
-        config=data.config, current_user=current_user)
+        config=lambda stored: {
+            key: value for key, value in merge_agent_tool_config_secrets(data.config, stored, tool.config_schema or {}).items()
+            if key in data.config or not is_safe_agent_tool_setting(key, value, tool.config_schema or {},
+                platform_tool=tool.type == "builtin" and tool.tenant_id is None)
+        }, current_user=current_user)
     await db.commit()
     defaults, _enabled = await resolve_tool_config_for_tenant_display(db, tool, agent.tenant_id)
     return {"ok": True, "tool": _serialize_agent_tool_row(tool, assignment, base_config=defaults)}

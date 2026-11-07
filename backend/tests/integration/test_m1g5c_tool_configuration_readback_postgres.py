@@ -94,3 +94,60 @@ async def test_profile_configuration_inherits_company_defaults_and_reads_back_a_
         raw = await db.scalar(text("select config::text from agent_tools where id=:id"), {"id": assignment.id})
         assert "synthetic-employee-key" not in raw
         assert "synthetic-platform-key" not in json.dumps(assignment.config)
+
+
+@pytest.mark.parametrize("masked", [False, True])
+async def test_api_save_replaces_safe_settings_and_preserves_omitted_or_masked_credentials(
+    owner_sessionmaker, app_user_sessionmaker, masked,
+):
+    from app.api.tools import router
+    from app.core.security import get_current_user
+
+    tenant_id, user_id, agent_id, _, _ = await _seed_session(owner_sessionmaker)
+    tool_id, name = uuid.uuid4(), f"config_replace_{uuid.uuid4().hex[:12]}"
+    stored = {"endpoint": "employee-value", "timeout": 9, "api_key": "synthetic-employee-key",
+        "headers": {"Authorization": "synthetic-header"}, "opaque": "synthetic-opaque"}
+    async with owner_sessionmaker() as db:
+        db.add(Tool(id=tool_id, name=name, display_name="Replace probe", type="builtin", category="general",
+            is_default=True, enabled=True, config={}, config_schema={"fields": [
+                {"key": "endpoint", "type": "text"}, {"key": "timeout", "type": "number"},
+                {"key": "api_key", "type": "password"}]}))
+        await db.flush()
+        await update_tenant_tool_config(db, tenant_id, tool_id,
+            config={"endpoint": "company-value", "timeout": 30})
+        db.add(AgentTool(tenant_id=tenant_id, agent_id=agent_id, tool_id=tool_id, config=stored))
+        await db.commit()
+        user = await db.get(User, user_id)
+
+    async def scoped_db():
+        async with app_user_sessionmaker() as db:
+            await pin_rls_tenant_context(db, tenant_id)
+            yield db
+
+    app = FastAPI()
+    app.include_router(router, prefix="/api")
+    app.dependency_overrides[get_current_user] = lambda: user
+    app.dependency_overrides[get_db] = scoped_db
+    incoming = {key: MASKED_SECRET_SENTINEL for key in stored if key != "timeout"} if masked else {}
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://config-test") as client:
+        response = await client.put(f"/api/tools/agents/{agent_id}/tool-config/{tool_id}", json={"config": incoming})
+        assert response.status_code == 200, response.text
+        saved = response.json()["tool"]
+        assert saved["config"]["endpoint"] == ("employee-value" if masked else "company-value")
+        assert saved["config"]["timeout"] == 30
+        assert saved["agent_config"]["api_key"] == MASKED_SECRET_SENTINEL
+        assert saved["agent_config"]["headers"] == saved["agent_config"]["opaque"] == MASKED_SECRET_SENTINEL
+        assert "synthetic-" not in response.text and "enc:v1:" not in response.text
+        reread = await client.get(f"/api/tools/agents/{agent_id}/with-config")
+        assert reread.status_code == 200, reread.text
+        assert next(row for row in reread.json() if row["id"] == str(tool_id)) == saved
+
+    async with app_user_sessionmaker() as db:
+        await pin_rls_tenant_context(db, tenant_id)
+        assignment = await db.scalar(select(AgentTool).where(AgentTool.agent_id == agent_id, AgentTool.tool_id == tool_id))
+        expected = {key: value for key, value in stored.items() if key != "timeout" and (masked or key != "endpoint")}
+        assert assignment.config == expected
+        effective = await resolve_tool_config(name, tenant_id, agent_id=agent_id, db=db)
+        assert effective == {"endpoint": "company-value", "timeout": 30, **expected}
+        raw = await db.scalar(text("select config::text from agent_tools where id=:id"), {"id": assignment.id})
+        assert all(value not in raw for value in ("synthetic-employee-key", "synthetic-header", "synthetic-opaque"))

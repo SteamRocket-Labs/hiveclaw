@@ -18,10 +18,11 @@ class PermissionExecutionUnavailable(RuntimeError):
 
 
 class PermissionExecutionLease:
-    def __init__(self, connection, *, acquired: bool, pid: int) -> None:
+    def __init__(self, connection, *, acquired: bool, pid: int, permission_request_id: uuid.UUID) -> None:
         self.connection = connection
         self.acquired = acquired
         self.pid = pid
+        self.permission_request_id = permission_request_id
 
     async def ensure_owned(self) -> None:
         if not self.acquired or self.connection.closed or self.connection.invalidated:
@@ -63,7 +64,8 @@ async def permission_execution_lease(db: AsyncSession, permission_request_id: uu
                 await connection.commit()
             except (SQLAlchemyError, TimeoutError, OSError) as exc:
                 raise PermissionExecutionUnavailable(PermissionExecutionUnavailable.code) from exc
-            lease = PermissionExecutionLease(connection, acquired=bool(row[0]), pid=int(row[1]))
+            lease = PermissionExecutionLease(connection, acquired=bool(row[0]), pid=int(row[1]),
+                permission_request_id=permission_request_id)
             if not lease.acquired:
                 await connection.close()
             yield lease

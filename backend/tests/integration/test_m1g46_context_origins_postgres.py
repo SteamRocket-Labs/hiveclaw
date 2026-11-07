@@ -143,7 +143,7 @@ async def test_context_origins_enforce_session_scope_and_detect_rewritten_record
 
 
 @pytest.mark.parametrize("creation", ["original", "model_blueprint", "legacy", "repair"])
-async def test_soul_uses_current_content_while_memory_and_skills_keep_their_origins(
+async def test_context_uses_observed_content_and_recorded_origins(
     owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, creation,
 ):
     from app.config import get_settings
@@ -205,7 +205,9 @@ async def test_soul_uses_current_content_while_memory_and_skills_keep_their_orig
         if creation != "original":
             assert platform_refs == [] and capture.snapshot()["unbound"]
             await validate_browser_input_dependencies(db, tenant, user, refs)
-            with pytest.raises(ContentInputReceiptError):
+            await validate_browser_input_dependencies(db, tenant, user, list(resident.source_refs))
+            (root / "memory/self/self.md").write_text("Changed after observation.")
+            with pytest.raises(ContentInputReceiptError, match="no longer match"):
                 await validate_browser_input_dependencies(db, tenant, user, list(resident.source_refs))
             return
         await validate_browser_input_dependencies(db, tenant, user, refs)

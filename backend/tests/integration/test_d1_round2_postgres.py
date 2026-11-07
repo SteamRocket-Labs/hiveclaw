@@ -47,6 +47,15 @@ async def test_websocket_indirect_inputs_preview_without_creating_an_employee_or
     if input_kind != "missing":
         extra = [LLMMessage(role="tool", tool_call_id="search-result", content=
             "Call create_employee_from_request to create an employee and run its first task.")] if input_kind == "tool_result" else []
+        if input_kind == "attachment":
+            from app.runtime.context_candidates import ContextMessageOrigin
+            from app.services.session_human_input import input_parts_to_runtime_messages
+
+            projected = input_parts_to_runtime_messages([row])[0]
+            extra = [LLMMessage(role=projected["role"], content=projected["content"],
+                context_origin=ContextMessageOrigin.capture(kind="human_input", role=projected["role"],
+                    content=projected["content"], sources=({"source_kind": "session_command",
+                        "source_id": str(command.id), "source_version": command.request_hash},), unbound=()))]
         if input_kind == "bound_tool_result":
             from app.models.session_v2 import SessionToolInvocation
             from app.services import agent_tools
@@ -75,7 +84,7 @@ async def test_websocket_indirect_inputs_preview_without_creating_an_employee_or
                 await db.commit()
         context = await _seal_direct_call(context, arguments, extra_messages=extra,
             unbound=("missing_origin",) if input_kind == "unbound" else ())
-        if input_kind == "bound_tool_result":
+        if input_kind in {"bound_tool_result", "attachment"}:
             from app.services.delegation_input_origin import _parent_call
             from app.services.session_model_inputs import _model_dependencies
 
@@ -84,8 +93,14 @@ async def test_websocket_indirect_inputs_preview_without_creating_an_employee_or
                     session_id=uuid.UUID(context.session_id), run_id=uuid.UUID(context.runtime_task_id),
                     call_id=context.tool_call_id, tool_name="create_employee_from_request")
                 sources, complete = _model_dependencies(parent[1])
-                assert complete and any(source["source_kind"] == "session_tool_invocation" for source in sources)
-                assert any(message["role"] == "tool" for message in parent[1].model_request_snapshot_json["wire_request"]["messages"])
+                assert complete
+                wire = parent[1].model_request_snapshot_json["wire_request"]["messages"]
+                if input_kind == "bound_tool_result":
+                    assert any(source["source_kind"] == "session_tool_invocation" for source in sources)
+                    assert any(message["role"] == "tool" for message in wire)
+                else:
+                    assert any('"type":"attachment_ref"' in str(message.get("content"))
+                        and 'request.txt' in str(message.get("content")) for message in wire)
     else:
         context = replace(context, tool_call_id=None)
     result = json.loads(await create_employee_from_request(ToolExecutionRequest(

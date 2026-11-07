@@ -24,7 +24,9 @@ CALL_MCP_TOOL_DESCRIPTION = (
     "Invoke an imported MCP tool against its remote server. Use call only after "
     "list_mcp_tools/inspect_mcp_tool confirms the tool name and schema. Pass "
     "`tool_name` and an `arguments` dict matching the tool's input schema; the "
-    "result is returned as a string."
+    "result is returned as a string. If authorization is missing, use ask_user_question "
+    "with configuration.mcp_server_id from list_mcp_tools to connect in this conversation. "
+    "Explain the application and purpose plainly; never ask for credentials in chat."
 )
 
 MCP_LIST_RESOURCES_DESCRIPTION = (

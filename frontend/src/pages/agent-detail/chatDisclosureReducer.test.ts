@@ -8,6 +8,14 @@ import {
 import type { AgentChatMessage } from './chatRuntime';
 
 describe('chatDisclosureReducer', () => {
+  it('settles the connection question after its canonical answer without keeping a waiting state', () => {
+    const question: AgentChatMessage = { role: 'tool_call', content: '', toolName: 'ask_user_question', toolStatus: 'done',
+      toolMeta: { kind: 'user_clarification', questions: [], blocking: true, nextAction: null,
+        configurationRequest: { targetAgentId: 'bot', mcpServerId: 'documents' } } };
+    expect(buildRunTimelineFromMessages([question]).status).toBe('blocked');
+    const answered = { ...question, toolMeta: { ...question.toolMeta!, answered: true } } as AgentChatMessage;
+    expect(buildRunTimelineFromMessages([answered]).status).toBe('done');
+  });
   it('keeps runtime completion notices outside collapsed progress', () => {
     const notice: AgentChatMessage = {
       role: 'assistant', content: 'A requested file could not be attached.',

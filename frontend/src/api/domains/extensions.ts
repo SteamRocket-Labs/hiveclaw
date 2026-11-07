@@ -137,6 +137,7 @@ export interface McpAccount {
 }
 
 export interface McpOAuthStatus {
+  authorization_method?: 'oauth' | 'token';
   server_id: string;
   auth_status: string;
   attempt: { id: string | null; outcome: string; expires_at?: number | null; code?: string | null } | null;
@@ -395,6 +396,9 @@ export interface LegacyPackMigrationReport {
 }
 
 export const extensionsApi = {
+  listMyMcpAccounts: () => get<McpAccount[]>('/mcp-accounts'),
+  saveMcpAccountToken: (accountId: string, accessToken: string) =>
+    post<{ auth_status: string }>(`/mcp-accounts/${accountId}/oauth/start`, { access_token: accessToken }),
   /** Agent Detail source of truth: skills + MCP servers for one agent. */
   getAgentExtensions: (agentId: string) => get<AgentExtensions>(`/agents/${agentId}/extensions`),
 
@@ -434,7 +438,7 @@ export const extensionsApi = {
     put<{ enabled: boolean; version: number }>(`/mcp-accounts/${accountId}/grants/${agentId}/${requesterId}`, { enabled, expected_version: expectedVersion }),
   revokeMcpAccount: (accountId: string) => post<McpAccount>(`/mcp-accounts/${accountId}/revoke`),
   getMcpOAuthStatus: (serverId: string, personal = false) => get<McpOAuthStatus>(`${personal ? '/mcp-accounts' : '/enterprise/mcp'}/${serverId}/oauth`),
-  startMcpOAuth: (serverId: string, data: McpOAuthRegistration, personal = false) =>
+  startMcpOAuth: (serverId: string, data: McpOAuthRegistration | undefined, personal = false) =>
     post<{ authorization_url: string; attempt_id: string; expires_at: number }>(`${personal ? '/mcp-accounts' : '/enterprise/mcp'}/${serverId}/oauth/start`, data),
 
   /** Company admin: raw evidence plus canonical metadata review state for one MCP server. */

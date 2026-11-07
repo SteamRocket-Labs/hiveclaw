@@ -173,12 +173,14 @@ async def get_agent_mcp_servers(db: AsyncSession, agent_id: uuid.UUID) -> list[d
             MCPServer.server_key,
             MCPServer.status,
             MCPServer.config_json,
-            AgentMCPServerAssignment.enabled,
-            AgentMCPServerAssignment.default_tool_mode,
-            AgentMCPServerAssignment.always_load,
+            func.coalesce(AgentMCPServerAssignment.enabled, True).label("enabled"),
+            func.coalesce(AgentMCPServerAssignment.default_tool_mode, "auto").label("default_tool_mode"),
+            func.coalesce(AgentMCPServerAssignment.always_load, False).label("always_load"),
         )
-        .join(AgentMCPServerAssignment, AgentMCPServerAssignment.mcp_server_id == MCPServer.id)
-        .where(AgentMCPServerAssignment.agent_id == agent_id, MCPServer.owner_user_id.is_(None))
+        .join(Agent, Agent.tenant_id == MCPServer.tenant_id)
+        .outerjoin(AgentMCPServerAssignment, (AgentMCPServerAssignment.mcp_server_id == MCPServer.id)
+            & (AgentMCPServerAssignment.agent_id == agent_id))
+        .where(Agent.id == agent_id, MCPServer.owner_user_id.is_(None))
         .order_by(MCPServer.name)
     )
     rows = result.all()
@@ -790,7 +792,7 @@ async def resolve_agent_mcp_tool_mode(
         )
         assignment = assignment_result.scalar_one_or_none()
         if assignment is None:
-            continue
+            assignment = SimpleNamespace(enabled=True, default_tool_mode="auto")
         if not bool(assignment.enabled):
             return "deny"
 

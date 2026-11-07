@@ -50,6 +50,19 @@ class McpAccountGrantIn(BaseModel):
     expected_version: int = Field(ge=0)
 
 
+@router.get("/mcp-accounts")
+async def list_my_mcp_accounts(current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    from sqlalchemy import select
+    from app.core.tenant_scope import resolve_and_pin_tenant_scope
+    from app.models.mcp_server import MCPServer
+    from app.services.mcp_accounts import account_public
+
+    tenant = await resolve_and_pin_tenant_scope(db, current_user)
+    accounts = (await db.scalars(select(MCPServer).where(MCPServer.tenant_id == tenant,
+        MCPServer.owner_user_id == current_user.id).order_by(MCPServer.name, MCPServer.id))).all()
+    return [account_public(account) for account in accounts if account.auth_status != "none"]
+
+
 @router.post("/agents/{agent_id}/mcp-servers/{server_id}/accounts")
 async def create_mcp_account(agent_id: uuid.UUID, server_id: uuid.UUID, body: PersonalMcpAccountIn,
     current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
@@ -102,22 +115,52 @@ async def personal_mcp_oauth_status(account_id: uuid.UUID, current_user: User = 
     from app.services.mcp_server_service import get_mcp_oauth_status
     tenant = await resolve_and_pin_tenant_scope(db, current_user)
     await account_owner(db, current_user, account_id, tenant_id=tenant)
-    return await get_mcp_oauth_status(db, tenant, account_id)
+    status = await get_mcp_oauth_status(db, tenant, account_id)
+    registration = status.pop("registration", {})
+    status["authorization_method"] = "oauth" if all(registration.get(key) for key in (
+        "authorization_endpoint", "token_endpoint", "client_id", "redirect_uri")) else "token"
+    return status
+
+
+class PersonalMcpTokenIn(BaseModel):
+    access_token: str = Field(min_length=1)
 
 
 @router.post("/mcp-accounts/{account_id}/oauth/start")
-async def start_personal_mcp_oauth(account_id: uuid.UUID, body: McpOAuthStartIn,
+async def start_personal_mcp_oauth(account_id: uuid.UUID, body: McpOAuthStartIn | PersonalMcpTokenIn | None = None,
     current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
     from app.core.tenant_scope import resolve_and_pin_tenant_scope
     from app.services.mcp_accounts import account_owner
-    from app.services.mcp_oauth import OAuthFlowError
+    from app.services.mcp_oauth import OAuthError, OAuthFlowError
     from app.services.mcp_server_service import start_mcp_oauth
     tenant = await resolve_and_pin_tenant_scope(db, current_user)
-    await account_owner(db, current_user, account_id, tenant_id=tenant)
+    account = await account_owner(db, current_user, account_id, tenant_id=tenant)
     try:
-        return await start_mcp_oauth(db, tenant, account_id, **body.model_dump(), requester_id=current_user.id)
+        if isinstance(body, PersonalMcpTokenIn):
+            from app.services.mcp_server_service import _store_oauth
+            from app.services.mcp_oauth import OAuthTokenSet, encrypt_token_set
+            _store_oauth(account, {"token": encrypt_token_set(OAuthTokenSet(body.access_token)),
+                "authorization_id": str(uuid.uuid4())})
+            account.auth_status = "configured"
+            account.status = "connected"
+            await db.commit()
+            return {"server_id": str(account.id), "auth_status": "configured"}
+        if body is None:
+            from app.models.mcp_server import MCPServer
+            from app.services.mcp_accounts import REGISTRATION_FIELDS
+            parent = await db.get(MCPServer, account.parent_server_id) if account.parent_server_id else None
+            registration = ((parent.config_json or {}).get("oauth") or {}) if parent else {}
+            registration = registration.get("pending") or registration
+            values = {key: registration.get(key) for key in REGISTRATION_FIELDS}
+            if not all(values[key] for key in REGISTRATION_FIELDS[:4]):
+                raise OAuthFlowError("mcp_account_registration_changed", "unavailable", 409)
+        else:
+            values = body.model_dump()
+        return await start_mcp_oauth(db, tenant, account_id, **values, requester_id=current_user.id)
     except OAuthFlowError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+    except OAuthError as exc:
+        raise HTTPException(status_code=503, detail={"code": "oauth_encryption_unavailable"}) from exc
 
 
 class AgentMcpAssignmentIn(BaseModel):

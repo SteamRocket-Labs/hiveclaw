@@ -348,6 +348,10 @@ function projectCanonicalItem(
     };
   }
   if (item.kind === 'human_input') {
+    const requestId = item.payload.request_item_id;
+    const request = item.payload.intent === 'answer_request' && typeof requestId === 'string' ? store.items[requestId] : undefined;
+    // The connection card already displays this automatic acknowledgement.
+    if (request?.kind === 'user_question' && typeof recordValue(request.payload.configuration_request)?.mcp_server_id === 'string') return null;
     const firstPart = Array.isArray(item.payload.content_parts) ? recordValue(item.payload.content_parts[0]) : undefined;
     const noticePart = Array.isArray(item.payload.content_parts) ? item.payload.content_parts
       .map(recordValue).find(part => part?.type === 'text'

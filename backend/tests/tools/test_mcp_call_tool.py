@@ -668,7 +668,8 @@ async def test_mcp_auth_status_reports_server_side_auth_without_token_leak(insta
 
     assert "## MCP Auth Status" in out
     assert "docs" in out
-    assert "api_key: configured" in out
+    assert "authorization: configured" in out
+    assert "https://mcp.example.com" not in out
     assert "secret-key" not in out
 
 

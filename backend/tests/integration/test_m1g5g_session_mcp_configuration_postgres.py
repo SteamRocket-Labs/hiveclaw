@@ -196,7 +196,11 @@ async def test_original_question_requires_separate_oauth_use_grant_and_readback(
                 },
             )
             assert invalid_endpoint.status_code == 422
-        assert not initial.json()["usage"]["enabled"] and initial.json()["authorization"] != "configured"
+        assert initial.json()["usage"]["enabled"] and initial.json()["authorization"] != "configured"
+        denied = await client.put(
+            f"/api/agents/{target}/mcp-servers/{server_id}", json={"enabled": False, "default_tool_mode": "auto"}
+        )
+        assert denied.status_code == 200, denied.text
         actor[0] = user
         assert (await client.post(f"/api/agents/{source}/sessions/{session}/inputs", json=answer)).status_code == 409
         actor[0] = admin if flow in {"member", "lost_target_access", "lost_target_revision"} else user

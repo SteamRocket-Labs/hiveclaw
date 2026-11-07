@@ -3,7 +3,7 @@
 import uuid
 
 from fastapi import HTTPException
-from sqlalchemy import or_, select
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
 from app.models.mcp_server import MCPAccountGrant, MCPServer, MCPWorkAccountBinding
@@ -95,6 +95,8 @@ async def create_personal_account(db, *, user, tenant_id, server_id, account_id,
 
 
 async def set_account_grant(db, *, account, agent_id, requester_id, enabled, expected_version):
+    if requester_id != account.owner_user_id:
+        raise HTTPException(status_code=403, detail="Personal connections can only act for their owner")
     requester = await db.get(User, requester_id, populate_existing=True)
     if not _active_in_tenant(requester, account.tenant_id):
         raise HTTPException(status_code=404, detail="Current company requester not found")
@@ -143,18 +145,13 @@ async def set_account_grant(db, *, account, agent_id, requester_id, enabled, exp
 
 
 async def list_work_accounts(db, *, server, agent_id, user):
-    granted_ids = select(MCPAccountGrant.account_id).where(
-        MCPAccountGrant.agent_id == agent_id,
-        MCPAccountGrant.requester_user_id == user.id,
-        MCPAccountGrant.enabled.is_(True),
-    )
     accounts = (
         await db.scalars(
             select(MCPServer)
             .where(
                 MCPServer.tenant_id == server.tenant_id,
                 MCPServer.parent_server_id == server.id,
-                or_(MCPServer.owner_user_id == user.id, MCPServer.id.in_(granted_ids)),
+                MCPServer.owner_user_id == user.id,
             )
             .order_by(MCPServer.name, MCPServer.id)
         )
@@ -175,9 +172,9 @@ async def list_work_accounts(db, *, server, agent_id, user):
         result.append(
             {
                 **account_public(account),
-                "account_use_enabled": bool(grant and grant.enabled),
+                "account_use_enabled": True,
                 "grant_version": grant.version if grant else 0,
-                "can_grant_account": account.owner_user_id == user.id,
+                "can_grant_account": False,
                 "can_authorize": account.owner_user_id == user.id,
             }
         )
@@ -197,29 +194,20 @@ async def account_access(db, *, server, account_id, agent_id, user):
     if not account.owner_user_id:
         return account, None
     owner = await db.get(User, account.owner_user_id, populate_existing=True)
-    grant = await db.scalar(
-        select(MCPAccountGrant)
-        .where(
-            MCPAccountGrant.account_id == account.id,
-            MCPAccountGrant.agent_id == agent_id,
-            MCPAccountGrant.requester_user_id == user.id,
-        )
-        .execution_options(populate_existing=True)
-    )
     if owner and owner.tenant_id == server.tenant_id and _active_in_tenant(user, server.tenant_id) and not owner.is_active:
         raise HTTPException(status_code=403, detail="个人 MCP 凭据已吊销")
     if not _active_in_tenant(owner, server.tenant_id) or not _active_in_tenant(user, server.tenant_id):
         raise HTTPException(
             status_code=403, detail="MCP account owner or requester is no longer active in this company"
         )
-    if account.owner_user_id != user.id and not (grant and grant.enabled):
-        raise HTTPException(status_code=403, detail="Account owner has not granted this requester and employee use")
-    return account, grant
+    if account.owner_user_id != user.id:
+        raise HTTPException(status_code=403, detail="Personal connections can only act for their owner")
+    return account, None
 
 
 async def bind_work_account(db, *, server, account, grant, agent_id, session_id, user):
-    if account.owner_user_id and not (grant and grant.enabled):
-        raise HTTPException(status_code=409, detail="Account-use grant required")
+    if account.owner_user_id and account.owner_user_id != user.id:
+        raise HTTPException(status_code=403, detail="Personal connections can only act for their owner")
     binding = await db.scalar(
         select(MCPWorkAccountBinding)
         .execution_options(populate_existing=True)
@@ -299,26 +287,22 @@ async def resolve_work_account(db, *, server, agent_id, context):
         if session_id
         else None
     )
-    if binding is None:
-        personal_grant = await db.scalar(
-            select(MCPAccountGrant.id)
-            .join(MCPServer, MCPServer.id == MCPAccountGrant.account_id)
-            .where(
-                MCPServer.parent_server_id == server.id,
-                MCPAccountGrant.agent_id == agent_id,
-                MCPAccountGrant.requester_user_id == principal.requester_user_id,
-                MCPAccountGrant.enabled.is_(True),
-            )
-            .limit(1)
-        )
-        if personal_grant:
-            raise HTTPException(
-                status_code=409,
-                detail="Select the authorized account in the original work before using this connection",
-            )
+    if binding is None or binding.account_id is None:
+        if requester is None:
+            return server, None
+        accounts = list((await db.scalars(select(MCPServer).where(
+            MCPServer.tenant_id == server.tenant_id,
+            MCPServer.parent_server_id == server.id,
+            MCPServer.owner_user_id == requester.id,
+        ).order_by(MCPServer.created_at, MCPServer.id))).all())
+        connected = [account for account in accounts if account.auth_status == "configured"]
+        if len(connected) > 1:
+            raise HTTPException(status_code=409, detail="Choose which of your connections to use in this work")
+        if connected:
+            return await account_access(db, server=server, account_id=connected[0].id, agent_id=agent_id, user=requester)
         return server, None
-    if requester is None or not _active_in_tenant(requester, server.tenant_id) or binding.account_id is None:
-        raise HTTPException(status_code=403, detail="Selected MCP account or requester is no longer available")
+    if requester is None or not _active_in_tenant(requester, server.tenant_id):
+        raise HTTPException(status_code=403, detail="Selected MCP requester is no longer available")
     from app.models.chat_session import ChatSession
     from app.core.permissions import authorize_session_action
 
@@ -338,9 +322,7 @@ async def resolve_work_account(db, *, server, agent_id, context):
         db, server=server, account_id=binding.account_id, agent_id=agent_id, user=requester
     )
     if (
-        account.owner_user_id
-        and (not grant or not grant.enabled or binding.grant_id != grant.id or binding.grant_version != grant.version)
-        or binding.authorization_id != ((account.config_json or {}).get("oauth") or {}).get("authorization_id")
+        binding.authorization_id != ((account.config_json or {}).get("oauth") or {}).get("authorization_id")
     ):
         raise HTTPException(
             status_code=409, detail="MCP account authorization changed; review its selection in the original work"

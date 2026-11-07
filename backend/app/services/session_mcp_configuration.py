@@ -24,6 +24,17 @@ async def mcp_configuration_snapshot(db, *, target, server_id, user=None, accoun
         raise HTTPException(status_code=404, detail="MCP connection not found")
     from app.services.mcp_accounts import account_access, account_public, list_work_accounts
 
+    if user and account_id is None:
+        own = list((await db.scalars(select(MCPServer).where(
+            MCPServer.tenant_id == target.tenant_id, MCPServer.parent_server_id == server.id,
+            MCPServer.owner_user_id == user.id,
+        ).order_by(MCPServer.created_at, MCPServer.id))).all())
+        connected = [item for item in own if item.auth_status == "configured"]
+        if len(connected) == 1:
+            account_id = connected[0].id
+        elif len(own) == 1:
+            account_id = own[0].id
+
     account, grant = (
         await account_access(db, server=server, account_id=account_id or server.id, agent_id=target.id, user=user)
         if user
@@ -56,9 +67,9 @@ async def mcp_configuration_snapshot(db, *, target, server_id, user=None, accoun
         )
     ).all()
     override_modes = {row.tool_name: row.mode for row in overrides}
-    mode = assignment.default_tool_mode if assignment else "deny"
+    mode = assignment.default_tool_mode if assignment else "auto"
     usage = {
-        "enabled": bool(assignment and assignment.enabled),
+        "enabled": bool(assignment.enabled) if assignment else True,
         "default_tool_mode": mode,
         "always_load": bool(assignment and assignment.always_load),
     }
@@ -67,7 +78,7 @@ async def mcp_configuration_snapshot(db, *, target, server_id, user=None, accoun
             "id": str(tool.id),
             "fingerprint": current_mcp_fingerprint(tool),
             "approved": is_mcp_metadata_runtime_approved(tool),
-            "enabled": bool(enabled and tool.enabled),
+            "enabled": bool(enabled is not False and tool.enabled),
             "mode": override_modes.get(tool.mcp_tool_name, mode),
         }
         for tool, enabled in rows
@@ -78,8 +89,6 @@ async def mcp_configuration_snapshot(db, *, target, server_id, user=None, accoun
         else 0
     )
     permitted_tool_count = usable
-    if account.owner_user_id and not (grant and grant.enabled):
-        usable = 0
     oauth = (account.config_json or {}).get("oauth") or {}
     token = mcp_oauth.decrypt_token_set(oauth.get("token"))
     refreshable = bool(
@@ -127,8 +136,8 @@ async def mcp_configuration_snapshot(db, *, target, server_id, user=None, accoun
         "accounts": await list_work_accounts(db, server=server, agent_id=target.id, user=user)
         if user
         else [account_public(server)],
-        "account_use_enabled": not account.owner_user_id or bool(grant and grant.enabled),
-        "can_grant_account": bool(user and account.owner_user_id == user.id),
+        "account_use_enabled": True,
+        "can_grant_account": False,
         "can_authorize": bool(
             user
             and (

@@ -389,11 +389,10 @@ async def _latest_transcript_frontier(
             # File delivery consumes a saved remote packet after execution has
             # ended. It cannot replace that execution's terminal frontier.
             ChatTranscriptEvent.event_type != "remote_a2a_artifacts",
-            # Question answers belong to later input commands. They retain
-            # the question's run scope without advancing that execution's
-            # terminal frontier after its tool result has committed.
+            # Member answers and configuration updates retain the question's
+            # run scope, but do not advance its committed execution frontier.
             or_(ChatTranscriptEvent.item_kind.is_distinct_from('user_question'),
-                ChatTranscriptEvent.command_id.is_(None), ChatTranscriptEvent.input_id.is_(None)),
+                ChatTranscriptEvent.actor_type.is_distinct_from('user')),
         )
         .order_by(ChatTranscriptEvent.sequence.desc())
         .limit(1)

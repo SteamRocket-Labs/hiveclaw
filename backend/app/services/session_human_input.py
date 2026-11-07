@@ -685,6 +685,16 @@ async def queue_admitted_human_input(
             )
             .with_for_update()
         )
+        if row.intent == "answer_request":
+            # Another tab can answer while this transaction waits for the run lock.
+            question = await load_answer_question(db, authority=authority, item_id=row.request_item_id)
+            payload = (question.metadata_json or {}).get("v2_payload") or {} if question is not None else {}
+            revising_answer = (question is not None and question.input_id == row.id
+                               and int(payload.get("answer_input_revision") or 1) < row.revision)
+            if question is None or (question.lifecycle not in {"created", "waiting"} and not revising_answer):
+                return await _reject_admitted_input(
+                    db, authority=authority, row=row, command=command, reason_code="user_question_not_waiting"
+                )
         active_turn_id = (
             str((task.metadata_json or {}).get("turn_id") or f"turn-{task.id.hex}") if task is not None else None
         )
@@ -716,7 +726,10 @@ async def queue_admitted_human_input(
                 task.status in SESSION_TARGETABLE_RUN_STATUSES
                 or (task.status in TERMINAL_SETTLEMENT_STATUSES and row.terminal_fallback == "queue_next_turn")
             ):
-                await record_question_answer(db, authority=authority, row=row, question=question)
+                if not await record_question_answer(db, authority=authority, row=row, question=question):
+                    return await _reject_admitted_input(
+                        db, authority=authority, row=row, command=command, reason_code="user_question_not_waiting"
+                    )
                 if task.status in TERMINAL_SETTLEMENT_STATUSES:
                     return await rollover_terminal_steer(db, authority=authority, row=row, command=command)
         # Target validity is the authoritative session-occupancy contract:

@@ -86,15 +86,17 @@ async def test_member_connects_once_second_bot_uses_it_and_revoke_requires_conne
         status = await http.get(f"/api/mcp-accounts/{account_id}/oauth")
         assert "registration" not in status.json()
         assert "auth.test" not in status.text
-        started = await http.post(f"/api/mcp-accounts/{account_id}/oauth/start",
-            **({"json": {"access_token": "d2-personal-bearer"}} if method == "token" else {}))
+        # S6: token entry has its own bounded, audited endpoint.
+        started = await (http.put(f"/api/mcp-accounts/{account_id}/token", json={"access_token": "d2-personal-bearer"})
+            if method == "token" else http.post(f"/api/mcp-accounts/{account_id}/oauth/start"))
         assert started.status_code == 200, started.text
         assert "d2-personal-bearer" not in started.text
         if method == "oauth":
             callback = await http.get("/api/enterprise/mcp/oauth/callback",
                 params={"state": started.json()["state"], "code": "local-code"}, headers={"Accept": "text/html"})
             assert callback.status_code == 200, callback.text
-            assert "hive.mcp.connected" in callback.text, "The OAuth return must notify the originating conversation"
+            # S1: production CSP allows no inline script; the card rechecks when the member returns.
+            assert "返回原对话" in callback.text and "<script" not in callback.text
             assert "d2-personal-bearer" not in callback.text
         mine = await http.get("/api/mcp-accounts")
         assert mine.status_code == 200 and [row["id"] for row in mine.json()] == [account_id]
@@ -185,7 +187,7 @@ async def test_company_connection_has_default_tool_visibility_and_executes_for_s
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("entry", ["same_bot", "delegated_child", "scheduled"])
-async def test_legacy_employee_key_cannot_act_as_a_personal_connection(owner_sessionmaker, app_user_sessionmaker, monkeypatch, entry):
+async def test_legacy_employee_key_is_ignored_for_public_connection(owner_sessionmaker, app_user_sessionmaker, monkeypatch, entry):
     from app.models.tool import AgentTool, Tool
     from app.services.agent_tool_domains import web_mcp
     tenant, _, bot1, bot2, session, member_b, server_id, _, tool_name = await _seed(owner_sessionmaker)
@@ -204,10 +206,11 @@ async def test_legacy_employee_key_cannot_act_as_a_personal_connection(owner_ses
         def __init__(self, url, *, api_key):
             used.append(api_key)
         async def call_tool(self, name, arguments):
-            return "An unauthorized call happened"
+            return "Public document"
     monkeypatch.setattr("app.services.mcp_client.MCPClient", Transport)
     result = await web_mcp._execute_mcp_tool(tool_name, {}, bot,
         execution_context=_context(tenant, member_b, bot, None if entry == "scheduled" else session,
             origin=entry, carried=entry != "same_bot"))
-    assert used == []
-    assert "configuration_required" in result and "member-a-legacy-key" not in result
+    # S5: an ignored stale key must not disable an otherwise public MCP endpoint.
+    assert used == [None]
+    assert result == "Public document" and "member-a-legacy-key" not in result

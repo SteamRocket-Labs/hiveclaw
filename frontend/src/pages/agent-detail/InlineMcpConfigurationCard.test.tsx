@@ -17,12 +17,17 @@ const props = { agentId: 'source', sessionId: 'work', questionId: 'question', qu
 afterEach(cleanup);
 beforeEach(() => { vi.clearAllMocks(); mocks.get.mockResolvedValue(configured); mocks.confirm.mockResolvedValue({ ...configured, state: 'ready', receipt_ref: 'confirmed' }); });
 it('automatically continues the original work and retries delivery without repeating confirmation', async () => {
+  // S1/Grok 1: recheck fresh server state after a refused or uncertain answer.
+  mocks.get.mockImplementation(async () => ({ ...configured, state: 'ready' })).mockResolvedValueOnce(configured);
   const answer = vi.fn().mockRejectedValueOnce(new Error('internal failure')).mockResolvedValueOnce({});
   render(<InlineMcpConfigurationCard {...props} onAnswer={answer} />);
   await waitFor(() => expect(answer).toHaveBeenCalledTimes(1));
   expect(mocks.confirm).toHaveBeenCalledExactlyOnceWith('source', 'work', 'question', { revision: 'revision-1' });
   expect(screen.queryByText('internal failure')).toBeNull();
-  fireEvent.click(await screen.findByRole('button', { name: 'Continue original work' }));
+  const recheck = await screen.findByRole('button', { name: 'I have connected' });
+  await waitFor(() => expect(mocks.get).toHaveBeenCalledTimes(2));
+  await waitFor(() => expect((recheck as HTMLButtonElement).disabled).toBe(false));
+  fireEvent.click(recheck);
   await waitFor(() => expect(answer).toHaveBeenCalledTimes(2));
   expect(answer).toHaveBeenLastCalledWith('question', 'Continue with the authorized MCP connection.');
   expect(mocks.confirm).toHaveBeenCalledTimes(1); expect(mocks.grant).not.toHaveBeenCalled();
@@ -79,4 +84,38 @@ it('creates the personal account in place without exposing registration fields o
   await waitFor(() => expect(mocks.oauth).toHaveBeenCalledWith('personal', true));
   expect(mocks.create).toHaveBeenCalledWith('target', 'server', { id: expect.any(String), name: 'Documents' });
   expect(screen.queryByRole('textbox')).toBeNull(); expect(screen.queryByText('internal-client')).toBeNull(); expect(screen.queryByText('https://auth.test/token')).toBeNull();
+});
+
+it.each(['visibilitychange', 'button', 'focus'])('rechecks the connection on %s and continues after a static OAuth return', async (event) => {
+  // S1: the callback has no inline script. Returning or the plain button drives readback.
+  mocks.get.mockResolvedValueOnce({ ...configured, authorization: 'required' }).mockResolvedValue(configured);
+  const answer = vi.fn().mockResolvedValue({});
+  render(<InlineMcpConfigurationCard {...props} onAnswer={answer} />);
+  const button = await screen.findByRole('button', { name: 'I have connected' });
+  await waitFor(() => expect((button as HTMLButtonElement).disabled).toBe(false));
+  expect(answer).not.toHaveBeenCalled();
+  if (event === 'button') fireEvent.click(button);
+  else if (event === 'focus') fireEvent.focus(window);
+  else fireEvent(document, new Event('visibilitychange'));
+  await waitFor(() => expect(answer).toHaveBeenCalledTimes(1));
+  expect(mocks.get).toHaveBeenCalledTimes(2);
+});
+
+it('refetches a refused answer and collapses when another tab has already continued', async () => {
+  // Grok 1: a losing tab must not offer a continuation that can never succeed.
+  mocks.get.mockResolvedValueOnce(configured).mockResolvedValue({ ...configured, state: 'ready', answered: true });
+  const answer = vi.fn().mockRejectedValue(new Error('user_question_not_waiting'));
+  render(<InlineMcpConfigurationCard {...props} onAnswer={answer} />);
+  await screen.findByText('Continued your work');
+  expect(mocks.get).toHaveBeenCalledTimes(2);
+  expect(answer).toHaveBeenCalledTimes(1);
+  expect(screen.queryByRole('button')).toBeNull();
+});
+
+it('shows the connection explanation without raw model question text', async () => {
+  mocks.get.mockResolvedValue({ ...configured, authorization: 'required' });
+  render(<InlineMcpConfigurationCard {...props} question="Call list_mcp_tools then grant_id=private" onAnswer={vi.fn()} />);
+  await screen.findByRole('button', { name: 'I have connected' });
+  expect(document.body.textContent).not.toContain('list_mcp_tools');
+  expect(document.body.textContent).not.toContain('grant_id');
 });

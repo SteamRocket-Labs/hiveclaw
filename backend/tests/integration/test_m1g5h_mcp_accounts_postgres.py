@@ -16,7 +16,7 @@ from tests.services.test_session_input_control_v2 import _seed_session
 pytestmark = pytest.mark.usefixtures("migrated_pg_url")
 
 
-async def test_personal_account_creation_and_owner_grant_do_not_grant_employee_capability(
+async def test_personal_account_creation_does_not_grant_employee_capability(
     owner_sessionmaker, app_user_sessionmaker
 ):
     from sqlalchemy import select
@@ -51,16 +51,12 @@ async def test_personal_account_creation_and_owner_grant_do_not_grant_employee_c
         assert changed.status_code == 409
         assert account["owner_user_id"] == str(requester) and account["parent_server_id"] == str(server)
         assert account["id"] != str(server) and "config" not in account and "token" not in response.text
+        # B1 / D2 §3: personal identity cannot be granted to another member; the route is retired.
         grant = await http.put(
             f"/api/mcp-accounts/{account['id']}/grants/{agent}/{requester}",
             json={"enabled": True, "expected_version": 0},
         )
-        assert grant.status_code == 200 and grant.json()["enabled"] is True, grant.text
-        replay = await http.put(
-            f"/api/mcp-accounts/{account['id']}/grants/{agent}/{requester}",
-            json={"enabled": True, "expected_version": 0},
-        )
-        assert replay.json()["id"] == grant.json()["id"] and replay.json()["version"] == grant.json()["version"]
+        assert grant.status_code == 404
     async with owner_sessionmaker() as db:
         assert not (
             await db.scalars(select(AgentTool).where(AgentTool.agent_id == agent, AgentTool.tool_id == tool_id))
@@ -82,7 +78,7 @@ async def test_personal_account_creation_and_owner_grant_do_not_grant_employee_c
         assert not (await db.scalars(select(MCPAccountGrant))).all()
 
 
-async def test_selected_account_is_consumed_and_revocation_never_falls_back_to_company_credentials(
+async def test_personal_account_is_owner_only_and_reconnect_ignores_old_work_binding(
     owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path
 ):
     from sqlalchemy import select
@@ -179,9 +175,9 @@ async def test_selected_account_is_consumed_and_revocation_never_falls_back_to_c
             await http.put(f"/api/agents/{agent}/mcp-servers/{server_id}", json={"enabled": True})
         ).status_code == 200
         grant_url = f"/api/mcp-accounts/{account_id}/grants/{agent}/{requester}"
-        assert (await http.put(grant_url, json={"enabled": True, "expected_version": 0})).status_code == 200
+        assert (await http.put(grant_url, json={"enabled": True, "expected_version": 0})).status_code == 404
         actor[0] = other
-        assert (await http.put(grant_url, json={"enabled": True, "expected_version": 0})).status_code == 403
+        assert (await http.put(grant_url, json={"enabled": True, "expected_version": 0})).status_code == 404
         assert (await http.post(f"/api/enterprise/mcp/{account_id}/oauth/start", json=registration)).status_code == 403
         assert (await http.delete(f"/api/enterprise/mcp-servers/{account_id}")).status_code == 404
         actor[0] = owner
@@ -216,7 +212,7 @@ async def test_selected_account_is_consumed_and_revocation_never_falls_back_to_c
             return await web_mcp._execute_mcp_tool(tool.name, {}, agent, execution_context=context)
 
         await login("first")
-        assert "configuration_required" in await call() and received == []
+        # B1: D2 §3 makes the requester's connection reusable without a per-bot grant.
         await bind()
         assert await call() == "Authorized private account document"
         assert (
@@ -246,45 +242,20 @@ async def test_selected_account_is_consumed_and_revocation_never_falls_back_to_c
                 execution_context=replace(other_context, session_id="legacy-channel-work"),
             )
             assert legacy_bearer == "company-only-bearer" and error is None
-        assert (
-            await http.put(
-                f"/api/mcp-accounts/{account_id}/grants/{agent}/{other_id}",
-                json={"enabled": True, "expected_version": 0},
-            )
-        ).status_code == 200
+        # B1 / D2 §3: A cannot grant a personal connection to B.
+        assert (await http.put(f"/api/mcp-accounts/{account_id}/grants/{agent}/{other_id}",
+            json={"enabled": True, "expected_version": 0})).status_code == 404
         async with app_user_sessionmaker() as db:
             await pin_rls_tenant_context(db, tenant)
-            with pytest.raises(HTTPException) as blocked:
-                await resolve_mcp_oauth_bearer(
-                    db, tenant, server.server_url, tool_id=tool_id, agent_id=agent, execution_context=other_context
-                )
-            assert blocked.value.status_code == 409
-        async with owner_sessionmaker() as db:
-            account = await db.get(MCPServer, account_id)
-            oauth = dict(account.config_json["oauth"])
-            oauth["token"] = mcp_oauth.encrypt_token_set(
-                mcp_oauth.OAuthTokenSet("expired-private-bearer", refresh_token="private-refresh", expires_at=0)
+            bearer, error = await resolve_mcp_oauth_bearer(
+                db, tenant, server.server_url, tool_id=tool_id, agent_id=agent, execution_context=other_context
             )
-            account.config_json = {**account.config_json, "oauth": oauth}
-            await db.commit()
-
-        async def rotate_after_revocation(**kwargs):
-            revoked = await http.put(grant_url, json={"enabled": False, "expected_version": 1})
-            assert revoked.status_code == 200
-            return mcp_oauth.OAuthTokenSet("rotated-private-bearer")
-
-        monkeypatch.setattr(mcp_oauth, "refresh_access_token", rotate_after_revocation)
-        assert "configuration_required" in await call() and len(received) == 3
-        assert (await http.put(grant_url, json={"enabled": False, "expected_version": 1})).status_code == 200
-        stale_replay = await http.put(grant_url, json={"enabled": True, "expected_version": 0})
-        assert stale_replay.status_code == 409, "An old grant retry must not reverse a later revocation"
-        assert "configuration_required" in await call() and len(received) == 3
-        assert (await http.put(grant_url, json={"enabled": True, "expected_version": 2})).status_code == 200
-        assert "configuration_required" in await call() and len(received) == 3
-        await bind()
+            assert (bearer, error) == ("company-only-bearer", None)
+        assert (await http.post(f"/api/mcp-accounts/{account_id}/revoke")).status_code == 200
+        assert await call() == "Authorized private account document"
+        assert received[-1] == "company-only-bearer"
         second = await login("second")
-        assert "configuration_required" in await call() and len(received) == 3
-        await bind()
+        # S3: remove/reconnect must work in the same conversation without rebinding.
         assert await call() == "Authorized private account document" and received[-1] == "personal-bearer-second"
         assert (await http.post(f"/api/mcp-accounts/{account_id}/revoke")).status_code == 200
         replay = await http.get(
@@ -292,7 +263,8 @@ async def test_selected_account_is_consumed_and_revocation_never_falls_back_to_c
         )
         assert replay.status_code == 200 and replay.json()["auth_status"] == "none"
         assert exchanges == ["first", "second"]
-        assert "configuration_required" in await call() and len(received) == 4
+        assert await call() == "Authorized private account document"
+        assert received[-1] == "company-only-bearer"
     async with owner_sessionmaker() as db:
         audits = (
             await db.scalars(

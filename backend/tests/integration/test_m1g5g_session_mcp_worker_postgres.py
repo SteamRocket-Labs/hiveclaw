@@ -215,11 +215,7 @@ async def test_original_work_authorization_reaches_the_actual_successor_worker(
             )
             assert created.status_code == 200, created.text
             account_id = created.json()["id"]
-            granted = await http.put(
-                f"/api/mcp-accounts/{account_id}/grants/{seed['agent_id']}/{seed['user_id']}",
-                json={"enabled": True, "expected_version": 0},
-            )
-            assert granted.status_code == 200, granted.text
+            # B1 / D2 §3: owner-only personal connections need no grant route.
             personal = await http.post(
                 f"/api/mcp-accounts/{account_id}/oauth/start",
                 json={

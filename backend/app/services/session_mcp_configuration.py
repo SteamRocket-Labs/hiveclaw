@@ -22,20 +22,13 @@ async def mcp_configuration_snapshot(db, *, target, server_id, user=None, accoun
     )
     if server is None:
         raise HTTPException(status_code=404, detail="MCP connection not found")
-    from app.services.mcp_accounts import account_access, account_public, list_work_accounts
+    from app.services.mcp_accounts import account_access, account_public, list_work_accounts, personal_account
 
     if user and account_id is None:
-        own = list((await db.scalars(select(MCPServer).where(
-            MCPServer.tenant_id == target.tenant_id, MCPServer.parent_server_id == server.id,
-            MCPServer.owner_user_id == user.id,
-        ).order_by(MCPServer.created_at, MCPServer.id))).all())
-        connected = [item for item in own if item.auth_status == "configured"]
-        if len(connected) == 1:
-            account_id = connected[0].id
-        elif len(own) == 1:
-            account_id = own[0].id
+        own = await personal_account(db, server=server, user_id=user.id)
+        account_id = own.id if own else None
 
-    account, grant = (
+    account, _ = (
         await account_access(db, server=server, account_id=account_id or server.id, agent_id=target.id, user=user)
         if user
         else (server, None)
@@ -116,7 +109,6 @@ async def mcp_configuration_snapshot(db, *, target, server_id, user=None, accoun
                 "updated_at": server.updated_at.isoformat(),
                 "account": str(account.id),
                 "account_updated_at": account.updated_at.isoformat(),
-                "grant": [str(grant.id), grant.version, grant.enabled] if grant else None,
                 "credential": hashlib.sha256(str(oauth.get("token") or "").encode()).hexdigest(),
                 "authorization": authorization,
                 "usage": usage,
@@ -132,12 +124,10 @@ async def mcp_configuration_snapshot(db, *, target, server_id, user=None, accoun
         "usage": usage,
         "usable_tool_count": usable,
         "permitted_tool_count": permitted_tool_count,
-        "account": {**account_public(account), "grant_version": grant.version if grant else 0},
+        "account": account_public(account),
         "accounts": await list_work_accounts(db, server=server, agent_id=target.id, user=user)
         if user
         else [account_public(server)],
-        "account_use_enabled": True,
-        "can_grant_account": False,
         "can_authorize": bool(
             user
             and (

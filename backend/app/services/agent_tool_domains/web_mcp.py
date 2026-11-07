@@ -2364,7 +2364,7 @@ async def _execute_mcp_tool(tool_name: str, arguments: dict, agent_id: "uuid.UUI
                 except HTTPException as exc:
                     return render_tool_error(tool_name=tool_name, error_class="forbidden" if exc.status_code == 403 else "configuration_required",
                         message=str(exc.detail), provider="mcp", retryable=False,
-                        actionable_hint="Review the account, requester and employee use grant in the original work.")
+                        actionable_hint="The member can connect their account through the card in this conversation.")
                 if oauth_error:
                     return render_tool_error(
                         tool_name=tool_name,

@@ -67,6 +67,11 @@ class _FakeSession:
         self.committed = False
         self.rolled_back = False
 
+    async def scalar(self, stmt):
+        # D2 checks the explicit tool assignment before connection policy.
+        assert "agent_tools.enabled" in str(stmt)
+        return None
+
     async def execute(self, stmt):
         # RLS 阶段1: tenant_scoped_session issues `SET LOCAL app.current_tenant_id`
         # before the business query. Don't let the GUC statement consume a

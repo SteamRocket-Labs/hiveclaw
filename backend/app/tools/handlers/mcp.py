@@ -23,6 +23,14 @@ from app.tools.decorator import ToolMeta, tool
 from app.tools.result_envelope import render_tool_error
 
 
+def _available_mcp_tools(tenant_id):
+    from sqlalchemy import select
+    from app.models.tool import AgentTool, Tool
+
+    return or_(AgentTool.enabled.is_(True), AgentTool.id.is_(None) & Tool.id.in_(
+        select(ConnectionTool.tool_id).where(ConnectionTool.tenant_id == tenant_id)))
+
+
 def _render_mcp_authz_error(tool_name: str, exc: Exception) -> str:
     from app.services.mcp_authz import MCPStoredCredentialRequired
 
@@ -79,8 +87,7 @@ async def list_mcp_tools(agent_id: uuid.UUID, arguments: dict) -> str:
                 select(Tool)
                 .outerjoin(AgentTool, (AgentTool.tool_id == Tool.id) & (AgentTool.agent_id == agent_id))
                 .where(
-                    or_(AgentTool.enabled.is_(True), AgentTool.id.is_(None) & Tool.id.in_(
-                        select(ConnectionTool.tool_id).where(ConnectionTool.tenant_id == tid))),
+                    _available_mcp_tools(tid),
                     Tool.type == "mcp",
                     Tool.enabled.is_(True),
                 )
@@ -198,8 +205,7 @@ async def inspect_mcp_tool(agent_id: uuid.UUID, arguments: dict) -> str:
                 select(Tool)
                 .outerjoin(AgentTool, (AgentTool.tool_id == Tool.id) & (AgentTool.agent_id == agent_id))
                 .where(
-                    or_(AgentTool.enabled.is_(True), AgentTool.id.is_(None) & Tool.id.in_(
-                        select(ConnectionTool.tool_id).where(ConnectionTool.tenant_id == tid))),
+                    _available_mcp_tools(tid),
                     Tool.name == tool_name,
                     Tool.type == "mcp",
                     Tool.enabled.is_(True),
@@ -376,8 +382,7 @@ async def call_mcp_tool(agent_id: uuid.UUID, arguments: dict, *, execution_conte
             select(Tool)
             .outerjoin(AgentTool, (AgentTool.tool_id == Tool.id) & (AgentTool.agent_id == agent_id))
             .where(
-                or_(AgentTool.enabled.is_(True), AgentTool.id.is_(None) & Tool.id.in_(
-                    select(ConnectionTool.tool_id).where(ConnectionTool.tenant_id == tid))),
+                _available_mcp_tools(tid),
                 Tool.name == tool_name,
                 Tool.type == "mcp",
             )
@@ -449,7 +454,7 @@ async def call_mcp_tool(agent_id: uuid.UUID, arguments: dict, *, execution_conte
         except HTTPException as exc:
             return render_tool_error(tool_name="call_mcp_tool", error_class="forbidden" if exc.status_code == 403 else "configuration_required",
                 message=str(exc.detail), provider="mcp", retryable=False,
-                actionable_hint="Review the account and its use grant in the original work.")
+                actionable_hint="The member can connect their account through the card in this conversation.")
         if auth_error:
             return render_tool_error(tool_name="call_mcp_tool", error_class="auth_required", message=auth_error,
                 provider="mcp", retryable=False, actionable_hint="Call ask_user_question with configuration.mcp_server_id from list_mcp_tools. Explain the application and purpose; never ask for credentials in chat.")
@@ -519,8 +524,7 @@ async def _resolve_agent_mcp_server(
                     select(Tool)
                     .outerjoin(AgentTool, (AgentTool.tool_id == Tool.id) & (AgentTool.agent_id == agent_id))
                     .where(
-                        or_(AgentTool.enabled.is_(True), AgentTool.id.is_(None) & Tool.id.in_(
-                            select(ConnectionTool.tool_id).where(ConnectionTool.tenant_id == tid))),
+                        _available_mcp_tools(tid),
                         Tool.type == "mcp",
                         Tool.enabled.is_(True),
                     )
@@ -632,7 +636,7 @@ async def _resolve_agent_mcp_server(
         except HTTPException as exc:
             return render_tool_error(tool_name=tool_name, error_class="forbidden" if exc.status_code == 403 else "configuration_required",
                 message=str(exc.detail), provider="mcp", retryable=False,
-                actionable_hint="Review the account and its use grant in the original work.")
+                actionable_hint="The member can connect their account through the card in this conversation.")
         if auth_error:
             return render_tool_error(tool_name=tool_name, error_class="auth_required", message=auth_error,
                 provider="mcp", retryable=False, actionable_hint="Call ask_user_question with configuration.mcp_server_id from list_mcp_tools. Explain the application and purpose; never ask for credentials in chat.")

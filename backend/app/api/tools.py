@@ -1188,6 +1188,8 @@ async def update_tool_config(
     tool = await _get_visible_agent_tool(db, agent, tool_id)
     if not tool:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tool not found")
+    if tool.type == "mcp" and "api_key" in data.config:
+        raise HTTPException(status_code=400, detail="请在对话中连接个人账号，或由管理员配置公司连接。")
     assignment, _ = await ensure_agent_tool_assignment(db, agent_id=agent_id, tool_id=tool.id,
         config=lambda stored: {
             key: value for key, value in merge_agent_tool_config_secrets(data.config, stored, tool.config_schema or {}).items()
@@ -1788,6 +1790,7 @@ def _session_mcp_configuration_response(question, target, snapshot, user, *, rep
     return {
         **snapshot,
         "state": "ready" if matches else "waiting",
+        "answered": question.lifecycle == "completed",
         "receipt_ref": ready.get("receipt_ref") if matches else None,
         "target_agent_id": str(target.id),
         "target_agent_name": target.name,

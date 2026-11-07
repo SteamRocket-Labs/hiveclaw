@@ -3483,6 +3483,7 @@
     },
     "details": "Details",
     "mcpConnect": {
+      "recheck": "I have connected",
       "title": "Connections",
       "reason": "Connect {{name}} so I can use it for this task.",
       "scope": "Your account works with every colleague you ask. Other members cannot use it.",

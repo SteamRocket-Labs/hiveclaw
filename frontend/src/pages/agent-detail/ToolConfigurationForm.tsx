@@ -14,7 +14,7 @@ export default function ToolConfigurationForm({ tool, onSave, onCancel, submitLa
 }) {
   const { t } = useTranslation();
   const formId = useId();
-  const fields = tool.config_schema?.fields || [];
+  const fields = (tool.config_schema?.fields || []).filter((field: any) => tool.type !== 'mcp' || field.key !== 'api_key');
   const inherited = { ...tool.global_config, ...tool.agent_config };
   const structuredFields = (fields as any[]).filter((field: any) => ['object', 'array'].includes(field.type));
   const structuredValue = (field: any) => [MASKED_SECRET, ''].includes(inherited[field.key] as string) ? '' : JSON.stringify(inherited[field.key] ?? (field.type === 'array' ? [] : {}), null, 2);
@@ -40,6 +40,7 @@ export default function ToolConfigurationForm({ tool, onSave, onCancel, submitLa
           if (structured[field.key] !== structuredValue(field)) payload[field.key] = JSON.parse(structured[field.key] || '""');
         }
       }
+      if (tool.type === 'mcp') delete payload.api_key;
       await onSave(payload);
     } catch (failure) {
       setError(failure instanceof Error ? failure.message : t('agent.configuration.saveFailed', 'Could not save configuration.'));

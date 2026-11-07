@@ -774,6 +774,11 @@ async def resolve_agent_mcp_tool_mode(
     ))).scalar_one_or_none()
     if company_enabled is False:
         return "deny"
+    tool_enabled = await db.scalar(select(AgentTool.enabled).where(
+        AgentTool.agent_id == agent_id, AgentTool.tool_id == tool_id,
+    ))
+    if tool_enabled is False:
+        return "deny"
 
     query = select(MCPServerTool).where(MCPServerTool.tool_id == tool_id)
     if server_id is not None:
@@ -1544,23 +1549,24 @@ async def resolve_mcp_oauth_bearer(
     if len(servers) != 1:
         return None, "MCP connection is ambiguous; select one server assignment before authorizing this tool."
     from app.services.mcp_accounts import protect_account_credentials, resolve_work_account
-    server, binding = await resolve_work_account(db, server=servers[0], agent_id=agent_id, context=execution_context)
+    server, _ = await resolve_work_account(db, server=servers[0], agent_id=agent_id, context=execution_context)
     if server.server_url != server_url:
         return None, "MCP account endpoint changed; re-authorize and select the account again."
 
     async def resolved(token, *, recheck_authority=False):
-        if recheck_authority and binding is not None:
+        if recheck_authority and server.owner_user_id is not None:
             from fastapi import HTTPException
-            current_account, current_binding = await resolve_work_account(db, server=servers[0], agent_id=agent_id, context=execution_context)
-            if current_binding is None or current_account.id != server.id:
+            current_account, _ = await resolve_work_account(db, server=servers[0], agent_id=agent_id, context=execution_context)
+            if current_account.id != server.id:
                 raise HTTPException(status_code=409, detail="MCP work account changed during refresh; review its selection")
         protect_account_credentials(execution_context, account=server, token=token)
-        if binding is not None:
-            db.add(AuditLog(tenant_id=tenant_id, user_id=binding.requester_user_id, agent_id=binding.agent_id,
+        if server.owner_user_id is not None:
+            from app.services.runtime_task_authority import execution_principal_from_tool_context
+
+            principal = execution_principal_from_tool_context(execution_context)
+            db.add(AuditLog(tenant_id=tenant_id, user_id=principal.requester_user_id, agent_id=agent_id,
                 action="mcp.account.credentials_resolved", details={"account_id": str(server.id),
-                    "server_id": str(binding.server_id), "binding_id": str(binding.id),
-                    "grant_id": str(binding.grant_id) if binding.grant_id else None,
-                    "grant_version": binding.grant_version, "session_id": str(binding.session_id),
+                    "server_id": str(servers[0].id), "session_id": principal.root_session_id,
                     "runtime_task_id": str(getattr(execution_context, "runtime_task_id", None) or "") or None,
                     "status": "credential_resolved; external_execution_not_asserted"}))
             await db.commit()

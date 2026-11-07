@@ -319,7 +319,6 @@ class ToolGovernanceResolver:
                 ) as db:
                     result = await db.execute(
                         select(Tool)
-                        .outerjoin(AgentTool, (AgentTool.tool_id == Tool.id) & (AgentTool.agent_id == agent_id))
                         .where(
                             Tool.name == target,
                             Tool.type == "mcp",

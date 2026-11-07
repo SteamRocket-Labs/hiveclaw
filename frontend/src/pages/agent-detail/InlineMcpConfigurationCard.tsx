@@ -4,7 +4,7 @@ import { toolsApi, type SessionMcpConfiguration } from '../../api/domains/tools'
 import { extensionsApi } from '../../api/domains/extensions';
 import McpOAuthSettings from '../../components/McpOAuthSettings';
 
-export default function InlineMcpConfigurationCard({ agentId, sessionId, questionId, question, answered, onAnswer }: {
+export default function InlineMcpConfigurationCard({ agentId, sessionId, questionId, answered, onAnswer }: {
   agentId: string; sessionId: string; questionId: string; question: string;
   answered?: boolean; onAnswer?: (itemId: string, text: string) => Promise<unknown>;
 }) {
@@ -26,7 +26,7 @@ export default function InlineMcpConfigurationCard({ agentId, sessionId, questio
     if (answered || !interactive) return;
     let active = true; setLoading(true); setError('');
     void (accountId ? toolsApi.getSessionMcpConfiguration(agentId, sessionId, questionId, accountId) : toolsApi.getSessionMcpConfiguration(agentId, sessionId, questionId)).then((value) => {
-      if (active) setConfiguration(value);
+      if (active) { setConfiguration(value); if (value.answered) setSubmitted(true); }
     }).catch(() => { if (active) setError(t('agent.configuration.loadFailed')); })
       .finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
@@ -42,24 +42,31 @@ export default function InlineMcpConfigurationCard({ agentId, sessionId, questio
       }
       await onAnswer(questionId, skip ? 'Continue without changing configuration.' : 'Continue with the authorized MCP connection.');
       setSubmitted(true);
-    } catch { setError(t('agent.configuration.resumeFailed')); resuming.current = false; }
+    } catch {
+      setError(t('agent.configuration.resumeFailed')); resuming.current = false;
+      review();
+    }
     finally { setBusy(false); }
   };
   useEffect(() => {
-    if (!answered && !submitted && !autoContinued.current && configuration?.authorization === 'configured' && configuration.usable_tool_count) {
+    if (!answered && !submitted && !configuration?.answered && !autoContinued.current && configuration?.authorization === 'configured' && configuration.usable_tool_count) {
       autoContinued.current = true;
       void resume();
     }
   }, [configuration, answered, submitted]);
   useEffect(() => {
     if (answered || submitted || !interactive) return;
+    const visible = () => { if (document.visibilityState === 'visible') review(); };
     window.addEventListener('focus', review);
-    return () => window.removeEventListener('focus', review);
+    document.addEventListener('visibilitychange', visible);
+    return () => {
+      window.removeEventListener('focus', review);
+      document.removeEventListener('visibilitychange', visible);
+    };
   }, [answered, submitted, interactive]);
   if (answered || submitted) return <p>{t('agent.mcpConnect.continued')}</p>;
-  if (!onAnswer) return <p>{question}</p>;
+  if (!onAnswer) return <p>{t('agent.mcpConnect.title')}</p>;
   return <section className="card" aria-label={t('agent.mcpConnect.title')}>
-    <p>{question}</p>
     {configuration && <>
       <p>{t('agent.mcpConnect.reason', { name: configuration.server.name })}</p>
       <p>{t('agent.mcpConnect.scope')}</p>
@@ -82,8 +89,8 @@ export default function InlineMcpConfigurationCard({ agentId, sessionId, questio
     {error && <p role="alert">{error}</p>}
     {loading && <p>{t('common.loading')}</p>}
     <div className="mcp-configuration-actions">
-      {error && configuration && <button className="btn btn-primary" type="button" disabled={busy || authorizing || loading || configuration.authorization !== 'configured' || !configuration.usable_tool_count}
-        onClick={() => void resume()}>{t('agent.configuration.continue')}</button>}
+      <button className="btn btn-secondary" type="button" disabled={busy || authorizing || loading}
+        onClick={() => { autoContinued.current = false; review(); }}>{t('agent.mcpConnect.recheck')}</button>
       {configuration?.state !== 'ready' && <button className="btn btn-secondary" type="button" disabled={busy || authorizing || loading}
         onClick={() => void resume(true)}>{t('agent.configuration.skip')}</button>}
     </div>

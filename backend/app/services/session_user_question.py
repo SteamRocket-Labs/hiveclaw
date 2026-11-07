@@ -199,11 +199,13 @@ async def record_question_answer(db, *, authority, row, question):
 
     parts = row.content_parts_json or []
     text = "\n".join(str(part.get("text") or "") for part in parts if isinstance(part, dict))
-    await mark_latest_pending_clarification_answered(
+    marked = await mark_latest_pending_clarification_answered(
         db=db, agent_id=authority.agent_id, session_id=authority.session_id, question_item_id=question.item_id,
         answer_event_id=row.id, answer_text=text,
         answer_revision=row.revision,
     )
+    if not marked:
+        return False
     metadata = question.metadata_json or {}
     await append_session_events(db, tenant_id=authority.tenant_id, agent_id=authority.agent_id,
         session_id=authority.session_id, drafts=[SessionEventDraft(
@@ -215,6 +217,7 @@ async def record_question_answer(db, *, authority, row, question):
                      "answer_input_revision": row.revision,
                      "answer_text": text, "effective_answer": metadata.get("answer_text", text)},
         )])
+    return True
 
 
 async def answer_projection(db, row):

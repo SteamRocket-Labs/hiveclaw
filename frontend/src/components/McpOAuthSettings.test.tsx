@@ -81,7 +81,7 @@ it('uses owner-account OAuth routes without exposing or submitting application r
 it('stores a personal token through the secure form, clears it, and reports completion without OAuth', async () => {
   const posts: unknown[] = []; const reviewed = vi.fn(); const open = vi.spyOn(window, 'open');
   vi.spyOn(globalThis, 'fetch').mockImplementation(async (_url, init) => {
-    if (init?.method === 'POST') { posts.push(JSON.parse(String(init.body))); return response({ auth_status: 'configured' }); }
+    if (init?.method === 'PUT') { expect(String(_url)).toBe('/api/mcp-accounts/personal/token'); posts.push(JSON.parse(String(init.body))); return response({ auth_status: 'configured' }); }
     return response({ auth_status: 'none', authorization_method: 'token' });
   });
   render(<McpOAuthSettings serverId="personal" personal inline onReviewed={reviewed} />);
@@ -98,27 +98,15 @@ it('stores a personal token through the secure form, clears it, and reports comp
   expect(open).not.toHaveBeenCalled();
 });
 
-it('opens OAuth without an opener and accepts only its matching attempt on the same-origin channel', async () => {
+it('opens OAuth without an opener and needs no inline callback script or BroadcastChannel', async () => {
+  // S1: production script-src self blocks the old inline notification.
   const open = vi.spyOn(window, 'open').mockReturnValue(null);
-  let channel: { onmessage?: (event: { data: unknown }) => void };
-  vi.stubGlobal('BroadcastChannel', class {
-    onmessage?: (event: { data: unknown }) => void;
-    constructor() { channel = this; }
-    close() {}
-  });
-  const reviewed = vi.fn(); let connected = false;
+  vi.stubGlobal('BroadcastChannel', undefined);
   vi.spyOn(globalThis, 'fetch').mockImplementation(async (_url, init) => init?.method === 'POST'
     ? response({ authorization_url: 'https://auth.test/authorize', attempt_id: 'attempt' })
-    : response({ auth_status: connected ? 'configured' : 'none', authorization_method: 'oauth', attempt: connected ? { id: 'attempt', outcome: 'configured' } : null }));
-  render(<McpOAuthSettings serverId="personal" personal inline onReviewed={reviewed} />);
+    : response({ auth_status: 'none', authorization_method: 'oauth' }));
+  render(<McpOAuthSettings serverId="personal" personal inline />);
   await waitFor(() => expect((screen.getByRole('button', { name: 'Connect my account' }) as HTMLButtonElement).disabled).toBe(false));
   fireEvent.click(screen.getByRole('button', { name: 'Connect my account' }));
   await waitFor(() => expect(open).toHaveBeenCalledWith('https://auth.test/authorize', '_blank', 'noopener,noreferrer'));
-  const data = { type: 'hive.mcp.connected', server_id: 'personal', attempt_id: 'attempt' };
-  channel!.onmessage?.({ data: { ...data, attempt_id: 'foreign-attempt' } });
-  channel!.onmessage?.({ data: { ...data, server_id: 'foreign-account' } });
-  expect(reviewed).not.toHaveBeenCalled();
-  connected = true;
-  channel!.onmessage?.({ data });
-  await waitFor(() => expect(reviewed).toHaveBeenCalledTimes(1));
 });

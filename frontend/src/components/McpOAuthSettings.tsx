@@ -41,15 +41,6 @@ export default function McpOAuthSettings({ serverId, personal = false, inline = 
     catch { setError('load'); }
     finally { setBusy(false); }
   };
-  useEffect(() => {
-    if (!inline) return;
-    const channel = new BroadcastChannel('hive-mcp-oauth');
-    channel.onmessage = (event: MessageEvent) => {
-      if (event.data?.type === 'hive.mcp.connected' && event.data.server_id === serverId
-        && event.data.attempt_id === attemptId) void review();
-    };
-    return () => channel.close();
-  }, [inline, serverId, attemptId]);
   return <section aria-label={t(inline ? 'agent.mcpConnect.title' : 'agent.mcpOAuth.title')}>
     {!inline && <p>{personal ? t('agent.mcpAccounts.personalScope') : t('agent.mcpOAuth.companyScope')}</p>}
     {!inline && status?.authorized_agents && (status.authorized_agents.length ? <details>
@@ -80,7 +71,7 @@ export default function McpOAuthSettings({ serverId, personal = false, inline = 
       <fieldset disabled={busy || disabled} className="mcp-oauth-fields">
         {personal && status?.authorization_method === 'token' && <div>
           <label htmlFor={`${formId}-token`}>{t('agent.mcpConnect.token')}</label>
-          <input className="input" id={`${formId}-token`} type="password" autoComplete="new-password" required
+          <input className="input" id={`${formId}-token`} type="password" autoComplete="new-password" maxLength={16384} required
             value={secret} onChange={(event) => setSecret(event.target.value)} />
         </div>}
         {!inline && !personal && (['authorization_endpoint', 'token_endpoint', 'client_id', 'redirect_uri', 'scope'] as const).map((key) => <div key={key}>

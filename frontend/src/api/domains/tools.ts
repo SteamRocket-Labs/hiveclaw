@@ -126,8 +126,7 @@ export interface SessionMcpConfiguration {
   can_authorize: boolean;
   account?: McpAccount;
   accounts?: McpAccount[];
-  account_use_enabled?: boolean;
-  can_grant_account?: boolean;
+  answered?: boolean;
   can_manage_employee?: boolean;
   selection_unavailable?: boolean;
   permitted_tool_count?: number;

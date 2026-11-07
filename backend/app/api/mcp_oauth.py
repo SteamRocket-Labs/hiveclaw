@@ -18,7 +18,6 @@ import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse
-import json
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -31,6 +30,9 @@ from app.services.mcp_server_service import complete_mcp_oauth, get_mcp_oauth_st
 
 router = APIRouter(tags=["mcp-oauth"])
 _CALLBACK_HEADERS = {"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"}
+
+_CALLBACK_FAILURE = ('<!doctype html><meta charset="utf-8"><title>连接未完成</title>'
+                     '<p>连接未完成，请返回原对话重试。</p>')
 
 
 class McpOAuthStartIn(BaseModel):
@@ -97,18 +99,13 @@ async def oauth_callback(
         result = await complete_mcp_oauth(db, state=state, code=code, error=error)
     except OAuthFlowError as exc:
         if browser:
-            return HTMLResponse('<!doctype html><meta charset="utf-8"><title>连接未完成</title>'
-                '<p>连接未完成，请返回原对话重试。</p>', status_code=exc.status_code, headers=_CALLBACK_HEADERS)
+            return HTMLResponse(_CALLBACK_FAILURE, status_code=exc.status_code, headers=_CALLBACK_HEADERS)
         raise HTTPException(status_code=exc.status_code, detail=exc.detail, headers=_CALLBACK_HEADERS) from exc
     except ValueError as exc:
         if browser:
-            return HTMLResponse('<!doctype html><meta charset="utf-8"><title>连接未完成</title>'
-                '<p>连接未完成，请返回原对话重试。</p>', status_code=400, headers=_CALLBACK_HEADERS)
+            return HTMLResponse(_CALLBACK_FAILURE, status_code=400, headers=_CALLBACK_HEADERS)
         raise HTTPException(status_code=400, detail="Invalid OAuth callback", headers=_CALLBACK_HEADERS) from exc
     if browser:
-        message = json.dumps({"type": "hive.mcp.connected", "server_id": result["server_id"], "attempt_id": result["attempt_id"]})
         return HTMLResponse('<!doctype html><meta charset="utf-8"><title>连接成功</title>'
-            '<p>连接成功，可以返回原对话继续工作。</p><script>'
-            f'const channel=new BroadcastChannel("hive-mcp-oauth");channel.postMessage({message});channel.close();window.close();'
-            '</script>', headers=_CALLBACK_HEADERS)
+            '<p>连接成功，请返回原对话继续工作。</p>', headers=_CALLBACK_HEADERS)
     return {"status": "ok", **result, "message": "Connection saved. Return to your conversation to continue."}

@@ -135,6 +135,11 @@ class _RoutingSession:
     async def __aexit__(self, exc_type, exc, tb):
         return False
 
+    async def scalar(self, stmt):
+        # D2 disabled-assignment check: these transport fixtures have no override.
+        assert "agent_tools.enabled" in str(stmt)
+        return None
+
     async def execute(self, stmt):
         columns = getattr(stmt, "column_descriptions", [])
         if columns and columns[0]["name"] == "company_config":

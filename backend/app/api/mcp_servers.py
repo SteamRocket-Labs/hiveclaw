@@ -45,11 +45,6 @@ class PersonalMcpAccountIn(BaseModel):
     name: str = Field(min_length=1, max_length=200)
 
 
-class McpAccountGrantIn(BaseModel):
-    enabled: bool
-    expected_version: int = Field(ge=0)
-
-
 @router.get("/mcp-accounts")
 async def list_my_mcp_accounts(current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
     from sqlalchemy import select
@@ -89,16 +84,6 @@ async def get_mcp_accounts(agent_id: uuid.UUID, server_id: uuid.UUID,
     return await list_work_accounts(db, server=server, agent_id=agent_id, user=current_user)
 
 
-@router.put("/mcp-accounts/{account_id}/grants/{agent_id}/{requester_id}")
-async def update_mcp_account_grant(account_id: uuid.UUID, agent_id: uuid.UUID, requester_id: uuid.UUID,
-    body: McpAccountGrantIn, current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
-    from app.services.mcp_accounts import account_owner, set_account_grant
-    agent, access = await check_agent_access(db, current_user, agent_id)
-    reject_non_executing_agent_access(access)
-    account = await account_owner(db, current_user, account_id, tenant_id=agent.tenant_id)
-    return await set_account_grant(db, account=account, agent_id=agent_id, requester_id=requester_id, enabled=body.enabled, expected_version=body.expected_version)
-
-
 @router.post("/mcp-accounts/{account_id}/revoke")
 async def revoke_mcp_account(account_id: uuid.UUID, current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
     from app.core.tenant_scope import resolve_and_pin_tenant_scope
@@ -123,11 +108,39 @@ async def personal_mcp_oauth_status(account_id: uuid.UUID, current_user: User = 
 
 
 class PersonalMcpTokenIn(BaseModel):
-    access_token: str = Field(min_length=1)
+    access_token: str = Field(repr=False)
+
+
+@router.put("/mcp-accounts/{account_id}/token")
+async def save_personal_mcp_token(account_id: uuid.UUID, body: PersonalMcpTokenIn,
+    current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    from app.core.tenant_scope import resolve_and_pin_tenant_scope
+    from app.models.audit import AuditLog
+    from app.models.mcp_server import MCPServer
+    from app.services.mcp_accounts import account_owner
+    from app.services.mcp_oauth import OAuthTokenSet, encrypt_token_set
+    from app.services.mcp_server_service import _store_oauth
+
+    if not body.access_token or len(body.access_token) > 16384:
+        raise HTTPException(status_code=400, detail="访问令牌不能为空，且不能超过 16384 个字符。")
+    tenant = await resolve_and_pin_tenant_scope(db, current_user)
+    account = await account_owner(db, current_user, account_id, tenant_id=tenant)
+    parent = await db.get(MCPServer, account.parent_server_id)
+    if parent is None or parent.tenant_id != tenant:
+        raise HTTPException(status_code=404, detail="Connection not found")
+    account.server_url, account.transport = parent.server_url, parent.transport
+    _store_oauth(account, {"token": encrypt_token_set(OAuthTokenSet(body.access_token)),
+        "authorization_id": str(uuid.uuid4())})
+    account.auth_status = "configured"
+    account.status = "connected"
+    db.add(AuditLog(tenant_id=tenant, user_id=current_user.id, action="mcp.account.token_saved",
+        details={"account_id": str(account.id), "server_id": str(parent.id)}))
+    await db.commit()
+    return {"server_id": str(account.id), "auth_status": "configured"}
 
 
 @router.post("/mcp-accounts/{account_id}/oauth/start")
-async def start_personal_mcp_oauth(account_id: uuid.UUID, body: McpOAuthStartIn | PersonalMcpTokenIn | None = None,
+async def start_personal_mcp_oauth(account_id: uuid.UUID, body: McpOAuthStartIn | None = None,
     current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
     from app.core.tenant_scope import resolve_and_pin_tenant_scope
     from app.services.mcp_accounts import account_owner
@@ -136,15 +149,6 @@ async def start_personal_mcp_oauth(account_id: uuid.UUID, body: McpOAuthStartIn 
     tenant = await resolve_and_pin_tenant_scope(db, current_user)
     account = await account_owner(db, current_user, account_id, tenant_id=tenant)
     try:
-        if isinstance(body, PersonalMcpTokenIn):
-            from app.services.mcp_server_service import _store_oauth
-            from app.services.mcp_oauth import OAuthTokenSet, encrypt_token_set
-            _store_oauth(account, {"token": encrypt_token_set(OAuthTokenSet(body.access_token)),
-                "authorization_id": str(uuid.uuid4())})
-            account.auth_status = "configured"
-            account.status = "connected"
-            await db.commit()
-            return {"server_id": str(account.id), "auth_status": "configured"}
         if body is None:
             from app.models.mcp_server import MCPServer
             from app.services.mcp_accounts import REGISTRATION_FIELDS

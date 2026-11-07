@@ -255,6 +255,10 @@ export function ThreadItemRenderer({
     ? t('agent.chat.groupSourcesUnavailable', 'Some source content is unavailable to you. Request access or refresh this conversation.')
     : runtimeFailure
     ? translateRuntimeFailure(t, runtimeFailure)
+    : item.metadata?.runtime_action_from_result_integration === true && item.event_type === 'runtime_action_blocked'
+    ? t('approvalExecution.needs_reconciliation', 'Needs admin attention')
+    : item.metadata?.runtime_action_from_result_integration === true && item.event_type === 'runtime_action_failed'
+    ? t('approvalExecution.failed', 'Failed')
     : item.item_type === 'approval_request'
     ? approvalSentence(item, t)
     : item.user_summary || item.content;

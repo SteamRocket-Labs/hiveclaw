@@ -59,6 +59,8 @@ async def test_actual_enterprise_ticket_is_not_a_local_permission_and_stays_in_i
 
     workspace = Path(get_settings().AGENT_DATA_DIR) / str(agent_id) / "workspace"
     workspace.mkdir(parents=True)
+    monkeypatch.setattr(agent_tools, "WORKSPACE_ROOT", workspace.parent.parent)
+    monkeypatch.setattr("app.tools.workspace.WORKSPACE_ROOT", workspace.parent.parent)
     async with owner_sessionmaker() as db:
         from app.services.workspace_resource_authority import register_workspace_path
 
@@ -353,6 +355,7 @@ async def test_actual_enterprise_ticket_is_not_a_local_permission_and_stays_in_i
             assert ticket.execution_status == "rejected" and ticket.consumed_at is None
         source = await db.get(RuntimeTask, run_id)
         source.status = "completed"
+        source.result_summary = "awaiting_company_approval"  # Legacy completed handoff.
         await _mark_web_terminal_boundary_delivered(db, task=source, agent_id=agent_id, session_id=session_id)
         await db.commit()
     from app.services.runtime_notification_outbox import RuntimeNotificationOutboxService

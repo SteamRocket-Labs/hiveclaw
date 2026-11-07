@@ -228,7 +228,9 @@ async def _enqueue_origin_continuation(
     session, session_key = await _resolve_origin_session(db, approval=approval, task=task)
     receipt = dict(approval.execution_receipt or {})
     parent_user_id = session.user_id if session else None
-    root_runtime_task_id = None
+    root_runtime_task_id = (_uuid_or_none((approval.execution_envelope or {}).get("runtime_task_id"))
+        if session is not None and session.source_channel == "web" and parent_user_id is not None
+        and session.audience_kind != "group" else None)
     machine_budget_run_id = None
     machine_return = (session is not None and session.audience_kind != "group"
         and session.user_id is None and approval.requested_by_external_principal_id is not None)
@@ -321,7 +323,7 @@ async def _enqueue_origin_continuation(
     )
     receipt.update(
         {
-            "continuation_status": "queued",
+            "continuation_status": receipt.get("continuation_status") or "queued",
             "continuation_outbox_id": str(outbox_id),
             "origin_session_id": str(session.id),
         }
@@ -557,7 +559,9 @@ async def _mark_preflight_reapproval(
             "automatic_replay": False,
             "error": error,
         }
-        return _set_task_terminal(task, approval_status="needs_reapproval", result=error)
+        status = _set_task_terminal(task, approval_status="needs_reapproval", result=error)
+        await _enqueue_origin_continuation(db, approval=approval, task=task, approval_status=status, execution_result=error)
+        return status
 
 
 async def _handle_operational_failure(

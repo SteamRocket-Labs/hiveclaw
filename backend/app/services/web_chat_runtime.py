@@ -503,7 +503,9 @@ def _sync_runtime_session_permission_metadata(runtime_session_context: Any, meta
 
 def _is_web_origin_turn(metadata: dict[str, Any], runtime_session_context: Any) -> bool:
     source = str(metadata.get("source") or getattr(runtime_session_context, "source", None) or "web").strip().lower()
-    return source in {"", "web", "web_chat"}
+    return source in {"", "web", "web_chat", "websocket"} or (
+        source in {"websocket_message", "session_input_api", "legacy_rest_create_session_run", "legacy_rest_start_session_run"}
+        and (getattr(runtime_session_context, "metadata", None) or {}).get("source_channel") == "web")
 
 
 def _explicit_channel_delivery_requested(metadata: dict[str, Any], prompt: str | None = None) -> bool:
@@ -5503,6 +5505,8 @@ async def _update_runtime_task(
             await _enqueue_web_terminal_boundary(db, task)
             return
         task.status = status
+        if status == "suspended":
+            task.claimed_by = task.claim_expires_at = None
         if result_summary is not None:
             task.result_summary = result_summary
         if metadata_json:

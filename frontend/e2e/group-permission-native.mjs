@@ -60,7 +60,9 @@ try {
   await page.reload();
   await expect(page.getByText('shared-report.md', { exact: false }).first()).toBeVisible({ timeout: 20000 });
   await expect(page.getByRole('button', { name: 'Allow once', exact: true })).toHaveCount(0);
-  await expect(page.locator('[data-thread-item-type="approval_decision"]').getByText('Approval decision', { exact: true })).toBeVisible();
+  const decision = page.getByText('Allowed · this time', { exact: true });
+  await expect(decision).toHaveCount(1);
+  await expect(decision).toBeVisible();
   await expect(page.getByText('permission_resolved', { exact: true })).toHaveCount(0);
   await expect(page.getByText('allow_once', { exact: true })).toHaveCount(0);
   await expect(page.getByText('Some source content is unavailable to you.', { exact: false })).toHaveCount(0);

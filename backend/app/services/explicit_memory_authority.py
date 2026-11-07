@@ -377,6 +377,8 @@ async def _writer_input(db, request, *, require_sources=True):
     context = request.context
     tenant_id = uuid.UUID(str(context.tenant_id))
     principal, actor, session = await _actor(db, tenant_id, request)
+    if context.runtime_task_id is None:
+        raise ContentInputReceiptError("explicit_memory_input_unavailable", "The exact sealed memory invocation is unavailable.")
     rows = (await db.execute(select(SessionToolInvocation, SessionModelResult).join(SessionModelResult,
         SessionModelResult.provider_request_id == SessionToolInvocation.provider_request_id).where(
             SessionToolInvocation.tenant_id == tenant_id, SessionToolInvocation.session_id == session.id,

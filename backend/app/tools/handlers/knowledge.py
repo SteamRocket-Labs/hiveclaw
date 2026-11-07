@@ -104,7 +104,9 @@ def _proposal_idempotency_key(request: ToolExecutionRequest) -> str:
     return f"personal-kb:{anchor}:{digest[:32]}"[:200]
 
 
-def _personal_kb_runtime_principal(request: ToolExecutionRequest) -> AgentRuntimePrincipal:
+def _personal_kb_runtime_principal(
+    request: ToolExecutionRequest, *, require_delegation_binding: bool = True,
+) -> AgentRuntimePrincipal:
     context = request.context
     context_requester = _coerce_uuid(context.user_id)
     carried = context.execution_principal
@@ -154,7 +156,7 @@ def _personal_kb_runtime_principal(request: ToolExecutionRequest) -> AgentRuntim
     session_id = str(context.session_id).strip() if context.session_id else None
     if purpose != "autonomous_agent" and not session_id:
         raise ValueError("personal_kb_session_binding_missing")
-    if purpose in {"a2a_delegation", "subagent_delegation"} and not delegation_id:
+    if require_delegation_binding and purpose in {"a2a_delegation", "subagent_delegation"} and not delegation_id:
         raise ValueError("personal_kb_delegation_binding_missing")
     return AgentRuntimePrincipal(
         agent_id=context.agent_id,

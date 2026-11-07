@@ -1512,7 +1512,11 @@ async def _runtime_input_actor(db, tenant_id, request):
         )
 
     try:
-        principal = request if isinstance(request, AgentRuntimePrincipal) else _personal_kb_runtime_principal(request)
+        # Native A2A carries the authenticated requester in its execution frame;
+        # a personal-KB grant token is not authority for generic source reads.
+        principal = request if isinstance(request, AgentRuntimePrincipal) else _personal_kb_runtime_principal(
+            request, require_delegation_binding=False,
+        )
         requester = await load_scoped_runtime_user(db, principal.requester_user_id, tenant_id=tenant_id)
         if requester is None:
             raise ValueError("runtime_requester_unavailable")
@@ -1521,7 +1525,9 @@ async def _runtime_input_actor(db, tenant_id, request):
             .where(
                 ChatSession.id == uuid.UUID(str(principal.session_id)),
                 ChatSession.tenant_id == tenant_id,
-                ChatSession.agent_id == principal.agent_id,
+                or_(ChatSession.agent_id == principal.agent_id,
+                    (ChatSession.peer_agent_id == principal.agent_id)
+                    & (ChatSession.source_channel == "agent") & (ChatSession.session_kind == "agent_chat")),
             )
             .execution_options(populate_existing=True)
         )

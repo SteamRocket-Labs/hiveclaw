@@ -17,7 +17,7 @@ from tempfile import TemporaryDirectory
 from typing import Any
 
 from fastapi import HTTPException
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -688,7 +688,10 @@ async def _canonical_root_session(
         await db.execute(
             select(ChatSession).where(
                 ChatSession.id == session_id,
-                ChatSession.agent_id == agent_id,
+                or_(ChatSession.agent_id == agent_id,
+                    (ChatSession.peer_agent_id == agent_id)
+                    & (ChatSession.tenant_id == resource_tenant_id)
+                    & (ChatSession.source_channel == "agent") & (ChatSession.session_kind == "agent_chat")),
             )
         )
     ).scalar_one_or_none()

@@ -1,5 +1,6 @@
 """Registered session recall cannot borrow another requester's private history."""
 
+import json
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
@@ -50,6 +51,22 @@ async def _search(n, **extra):
         agent_id=n.agent, user_id=n.user, session_id=str(n.session), runtime_task_id=str(n.run), emit_runtime_hooks=False))
 
 
+@pytest.fixture
+def recall_results(monkeypatch):
+    from app.tools.handlers import memory
+
+    observed = []
+    original = memory.search_session_history
+
+    async def record(*args, **kwargs):
+        hits = await original(*args, **kwargs)
+        observed.append(hits)
+        return hits
+
+    monkeypatch.setattr(memory, "search_session_history", record)
+    return observed
+
+
 async def _shared_reader(n, owner_sessionmaker, monkeypatch):
     from app.models.channel_config import ChannelConfig
     from app.models.runtime_task import RuntimeTask
@@ -88,13 +105,24 @@ async def _shared_reader(n, owner_sessionmaker, monkeypatch):
 @pytest.mark.parametrize("source", ["ledger", "legacy", "db"])
 @pytest.mark.parametrize("admin", [False, True])
 async def test_each_native_source_filters_authority_before_the_requested_result_limit(
-    native_workspace, owner_sessionmaker, source, admin,  # noqa: F811
+    native_workspace, owner_sessionmaker, source, admin, recall_results,  # noqa: F811
 ):
     n = native_workspace
     await _sources(n, owner_sessionmaker, source=source, admin=admin)
     result = await _search(n)
-    assert "OWN_PRIVATE_EVIDENCE" in result and "OWN_PRIVATE_EVIDENCE_TAIL" in result, result
+    # R1 `9699a491` omits unverified session recall from runtime search results;
+    # before R1 that output was marked unbound and withheld from the model by A4c,
+    # so the model-visible behaviour did not shrink; the authority filter is
+    # asserted where it runs.
+    recalled = str(recall_results[-1])
+    assert "OWN_PRIVATE_EVIDENCE" in recalled and "OWN_PRIVATE_EVIDENCE_TAIL" in recalled, recalled
+    assert "OTHER_REQUESTER_PRIVATE_EVIDENCE" not in recalled and "UNKNOWN_PRIVATE_EVIDENCE" not in recalled
+    assert len(recall_results[-1]) == 1
     assert "OTHER_REQUESTER_PRIVATE_EVIDENCE" not in result and "UNKNOWN_PRIVATE_EVIDENCE" not in result
+    assert "OWN_PRIVATE_EVIDENCE" not in result and "OWN_PRIVATE_EVIDENCE_TAIL" not in result
+    availability = json.loads(result.split("## Memory Availability\n", 1)[1])
+    assert availability == {"schema": "hive.explicit_memory_availability.v1", "status": "partial",
+        "issues": [{"status": "unavailable", "code": "session_recall_sources_unverified", "count": 1}]}
 
 
 @pytest.mark.parametrize("case", ["shared_worker", "shared_worker_all", "shared_identity_missing", "outage", "during_read", "during_source_change", "caller_identity"])
@@ -161,7 +189,7 @@ async def test_raw_service_cannot_use_files_as_authority_when_the_reader_is_miss
 
 @pytest.mark.parametrize("source", ["ledger", "legacy", "db"])
 async def test_past_session_recall_never_reingests_the_current_work(
-    native_workspace, owner_sessionmaker, monkeypatch, source,  # noqa: F811
+    native_workspace, owner_sessionmaker, monkeypatch, source, recall_results,  # noqa: F811
 ):
     from app.services import session_recall
 
@@ -193,7 +221,18 @@ async def test_past_session_recall_never_reingests_the_current_work(
     assert body not in result, result
     assert "Complete transcript:" not in result and "session_recall_error" not in result, result
     assert observed and all(str(n.session) not in candidates for candidates in observed)
-    # Authorized past evidence remains complete, including its original continuation tail.
+    # R1 `9699a491` omits unverified session recall from runtime search results;
+    # before R1 that output was marked unbound and withheld from the model by A4c,
+    # so the model-visible behaviour did not shrink; the authority filter is
+    # asserted where it runs. The actual service must exclude the current work.
+    assert recall_results[-1] == []
     past = await _search(n)
-    assert "OWN_PRIVATE_EVIDENCE" in past and "OWN_PRIVATE_EVIDENCE_TAIL" in past, past
+    recalled = str(recall_results[-1])
+    assert "OWN_PRIVATE_EVIDENCE" in recalled and "OWN_PRIVATE_EVIDENCE_TAIL" in recalled, recalled
+    assert "OTHER_REQUESTER_PRIVATE_EVIDENCE" not in recalled and "UNKNOWN_PRIVATE_EVIDENCE" not in recalled
+    assert body not in recalled, recalled
     assert "OTHER_REQUESTER_PRIVATE_EVIDENCE" not in past and "UNKNOWN_PRIVATE_EVIDENCE" not in past
+    assert "OWN_PRIVATE_EVIDENCE" not in past and "OWN_PRIVATE_EVIDENCE_TAIL" not in past
+    availability = json.loads(past.split("## Memory Availability\n", 1)[1])
+    assert availability == {"schema": "hive.explicit_memory_availability.v1", "status": "partial",
+        "issues": [{"status": "unavailable", "code": "session_recall_sources_unverified", "count": 1}]}

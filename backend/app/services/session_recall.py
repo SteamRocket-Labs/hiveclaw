@@ -44,9 +44,9 @@ async def _authorized_recall_session_ids(agent_id, tenant_id, runtime_request) -
             principal, requester = await _runtime_input_actor(db, tenant_id, runtime_request)
         except ContentInputReceiptError as exc:
             raise SessionRecallError("session_recall_access_denied", "Current session recall access is denied.", status="denied") from exc
+        # The runtime actor already validates the actual native-pair participant.
         current_session = (await db.execute(select(ChatSession.audience_kind).where(
-            ChatSession.id == uuid.UUID(str(principal.session_id)), ChatSession.tenant_id == tenant_id,
-            ChatSession.agent_id == agent_id))).one_or_none()
+            ChatSession.id == uuid.UUID(str(principal.session_id)), ChatSession.tenant_id == tenant_id))).one_or_none()
         if current_session is None:
             raise SessionRecallError("session_recall_access_denied", "Current session recall access is denied.", status="denied")
         if current_session.audience_kind not in {None, "private"}:

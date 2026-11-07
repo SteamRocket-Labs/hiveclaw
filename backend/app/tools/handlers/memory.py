@@ -1172,6 +1172,9 @@ async def search_memory(
             if limit is not None:
                 facts = facts[:limit]
         facts = [fact for fact in facts if _memory_fact_visible(fact)]
+        if facts and execution_context is not None:
+            issues.append({"status": "unavailable", "code": "legacy_memory_sources_unverified", "count": len(facts)})
+            facts = []
         if facts:
             unbound.append("legacy_memory_sources")
             results.append("## Semantic Memory")
@@ -1205,6 +1208,13 @@ async def search_memory(
                 if execution_context is not None
                 else None,
             )
+            if recalled and execution_context is not None:
+                # A session ACL proves its reader, not the producer and upstream
+                # sources of a legacy transcript projection. Omit that projection
+                # alone; the independently receipted facts remain usable.
+                issues.append({"status": "unavailable", "code": "session_recall_sources_unverified",
+                    "count": len(recalled)})
+                recalled = []
             if recalled:
                 unbound.append("session_recall_sources")
                 results.append("## Session Recall")

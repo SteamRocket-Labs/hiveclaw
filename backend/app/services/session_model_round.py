@@ -474,25 +474,34 @@ def _withhold_model_source(messages, wire_request, input_bindings, source, code,
     attached = [ref for entry in input_bindings["messages"] for ref in entry.get("dependencies", [])]
     unattached = [ref for ref in input_bindings["dependencies"] if ref not in attached]
     indexes = set(indexes)
-    result_ids = {wire_messages[i].get("tool_call_id") for i in indexes if wire_messages[i].get("role") == "tool"}
+    # Providers may reuse a call ID in later rounds. Pair within its originating
+    # assistant message so withholding one result leaves earlier rounds intact.
+    pairs, active_calls = {}, {}
+    for i, message in enumerate(wire_messages):
+        if message.get("role") == "tool":
+            if message.get("tool_call_id") in active_calls:
+                pairs[i] = active_calls[message["tool_call_id"]]
+        elif message.get("role") == "assistant":
+            active_calls = {call["id"]: i for call in message.get("tool_calls") or [] if call.get("id")}
+        elif message.get("role") == "user":
+            active_calls = {}
     partial = {}
     for i, message in enumerate(wire_messages):
         calls = message.get("tool_calls") or []
+        result_ids = {wire_messages[j].get("tool_call_id") for j in indexes if pairs.get(j) == i}
         if i not in indexes and any(call.get("id") in result_ids for call in calls if call.get("id")):
             remaining = [call for call in calls if call.get("id") not in result_ids]
             if remaining:
                 partial[i] = {"role": "assistant", "content": note, "tool_calls": remaining}
             else:
                 indexes.add(i)
-    call_ids = {call.get("id") for i in indexes for call in wire_messages[i].get("tool_calls") or [] if call.get("id")}
     for i in list(indexes):
         if any(not call.get("id") for call in wire_messages[i].get("tool_calls") or []):
             for j in range(i + 1, len(wire_messages)):
                 if wire_messages[j].get("role") != "tool":
                     break
                 indexes.add(j)
-    indexes.update(index for index, message in enumerate(wire_messages)
-        if message.get("role") == "tool" and message.get("tool_call_id") in call_ids)
+    indexes.update(index for index, origin in pairs.items() if origin in indexes)
     for index, replacement in {**partial, **{i: {"role": "system", "content": note} for i in indexes}}.items():
         origin = getattr(messages[index], "context_origin", None)
         if isinstance(origin, ContextMessageOrigin) and any(section.get("name") == "skill_catalog" for section in origin.sections):

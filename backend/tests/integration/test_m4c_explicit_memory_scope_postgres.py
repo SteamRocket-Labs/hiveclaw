@@ -302,17 +302,21 @@ async def test_corrected_memory_is_used_by_new_work_and_still_depends_on_origina
 
 
 async def test_search_rechecks_sources_after_backend_await_and_keeps_other_results(
-    shared_memory, owner_sessionmaker, monkeypatch,
+    shared_memory, owner_sessionmaker, app_user_sessionmaker, monkeypatch,
 ):
     s = shared_memory
     n = s.n
     session, run = await new_owner_work(n, owner_sessionmaker)
+    saved, _ = await memory_call(n, app_user_sessionmaker, "save_memory",
+        {"category": "project", "content": "release INDEPENDENT_AVAILABLE_FACT"},
+        session=session, run=run)
+    assert "Saved to explicit memory overlay" in saved, saved
 
     async def backend_with_source_withdrawal(*_args, **_kwargs):
         async with owner_sessionmaker() as db:
             (await db.get(ChatSession, n.session)).user_id = n.foreign
             await db.commit()
-        return [{"id": "independent-reference", "content": "INDEPENDENT_AVAILABLE_FACT", "category": "project"}]
+        return []
 
     monkeypatch.setattr("app.tools.handlers.memory._search_semantic_backend_facts", backend_with_source_withdrawal)
     result = str(await n.service.execute("search_memory", {"query": "release", "scope": "facts"},

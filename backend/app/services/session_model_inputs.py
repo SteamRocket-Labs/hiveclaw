@@ -1385,7 +1385,8 @@ async def _resolve_origin_dependencies(db, *, tenant_id, agent_id, ref):
         # Connector and other ordinary tool results are already bound to their
         # exact settled invocation. File and skill reads still need their leaves.
         complete = (invocation.tool_name not in {"read_file", "read_document", "fs_read"}
-            and invocation.effect_state == "effect_committed" and payload.get("outcome") == "success"
+            and (invocation.effect_state, payload.get("outcome"))
+                in {("effect_committed", "success"), ("failed", "failed")}
             and model is not None and event.result_id == model.id
             and event.content_hash == payload["content_hash"]
             and payload.get("content_or_error_ref") == invocation.receipt_ref

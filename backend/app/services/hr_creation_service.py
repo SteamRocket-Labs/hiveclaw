@@ -43,7 +43,8 @@ def canonical_hr_blueprint_hash(blueprint: dict[str, Any]) -> str:
     return f"bp_{canonical_hr_blueprint_payload_hash(blueprint)[:24]}"
 
 
-def direct_creation_authorization(draft: HrCreationDraft) -> dict[str, Any] | None:
+def creation_request_evidence(draft: HrCreationDraft) -> dict[str, Any] | None:
+    """Return bound request data; this alone never authorizes provisioning."""
     evidence = (draft.preview_json or {}).get("creation_authorization")
     if not isinstance(evidence, dict) or evidence.get("schema") != "hive.employee_creation_authorization.v1":
         return None
@@ -62,6 +63,14 @@ def direct_creation_authorization(draft: HrCreationDraft) -> dict[str, Any] | No
     if not isinstance(evidence.get("tool_arguments"), dict):
         return None
     return evidence
+
+
+def direct_creation_authorization(draft: HrCreationDraft) -> dict[str, Any] | None:
+    if (draft.preview_json or {}).get("confirmation_requirements", {}).get("must_confirm_before_create") and not (
+        draft.confirmed_at is not None and draft.confirmed_by_user_id == draft.requested_by_user_id
+    ):
+        return None
+    return creation_request_evidence(draft)
 
 
 def has_creation_authorization(draft: HrCreationDraft) -> bool:

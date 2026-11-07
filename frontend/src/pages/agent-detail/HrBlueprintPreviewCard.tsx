@@ -1,5 +1,6 @@
 import { useId, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 
 import { hrCreationApi, type HrCreationDraft } from '../../api/domains/hrCreation';
@@ -13,6 +14,7 @@ import './HrBlueprintPreviewCard.css';
 import { blueprintStatusLabel } from './hrCreationStatus';
 import HrFirstTaskPermissions from './HrFirstTaskPermissions';
 import MarkdownRenderer from '../../components/MarkdownRenderer';
+import { buildNewSessionDraftNavigation } from './newSessionNavigation';
 
 interface HrBlueprintPreviewCardProps {
   agentId?: string;
@@ -146,7 +148,7 @@ export function HrBlueprintPreviewCard({ agentId, preview, onSendMessage }: HrBl
   const status = draft?.draft_status || preview.status;
   const createdAgentId = draft?.created_agent_id;
   const canonicalPreview = draft && Object.keys(draft.blueprint || {}).length > 0
-    ? parsePreviewAgentBlueprintResult(draft) || preview
+    ? parsePreviewAgentBlueprintResult({ status: 'preview', ...draft }) || preview
     : preview;
   const statusLabel = blueprintStatusLabel(status, t);
   const scopeLabel = permissionScopeLabel(canonicalPreview.permissionScope, t);
@@ -244,7 +246,7 @@ export function HrBlueprintPreviewCard({ agentId, preview, onSendMessage }: HrBl
   const openEmployee = createdAgentId && durableAction !== 'retry';
 
   if (canonicalPreview.authorizationMode === 'policy_direct') {
-    const conversation = createdAgentId ? `/agents/${createdAgentId}#chat` : null;
+    const conversation = createdAgentId ? buildNewSessionDraftNavigation(createdAgentId) : null;
     return <article className="hr-blueprint-card">
       <header><div><h3>{canonicalPreview.name}</h3></div>
         <span className="hr-blueprint-status">{undoMutation.isSuccess ? t('agent.chat.toolResults.createdBotStopped', 'Stopped') : statusLabel}</span>
@@ -254,7 +256,7 @@ export function HrBlueprintPreviewCard({ agentId, preview, onSendMessage }: HrBl
       {firstTask?.status === 'blocked' && <p role="alert">{firstTask.message || t('agent.chat.toolResults.firstTaskDenied', 'Company policy blocks this task. Restore the required permission before retrying.')}</p>}
       {undoMutation.isError && <p role="alert">{t('agent.chat.toolResults.undoCreationFailed', 'Could not undo creation. Please retry.')}</p>}
       <footer>
-        {conversation && <a className="btn btn-primary" href={conversation}>{t('agent.chat.toolResults.talkToCreatedBot', 'Talk to it')}</a>}
+        {conversation && <Link className="btn btn-primary" to={conversation.to} state={conversation.state}>{t('agent.chat.toolResults.talkToCreatedBot', 'Talk to it')}</Link>}
         {createdAgentId && <button type="button" className="btn btn-ghost"
           disabled={undoMutation.isPending || undoMutation.isSuccess}
           onClick={() => undoMutation.mutate()}>{t('agent.chat.toolResults.undoCreation', 'Undo')}</button>}
@@ -285,13 +287,13 @@ export function HrBlueprintPreviewCard({ agentId, preview, onSendMessage }: HrBl
         <section className="hr-blueprint-boundaries">
           <h4>{t('agent.chat.toolResults.explicitFirstTask', 'Your first task')}</h4>
           <p>{canonicalPreview.explicitFirstTask}</p>
-          <p>{work
+          {status !== 'awaiting_confirmation' && <p>{work
             ? runtimeStatusLabel(work.question || work.permissions?.length ? 'waiting_user' : work.status === 'resumable' ? 'resuming' : work.status, t)
             : firstTask?.status === 'dispatched'
             ? t('agent.chat.toolResults.firstTaskDispatched', 'Task dispatched. Updates and results return to this work.')
             : firstTask?.status
               ? t('agent.chat.toolResults.firstTaskRecovery', 'Employee ready. The first task needs recovery; it has not been reported as started.')
-              : t('agent.chat.toolResults.firstTaskWaiting', 'The task will start once the employee is ready.')}</p>
+              : t('agent.chat.toolResults.firstTaskWaiting', 'The task will start once the employee is ready.')}</p>}
           {work?.progress && ['running', 'resumable', 'suspended'].includes(work.status) && (
             <div aria-live="polite"><MarkdownRenderer content={work.progress.text} /></div>
           )}
@@ -336,7 +338,7 @@ export function HrBlueprintPreviewCard({ agentId, preview, onSendMessage }: HrBl
       </div>
       <PreviewList label={t('agent.chat.toolResults.primaryUsers', 'Primary users')} items={canonicalPreview.primaryUsers} />
       <PreviewList label={t('agent.chat.toolResults.coreOutputs', 'Core outputs')} items={canonicalPreview.coreOutputs} />
-      {canonicalPreview.firstMission && canonicalPreview.authorizationMode !== 'policy_direct' && (
+      {canonicalPreview.firstMission && !canonicalPreview.explicitFirstTask && canonicalPreview.authorizationMode !== 'policy_direct' && (
         <section className="hr-blueprint-boundaries">
           <h4>{t('agent.chat.toolResults.firstMission', 'First mission')}</h4>
           <p>{canonicalPreview.firstMission}</p>

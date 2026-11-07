@@ -272,14 +272,15 @@ export function parsePreviewAgentBlueprintResult(rawResult: unknown): HrPreviewT
     status: typeof parsed.draft_status === 'string' ? parsed.draft_status : 'legacy_preview',
     name: typeof blueprint.name === 'string' ? blueprint.name : null,
     mission: typeof summary.mission === 'string' ? summary.mission : null,
-    firstMission: typeof summary.first_mission === 'string' ? summary.first_mission : null,
+    firstMission: typeof authorization.first_task === 'string' && authorization.first_task
+      ? authorization.first_task : typeof summary.first_mission === 'string' ? summary.first_mission : null,
     primaryUsers: normalizeStringList(blueprint.primary_users),
     coreOutputs: normalizeStringList(blueprint.core_outputs),
     boundaries: typeof blueprint.boundaries === 'string' ? blueprint.boundaries : null,
     permissionScope: typeof blueprint.permission_scope === 'string' ? blueprint.permission_scope : null,
     firstTaskAutostart: typeof blueprint.first_task_autostart === 'boolean' ? blueprint.first_task_autostart : null,
     ...(authorization.mode === 'policy_direct' ? {
-      authorizationMode: 'policy_direct',
+      authorizationMode: parsed.draft_status === 'awaiting_confirmation' ? null : 'policy_direct',
       explicitFirstTask: typeof authorization.first_task === 'string' ? authorization.first_task : null,
     } : {}),
     sourceAttributions: normalizeRecordList(blueprint.source_attributions),

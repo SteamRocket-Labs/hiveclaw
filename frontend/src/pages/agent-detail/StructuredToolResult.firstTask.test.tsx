@@ -1,7 +1,8 @@
 /** @vitest-environment jsdom */
 import React from 'react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, render as renderWithoutRouter, screen, waitFor } from '@testing-library/react';
+import { MemoryRouter } from 'react-router-dom';
 import { afterEach, expect, it, vi } from 'vitest';
 
 vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: (_key: string, fallback: string) => fallback }) }));
@@ -14,6 +15,8 @@ import { StructuredToolResultBody } from './StructuredToolResult';
 import { HrBlueprintPreviewCard } from './HrBlueprintPreviewCard';
 import { normalizeToolCallResult } from './toolResultEnvelope';
 import { useAuthStore } from '../../stores';
+
+const render = (ui: React.ReactNode) => renderWithoutRouter(ui, { wrapper: MemoryRouter });
 
 afterEach(() => { cleanup(); vi.clearAllMocks(); useAuthStore.setState({ user: null }); });
 

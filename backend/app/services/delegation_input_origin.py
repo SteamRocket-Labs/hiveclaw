@@ -180,20 +180,20 @@ async def capture_employee_blueprint_origin(db, *, request, draft):
 
 
 def employee_creation_source_pointer(draft):
-    from app.services.hr_creation_service import direct_creation_authorization
+    from app.services.hr_creation_service import creation_request_evidence
 
     preview = draft.preview_json or {}
     if "creation_authorization" in preview:
-        return (direct_creation_authorization(draft) or {}).get("creation_origin")
+        return (creation_request_evidence(draft) or {}).get("creation_origin")
     return preview.get("creation_origin")
 
 
 async def load_employee_creation_dependencies(db, *, draft):
     from app.models.runtime_task import RuntimeTask
-    from app.services.hr_creation_service import direct_creation_authorization
+    from app.services.hr_creation_service import creation_request_evidence
     from app.services.hr_provisioning_runtime import _runtime_authority_issues
 
-    evidence = direct_creation_authorization(draft)
+    evidence = creation_request_evidence(draft)
     pointer = employee_creation_source_pointer(draft)
     if not isinstance(pointer, dict) or set(pointer) != {"source_id", "source_hash"}:
         return None
@@ -220,8 +220,11 @@ async def load_employee_creation_dependencies(db, *, draft):
         or _hash(proof) != pointer["source_hash"]
         or proof.get("draft_id") != str(draft.id)
         or proof.get("requester_user_id") != str(draft.requested_by_user_id)
-        or job is None
-        or _runtime_authority_issues(job, draft, allow_completed=True)
+        or (job is None and not (
+            evidence is not None and draft.status == "awaiting_confirmation"
+            and draft.confirmed_at is None and draft.created_agent_id is None
+        ))
+        or (job is not None and _runtime_authority_issues(job, draft, allow_completed=True))
     ):
         return None
     if evidence:

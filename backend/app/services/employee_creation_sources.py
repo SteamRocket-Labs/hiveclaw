@@ -912,7 +912,7 @@ async def _owned_delegation_parent_sources(db, *, task, requester, parent, child
 async def creation_tool_result_bound(db, *, tenant_id, agent_id, invocation, content):
     """Bind the native creation transaction result, retaining its original Session audience."""
     import json
-    from app.services.hr_creation_service import direct_creation_authorization
+    from app.services.hr_creation_service import creation_request_evidence
 
     try:
         output = json.loads(content)
@@ -930,10 +930,12 @@ async def creation_tool_result_bound(db, *, tenant_id, agent_id, invocation, con
         or output.get("hr_agent_id") != str(agent_id)
         or output.get("session_id") != str(invocation.session_id)
         or output.get("requested_by_user_id") != str(draft.requested_by_user_id)
-        or output.get("provisioning_task_id") != str(draft.provisioning_task_id)
+        or (output.get("provisioning_task_id") != (
+            None if output.get("draft_status") == "awaiting_confirmation" else str(draft.provisioning_task_id)
+        ))
     ):
         return False
-    evidence = direct_creation_authorization(draft)
+    evidence = creation_request_evidence(draft)
     if (
         not evidence
         or evidence.get("source_run_id") != str(invocation.run_id)

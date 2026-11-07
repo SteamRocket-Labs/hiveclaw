@@ -1198,6 +1198,18 @@ def _client(user, sessionmaker):
     return AsyncClient(transport=ASGITransport(app=app), base_url="http://origin")
 
 
+async def _confirm_creation_preview(user, context, preview, sessionmaker):
+    """Click the existing persisted preview as the authenticated requester."""
+    async with _client(user, sessionmaker) as client:
+        path = f"/api/agents/{context.agent_id}/hr-creation-drafts/{preview['blueprint_id']}/confirm"
+        response = await client.post(path, json={"blueprint_version": preview["blueprint_version"]})
+        assert response.status_code == 200, response.text
+        repeated = await client.post(path, json={"blueprint_version": preview["blueprint_version"]})
+        assert repeated.status_code == 200, repeated.text
+        assert repeated.json()["provisioning_task_id"] == response.json()["provisioning_task_id"]
+        return {**preview, **response.json()}
+
+
 async def _draft(owner_sessionmaker, context):
     from app.services.hr_creation_service import upsert_hr_creation_draft
 

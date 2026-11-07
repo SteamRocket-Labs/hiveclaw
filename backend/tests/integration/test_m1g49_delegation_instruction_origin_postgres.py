@@ -1091,6 +1091,38 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
                 {"content": "The research employee and explicit first task are queued.", "finish_reason": "stop"},
             ]
         )
+        confirmed_creation = None
+        native_stream = creator_client.stream
+
+        async def click_creation_preview_then_continue(**kwargs):
+            nonlocal confirmed_creation
+            from types import SimpleNamespace
+            from app.models.hr_creation import HrCreationDraft
+            from app.models.user import User
+            from app.services.hr_creation_service import hr_creation_draft_payload
+            from tests.integration.test_m1g_originated_creation_postgres import _confirm_creation_preview
+
+            async with owner_sessionmaker() as reader:
+                proposal = await reader.scalar(select(HrCreationDraft).where(
+                    HrCreationDraft.tenant_id == seed["tenant_id"],
+                    HrCreationDraft.session_id == seed["session_id"],
+                    HrCreationDraft.requested_by_user_id == seed["user_id"],
+                    HrCreationDraft.status == "awaiting_confirmation",
+                ))
+                if proposal is not None:
+                    assert proposal.created_agent_id is None and proposal.provisioning_task_id is None
+                    requester = await reader.get(User, seed["user_id"])
+                    preview = hr_creation_draft_payload(proposal)
+            if proposal is not None:
+                # Round-2 item 1 / round-3 ruling 3: tool/file input may only
+                # propose creation. The member clicks before all original
+                # source, identity, recovery and actual-effect assertions.
+                confirmed_creation = await _confirm_creation_preview(
+                    requester, SimpleNamespace(agent_id=seed["agent_id"]), preview, app_user_sessionmaker
+                )
+            return await native_stream(**kwargs)
+
+        creator_client.stream = click_creation_preview_then_continue
         if discovery_case:
             creator_client.script.insert(
                 0,
@@ -1560,14 +1592,19 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
                 from app.services.employee_first_task import first_task_preflight_result_bound
                 from app.services.session_model_inputs import _origin_dependencies
 
-                created = json.loads(result)
+                created = confirmed_creation or json.loads(result)
                 assert created["first_task_autostart"] is False
                 assert created["provisioning"]["first_task"] == {
                     "status": "waiting_for_employee",
                     "auto_dispatch": True,
                     "authorization": "original_human_request",
                 }
-                assert "already authorized" in created["creation_flow"]["instruction"]
+                if confirmed_creation is not None:
+                    # Round-2 item 1: a mixed-input proposal is authorized by
+                    # the member's click, not by the original tool call.
+                    assert created["confirmed_by_user_id"] == str(seed["user_id"]) and created["confirmed_at"]
+                else:
+                    assert "already authorized" in created["creation_flow"]["instruction"]
                 early = await db.scalar(
                     select(SessionToolInvocation).where(
                         SessionToolInvocation.run_id == seed["run_id"],
@@ -1824,6 +1861,20 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
         from app.services.hr_provisioning_runtime import execute_claimed_hr_provisioning
 
         creation = json.loads(str(result))
+        if native_creation and confirmed_creation is not None:
+            creation = confirmed_creation
+        elif creation.get("draft_status") == "awaiting_confirmation":
+            from types import SimpleNamespace
+            from app.models.user import User
+            from tests.integration.test_m1g_originated_creation_postgres import _confirm_creation_preview
+
+            # Round-2 item 1 / round-3 ruling 3: preserve every downstream
+            # assertion after the existing authenticated human confirmation.
+            async with owner_sessionmaker() as reader:
+                requester = await reader.get(User, seed["user_id"])
+            creation = await _confirm_creation_preview(
+                requester, SimpleNamespace(agent_id=seed["agent_id"]), creation, app_user_sessionmaker
+            )
         assert creation.get("draft_status") == "confirmed", creation
         if delivery_case and not native_creation:
             from app.services.session_permission_runtime import _execution_evidence

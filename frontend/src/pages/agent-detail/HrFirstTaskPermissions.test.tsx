@@ -1,5 +1,6 @@
 import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
+import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import type { HrCreationDraft, HrFirstTaskPermission } from '../../api/domains/hrCreation';
 import { chatApi, type SessionPermissionResolutionReceipt } from '../../api/domains/chat';
@@ -40,7 +41,7 @@ beforeEach(() => {
 function originalCard() {
   const preview = normalizeToolCallResult('create_employee_from_request', state.draft).toolMeta;
   if (preview?.kind !== 'hr_preview') throw new Error('Missing original creation preview');
-  return renderToStaticMarkup(<HrBlueprintPreviewCard agentId="original-agent" preview={preview} />);
+  return renderToStaticMarkup(<MemoryRouter><HrBlueprintPreviewCard agentId="original-agent" preview={preview} /></MemoryRouter>);
 }
 
 it('opens the first task in its own conversation for native permission controls', () => {

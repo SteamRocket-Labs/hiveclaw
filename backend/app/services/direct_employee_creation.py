@@ -236,21 +236,41 @@ async def create_from_request(db, request):
         "agent_resident_memory": {"memory/self/self.md"},
         "owner_action_policy": None, "agent_platform_skill_file": None,
     }
+    command_ids = []
+    for source in dependencies:
+        if source["source_kind"] == "session_command":
+            try:
+                command_ids.append(uuid.UUID(source["source_id"]))
+            except ValueError:
+                continue
+    commands = {str(item.id): item for item in await db.scalars(select(SessionCommand).where(
+        SessionCommand.tenant_id == tenant_id, SessionCommand.session_id == session_id,
+        SessionCommand.id.in_(command_ids), SessionCommand.principal_type == command.principal_type,
+        SessionCommand.principal_id == command.principal_id, SessionCommand.namespace == "human_input",
+        SessionCommand.status.in_(("accepted", "applied")),
+    ))}
+    attached_commands = {str(item.command_id) for item in await db.scalars(select(SessionTurnInput).where(
+        SessionTurnInput.tenant_id == tenant_id, SessionTurnInput.command_id.in_(command_ids),
+    )) if any(part.get("type") != "text" for part in item.content_parts_json or [])}
+
     def is_direct_input(source):
         # Fixed native prompt snapshots are distinct from a read tool's result,
         # which also carries its session_tool_invocation dependency.
-        if source == current_input or source["source_kind"] in {"session_actor_identity", "agent_directory_observation"}:
+        if source["source_kind"] == "session_command":
+            author_command = commands.get(source["source_id"])
+            return (author_command is not None and author_command.request_hash == source["source_version"]
+                    and source["source_id"] not in attached_commands)
+        if source["source_kind"] in {"session_actor_identity", "agent_directory_observation"}:
             return True
         kind, _, resource = source["source_id"].partition("\n")
         allowed = fixed_context.get(source["source_kind"], set())
         return (source["source_kind"] in fixed_context and kind == str(agent_id)
                 and bool(resource) and (allowed is None or resource in allowed))
 
-    if (not complete or current_input not in dependencies or any(not is_direct_input(source) for source in dependencies)
+    direct = not (not complete or current_input not in dependencies or any(not is_direct_input(source) for source in dependencies)
             or parent[2] != request.arguments
             or any(message.get("status") != "bound" for message in parent[1].model_request_snapshot_json["input_bindings"]["messages"])
-            or any(part.get("type") != "text" for part in row.content_parts_json or [])):
-        _refused("direct_human_input_required", "请直接告诉我要建什么样的助手。")
+            or any(part.get("type") != "text" for part in row.content_parts_json or []))
     policy = await load_owner_action_policy(db, tenant_id=tenant_id, agent_id=agent_id, create_default=False)
     evidence = {
         "schema": AUTHORIZATION_SCHEMA, "mode": "policy_direct", "package": "private_native_employee.v1",
@@ -283,7 +303,7 @@ async def create_from_request(db, request):
     for field in ("skill_names", "effective_skill_names", "requested_skill_names", "deferred_skill_names"):
         preview["blueprint"][field] = []
     preview["will_install"] = []
-    preview["creation_flow"] = {
+    direct_flow = {
         **preview["creation_flow"], "mode": "policy_direct",
         "instruction": (
             "The approved private package is authorized by this human request and current policy; no preview click is needed. "
@@ -295,7 +315,9 @@ async def create_from_request(db, request):
                if evidence["first_task"] else "No explicit first task was requested; creation does not authorize unrelated work.")
         ),
     }
-    preview["confirmation_requirements"] = {"required": False, "authorization_mode": "policy_direct"}
+    if direct:
+        preview["creation_flow"] = direct_flow
+        preview["confirmation_requirements"] = {"required": False, "authorization_mode": "policy_direct"}
     preview["blueprint"]["approved_model_id"] = str(model_id)
     preview["blueprint_hash"] = canonical_hr_blueprint_hash(preview["blueprint"])
     evidence["blueprint_hash"] = preview["blueprint_hash"]
@@ -312,8 +334,15 @@ async def create_from_request(db, request):
             # receipt into authority to create the member's private employee.
             evidence = {**evidence, "creation_origin": origin}
             draft.preview_json = {**draft.preview_json, "creation_authorization": evidence}
-    draft.status = "confirmed"
     draft.creation_idempotency_key = key
+    if evidence["first_task"]:
+        draft.provisioning_json = {"first_task": {"status": "waiting_for_employee", "auto_dispatch": True,
+            "authorization": "original_human_request"}}
+    if not direct:
+        # The proposal carries lineage and the exact task, never authority.
+        # Existing authenticated confirmation is the only path to provisioning.
+        return hr_creation_draft_payload(draft), False
+    draft.status = "confirmed"
     task = build_hr_provisioning_runtime_task(draft)
     from app.services.session_writer_epoch import assign_runtime_task_writer_generation
 
@@ -323,10 +352,7 @@ async def create_from_request(db, request):
     db.add(task)
     await db.flush()
     draft.provisioning_task_id = task.id
-    draft.provisioning_json = {"runtime_task_id": str(task.id), "runtime_status": "pending"}
-    if evidence["first_task"]:
-        draft.provisioning_json["first_task"] = {"status": "waiting_for_employee", "auto_dispatch": True,
-            "authorization": "original_human_request"}
+    draft.provisioning_json = {**draft.provisioning_json, "runtime_task_id": str(task.id), "runtime_status": "pending"}
     from app.core.policy import write_audit_event
 
     await write_audit_event(db, event_type="hr.creation_policy_authorized", severity="info", actor_type="user",

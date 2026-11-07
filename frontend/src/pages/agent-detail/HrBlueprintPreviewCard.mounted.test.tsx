@@ -2,7 +2,8 @@
 
 import React from 'react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render as renderWithoutRouter, screen, waitFor } from '@testing-library/react';
+import { MemoryRouter, useLocation } from 'react-router-dom';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 const hrMocks = vi.hoisted(() => ({
@@ -34,7 +35,12 @@ vi.mock('../../api/domains/hrCreation', () => ({
 }));
 
 import { HrBlueprintPreviewCard } from './HrBlueprintPreviewCard';
-import type { HrPreviewToolResult } from './toolResultEnvelope';
+import { parsePreviewAgentBlueprintResult, type HrPreviewToolResult } from './toolResultEnvelope';
+
+const render = (ui: React.ReactNode) => renderWithoutRouter(ui, { wrapper: MemoryRouter });
+function NavigationState() {
+  return <output data-testid="creation-navigation">{JSON.stringify(useLocation().state)}</output>;
+}
 
 const preview: HrPreviewToolResult = {
   kind: 'hr_preview' as const,
@@ -84,6 +90,22 @@ function renderCard(
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
+});
+
+it('confirms a private creation proposal with one click and shows its exact first task', async () => {
+  const proposal = parsePreviewAgentBlueprintResult({ status: 'preview', blueprint_id: 'draft-1',
+    draft_status: 'awaiting_confirmation', blueprint: { name: 'Researcher', permission_scope: 'self' },
+    creation_authorization: { mode: 'policy_direct', first_task: 'Draft the authorized report' } })!;
+  hrMocks.confirm.mockResolvedValue({ blueprint_id: 'draft-1', draft_status: 'completed',
+    blueprint: { name: 'Researcher', permission_scope: 'self' }, created_agent_id: 'confirmed-employee',
+    creation_authorization: { mode: 'policy_direct', first_task: 'Draft the authorized report' } });
+  renderCard(undefined, proposal);
+  expect(screen.getByText('Draft the authorized report')).toBeTruthy();
+  expect(screen.getByText('Access: Only me')).toBeTruthy();
+  expect(hrMocks.confirm).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole('button', { name: 'agent.chat.toolResults.confirmAndCreate' }));
+  await waitFor(() => expect(hrMocks.confirm).toHaveBeenCalledExactlyOnceWith('hr-agent', 'draft-1', { blueprint_version: 1 }));
+  expect((await screen.findByRole('link', { name: 'Talk to it' })).getAttribute('href')).toBe('/agents/confirmed-employee#chat');
 });
 
 it('recovers a requested first task on the existing employee without confirming or navigating', async () => {
@@ -261,7 +283,7 @@ it('shows a compact created bot card with conversation and undo actions', async 
     blueprint_hash: direct.blueprintHash, draft_status: 'completed', blueprint: {},
     created_agent_id: 'weekly-assistant', provisioning: { first_task: { status: 'dispatched', session_id: 'first-work' } } });
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  render(<QueryClientProvider client={client}><HrBlueprintPreviewCard agentId="source" preview={direct} /></QueryClientProvider>);
+  render(<><QueryClientProvider client={client}><HrBlueprintPreviewCard agentId="source" preview={direct} /></QueryClientProvider><NavigationState /></>);
   const open = await screen.findByRole('link', { name: 'Talk to it' });
   expect(open.getAttribute('href')).toBe('/agents/weekly-assistant#chat');
   expect(screen.getByRole('button', { name: 'Undo' })).toBeTruthy();
@@ -270,4 +292,8 @@ it('shows a compact created bot card with conversation and undo actions', async 
   expect(screen.getByText('整理每周工作要点')).toBeTruthy();
   expect(screen.queryByText('Primary users')).toBeNull();
   expect(screen.queryByText(/Authorized from your request/)).toBeNull();
+  fireEvent.click(open);
+  expect(JSON.parse(screen.getByTestId('creation-navigation').textContent!)).toMatchObject({
+    newSessionDraft: { agent_id: 'weekly-assistant', request_id: expect.any(String) },
+  });
 });

@@ -24,8 +24,8 @@ pytestmark = pytest.mark.usefixtures("migrated_pg_url")
 
 
 @pytest.mark.parametrize("input_kind", ["tool_result", "bound_tool_result", "attachment", "unbound", "missing"])
-async def test_websocket_indirect_inputs_never_create_a_draft_or_first_task(
-    direct_origin, owner_sessionmaker, input_kind,
+async def test_websocket_indirect_inputs_preview_without_creating_an_employee_or_first_task(
+    direct_origin, owner_sessionmaker, app_user_sessionmaker, monkeypatch, input_kind,
 ):
     from app.services.llm_client import LLMMessage
     from app.services.session_model_inputs import _hash
@@ -90,13 +90,101 @@ async def test_websocket_indirect_inputs_never_create_a_draft_or_first_task(
         context = replace(context, tool_call_id=None)
     result = json.loads(await create_employee_from_request(ToolExecutionRequest(
         tool_name="create_employee_from_request", context=context, arguments=arguments)))
-    assert result.get("error") == "direct_human_input_required", result
-    assert result["message"] == "请直接告诉我要建什么样的助手。"
+    # Round 3 ruling 2: round-2 item 1 prohibits creation, while the existing
+    # human confirmation card preserves a usable creation path.
+    assert result.get("draft_status") == "awaiting_confirmation", result
+    assert result["blueprint"]["permission_scope"] == "self"
+    assert result["provisioning_task_id"] is None
     async with owner_sessionmaker() as db:
-        assert list(await db.scalars(select(HrCreationDraft).where(HrCreationDraft.tenant_id == user.tenant_id))) == []
+        assert len(list(await db.scalars(select(HrCreationDraft).where(HrCreationDraft.tenant_id == user.tenant_id)))) == 1
         assert len(list(await db.scalars(select(Agent).where(Agent.tenant_id == user.tenant_id)))) == 1
         assert list(await db.scalars(select(RuntimeTask).where(RuntimeTask.tenant_id == user.tenant_id,
             RuntimeTask.task_type.in_(["hr_provisioning", "delegation"])))) == []
+
+    from app.services.hr_creation_service import has_creation_authorization
+    from app.services.hr_provisioning_runtime import build_hr_provisioning_runtime_task, execute_claimed_hr_provisioning
+
+    async with owner_sessionmaker() as db:
+        draft = await db.get(HrCreationDraft, uuid.UUID(result["blueprint_id"]))
+        assert not has_creation_authorization(draft)
+        with pytest.raises(ValueError, match="authenticated confirmation"):
+            build_hr_provisioning_runtime_task(draft)
+    confirmed = await creation._confirm_creation_preview(user, context, result, app_user_sessionmaker)
+    assert confirmed["confirmed_by_user_id"] == str(user.id)
+
+    async def no_refinement(*_args, **_kwargs):
+        return None, "synthetic_transport"
+
+    monkeypatch.setattr("app.tools.handlers.hr._resolve_employee_refinement_model", no_refinement)
+    job_id = uuid.UUID(confirmed["provisioning_task_id"])
+    async with owner_sessionmaker() as db:
+        job = await db.get(RuntimeTask, job_id)
+        job.status = "running"
+        source = await db.get(RuntimeTask, uuid.UUID(context.runtime_task_id))
+        source.status = "completed"
+        await db.commit()
+    assert await execute_claimed_hr_provisioning(job_id) == "completed"
+    assert await execute_claimed_hr_provisioning(job_id) == "completed"
+    async with owner_sessionmaker() as db:
+        draft = await db.get(HrCreationDraft, uuid.UUID(result["blueprint_id"]))
+        employee = await db.get(Agent, draft.created_agent_id)
+        from app.models.agent import AgentPermission
+
+        assert employee.owner_user_id == user.id
+        grants = list(await db.scalars(select(AgentPermission).where(AgentPermission.agent_id == employee.id)))
+        assert grants and all(grant.scope_type == "user" and grant.scope_id == user.id for grant in grants)
+        tasks = list(await db.scalars(select(RuntimeTask).where(RuntimeTask.tenant_id == user.tenant_id,
+            RuntimeTask.task_type == "delegation")))
+        assert len(tasks) == 1 and tasks[0].prompt == arguments["first_task"]
+
+
+@pytest.mark.parametrize("same_requester,group_command", [(True, False), (False, False), (False, True), (True, True)])
+async def test_earlier_commands_create_directly_only_for_the_requester(
+    direct_origin, owner_sessionmaker, same_requester, group_command,
+):
+    from app.models.user import User
+    from app.runtime.context_candidates import ContextMessageOrigin
+    from app.services.llm_client import LLMMessage
+    from app.services.session_model_inputs import _hash
+    from app.tools.handlers.hr import create_employee_from_request
+
+    user, context, _, _ = direct_origin
+    earlier_id, earlier_user = uuid.uuid4(), user.id
+    async with owner_sessionmaker() as db:
+        if not same_requester:
+            # A group member's command retains its own author when included in
+            # the requester's model input; it never inherits the current user.
+            earlier_user = uuid.uuid4()
+            db.add(User(id=earlier_user, tenant_id=user.tenant_id, username=f"other-{earlier_user.hex}",
+                email=f"{earlier_user.hex}@test.local", display_name="Other group member",
+                password_hash="synthetic", role="member"))
+        earlier_session = uuid.UUID(context.session_id)
+        if group_command:
+            from app.services.channel_session import find_or_create_shared_group_session
+
+            group = await find_or_create_shared_group_session(db, tenant_id=user.tenant_id, agent_id=context.agent_id,
+                installation_ref="synthetic-group-installation", chat_id=f"group-{earlier_id}",
+                first_message_title="Group creation suggestion")
+            earlier_session = group.id
+        command = SessionCommand(id=earlier_id, tenant_id=user.tenant_id, session_id=earlier_session,
+            principal_type="user", principal_id=earlier_user, namespace="human_input", command_kind="start_turn",
+            idempotency_key=str(earlier_id), request_hash=_hash({"command_kind": "start_turn",
+                "request": {"content": "Build a research employee"}}),
+            target_hash=_hash({}), request_json={"content": "Build a research employee"}, target_json={},
+            status="applied", receipt_ref=f"input:{earlier_id}")
+        db.add(command)
+        await db.commit()
+    message = LLMMessage(role="user", content="Build a research employee", context_origin=ContextMessageOrigin.capture(
+        kind="human_input", role="user", content="Build a research employee", sources=({
+            "source_kind": "session_command", "source_id": str(earlier_id), "source_version": command.request_hash,
+        },), unbound=()))
+    arguments = _direct_arguments()
+    context = await _seal_direct_call(context, arguments, extra_messages=[message])
+    result = json.loads(await create_employee_from_request(ToolExecutionRequest(
+        tool_name="create_employee_from_request", context=context, arguments=arguments)))
+    direct = same_requester and not group_command
+    assert result.get("draft_status") == ("confirmed" if direct else "awaiting_confirmation"), result
+    assert bool(result["provisioning_task_id"]) is direct
 
 
 async def test_company_tool_off_without_capability_policy_still_refuses(

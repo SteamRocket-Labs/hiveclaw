@@ -1,4 +1,5 @@
 import { renderToStaticMarkup } from 'react-dom/server';
+import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, expect, it, vi } from 'vitest';
 import type { HrCreationDraft } from '../../api/domains/hrCreation';
 import { HrBlueprintPreviewCard } from './HrBlueprintPreviewCard';
@@ -33,7 +34,7 @@ beforeEach(() => {
 function originalCard() {
   const preview = normalizeToolCallResult('create_employee_from_request', state.draft).toolMeta;
   if (preview?.kind !== 'hr_preview') throw new Error('Missing original creation preview');
-  return renderToStaticMarkup(<HrBlueprintPreviewCard agentId="original-agent" preview={preview} />);
+  return renderToStaticMarkup(<MemoryRouter><HrBlueprintPreviewCard agentId="original-agent" preview={preview} /></MemoryRouter>);
 }
 
 it.each(['running', 'resumable', 'suspended'])('opens the bot conversation for %s first task progress', (status) => {

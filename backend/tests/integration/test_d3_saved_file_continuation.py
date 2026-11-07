@@ -15,7 +15,10 @@ from tests.integration.test_m1g24_workspace_artifact_authority_postgres import n
 pytestmark = pytest.mark.usefixtures("migrated_pg_url")
 
 
-@pytest.mark.parametrize("case", ["same", "changed", "forged_hash", "foreign_path", "foreign_agent", "escape"])
+@pytest.mark.parametrize("case", [
+    "same", "changed", "forged_hash", "foreign_path", "foreign_agent", "escape",
+    "invalid_utf8", "storage_unavailable",
+])
 async def test_saved_file_is_checked_at_the_real_model_input_boundary(
     native_workspace, app_user_sessionmaker, case,
 ):
@@ -38,6 +41,27 @@ async def test_saved_file_is_checked_at_the_real_model_input_boundary(
     assert saved.status_code == 200, saved.text
     saved_hash = saved.json()["content_hash"]
     assert saved_hash == hashlib.sha256(saved_text.encode()).hexdigest()
+    if case == "invalid_utf8":
+        from app.services.content_input_receipts import latest_workspace_receipt, record_workspace_receipt
+        from app.services.workspace_resource_authority import register_workspace_path
+
+        raw = b"INVALID_UTF8_FILE_BYTES_MUST_NOT_REACH_MODEL\xff"
+        (n.root / path).write_bytes(raw)
+        saved_hash = hashlib.sha256(raw).hexdigest()
+        async with app_user_sessionmaker() as db:
+            await pin_rls_tenant_context(db, n.tenant)
+            previous = await latest_workspace_receipt(db, n.tenant, n.agent, path)
+            await register_workspace_path(db, tenant_id=n.tenant, agent_id=n.agent, path=path,
+                owner_user_id=n.user, root_session_id=n.session, source="fixture", content_hash=saved_hash)
+            record_workspace_receipt(db, n.tenant, n.agent, path, saved_hash, previous)
+            await db.commit()
+    elif case == "storage_unavailable":
+        from app.services.workspace_resource_authority import WorkspaceAuthorityError
+
+        def unavailable(*_args):
+            raise WorkspaceAuthorityError("workspace_storage_unavailable", "Snapshot storage is unavailable.")
+
+        n.monkeypatch.setattr("app.services.artifact_continuation.snapshot_workspace_file", unavailable)
     reference = {"type": "workspace_file_ref", "agent_id": str(n.agent), "path": path,
                  "human_saved_hash": saved_hash}
     if case == "changed":
@@ -73,10 +97,14 @@ async def test_saved_file_is_checked_at_the_real_model_input_boundary(
     wire_text = json.dumps([m.content for m in messages], ensure_ascii=False)
     assert "LATER_OTHER_VERSION_MUST_NOT_REACH_MODEL" not in wire_text
     assert "PRIVATE_FOREIGN_FILE_BODY" not in wire_text
+    assert "INVALID_UTF8_FILE_BYTES_MUST_NOT_REACH_MODEL" not in wire_text
     assert (saved_text in wire_text.replace("\\n", "\n")) is (case == "same")
-    notice = "文件已不是你保存时的版本，本次未使用它。请重新打开确认后再继续，其他问题可以继续处理。"
-    if case in {"changed", "forged_hash"}:
+    changed_notice = "文件已不是你保存时的版本，本次未使用它。请重新打开确认后再继续，其他问题可以继续处理。"
+    unreadable_notice = "这个文件目前无法读取，本次未使用它。你可以继续处理其他问题，或选择有权打开的文件。"
+    notice = changed_notice if case in {"changed", "forged_hash"} else unreadable_notice
+    if case != "same":
         assert notice in wire_text
+        assert (changed_notice in wire_text) is (case in {"changed", "forged_hash"})
     async with app_user_sessionmaker() as db:
         await pin_rls_tenant_context(db, n.tenant)
         request_id = await prepare_model_request(db, tenant_id=n.tenant, agent_id=n.agent,
@@ -88,11 +116,15 @@ async def test_saved_file_is_checked_at_the_real_model_input_boundary(
         assert "请接着修改我保存的报告，也回答另外的问题。" in captured, result.model_request_snapshot_json["input_bindings"]
         assert ("人修改的决定性内容" in captured) is (case == "same")
         assert "PRIVATE_FOREIGN_FILE_BODY" not in captured
+        assert "INVALID_UTF8_FILE_BYTES_MUST_NOT_REACH_MODEL" not in captured
         assert (await db.get(RuntimeTask, n.run)).status == "running"
         notices = list(await db.scalars(select(ChatTranscriptEvent).where(
             ChatTranscriptEvent.session_id == n.session, ChatTranscriptEvent.item_kind == "assistant_commentary")))
-        if case in {"changed", "forged_hash"}:
+        if case != "same":
+            assert notice in captured
+            assert (changed_notice in captured) is (case in {"changed", "forged_hash"})
             assert any(notice in event.content for event in notices)
+            assert any(changed_notice in event.content for event in notices) is (case in {"changed", "forged_hash"})
         if case == "same":
             assert any(m.context_origin and m.context_origin.sources[0]["source_kind"] == "workspace_artifact"
                        for m in messages)

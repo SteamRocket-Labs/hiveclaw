@@ -349,6 +349,10 @@ export default function AppSidebar({
                   <IconDeviceDesktop size={15} stroke={1.5} />
                   <span>{t('nav.bridge', 'Local connection')}</span>
                 </NavLink>
+                <NavLink to="/connections" className="account-dropdown-item">
+                  <IconWorld size={15} stroke={1.5} />
+                  <span>{t('agent.mcpConnect.title')}</span>
+                </NavLink>
                 {canSeeControlPlane && (
                   <NavLink to="/enterprise/users" className="account-dropdown-item">
                     <IconBuilding size={15} stroke={1.5} />

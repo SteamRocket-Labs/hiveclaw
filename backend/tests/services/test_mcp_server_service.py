@@ -42,6 +42,11 @@ class _SpyDB:
         self.deleted: list = []
         self.committed = False
 
+    async def scalar(self, stmt):
+        # D2 checks the explicit tool deny before the connection-level policy.
+        assert "agent_tools.enabled" in str(stmt)
+        return None
+
     async def execute(self, _stmt):
         from app.models.tenant_tool_config import TenantToolConfig
         columns = getattr(_stmt, "column_descriptions", [])

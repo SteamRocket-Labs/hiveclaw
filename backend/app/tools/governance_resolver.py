@@ -319,10 +319,7 @@ class ToolGovernanceResolver:
                 ) as db:
                     result = await db.execute(
                         select(Tool)
-                        .join(AgentTool, AgentTool.tool_id == Tool.id)
                         .where(
-                            AgentTool.agent_id == agent_id,
-                            AgentTool.enabled.is_(True),
                             Tool.name == target,
                             Tool.type == "mcp",
                             Tool.enabled.is_(True),

@@ -517,7 +517,7 @@ async def test_same_url_credentials_require_concrete_server_tool_identity(
     monkeypatch.setattr("app.services.mcp_client.MCPClient", MCPTransport)
     assert await web_mcp._execute_mcp_tool(tool.name, {"record": "test"}, agent_id) == "Synthetic MCP record"
     assert received == [(oauth_server.server_url, "authorized-second-account")]
-    # A shared runtime tool must not borrow a different connection's use grant.
+    # A shared runtime tool must not bypass an explicitly disabled connection.
     async with owner_sessionmaker() as db:
         db.add(
             MCPServerTool(
@@ -527,6 +527,8 @@ async def test_same_url_credentials_require_concrete_server_tool_identity(
                 mcp_tool_name="lookup",
             )
         )
+        db.add(AgentMCPServerAssignment(tenant_id=oauth_server.tenant_id, agent_id=agent_id,
+            mcp_server_id=oauth_server.server_id, enabled=False, default_tool_mode="auto"))
         await db.commit()
     from app.tools.handlers import mcp
 
@@ -543,7 +545,8 @@ async def test_same_url_credentials_require_concrete_server_tool_identity(
     assert "server_side_only" in await mcp.mcp_auth_status(agent_id, {"server": str(other_id)})
     async with owner_sessionmaker() as db:
         assignment = (
-            await db.execute(select(AgentMCPServerAssignment).where(AgentMCPServerAssignment.agent_id == agent_id))
+            await db.execute(select(AgentMCPServerAssignment).where(
+                AgentMCPServerAssignment.agent_id == agent_id, AgentMCPServerAssignment.mcp_server_id == other_id))
         ).scalar_one()
         assignment.enabled = False
         await db.commit()

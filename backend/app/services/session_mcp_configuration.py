@@ -22,13 +22,12 @@ async def mcp_configuration_snapshot(db, *, target, server_id, user=None, accoun
     )
     if server is None:
         raise HTTPException(status_code=404, detail="MCP connection not found")
-    from app.services.mcp_accounts import account_access, account_public, list_work_accounts
+    from app.services.mcp_accounts import account_access, account_public, personal_account
 
-    account, grant = (
-        await account_access(db, server=server, account_id=account_id or server.id, agent_id=target.id, user=user)
-        if user
-        else (server, None)
-    )
+    if user and account_id is None:
+        own = await personal_account(db, server=server, user_id=user.id)
+        account_id = own.id if own else server.id
+    account = await account_access(db, server=server, account_id=account_id, agent_id=target.id, user=user) if user else server
     assignment = await db.scalar(
         select(AgentMCPServerAssignment)
         .where(
@@ -56,9 +55,9 @@ async def mcp_configuration_snapshot(db, *, target, server_id, user=None, accoun
         )
     ).all()
     override_modes = {row.tool_name: row.mode for row in overrides}
-    mode = assignment.default_tool_mode if assignment else "deny"
+    mode = assignment.default_tool_mode if assignment else "auto"
     usage = {
-        "enabled": bool(assignment and assignment.enabled),
+        "enabled": bool(assignment.enabled) if assignment else True,
         "default_tool_mode": mode,
         "always_load": bool(assignment and assignment.always_load),
     }
@@ -67,7 +66,7 @@ async def mcp_configuration_snapshot(db, *, target, server_id, user=None, accoun
             "id": str(tool.id),
             "fingerprint": current_mcp_fingerprint(tool),
             "approved": is_mcp_metadata_runtime_approved(tool),
-            "enabled": bool(enabled and tool.enabled),
+            "enabled": bool(enabled is not False and tool.enabled),
             "mode": override_modes.get(tool.mcp_tool_name, mode),
         }
         for tool, enabled in rows
@@ -78,8 +77,6 @@ async def mcp_configuration_snapshot(db, *, target, server_id, user=None, accoun
         else 0
     )
     permitted_tool_count = usable
-    if account.owner_user_id and not (grant and grant.enabled):
-        usable = 0
     oauth = (account.config_json or {}).get("oauth") or {}
     token = mcp_oauth.decrypt_token_set(oauth.get("token"))
     refreshable = bool(
@@ -107,7 +104,6 @@ async def mcp_configuration_snapshot(db, *, target, server_id, user=None, accoun
                 "updated_at": server.updated_at.isoformat(),
                 "account": str(account.id),
                 "account_updated_at": account.updated_at.isoformat(),
-                "grant": [str(grant.id), grant.version, grant.enabled] if grant else None,
                 "credential": hashlib.sha256(str(oauth.get("token") or "").encode()).hexdigest(),
                 "authorization": authorization,
                 "usage": usage,
@@ -123,12 +119,7 @@ async def mcp_configuration_snapshot(db, *, target, server_id, user=None, accoun
         "usage": usage,
         "usable_tool_count": usable,
         "permitted_tool_count": permitted_tool_count,
-        "account": {**account_public(account), "grant_version": grant.version if grant else 0},
-        "accounts": await list_work_accounts(db, server=server, agent_id=target.id, user=user)
-        if user
-        else [account_public(server)],
-        "account_use_enabled": not account.owner_user_id or bool(grant and grant.enabled),
-        "can_grant_account": bool(user and account.owner_user_id == user.id),
+        "account": account_public(account),
         "can_authorize": bool(
             user
             and (
@@ -163,24 +154,12 @@ async def validate_mcp_configuration_answer(db, *, payload, user, session_id):
         target=target,
         server_id=uuid.UUID(descriptor["mcp_server_id"]),
         user=user,
-        account_id=uuid.UUID(ready["account_id"]) if ready.get("account_id") else None,
-    )
-    from app.services.mcp_accounts import work_binding_matches
-
-    matches = await work_binding_matches(
-        db,
-        ready=ready,
-        tenant_id=target.tenant_id,
-        agent_id=target.id,
-        session_id=session_id,
-        user_id=user.id,
-        account_id=current["account"]["id"],
     )
     if (
         current["revision"] != ready.get("revision")
         or not current["usable_tool_count"]
         or current["authorization"] != "configured"
-        or not matches
+        or current["account"]["id"] != ready.get("account_id")
     ):
         raise HTTPException(
             status_code=409,

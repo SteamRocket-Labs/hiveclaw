@@ -34,6 +34,25 @@ import {
 } from '../session-workbench/sessionEventStore';
 import { normalizeThreadItemPayload } from '../session-workbench/threadItemReducer';
 
+it('keeps automatic MCP acknowledgement inside its card while preserving other answers', () => {
+  const question: SessionEventV2 = { ...event(1, 'completed'), item_id: 'mcp-question', item_kind: 'user_question',
+    kind: 'user_question.completed', payload_schema: 'hive.session.payload.user_question.completed.v2',
+    payload: { status: 'awaiting_user_clarification', configuration_request: { target_agent_id: 'bot', mcp_server_id: 'documents' },
+      configuration_ready: { receipt_ref: 'confirmed' }, questions: [{ question: 'Connect documents?' }],
+      legacy_event_id: 'mcp-legacy' } };
+  const answer: SessionEventV2 = { ...event(2, 'completed'), item_id: 'mcp-answer', item_kind: 'human_input',
+    kind: 'human_input.accepted', lifecycle: 'accepted', ordinal: undefined,
+    scope: { level: 'session', session_id: 'session-1', thread_id: 'session-1' },
+    payload_schema: 'hive.session.payload.human_input.accepted.v2',
+    payload: { intent: 'answer_request', request_item_id: 'mcp-question', content_parts: [{ type: 'text', text: 'Internal acknowledgement' }] } };
+  const ordinary: SessionEventV2 = { ...answer, sequence: 3, event_id: 'ordinary', item_id: 'ordinary',
+    payload: { ...answer.payload, request_item_id: 'ordinary-question', content_parts: [{ type: 'text', text: 'Keep this answer' }] } };
+  const messages = projectSessionEventStoreToMessages(replay([question, answer, ordinary]));
+  expect(messages.filter(message => message.role === 'user').map(message => message.content)).toEqual(['Keep this answer']);
+  expect(messages.find(message => message.toolMeta?.kind === 'user_clarification')?.toolMeta)
+    .toMatchObject({ answered: true });
+});
+
 it.each(['cancelled', 'needs_reconciliation', 'completed', 'failed'])(
   'updates the same run item to its recorded %s state when sealing the live tail', lifecycle => {
     const pending = { id: 'run-1', role: 'event', content: '', sessionItem: {

@@ -6,7 +6,7 @@ import ToolsManager from './ToolsManager';
 
 vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: (key: string, value: unknown) => typeof value === 'string' ? value : key }) }));
 const api = vi.hoisted(() => ({ listWithConfig: vi.fn(), updateToolConfig: vi.fn(),
-  getAgentExtensions: vi.fn(), getAgentMcpServerTools: vi.fn(), listMcpAccounts: vi.fn() }));
+  getAgentExtensions: vi.fn(), getAgentMcpServerTools: vi.fn(), listMcpAccounts: vi.fn(), getMcpOAuthStatus: vi.fn().mockResolvedValue({ auth_status: 'none' }) }));
 vi.mock('../../api/domains/tools', () => ({ toolsApi: api }));
 vi.mock('../../api/domains/extensions', () => ({ extensionsApi: api }));
 const tool = { id: 'tool', tool_id: 'tool', name: 'lookup', display_name: 'Lookup', type: 'mcp', category: 'mcp',
@@ -71,8 +71,7 @@ it('loads the real account controls on demand for an employee user without compa
   setup();
   api.listMcpAccounts.mockResolvedValue([
     { id: 'server', name: 'Shared connector', owner_user_id: null, can_authorize: false },
-    { id: 'owned', name: 'My documents', owner_user_id: 'requester', can_authorize: false,
-      can_grant_account: true, account_use_enabled: true, grant_version: 3 },
+    { id: 'owned', name: 'My documents', owner_user_id: 'requester', can_authorize: true },
   ]);
   const view = render(<ToolsManager agentId="employee" canManage={false} />);
   const summary = await screen.findByText('agent.mcpAccounts.title');
@@ -80,10 +79,10 @@ it('loads the real account controls on demand for an employee user without compa
   const details = summary.closest('details')!;
   details.open = true;
   fireEvent(details, new Event('toggle'));
-  await screen.findByRole('option', { name: /My documents/ });
+  await screen.findByText('My documents');
   expect(api.listMcpAccounts).toHaveBeenCalledWith('employee', 'server');
-  fireEvent.change(screen.getByRole('combobox'), { target: { value: 'owned' } });
-  expect(await screen.findByRole('button', { name: 'agent.mcpAccounts.removeUse' })).toBeTruthy();
+  // S2 / item 6: personal connections expose removal, without account selection or grants.
+  expect(await screen.findByRole('button', { name: 'agent.mcpConnect.remove' })).toBeTruthy();
   view.rerender(<ToolsManager agentId="another-employee" canManage={false} />);
-  await waitFor(() => expect(screen.queryByRole('combobox')).toBeNull());
+  await waitFor(() => expect(screen.queryByText('My documents')).toBeNull());
 });

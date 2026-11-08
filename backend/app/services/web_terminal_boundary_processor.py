@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any
 import uuid
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 import app.database as _app_database  # late-bound: a test (or redeploy) may rebind the app session factories
@@ -389,11 +389,11 @@ async def _latest_transcript_frontier(
             # File delivery consumes a saved remote packet after execution has
             # ended. It cannot replace that execution's terminal frontier.
             ChatTranscriptEvent.event_type != "remote_a2a_artifacts",
-            # Question answers belong to later input commands. They retain
-            # the question's run scope without advancing that execution's
-            # terminal frontier after its tool result has committed.
+            # Member answers and configuration updates retain the question's
+            # run scope, but do not advance its committed execution frontier.
             or_(ChatTranscriptEvent.item_kind.is_distinct_from('user_question'),
-                ChatTranscriptEvent.command_id.is_(None), ChatTranscriptEvent.input_id.is_(None)),
+                and_(ChatTranscriptEvent.actor_type.is_distinct_from('user'),
+                     or_(ChatTranscriptEvent.command_id.is_(None), ChatTranscriptEvent.input_id.is_(None)))),
         )
         .order_by(ChatTranscriptEvent.sequence.desc())
         .limit(1)

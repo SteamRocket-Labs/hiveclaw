@@ -726,6 +726,7 @@ async def spawn_subagent_tool(request: ToolExecutionRequest) -> str:
         memory_store=memory_store,
         memory_distiller=memory_distiller,
         parent_session_id=request.context.session_id,
+        recovery_metadata={"runtime_task_id": request.context.runtime_task_id},
         budget_run_id=request.context.budget_run_id,
         parent_messages=await _load_parent_messages_for_fork(
             agent_id=agent_id,

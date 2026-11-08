@@ -399,7 +399,7 @@ export function StructuredToolResultBody({
         return agentId && sessionId && requestItemId ? <Suspense fallback={null}>
           <InlineMcpConfigurationCard key={`${agentId}:${sessionId}:${requestItemId}`}
             agentId={agentId} sessionId={sessionId} questionId={requestItemId}
-            question={toolMeta.questions[0]?.question || ''} answered={submitted || toolMeta.answered} onAnswer={onAnswerQuestion} />
+            answered={submitted || toolMeta.answered} onAnswer={onAnswerQuestion} />
         </Suspense> : <p>{toolMeta.questions[0]?.question}</p>;
       }
       if (toolMeta.configurationRequest.channelType) {

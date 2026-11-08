@@ -22,7 +22,7 @@ pytestmark = pytest.mark.usefixtures("migrated_pg_url")
     ("config", False), ("apiKey", False), ("api_key", False), ("config", True),
 ])
 @pytest.mark.parametrize("stored_legacy", [False, True])
-async def test_direct_import_uses_only_the_current_employee_or_explicit_company_credential(
+async def test_direct_import_ignores_stale_bot_keys_and_requires_explicit_company_credential(
     owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, scoped_runtime_factories, entry, company_default,  # noqa: F811
     credential_location, stored_legacy, legacy_unattributed, created_company=False,
 ):
@@ -183,12 +183,13 @@ async def test_direct_import_uses_only_the_current_employee_or_explicit_company_
         for employee in [agent, peer]:
             available = await agent_tools.get_agent_tools_for_llm(employee, requested_names=[tool_name])
             assert tool_name in {row["function"]["name"] for row in available}
-            if (legacy_unattributed or stored_legacy and not company_default) and employee == peer:
+            # S5: stored per-bot keys cannot override or bypass company credential scope.
+            if legacy_unattributed or stored_legacy and not company_default:
                 result = await invoke(employee)
                 (tmp_path / "unattributed-credential-execution.json").write_text(json.dumps({
                     "legacy_unattributed": legacy_unattributed, "observed": list(observed), "result": result}, indent=2))
                 assert "configuration_required" in result, result
-                assert len(observed) == 1, observed
+                assert len(observed) == 0, observed
             else:
                 assert "Public ledger" in await invoke(employee)
         async with app_user_sessionmaker() as db:
@@ -203,10 +204,11 @@ async def test_direct_import_uses_only_the_current_employee_or_explicit_company_
                 "shared_config": shared.config, "first_config": first_config, "second_config": second_config,
                 "raw_employee_key_present": "synthetic-employee-key" in raw}
             (tmp_path / "credential-consumption.json").write_text(json.dumps(snapshot, indent=2))
-        assert observed[0]["authorization"] == "Bearer synthetic-employee-key", snapshot
         expected_peer = "Bearer synthetic-company-key" if company_default else None
         if not (legacy_unattributed or stored_legacy and not company_default):
-            assert observed[1]["authorization"] == expected_peer, snapshot
+            assert [row["authorization"] for row in observed] == [expected_peer, expected_peer], snapshot
+        else:
+            assert observed == [], snapshot
         if created_company:
             rotated = await client.put(f"/api/tools/{tool_id}", json={"config": {
                 **shared.config, "api_key": "synthetic-rotated-company-key"}})
@@ -227,7 +229,7 @@ async def test_direct_import_uses_only_the_current_employee_or_explicit_company_
             (tmp_path / "company-credential-rotation.json").write_text(json.dumps({
                 "observed": list(observed), "employee_config": first_config,
                 "company_employee_assignment": second_config}, indent=2))
-            assert observed[-2]["authorization"] == "Bearer synthetic-employee-key"
+            assert observed[-2]["authorization"] == "Bearer synthetic-rotated-company-key"
             expected_peer = "Bearer synthetic-rotated-company-key"
             assert observed[-1]["authorization"] == expected_peer
         assert first_config.get("api_key") == "synthetic-employee-key" and not second_config.get("api_key")
@@ -258,7 +260,7 @@ async def test_direct_import_uses_only_the_current_employee_or_explicit_company_
                 **current_config, "api_key": "__HIVE_SECRET_SET__"}})
             assert masked.status_code == 200, masked.text
             assert "configuration_required" in await invoke(peer)
-            assert len(observed) == 1
+            assert len(observed) == 0
             if entry == "native" and not company_default and not stored_legacy:
                 from app.models.tenant import Tenant
 
@@ -338,26 +340,32 @@ async def test_direct_import_uses_only_the_current_employee_or_explicit_company_
                 assert restored.status_code == 200, restored.text
         changed = await client.put(f"/api/tools/agents/{agent}/tool-config/{tool_id}",
             json={"config": {"api_key": "synthetic-rotated-employee-key"}})
-        assert changed.status_code == 200, changed.text
-        if stored_legacy and not company_default and not legacy_unattributed:
-            configured_peer = await client.put(f"/api/tools/agents/{peer}/tool-config/{tool_id}",
-                json={"config": {"api_key": "synthetic-peer-key"}})
-            assert configured_peer.status_code == 200, configured_peer.text
-            expected_peer = "Bearer synthetic-peer-key"
-        assert "Public ledger" in await invoke(agent)
-        assert "Public ledger" in await invoke(peer)
-        assert observed[-2]["authorization"] == "Bearer synthetic-rotated-employee-key"
-        assert observed[-1]["authorization"] == expected_peer
+        # S5: the per-bot write route rejects keys; the live company/public scope stays authoritative.
+        assert changed.status_code == 400, changed.text
         async with app_user_sessionmaker() as db:
             await pin_rls_tenant_context(db, tenant)
             assert (await db.get(Tool, tool_id)).mcp_server_url == (legacy_url if stored_legacy else endpoint)
+        configured_peer = await client.put(f"/api/tools/agents/{peer}/tool-config/{tool_id}",
+            json={"config": {"api_key": "synthetic-peer-key"}})
+        assert configured_peer.status_code == 400, configured_peer.text
+        if stored_legacy and not company_default and not legacy_unattributed:
+            before_attempts = len(attempts)
+            assert "configuration_required" in await invoke(agent)
+            assert "configuration_required" in await invoke(peer)
+            assert len(attempts) == before_attempts
+        else:
+            assert "Public ledger" in await invoke(agent)
+            assert "Public ledger" in await invoke(peer)
+            assert observed[-2]["authorization"] == expected_peer
+            assert observed[-1]["authorization"] == expected_peer
+
 
 
 @pytest.mark.parametrize("entry", ["native", "generic", "resources"])
 async def test_company_created_credentials_rotate_without_becoming_employee_overrides(
     owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, scoped_runtime_factories, entry,  # noqa: F811
 ):
-    await test_direct_import_uses_only_the_current_employee_or_explicit_company_credential(
+    await test_direct_import_ignores_stale_bot_keys_and_requires_explicit_company_credential(
         owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, scoped_runtime_factories,
         entry, True, "config", False, False, created_company=True,
     )

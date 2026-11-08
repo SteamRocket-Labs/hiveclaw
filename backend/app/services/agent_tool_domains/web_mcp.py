@@ -2339,10 +2339,10 @@ async def _execute_mcp_tool(tool_name: str, arguments: dict, agent_id: "uuid.UUI
                 at = at_r.scalar_one_or_none()
                 if at is not None and hasattr(at, "enabled") and not bool(at.enabled):
                     return f"❌ MCP tool {tool_name} denied by this agent's tool assignment"
-                if at is None and not bool(getattr(tool, "is_default", False)):
-                    return f"Unknown tool: {tool_name}"
                 agent_config = (getattr(at, "config", None) or {}) if at else {}
                 mode = await resolve_agent_mcp_tool_mode(db, agent_id, tool)
+                if at is None and mode is None and not bool(getattr(tool, "is_default", False)):
+                    return f"Unknown tool: {tool_name}"
                 if mode == "deny":
                     return f"❌ MCP tool {tool_name} denied by this agent's MCP server policy"
             # OAuth bearer (Step 7): server-side encrypted token, resolved + refreshed
@@ -2356,7 +2356,7 @@ async def _execute_mcp_tool(tool_name: str, arguments: dict, agent_id: "uuid.UUI
                 except HTTPException as exc:
                     return render_tool_error(tool_name=tool_name, error_class="forbidden" if exc.status_code == 403 else "configuration_required",
                         message=str(exc.detail), provider="mcp", retryable=False,
-                        actionable_hint="Review the account, requester and employee use grant in the original work.")
+                        actionable_hint="The member can connect their account through the card in this conversation.")
                 if oauth_error:
                     return render_tool_error(
                         tool_name=tool_name,
@@ -2364,7 +2364,7 @@ async def _execute_mcp_tool(tool_name: str, arguments: dict, agent_id: "uuid.UUI
                         message=oauth_error,
                         provider="mcp",
                         retryable=False,
-                        actionable_hint="Re-authorize this MCP server via the OAuth flow (admin MCP controls).",
+                        actionable_hint="Call list_mcp_tools for the connection id, then ask_user_question with configuration.mcp_server_id. Explain the application and purpose; never ask for credentials in chat.",
                     )
                 try:
                     scoped_api_key = await resolve_mcp_api_key(db, tool=tool, tenant_id=tid,
@@ -2372,7 +2372,7 @@ async def _execute_mcp_tool(tool_name: str, arguments: dict, agent_id: "uuid.UUI
                 except MCPStoredCredentialRequired as exc:
                     return render_tool_error(tool_name=tool_name, error_class="configuration_required", message=str(exc),
                         provider="mcp", retryable=False,
-                        actionable_hint="Use secure employee configuration, or ask an administrator to confirm company scope.")
+                        actionable_hint="Call list_mcp_tools, then ask_user_question with configuration.mcp_server_id. The member connects their own account in the conversation.")
                 except MCPAuthzError as exc:
                     return render_tool_error(tool_name=tool_name, error_class="forbidden", message=str(exc),
                         provider="mcp", retryable=False,

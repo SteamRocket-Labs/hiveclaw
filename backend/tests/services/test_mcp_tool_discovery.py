@@ -46,6 +46,11 @@ class _FakeSession:
     async def __aexit__(self, exc_type, exc, tb):
         return False
 
+    async def scalars(self, stmt):
+        # D2 company defaults: these legacy discovery fixtures have no company rows.
+        assert "mcp_servers.id" in str(stmt)
+        return SimpleNamespace(all=lambda: [])
+
     async def execute(self, _stmt):
         if not self._results:
             raise AssertionError("Unexpected execute() call")

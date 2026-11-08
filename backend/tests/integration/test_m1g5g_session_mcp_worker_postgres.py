@@ -116,6 +116,15 @@ async def test_original_work_authorization_reaches_the_actual_successor_worker(
             {"type": "function", "function": {"name": tool.name, "parameters": {"type": "object"}}},
         ],
     )
+    from app.models.session_v2 import SessionInputAdmission
+    from app.services.session_input_dispatch import dispatch_admitted_input_fast_path
+
+    async with scoped() as db:
+        initial_admission = await db.scalar(select(SessionInputAdmission.id).where(
+            SessionInputAdmission.session_id == seed["session_id"]))
+        dispatched = await dispatch_admitted_input_fast_path(db, admission_id=initial_admission,
+            worker_id="oauth-initial-input")
+        assert dispatched.state == "dispatched"
     await asyncio.wait_for(runtime.execute_web_chat_run(seed["run_id"]), 15)
     async with owner_sessionmaker() as db:
         task = await db.get(RuntimeTask, seed["run_id"])
@@ -144,21 +153,6 @@ async def test_original_work_authorization_reaches_the_actual_successor_worker(
 
     monkeypatch.setattr(runtime_task_worker, "tenant_scoped_session", real_tenant_session)
 
-    counts = await drain_terminal_boundary_for_task(
-        runtime_task_worker.drain_web_terminal_boundary_outbox_once,
-        task_id=seed["run_id"],
-        worker_id="oauth-boundary-worker",
-        session_factory=app_user_sessionmaker,
-    )
-    async with owner_sessionmaker() as db:
-        statuses = (
-            await db.scalars(
-                select(RuntimeTerminalBoundaryOutbox.status).where(
-                    RuntimeTerminalBoundaryOutbox.runtime_task_id == seed["run_id"]
-                )
-            )
-        ).all()
-        assert statuses and set(statuses) == {"delivered"}, (counts, statuses)
     from fastapi import FastAPI
     from httpx import AsyncClient, ASGITransport
     from app.api.tools import router as tools_router
@@ -221,11 +215,7 @@ async def test_original_work_authorization_reaches_the_actual_successor_worker(
             )
             assert created.status_code == 200, created.text
             account_id = created.json()["id"]
-            granted = await http.put(
-                f"/api/mcp-accounts/{account_id}/grants/{seed['agent_id']}/{seed['user_id']}",
-                json={"enabled": True, "expected_version": 0},
-            )
-            assert granted.status_code == 200, granted.text
+            # B1 / D2 §3: owner-only personal connections need no grant route.
             personal = await http.post(
                 f"/api/mcp-accounts/{account_id}/oauth/start",
                 json={
@@ -241,16 +231,17 @@ async def test_original_work_authorization_reaches_the_actual_successor_worker(
             )
             assert callback.status_code == 200, callback.text
             selection = {"account_id": account_id}
-            selected = await http.post(endpoint + "/select", json=selection)
+            # R3 item 5: the snapshot finds the new account without a select round trip.
+            selected = await http.get(endpoint)
             assert selected.status_code == 200 and selected.json()["state"] == "waiting", selected.text
-            assert (await http.get(endpoint)).json()["account"]["id"] == account_id
+            assert selected.json()["account"]["id"] == account_id
         assert len(client.requests) == 1
         async with owner_sessionmaker() as db:
             tasks = (
                 await db.scalars(select(RuntimeTask).where(RuntimeTask.root_session_id == str(seed["session_id"])))
             ).all()
             assert len(tasks) == 1 and tasks[0].status == "completed"
-        current = (await http.get(endpoint, params=selection)).json()
+        current = (await http.get(endpoint)).json()
         assert (
             await http.post(endpoint + "/confirm", json={"revision": current["revision"], **selection})
         ).status_code == 200
@@ -265,6 +256,22 @@ async def test_original_work_authorization_reaches_the_actual_successor_worker(
             },
         )
         assert resumed.status_code == 200 and resumed.json()["admission_state"] == "admitted", resumed.text
+    # OAuth can finish before the original terminal outbox is consumed.
+    counts = await drain_terminal_boundary_for_task(
+        runtime_task_worker.drain_web_terminal_boundary_outbox_once,
+        task_id=seed["run_id"],
+        worker_id="oauth-boundary-worker",
+        session_factory=app_user_sessionmaker,
+    )
+    async with owner_sessionmaker() as db:
+        statuses = (
+            await db.scalars(
+                select(RuntimeTerminalBoundaryOutbox.status).where(
+                    RuntimeTerminalBoundaryOutbox.runtime_task_id == seed["run_id"]
+                )
+            )
+        ).all()
+        assert statuses and set(statuses) == {"delivered"}, (counts, statuses)
     # Preserve the production dispatch recovery age; do not shorten its fence.
     await asyncio.sleep(5.1)
     counts = await runtime_task_worker.recover_session_input_dispatches_once(

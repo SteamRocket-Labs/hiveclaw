@@ -1188,6 +1188,8 @@ async def update_tool_config(
     tool = await _get_visible_agent_tool(db, agent, tool_id)
     if not tool:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tool not found")
+    if tool.type == "mcp" and "api_key" in data.config:
+        raise HTTPException(status_code=400, detail="请在对话中连接个人账号，或由管理员配置公司连接。")
     assignment, _ = await ensure_agent_tool_assignment(db, agent_id=agent_id, tool_id=tool.id,
         config=lambda stored: _replace_agent_config(data.config, stored, tool), locked_agent=agent)
     await db.commit()
@@ -1729,7 +1731,7 @@ class McpConfigurationConfirmIn(BaseModel):
     account_id: uuid.UUID | None = None
 
 
-async def _session_mcp_configuration_context(db, current_user, agent_id, session_id, question_id, account_id=None):
+async def _session_mcp_configuration_context(db, current_user, agent_id, session_id, question_id):
     from app.services.session_mcp_configuration import mcp_configuration_snapshot
 
     authority, question, target, descriptor = await _configuration_question_context(
@@ -1737,33 +1739,8 @@ async def _session_mcp_configuration_context(db, current_user, agent_id, session
     )
     if not descriptor.get("mcp_server_id"):
         raise HTTPException(status_code=409, detail="Use the requested configuration settings")
-    from app.services.session_user_question import question_payload
-
-    previous_account = question_payload(question).get("configuration_selected_account_id") or (
-        question_payload(question).get("configuration_ready") or {}
-    ).get("account_id")
-    selected = account_id or (uuid.UUID(previous_account) if previous_account else None)
-    try:
-        snapshot = await mcp_configuration_snapshot(
-            db, target=target, server_id=uuid.UUID(descriptor["mcp_server_id"]), user=current_user, account_id=selected
-        )
-    except HTTPException as exc:
-        if account_id is not None or not previous_account or exc.status_code not in {403, 404}:
-            raise
-        snapshot = await mcp_configuration_snapshot(
-            db, target=target, server_id=uuid.UUID(descriptor["mcp_server_id"]), user=current_user
-        )
-        snapshot["selection_unavailable"] = True
-    from app.services.mcp_accounts import work_binding_matches
-
-    snapshot["work_selection_matches"] = await work_binding_matches(
-        db,
-        ready=question_payload(question).get("configuration_ready") or {},
-        tenant_id=target.tenant_id,
-        agent_id=target.id,
-        session_id=session_id,
-        user_id=current_user.id,
-        account_id=snapshot["account"]["id"],
+    snapshot = await mcp_configuration_snapshot(
+        db, target=target, server_id=uuid.UUID(descriptor["mcp_server_id"]), user=current_user
     )
     _, employee_access = await check_agent_access(db, current_user, target.id)
     snapshot["can_manage_employee"] = employee_access == "manage"
@@ -1775,7 +1752,7 @@ def _session_mcp_configuration_response(question, target, snapshot, user, *, rep
 
     ready = question_payload(question).get("configuration_ready") or {}
     matches = (
-        snapshot["work_selection_matches"]
+        ready.get("account_id") == snapshot["account"]["id"]
         and ready.get("revision") == snapshot["revision"]
         and snapshot["usable_tool_count"] > 0
         and snapshot["authorization"] == "configured"
@@ -1783,6 +1760,7 @@ def _session_mcp_configuration_response(question, target, snapshot, user, *, rep
     return {
         **snapshot,
         "state": "ready" if matches else "waiting",
+        "answered": question.lifecycle == "completed",
         "receipt_ref": ready.get("receipt_ref") if matches else None,
         "target_agent_id": str(target.id),
         "target_agent_name": target.name,
@@ -1796,12 +1774,11 @@ async def get_session_mcp_configuration(
     agent_id: uuid.UUID,
     session_id: uuid.UUID,
     question_id: uuid.UUID,
-    account_id: uuid.UUID | None = None,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     _authority, question, target, snapshot = await _session_mcp_configuration_context(
-        db, current_user, agent_id, session_id, question_id, account_id
+        db, current_user, agent_id, session_id, question_id
     )
     return _session_mcp_configuration_response(question, target, snapshot, current_user)
 
@@ -1819,10 +1796,10 @@ async def confirm_session_mcp_configuration(
     from app.services.session_v2_persistence import SessionEventDraft, append_session_events
 
     authority, question, target, snapshot = await _session_mcp_configuration_context(
-        db, current_user, agent_id, session_id, question_id, data.account_id
+        db, current_user, agent_id, session_id, question_id
     )
     if (
-        (snapshot.get("selection_unavailable") and data.account_id is None)
+        (data.account_id is not None and str(data.account_id) != snapshot["account"]["id"])
         or snapshot["revision"] != data.revision
         or snapshot["authorization"] != "configured"
         or not snapshot["usable_tool_count"]
@@ -1836,22 +1813,12 @@ async def confirm_session_mcp_configuration(
         )
     payload = question_payload(question)
     if (
-        snapshot["work_selection_matches"]
+        (payload.get("configuration_ready") or {}).get("account_id") == snapshot["account"]["id"]
         and (payload.get("configuration_ready") or {}).get("revision") == snapshot["revision"]
     ):
         return _session_mcp_configuration_response(question, target, snapshot, current_user, replayed=True)
     if question.lifecycle not in {"created", "waiting"}:
         raise HTTPException(status_code=409, detail="Configuration request is no longer waiting")
-    from app.models.mcp_server import MCPServer
-    from app.services.mcp_accounts import account_access, bind_work_account
-
-    server = await db.get(MCPServer, uuid.UUID(snapshot["server"]["id"]))
-    account, grant = await account_access(
-        db, server=server, account_id=uuid.UUID(snapshot["account"]["id"]), agent_id=target.id, user=current_user
-    )
-    binding = await bind_work_account(
-        db, server=server, account=account, grant=grant, agent_id=target.id, session_id=session_id, user=current_user
-    )
     events = await append_session_events(
         db,
         tenant_id=authority.tenant_id,
@@ -1869,13 +1836,11 @@ async def confirm_session_mcp_configuration(
                 provider_tool_use_id=question.provider_tool_use_id,
                 payload={
                     **payload,
-                    "configuration_selected_account_id": str(account.id),
                     "configuration_ready": {
                         "receipt_ref": f"mcp-configuration:{uuid.uuid4()}",
                         "target_agent_id": str(target.id),
                         "mcp_server_id": snapshot["server"]["id"],
-                        "account_id": str(account.id),
-                        "binding_id": str(binding.id),
+                        "account_id": snapshot["account"]["id"],
                         "revision": snapshot["revision"],
                     },
                 },
@@ -1883,60 +1848,4 @@ async def confirm_session_mcp_configuration(
         ],
     )
     await db.commit()
-    snapshot["work_selection_matches"] = True
     return _session_mcp_configuration_response(events[0], target, snapshot, current_user)
-
-
-class McpAccountSelectionIn(BaseModel):
-    account_id: uuid.UUID
-
-
-@router.post("/tools/agents/{agent_id}/sessions/{session_id}/questions/{question_id}/mcp/select")
-async def select_session_mcp_account(
-    agent_id: uuid.UUID,
-    session_id: uuid.UUID,
-    question_id: uuid.UUID,
-    data: McpAccountSelectionIn,
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-):
-    from app.services.session_user_question import question_payload
-    from app.services.session_v2_persistence import SessionEventDraft, append_session_events
-
-    authority, question, target, snapshot = await _session_mcp_configuration_context(
-        db, current_user, agent_id, session_id, question_id, data.account_id
-    )
-    if question.lifecycle not in {"created", "waiting"}:
-        raise HTTPException(status_code=409, detail="Configuration request is no longer waiting")
-    payload = question_payload(question)
-    previous = payload.get("configuration_selected_account_id") or (payload.get("configuration_ready") or {}).get(
-        "account_id"
-    )
-    if previous != str(data.account_id):
-        events = await append_session_events(
-            db,
-            tenant_id=authority.tenant_id,
-            agent_id=agent_id,
-            session_id=session_id,
-            drafts=[
-                SessionEventDraft(
-                    item_id=question.item_id,
-                    item_kind="user_question",
-                    lifecycle="waiting",
-                    scope=question.scope_json,
-                    actor=authority.event_actor(),
-                    invocation_id=question.invocation_id,
-                    result_id=question.result_id,
-                    provider_tool_use_id=question.provider_tool_use_id,
-                    payload={
-                        **payload,
-                        "configuration_selected_account_id": str(data.account_id),
-                        "configuration_ready": None,
-                    },
-                )
-            ],
-        )
-        question = events[0]
-        snapshot["work_selection_matches"] = False
-        await db.commit()
-    return _session_mcp_configuration_response(question, target, snapshot, current_user)

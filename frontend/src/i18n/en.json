@@ -3496,6 +3496,20 @@
       "reject": "Reject"
     },
     "details": "Details",
+    "mcpConnect": {
+      "recheck": "I have connected",
+      "title": "Connections",
+      "reason": "Connect {{name}} so I can use it for this task.",
+      "scope": "Your account works with every colleague you ask. Other members cannot use it.",
+      "connect": "Connect my account",
+      "token": "Access token (stored securely and hidden from colleagues)",
+      "continued": "Continued your work",
+      "return": "After you connect, this task continues here automatically.",
+      "unavailable": "This application is unavailable for this colleague. You can continue without it.",
+      "failed": "Couldn't update the connection. Please try again.",
+      "remove": "Remove connection",
+      "empty": "No connected applications yet. I will ask here when a task needs one."
+    },
     "mcpOAuth": {
       "workTitle": "Authorize MCP for this work",
       "title": "OAuth authorization",

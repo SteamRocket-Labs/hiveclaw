@@ -505,13 +505,18 @@ async def _resolve_agent_mcp_gating(db, agent_id: uuid.UUID) -> _MCPGating | Non
     where mode == "deny"}``. Approval handling is intentionally left to the
     downstream capability gate.
     """
-    from app.models.mcp_server import AgentMCPServerAssignment, AgentMCPToolOverride, MCPServerTool
+    from app.models.mcp_server import AgentMCPServerAssignment, AgentMCPToolOverride, MCPServer, MCPServerTool
     from app.services.mcp_backfill import resolve_reachable_tools
 
     assignments_r = await db.execute(
         select(AgentMCPServerAssignment).where(AgentMCPServerAssignment.agent_id == agent_id)
     )
     assignments = list(assignments_r.scalars().all())
+    company_ids = list((await db.scalars(select(MCPServer.id).join(Agent, Agent.tenant_id == MCPServer.tenant_id)
+        .where(Agent.id == agent_id, MCPServer.owner_user_id.is_(None)))).all())
+    assigned_ids = {assignment.mcp_server_id for assignment in assignments}
+    assignments.extend(AgentMCPServerAssignment(mcp_server_id=server_id, enabled=True,
+        default_tool_mode="auto", always_load=False) for server_id in company_ids if server_id not in assigned_ids)
     if not assignments:
         # Not yet backfilled for this agent → signal fallback.
         return None
@@ -847,7 +852,7 @@ async def list_agent_mcp_deferred_tools(agent_id: uuid.UUID, query: str = "") ->
                 # override gating; un-backfilled fall back to legacy is_default /
                 # AgentTool.enabled — a non-default unassigned MCP tool is never listed.
                 if mcp_gating is not None and tid in mcp_gating.reachable_by_tool_id:
-                    reachable = mcp_gating.reachable_by_tool_id[tid]
+                    reachable = mcp_gating.reachable_by_tool_id[tid] and (tid not in assignments or assignments[tid].enabled)
                 else:
                     at = assignments.get(tid)
                     reachable = at.enabled if at else bool(t.is_default)
@@ -959,7 +964,7 @@ async def get_agent_tools_for_llm(
                 # decide reachability (§8.5). Un-backfilled agents (mcp_gating is None,
                 # or tool absent from gating) keep the legacy decision above.
                 if t.type == "mcp" and mcp_gating is not None and tid in mcp_gating.reachable_by_tool_id:
-                    enabled = mcp_gating.reachable_by_tool_id[tid]
+                    enabled = mcp_gating.reachable_by_tool_id[tid] and (at is None or at.enabled)
                 if not enabled:
                     continue
 

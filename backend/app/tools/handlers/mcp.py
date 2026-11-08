@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import uuid
 from pathlib import Path
+from sqlalchemy import or_
+from app.models.mcp_server import MCPServerTool as ConnectionTool
 
 from app.config import get_settings
 from app.runtime.prompts.mcp import (
@@ -21,13 +23,21 @@ from app.tools.decorator import ToolMeta, tool
 from app.tools.result_envelope import render_tool_error
 
 
+def _available_mcp_tools(tenant_id):
+    from sqlalchemy import select
+    from app.models.tool import AgentTool, Tool
+
+    return or_(AgentTool.enabled.is_(True), AgentTool.id.is_(None) & Tool.id.in_(
+        select(ConnectionTool.tool_id).where(ConnectionTool.tenant_id == tenant_id)))
+
+
 def _render_mcp_authz_error(tool_name: str, exc: Exception) -> str:
     from app.services.mcp_authz import MCPStoredCredentialRequired
 
     if isinstance(exc, MCPStoredCredentialRequired):
         return render_tool_error(tool_name=tool_name, error_class="configuration_required", message=str(exc),
             provider="mcp", retryable=False,
-            actionable_hint="Use secure employee tool configuration, or ask an administrator to configure company authorization.")
+            actionable_hint="The member can connect their account through the card in this conversation.")
     return render_tool_error(
         tool_name=tool_name,
         error_class="authz_policy_violation",
@@ -75,10 +85,9 @@ async def list_mcp_tools(agent_id: uuid.UUID, arguments: dict) -> str:
         async with tenant_scoped_session(tid) as db:
             result = await db.execute(
                 select(Tool)
-                .join(AgentTool, AgentTool.tool_id == Tool.id)
+                .outerjoin(AgentTool, (AgentTool.tool_id == Tool.id) & (AgentTool.agent_id == agent_id))
                 .where(
-                    AgentTool.agent_id == agent_id,
-                    AgentTool.enabled.is_(True),
+                    _available_mcp_tools(tid),
                     Tool.type == "mcp",
                     Tool.enabled.is_(True),
                 )
@@ -194,10 +203,9 @@ async def inspect_mcp_tool(agent_id: uuid.UUID, arguments: dict) -> str:
         async with tenant_scoped_session(tid) as db:
             result = await db.execute(
                 select(Tool)
-                .join(AgentTool, AgentTool.tool_id == Tool.id)
+                .outerjoin(AgentTool, (AgentTool.tool_id == Tool.id) & (AgentTool.agent_id == agent_id))
                 .where(
-                    AgentTool.agent_id == agent_id,
-                    AgentTool.enabled.is_(True),
+                    _available_mcp_tools(tid),
                     Tool.name == tool_name,
                     Tool.type == "mcp",
                     Tool.enabled.is_(True),
@@ -372,10 +380,9 @@ async def call_mcp_tool(agent_id: uuid.UUID, arguments: dict, *, execution_conte
     async with tenant_scoped_session(tid) as db:
         result = await db.execute(
             select(Tool)
-            .join(AgentTool, AgentTool.tool_id == Tool.id)
+            .outerjoin(AgentTool, (AgentTool.tool_id == Tool.id) & (AgentTool.agent_id == agent_id))
             .where(
-                AgentTool.agent_id == agent_id,
-                AgentTool.enabled.is_(True),
+                _available_mcp_tools(tid),
                 Tool.name == tool_name,
                 Tool.type == "mcp",
             )
@@ -447,10 +454,10 @@ async def call_mcp_tool(agent_id: uuid.UUID, arguments: dict, *, execution_conte
         except HTTPException as exc:
             return render_tool_error(tool_name="call_mcp_tool", error_class="forbidden" if exc.status_code == 403 else "configuration_required",
                 message=str(exc.detail), provider="mcp", retryable=False,
-                actionable_hint="Review the account and its use grant in the original work.")
+                actionable_hint="The member can connect their account through the card in this conversation.")
         if auth_error:
             return render_tool_error(tool_name="call_mcp_tool", error_class="auth_required", message=auth_error,
-                provider="mcp", retryable=False, actionable_hint="Request MCP OAuth configuration in the original work.")
+                provider="mcp", retryable=False, actionable_hint="Call ask_user_question with configuration.mcp_server_id from list_mcp_tools. Explain the application and purpose; never ask for credentials in chat.")
         try:
             api_key = await resolve_mcp_api_key(db, tool=row, tenant_id=tid,
                 agent_config=agent_config, oauth_bearer=bearer)
@@ -487,7 +494,7 @@ async def _resolve_agent_mcp_server(
     tool_name: str = "mcp_list_resources",
     resolve_oauth: bool = True,
     execution_context=None,
-) -> tuple[str, str | None, str] | str:
+) -> tuple[str, str | None, str] | dict[str, str] | str:
     """Resolve (server_url, api_key) for one MCP server the agent may reach.
 
     Server access follows tool access: the agent must hold at least one enabled,
@@ -515,10 +522,9 @@ async def _resolve_agent_mcp_server(
             (
                 await db.execute(
                     select(Tool)
-                    .join(AgentTool, AgentTool.tool_id == Tool.id)
+                    .outerjoin(AgentTool, (AgentTool.tool_id == Tool.id) & (AgentTool.agent_id == agent_id))
                     .where(
-                        AgentTool.agent_id == agent_id,
-                        AgentTool.enabled.is_(True),
+                        _available_mcp_tools(tid),
                         Tool.type == "mcp",
                         Tool.enabled.is_(True),
                     )
@@ -591,11 +597,35 @@ async def _resolve_agent_mcp_server(
             return _render_mcp_authz_error(tool_name, exc)
         api_key = config.get("api_key")
         if not resolve_oauth:
+            if connection_id in ids_by_tool.get(row.id, []):
+                from app.models.agent import Agent
+                from app.models.mcp_server import MCPServer
+                from app.models.user import User
+                from app.services.mcp_accounts import resolve_work_account
+                from app.services.session_mcp_configuration import mcp_configuration_snapshot
+                from fastapi import HTTPException
+
+                parent = await db.get(MCPServer, uuid.UUID(connection_id))
+                try:
+                    account, _ = await resolve_work_account(db, server=parent, agent_id=agent_id, context=execution_context)
+                    user = await db.get(User, account.owner_user_id) if account.owner_user_id else None
+                    snapshot = await mcp_configuration_snapshot(db, target=await db.get(Agent, agent_id),
+                        server_id=parent.id, user=user, account_id=account.id)
+                    if not account.owner_user_id and not (account.config_json or {}).get("oauth"):
+                        configured_key = await resolve_mcp_api_key(db, tool=row, tenant_id=tid, agent_config=agent_config)
+                        if configured_key:
+                            snapshot["authorization"] = "configured"
+                    return {"server_name": snapshot["server"]["name"], "authorization": snapshot["authorization"]}
+                except HTTPException as exc:
+                    return render_tool_error(tool_name=tool_name, error_class="configuration_required",
+                        message=str(exc.detail), provider="mcp", retryable=False)
+                except MCPAuthzError as exc:
+                    return _render_mcp_authz_error(tool_name, exc)
             try:
                 api_key = await resolve_mcp_api_key(db, tool=row, tenant_id=tid, agent_config=agent_config)
             except MCPAuthzError as exc:
                 return _render_mcp_authz_error(tool_name, exc)
-            return split_mcp_server_url_and_api_key(url)[0], api_key, name
+            return {"server_name": name, "authorization": "configured" if api_key else "required"}
         from app.services.mcp_server_service import resolve_mcp_oauth_bearer
 
         from fastapi import HTTPException
@@ -606,10 +636,10 @@ async def _resolve_agent_mcp_server(
         except HTTPException as exc:
             return render_tool_error(tool_name=tool_name, error_class="forbidden" if exc.status_code == 403 else "configuration_required",
                 message=str(exc.detail), provider="mcp", retryable=False,
-                actionable_hint="Review the account and its use grant in the original work.")
+                actionable_hint="The member can connect their account through the card in this conversation.")
         if auth_error:
             return render_tool_error(tool_name=tool_name, error_class="auth_required", message=auth_error,
-                provider="mcp", retryable=False, actionable_hint="Request MCP OAuth configuration in the original work.")
+                provider="mcp", retryable=False, actionable_hint="Call ask_user_question with configuration.mcp_server_id from list_mcp_tools. Explain the application and purpose; never ask for credentials in chat.")
         try:
             api_key = await resolve_mcp_api_key(db, tool=row, tenant_id=tid,
                 agent_config=agent_config, oauth_bearer=bearer)
@@ -923,17 +953,15 @@ async def mcp_get_prompt(agent_id: uuid.UUID, arguments: dict, *, execution_cont
         adapter="agent_args",
     )
 )
-async def mcp_auth_status(agent_id: uuid.UUID, arguments: dict) -> str:
-    resolved = await _resolve_agent_mcp_server(agent_id, arguments.get("server"), tool_name="mcp_auth_status", resolve_oauth=False)
+async def mcp_auth_status(agent_id: uuid.UUID, arguments: dict, *, execution_context=None) -> str:
+    resolved = await _resolve_agent_mcp_server(agent_id, arguments.get("server"), tool_name="mcp_auth_status", resolve_oauth=False, execution_context=execution_context)
     if isinstance(resolved, str):
         return resolved
-    server_url, api_key, server_name = resolved
     return "\n".join(
         [
             "## MCP Auth Status",
-            f"- server: {server_name}",
-            f"- url: {server_url}",
-            f"- api_key: {'configured' if api_key else 'not_configured'}",
+            f"- server: {resolved['server_name']}",
+            f"- authorization: {resolved['authorization']}",
             "- oauth: server_side_only; tokens are never exposed to the agent",
         ]
     )

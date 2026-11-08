@@ -855,7 +855,11 @@ def fingerprint_rls_bypass_scopes(app_root: Path) -> str:
 # Merging G2bf with main keeps each entry from one side.
 # A4bf reuses tenant-scoped approval delivery/redrive; typed projection changes add no bypass call or scope.
 # Merging A4bf with main accepts the exact three-way module-source merge of web_chat_runtime.py; no bypass scope changed on both sides.
-RLS_BYPASS_SCOPES_SHA256 = "5cb52ede88bf07f61074b34c5bd2517ddc419f24146143f75ea4576c4b4fdd29"
+# D2 excludes member-owned question updates from the terminal execution frontier; all bypass callsites and authority scopes are unchanged.
+# D2 round 2 retains native answer exclusions and rechecks answers under the run lock;
+# only the two reviewed modules and terminal-frontier query digest change, with no new bypass callsite.
+# Merging D2 with main accepts the exact three-way module-source merge of session_human_input.py; no bypass scope changed on both sides.
+RLS_BYPASS_SCOPES_SHA256 = "d1e13d2185a960cb07811188cff5ffe84016eec98d2159e5258c146dca634606"
 
 
 def scan_rls_bypass_callsites(app_root: Path) -> list[RLSBypassCallsite]:

@@ -15,7 +15,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from fastapi import HTTPException
-from sqlalchemy import String, cast, func, or_, select
+from sqlalchemy import String, case, cast, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.agent import Agent
@@ -799,7 +799,15 @@ def _admitted_input_candidate_statement(
     tenant_id: uuid.UUID | None,
     limit: int,
 ):
-    receipt_boundary_id = SessionInputAdmission.dispatch_receipt_json["terminal_boundary_id"].as_string()
+    receipt_boundary_id = func.replace(
+        SessionInputAdmission.dispatch_receipt_json["terminal_boundary_id"].as_string(), "-", ""
+    )
+    # Preserve the old comparison for compact, missing and malformed receipts,
+    # while leaving the outbox primary key available for an exact lookup.
+    receipt_boundary_uuid = cast(
+        case((receipt_boundary_id.op("~")("^[0-9a-f]{32}$"), receipt_boundary_id)),
+        RuntimeTerminalBoundaryOutbox.id.type,
+    )
     receipt_boundary_status = SessionInputAdmission.dispatch_receipt_json["terminal_boundary_status"].as_string()
     execution_denied_hold = (
         func.coalesce(SessionInputAdmission.dispatch_receipt_json["code"].as_string(), "") == _EXECUTION_DENIED_CODE
@@ -814,9 +822,10 @@ def _admitted_input_candidate_statement(
             == func.replace(cast(SessionInputAdmission.session_id, String), "-", ""),
             RuntimeTerminalBoundaryOutbox.status != "delivered",
             RuntimeTerminalBoundaryOutbox.status == receipt_boundary_status,
-            func.replace(cast(RuntimeTerminalBoundaryOutbox.id, String), "-", "")
-            == func.replace(receipt_boundary_id, "-", ""),
+            RuntimeTerminalBoundaryOutbox.id == receipt_boundary_uuid,
         )
+        .correlate(SessionInputAdmission)
+        .offset(0)
         .exists()
     )
     statement = (

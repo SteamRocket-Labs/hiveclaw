@@ -137,6 +137,9 @@ def apply_agent_content(agent: Any, content: dict[str, Any]) -> None:
     unknown = set(config) - set(_AGENT_CONFIG_FIELDS)
     if unknown:
         raise ValueError(f"unsupported Agent rollback fields: {sorted(unknown)}")
+    from app.domain.agent_lifecycle import validate_system_agent_identity
+
+    validate_system_agent_identity(agent, config)
     for config_field, value in config.items():
         if config_field in {"primary_model_id", "fallback_model_id"}:
             value = _uuid(value)

@@ -273,8 +273,10 @@ async def preview_user_offboarding(
         raise HTTPException(status_code=400, detail="Administrators cannot offboard their own account")
     preview = await build_user_offboarding_preview(db, target_user=target, actor=current_user,
         successor_user_id=successor_user_id)
+    preview_successor_id = successor_user_id or preview.default_successor_id
     return {
         "user_id": str(preview.user_id),
+        "successor_user_id": str(preview_successor_id) if preview_successor_id else None,
         "display_name": preview.display_name,
         "is_active": preview.is_active,
         "owned_agents": preview.owned_agents,

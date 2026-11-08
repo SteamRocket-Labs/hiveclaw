@@ -8,6 +8,17 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import StrEnum
+from typing import Any
+
+
+def validate_system_agent_identity(agent: Any, changes: dict[str, Any]) -> None:
+    """Keep system identity platform-owned across settings and snapshots."""
+    current_class = getattr(agent, "agent_class", None)
+    if current_class == "internal_system":
+        if any(field in changes and changes[field] != getattr(agent, field) for field in ("name", "agent_class")):
+            raise ValueError("The system HR assistant's name and class cannot be changed.")
+    elif changes.get("agent_class") == "internal_system":
+        raise ValueError("Only the platform can create a system HR assistant.")
 
 
 class AgentStatus(StrEnum):

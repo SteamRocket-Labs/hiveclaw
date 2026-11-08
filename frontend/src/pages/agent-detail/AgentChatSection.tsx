@@ -1176,7 +1176,7 @@ function AgentChatSection({
       { percent: composerRuntime.contextUsedPercent },
     )
     : '';
-  const agentDisplayName = (agent as any)?.agent_class === 'internal_system' || agent?.name === '__system_hr__'
+  const agentDisplayName = agent?.agent_class === 'internal_system' && agent?.name === '__system_hr__'
     ? t('agentCreate.hrAgentName', 'HR Agent')
     : effectiveAgentId === assistantAgentId ? t('assistant.title') : assistantNameForDisplay(agent?.name || '', t('assistant.title', 'My Assistant'));
   const permissionModeLabel = getSessionPermissionModeLabel(sessionPermissionMode, t);

@@ -37,6 +37,8 @@ export default function WorkspaceAuditSection({ selectedTenantId }: WorkspaceAud
     'user:role_changed': t('enterprise.audit.roleChanged', 'Role changed'),
     'agent:handover': t('enterprise.audit.agentHandover', 'Digital employee owner changed'),
     'agent:retirement_requested': t('enterprise.audit.agentDeactivated', 'Digital employee deactivated'),
+    'agent:restored': t('enterprise.audit.agentRestored', 'Digital employee restored'),
+    restore_agent: t('enterprise.audit.agentRestored', 'Digital employee restored'),
     'agent:retirement_tracking_ended': t('enterprise.audit.agentTrackingEnded', 'Digital employee task tracking ended'),
     'agent:retirement_work_withdrawal': t('enterprise.audit.agentWorkWithdrawn', 'Digital employee work withdrawn'),
     schedule_tick: t('enterprise.audit.scheduleCheck', 'Scheduled task check'),
@@ -47,10 +49,20 @@ export default function WorkspaceAuditSection({ selectedTenantId }: WorkspaceAud
     heartbeat_error: t('enterprise.audit.periodicError', 'Periodic work failed'),
     server_startup: t('enterprise.audit.startup', 'Service started'),
     test_llm_model_completed: t('enterprise.audit.modelTest', 'Model test'),
+    login: t('enterprise.audit.login', 'Member signed in'),
+    'assistant.provisioned': t('enterprise.audit.assistantCreated', 'Personal assistant created'),
+    'ai_asset.create': t('enterprise.audit.assetCreated', 'Resource created'),
+    'ai_asset.update': t('enterprise.audit.assetUpdated', 'Resource updated'),
+    'ai_asset.revoke': t('enterprise.audit.assetRevoked', 'Resource deactivated'),
   };
   const combinedAuditLogs: AuditLog[] = [
     ...auditLogs,
-    ...(securityAuditEvents?.items || []).map((event) => ({ ...event, id: `security:${event.id}`, user_id: event.actor_id || undefined })),
+    ...(securityAuditEvents?.items || []).filter((event) => event.action !== 'deactivate_agent'
+      && (event.action !== 'restore_agent' || !auditLogs.some((log) => log.action === 'agent:restored'
+        && log.agent_id && log.agent_id === event.resource_id)))
+      .map((event) => ({ ...event, id: `security:${event.id}`, user_id: event.actor_id || undefined,
+        agent_id: event.action === 'restore_agent' ? event.resource_id || undefined : undefined,
+        agent_name: typeof event.details.name === 'string' ? event.details.name : undefined })),
   ].sort((left, right) => Date.parse(right.created_at) - Date.parse(left.created_at));
   const filteredAuditLogs = combinedAuditLogs.filter((log) => auditFilter === 'all'
     || BACKGROUND_ACTIONS.includes(log.action) === (auditFilter === 'background'));

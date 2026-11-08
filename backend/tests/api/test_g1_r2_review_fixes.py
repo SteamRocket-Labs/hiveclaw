@@ -345,7 +345,7 @@ async def test_deactivate_settles_unfinished_runtime_tasks_after_prepare(monkeyp
     tenant_id = uuid4()
     admin = SimpleNamespace(id=uuid4(), role="org_admin", tenant_id=tenant_id)
     agent = SimpleNamespace(
-        id=uuid4(), tenant_id=tenant_id, name="停用时还有活", status="idle",
+        id=uuid4(), tenant_id=tenant_id, name="停用时还有活", status="idle", agent_class="internal_tenant",  # G3f review 3: ordinary employee.
         deleted_at=None, deactivated_at=None, deactivation_reason=None,
     )
     settled: list[dict] = []

@@ -11,7 +11,7 @@ import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import String, and_, func, or_, select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -1081,12 +1081,32 @@ async def list_audit_logs(
     """List audit logs scoped to a tenant (admin only)."""
     # Personnel rows carry tenant_id; legacy agent rows may only carry agent_id.
     target_tenant_id = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
-    query = select(AuditLog, Agent.name).outerjoin(Agent,
-        and_(Agent.id == AuditLog.agent_id, Agent.tenant_id == target_tenant_id)
-    ).where(enterprise_audit_log_scope(target_tenant_id, agent_id=agent_id)
-    ).order_by(AuditLog.created_at.desc()).limit(limit)
+    from app.models.ai_asset import AIAssetRecord
+    from app.models.security_audit import SecurityAuditEvent
+
+    # Lifecycle routes write their asset projection and security event in the
+    # same transaction. Match those exact records, retaining other asset edits.
+    duplicate_lifecycle = select(SecurityAuditEvent.id).where(
+        SecurityAuditEvent.tenant_id == target_tenant_id,
+        SecurityAuditEvent.resource_type == "agent",
+        SecurityAuditEvent.resource_id == AIAssetRecord.native_entity_id,
+        SecurityAuditEvent.actor_id == AuditLog.user_id,
+        SecurityAuditEvent.created_at == AuditLog.created_at,
+        or_(and_(AuditLog.action == "ai_asset.update", SecurityAuditEvent.action == "restore_agent"),
+            and_(AuditLog.action == "ai_asset.revoke", SecurityAuditEvent.action == "deactivate_agent")),
+    ).exists()
+    query = select(AuditLog, Agent.id, Agent.name).outerjoin(AIAssetRecord, and_(
+        AuditLog.action.like("ai_asset.%"), AIAssetRecord.tenant_id == target_tenant_id,
+        AIAssetRecord.asset_type == "agent", AIAssetRecord.id.cast(String) == AuditLog.details["asset_id"].astext,
+    )).outerjoin(Agent, and_(Agent.tenant_id == target_tenant_id,
+        Agent.id == func.coalesce(AIAssetRecord.native_entity_id, AuditLog.agent_id),
+    )).where(enterprise_audit_log_scope(target_tenant_id), ~duplicate_lifecycle)
+    if agent_id is not None:
+        query = query.where(Agent.id == agent_id)
+    query = query.order_by(AuditLog.created_at.desc()).limit(limit)
     result = await db.execute(query)
-    return [AuditLogSummaryOut.model_validate(log).model_copy(update={"agent_name": name}) for log, name in result.all()]
+    return [AuditLogSummaryOut.model_validate(log).model_copy(update={"agent_id": employee_id, "agent_name": name})
+        for log, employee_id, name in result.all()]
 
 
 # ─── Security Audit (SecurityAuditEvent table) ─────────

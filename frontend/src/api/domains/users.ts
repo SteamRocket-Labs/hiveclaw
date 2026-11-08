@@ -25,6 +25,7 @@ export interface ManagedUser {
 
 export interface UserOffboardingPreview {
   user_id: string;
+  successor_user_id: string | null;
   display_name: string;
   is_active: boolean;
   owned_agents: Array<{ id: string; name: string; status: string; agent_class: string }>;

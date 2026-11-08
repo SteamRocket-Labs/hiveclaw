@@ -1319,7 +1319,9 @@ async def _resolve_origin_dependencies(db, *, tenant_id, agent_id, ref):
         from app.services.content_input_receipts import load_skill_input_evidence
 
         pointer = metadata.get("skill_input_receipt")
-        if isinstance(pointer, dict) and pointer.get("sources"):
+        if "skill_input_receipt" in metadata:
+            if not isinstance(pointer, dict) or pointer.get("status") != "verified":
+                return _unique_dependencies(dependencies), False
             try:
                 bound = await load_skill_input_evidence(
                     db,
@@ -1330,10 +1332,12 @@ async def _resolve_origin_dependencies(db, *, tenant_id, agent_id, ref):
                     content_hash=payload["content_hash"],
                     capture={"status": "captured", "receipt_ref": pointer.get("evidence_ref")},
                 )
-                return _unique_dependencies([*dependencies, *bound["sources"]]), inherited_complete and (
-                    bound == pointer and not bound["unbound"] and bool(bound["sources"])
-                )
-            except (ContentInputReceiptError, ValueError, TypeError):
+                if bound["sources"] or bound != pointer or bound["unbound"]:
+                    return _unique_dependencies([*dependencies, *bound["sources"]]), inherited_complete and (
+                        bound == pointer and not bound["unbound"] and bool(bound["sources"])
+                    )
+                # A verified empty Skill inventory carries no source leaf.
+            except (ContentInputReceiptError, ValueError, TypeError, AttributeError):
                 return _unique_dependencies(dependencies), False
     if invocation.tool_name in {"load_skill", "run_skill_tool", "tool_search"}:
         from app.services.content_input_receipts import load_skill_input_evidence
@@ -1393,14 +1397,30 @@ async def _resolve_origin_dependencies(db, *, tenant_id, agent_id, ref):
             return _unique_dependencies(dependencies), False
     if invocation.tool_name not in KNOWLEDGE_TOOL_NAMES:
         # Connector and other ordinary tool results are already bound to their
-        # exact settled invocation. File and skill reads still need their leaves.
-        complete = (invocation.tool_name not in {"read_file", "read_document", "fs_read"}
-            and (invocation.effect_state, payload.get("outcome"))
+        # exact settled invocation. Other file and skill reads still need their leaves.
+        complete = ((invocation.effect_state, payload.get("outcome"))
                 in {("effect_committed", "success"), ("failed", "failed")}
             and model is not None and event.result_id == model.id
             and event.content_hash == payload["content_hash"]
             and payload.get("content_or_error_ref") == invocation.receipt_ref
             and invocation.receipt_ref == f"tool-frame:{payload['content_hash']}")
+        if invocation.tool_name in {"read_file", "read_document", "fs_read"}:
+            mode = arguments.get("mode", "text") if isinstance(arguments, dict) else None
+            complete = (complete and payload.get("outcome") == "success" and isinstance(arguments, dict)
+                and invocation.effective_args_hash == _hash({"tool_name": invocation.tool_name, "arguments": arguments})
+                and "workspace_input_receipt" not in metadata
+                and (invocation.tool_name != "fs_read" or isinstance(mode, str) and mode.strip().lower() in {"text", "document"}))
+            if complete:
+                from app.models.runtime_task import RuntimeTask
+                from app.services.workspace_resource_authority import native_private_session_source_ids, session_source_path_allowed
+
+                task = await db.get(RuntimeTask, invocation.run_id)
+                complete = task is not None and task.tenant_id == tenant_id and task.root_user_id is not None
+                if complete:
+                    # Reuse M1G40 authority from the settled call's requester, never from tool arguments.
+                    sources = await native_private_session_source_ids(db, tenant_id=tenant_id, agent_id=agent_id,
+                        user_id=task.root_user_id, session_id=invocation.session_id, source_path=arguments.get("path"))
+                    complete = session_source_path_allowed(arguments.get("path"), sources) is True
         return _unique_dependencies(dependencies), inherited_complete and complete
     provenance = build_knowledge_provenance(invocation.tool_name, content)
     if not isinstance(provenance, dict) or metadata.get("knowledge_provenance") != provenance:

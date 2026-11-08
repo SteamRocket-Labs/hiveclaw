@@ -7,7 +7,7 @@ import uuid
 from dataclasses import replace
 from typing import Any
 
-from sqlalchemy import or_, select
+from sqlalchemy import select
 
 from app.core.execution_context import get_execution_identity
 from app.database import async_session, tenant_scoped_session
@@ -255,7 +255,7 @@ async def _load_workspace_authority_scope(
                 source="tool_runtime",
                 agent_id=agent_id,
             )
-        from app.services.workspace_resource_authority import load_workspace_authority_scope
+        from app.services.workspace_resource_authority import load_workspace_authority_scope, native_private_session_source_ids
         from app.services.personal_knowledge_access import AgentRuntimePrincipal
 
         scope = await load_workspace_authority_scope(
@@ -266,11 +266,7 @@ async def _load_workspace_authority_scope(
             runtime_principal=AgentRuntimePrincipal(agent_id=agent_id, requester_user_id=user_id,
                 session_id=str(session_id) if session_id else None, runtime_task_id=runtime_task_id),
         )
-        private_sessions = select(ChatSession.id).where(
-            ChatSession.tenant_id == tenant_id, ChatSession.agent_id == agent_id, ChatSession.user_id == user_id,
-            or_(ChatSession.audience_kind.is_(None), ChatSession.audience_kind == "private"),
+        sources = await native_private_session_source_ids(
+            authority_db, tenant_id=tenant_id, agent_id=agent_id, user_id=user_id, session_id=session_id,
         )
-        worker = await authority_db.scalar(private_sessions.where(ChatSession.id == session_id)) if session_id else None
-        sources = await authority_db.scalars(private_sessions) if worker is not None else ()
-        # Native execution never borrows browser administrator inspection rights.
-        return replace(scope, session_source_ids=frozenset(str(value) for value in sources))
+        return replace(scope, session_source_ids=sources)

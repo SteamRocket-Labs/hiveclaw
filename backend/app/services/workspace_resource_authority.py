@@ -78,6 +78,44 @@ def _is_session_source_path(path: str) -> bool:
         for root in ("memory/t0/sessions", "memory/t2/sessions", "memory/sessions", "memory/session_state", "logs"))
 
 
+async def native_private_session_source_ids(db, *, tenant_id, agent_id, user_id, session_id, source_path=None):
+    private_sessions = select(ChatSession.id).where(
+        ChatSession.tenant_id == tenant_id, ChatSession.agent_id == agent_id, ChatSession.user_id == user_id,
+        or_(ChatSession.audience_kind.is_(None), ChatSession.audience_kind == "private"),
+    )
+    worker = await db.scalar(private_sessions.where(ChatSession.id == session_id)) if session_id else None
+    if worker is not None and source_path is not None:
+        try:
+            source_id = uuid.UUID(_session_source_id(normalize_workspace_resource_path(source_path)) or "")
+        except ValueError:
+            return frozenset()
+        private_sessions = private_sessions.where(ChatSession.id == source_id)
+    sources = await db.scalars(private_sessions) if worker is not None else ()
+    # Native execution never borrows browser administrator inspection rights.
+    return frozenset(str(value) for value in sources)
+
+
+def _session_source_id(path: str) -> str | None:
+    for prefix in ("memory/t0/sessions/", "memory/t2/sessions/", "memory/sessions/", "memory/session_state/"):
+        if path.startswith(prefix):
+            return path[len(prefix):].split("/", 1)[0]
+    return None
+
+
+def session_source_path_allowed(path: str, session_source_ids: frozenset[str] | None) -> bool | None:
+    if session_source_ids is None:
+        return None
+    try:
+        normalized = normalize_workspace_resource_path(path)
+    except ValueError:
+        return False
+    # Legacy log headers and filenames are not authenticated source bindings.
+    if normalized == "logs" or normalized.startswith("logs/"):
+        return False
+    source_id = _session_source_id(normalized)
+    return source_id in session_source_ids if source_id is not None else None
+
+
 async def authorize_browser_session_source(
     db: AsyncSession, user: User, *, agent_id: uuid.UUID, path: str,
     operator_view: bool = False, operator_reason: str | None = None,
@@ -474,19 +512,7 @@ class WorkspaceAuthorityScope:
         return any(file == normalized or file.startswith(normalized + "/") for file, _revision, _digest in self.learning_files)
 
     def can_read_session_source(self, path: str) -> bool | None:
-        if self.session_source_ids is None:
-            return None
-        try:
-            normalized = normalize_workspace_resource_path(path)
-        except ValueError:
-            return False
-        # Legacy log headers and filenames are not authenticated source bindings.
-        if normalized == "logs" or normalized.startswith("logs/"):
-            return False
-        for prefix in ("memory/t0/sessions/", "memory/t2/sessions/", "memory/sessions/", "memory/session_state/"):
-            if normalized.startswith(prefix):
-                return normalized[len(prefix):].split("/", 1)[0] in self.session_source_ids
-        return None
+        return session_source_path_allowed(path, self.session_source_ids)
 
     def output_write(self, path: str) -> WorkspaceOutputWrite | None:
         normalized = normalize_workspace_resource_path(path)

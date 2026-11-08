@@ -1277,6 +1277,24 @@ async def _resolve_origin_dependencies(db, *, tenant_id, agent_id, ref):
             db, tenant_id=tenant_id, agent_id=agent_id, invocation=invocation
         )
         return _unique_dependencies([*dependencies, *sources]), inherited_complete and complete
+    if (invocation.tool_name in {"read_file", "read_document", "fs_read"}
+        and isinstance(arguments, dict)
+        and (invocation.tool_name != "fs_read" or (arguments.get("mode") or "text").strip().lower() in {"text", "document"})
+        and invocation.effect_state == "effect_committed" and payload.get("outcome") == "success"
+        and model is not None and event.result_id == model.id
+        and event.content_hash == payload["content_hash"]
+        and payload.get("content_or_error_ref") == invocation.receipt_ref
+        and invocation.receipt_ref == f"tool-frame:{payload['content_hash']}"):
+        from app.models.runtime_task import RuntimeTask
+        from app.services.workspace_resource_authority import native_private_session_source_ids, session_source_path_allowed
+
+        task = await db.get(RuntimeTask, invocation.run_id)
+        if task is not None and task.tenant_id == tenant_id and task.root_user_id is not None:
+            # Reuse M1G40 authority from the settled call's requester, never from tool arguments.
+            sources = await native_private_session_source_ids(db, tenant_id=tenant_id, agent_id=agent_id,
+                user_id=task.root_user_id, session_id=invocation.session_id)
+            if session_source_path_allowed(arguments.get("path"), sources) is True:
+                return _unique_dependencies(dependencies), inherited_complete
     metadata = payload.get("metadata", {})
     if not isinstance(metadata, dict):
         return _unique_dependencies(dependencies), False
@@ -1393,7 +1411,7 @@ async def _resolve_origin_dependencies(db, *, tenant_id, agent_id, ref):
             return _unique_dependencies(dependencies), False
     if invocation.tool_name not in KNOWLEDGE_TOOL_NAMES:
         # Connector and other ordinary tool results are already bound to their
-        # exact settled invocation. File and skill reads still need their leaves.
+        # exact settled invocation. Other file and skill reads still need their leaves.
         complete = (invocation.tool_name not in {"read_file", "read_document", "fs_read"}
             and (invocation.effect_state, payload.get("outcome"))
                 in {("effect_committed", "success"), ("failed", "failed")}

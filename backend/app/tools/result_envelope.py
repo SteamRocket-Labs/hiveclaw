@@ -180,12 +180,12 @@ def render_tool_fallback(
     error_class: str,
     message: str,
     fallback_tool: str,
-    fallback_result: str,
+    fallback_result: str | ToolContentEnvelope,
     provider: str | None = None,
     http_status: int | None = None,
     retryable: bool = False,
     actionable_hint: str | None = None,
-) -> str:
+) -> str | ToolContentEnvelope:
     payload_extra = {"fallback_tool": fallback_tool}
     error_block = render_tool_error(
         tool_name=tool_name,
@@ -197,4 +197,12 @@ def render_tool_fallback(
         actionable_hint=actionable_hint,
         extra=payload_extra,
     )
-    return f"{error_block}\n\n已改用其他方式获取以下结果：\n\n{fallback_result}"
+    from app.tools.service import _tool_result_failed
+
+    if _tool_result_failed(fallback_result) or str(fallback_result).lstrip().startswith("❌"):
+        return f"{error_block}\n\n{fallback_result}"
+    diagnostic = json.loads(error_block.split("<tool_error>", 1)[1].split("</tool_error>", 1)[0])
+    return ToolContentEnvelope(
+        text=f"已改用其他方式获取以下结果：\n\n{fallback_result}",
+        metadata={**getattr(fallback_result, "metadata", {}), "primary_tool_error": diagnostic},
+    )

@@ -22,6 +22,14 @@ def _pin_public_web_targets(monkeypatch):
 
 
 def _extract_tool_error_payload(result: str) -> dict:
+    from app.tools.result_envelope import ToolContentEnvelope
+
+    if isinstance(result, ToolContentEnvelope):
+        from app.tools.service import _tool_result_failed
+
+        assert not _tool_result_failed(result)
+        assert "<tool_error>" not in result.text
+        return result.metadata["primary_tool_error"]
     marker = "<tool_error>"
     end_marker = "</tool_error>"
     start = result.index(marker) + len(marker)

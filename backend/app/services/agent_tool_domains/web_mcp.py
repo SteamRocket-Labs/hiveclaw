@@ -320,7 +320,7 @@ def _looks_like_incomplete_rendered_page(markup: str, extracted_text: str) -> bo
 
 
 def _provider_result_failed(result: str) -> bool:
-    normalized = (result or "").strip()
+    normalized = str(result or "").strip()
     return normalized.startswith("❌") or "<tool_error>" in normalized
 
 

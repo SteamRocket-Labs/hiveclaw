@@ -5,6 +5,7 @@ from __future__ import annotations
 import uuid
 from pathlib import Path
 
+from app.memory.rendering import quote_memory_text
 from app.services.session_recall import SessionRecallError, search_session_history
 from app.tools.decorator import RESULT_CHARS_UNLIMITED, ToolMeta, tool
 
@@ -916,9 +917,7 @@ def load_memory(
         for entry in explicit_entries:
             if entry.status != "active":
                 continue
-            lines.append(_render_memory_fact(entry.content, entry.entry_id))
-            if entry.source_refs:
-                lines.append(f"  来源参考（仅供核对，不要向用户展示）：{', '.join(entry.source_refs)}")
+            lines.append(_render_memory_fact(entry.content, entry.entry_id, source=", ".join(entry.source_refs)))
     for entry in visible_entries:
         lines.append(_render_memory_fact(entry.content, entry.entry_id, source=entry.source, timestamp=entry.timestamp))
     missing = [entry_id for entry_id in ids if entry_id not in found_ids and entry_id not in suppressed_ids]
@@ -932,13 +931,13 @@ def load_memory(
 
 
 def _render_memory_fact(content, entry_id, *, source="", timestamp=""):
-    lines = [f"- {content}"]
+    lines = [f"- {quote_memory_text(content)}"]
     if timestamp:
-        lines.append(f"  记录时间：{timestamp}")
+        lines.append(f"  记录时间：{quote_memory_text(timestamp)}")
+    if source:
+        lines.append(f"  来源参考（仅供核对，不要向用户展示）：{quote_memory_text(source)}")
     if entry_id:
         lines.append(f"  管理引用（仅用于读取、更正或忘记，不要向用户展示）：id={entry_id}")
-    if source:
-        lines.append(f"  来源参考（仅供核对，不要向用户展示）：{source}")
     return "\n".join(lines)
 
 
@@ -970,9 +969,9 @@ def _memory_availability(content, issues):
 
     return (
         content
-        + "\n\n## 可用情况\n目前只读到了部分记忆，暂不可用的部分不能用来下结论。\n"
+        + "\n\n## 可用情况\n"
         + json.dumps({"schema": "hive.explicit_memory_availability.v1", "status": "partial", "issues": issues,
-            "message": "部分记忆暂时无法读取，可以稍后重试。"}, ensure_ascii=False)
+            "message": "目前只读到了部分记忆，暂不可用的部分不能用来下结论，可以稍后重试。"}, ensure_ascii=False)
     )
 
 

@@ -749,6 +749,7 @@ async def _build_system_prompt(
         source_refs=source_refs,
         source_unbound=source_unbound,
         runtime_request=directory_request,
+        requesting_user_id=request.user_id,
     )
     return build_frozen_prompt_prefix(
         agent_context=agent_context,

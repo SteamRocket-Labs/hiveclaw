@@ -13,45 +13,31 @@ from app.services.session_model_inputs import _hash
 _KIND = "native_tool_timeout"
 
 
-def _timeout_text(tool_name, seconds, *, legacy_format=False):
+def _timeout_text(tool_name, seconds, *, legacy_format=False, retryable=None):
     from app.tools.result_envelope import render_tool_error
 
-    if legacy_format:
-        return _historical_timeout_text(tool_name, seconds, retryable=True)
+    retryable = legacy_format if retryable is None else retryable
     return render_tool_error(
         tool_name=tool_name,
         error_class="timeout",
         message=f"{tool_name} exceeded the {int(seconds)} second time limit.",
         provider="runtime",
-        retryable=False,
+        retryable=retryable,
         actionable_hint=(
-            "The execution outcome is unknown. Inspect the original tool's state or read back its output "
+            "Try a simpler request, smaller input, or a more targeted operation."
+            if retryable else "The execution outcome is unknown. Inspect the original tool's state or read back its output "
             "before requesting another effect."
         ),
-        extra={"timeout_seconds": int(seconds)},
+        extra=None if legacy_format else {"timeout_seconds": int(seconds)},
+        legacy_format=legacy_format,
     )
-
-
-def _historical_timeout_text(tool_name, seconds, *, retryable):
-    from app.tools.result_envelope import render_tool_error
-
-    message = f"{tool_name} exceeded the {int(seconds)} second time limit."
-    hint = (
-        "Try a simpler request, smaller input, or a more targeted operation."
-        if retryable else "The execution outcome is unknown. Inspect the original tool's state or read back its output "
-        "before requesting another effect."
-    )
-    return render_tool_error(tool_name=tool_name, error_class="timeout", message=message, provider="runtime",
-        retryable=retryable, actionable_hint=hint, legacy_format=True)
 
 
 def _timeout_content_hash_matches(tool_name, seconds, content_hash):
     # Older receipts bind the exact former text. Validate those immutable
     # bytes without emitting their retry suggestion for a new execution.
-    return content_hash in {
-        _hash(_timeout_text(tool_name, seconds)),
-        *(_hash(_historical_timeout_text(tool_name, seconds, retryable=retry)) for retry in (False, True)),
-    }
+    return any(_hash(_timeout_text(tool_name, seconds, legacy_format=legacy, retryable=retry)) == content_hash
+        for legacy, retry in ((False, False), (True, False), (True, True)))
 
 
 def _unavailable():

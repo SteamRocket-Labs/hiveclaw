@@ -15,9 +15,9 @@ def payload(text):
 def test_default_assistant_identity_uses_the_chinese_ui_name():
     from app.runtime.prompt_sections.identity import build_identity_section
 
-    section = build_identity_section("My Assistant", soul_text="I am My Assistant.")
-    assert 'Your current display name is "我的助理".' in section
-    assert section.index('Your current display name is "我的助理".') > section.index("### Personality")
+    section = build_identity_section("My Assistant", soul_text="I am My Assistant.", member_assistant=True)
+    assert 'The member sees you as "我的助理" in the Chinese interface or "My Assistant" in the English interface' in section
+    assert section.index('The member sees you as "我的助理"') > section.index("### Personality")
     custom = build_identity_section("周报助手")
     assert 'Your current display name is "周报助手".' in custom
 
@@ -120,9 +120,9 @@ INTERNAL_FILES = (
     "memory/.staging/t2_episode_jobs/job/source_bundle.json",
     "memory/.staging/t3_jobs/job/consolidation_pitch.md",
     "memory/.archive/t2/sessions/session/summary.md",
-    "memory/t0/sessions/session/events.jsonl",
-    "memory/t2/sessions/session/segments/segment/summary.md",
-    "memory/sessions/session/segments/segment/review.md",
+    "memory/.rollback/soul/old.md",
+    "memory/.dream_workspace/scratch.md",
+    "memory/learnings/legacy.md",
     "memory/control/t2_job_sweep.json",
     "memory/indexes/wiki_map.md",
     "memory/retired_artifacts/memory.json",
@@ -151,6 +151,9 @@ def test_file_tools_hide_platform_memory_records_but_keep_user_files(tmp_path, p
     for reader in (read_file, fs_read):
         error = payload(reader(tmp_path, {"path": path}))
         assert error["error_class"] == "auth_or_permission"
+        case_alias = path.upper()
+        if (tmp_path / case_alias).exists():
+            assert payload(reader(tmp_path, {"path": case_alias}))["error_class"] == "auth_or_permission"
     assert payload(fs_list(tmp_path, {"path": path}))['ok'] is False
     listing = str(fs_list(tmp_path, {"path": "memory"}))
     assert path.split("/")[1] not in listing

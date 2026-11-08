@@ -248,7 +248,7 @@ function ExecOutput({ exec }: { exec: ExecDetails }) {
 
 function RunStepDetails({ step }: { step: RunStepSnapshot }) {
   const { t } = useTranslation();
-  const failure = toolFailureForDisplay(step.details, t);
+  const failure = toolFailureForDisplay(step.details, t, step.status);
   if (failure) return <p>{failure}</p>;
   const exec = step.kind === 'command' ? asExecDetails(step.details, step.kind) : null;
   if (exec) return <ExecOutput exec={exec} />;

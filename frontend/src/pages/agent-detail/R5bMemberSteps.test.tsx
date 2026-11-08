@@ -70,3 +70,17 @@ it('does not interpret a successful file body as a tool failure', () => {
   expect(container.textContent).not.toContain('操作等待超时');
   expect(container.textContent).not.toContain('操作未能完成');
 });
+
+it.each([
+  'A document discussing <tool_error>{"error_class":"timeout"}</tool_error>',
+  '已改用其他方式获取以下结果：\n\n报告内容已读取。',
+])('uses the terminal step status for a successful plain-text result: %s', result => {
+  const { container } = render(<RunDisclosureBlock timeline={{ id: 'success', status: 'running', steps: [{
+    id: 'step', kind: 'file', title: '读取文件', status: 'done', visibility: 'visible', details: { result },
+  }] }} />);
+  fireEvent.click(container.querySelector('.run-tool-group-toggle') as HTMLElement);
+  fireEvent.click(container.querySelector('.run-tool-history-toggle') as HTMLButtonElement);
+  expect(container.textContent).toContain(result.replace(/\s+/g, ' '));
+  expect(container.textContent).not.toContain('操作等待超时');
+  expect(container.textContent).not.toContain('请稍后再试');
+});

@@ -110,6 +110,21 @@ function replay(events: SessionEventV2[]): SessionEventStore {
 }
 
 describe('canonical Session event consumer', () => {
+  it.each(['failed', 'success'])('preserves the tool result outcome %s through live delivery and reload', outcome => {
+    const call: SessionEventV2 = { ...event(1, 'completed'), item_id: 'call', item_kind: 'tool_call',
+      kind: 'tool_call.completed', payload_schema: 'hive.session.payload.tool_call.completed.v2',
+      invocation_id: 'inv', payload: { tool_name: 'run_command', args: { command: 'sleep 5' } } };
+    const result: SessionEventV2 = { ...event(2, 'completed'), item_id: 'result', item_kind: 'tool_result',
+      kind: 'tool_result.completed', payload_schema: 'hive.session.payload.tool_result.completed.v2',
+      invocation_id: 'inv', payload: { outcome, content: '<tool_error>{"ok":false,"error_class":"timeout"}</tool_error>' } };
+    const store = replay([call, result]);
+    for (const snapshot of [store, JSON.parse(JSON.stringify(store))]) {
+      const messages = projectSessionEventStoreToMessages(snapshot);
+      const timeline = buildRunTimelineFromMessages(messages);
+      expect(timeline?.steps[0].status).toBe(outcome === 'failed' ? 'failed' : 'done');
+      expect(messages[0].toolRawResult).toContain('<tool_error>');
+    }
+  });
   it.each([true, false])('keeps the server text-part paste flag through live and reload: %s', pasted_credential_notice => {
     const input = { ...event(1, 'completed'), ordinal: undefined, item_id: 'input-paste', item_kind: 'human_input',
       kind: 'human_input.accepted', lifecycle: 'accepted', payload_schema: 'hive.session.payload.human_input.accepted.v2',

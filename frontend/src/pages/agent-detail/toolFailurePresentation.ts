@@ -1,4 +1,5 @@
 import type { TFunction } from 'i18next';
+import type { RunStepStatus } from './chatDisclosureReducer';
 
 const FAILURE_GROUPS: Array<[string, string[]]> = [
   ['arguments', ['bad_arguments', 'invalid_arguments', 'invalid_input', 'invalid_tool_arguments', 'invalid_approval_form', 'provider_bad_request', 'wrong_tool']],
@@ -16,7 +17,8 @@ const FAILURE_GROUPS: Array<[string, string[]]> = [
 const FAILURE_KIND = Object.fromEntries(FAILURE_GROUPS.flatMap(([kind, names]) => names.map(name => [name, kind])));
 
 /** Only tool failure envelopes are projected; assistant prose is never scanned. */
-export function toolFailureForDisplay(details: unknown, t: TFunction): string | null {
+export function toolFailureForDisplay(details: unknown, t: TFunction, status: RunStepStatus): string | null {
+  if (status !== 'failed') return null;
   const record = details && typeof details === 'object' ? details as Record<string, unknown> : {};
   const raw = typeof details === 'string' ? details : record.result ?? record.output ?? record.rawResult;
   if (typeof raw === 'string') {

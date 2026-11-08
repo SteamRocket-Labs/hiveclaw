@@ -1318,7 +1318,8 @@ async def _check_new_agent_messages(trigger: AgentTrigger) -> bool:
     try:
         tid = await resolve_tenant_for_agent(trigger.agent_id)
         async with tenant_scoped_session(tid) as db:
-            from sqlalchemy import cast as sa_cast, String as SaString, or_
+            from sqlalchemy import cast as sa_cast, String as SaString, or_, true
+            from sqlalchemy.orm import aliased
             from app.models.agent import Agent as AgentModel
             from app.models.participant import Participant
             from app.models.user import User
@@ -1330,6 +1331,33 @@ async def _check_new_agent_messages(trigger: AgentTrigger) -> bool:
                 if msg_id:
                     cfg["_matched_event_key"] = f"chat_message:{msg_id}"
                 return True
+
+            def _latest_session_messages(*message_filters, limit=1, session_filters=(), include_session=False):
+                # A global top N can only contain a session's own top N. Keep
+                # that lookup on the existing conversation/time index before
+                # merging sessions, including the original post-limit filters.
+                candidates = (
+                    select(ChatMessage)
+                    .where(
+                        ChatMessage.conversation_id == sa_cast(ChatSession.id, SaString),
+                        ChatMessage.created_at > since,
+                        *message_filters,
+                    )
+                    .order_by(ChatMessage.created_at.desc())
+                    .limit(limit)
+                    .correlate(ChatSession)
+                    .lateral()
+                )
+                message = aliased(ChatMessage, candidates)
+                statement = select(message, ChatSession) if include_session else select(message)
+                return (
+                    statement
+                    .select_from(ChatSession)
+                    .join(candidates, true())
+                    .where(ChatSession.agent_id == trigger.agent_id, *session_filters)
+                    .order_by(message.created_at.desc())
+                    .limit(limit)
+                )
 
             def _session_sender_identity(session_obj: ChatSession) -> str:
                 from app.services.channel_delivery_service import ChannelDeliveryService
@@ -1430,15 +1458,7 @@ async def _check_new_agent_messages(trigger: AgentTrigger) -> bool:
                 if await _v2_human_match(source_label=from_user_identity):
                     return True
                 result = await db.execute(
-                    select(ChatMessage, ChatSession)
-                    .join(ChatSession, ChatMessage.conversation_id == sa_cast(ChatSession.id, SaString))
-                    .where(
-                        ChatSession.agent_id == trigger.agent_id,
-                        ChatMessage.role == "user",
-                        ChatMessage.created_at > since,
-                    )
-                    .order_by(ChatMessage.created_at.desc())
-                    .limit(20)
+                    _latest_session_messages(ChatMessage.role == "user", limit=20, include_session=True)
                 )
                 for msg, session_obj in result.all():
                     if from_channel and getattr(session_obj, "source_channel", "") != from_channel:
@@ -1493,16 +1513,10 @@ async def _check_new_agent_messages(trigger: AgentTrigger) -> bool:
                     return False
 
                 result = await db.execute(
-                    select(ChatMessage)
-                    .join(ChatSession, ChatMessage.conversation_id == sa_cast(ChatSession.id, SaString))
-                    .where(
-                        ChatSession.agent_id == trigger.agent_id,
+                    _latest_session_messages(
                         ChatMessage.participant_id == from_participant,
-                        ChatMessage.created_at > since,
                         ChatMessage.role == "assistant",
                     )
-                    .order_by(ChatMessage.created_at.desc())
-                    .limit(1)
                 )
                 msg = result.scalar_one_or_none()
                 if not msg:
@@ -1528,16 +1542,10 @@ async def _check_new_agent_messages(trigger: AgentTrigger) -> bool:
                 if await _v2_human_match(user_id=target_user.id, source_label=from_user_name):
                     return True
                 result = await db.execute(
-                    select(ChatMessage)
-                    .join(ChatSession, ChatMessage.conversation_id == sa_cast(ChatSession.id, SaString))
-                    .where(
-                        ChatSession.agent_id == trigger.agent_id,
-                        ChatSession.user_id == target_user.id,
+                    _latest_session_messages(
                         ChatMessage.role == "user",
-                        ChatMessage.created_at > since,
+                        session_filters=(ChatSession.user_id == target_user.id,),
                     )
-                    .order_by(ChatMessage.created_at.desc())
-                    .limit(1)
                 )
                 msg = result.scalar_one_or_none()
                 if not msg:

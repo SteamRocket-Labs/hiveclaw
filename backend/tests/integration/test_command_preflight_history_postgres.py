@@ -1,6 +1,7 @@
 """Native command preflight stays bounded as retained conversation history grows."""
 
 import hashlib
+import inspect
 from contextvars import ContextVar
 import platform
 import shlex
@@ -144,6 +145,9 @@ def command_probe(history_workspace, monkeypatch):
         return result
 
     async def measured(_service, *args, **kwargs):
+        # Include the same fixed policy reads even if the 15-second lookup
+        # cache expires while a larger history fixture is being prepared.
+        _service.governance_resolver.clear_lookup_cache()
         active = {"start": time.perf_counter(), "statements": 0}
         token = current.set(active)
 
@@ -226,7 +230,9 @@ async def test_disclosure_rechecks_the_runtime_reader_after_transaction_commit(
         agent_id=n.agent, user_id=n.user, tenant_id=str(n.tenant), session_id=str(n.session),
         runtime_task_id=str(n.run), workspace=n.root))
     async with app_user_sessionmaker() as db:
-        with group_source_read():
+        # BASE predates the optional command-input batching mode.
+        options = {"batch_inputs": True} if "batch_inputs" in inspect.signature(group_source_read).parameters else {}
+        with group_source_read(**options):
             await pin_rls_tenant_context(db, n.tenant)
             _, actor = await _runtime_input_actor(db, n.tenant, request)
             assert actor.id == n.user

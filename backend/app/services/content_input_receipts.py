@@ -101,16 +101,17 @@ def observe_native_directory_read(tool_name, content, *, outcome):
 
 
 class _DisclosureSourceValidations:
-    def __init__(self):
+    def __init__(self, *, batch_inputs=False):
         self.active = True
+        self.batch_inputs = batch_inputs
         self.verified = {}
         self.actors = {}
 
 
 @contextmanager
-def group_source_read():
+def group_source_read(*, batch_inputs=False):
     """Reuse successful exact source checks only inside one reader disclosure."""
-    scope = _DisclosureSourceValidations()
+    scope = _DisclosureSourceValidations(batch_inputs=batch_inputs)
     token = _DISCLOSURE_SOURCE_VALIDATIONS.set(scope)
     try:
         yield
@@ -220,6 +221,11 @@ async def _validate_input_dependencies(
             or (source_key[0] == "session_tool_invocation" and source_key[1:] in _ACTIVE_GROUP_TOOL_SOURCES.get())
         ):
             pending[reader_key] = dependency
+            if not scope.batch_inputs:
+                await _validate_input_dependency_batch(db, tenant_id, [dependency], **context)
+                if scope.active:
+                    scope.verified[reader_key] = (db, user, runtime_request)
+                pending.clear()
     if pending:
         await _validate_input_dependency_batch(db, tenant_id, list(pending.values()), **context)
         if scope.active:
@@ -1467,7 +1473,7 @@ async def _runtime_input_actor(db, tenant_id, request):
     from app.core.source_read_purpose import current_source_recipient
 
     scope = _DISCLOSURE_SOURCE_VALIDATIONS.get()
-    if scope is None or not scope.active:
+    if scope is None or not scope.active or not scope.batch_inputs:
         return await _resolve_runtime_input_actor(db, tenant_id, request)
     key = (id(db), db.get_transaction(), tenant_id, id(request), current_source_recipient())
     if key in scope.actors:
@@ -1837,7 +1843,7 @@ async def authorize_workspace_execution_inputs(request):
                 .order_by(ContentInputReceipt.carrier_ref, ContentInputReceipt.revision.desc())
                 .execution_options(populate_existing=True)
             )} if paths else {}
-            with group_source_read():
+            with group_source_read(batch_inputs=True):
                 for path in sorted(paths):
                     receipt = receipts.get(workspace_artifact_ref(context.agent_id, path))
                     if receipt is None and path not in scope.full_control_paths:

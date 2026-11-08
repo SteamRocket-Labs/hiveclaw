@@ -27,7 +27,7 @@ def _event_checkpoint(event: ChatTranscriptEvent) -> dict[str, Any]:
     return {
         "checkpoint_event_id": str(event.id),
         "sequence": int(event.sequence),
-        "content_preview": user_checkpoint_content(event)[:240],
+        "content_preview": user_checkpoint_content(event, display=True)[:240],
         "created_at": event.created_at.isoformat() if getattr(event, "created_at", None) else None,
     }
 

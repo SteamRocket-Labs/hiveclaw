@@ -608,6 +608,81 @@ def replay_t0_session_events(
     return _validate_replay(events, index=index, agent_id=agent_id, session_id=session_id, complete=True)
 
 
+def find_t0_transcript_event(*, agent_id, session_id, transcript_event_id, transcript_sequence,
+    data_root: Path | str | None = None, after_transcript_event_id=None) -> T0SessionEvent | None:
+    """Recover an append-before-DB-ack from the ordered, unfinished suffix.
+
+    The ordered bridge can supply its last acknowledged predecessor as an
+    exact lower boundary. Numeric transcript order alone cannot prove absence
+    in a ledger written by another caller; those reads fall back to replay.
+    """
+    session_dir = _session_dir(data_root, agent_id, session_id)
+    index = _read_index(session_dir)
+    if not index:
+        return next((event for event in replay_t0_session_events(agent_id=agent_id, session_id=session_id,
+            data_root=data_root) if event.metadata.get("transcript_event_id") == str(transcript_event_id)), None)
+    suffix = []
+    found = None
+    for segment in reversed(index.get("segments") or []):
+        path = session_dir / _segment_events_path(segment)
+        if not path.exists():
+            # Historical Markdown ledgers retain their existing reader and
+            # integrity behavior; current JSONL sessions use the bounded tail.
+            events = _replay_segment_events(session_dir=session_dir, segment=segment,
+                agent_id=agent_id, session_id=session_id)
+            tail = reversed(events)
+        else:
+            tail = _read_jsonl_events_reverse(path=path, segment=segment, session_dir=session_dir,
+                agent_id=agent_id, session_id=session_id)
+        for event in tail:
+            suffix.append(event)
+            if str(event.metadata.get("transcript_event_id") or "") == str(transcript_event_id):
+                found = event
+                break
+            if after_transcript_event_id is not None and str(event.metadata.get("transcript_event_id") or "") == str(after_transcript_event_id):
+                break
+            sequence = event.metadata.get("transcript_sequence")
+            if after_transcript_event_id is None and type(sequence) is int and sequence < transcript_sequence:
+                return next((candidate for candidate in replay_t0_session_events(agent_id=agent_id,
+                    session_id=session_id, data_root=data_root)
+                    if candidate.metadata.get("transcript_event_id") == str(transcript_event_id)), None)
+        else:
+            continue
+        break
+    _validate_replay(suffix, index=index, agent_id=agent_id, session_id=session_id, complete=False)
+    return found
+
+
+def _read_jsonl_events_reverse(*, path, segment, session_dir, agent_id, session_id):
+    try:
+        with path.open("rb") as stream:
+            position = end = stream.seek(0, os.SEEK_END)
+            buffered = b""
+            while position:
+                size = min(position, 8192)
+                position -= size
+                stream.seek(position)
+                lines = (stream.read(size) + buffered).splitlines(keepends=True)
+                buffered = lines.pop(0) if position else b""
+                for raw in reversed(lines):
+                    end -= len(raw)
+                    if not raw.strip():
+                        continue
+                    if not raw.endswith(b"\n"):
+                        raise T0LedgerIntegrityError("t0_record_truncated")
+                    try:
+                        record = json.loads(raw)
+                    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                        raise T0LedgerIntegrityError("t0_record_invalid") from exc
+                    if not isinstance(record, dict):
+                        raise T0LedgerIntegrityError("t0_record_invalid")
+                    yield _event_from_record(record=record, jsonl_path=path,
+                        source_path=session_dir / segment["path"], segment_id=str(segment["segment_id"]),
+                        byte_offset=end, byte_length=len(raw), agent_id=agent_id, session_id=session_id)
+    except OSError as exc:
+        raise T0LedgerIntegrityError("t0_primary_unavailable") from exc
+
+
 def replay_t0_session_events_tail(
     *,
     agent_id: uuid.UUID | str,

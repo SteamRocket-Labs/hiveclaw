@@ -329,6 +329,22 @@ function switchToBot(view: { rerender: (ui: React.ReactElement) => void }, agent
 }
 
 describe('returning to a bot after a bot switch (B5-fix2)', () => {
+  it.each(['listed', 'deep-link'] as const)('reads only transcript, workbench and index for a %s read-only delegation child', async surface => {
+    agentASessions = surface === 'deep-link' ? [] : [sessionOf('agent-child', 's-child', 'Delegated task', {
+      peer_agent_id: 'agent-a', session_kind: 'delegation_run', source_channel: 'agent',
+      actor_type: 'agent', read_only: true,
+    })];
+    mocks.sessionId = 's-child';
+    render(<AgentDetail />);
+    await waitFor(() => expect(mocks.getSessionWorkbench).toHaveBeenCalled(), { timeout: 10000 });
+    await waitFor(() => expect(mocks.getSessionIndex).toHaveBeenCalled());
+    expect(mocks.getSessionTranscript).toHaveBeenCalled();
+    expect(mocks.getSessionLineage).not.toHaveBeenCalled();
+    expect(mocks.getSessionContextUsage).not.toHaveBeenCalled();
+    expect(mocks.listSessionDecisions).not.toHaveBeenCalled();
+    expect(mocks.getRuntimeSummary).not.toHaveBeenCalled();
+  });
+
   it("A → empty B → A selects A's latest conversation and lists A's history", async () => {
     const view = render(<AgentDetail />);
     await waitFor(() => expect(mocks.chatProps?.activeSession?.id).toBe('s-a-1'), { timeout: 10000 });

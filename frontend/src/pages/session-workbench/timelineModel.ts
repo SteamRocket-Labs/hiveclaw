@@ -86,6 +86,8 @@ export interface BuildThreadTimelineInput {
   activeRunId?: string | null;
   /** First-class RuntimePhase for the active turn (backend contract, §3.3). */
   runtimePhase?: string;
+  /** The single read after a live terminal witness is still outstanding. */
+  terminalTranscriptPending?: boolean;
 }
 
 export type CompletionWakeState = 'pending' | 'running' | 'completed' | 'failed';
@@ -2084,6 +2086,7 @@ function threadTimelineInputSignature(input: BuildThreadTimelineInput): string {
     activeRunStatus: input.activeRunStatus ?? null,
     activeRunId: normalizeSessionRunId(input.activeRunId) || null,
     runtimePhase: input.runtimePhase ?? null,
+    terminalTranscriptPending: input.terminalTranscriptPending ?? false,
   });
 }
 
@@ -2159,7 +2162,8 @@ export function buildThreadTimeline(input: BuildThreadTimelineInput): ThreadTime
   );
   const activeRunStatus = mainTurnActiveRunStatus(input, cells);
   const runtimePhaseValue = String(input.runtimePhase || '').trim();
-  const terminalDeliveryPending = runtimePhaseValue === 'done'
+  const terminalDeliveryPending = Boolean(input.terminalTranscriptPending) && (runtimePhaseValue === 'done'
+    || runtimeStatusKey(currentRun?.lifecycle || activeRunStatus || '') === 'done')
     && latestUserMessageIndex(input.messages) >= 0
     && !latestTurnAnswered;
   const retainedProcessRun = keepLatestProcessRunActive(cells, input, activeRunStatus, terminalDeliveryPending);
@@ -2204,7 +2208,10 @@ export function buildThreadTimeline(input: BuildThreadTimelineInput): ThreadTime
   const guidance = runLifecycle === 'needs_reconciliation'
     ? readString(asRecord(blockedRun?.user_blocker) ?? {}, ['next_action'], '') : '';
   const runDisplay = runLifecycle ? runtimeStatusKey(runLifecycle) : null;
-  const headerStatus = runDisplay
+  const terminalStatePending = terminalDeliveryPending || (!runDisplay && !latestTurnAnswered
+    && input.messages[latestUserMessageIndex(input.messages)]?.sessionItem?.kind === 'human_input'
+    && getHeaderStatus(cells, input.isWaiting, input.isStreaming, activeRunStatus, input.runtimePhase) === 'complete');
+  const headerStatus = terminalStatePending ? 'running' : runDisplay
     ? runDisplay === 'done' ? 'complete' : runDisplay === 'stopped' ? 'cancelled' : runDisplay
     : livePhase
     ? livePhaseHeaderStatus(livePhase)
@@ -2215,7 +2222,12 @@ export function buildThreadTimeline(input: BuildThreadTimelineInput): ThreadTime
         : getHeaderStatus(cells, input.isWaiting, input.isStreaming, activeRunStatus, input.runtimePhase);
 
   return {
-    cells: applyCanonicalRunTerminalEvidence(cells, input.messages, activeRunId, runLifecycle, sessionWorkbench?.runtime_tasks),
+    cells: applyCanonicalRunTerminalEvidence(cells, input.messages, activeRunId, runLifecycle, sessionWorkbench?.runtime_tasks)
+      .map(cell => terminalStatePending && cell.kind === 'active_run'
+        && (!headerRunId || !cell.runId || isSameSessionRunId(cell.runId, headerRunId))
+        && cell.timeline.status === 'done'
+        ? { ...cell, timeline: { ...cell.timeline, status: 'running' as const }, phase: undefined }
+        : cell),
     header: {
       title: getSessionTitle(input.activeSession),
       status: headerStatus,

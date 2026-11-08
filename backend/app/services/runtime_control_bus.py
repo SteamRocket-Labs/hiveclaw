@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import asynccontextmanager
 import inspect
 import json
 from datetime import datetime, timezone
@@ -21,6 +22,7 @@ RUNTIME_CONTROL_CHANNEL = "hive:runtime:control"
 RUNTIME_CONTROL_RECONNECT_SECONDS = 2.0
 RUNTIME_CONTROL_PUBLISH_TIMEOUT_SECONDS = 2.0
 TRANSCRIPT_PROJECTION_SWEEP_SECONDS = 5.0
+_TRANSCRIPT_PROJECTION_WAKE: asyncio.Event | None = None
 SESSION_LIFECYCLE_MESSAGE_LIMIT = 100
 _STATE: dict[str, Any] = {
     "running": False,
@@ -436,6 +438,9 @@ async def bridge_transcript_event_to_t0(
     transcript_event_id: str | Any,
     attempts: int = 40,
     retry_delay_seconds: float = 0.25,
+    _batch_db: AsyncSession | None = None,
+    _batch_event: Any = None,
+    _after_transcript_event_id: Any = None,
 ) -> bool:
     event_uuid = _uuid_or_none(transcript_event_id)
     if event_uuid is None:
@@ -443,35 +448,42 @@ async def bridge_transcript_event_to_t0(
         return False
 
     from app.database import async_session, tenant_scoped_session
-    from app.memory.t0.ledger import T0SegmentBoundaryPending, append_t0_session_event, replay_t0_session_events
+    from app.memory.t0.ledger import T0SegmentBoundaryPending, append_t0_session_event, find_t0_transcript_event
     from app.models.audit import ChatMessage
     from app.models.chat_transcript_event import ChatTranscriptEvent
     from app.services.tenant_resolver import resolve_tenant_for_transcript_event
+
+    @asynccontextmanager
+    async def projection_session(tenant_id):
+        if _batch_db is not None:
+            yield _batch_db
+        else:
+            async with tenant_scoped_session(tenant_id, session_factory=async_session,
+                require_tenant=True, source="runtime_control_bus.transcript_t0_bridge") as db:
+                yield db
 
     attempts = max(1, attempts)
     for attempt in range(attempts):
         predecessor_event_ids: list[UUID] = []
         projection_failed = False
-        tenant_id = await resolve_tenant_for_transcript_event(
+        tenant_id = _batch_event.tenant_id if _batch_event is not None else await resolve_tenant_for_transcript_event(
             event_uuid,
             session_factory=async_session,
         )
         if tenant_id is not None:
-            async with tenant_scoped_session(
-                tenant_id,
-                session_factory=async_session,
-                require_tenant=True,
-                source="runtime_control_bus.transcript_t0_bridge",
-            ) as db:
-                result = await db.execute(
-                    select(ChatTranscriptEvent)
-                    .where(
-                        ChatTranscriptEvent.id == event_uuid,
-                        ChatTranscriptEvent.tenant_id == tenant_id,
+            async with projection_session(tenant_id) as db:
+                if _batch_event is None:
+                    result = await db.execute(
+                        select(ChatTranscriptEvent)
+                        .where(
+                            ChatTranscriptEvent.id == event_uuid,
+                            ChatTranscriptEvent.tenant_id == tenant_id,
+                        )
+                        .with_for_update()
                     )
-                    .with_for_update()
-                )
-                transcript_event = result.scalar_one_or_none()
+                    transcript_event = result.scalar_one_or_none()
+                else:
+                    transcript_event = _batch_event
                 if transcript_event is not None:
                     metadata = dict(transcript_event.metadata_json or {})
                     if (
@@ -480,7 +492,7 @@ async def bridge_transcript_event_to_t0(
                     ):
                         return True
 
-                    predecessor_event_ids = await _unprojected_predecessor_transcript_event_ids(
+                    predecessor_event_ids = [] if _batch_event is not None else await _unprojected_predecessor_transcript_event_ids(
                         db,
                         transcript_event=transcript_event,
                     )
@@ -497,18 +509,6 @@ async def bridge_transcript_event_to_t0(
                         actor_id = getattr(chat_message, "user_id", None) or transcript_event.agent_id
                         role = metadata.get("t0_role") or metadata.get("role")
                         source = str(metadata.get("source") or "runtime_control")
-
-                        existing_t0_event = next(
-                            (
-                                event
-                                for event in replay_t0_session_events(
-                                    agent_id=transcript_event.agent_id,
-                                    session_id=transcript_event.session_id,
-                                )
-                                if str(event.metadata.get("transcript_event_id") or "") == str(event_uuid)
-                            ),
-                            None,
-                        )
 
                         def _append_t0_event(*, join_active_segment: bool = False) -> Any:
                             append_metadata = metadata
@@ -548,6 +548,19 @@ async def bridge_transcript_event_to_t0(
                             )
 
                         try:
+                            predecessor = _after_transcript_event_id
+                            if _batch_event is None and transcript_event.sequence > 1:
+                                with db.no_autoflush:
+                                    predecessor = await db.scalar(select(ChatTranscriptEvent.id).where(
+                                        ChatTranscriptEvent.session_id == transcript_event.session_id,
+                                        ChatTranscriptEvent.sequence < transcript_event.sequence,
+                                        ChatTranscriptEvent.projection_status == "projected",
+                                    ).order_by(ChatTranscriptEvent.sequence.desc()).limit(1))
+                            existing_t0_event = find_t0_transcript_event(
+                                agent_id=transcript_event.agent_id, session_id=transcript_event.session_id,
+                                transcript_event_id=event_uuid, transcript_sequence=transcript_event.sequence,
+                                after_transcript_event_id=predecessor,
+                            )
                             if existing_t0_event is None:
                                 try:
                                     # File delivery can follow its run's sealed
@@ -664,20 +677,21 @@ async def bridge_transcript_event_to_t0(
     return False
 
 
-async def sweep_pending_transcript_t0_bridges(*, limit: int = 100, max_attempts: int = 20) -> int:
+async def sweep_pending_transcript_t0_bridges(*, limit: int = 100, max_attempts: int | None = None,
+    retry_failed: bool = True, session_id: UUID | None = None) -> int:
     """Recover committed transcript projections after publish/process failure.
 
-    Only a session's frontier row — the earliest unfinished one — is selected.
-    Bridging a later row drains its unfinished predecessors first, so
-    selecting a descendant would re-drive an earlier failed row (even one
-    already past its attempt cap) through recursion and burn attempts. The
-    frontier guard keeps the sweeper one ordered entry point per session;
-    explicit/manual bridges keep their existing predecessor-drain behavior.
+    Select only each session's unfinished frontier. Live wakes handle pending
+    rows; periodic sweeps also retry failed frontiers, without a permanent cap.
+    An explicit max_attempts remains available to bounded maintenance callers.
     """
     from sqlalchemy.orm import aliased
 
-    from app.database import async_session, enter_rls_bypass
+    from app.database import async_session, enter_rls_bypass, tenant_scoped_session
     from app.models.chat_transcript_event import ChatTranscriptEvent
+
+    limit = max(1, int(limit))
+    statuses = ("pending", "failed") if retry_failed else ("pending",)
 
     earlier_row = aliased(ChatTranscriptEvent)
     no_earlier_unfinished = ~(
@@ -692,21 +706,55 @@ async def sweep_pending_transcript_t0_bridges(*, limit: int = 100, max_attempts:
     async with async_session() as db:
         async with enter_rls_bypass(db, reason="sweep pending transcript T0 projections") as bypass_db:
             result = await bypass_db.execute(
-                select(ChatTranscriptEvent.id)
+                select(ChatTranscriptEvent.id, ChatTranscriptEvent.tenant_id, ChatTranscriptEvent.session_id)
                 .where(
-                    ChatTranscriptEvent.projection_status.in_(("pending", "failed")),
-                    ChatTranscriptEvent.projection_attempts < max(1, int(max_attempts)),
+                    ChatTranscriptEvent.projection_status.in_(statuses),
                     no_earlier_unfinished,
+                    *([ChatTranscriptEvent.projection_attempts < max(1, int(max_attempts))] if max_attempts is not None else []),
+                    *([ChatTranscriptEvent.session_id == session_id] if session_id is not None else []),
                 )
                 .order_by(ChatTranscriptEvent.sequence.asc())
                 .limit(max(1, int(limit)))
             )
-            event_ids = list(result.scalars().all())
+            sessions = list(result.all())
 
     projected = 0
-    for event_id in event_ids:
-        if await bridge_transcript_event_to_t0(transcript_event_id=event_id, attempts=1):
-            projected += 1
+    for frontier_id, tenant_id, session_id in sessions:
+        if projected >= limit:
+            break
+        try:
+            session_projected = 0
+            async with tenant_scoped_session(tenant_id, session_factory=async_session, require_tenant=True,
+                source="runtime_control_bus.transcript_t0_batch") as db:
+                # One ordered owner and transaction for this session's poll batch.
+                frontier = await db.scalar(select(ChatTranscriptEvent.id).where(ChatTranscriptEvent.id == frontier_id,
+                    ChatTranscriptEvent.tenant_id == tenant_id,
+                    ChatTranscriptEvent.projection_status.in_(statuses),
+                ).with_for_update(skip_locked=True))
+                if frontier is None:
+                    continue
+                rows = list((await db.scalars(select(ChatTranscriptEvent).where(
+                    ChatTranscriptEvent.session_id == session_id,
+                    ChatTranscriptEvent.tenant_id == tenant_id,
+                    ChatTranscriptEvent.projection_status.in_(("pending", "failed", "projecting")),
+                ).order_by(ChatTranscriptEvent.sequence).limit(max(1, limit - projected)).with_for_update())).all())
+                predecessor = await db.scalar(select(ChatTranscriptEvent.id).where(
+                    ChatTranscriptEvent.session_id == session_id,
+                    ChatTranscriptEvent.sequence < rows[0].sequence,
+                    ChatTranscriptEvent.projection_status == "projected",
+                ).order_by(ChatTranscriptEvent.sequence.desc()).limit(1)) if rows else None
+                for row in rows:
+                    if (max_attempts is not None and row.projection_attempts >= max_attempts) or row.projection_status not in statuses:
+                        break
+                    if not await bridge_transcript_event_to_t0(transcript_event_id=row.id, attempts=1,
+                        _batch_db=db, _batch_event=row, _after_transcript_event_id=predecessor):
+                        break
+                    predecessor = row.id
+                    session_projected += 1
+            projected += session_projected
+        except Exception as exc:  # noqa: BLE001 - one session must not block other ledgers.
+            _STATE["last_error"] = f"projection_session:{session_id}:{type(exc).__name__}:{exc}"
+            logger.warning("[RuntimeControlBus] transcript projection session {} failed: {}", session_id, exc)
     return projected
 
 
@@ -714,15 +762,32 @@ async def _run_transcript_projection_sweeper(
     *,
     interval_seconds: float = TRANSCRIPT_PROJECTION_SWEEP_SECONDS,
 ) -> None:
-    while True:
-        try:
-            await sweep_pending_transcript_t0_bridges()
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:  # noqa: BLE001 - the next sweep remains a recovery path.
-            _STATE["last_error"] = f"projection_sweeper:{type(exc).__name__}:{exc}"
-            logger.warning("[RuntimeControlBus] transcript projection sweep failed: {}", exc)
-        await asyncio.sleep(max(0.1, interval_seconds))
+    global _TRANSCRIPT_PROJECTION_WAKE
+    wake = _TRANSCRIPT_PROJECTION_WAKE = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    next_retry = loop.time()
+    try:
+        while True:
+            wake.clear()
+            periodic = loop.time() >= next_retry
+            if periodic:
+                next_retry = loop.time() + max(0.1, interval_seconds)
+            try:
+                await sweep_pending_transcript_t0_bridges(retry_failed=periodic)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001 - the next sweep remains a recovery path.
+                _STATE["last_error"] = f"projection_sweeper:{type(exc).__name__}:{exc}"
+                logger.warning("[RuntimeControlBus] transcript projection sweep failed: {}", exc)
+            if wake.is_set():
+                continue
+            try:
+                await asyncio.wait_for(wake.wait(), timeout=max(0.01, next_retry - loop.time()))
+            except asyncio.TimeoutError:
+                pass
+    finally:
+        if _TRANSCRIPT_PROJECTION_WAKE is wake:
+            _TRANSCRIPT_PROJECTION_WAKE = None
 
 
 async def handle_runtime_control_message(message: dict[str, Any]) -> bool:
@@ -756,11 +821,6 @@ async def handle_runtime_control_message(message: dict[str, Any]) -> bool:
         from app.services.subagent_run_service import apply_remote_subagent_cancel
 
         return bool(await _maybe_await(apply_remote_subagent_cancel(str(message.get("run_id") or ""))))
-
-    if event_type == "transcript_t0_bridge":
-        return bool(
-            await bridge_transcript_event_to_t0(transcript_event_id=str(message.get("transcript_event_id") or ""))
-        )
 
     if event_type == "session_lifecycle_hook":
         from app.services.execution_environments import EnvironmentError, command_environment_context
@@ -818,7 +878,14 @@ async def _listen_runtime_control_once() -> None:
         try:
             raw = raw_message.get("data")
             payload = json.loads(raw if isinstance(raw, str) else raw.decode("utf-8"))
-            await handle_runtime_control_message(payload)
+            if payload.get("schema") == RUNTIME_CONTROL_SCHEMA and payload.get("type") == "transcript_t0_bridge":
+                # The existing durable sweeper owns projection. Keeping its
+                # filesystem/DB work off this listener lets cancellation reach
+                # an in-flight provider even when the transcript is behind.
+                if _TRANSCRIPT_PROJECTION_WAKE is not None:
+                    _TRANSCRIPT_PROJECTION_WAKE.set()
+            else:
+                await handle_runtime_control_message(payload)
         except Exception as exc:  # noqa: BLE001 - one malformed control event must not stop listener.
             _STATE["last_error"] = f"{type(exc).__name__}: {exc}"
             logger.warning("[RuntimeControlBus] failed to handle control message: {}", exc)

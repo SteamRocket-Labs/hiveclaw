@@ -2505,6 +2505,7 @@ describe('RuntimePhase in the thread projection (§3 seam 3)', () => {
 
   it('keeps terminal delivery in progress until the accepted answer is consumable', () => {
     const input = {
+      terminalTranscriptPending: true,
       messages: [{ role: 'user', content: 'Return the marker.' }] as AgentChatMessage[],
       isWaiting: false,
       isStreaming: false,
@@ -2592,6 +2593,7 @@ describe('RuntimePhase in the thread projection (§3 seam 3)', () => {
   it('keeps a consumed assistant snapshot visible while the typed terminal answer catches up', () => {
     const marker = 'SESSION-PHASE-FIX-PASS1-20260828-2358-R7';
     const model = buildThreadTimeline({
+      terminalTranscriptPending: true,
       messages: [
         { id: 'accepted-input-1', role: 'user', content: 'Return the marker.' },
         {

@@ -665,6 +665,65 @@ function receiveLiveMessage(data: any) {
     closeSessionSocket: vi.fn(), failAuthentication: vi.fn() });
 }
 
+it.each([
+  ['terminal-first', 'stream'], ['reply-first', 'stream'], ['terminal-first', 'rest'], ['reply-first', 'rest'],
+] as const)('reconciles the final reply and file after an older read across %s %s channels', async (order, channel) => {
+  mocks.userRole = 'member';
+  mocks.activeSessionRun = { run_id: 'run-1', status: 'running' };
+  await mountOwnedArtifactWork();
+  const scope = { level: 'round', session_id: mocks.sessionId, thread_id: mocks.sessionId,
+    turn_id: 'turn-1', run_id: 'run-1', round_id: 'round-1' };
+  const envelope = (sequence: number, item: string, kind: string, payload: Record<string, unknown>) => ({
+    schema: 'hive.session_event', schema_version: 2, event_id: `event-${sequence}`, tenant_id: 'tenant-1',
+    sequence, item_id: item, item_kind: kind, kind: `${kind}.completed`, lifecycle: 'completed',
+    payload_schema: `hive.session.payload.${kind}.completed.v2`, scope, actor: { type: 'runtime' },
+    visibility: { audience: 'direct_user' }, payload,
+    occurred_at: '2026-11-08T00:00:01Z', persisted_at: '2026-11-08T00:00:01Z',
+  });
+  const text = envelope(1, 'text', 'assistant_text', { content: 'The saved continuation is ready.' });
+  const final = envelope(2, 'final', 'assistant_final', { zero_copy: true,
+    source_blocks: [{ item_id: 'text', block_index: 0, content_hash: 'hash' }],
+    parts: [{ type: 'artifact', artifact_id: 'new-report', name: 'report.md', path: 'workspace/report.md' }] });
+  const olderRead = deferred<any[]>();
+  const initialReads = mocks.getSessionTranscript.mock.calls.length;
+  mocks.getSessionTranscript.mockReturnValueOnce(olderRead.promise).mockResolvedValue([text, final]);
+  let read!: unknown;
+  act(() => { read = mocks.transport.callbacks.onBackfill(mocks.chatProps.activeSession, 'agent-1'); });
+  await waitFor(() => expect(mocks.getSessionTranscript.mock.calls.length).toBe(initialReads + 1));
+  if (order === 'reply-first') await act(async () => { receiveLiveMessage(text); receiveLiveMessage(final); });
+  if (channel === 'stream') {
+    await act(async () => { receiveLiveMessage({ type: 'done', run_id: 'run-1', content: '' }); });
+  } else {
+    mocks.activeSessionRun = null;
+    act(() => mocks.chatProps.onSetChatInput('Trigger the authoritative active-run read'));
+  }
+  await waitFor(() => expect(mocks.chatProps.terminalTranscriptPending).toBe(true));
+  await act(async () => { olderRead.resolve([]); await read; });
+  await screen.findByText('The saved continuation is ready.');
+  await waitFor(() => expect(mocks.chatProps.chatMessages.find((message: any) => message.sessionItem?.kind === 'assistant_final')?.artifacts)
+    .toEqual(expect.arrayContaining([expect.objectContaining({ id: 'new-report', path: 'workspace/report.md' })])));
+  expect(mocks.getSessionTranscript.mock.calls.length).toBe(initialReads + 2);
+  await waitFor(() => expect(mocks.chatProps.terminalTranscriptPending).toBe(false));
+});
+
+it.each(['stream', 'rest'] as const)('releases terminal delivery after a fresh %s read with no reply', async channel => {
+  mocks.userRole = 'member';
+  mocks.activeSessionRun = { run_id: 'run-1', status: 'running' };
+  await mountOwnedArtifactWork();
+  await waitFor(() => expect(mocks.chatProps.terminalTranscriptPending).toBe(true));
+  const fresh = deferred<any[]>();
+  mocks.getSessionTranscript.mockReturnValueOnce(fresh.promise);
+  if (channel === 'stream') {
+    await act(async () => { receiveLiveMessage({ type: 'done', run_id: 'run-1', content: '' }); });
+  } else {
+    mocks.activeSessionRun = null;
+    act(() => mocks.chatProps.onSetChatInput('Observe terminal'));
+  }
+  await waitFor(() => expect(mocks.chatProps.terminalTranscriptPending).toBe(true));
+  await act(async () => { fresh.resolve([]); });
+  await waitFor(() => expect(mocks.chatProps.terminalTranscriptPending).toBe(false));
+});
+
 it('replaces the optimistic pasted text from the live server input before the send response', async () => {
   const request = deferred<any>();
   mocks.startSessionRun.mockReturnValue(request.promise);

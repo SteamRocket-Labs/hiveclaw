@@ -1032,7 +1032,10 @@ async def _get_run_session_and_agent(
     require_writable: bool = False,
     require_execution: bool = False,
 ) -> tuple[ChatSession, Agent, str]:
-    result = await db.execute(select(ChatSession).where(ChatSession.id == session_id, ChatSession.agent_id == agent_id))
+    read_only = action in {"read_workbench", "read_session_index"} and not require_writable and not require_execution
+    result = await db.execute(select(ChatSession).where(ChatSession.id == session_id,
+        ((ChatSession.agent_id == agent_id) | (ChatSession.peer_agent_id == agent_id))
+        if read_only else ChatSession.agent_id == agent_id))
     session = result.scalar_one_or_none()
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
@@ -1069,6 +1072,10 @@ async def _get_run_session_and_agent(
         operator_reason=operator_reason,
         require_writable=require_writable,
     )
+    if read_only and session.agent_id != agent.id:
+        agent = await db.scalar(select(Agent).where(Agent.id == session.agent_id, Agent.tenant_id == session.tenant_id))
+        if agent is None:
+            raise HTTPException(status_code=404, detail="Session not found")
     return session, agent, authority_source
 
 
@@ -1987,7 +1994,7 @@ async def get_session_lineage(
     result = await db.execute(
         select(ChatSession)
         .where(
-            ChatSession.agent_id == agent_id,
+            ChatSession.agent_id == session.agent_id,
             ChatSession.listed_surface == "chat",
             (ChatSession.id == root_id) | (ChatSession.root_session_id == root_id),
         )
@@ -2022,7 +2029,7 @@ async def get_session_index(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    await _get_run_session_and_agent(
+    session, _agent, _authority_source = await _get_run_session_and_agent(
         db=db,
         agent_id=agent_id,
         session_id=session_id,
@@ -2031,7 +2038,7 @@ async def get_session_index(
         operator_view=operator_view is True,
         operator_reason=operator_reason,
     )
-    index = await read_session_index(db, agent_id=agent_id, session_id=session_id)
+    index = await read_session_index(db, agent_id=session.agent_id, session_id=session_id)
     if index is None:
         raise HTTPException(status_code=404, detail="Chat session not found")
     return index

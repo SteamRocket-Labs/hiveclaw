@@ -590,6 +590,12 @@ export function shouldUseWritableSessionSurface(
   return !isReadOnlySessionForCurrentUser(session, currentUserId);
 }
 
+export function isTranscriptOnlySession(session: AgentOwnedSession | null | undefined,
+  currentUserId: string | number | null | undefined): boolean {
+  return Boolean(session && !shouldUseWritableSessionSurface(session, currentUserId)
+    && (isA2ASession(session) || (session.source_channel === 'unknown' && !session.operator_view)));
+}
+
 export function shouldPreserveActiveSessionForRequestedId(
   session: AgentOwnedSession | null | undefined,
   requestedSessionId: string | number | null | undefined,

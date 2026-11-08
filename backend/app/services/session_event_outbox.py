@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import and_, or_, select
+from sqlalchemy import and_, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.database import async_session, enter_rls_bypass
@@ -99,11 +99,7 @@ class SessionEventOutboxPublisher:
         current = now or datetime.now(UTC)
         async with self._worker_session("claim") as db:
             statement = (
-                select(SessionEventOutbox, ChatTranscriptEvent.agent_id)
-                .join(
-                    ChatTranscriptEvent,
-                    ChatTranscriptEvent.id == SessionEventOutbox.event_id,
-                )
+                select(SessionEventOutbox.id)
                 .where(
                     or_(
                         and_(
@@ -122,18 +118,19 @@ class SessionEventOutboxPublisher:
             rows = list(
                 (
                     await db.execute(
-                        statement.order_by(SessionEventOutbox.available_at, SessionEventOutbox.sequence)
-                        .limit(max(1, int(limit)))
-                        .with_for_update(skip_locked=True)
+                        update(SessionEventOutbox).where(SessionEventOutbox.id.in_(
+                            statement.order_by(SessionEventOutbox.available_at, SessionEventOutbox.sequence)
+                            .limit(max(1, int(limit))).with_for_update(skip_locked=True)
+                        )).values(status="publishing", claimed_by=str(worker_id),
+                            claim_expires_at=current + timedelta(seconds=self._lease_seconds),
+                            attempts=SessionEventOutbox.attempts + 1,
+                        ).returning(SessionEventOutbox, select(ChatTranscriptEvent.agent_id).where(
+                            ChatTranscriptEvent.id == SessionEventOutbox.event_id).scalar_subquery())
                     )
                 ).all()
             )
             claimed: list[ClaimedSessionEvent] = []
-            for row, agent_id in rows:
-                row.status = "publishing"
-                row.claimed_by = str(worker_id)
-                row.claim_expires_at = current + timedelta(seconds=self._lease_seconds)
-                row.attempts = int(row.attempts or 0) + 1
+            for row, agent_id in sorted(rows, key=lambda pair: (pair[0].available_at, pair[0].sequence)):
                 claimed.append(
                     ClaimedSessionEvent(
                         outbox_id=row.id,
@@ -166,51 +163,6 @@ class SessionEventOutboxPublisher:
         if _sha256(envelope) != item.envelope_sha256:
             raise ValueError("session_event_outbox_envelope_hash_mismatch")
 
-    async def _mark_published(self, *, item: ClaimedSessionEvent, worker_id: str) -> bool:
-        async with self._worker_session("ack") as db:
-            row = await db.scalar(
-                select(SessionEventOutbox).where(SessionEventOutbox.id == item.outbox_id).with_for_update()
-            )
-            if row is None or row.status != "publishing" or row.claimed_by != str(worker_id):
-                return False
-            row.status = "published"
-            row.published_at = datetime.now(UTC)
-            row.last_error = None
-            row.claimed_by = None
-            row.claim_expires_at = None
-            await db.commit()
-            return True
-
-    async def _mark_failed(
-        self,
-        *,
-        item: ClaimedSessionEvent,
-        worker_id: str,
-        error: Exception,
-    ) -> str:
-        now = datetime.now(UTC)
-        async with self._worker_session("retry") as db:
-            row = await db.scalar(
-                select(SessionEventOutbox).where(SessionEventOutbox.id == item.outbox_id).with_for_update()
-            )
-            if row is None or row.status != "publishing" or row.claimed_by != str(worker_id):
-                return "stale"
-            row.last_error = f"{type(error).__name__}: {error}"[:4000]
-            row.claimed_by = None
-            row.claim_expires_at = None
-            if int(row.attempts or 0) >= self._max_attempts:
-                # ``failed`` is terminal dead-letter in this table. Retryable
-                # attempts return to ``pending`` with a future available_at.
-                row.status = "failed"
-                outcome = "dead_letter"
-            else:
-                row.status = "pending"
-                delay = self._retry_base_seconds * (2 ** max(0, int(row.attempts or 1) - 1))
-                row.available_at = now + timedelta(seconds=delay)
-                outcome = "retry"
-            await db.commit()
-            return outcome
-
     async def drain_once(
         self,
         *,
@@ -225,16 +177,40 @@ class SessionEventOutboxPublisher:
             publish_callback = publish_canonical_session_event
         items = await self.claim_batch(worker_id=worker_id, limit=limit, tenant_id=tenant_id)
         counts = {"claimed": len(items), "published": 0, "retried": 0, "dead_lettered": 0}
+        published = []
+        failures = {}
         for item in items:
             try:
                 self._validate_claim(item)
                 await publish_callback(item.delivery_payload())
-                if await self._mark_published(item=item, worker_id=worker_id):
-                    counts["published"] += 1
+                published.append(item.outbox_id)
             except Exception as exc:  # noqa: BLE001 - durable retry owns transport failures.
-                outcome = await self._mark_failed(item=item, worker_id=worker_id, error=exc)
-                if outcome == "retry":
-                    counts["retried"] += 1
-                elif outcome == "dead_letter":
-                    counts["dead_lettered"] += 1
+                failures[item.outbox_id] = exc
+        if items:
+            now = datetime.now(UTC)
+            async with self._worker_session("ack") as db:
+                if published:
+                    acknowledged = await db.scalars(update(SessionEventOutbox).where(
+                        SessionEventOutbox.id.in_(published), SessionEventOutbox.status == "publishing",
+                        SessionEventOutbox.claimed_by == str(worker_id),
+                    ).values(status="published", published_at=now, last_error=None,
+                        claimed_by=None, claim_expires_at=None).returning(SessionEventOutbox.id))
+                    counts["published"] = len(acknowledged.all())
+                if failures:
+                    rows = await db.scalars(select(SessionEventOutbox).where(
+                        SessionEventOutbox.id.in_(failures), SessionEventOutbox.status == "publishing",
+                        SessionEventOutbox.claimed_by == str(worker_id),
+                    ).with_for_update())
+                    for row in rows:
+                        error = failures[row.id]
+                        row.last_error = f"{type(error).__name__}: {error}"[:4000]
+                        row.claimed_by = row.claim_expires_at = None
+                        if row.attempts >= self._max_attempts:
+                            row.status = "failed"
+                            counts["dead_lettered"] += 1
+                        else:
+                            row.status = "pending"
+                            row.available_at = now + timedelta(seconds=self._retry_base_seconds * (2 ** (row.attempts - 1)))
+                            counts["retried"] += 1
+                await db.commit()
         return counts

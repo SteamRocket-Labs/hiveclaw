@@ -37,7 +37,8 @@ export function toolFailureForDisplay(details: unknown, t: TFunction): string | 
   } else {
     return null;
   }
-  const kind = FAILURE_KIND[String(error?.error_class)] ?? 'generic';
+  const errorClass = String(error?.error_class);
+  const kind = Object.prototype.hasOwnProperty.call(FAILURE_KIND, errorClass) ? FAILURE_KIND[errorClass] : 'generic';
   if (kind === 'timeout') {
     // Read the exact historical native timeout format to preserve its duration.
     const legacySeconds = typeof error.message === 'string'

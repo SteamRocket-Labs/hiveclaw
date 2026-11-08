@@ -41,11 +41,12 @@ const MEMORY_AND_CREATION: Record<string, [string, string]> = {
 
 /** Share the conversation's tool words with handover notices. */
 export function toolStepLabel(toolName: string | null, t: TFunction, sentinel?: string): string {
-  const known = MEMORY_AND_CREATION[toolName ?? ''];
+  const known = Object.prototype.hasOwnProperty.call(MEMORY_AND_CREATION, toolName ?? '')
+    ? MEMORY_AND_CREATION[toolName ?? ''] : undefined;
   if (known) return t(`agent.chat.disclosure.toolTitle.${known[0]}`, known[1]);
   const action = approvalActionFor(toolName);
   if (action) return t(action.key, action.fallback);
   const title = toolName ? titleForToolMessage({ toolName })
-    : sentinel && TOOL_TITLE_KEY[sentinel] ? sentinel : titleForToolMessage({ toolName: sentinel });
+    : sentinel && Object.prototype.hasOwnProperty.call(TOOL_TITLE_KEY, sentinel) ? sentinel : titleForToolMessage({ toolName: sentinel });
   return t(TOOL_TITLE_KEY[title] ?? TOOL_TITLE_KEY['Tool call'], title === 'Tool call' ? 'Tool' : title);
 }

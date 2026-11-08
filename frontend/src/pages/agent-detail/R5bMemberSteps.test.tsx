@@ -17,17 +17,18 @@ it.each([
   ['update_memory', '更新记忆'], ['retire_memory', '忘记记忆'],
   ['create_employee_from_request', '创建数字员工'], ['create_digital_employee', '创建数字员工'],
   ['preview_agent_blueprint', '预览数字员工'], ['unknown_new_tool', '工具'],
+  ['constructor', '工具'], ['__proto__', '工具'], ['toString', '工具'],
 ])('gives %s a Chinese label even with a stored ellipsis', (name, label) => {
   expect(toolStepLabel(name, t as unknown as TFunction, '…')).toBe(label);
 });
 
-it.each(['…', '...', 'private_raw_label', ''])('uses a Chinese generic fallback for %s', sentinel => {
+it.each(['…', '...', 'private_raw_label', '', 'constructor', '__proto__'])('uses a Chinese generic fallback for %s', sentinel => {
   expect(toolStepLabel(null, t as unknown as TFunction, sentinel)).toBe('工具');
 });
 
 it.each(['timeout', 'auth_or_permission', 'quota_or_billing', 'rate_limited', 'not_found', 'bad_arguments',
   'tool_execution_error', 'provider_unavailable', 'approval_required', 'cancelled', 'configuration_required',
-  'unsupported_file_type', 'authority_context_unavailable', 'future_error_class'])(
+  'unsupported_file_type', 'authority_context_unavailable', 'future_error_class', 'constructor'])(
   'shows one plain Chinese explanation for expanded %s steps', errorClass => {
     const raw = `❌ run_command failed.\n\nHint: worker state unknown.\n\n<tool_error>${JSON.stringify({
       ok: false, tool_name: 'run_command', error_class: errorClass,

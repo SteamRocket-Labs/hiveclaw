@@ -2608,6 +2608,21 @@
         "toolRunning": "Using {{tool}}",
         "toolCompleted": "Used tools: {{tools}}",
         "toolHistory": "Tool call history",
+        "system": {
+          "resultsReceived": "Received {{count}} task results",
+          "resultsReceived_one": "Received {{count}} task result",
+          "resultsReceived_other": "Received {{count}} task results",
+          "resultsAvailable": "Task results received",
+          "resultsKept": "Results are kept for review; this conversation did not continue.",
+          "toolsReady": "Tools ready",
+          "taskProgress": "Task update",
+          "coworkerAdded": "Digital employee added: {{name}}",
+          "scheduledTask": "Scheduled task: {{name}}",
+          "subagentRunning": "{{name}} is working in the background.",
+          "filesUpdated": "Updated {{count}} files",
+          "filesUpdated_one": "Updated {{count}} file",
+          "filesUpdated_other": "Updated {{count}} files"
+        },
         "failure": {
           "arguments": "Required information is missing or incorrect.",
           "permission": "You do not have permission for this operation.",
@@ -2629,6 +2644,7 @@
           "generic": "The operation did not complete; the outcome is unconfirmed."
         },
         "toolTitle": {
+          "goalUpdated": "Goal updated",
           "saveMemory": "Save memory",
           "searchMemory": "Search memory",
           "loadMemory": "Load memory",

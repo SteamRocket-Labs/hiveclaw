@@ -20,6 +20,7 @@ import { approvalActionFor } from '../session-workbench/approvalActionPresentati
 import { toolStepLabel as localizedToolName } from './toolStepLabel';
 import { toolFailureForDisplay } from './toolFailurePresentation';
 import { PastedCredentialText } from '../session-workbench/PastedCredentialNotice';
+import { presentSystemStep } from './systemStepPresentation';
 import type {
   RunStepKind,
   RunStepPresentation,
@@ -259,7 +260,15 @@ function RunStepDetails({ step }: { step: RunStepSnapshot }) {
       JSON.parse(result);
       return null;
     } catch {
-      return <p><PastedCredentialText content={result.trim().replace(/\s+/g, ' ')} /></p>;
+      // Native breaks retain line layout while DOM text reads as a sentence.
+      const lines = result.trim().split(/\r?\n/);
+      return <p>{lines.map((line, index) => (
+        <React.Fragment key={index}>
+          {index > 0 && <br />}
+          <PastedCredentialText content={line} />
+          {line && index < lines.length - 1 && ' '}
+        </React.Fragment>
+      ))}</p>;
     }
   }
   const detailText = step.details;
@@ -355,6 +364,7 @@ function toolNameOf(step: RunStepSnapshot): string | null {
 }
 
 function localizedToolTitle(step: RunStepSnapshot, t: TFunction): string {
+  if (step.titleIsLocalized) return step.title;
   if (step.kind === 'permission' && step.title === 'permission_resolved') {
     return t('sessionWorkbench.threadItem.type.approval_decision', 'Approval decision');
   }
@@ -523,7 +533,9 @@ export default function RunDisclosureBlock({
     'agent.chat.disclosure.interruptedHint',
     'This turn has no completion record; send a new message to continue.',
   );
-  const visibleSteps = timeline.steps.filter((step) => getRunStepPresentation(step) !== 'external');
+  const visibleSteps = timeline.steps
+    .filter((step) => getRunStepPresentation(step) !== 'external')
+    .map((step) => presentSystemStep(step, t));
   if (visibleSteps.length === 0) {
     if (timeline.status === 'idle') return null;
     return (

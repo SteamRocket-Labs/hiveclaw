@@ -60,6 +60,9 @@ export interface RunStepSnapshot {
   visibility: 'visible' | 'collapsed' | 'debug';
   blocking?: boolean;
   presentation?: RunStepPresentation;
+  systemEvent?: { type: string; metadata: Record<string, unknown> };
+  // Set only on render-time copies by the system step presenter.
+  titleIsLocalized?: boolean;
 }
 
 /** Locale-neutral run aggregate: the renderer composes the sentence. */
@@ -696,6 +699,7 @@ function buildStep(message: AgentChatMessage, index: number, allowLiveRunning: b
     visibility: 'collapsed',
     blocking: status === 'blocked',
     presentation: getEventStepPresentation(message, kind, status),
+    systemEvent: { type: message.eventType || '', metadata: message.threadItem?.metadata || {} },
   };
 }
 

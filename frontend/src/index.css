@@ -2611,7 +2611,7 @@
 
 .run-tool-history-item {
   display: grid;
-  grid-template-columns: 18px auto minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr);
   gap: 6px;
   align-items: start;
   min-width: 0;
@@ -2619,6 +2619,13 @@
 
 .run-tool-history-item.has-exec {
   display: block;
+}
+
+.run-tool-history-item > p,
+.run-step-body > p {
+  margin: 0 0 0 24px;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
 }
 
 .run-tool-history-exec-summary {
@@ -2722,7 +2729,8 @@
   padding: 2px 0;
   width: 100%;
   display: flex;
-  align-items: center;
+  align-items: start;
+  flex-wrap: wrap;
   gap: 6px;
   color: inherit;
   text-align: left;
@@ -2741,7 +2749,7 @@
   font-size: var(--text-row);
   font-weight: 500;
   color: var(--text-secondary);
-  white-space: nowrap;
+  overflow-wrap: anywhere;
 }
 
 .run-step-summary {
@@ -3171,7 +3179,7 @@
     background: var(--bg-elevated);
   }
 
-  .main-content .swb-header { padding-left: 44px; }
+  .main-content .swb-header { padding-left: 60px; }
   .has-notification-bar .sidebar.collapsed .sidebar-collapse-btn { top: 40px; }
   .swb-header-title-row { flex-wrap: wrap; }
   .swb-header-title { flex: 1; min-width: 0; }

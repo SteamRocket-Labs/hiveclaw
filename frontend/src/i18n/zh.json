@@ -2608,6 +2608,21 @@
         "toolRunning": "正在调用 {{tool}}",
         "toolCompleted": "已调用工具：{{tools}}",
         "toolHistory": "工具调用历史",
+        "system": {
+          "resultsReceived": "收到 {{count}} 项任务结果",
+          "resultsReceived_one": "收到 {{count}} 项任务结果",
+          "resultsReceived_other": "收到 {{count}} 项任务结果",
+          "resultsAvailable": "收到任务结果",
+          "resultsKept": "结果已保留，可供查看；本次对话未继续。",
+          "toolsReady": "工具已就绪",
+          "taskProgress": "任务进展",
+          "coworkerAdded": "已添加数字员工：{{name}}",
+          "scheduledTask": "定时任务：{{name}}",
+          "subagentRunning": "{{name}} 正在后台处理任务。",
+          "filesUpdated": "已更新 {{count}} 个文件",
+          "filesUpdated_one": "已更新 {{count}} 个文件",
+          "filesUpdated_other": "已更新 {{count}} 个文件"
+        },
         "failure": {
           "arguments": "这次操作缺少必要信息，或提供的信息不正确。",
           "permission": "当前没有权限完成这次操作。",
@@ -2629,6 +2644,7 @@
           "generic": "操作未能完成，结果尚未确认。"
         },
         "toolTitle": {
+          "goalUpdated": "任务已更新",
           "saveMemory": "保存记忆",
           "searchMemory": "查找记忆",
           "loadMemory": "读取记忆",

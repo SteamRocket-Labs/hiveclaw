@@ -903,8 +903,14 @@ async def test_test_email_category_uses_runtime_secret_not_masked_display_value(
         observed.update(config)
         return {"ok": True}
 
+    async def fake_resolve_tool_config(name, *, tenant_id: object, agent_id: object, db: object):
+        assert name == tool.name and tenant_id == agent.tenant_id and agent_id == agent.id
+        # G2bf r2 B1: category tests consume the governed runtime resolver.
+        return assignment.config
+
     monkeypatch.setattr(tools_api, "_require_manage_access", fake_require_manage_access)
     monkeypatch.setattr(tools_api, "test_email_connection", fake_test_email_connection)
+    monkeypatch.setattr(tools_api, "resolve_tool_config", fake_resolve_tool_config)
 
     result = await tools_api.test_category_config(
         agent_id=agent_id,

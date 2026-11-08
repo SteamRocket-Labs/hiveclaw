@@ -208,6 +208,7 @@ async def transfer_knowledge_and_notify(db, *, target_user, successor, agents, h
     for assignment, tool, company in assignments:
         def clear(stored):
             cleared = clear_agent_tool_config_secrets(stored, tool.config_schema,
+                platform_tool=tool.type == "builtin" and tool.tenant_id is None,
                 company_config=decrypt_tool_config_secrets({**(tool.config or {}), **(company.config if company else {})}, tool.config_schema))
             if cleared != stored:
                 tools_needing_credentials.append({"agent_id": str(assignment.agent_id),

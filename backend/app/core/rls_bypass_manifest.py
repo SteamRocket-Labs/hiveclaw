@@ -842,8 +842,8 @@ def fingerprint_rls_bypass_scopes(app_root: Path) -> str:
 # Merging A4c with B6 accepts the exact three-way module-source merge; no bypass scope changed on both sides.
 # G3: preview and inventory lifecycle source updates only; merging G3 with main keeps each entry from one side.
 # Merging A4c with G3 keeps each entry from one side.
-# G2bf updates endpoint authorization and inherited secrets; bypass callsite signatures are unchanged.
-RLS_BYPASS_SCOPES_SHA256 = "53a72850f41d3a1919cf523bfb5b73fe59b5d2dca3d5d65ca27499f4ea2ce627"
+# G2bf r2 unifies destination secrets and handover settings; bypass callsite signatures are unchanged.
+RLS_BYPASS_SCOPES_SHA256 = "a1a1e3ee12787e85a2a0c7b2c0c905ef8b7ecf278157b4826c3a126720452dee"
 
 
 def scan_rls_bypass_callsites(app_root: Path) -> list[RLSBypassCallsite]:

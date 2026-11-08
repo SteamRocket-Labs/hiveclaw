@@ -15,7 +15,9 @@ from app.services.tool_config_service import (
     ({"key": "enabled", "type": "boolean"}, False, True),
     # Less code 2: safe fixture fields use the current platform's select schema.
     ({"key": "region", "type": "select"}, "local", True),
+    ({"key": "region", "type": "text"}, "local", False),
     ({"key": "endpoint", "type": "select"}, "https://example.test/api?region=local", True),
+    ({"key": "endpoint", "type": "select"}, "https://user:fake@example.test/api", True),
     ({"key": "endpoint", "type": "text"}, "https://example.test/api?api_key=fake", False),
     ({"key": "endpoint", "type": "text"}, "https://user:fake@example.test/api", False),
     ({"key": "endpoint", "type": "text"}, "https://example.test/api?%74oken=fake", False),
@@ -38,7 +40,7 @@ def test_the_same_rule_masks_clears_and_preserves_a_sentinel(field, value, safe,
     assert masked[key] == (value if visible or value in (None, "", {}, []) else MASKED_SECRET_SENTINEL)
     assert masked["vendor_pin"] == MASKED_SECRET_SENTINEL
     cleared = clear_agent_tool_config_secrets(stored, schema, platform_tool=platform_tool)
-    # S1: handover keeps declared safe scalars even on a tenant-defined tool.
-    assert cleared == {key: value if safe else "", "vendor_pin": ""}
+    # G2bf r2 S3: one safe rule; tenant-defined text fields may hold secrets.
+    assert cleared == {key: value if visible else "", "vendor_pin": ""}
     assert merge_agent_tool_config_secrets(masked, cleared, schema, platform_tool=platform_tool) == cleared
     assert merge_agent_tool_config_secrets({key: "new-input"}, cleared, schema, platform_tool=platform_tool)[key] == "new-input"

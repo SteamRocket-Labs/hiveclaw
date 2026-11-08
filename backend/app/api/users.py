@@ -336,9 +336,13 @@ async def offboard_user(
         request_id=data.request_id,
     )
     if replay is not None:
+        queued = await db.scalar(select(func.count()).select_from(KnowledgeIndexJob).where(
+            KnowledgeIndexJob.tenant_id == pinned_tenant_id, KnowledgeIndexJob.scope_type == "person",
+            KnowledgeIndexJob.scope_id == data.successor_user_id, KnowledgeIndexJob.status == "queued"))
         await db.commit()
-        _schedule_personal_import_worker(background_tasks, tenant_id=pinned_tenant_id,
-            owner_user_id=data.successor_user_id)
+        for _ in range((queued + 4) // 5):
+            _schedule_personal_import_worker(background_tasks, tenant_id=pinned_tenant_id,
+                owner_user_id=data.successor_user_id)
         await publish_user_offboarding_runtime_cancellations(replay)
         return _offboarding_response(replay)
     successor = (

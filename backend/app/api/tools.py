@@ -31,6 +31,7 @@ from app.services.tool_config_service import (
     mask_agent_tool_config_secrets,
     merge_agent_tool_config_secrets,
     merge_tool_config_secrets,
+    resolve_tool_config,
     resolve_tool_config_for_tenant_display,
     update_tenant_tool_config,
 )
@@ -1163,7 +1164,8 @@ async def test_category_config(
         runtime_rows = [
             (agent_tool, tool) for agent_tool, tool in config_result.all() if is_tool_allowed_for_agent(tool, agent)
         ]
-        config = {**(runtime_rows[0][1].config or {}), **(runtime_rows[0][0].config or {})} if runtime_rows else {}
+        config = await resolve_tool_config(runtime_rows[0][1].name, tenant_id=agent.tenant_id,
+            agent_id=agent_id, db=db) if runtime_rows else {}
     else:
         config = {}
     if category == "email":

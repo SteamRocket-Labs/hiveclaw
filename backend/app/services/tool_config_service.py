@@ -13,7 +13,6 @@ from __future__ import annotations
 import logging
 import re
 import uuid
-from urllib.parse import parse_qsl, urlsplit
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -21,7 +20,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import tenant_scoped_session
 from app.models.tenant_tool_config import TenantToolConfig
 from app.models.tool import AgentTool, Tool
-from app.services.agent_tool_config_storage import is_agent_tool_credential_key
 
 logger = logging.getLogger(__name__)
 
@@ -98,31 +96,9 @@ def clear_agent_tool_config_secrets(config: dict | None, config_schema: dict | N
     company_config: dict | None = None) -> dict:
     """Keep company copies and declared safe scalars; empty personal secrets."""
     company = company_config or {}
-    return {key: value if _is_safe_handover_setting(key, value, config_schema)
+    return {key: value if is_safe_agent_tool_setting(key, value, config_schema, platform_tool=platform_tool)
         or (key in company and _decrypt_secret(value) == company[key]) else ""
         for key, value in config.items()} if isinstance(config, dict) else {}
-
-
-def _is_safe_handover_setting(key: str, value: object, config_schema: dict | None) -> bool:
-    """A private declared scalar need not be disclosed to survive handover."""
-    field = _schema_fields_by_key(config_schema).get(key, {})
-    normalized = re.sub(r"[^a-z0-9]", "", key.casefold())
-    if (field.get("type") not in {"text", "select", "number", "boolean"}
-            or not isinstance(value, (str, int, float, bool, type(None))) or value == MASKED_SECRET_SENTINEL
-            or field.get("format") == "password" or field.get("writeOnly") or is_agent_tool_credential_key(key)
-            or normalized in {"headers", "auth", "env", "environment", "envvars", "authorization"}
-            or normalized.endswith("headers")):
-        return False
-    if isinstance(value, str):
-        try:
-            url = urlsplit(value)
-            if url.username is not None or url.password is not None or any(is_agent_tool_credential_key(name)
-                    or name.casefold() in {"key", "auth", "authorization", "signature", "sig"}
-                    for name, _ in parse_qsl(url.query, keep_blank_values=True)):
-                return False
-        except ValueError:
-            return False
-    return True
 
 
 def merge_tool_config_secrets(
@@ -312,15 +288,19 @@ async def resolve_tool_config(
 
     # These providers historically read environment defaults in their handlers.
     # Resolve them before employee overrides so endpoint changes also withhold them.
-    if tool_name == "firecrawl_search" and not (base_config.get("api_key") or base_config.get("firecrawl_api_key")):
-        base_config["api_key"] = (await resolve_tool_config("firecrawl_fetch", effective_tenant_id,
-            agent_id=agent_id, db=db)).get("api_key")
     fallback = {"firecrawl_search": "FIRECRAWL_API_KEY", "firecrawl_fetch": "FIRECRAWL_API_KEY",
-        "exa_fetch": "EXA_API_KEY"}.get(tool_name)
+        "exa_search": "EXA_API_KEY", "exa_fetch": "EXA_API_KEY", "tavily_search": "TAVILY_API_KEY",
+        "tavily_extract": "TAVILY_API_KEY", "xcrawl_scrape": "XCRAWL_API_KEY"}.get(tool_name)
     if fallback and not (base_config.get("api_key") or base_config.get(fallback.lower())):
         from app.config import get_settings
 
         base_config["api_key"] = getattr(get_settings(), fallback)
+        if fallback == "TAVILY_API_KEY":
+            from app.models.system_settings import SystemSetting
+
+            setting = await db.scalar(select(SystemSetting).where(SystemSetting.key == "tavily_api_key"))
+            if setting and setting.value.get("api_key"):
+                base_config["api_key"] = setting.value["api_key"]
 
     # 4. Merge agent-level override (if requested)
     if agent_id:
@@ -334,12 +314,16 @@ async def resolve_tool_config(
         if agent_config:
             agent_config = decrypt_tool_config_secrets(agent_config, tool.config_schema)
             fields = _schema_fields_by_key(tool.config_schema)
-            endpoint_keys = {key for key, field in fields.items() if key == "url" or key.endswith("_url")
-                or field.get("type") == "url" or field.get("format") in {"uri", "url"}}
-            endpoint_keys.update({"base_url", "mcp_url"})
+            endpoint_keys = {key for key in fields.keys() | base_config.keys() | agent_config.keys()
+                if key in {"url", "uri"} or key.endswith(("_url", "_host"))
+                or fields.get(key, {}).get("type") in {"url", "uri"} or fields.get(key, {}).get("format") in {"uri", "url"}}
+            endpoint_keys.update({"base_url", "mcp_url", "email_provider", "smtp_port", "imap_port",
+                "smtp_ssl", "imap_ssl", "smtp_tls", "imap_tls"})
+            agent_config = {key: value for key, value in agent_config.items() if key not in endpoint_keys or value not in ("", None)}
             if any(key in agent_config and agent_config[key] != base_config.get(key) for key in endpoint_keys):
-                inherited_secrets = (_secret_field_keys(tool.config_schema)
-                    | {key for key in base_config if is_agent_tool_credential_key(key)}) - endpoint_keys
+                inherited_secrets = {key for key, value in base_config.items() if key not in endpoint_keys
+                    and not is_safe_agent_tool_setting(key, value, tool.config_schema,
+                        platform_tool=tool.type == "builtin" and tool.tenant_id is None)}
                 agent_config = {key: value for key, value in agent_config.items() if key not in inherited_secrets or value != base_config.get(key)}
                 base_config = {key: value for key, value in base_config.items() if key not in inherited_secrets}
             base_config.update(agent_config)

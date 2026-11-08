@@ -5,6 +5,7 @@ from copy import deepcopy
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from threading import Thread
 
 import pytest
@@ -22,17 +23,294 @@ from app.services.tool_config_service import MASKED_SECRET_SENTINEL, resolve_too
 from tests.integration.test_offboarding_member_handover import offboard, seed_handover
 
 
+@pytest.fixture
+def mail_clients(monkeypatch):
+    from app.services import email_service
+
+    logins = []
+
+    class MailClient:
+        def __init__(self, host, *_args, **_kwargs):
+            self.host = host
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            pass
+
+        def login(self, address, password):
+            logins.append((self.host, address, password))
+
+        def sendmail(self, *_args):
+            pass
+
+        def select(self, *_args, **_kwargs):
+            return "OK", [b"0"]
+
+        def search(self, *_args):
+            return "OK", [b""]
+
+    monkeypatch.setattr(email_service.smtplib, "SMTP_SSL", MailClient)
+    monkeypatch.setattr(email_service.imaplib, "IMAP4_SSL", MailClient)
+    return logins
+
+
+@pytest.mark.parametrize("entry", ["mailbox", "runtime", "work", "category"])
+@pytest.mark.parametrize("override", [False, True])
+async def test_r2_b1_mail_destinations_never_receive_inherited_password(
+    owner_sessionmaker, mail_clients, entry, override,
+):
+    from app.services import email_accounts, email_service
+
+    async with owner_sessionmaker() as db:
+        state = await seed_handover(db)
+        tool = await builtin(db, "send_email")
+        company = {"email_provider": "custom", "email_address": "company@example.test", "auth_code": "synthetic-company-mail",
+            "smtp_host": "company.local", "imap_host": "company.local", "smtp_ssl": True}
+        tool.config = company
+        await update_tenant_tool_config(db, state.tenant.id, tool.id, config=company, config_schema=tool.config_schema)
+        await db.commit()
+        async with tool_api(db, state.leaver) as client:
+            response = await client.put(f"/tools/agents/{state.bot.id}/tool-config/{tool.id}", json={"config": {
+                "email_provider": "custom", "smtp_host": "member.local", "imap_host": "member.local"} if override else {}})
+            assert response.status_code == 200, response.text
+            if entry == "category":
+                response = await client.post(f"/tools/agents/{state.bot.id}/category-config/email/test")
+                assert response.status_code == 200, response.text
+                assert response.json()["ok"] is (not override), response.text
+            else:
+                if entry == "mailbox":
+                    config, _ = await email_accounts.company_mailbox(db, tenant_id=state.tenant.id, agent_id=state.bot.id)
+                elif entry == "runtime":
+                    config = await email_accounts.resolve_email_config(state.bot.id, None)
+                else:
+                    from app.tools.runtime import ToolExecutionContext
+
+                    config = await email_accounts.resolve_email_config(state.bot.id, ToolExecutionContext(
+                        agent_id=state.bot.id, user_id=state.leaver.id, tenant_id=str(state.tenant.id), workspace=Path(".")))
+                result = await email_service.send_email(config, "recipient@example.test", "Local test", "Local body")
+                probe = await email_service.test_connection(config)
+                assert probe["ok"] is (not override), (probe, result)
+        if override:
+            assert mail_clients == [], "B1: no company password may reach member SMTP or IMAP"
+        else:
+            assert len(mail_clients) == (2 if entry == "category" else 3)
+            assert all(row == ("company.local", company["email_address"], company["auth_code"]) for row in mail_clients)
+
+
+@pytest.mark.parametrize("key,original,changed,field", [
+    ("service_url", "http://company.local", "http://member.local", {}),
+    ("service_host", "company.local", "member.local", {}),
+    ("endpoint", "http://company.local", "http://member.local", {"type": "url"}),
+    ("endpoint", "http://company.local", "http://member.local", {"type": "uri"}),
+    ("endpoint", "http://company.local", "http://member.local", {"format": "uri"}),
+    ("email_provider", "outlook", "custom", {}),
+    ("smtp_host", "company.local", "member.local", {}),
+    ("imap_host", "company.local", "member.local", {}),
+    ("smtp_port", 465, 1465, {}), ("imap_port", 993, 1993, {}),
+    ("smtp_ssl", True, False, {}), ("imap_tls", True, False, {}),
+])
+async def test_r2_b1_any_destination_change_withholds_every_unsafe_inherited_value(
+    owner_sessionmaker, key, original, changed, field,
+):
+    async with owner_sessionmaker() as db:
+        state = await seed_handover(db)
+        tool = await builtin(db, "send_email")
+        tool.config_schema = {"fields": [{"key": "mode", "type": "select"}, {"key": key, **field}]}
+        secrets = {"api_key": "synthetic-api", "auth_code": "synthetic-mail", "password": "synthetic-password",
+            "token": "synthetic-token", "region": "possible-secret", "opaque": {"nested": "possible-secret"}}
+        await update_tenant_tool_config(db, state.tenant.id, tool.id, config={**secrets, key: original, "mode": "fast"})
+        db.add(AgentTool(tenant_id=state.tenant.id, agent_id=state.bot.id, tool_id=tool.id,
+            config={key: changed, "api_key": secrets["api_key"]}))
+        await db.commit()
+        resolved = await resolve_tool_config(tool.name, state.tenant.id, agent_id=state.bot.id, db=db)
+        assert resolved == {key: changed, "mode": "fast"}
+
+
+@pytest.mark.parametrize("empty", ["", None])
+async def test_r2_s1_cleared_endpoint_uses_company_host_and_key(owner_sessionmaker, provider_endpoint, empty):
+    from app.services.agent_tool_domains import web_mcp
+
+    endpoint, requests = provider_endpoint
+    async with owner_sessionmaker() as db:
+        state = await seed_handover(db)
+        tool = await builtin(db, "firecrawl_search")
+        await update_tenant_tool_config(db, state.tenant.id, tool.id,
+            config={"base_url": endpoint + "/company", "api_key": "synthetic-company"}, config_schema=tool.config_schema)
+        db.add(AgentTool(tenant_id=state.tenant.id, agent_id=state.bot.id, tool_id=tool.id, config={"base_url": empty}))
+        await db.commit()
+        resolved = await resolve_tool_config(tool.name, state.tenant.id, agent_id=state.bot.id, db=db)
+        assert resolved["base_url"] == endpoint + "/company"
+        assert resolved["api_key"] == "synthetic-company"
+        with tool_configuration_context(tenant_id=state.tenant.id, agent_id=state.bot.id):
+            await web_mcp._firecrawl_search({"query": "local test"})
+        assert requests == [{"path": "/company/v2/search", "authorization": "Bearer synthetic-company"}]
+
+
+async def test_r2_s2_cleared_differing_secret_does_not_fall_back_to_company(owner_sessionmaker):
+    async with owner_sessionmaker() as db:
+        state = await seed_handover(db)
+        tool = await builtin(db, "firecrawl_search")
+        await update_tenant_tool_config(db, state.tenant.id, tool.id, config={"api_key": "synthetic-company"}, config_schema=tool.config_schema)
+        assignment = AgentTool(tenant_id=state.tenant.id, agent_id=state.bot.id, tool_id=tool.id, config={"api_key": "synthetic-companyx"})
+        db.add(assignment)
+        await db.commit()
+        await offboard(state)
+        await db.refresh(assignment)
+        assert assignment.config["api_key"] == ""
+        assert (await resolve_tool_config(tool.name, state.tenant.id, agent_id=state.bot.id, db=db))["api_key"] == ""
+        card = await db.scalar(select(Notification).where(Notification.user_id == state.successor.id))
+        assert json.loads(card.body)["tools_needing_credentials"] == [{"agent_id": str(state.bot.id),
+            "agent_name": state.bot.name, "name": tool.display_name}]
+
+
+@pytest.mark.parametrize("name,setting", [("firecrawl_search", "FIRECRAWL_API_KEY"), ("firecrawl_fetch", "FIRECRAWL_API_KEY"),
+    ("exa_search", "EXA_API_KEY"), ("exa_fetch", "EXA_API_KEY"), ("tavily_search", "TAVILY_API_KEY"),
+    ("tavily_extract", "TAVILY_API_KEY"), ("xcrawl_scrape", "XCRAWL_API_KEY")])
+@pytest.mark.parametrize("override", ["none", "destination", "cleared_key"])
+async def test_r2_nit_environment_fallback_precedes_bot_overrides(owner_sessionmaker, monkeypatch, name, setting, override):
+    from app.config import get_settings
+
+    monkeypatch.setattr(get_settings(), setting, "synthetic-environment")
+    async with owner_sessionmaker() as db:
+        state = await seed_handover(db)
+        tool = await builtin(db, name)
+        tool.config = {"base_url": "http://company.local"}
+        if name == "firecrawl_search":
+            (await builtin(db, "firecrawl_fetch")).config = {}
+        config = {"base_url": "http://member.local"} if override == "destination" else {"api_key": ""} if override == "cleared_key" else {}
+        db.add(AgentTool(tenant_id=state.tenant.id, agent_id=state.bot.id, tool_id=tool.id, config=config))
+        await db.commit()
+        resolved = await resolve_tool_config(name, state.tenant.id, agent_id=state.bot.id, db=db)
+        assert resolved.get("api_key") == (None if override == "destination" else "" if override == "cleared_key" else "synthetic-environment")
+
+
+async def test_r2_nit_firecrawl_fetch_bot_key_is_not_the_search_company_baseline(owner_sessionmaker, monkeypatch):
+    from app.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "FIRECRAWL_API_KEY", "synthetic-environment")
+    async with owner_sessionmaker() as db:
+        state = await seed_handover(db)
+        for name in ("firecrawl_search", "firecrawl_fetch"):
+            tool = await builtin(db, name)
+            tool.config = {}
+            db.add(AgentTool(tenant_id=state.tenant.id, agent_id=state.bot.id, tool_id=tool.id,
+                config={"base_url": "http://member.local", "api_key": "synthetic-personal"}))
+        await db.commit()
+        resolved = await resolve_tool_config("firecrawl_search", state.tenant.id, agent_id=state.bot.id, db=db)
+        assert resolved["api_key"] == "synthetic-personal"
+
+
+@pytest.mark.parametrize("name,setting", [("exa_search", "EXA_API_KEY"), ("tavily_search", "TAVILY_API_KEY"),
+    ("tavily_extract", "TAVILY_API_KEY"), ("xcrawl_scrape", "XCRAWL_API_KEY")])
+async def test_r2_nit_handlers_do_not_restore_a_cleared_environment_key(owner_sessionmaker, monkeypatch, name, setting):
+    import httpx
+    from app.config import get_settings
+    from app.services.agent_tool_domains import web_mcp
+
+    monkeypatch.setattr(get_settings(), setting, "synthetic-environment")
+    keys = []
+
+    async def search(_query, api_key, _max_results, **_kwargs):
+        keys.append(api_key)
+        return "Local results"
+
+    async def mcp_search(_query, _max_results, *, api_key, **_kwargs):
+        keys.append(api_key)
+        return "Local results"
+
+    class Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            pass
+
+        async def post(self, url, **kwargs):
+            keys.append(kwargs.get("headers", {}).get("Authorization"))
+            return httpx.Response(200, json={"results": [{"url": "https://8.8.8.8/article", "raw_content": "Local content"}],
+                "data": {"markdown": "Local content"}})
+
+    monkeypatch.setattr(web_mcp, "_search_exa", search)
+    monkeypatch.setattr(web_mcp, "_search_exa_mcp", mcp_search)
+    monkeypatch.setattr(web_mcp, "_search_tavily", search)
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **_kwargs: Client())
+    async with owner_sessionmaker() as db:
+        state = await seed_handover(db)
+        tool = await builtin(db, name)
+        tool.config = {}
+        db.add(AgentTool(tenant_id=state.tenant.id, agent_id=state.bot.id, tool_id=tool.id, config={"api_key": ""}))
+        await db.commit()
+        with tool_configuration_context(tenant_id=state.tenant.id, agent_id=state.bot.id):
+            result = await getattr(web_mcp, "_" + name)({"query": "local test"} if name.endswith("search") else {"url": "https://8.8.8.8/article"})
+        assert all(key in (None, "") for key in keys), (keys, result)
+        if name == "xcrawl_scrape":
+            assert keys == [] and "provider_not_configured" in result
+        else:
+            assert len(keys) == 1
+
+
+async def test_r2_nit_offboard_replay_schedules_all_five_job_batches(owner_sessionmaker, monkeypatch):
+    from fastapi import BackgroundTasks
+    from sqlalchemy import func
+    from app.api import users
+    from app.models.knowledge import KnowledgeIndexJob
+
+    scheduled = []
+    monkeypatch.setattr(users, "_schedule_personal_import_worker", lambda *_args, **kwargs: scheduled.append(kwargs))
+    async with owner_sessionmaker() as db:
+        state = await seed_handover(db)
+        from app.services.personal_knowledge_service import PersonalKnowledgeService
+
+        service = PersonalKnowledgeService(extractor=None)
+        for index in range(11):
+            await service.ingest_markdown(db, tenant_id=state.tenant.id, owner_user_id=state.leaver.id,
+                title=f"Round2 replay {index}", markdown=f"# Round2 replay\n\nUnique project {index}.",
+                source_kind="paste", sensitivity="PL1_public", created_by_user_id=state.leaver.id)
+        await db.commit()
+        data = users.UserOffboardingRequest(successor_user_id=state.successor.id, expected_agent_ids=[state.bot.id],
+            reason="Employment ended", request_id="round2-replay")
+        await users.offboard_user(state.leaver.id, data, BackgroundTasks(), current_user=state.admin, db=db)
+        queued = await db.scalar(select(func.count()).select_from(KnowledgeIndexJob).where(
+            KnowledgeIndexJob.tenant_id == state.tenant.id, KnowledgeIndexJob.scope_id == state.successor.id,
+            KnowledgeIndexJob.status == "queued"))
+        first = list(scheduled)
+        assert len(first) == (queued + 4) // 5 and len(first) >= 3
+        scheduled.clear()
+        await users.offboard_user(state.leaver.id, data, BackgroundTasks(), current_user=state.admin, db=db)
+        assert scheduled == first
+
+
+@pytest.mark.parametrize("entry", ["httpx", "mcp"])
+async def test_r2_nit_installed_httpx_strips_authorization_on_cross_host_redirect(provider_endpoint, monkeypatch, entry):
+    endpoint, requests = provider_endpoint
+    if entry == "httpx":
+        async with AsyncClient(follow_redirects=True) as client:
+            response = await client.post(endpoint + "/redirect", json={}, headers={"Authorization": "Bearer synthetic-company"})
+            assert response.status_code == 200
+    else:
+        from app.services import mcp_client
+
+        monkeypatch.setattr(mcp_client, "assert_mcp_cloud_transport_allowed", lambda _url: None)
+        client = mcp_client.MCPClient(endpoint + "/redirect", api_key="synthetic-company")
+        assert "content" in (await client._streamable_request("tools/call"))["result"]
+    assert any(row["path"] == "/redirect" and row["authorization"] == "Bearer synthetic-company" for row in requests)
+    landed = [row for row in requests if row["path"] == "/landing"]
+    assert landed and all(row["authorization"] is None for row in landed), requests
+
+
 @pytest.fixture(autouse=True)
 async def restore_platform_defaults(owner_sessionmaker):
-    from app.services.tool_seeder import BUILTIN_TOOLS
-
-    defaults = {row["name"]: row.get("config", {}) for row in BUILTIN_TOOLS}
     async with owner_sessionmaker() as db:
-        stored = {row.id: deepcopy(row.config) for row in await db.scalars(select(Tool).where(Tool.tenant_id.is_(None)))}
+        stored = {row.id: deepcopy((row.config, row.config_schema)) for row in await db.scalars(select(Tool).where(Tool.tenant_id.is_(None)))}
     yield
     async with owner_sessionmaker() as db:
         for row in await db.scalars(select(Tool).where(Tool.tenant_id.is_(None))):
-            row.config = stored.get(row.id, defaults.get(row.name, {}))
+            if row.id not in stored:
+                await db.delete(row)
+            else:
+                row.config, row.config_schema = stored[row.id]
         await db.commit()
 
 
@@ -136,6 +414,12 @@ def provider_endpoint():
         def do_POST(self):
             body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))))
             requests.append({"path": self.path, "authorization": self.headers.get("Authorization")})
+            if self.path == "/redirect":
+                self.send_response(307)
+                self.send_header("Location", f"http://localhost:{self.server.server_port}/landing")
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
             if "method" in body:
                 result = {"content": [{"type": "text", "text": "Local provider content"}]}
                 if body["method"] == "initialize":
@@ -220,6 +504,7 @@ async def test_s1_handover_preserves_company_copies_and_audits_only_cleared_tool
             assert saved.status_code == 200, saved.text
         await offboard(state)
         resolved = await resolve_tool_config(tool.name, agent_id=state.bot.id, db=db)
+        # G2bf r2 S2: a cleared differing secret still asks the successor.
         assert resolved["api_key"] == ("" if personal else "synthetic-company")
         card = await db.scalar(select(Notification).where(Notification.user_id == state.successor.id))
         names = [row["name"] for row in json.loads(card.body)["tools_needing_credentials"]]
@@ -247,7 +532,7 @@ async def test_nested_masks_are_rejected_without_changing_storage(owner_sessionm
         assert assignment.config == {"headers": {"Authorization": "synthetic-old"}}
 
 
-async def test_s1_safe_only_tool_row_is_kept_without_a_handover_request(owner_sessionmaker):
+async def test_r2_s3_tenant_text_is_cleared_and_listed_for_handover(owner_sessionmaker):
     async with owner_sessionmaker() as db:
         state = await seed_handover(db)
         state.tool.config_schema = {"fields": [{"key": "region", "type": "text"}]}
@@ -256,9 +541,11 @@ async def test_s1_safe_only_tool_row_is_kept_without_a_handover_request(owner_se
         await db.commit()
         await offboard(state)
         await db.refresh(assignment)
-        assert assignment.config == {"region": "local"}
+        # G2bf r2 S3: one safe rule; tenant-defined text fields may hold secrets.
+        assert assignment.config == {"region": ""}
         card = await db.scalar(select(Notification).where(Notification.user_id == state.successor.id))
-        assert json.loads(card.body)["tools_needing_credentials"] == []
+        assert json.loads(card.body)["tools_needing_credentials"] == [{"agent_id": str(state.bot.id),
+            "agent_name": state.bot.name, "name": state.tool.display_name}]
 
 
 async def test_category_save_replaces_omitted_safe_overrides(owner_sessionmaker):

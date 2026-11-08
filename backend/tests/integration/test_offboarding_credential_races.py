@@ -104,8 +104,8 @@ async def test_undeclared_credentials_are_removed_and_listed_on_the_card(owner_s
         assert displayed["agent_config"] == dict.fromkeys(original, MASKED_SECRET_SENTINEL)
         await offboard(state)
         await db.refresh(assignment)
-        # S1: declared safe region/timeout scalars are not personal credentials.
-        assert assignment.config == {**dict.fromkeys(original, ""), "region": "local", "timeout": 0}
+        # G2bf r2 S3: one safe rule; tenant-defined text fields may hold secrets.
+        assert assignment.config == dict.fromkeys(original, "")
         card = await db.scalar(select(Notification).where(Notification.user_id == state.successor.id))
         assert json.loads(card.body)["tools_needing_credentials"] == [{"agent_id": str(state.bot.id),
             "agent_name": state.bot.name, "name": state.tool.display_name}]
@@ -177,8 +177,8 @@ async def test_save_started_before_offboarding_rechecks_authority_and_stored_con
             assert not isinstance(result, HTTPException), result
         stored = await db.get(AgentTool, assignment_id, populate_existing=True)
         assert stored.config["api_key"] == ""
-        # S1: offboarding preserves the safe scalar when the leaver's save is refused.
-        assert stored.config["timeout"] == (1 if caller == "leaver" else 2)
+        # G2bf r2 S3: only platform-declared scalars survive; a later admin save is new input.
+        assert stored.config["timeout"] == ("" if caller == "leaver" else 2)
 
 
 @pytest.mark.parametrize("empty", ["", "   ", None])

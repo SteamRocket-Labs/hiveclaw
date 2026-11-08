@@ -127,6 +127,7 @@ export interface McpOAuthRegistration {
 export interface McpAccount {
   id: string;
   name: string;
+  app_name?: string;
   owner_user_id: string | null;
   parent_server_id: string | null;
   auth_status: string;

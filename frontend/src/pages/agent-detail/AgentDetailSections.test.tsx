@@ -3366,10 +3366,10 @@ describe('AgentDetail extracted sections', () => {
       readFileSync: (path: URL, encoding: string) => string;
     };
     const detailSource = readFileSync(new URL('../AgentDetail.tsx', import.meta.url), 'utf8');
-    const documentsArea = AGENT_WORKBENCH_AREAS.find((area) => area.id === 'documents');
+    const documentsArea = AGENT_WORKBENCH_AREAS.find((area) => area.id === 'capabilities');
 
     expect(Array.from(AGENT_DETAIL_TABS)).not.toContain('office');
-    expect(documentsArea?.tabs).toEqual(['workspace']);
+    expect(documentsArea?.tabs).toEqual(['status', 'extensions', 'workflows', 'workspace']);
     expect(getAgentDetailHashTab('#office', AGENT_DETAIL_TABS)).toBeNull();
     expect(detailSource).not.toContain('OfficeWorkbenchSection');
     expect(detailSource).not.toContain("activeTab === 'office'");

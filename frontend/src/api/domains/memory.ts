@@ -53,6 +53,8 @@ function buildQueryString(params: Record<string, string | undefined>): string {
 }
 
 export const memoryApi = {
+  listOwn: (agentId: string) => get<{ id: string; content: string }[]>(`/enterprise/memory/agents/${agentId}/my-entries`),
+  deleteOwn: (agentId: string, memoryId: string) => del(`/enterprise/memory/agents/${agentId}/my-entries/${encodeURIComponent(memoryId)}`),
   listWorkspaces: (agentId: string, tenantId: string) =>
     get<TeamMemoryWorkspaces>(`/enterprise/memory/shared-workspaces${buildQueryString({ agent_id: agentId, tenant_id: tenantId })}`),
   listShared: (workspaceKey: string, tenantId?: string) =>

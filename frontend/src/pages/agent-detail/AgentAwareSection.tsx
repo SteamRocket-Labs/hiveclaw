@@ -17,6 +17,7 @@ import RoutineWorkStatus from './RoutineWorkStatus';
 import { normalizeToolCallResult } from './toolResultEnvelope';
 import {
   buildWakePolicyPayload,
+  triggerScheduleLabel,
   StaleWorkflowRefError,
   WakeScheduleError,
   type WakeFormState,
@@ -164,45 +165,7 @@ export default function AgentAwareSection({
     return () => { wakeCreateScope.current = null; };
   }, [agentId]);
 
-  const triggerToHuman = (trigger: any): string => {
-    if (trigger.type === 'cron' && trigger.config?.expr) {
-      const expression = trigger.config.expr;
-      const parts = expression.split(' ');
-      if (parts.length >= 5) {
-        const [minute, hour, , , dayOfWeek] = parts;
-        const timeText = `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
-        if (dayOfWeek === '*' && minute !== '*' && hour !== '*') return t('agent.aware.scheduleEveryDayAt', 'Every day at {{time}}', { time: timeText });
-        if (dayOfWeek === '1-5' && minute !== '*' && hour !== '*') return t('agent.aware.scheduleWeekdaysAt', 'Weekdays at {{time}}', { time: timeText });
-        if (dayOfWeek === '0' || dayOfWeek === '7') return t('agent.aware.scheduleSundaysAt', 'Sundays at {{time}}', { time: timeText });
-        if (hour === '*' && minute === '0') {
-          if (dayOfWeek === '1-5') return t('agent.aware.scheduleHourlyWeekdays', 'Every hour on weekdays');
-          return t('agent.aware.scheduleHourly', 'Every hour');
-        }
-        if (hour === '*' && minute !== '*') return t('agent.aware.scheduleHourlyAt', 'Every hour at :{{minute}}', { minute: String(minute).padStart(2, '0') });
-      }
-      return t('agent.aware.scheduleCron', 'Cron: {{expression}}', { expression });
-    }
-    if (trigger.type === 'once' && trigger.config?.at) {
-      try {
-        const time = new Date(trigger.config.at).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
-        return t('agent.aware.scheduleOnceAt', 'Once at {{time}}', { time });
-      } catch {
-        return t('agent.aware.scheduleOnceAt', 'Once at {{time}}', { time: String(trigger.config.at) });
-      }
-    }
-    if (trigger.type === 'interval' && trigger.config?.minutes) {
-      const minutes = Number(trigger.config.minutes);
-      if (minutes >= 60 && minutes % 60 === 0) return t('agent.aware.scheduleEveryHours', 'Every {{count}}h', { count: minutes / 60 });
-      return t('agent.aware.scheduleEveryMinutes', 'Every {{count}} min', { count: minutes });
-    }
-    if (trigger.type === 'poll') return t('agent.aware.schedulePoll', 'Poll: {{url}}', { url: trigger.config?.url?.substring(0, 40) || 'URL' });
-    if (trigger.type === 'on_message') {
-      const source = trigger.config?.from_agent_name || trigger.config?.from_user_name || t('agent.aware.scheduleUnknownSource', 'unknown');
-      return t('agent.aware.scheduleOnMessage', 'On message from {{source}}', { source });
-    }
-    if (trigger.type === 'webhook') return t('agent.aware.scheduleWebhook', 'Webhook');
-    return String(trigger.type || '');
-  };
+  const triggerToHuman = (trigger: any) => triggerScheduleLabel(trigger, t);
 
   const standaloneTriggers = awareTriggers;
   const hasStandalone = standaloneTriggers.length > 0;

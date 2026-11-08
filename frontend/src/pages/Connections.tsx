@@ -21,7 +21,9 @@ export default function Connections() {
     {accounts.isPending && <p>{t('common.loading')}</p>}
     {accounts.data?.length === 0 && <p>{t('agent.mcpConnect.empty')}</p>}
     {accounts.data?.map((account) => <section className="card" key={account.id}>
-      <strong>{account.name}</strong>
+      <strong>{account.app_name || account.name}</strong>
+      {account.app_name && <p>{account.name}</p>}
+      <p>{t('memberSettings.account', { name: user?.display_name || user?.email || '' })}</p>
       <button className="btn btn-secondary" type="button" disabled={!!removing} onClick={async () => {
         setRemoving(account.id); setError(false);
         try {

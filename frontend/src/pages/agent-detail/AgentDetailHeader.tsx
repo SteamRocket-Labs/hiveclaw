@@ -286,10 +286,11 @@ export default function AgentDetailHeader({
   );
 }
 
-export function AgentDetailNavigation({ visibleTabs, activeTab, onSelectTab }: {
+export function AgentDetailNavigation({ visibleTabs, activeTab, onSelectTab, children }: {
   visibleTabs: AgentDetailTab[];
   activeTab: string;
   onSelectTab: (tab: string) => void;
+  children?: React.ReactNode;
 }) {
   const { t } = useTranslation();
   const visibleWorkbenchAreas = AGENT_WORKBENCH_AREAS
@@ -308,6 +309,9 @@ export function AgentDetailNavigation({ visibleTabs, activeTab, onSelectTab }: {
           <button
             key={area.id}
             type="button"
+            role="tab"
+            id={`agent-section-${area.id}`}
+            aria-selected={activeWorkbenchArea?.id === area.id}
             className={`agent-workbench-area ${activeWorkbenchArea?.id === area.id ? 'active' : ''}`}
             onClick={() => onSelectTab(area.tabs.includes(area.primaryTab) ? area.primaryTab : area.tabs[0])}
           >
@@ -316,18 +320,21 @@ export function AgentDetailNavigation({ visibleTabs, activeTab, onSelectTab }: {
         ))}
       </div>
       {activeWorkbenchArea && (
-        <div className="agent-workbench-subnav" aria-label={t('agent.workbench.sectionTabs', 'Section tabs')}>
+        <section aria-labelledby={`agent-section-${activeWorkbenchArea.id}`}>
           {activeWorkbenchArea.tabs.map((tab) => (
-            <button
+            <details
               key={tab}
-              type="button"
-              className={`agent-workbench-subtab ${activeTab === tab ? 'active' : ''}`}
-              onClick={() => onSelectTab(tab)}
+              className="card"
+              open={activeTab === tab}
             >
-              {t(`agent.tabs.${tab}`, AGENT_TAB_LABELS[tab])}
-            </button>
+              <summary onClick={(event) => { event.preventDefault(); onSelectTab(tab); }}>
+                {tab === 'knowledge' ? t('memberSettings.memory') : tab === 'aware'
+                  ? t('memberSettings.schedules') : t(`agent.tabs.${tab}`, AGENT_TAB_LABELS[tab])}
+              </summary>
+              {activeTab === tab && children}
+            </details>
           ))}
-        </div>
+        </section>
       )}
     </div>
   );

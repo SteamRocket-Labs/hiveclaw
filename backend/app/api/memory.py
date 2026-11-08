@@ -267,6 +267,70 @@ async def get_agent_memory(
     return {"facts": [*profile_entries, *knowledge_pages]}
 
 
+async def _member_memory(db, user, agent_id, memory_id=None):
+    from pathlib import Path
+    from app.config import get_settings
+    from app.core.permissions import check_agent_access
+    from app.models.organization_identity import ContentInputReceipt
+    from app.memory.explicit_overlay import load_explicit_overlay_entries_by_ids
+    from app.services.explicit_memory_authority import latest_memory_receipt, source_dependency, validate_browser_memory_dependency
+    from app.services.content_input_receipts import ContentInputReceiptError
+
+    agent, _ = await check_agent_access(db, user, agent_id)
+    if memory_id is not None:
+        from app.services.explicit_memory_operations import _lock
+        await _lock(db, agent.tenant_id, agent_id, memory_id)
+    rows = (await db.scalars(select(ContentInputReceipt).where(
+        ContentInputReceipt.tenant_id == agent.tenant_id,
+        ContentInputReceipt.carrier_kind == "explicit_memory",
+        ContentInputReceipt.carrier_ref.startswith(f"{agent_id}\n"),
+        ContentInputReceipt.authority_json["owner_user_id"].astext == str(user.id),
+        ContentInputReceipt.authority_json["audience_kind"].astext == "private",
+    ))).all()
+    root = Path(get_settings().AGENT_DATA_DIR)
+    result = []
+    for entry_id in {row.carrier_ref.split("\n", 1)[1] for row in rows}:
+        if memory_id is not None and entry_id != memory_id:
+            continue
+        receipt = await latest_memory_receipt(db, agent.tenant_id, agent_id, entry_id)
+        if (receipt.authority_json.get("state") != "active"
+            or receipt.authority_json.get("owner_user_id") != str(user.id)):
+            continue
+        try:
+            await validate_browser_memory_dependency(db, agent.tenant_id, source_dependency(receipt), user=user)
+        except ContentInputReceiptError as exc:
+            raise _content_receipt_http_error(exc) from exc
+        entries = load_explicit_overlay_entries_by_ids(root, agent_id, [entry_id])
+        if entries and entries[0].status == "active":
+            result.append((entries[0], receipt))
+    return result
+
+
+@router.get("/agents/{agent_id}/my-entries")
+async def list_member_memory(agent_id: uuid.UUID, current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)):
+    return [{"id": entry.entry_id, "content": entry.content} for entry, _ in
+        await _member_memory(db, current_user, agent_id)]
+
+
+@router.delete("/agents/{agent_id}/my-entries/{memory_id}")
+async def delete_member_memory(agent_id: uuid.UUID, memory_id: str,
+    current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    from pathlib import Path
+    from app.config import get_settings
+    from app.memory.explicit_overlay import update_explicit_overlay_status
+
+    entries = await _member_memory(db, current_user, agent_id, memory_id)
+    if not entries:
+        raise HTTPException(404, "Memory entry not found")
+    entry, receipt = entries[0]
+    update_explicit_overlay_status(Path(get_settings().AGENT_DATA_DIR), agent_id,
+        entry.entry_id, status="retired", reason="user_requested")
+    receipt.authority_json = {**receipt.authority_json, "state": "revoked"}
+    await db.commit()
+    return {"deleted": True}
+
+
 @router.get("/sessions/{session_id}/summary")
 async def get_session_summary(
     session_id: uuid.UUID,

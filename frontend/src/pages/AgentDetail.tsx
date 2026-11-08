@@ -142,6 +142,8 @@ const AgentExtensionsSection = lazy(() => import('./agent-detail/AgentExtensions
 const AgentKnowledgeSection = lazy(() => import('./agent-detail/AgentKnowledgeSection'));
 const AgentBusinessTasksSection = lazy(() => import('./agent-detail/AgentBusinessTasksSection'));
 const AgentSettingsSection = lazy(() => import('./agent-detail/AgentSettingsSection'));
+const MemberMemory = lazy(() => import('./agent-detail/MemberMemory'));
+const ScheduledWork = lazy(() => import('./ScheduledWork'));
 const AgentWorkspaceSection = lazy(() => import('./agent-detail/AgentWorkspaceSection'));
 const AgentA2ASection = lazy(() => import('./agent-detail/AgentA2ASection'));
 const LocalAgents = lazy(() => import('./LocalAgents'));
@@ -243,14 +245,14 @@ function AgentDetailInner() {
     const { data: awareTriggers = [], refetch: refetchTriggers } = useQuery({
         queryKey: ['triggers', id],
         queryFn: () => triggerApi.list(id!),
-        enabled: canLoadAgentScopedData && activeTab === 'aware',
+        enabled: canLoadAgentScopedData && activeTab === 'aware' && currentUser?.role !== 'member',
         refetchInterval: activeTab === 'aware' ? 5000 : false,
     });
 
     const { data: autonomyOverview, refetch: refetchAutonomy } = useQuery({
         queryKey: ['autonomy-overview', id],
         queryFn: () => autonomyApi.getOverview(id!, { lookbackHours: 24 }),
-        enabled: canLoadAgentScopedData && activeTab === 'aware',
+        enabled: canLoadAgentScopedData && activeTab === 'aware' && currentUser?.role !== 'member',
         refetchInterval: activeTab === 'aware' ? 5000 : false,
     });
 
@@ -2546,7 +2548,7 @@ function AgentDetailInner() {
 
     const visibleAgentTabs: AgentDetailTab[] = isOperatorOnly
         ? ['chat', 'workspace', 'activityLog']
-        : getVisibleAgentDetailTabs(agent);
+        : getVisibleAgentDetailTabs(agent).filter(tab => currentUser?.role !== 'member' || tab !== 'a2a');
     if (!isSystemHr && visibleAgentTabs.length > 0 && !visibleAgentTabs.includes(activeTab as AgentDetailTab)) {
         setActiveTab(visibleAgentTabs[0]);
     }
@@ -2571,17 +2573,10 @@ function AgentDetailInner() {
                     />
                 )}
 
-                {/* Workbench navigation — hidden for HR system agent */}
-                {!isSystemHr && !sessionWorkbenchMode && (
-                    <AgentDetailNavigation
-                        visibleTabs={visibleAgentTabs}
-                        activeTab={activeTab}
-                        onSelectTab={selectDetailTab}
-                    />
-                )}
-
                 {canOperatorInspect && <AgentOperatorReason value={operatorReason} onChange={setOperatorReason} />}
 
+                <AgentDetailBody visibleTabs={visibleAgentTabs} activeTab={activeTab}
+                    onSelectTab={selectDetailTab} plain={isSystemHr || sessionWorkbenchMode}>
                 <Suspense fallback={<AgentDetailSectionFallback />}>
                 {/* ── Enhanced Status Tab ── */}
                 {activeTab === 'status' && (
@@ -2599,6 +2594,7 @@ function AgentDetailInner() {
 
                 {/* ── Aware Tab ── */}
                 {activeTab === 'aware' && (
+                    currentUser?.role === 'member' ? <ScheduledWork agentId={id!} /> :
                     <AgentAwareSection
                         agentId={id!}
                         awareTriggers={awareTriggers}
@@ -2622,11 +2618,14 @@ function AgentDetailInner() {
 
                 {/* ── Mind Tab (Soul + Memory + Heartbeat) ── */}
                 {activeTab === 'knowledge' && (
+                    <>
+                    {currentUser?.role === 'member' && <MemberMemory key={`${readinessScopeKey}:${id}`} agentId={id!} />}
                     <AgentKnowledgeSection
                         agentId={id!}
-                        canEdit={canManage}
+                        canEdit={canManage && currentUser?.role !== 'member'}
                         onNavigateTab={selectDetailTab}
                     />
+                    </>
                 )}
 
                 {/* ── Evolution Tab (skill lifecycle + evolution timeline) ── */}
@@ -2846,6 +2845,7 @@ function AgentDetailInner() {
                     )
                 }
                 </Suspense>
+                </AgentDetailBody>
             </div >
 
             <ConfirmModal
@@ -2886,6 +2886,10 @@ function AgentDetailInner() {
         </>
     );
 }
+function AgentDetailBody({ plain, children, ...navigation }: React.ComponentProps<typeof AgentDetailNavigation> & { plain: boolean }) {
+    return plain ? <>{children}</> : <AgentDetailNavigation {...navigation}>{children}</AgentDetailNavigation>;
+}
+
 export default function AgentDetailWithErrorBoundary() {
     return (
         <AgentDetailErrorBoundary>

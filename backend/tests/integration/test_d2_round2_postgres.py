@@ -19,7 +19,7 @@ from app.models.runtime_task import RuntimeTask
 from app.models.tool import AgentTool, Tool
 from app.models.user import User
 from app.services import mcp_oauth
-from app.services.mcp_accounts import account_access, bind_work_account, create_personal_account
+from app.services.mcp_accounts import create_personal_account
 from app.services.mcp_server_service import resolve_mcp_oauth_bearer
 from tests.integration.test_d2_requester_connections_postgres import _context, _seed
 
@@ -102,9 +102,11 @@ async def test_s2_creation_reuses_one_account_and_legacy_duplicates_pick_latest_
         snapshot = await mcp_configuration_snapshot(db, target=await db.get(Agent, bot), server_id=server_id,
             user=await db.get(User, user_id))
         assert snapshot["account"]["id"] == str(latest_id)
-        assert len(snapshot["accounts"]) == 3
+        # R3 item 5: card snapshots no longer list accounts; settings/DB still expose legacy rows.
+        accounts = list(await db.scalars(select(MCPServer).where(MCPServer.parent_server_id == server_id)))
+        assert {row.id for row in accounts} == {first.id, latest_id}
         assert not {"account_use_enabled", "can_grant_account", "grant_id", "grant_version"} & snapshot.keys()
-        assert all("grant_version" not in row for row in snapshot["accounts"])
+        assert "accounts" not in snapshot
 
 
 async def test_s3_reconnect_uses_new_authorization_without_rebinding_existing_conversation(
@@ -114,11 +116,7 @@ async def test_s3_reconnect_uses_new_authorization_without_rebinding_existing_co
     tenant, user_id, bot, _, session, _, server_id, tool, _ = await _seed(owner_sessionmaker)
     async with owner_sessionmaker() as db:
         first = await _personal(db, tenant, user_id, server_id, "before")
-        account, grant = await account_access(db, server=await db.get(MCPServer, server_id), account_id=first.id,
-            agent_id=bot, user=await db.get(User, user_id))
-        await bind_work_account(db, server=await db.get(MCPServer, server_id), account=account, grant=grant,
-            agent_id=bot, session_id=session, user=await db.get(User, user_id))
-        await db.commit()
+        # R3 item 5: execution uses the requester's connection without a work binding.
     async def resolve():
         async with app_user_sessionmaker() as db:
             await pin_rls_tenant_context(db, tenant)

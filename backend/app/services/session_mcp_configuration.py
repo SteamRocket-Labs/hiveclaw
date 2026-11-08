@@ -22,17 +22,12 @@ async def mcp_configuration_snapshot(db, *, target, server_id, user=None, accoun
     )
     if server is None:
         raise HTTPException(status_code=404, detail="MCP connection not found")
-    from app.services.mcp_accounts import account_access, account_public, list_work_accounts, personal_account
+    from app.services.mcp_accounts import account_access, account_public, personal_account
 
     if user and account_id is None:
         own = await personal_account(db, server=server, user_id=user.id)
-        account_id = own.id if own else None
-
-    account, _ = (
-        await account_access(db, server=server, account_id=account_id or server.id, agent_id=target.id, user=user)
-        if user
-        else (server, None)
-    )
+        account_id = own.id if own else server.id
+    account = await account_access(db, server=server, account_id=account_id, agent_id=target.id, user=user) if user else server
     assignment = await db.scalar(
         select(AgentMCPServerAssignment)
         .where(
@@ -125,9 +120,6 @@ async def mcp_configuration_snapshot(db, *, target, server_id, user=None, accoun
         "usable_tool_count": usable,
         "permitted_tool_count": permitted_tool_count,
         "account": account_public(account),
-        "accounts": await list_work_accounts(db, server=server, agent_id=target.id, user=user)
-        if user
-        else [account_public(server)],
         "can_authorize": bool(
             user
             and (
@@ -162,24 +154,12 @@ async def validate_mcp_configuration_answer(db, *, payload, user, session_id):
         target=target,
         server_id=uuid.UUID(descriptor["mcp_server_id"]),
         user=user,
-        account_id=uuid.UUID(ready["account_id"]) if ready.get("account_id") else None,
-    )
-    from app.services.mcp_accounts import work_binding_matches
-
-    matches = await work_binding_matches(
-        db,
-        ready=ready,
-        tenant_id=target.tenant_id,
-        agent_id=target.id,
-        session_id=session_id,
-        user_id=user.id,
-        account_id=current["account"]["id"],
     )
     if (
         current["revision"] != ready.get("revision")
         or not current["usable_tool_count"]
         or current["authorization"] != "configured"
-        or not matches
+        or current["account"]["id"] != ready.get("account_id")
     ):
         raise HTTPException(
             status_code=409,

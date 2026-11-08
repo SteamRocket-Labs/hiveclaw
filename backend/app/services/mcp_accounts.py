@@ -6,7 +6,7 @@ from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
-from app.models.mcp_server import MCPAccountGrant, MCPServer, MCPWorkAccountBinding
+from app.models.mcp_server import MCPAccountGrant, MCPServer
 from app.models.user import User
 
 REGISTRATION_FIELDS = ("authorization_endpoint", "token_endpoint", "client_id", "redirect_uri", "scope")
@@ -139,7 +139,7 @@ async def account_access(db, *, server, account_id, agent_id, user):
     ):
         raise HTTPException(status_code=404, detail="MCP account does not belong to this connection")
     if not account.owner_user_id:
-        return account, None
+        return account
     owner = await db.get(User, account.owner_user_id, populate_existing=True)
     if owner and owner.tenant_id == server.tenant_id and _active_in_tenant(user, server.tenant_id) and not owner.is_active:
         raise HTTPException(status_code=403, detail="个人 MCP 凭据已吊销")
@@ -149,49 +149,7 @@ async def account_access(db, *, server, account_id, agent_id, user):
         )
     if account.owner_user_id != user.id:
         raise HTTPException(status_code=403, detail="Personal connections can only act for their owner")
-    return account, None
-
-
-async def bind_work_account(db, *, server, account, grant, agent_id, session_id, user):
-    if account.owner_user_id and account.owner_user_id != user.id:
-        raise HTTPException(status_code=403, detail="Personal connections can only act for their owner")
-    binding = await db.scalar(
-        select(MCPWorkAccountBinding)
-        .execution_options(populate_existing=True)
-        .where(
-            MCPWorkAccountBinding.session_id == session_id,
-            MCPWorkAccountBinding.agent_id == agent_id,
-            MCPWorkAccountBinding.server_id == server.id,
-            MCPWorkAccountBinding.requester_user_id == user.id,
-        )
-    )
-    if binding is None:
-        binding = MCPWorkAccountBinding(
-            tenant_id=server.tenant_id,
-            session_id=session_id,
-            agent_id=agent_id,
-            server_id=server.id,
-            requester_user_id=user.id,
-        )
-        db.add(binding)
-    binding.account_id = account.id
-    binding.authorization_id = ((account.config_json or {}).get("oauth") or {}).get("authorization_id")
-    await db.flush()
-    return binding
-
-
-async def work_binding_matches(db, *, ready, tenant_id, agent_id, session_id, user_id, account_id):
-    if not ready.get("binding_id"):
-        return False
-    binding = await db.get(MCPWorkAccountBinding, uuid.UUID(ready["binding_id"]), populate_existing=True)
-    return bool(
-        binding
-        and binding.tenant_id == tenant_id
-        and binding.agent_id == agent_id
-        and binding.session_id == session_id
-        and binding.requester_user_id == user_id
-        and str(binding.account_id) == str(account_id)
-    )
+    return account
 
 
 async def resolve_work_account(db, *, server, agent_id, context):
@@ -210,11 +168,24 @@ async def resolve_work_account(db, *, server, agent_id, context):
     # A session created for a system workflow does not make its owner a human requester.
     from app.models.runtime_task import RuntimeTask
 
-    root_id = principal.root_runtime_task_id or getattr(context, "runtime_task_id", None)
-    if root_id:
-        root = await db.get(RuntimeTask, uuid.UUID(str(root_id)))
-        if root is not None and (root.metadata_json or {}).get("headless_session_created"):
+    root_id = principal.root_runtime_task_id
+    if root_id is None:
+        root_id = getattr(context, "runtime_task_id", None)
+    visited = set()
+    while root_id is not None:
+        try:
+            task_id = uuid.UUID(str(root_id))
+        except (ValueError, TypeError, AttributeError):
             return server, None
+        if task_id in visited:
+            return server, None
+        visited.add(task_id)
+        root = await db.get(RuntimeTask, task_id)
+        if root is None or (root.metadata_json or {}).get("headless_session_created"):
+            return server, None
+        root_id = root.root_runtime_task_id
+        if root_id == root.id:
+            break
     requester = (
         await db.get(User, principal.requester_user_id, populate_existing=True) if principal.requester_user_id else None
     )
@@ -226,7 +197,7 @@ async def resolve_work_account(db, *, server, agent_id, context):
         return server, None
     account = await personal_account(db, server=server, user_id=requester.id, connected_only=True)
     if account is not None:
-        return await account_access(db, server=server, account_id=account.id, agent_id=agent_id, user=requester)
+        return await account_access(db, server=server, account_id=account.id, agent_id=agent_id, user=requester), None
     return server, None
 
 

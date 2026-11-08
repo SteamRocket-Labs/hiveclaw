@@ -6,10 +6,10 @@ import { translateFromCatalog } from '../../test/i18nMock';
 import InlineMcpConfigurationCard from './InlineMcpConfigurationCard';
 import { StructuredToolResultBody } from './StructuredToolResult';
 import { normalizeToolCallResult } from './toolResultEnvelope';
-const mocks = vi.hoisted(() => ({ get: vi.fn(), confirm: vi.fn(), grant: vi.fn(), select: vi.fn(), create: vi.fn(), oauth: vi.fn() }));
+const mocks = vi.hoisted(() => ({ get: vi.fn(), confirm: vi.fn(), grant: vi.fn(), create: vi.fn(), oauth: vi.fn() }));
 const translate = (key: string, fallback?: string) => translateFromCatalog(en, key, fallback);
 vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: translate }) }));
-vi.mock('../../api/domains/tools', () => ({ toolsApi: { getSessionMcpConfiguration: mocks.get, selectSessionMcpAccount: mocks.select, confirmSessionMcpConfiguration: mocks.confirm } }));
+vi.mock('../../api/domains/tools', () => ({ toolsApi: { getSessionMcpConfiguration: mocks.get, confirmSessionMcpConfiguration: mocks.confirm } }));
 vi.mock('../../api/domains/extensions', () => ({ extensionsApi: { setAgentMcpAssignment: mocks.grant, createMcpAccount: mocks.create, getMcpOAuthStatus: mocks.oauth } }));
 const configured = { state: 'waiting', target_agent_id: 'target', target_agent_name: 'Research colleague', server: { id: 'server', name: 'Documents' },
   authorization: 'configured', usage: { enabled: true, default_tool_mode: 'auto', always_load: false }, revision: 'revision-1', usable_tool_count: 1, can_authorize: false };
@@ -70,17 +70,18 @@ it('uses the returned requester account without per-employee grants or another s
   const answer = vi.fn().mockResolvedValue({}); render(<InlineMcpConfigurationCard {...props} onAnswer={answer} />);
   await waitFor(() => expect(answer).toHaveBeenCalledTimes(1));
   expect(mocks.confirm).toHaveBeenCalledExactlyOnceWith('source', 'work', 'question', { revision: 'personal-revision', account_id: 'personal' });
-  expect(mocks.select).not.toHaveBeenCalled(); expect(mocks.grant).not.toHaveBeenCalled(); expect(screen.queryByRole('combobox')).toBeNull();
+  expect(mocks.grant).not.toHaveBeenCalled(); expect(screen.queryByRole('combobox')).toBeNull();
 });
 it('creates the personal account in place without exposing registration fields or URLs', async () => {
   const personal = { id: 'personal', name: 'Documents', owner_user_id: 'requester', parent_server_id: 'server', auth_status: 'none' };
   const missing = { ...configured, authorization: 'required' };
-  mocks.get.mockImplementation((_a, _s, _q, account) => Promise.resolve(account ? { ...missing, account: personal } : missing));
-  mocks.create.mockResolvedValue(personal); mocks.select.mockResolvedValue({});
+  // R3 item 5: a fresh snapshot picks the created row without a selection request.
+  mocks.get.mockResolvedValueOnce(missing).mockResolvedValue({ ...missing, account: personal });
+  mocks.create.mockResolvedValue(personal);
   mocks.oauth.mockResolvedValue({ auth_status: 'none', registration: { client_id: 'internal-client', token_endpoint: 'https://auth.test/token' } });
   render(<InlineMcpConfigurationCard {...props} onAnswer={vi.fn()} />);
   fireEvent.click(await screen.findByRole('button', { name: 'Connect my account' }));
-  await waitFor(() => expect(mocks.select).toHaveBeenCalledExactlyOnceWith('source', 'work', 'question', 'personal'));
+  await waitFor(() => expect(mocks.get).toHaveBeenCalledTimes(2));
   await waitFor(() => expect(mocks.oauth).toHaveBeenCalledWith('personal', true));
   expect(mocks.create).toHaveBeenCalledWith('target', 'server', { id: expect.any(String), name: 'Documents' });
   expect(screen.queryByRole('textbox')).toBeNull(); expect(screen.queryByText('internal-client')).toBeNull(); expect(screen.queryByText('https://auth.test/token')).toBeNull();
@@ -114,7 +115,11 @@ it('refetches a refused answer and collapses when another tab has already contin
 
 it('shows the connection explanation without raw model question text', async () => {
   mocks.get.mockResolvedValue({ ...configured, authorization: 'required' });
-  render(<InlineMcpConfigurationCard {...props} question="Call list_mcp_tools then grant_id=private" onAnswer={vi.fn()} />);
+  const value = normalizeToolCallResult('ask_user_question', { status: 'awaiting_user_clarification',
+    questions: [{ question: 'Call list_mcp_tools then grant_id=private' }],
+    configuration_request: { target_agent_id: 'target', mcp_server_id: 'server' } });
+  render(<StructuredToolResultBody agentId="source" sessionId="work" questionItemId="question"
+    toolMeta={value.toolMeta} onAnswerQuestion={vi.fn()} />);
   await screen.findByRole('button', { name: 'I have connected' });
   expect(document.body.textContent).not.toContain('list_mcp_tools');
   expect(document.body.textContent).not.toContain('grant_id');

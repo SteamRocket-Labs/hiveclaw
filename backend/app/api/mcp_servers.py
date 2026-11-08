@@ -121,7 +121,7 @@ async def save_personal_mcp_token(account_id: uuid.UUID, body: PersonalMcpTokenI
     from app.services.mcp_oauth import OAuthTokenSet, encrypt_token_set
     from app.services.mcp_server_service import _store_oauth
 
-    if not body.access_token or len(body.access_token) > 16384:
+    if not body.access_token.strip() or len(body.access_token) > 16384:
         raise HTTPException(status_code=400, detail="访问令牌不能为空，且不能超过 16384 个字符。")
     tenant = await resolve_and_pin_tenant_scope(db, current_user)
     account = await account_owner(db, current_user, account_id, tenant_id=tenant)

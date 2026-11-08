@@ -5,7 +5,7 @@ import { extensionsApi } from '../../api/domains/extensions';
 import McpOAuthSettings from '../../components/McpOAuthSettings';
 
 export default function InlineMcpConfigurationCard({ agentId, sessionId, questionId, answered, onAnswer }: {
-  agentId: string; sessionId: string; questionId: string; question: string;
+  agentId: string; sessionId: string; questionId: string;
   answered?: boolean; onAnswer?: (itemId: string, text: string) => Promise<unknown>;
 }) {
   const { t } = useTranslation();
@@ -19,18 +19,17 @@ export default function InlineMcpConfigurationCard({ agentId, sessionId, questio
   const resuming = useRef(false);
   const autoContinued = useRef(false);
   const creationId = useRef(crypto.randomUUID());
-  const [accountId, setAccountId] = useState<string>();
   const interactive = !!onAnswer;
   const review = () => setRevision((value) => value + 1);
   useEffect(() => {
     if (answered || !interactive) return;
     let active = true; setLoading(true); setError('');
-    void (accountId ? toolsApi.getSessionMcpConfiguration(agentId, sessionId, questionId, accountId) : toolsApi.getSessionMcpConfiguration(agentId, sessionId, questionId)).then((value) => {
+    void toolsApi.getSessionMcpConfiguration(agentId, sessionId, questionId).then((value) => {
       if (active) { setConfiguration(value); if (value.answered) setSubmitted(true); }
     }).catch(() => { if (active) setError(t('agent.configuration.loadFailed')); })
       .finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
-  }, [agentId, sessionId, questionId, answered, interactive, revision, accountId, t]);
+  }, [agentId, sessionId, questionId, answered, interactive, revision, t]);
   const resume = async (skip = false) => {
     if (!onAnswer || resuming.current) return;
     resuming.current = true;
@@ -78,10 +77,9 @@ export default function InlineMcpConfigurationCard({ agentId, sessionId, questio
           : <button className="btn btn-primary" type="button" disabled={busy || loading} onClick={async () => {
             setBusy(true); setError('');
             try {
-              const account = await extensionsApi.createMcpAccount(configuration.target_agent_id, configuration.server.id,
+              await extensionsApi.createMcpAccount(configuration.target_agent_id, configuration.server.id,
                 { id: creationId.current, name: configuration.server.name });
-              await toolsApi.selectSessionMcpAccount(agentId, sessionId, questionId, account.id);
-              setAccountId(account.id);
+              review();
             } catch { setError(t('agent.mcpConnect.failed')); }
             finally { setBusy(false); }
           }}>{t('agent.mcpConnect.connect')}</button>)}

@@ -231,16 +231,17 @@ async def test_original_work_authorization_reaches_the_actual_successor_worker(
             )
             assert callback.status_code == 200, callback.text
             selection = {"account_id": account_id}
-            selected = await http.post(endpoint + "/select", json=selection)
+            # R3 item 5: the snapshot finds the new account without a select round trip.
+            selected = await http.get(endpoint)
             assert selected.status_code == 200 and selected.json()["state"] == "waiting", selected.text
-            assert (await http.get(endpoint)).json()["account"]["id"] == account_id
+            assert selected.json()["account"]["id"] == account_id
         assert len(client.requests) == 1
         async with owner_sessionmaker() as db:
             tasks = (
                 await db.scalars(select(RuntimeTask).where(RuntimeTask.root_session_id == str(seed["session_id"])))
             ).all()
             assert len(tasks) == 1 and tasks[0].status == "completed"
-        current = (await http.get(endpoint, params=selection)).json()
+        current = (await http.get(endpoint)).json()
         assert (
             await http.post(endpoint + "/confirm", json={"revision": current["revision"], **selection})
         ).status_code == 200

@@ -342,6 +342,9 @@ async def test_direct_import_ignores_stale_bot_keys_and_requires_explicit_compan
             json={"config": {"api_key": "synthetic-rotated-employee-key"}})
         # S5: the per-bot write route rejects keys; the live company/public scope stays authoritative.
         assert changed.status_code == 400, changed.text
+        async with app_user_sessionmaker() as db:
+            await pin_rls_tenant_context(db, tenant)
+            assert (await db.get(Tool, tool_id)).mcp_server_url == (legacy_url if stored_legacy else endpoint)
         configured_peer = await client.put(f"/api/tools/agents/{peer}/tool-config/{tool_id}",
             json={"config": {"api_key": "synthetic-peer-key"}})
         assert configured_peer.status_code == 400, configured_peer.text

@@ -125,10 +125,8 @@ export interface SessionMcpConfiguration {
   usable_tool_count: number;
   can_authorize: boolean;
   account?: McpAccount;
-  accounts?: McpAccount[];
   answered?: boolean;
   can_manage_employee?: boolean;
-  selection_unavailable?: boolean;
   permitted_tool_count?: number;
 }
 
@@ -218,10 +216,8 @@ export const toolsApi = {
     post<SessionRoleConfiguration>(`/tools/agents/${agentId}/sessions/${sessionId}/questions/${questionId}/role/confirm`, { role_revision: roleRevision }),
   saveSessionToolConfiguration: (agentId: string, sessionId: string, questionId: string, config: Record<string, unknown>) =>
     put<SessionToolConfiguration>(`/tools/agents/${agentId}/sessions/${sessionId}/questions/${questionId}/configuration`, { config }),
-  getSessionMcpConfiguration: (agentId: string, sessionId: string, questionId: string, accountId?: string) =>
-    get<SessionMcpConfiguration>(`/tools/agents/${agentId}/sessions/${sessionId}/questions/${questionId}/mcp${accountId ? `?account_id=${encodeURIComponent(accountId)}` : ''}`),
-  selectSessionMcpAccount: (agentId: string, sessionId: string, questionId: string, accountId: string) =>
-    post<SessionMcpConfiguration>(`/tools/agents/${agentId}/sessions/${sessionId}/questions/${questionId}/mcp/select`, { account_id: accountId }),
+  getSessionMcpConfiguration: (agentId: string, sessionId: string, questionId: string) =>
+    get<SessionMcpConfiguration>(`/tools/agents/${agentId}/sessions/${sessionId}/questions/${questionId}/mcp`),
   confirmSessionMcpConfiguration: (agentId: string, sessionId: string, questionId: string, data: { revision: string; account_id?: string }) =>
     post<SessionMcpConfiguration>(`/tools/agents/${agentId}/sessions/${sessionId}/questions/${questionId}/mcp/confirm`, data),
   getSessionChannelConfiguration: (agentId: string, sessionId: string, questionId: string) =>

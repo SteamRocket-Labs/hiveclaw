@@ -87,7 +87,6 @@ async def test_personal_account_is_owner_only_and_reconnect_ignores_old_work_bin
     from app.models.mcp_server import MCPServer
     from app.services import mcp_oauth, tenant_resolver
     from app.services.agent_tool_domains import web_mcp
-    from app.services.mcp_accounts import account_access, bind_work_account
     from app.tools.handlers import mcp
     from app.tools.runtime import ToolExecutionContext
 
@@ -196,24 +195,11 @@ async def test_personal_account_is_owner_only_and_reconnect_ignores_old_work_bin
             assert result.status_code == 200, result.text
             return started.json()
 
-        async def bind():
-            async with app_user_sessionmaker() as db:
-                await pin_rls_tenant_context(db, tenant)
-                parent = await db.get(MCPServer, server_id)
-                account, grant = await account_access(
-                    db, server=parent, account_id=account_id, agent_id=agent, user=owner
-                )
-                await bind_work_account(
-                    db, server=parent, account=account, grant=grant, agent_id=agent, session_id=session, user=owner
-                )
-                await db.commit()
-
         async def call():
             return await web_mcp._execute_mcp_tool(tool.name, {}, agent, execution_context=context)
 
         await login("first")
         # B1: D2 §3 makes the requester's connection reusable without a per-bot grant.
-        await bind()
         assert await call() == "Authorized private account document"
         assert (
             await mcp.call_mcp_tool(agent, {"tool_name": tool.name}, execution_context=context)
@@ -253,6 +239,7 @@ async def test_personal_account_is_owner_only_and_reconnect_ignores_old_work_bin
             assert (bearer, error) == ("company-only-bearer", None)
         assert (await http.post(f"/api/mcp-accounts/{account_id}/revoke")).status_code == 200
         assert await call() == "Authorized private account document"
+        # R3 ruling 2 / plan section 11 item 12: company connections are on by default after removal.
         assert received[-1] == "company-only-bearer"
         second = await login("second")
         # S3: remove/reconnect must work in the same conversation without rebinding.
@@ -278,7 +265,8 @@ async def test_personal_account_is_owner_only_and_reconnect_ignores_old_work_bin
 
     from app.models.mcp_server import MCPWorkAccountBinding
     async with owner_sessionmaker() as db:
-        assert (await db.scalars(select(MCPWorkAccountBinding).where(MCPWorkAccountBinding.agent_id == agent))).one()
+        # R3 item 5: the binding table/model stays for schema compatibility, with no new rows.
+        assert not (await db.scalars(select(MCPWorkAccountBinding).where(MCPWorkAccountBinding.agent_id == agent))).all()
     foreign_tenant, _, _, _, _ = await _seed_session(owner_sessionmaker)
     async with app_user_sessionmaker() as db:
         await pin_rls_tenant_context(db, foreign_tenant)

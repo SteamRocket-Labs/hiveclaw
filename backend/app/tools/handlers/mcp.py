@@ -37,7 +37,7 @@ def _render_mcp_authz_error(tool_name: str, exc: Exception) -> str:
     if isinstance(exc, MCPStoredCredentialRequired):
         return render_tool_error(tool_name=tool_name, error_class="configuration_required", message=str(exc),
             provider="mcp", retryable=False,
-            actionable_hint="Use secure employee tool configuration, or ask an administrator to configure company authorization.")
+            actionable_hint="The member can connect their account through the card in this conversation.")
     return render_tool_error(
         tool_name=tool_name,
         error_class="authz_policy_violation",

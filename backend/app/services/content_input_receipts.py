@@ -104,6 +104,7 @@ class _DisclosureSourceValidations:
     def __init__(self):
         self.active = True
         self.verified = {}
+        self.actors = {}
 
 
 @contextmanager
@@ -116,6 +117,7 @@ def group_source_read():
     finally:
         scope.active = False
         scope.verified.clear()
+        scope.actors.clear()
         _DISCLOSURE_SOURCE_VALIDATIONS.reset(token)
 
 
@@ -200,6 +202,7 @@ async def _validate_input_dependencies(
         )
     ):
         return await _validate_input_dependency_batch(db, tenant_id, dependencies, **context)
+    pending = {}
     for dependency in dependencies:
         source_key = (dependency["source_kind"], dependency["source_id"], dependency["source_version"])
         reader_key = (
@@ -216,10 +219,12 @@ async def _validate_input_dependencies(
             or reader_key not in scope.verified
             or (source_key[0] == "session_tool_invocation" and source_key[1:] in _ACTIVE_GROUP_TOOL_SOURCES.get())
         ):
-            await _validate_input_dependency_batch(db, tenant_id, [dependency], **context)
-            if scope.active:
-                # Keep identity keys bound to their objects until this disclosure ends.
-                scope.verified[reader_key] = (db, user, runtime_request)
+            pending[reader_key] = dependency
+    if pending:
+        await _validate_input_dependency_batch(db, tenant_id, list(pending.values()), **context)
+        if scope.active:
+            # Keep identity keys bound to their objects until this disclosure ends.
+            scope.verified.update(dict.fromkeys(pending, (db, user, runtime_request)))
 
 
 async def _validate_input_dependency_batch(
@@ -249,6 +254,16 @@ async def _validate_input_dependency_batch(
         published_user, published = await published_creation_seed_sources(
             db, tenant_id=tenant_id, request=runtime_request, requested_dependencies=dependencies
         )
+    models = [item for item in dependencies if item["source_kind"] == "session_model_result"]
+    if models:
+        from app.services.learned_skill_sources import validate_model_sources
+
+        await validate_model_sources(db, tenant_id, models, request=runtime_request, user=user)
+    session_sources = [item for item in dependencies
+        if item["source_kind"] in {"session_command", "session_tool_invocation"} and item not in published]
+    if session_sources:
+        await _validate_session_dependencies(db, tenant_id, session_sources, user=user,
+            runtime_request=runtime_request, active_workspace_receipts=active_workspace_receipts)
     for dependency in dependencies:
         if dependency["source_kind"] == "business_task_context":
             from app.services.business_task_context import validate_business_task_context
@@ -266,9 +281,6 @@ async def _validate_input_dependency_batch(
             await validate_observation(db, tenant_id, dependency, request=runtime_request, user=user)
             continue
         if dependency["source_kind"] == "session_model_result":
-            from app.services.learned_skill_sources import validate_model_source
-
-            await validate_model_source(db, tenant_id, dependency, request=runtime_request, user=user)
             continue
         if dependency["source_kind"] == "learned_skill_candidate":
             from app.services.learned_skill_sources import validate_candidate_dependency
@@ -404,14 +416,6 @@ async def _validate_input_dependency_batch(
             )
             continue
         if dependency["source_kind"] in {"session_command", "session_tool_invocation"}:
-            await _validate_session_dependency(
-                db,
-                tenant_id,
-                dependency,
-                user=user,
-                runtime_request=runtime_request,
-                active_workspace_receipts=active_workspace_receipts,
-            )
             continue
         if dependency["source_kind"] in {"runtime_result", "runtime_result_page", "runtime_team_context"}:
             from app.services.runtime_result_sources import validate_runtime_return_dependency
@@ -1087,38 +1091,48 @@ async def _validate_session_actor_identity(db, tenant_id, dependency, *, user, r
     await _authorize_session_input_source(db, tenant_id, session, user=user, runtime_request=runtime_request)
 
 
-async def _validate_session_dependency(
-    db, tenant_id, dependency, *, user, runtime_request, active_workspace_receipts=None
-):
+async def _validate_session_dependencies(db, tenant_id, dependencies, **context):
     from app.models.chat_session import ChatSession
     from app.models.chat_transcript_event import ChatTranscriptEvent
+    from app.models.session_v2 import SessionCommand, SessionToolInvocation, SessionTurnInput
+
+    for kind, model, linked, binding in (
+        ("session_command", SessionCommand, SessionTurnInput,
+            SessionTurnInput.command_id == SessionCommand.id),
+        ("session_tool_invocation", SessionToolInvocation, ChatTranscriptEvent,
+            (ChatTranscriptEvent.id == SessionToolInvocation.result_event_id)
+            & (ChatTranscriptEvent.agent_id == ChatSession.agent_id)
+            & (ChatTranscriptEvent.run_id == SessionToolInvocation.run_id)
+            & (ChatTranscriptEvent.invocation_id == SessionToolInvocation.id)),
+    ):
+        selected = [item for item in dependencies if item["source_kind"] == kind]
+        if not selected:
+            continue
+        try:
+            ids = [uuid.UUID(item["source_id"]) for item in selected]
+        except ValueError as exc:
+            raise ContentInputReceiptError("content_source_unavailable", "The session source receipt is invalid.", 503) from exc
+        rows = {row[0].id: row for row in await db.execute(
+            select(model, ChatSession, linked).join(ChatSession, ChatSession.id == model.session_id)
+            .outerjoin(linked, binding & (linked.tenant_id == tenant_id) & (linked.session_id == model.session_id))
+            .where(model.id.in_(ids), model.tenant_id == tenant_id, ChatSession.tenant_id == tenant_id)
+            .execution_options(populate_existing=True))}
+        for dependency in selected:
+            await _validate_session_dependency(db, tenant_id, dependency,
+                row=rows.get(uuid.UUID(dependency["source_id"])), model=model, **context)
+
+
+async def _validate_session_dependency(
+    db, tenant_id, dependency, *, row, model, user, runtime_request, active_workspace_receipts=None
+):
     from app.models.session_v2 import SessionCommand, SessionToolInvocation
     from app.services.session_model_inputs import _hash
     from app.services.session_semantic_history import _event_payload
     from app.services.session_v2_persistence import SESSION_COMMAND_AUTHORITY_STAMP_KEY
 
-    try:
-        source_id = uuid.UUID(dependency["source_id"])
-    except ValueError as exc:
-        raise ContentInputReceiptError(
-            "content_source_unavailable", "The session source receipt is invalid.", 503
-        ) from exc
-    model = SessionCommand if dependency["source_kind"] == "session_command" else SessionToolInvocation
-    row = (
-        await db.execute(
-            select(model, ChatSession)
-            .join(ChatSession, ChatSession.id == model.session_id)
-            .where(
-                model.id == source_id,
-                model.tenant_id == tenant_id,
-                ChatSession.tenant_id == tenant_id,
-            )
-            .execution_options(populate_existing=True)
-        )
-    ).first()
     if row is None:
         raise ContentInputReceiptError("content_source_changed", "The exact session source is unavailable.", 403)
-    source, session = row
+    source, session, linked = row
     if session.audience_kind == "group" and model is SessionCommand and source.namespace != "human_input":
         raise ContentInputReceiptError(
             "content_source_unavailable", "Derived group output requires its live source-disclosure reader.", 503
@@ -1129,18 +1143,7 @@ async def _validate_session_dependency(
             {"command_kind": source.command_kind, "request": source.request_json}
         ) and source.target_hash == _hash(source.target_json)
     else:
-        event = await db.scalar(
-            select(ChatTranscriptEvent)
-            .where(
-                ChatTranscriptEvent.id == source.result_event_id,
-                ChatTranscriptEvent.tenant_id == tenant_id,
-                ChatTranscriptEvent.agent_id == session.agent_id,
-                ChatTranscriptEvent.session_id == session.id,
-                ChatTranscriptEvent.run_id == source.run_id,
-                ChatTranscriptEvent.invocation_id == source.id,
-            )
-            .execution_options(populate_existing=True)
-        )
+        event = linked
         payload = _event_payload(event) if event is not None else {}
         content, version = payload.get("content"), payload.get("content_hash")
         valid = isinstance(content, str) and version == _hash(content)
@@ -1170,32 +1173,18 @@ async def _validate_session_dependency(
         ),
     )
     if model is SessionCommand:
-        from app.models.session_v2 import SessionTurnInput
         from app.services.team_task_context import input_sources
 
-        input_row = await db.scalar(
-            select(SessionTurnInput).where(
-                SessionTurnInput.command_id == source.id,
-                SessionTurnInput.tenant_id == tenant_id,
-                SessionTurnInput.session_id == session.id,
-            )
-        )
+        input_row = linked
         shared = await input_sources(db, tenant_id=tenant_id, row=input_row) if input_row else []
         await _validate_input_dependencies(db, tenant_id, shared, user=user, runtime_request=runtime_request)
     if (
         model is SessionCommand
         and ((source.target_json or {}).get("runtime_metadata") or {}).get("source") == "loop_same_session"
     ):
-        from app.models.session_v2 import SessionTurnInput
         from app.services.trigger_instruction_sources import native_trigger_input_sources
 
-        input_row = await db.scalar(
-            select(SessionTurnInput).where(
-                SessionTurnInput.command_id == source.id,
-                SessionTurnInput.tenant_id == tenant_id,
-                SessionTurnInput.session_id == session.id,
-            )
-        )
+        input_row = linked
         references, complete = await native_trigger_input_sources(
             db, tenant_id=tenant_id, agent_id=session.agent_id, row=input_row, command=source
         )
@@ -1311,29 +1300,26 @@ async def _authorize_session_input_source(
     from app.models.chat_session import ChatSession
 
     if runtime_request is not None:
-        from app.services.machine_runtime_authority import machine_request_actor
+        from app.services.machine_runtime_authority import is_machine_runtime_actor
+        from app.services.external_principal_service import ChannelRuntimeActor
 
-        machine = await machine_request_actor(db, tenant_id, runtime_request)
-        if machine is not None:
+        principal, requester = await _runtime_input_actor(db, tenant_id, runtime_request)
+        if is_machine_runtime_actor(requester):
             if (
-                session.tenant_id != machine.tenant_id
-                or session.agent_id != machine.agent_id
-                or session.external_principal_id != machine.external_principal_id
+                session.tenant_id != requester.tenant_id
+                or session.agent_id != requester.agent_id
+                or session.external_principal_id != requester.external_principal_id
                 or session.user_id is not None
             ):
                 raise ContentInputReceiptError(
                     "content_source_access_denied", "The machine cannot read this session source.", 403
                 )
             return
-        from app.services.external_principal_service import external_request_source_actor
-
-        external = await external_request_source_actor(db, tenant_id=tenant_id, request=runtime_request)
-        if external is not None:
-            current_session, _task, _actor = external
+        if isinstance(requester, ChannelRuntimeActor):
             if (
-                session.id != current_session.id
+                str(session.id) != principal.session_id
                 or session.tenant_id != tenant_id
-                or session.agent_id != current_session.agent_id
+                or session.agent_id != principal.agent_id
             ):
                 raise ContentInputReceiptError(
                     "content_source_access_denied", "The channel cannot read this session source.", 403
@@ -1345,9 +1331,7 @@ async def _authorize_session_input_source(
         from app.services.shared_group_authority import require_current_group_member
 
         try:
-            requester = (
-                (await _runtime_input_actor(db, tenant_id, runtime_request))[1] if runtime_request is not None else user
-            )
+            requester = requester if runtime_request is not None else user
             if (
                 runtime_request is None
                 and business_inspection_allowed()
@@ -1388,7 +1372,6 @@ async def _authorize_session_input_source(
                 db, user, agent_id=session.agent_id, session_id=session.id, action="read_content_input_source"
             )
             return
-        principal, requester = await _runtime_input_actor(db, tenant_id, runtime_request)
         if session.user_id != requester.id:
             raise ValueError("session_source_actor_mismatch")
         if session.agent_id != principal.agent_id:
@@ -1481,6 +1464,22 @@ async def _authorize_session_input_source(
 
 
 async def _runtime_input_actor(db, tenant_id, request):
+    from app.core.source_read_purpose import current_source_recipient
+
+    scope = _DISCLOSURE_SOURCE_VALIDATIONS.get()
+    if scope is None or not scope.active:
+        return await _resolve_runtime_input_actor(db, tenant_id, request)
+    key = (id(db), db.get_transaction(), tenant_id, id(request), current_source_recipient())
+    if key in scope.actors:
+        return scope.actors[key][2]
+    actor = await _resolve_runtime_input_actor(db, tenant_id, request)
+    if scope.active:
+        key = (id(db), db.get_transaction(), tenant_id, id(request), current_source_recipient())
+        scope.actors[key] = (db, request, actor)
+    return actor
+
+
+async def _resolve_runtime_input_actor(db, tenant_id, request):
     from fastapi import HTTPException
     from app.core.permissions import check_agent_access
     from app.models.agent import Agent
@@ -1838,22 +1837,23 @@ async def authorize_workspace_execution_inputs(request):
                 .order_by(ContentInputReceipt.carrier_ref, ContentInputReceipt.revision.desc())
                 .execution_options(populate_existing=True)
             )} if paths else {}
-            for path in sorted(paths):
-                receipt = receipts.get(workspace_artifact_ref(context.agent_id, path))
-                if receipt is None and path not in scope.full_control_paths:
-                    continue
-                if receipt is not None and task is not None and task.task_type == "web_chat_turn":
-                    try:
-                        await _validate_workspace_dependency(db, tenant_id, {
-                            "source_kind": "workspace_artifact", "source_id": str(receipt.id),
-                            "source_version": receipt.content_sha256,
-                        }, user=None, runtime_request=request, active_receipts=frozenset())
-                    except ContentInputReceiptError:
-                        omitted.add(path)
+            with group_source_read():
+                for path in sorted(paths):
+                    receipt = receipts.get(workspace_artifact_ref(context.agent_id, path))
+                    if receipt is None and path not in scope.full_control_paths:
                         continue
-                reads.append(WorkspaceInputRead(path=path, receipt_id=receipt.id if receipt else None,
-                    revision=receipt.revision if receipt else 0, content_sha256=receipt.content_sha256 if receipt else "",
-                    dependencies_hash=_sha256(receipt.dependencies_json if receipt else [])))
+                    if receipt is not None and task is not None and task.task_type == "web_chat_turn":
+                        try:
+                            await _validate_workspace_dependency(db, tenant_id, {
+                                "source_kind": "workspace_artifact", "source_id": str(receipt.id),
+                                "source_version": receipt.content_sha256,
+                            }, user=None, runtime_request=request, active_receipts=frozenset())
+                        except ContentInputReceiptError:
+                            omitted.add(path)
+                            continue
+                    reads.append(WorkspaceInputRead(path=path, receipt_id=receipt.id if receipt else None,
+                        revision=receipt.revision if receipt else 0, content_sha256=receipt.content_sha256 if receipt else "",
+                        dependencies_hash=_sha256(receipt.dependencies_json if receipt else [])))
         context.workspace_authority_scope = replace(scope, input_reads=tuple(reads),
             allowed_paths=scope.allowed_paths - omitted)
     except (ContentInputReceiptError, OSError, ValueError, SQLAlchemyError) as exc:

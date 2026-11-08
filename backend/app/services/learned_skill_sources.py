@@ -47,12 +47,41 @@ def model_source(result):
 
 
 async def validate_model_source(db, tenant_id, dependency, *, request=None, user=None):
+    try:
+        source_id = uuid.UUID(dependency["source_id"])
+    except (ValueError, KeyError, TypeError, AttributeError) as exc:
+        raise ContentInputReceiptError("learned_model_source_unavailable", "Restore the exact sealed workflow and its inputs.", 403) from exc
+    result = await db.get(SessionModelResult, source_id, populate_existing=True)
+    session = await db.get(ChatSession, result.session_id, populate_existing=True) if result else None
+    sources = await _validate_model_source(db, tenant_id, dependency, result, session, request=request, user=user)
+    await _validate_input_dependencies(db, tenant_id, sources, user=user, runtime_request=request)
+    return result, session
+
+
+async def validate_model_sources(db, tenant_id, dependencies, *, request=None, user=None):
+    try:
+        ids = [uuid.UUID(item["source_id"]) for item in dependencies]
+    except (ValueError, KeyError, TypeError, AttributeError) as exc:
+        raise ContentInputReceiptError("learned_model_source_unavailable", "Restore the exact sealed workflow and its inputs.", 403) from exc
+    rows = {str(result.id): (result, session) for result, session in await db.execute(
+        select(SessionModelResult, ChatSession).join(ChatSession, ChatSession.id == SessionModelResult.session_id)
+        .where(SessionModelResult.tenant_id == tenant_id, ChatSession.tenant_id == tenant_id,
+            SessionModelResult.id.in_(ids))
+        .execution_options(populate_existing=True))}
+    sources = []
+    for dependency in dependencies:
+        result, session = rows.get(dependency["source_id"], (None, None))
+        sources.extend(await _validate_model_source(db, tenant_id, dependency, result, session, request=request, user=user))
+    from app.services.session_model_inputs import _unique_dependencies
+
+    await _validate_input_dependencies(db, tenant_id, _unique_dependencies(sources), user=user, runtime_request=request)
+
+
+async def _validate_model_source(db, tenant_id, dependency, result, session, *, request, user):
     from app.services.content_input_receipts import _authorize_session_input_source
     from app.services.session_model_inputs import model_output_dependencies
 
     try:
-        result = await db.get(SessionModelResult, uuid.UUID(dependency["source_id"]), populate_existing=True)
-        session = await db.get(ChatSession, result.session_id, populate_existing=True) if result else None
         sources, complete = model_output_dependencies(result)
         seal = result.seal_json if result is not None else None
         if (result is None or result.tenant_id != tenant_id or session is None or session.tenant_id != tenant_id
@@ -61,8 +90,7 @@ async def validate_model_source(db, tenant_id, dependency, *, request=None, user
             or seal.get("content_hash") != _sha256(seal.get("semantic_content")) or model_source(result) != dependency):
             raise ValueError("learned_model_source_invalid")
         await _authorize_session_input_source(db, tenant_id, session, user=user, runtime_request=request)
-        await _validate_input_dependencies(db, tenant_id, sources, user=user, runtime_request=request)
-        return result, session
+        return sources
     except ContentInputReceiptError:
         raise
     except (ValueError, KeyError, TypeError, AttributeError) as exc:

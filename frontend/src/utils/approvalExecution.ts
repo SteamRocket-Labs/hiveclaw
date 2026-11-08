@@ -26,7 +26,7 @@ export type ApprovalContinuationPresentation = {
 const CONTINUATION_PRESENTATIONS: Record<string, ApprovalContinuationPresentation> = {
   queued: { status: 'queued', label: 'Continuing original session', tone: 'warning' },
   continuing: { status: 'continuing', label: 'Continuing original session', tone: 'warning' },
-  delivered: { status: 'delivered', label: 'Original session resumed', tone: 'success' },
+  delivered: { status: 'delivered', label: 'Approval result returned', tone: 'success' },
   retrying: { status: 'retrying', label: 'Continuation retrying', tone: 'warning' },
   needs_reconciliation: {
     status: 'needs_reconciliation',
@@ -92,6 +92,8 @@ export function approvalContinuationPresentation(
     active_turn_conflict_after_admission: 'This conversation is processing another input. Try again later.',
     origin_run_not_suspended: 'The conversation has stopped or ended. Work did not continue.',
     approval_origin_unavailable: 'The original conversation is unavailable. Work did not continue.',
+    approval_return_unavailable: 'The approval result could not be returned. Work did not continue.',
+    origin_session_authority_unresolved: 'The original conversation is unavailable. Work did not continue.',
     human_input_secret_boundary_unavailable: 'Credential protection is unavailable. Try again later.',
   };
   return presentation && status === 'needs_reconciliation' && reasons[reason]

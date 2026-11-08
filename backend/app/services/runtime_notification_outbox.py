@@ -770,8 +770,10 @@ async def _set_approval_continuation_status(
         }
     )
     if error:
+        from app.services.session_approval import APPROVAL_CONTINUATION_REASONS
+
         receipt["continuation_error"] = error
-        receipt["continuation_reason"] = error
+        receipt["continuation_reason"] = error if error in APPROVAL_CONTINUATION_REASONS else None
     else:
         receipt.pop("continuation_error", None)
         receipt.pop("continuation_reason", None)
@@ -811,6 +813,7 @@ class RuntimeNotificationOutboxService:
         page_id: uuid.UUID | str,
         actor_user_id: uuid.UUID | str,
         reason: str,
+        db: AsyncSession | None = None,
     ) -> RuntimeResultIntegrationPage:
         """Retry delivery of one immutable result page, never its child work."""
         from app.models.audit import AuditLog
@@ -822,12 +825,13 @@ class RuntimeNotificationOutboxService:
         if not normalized_reason or len(normalized_reason) > 1000:
             raise ValueError("dead-letter redrive reason must contain 1-1000 characters")
         now = datetime.now(UTC)
-        async with tenant_scoped_session(
+        owns_session = db is None
+        async with (tenant_scoped_session(
             tenant_uuid,
             session_factory=self._session_factory,
             require_tenant=True,
             source="runtime_result_page_redrive",
-        ) as db:
+        ) if owns_session else contextlib.nullcontext(db)) as db:
             page = await db.scalar(
                 select(RuntimeResultIntegrationPage)
                 .where(
@@ -889,7 +893,8 @@ class RuntimeNotificationOutboxService:
                 await _set_approval_continuation_status(db, row, status="retrying", error=row.last_error)
             await db.flush()
             await db.refresh(page)
-            await db.commit()
+            if owns_session:
+                await db.commit()
             return page
 
     async def claim_batch(
@@ -1723,16 +1728,14 @@ class RuntimeNotificationOutboxService:
                     select(Agent).where(Agent.id == page.parent_agent_id, Agent.tenant_id == page.tenant_id)
                 )
             ).scalar_one_or_none()
-            from app.services.runtime_user_identity import load_scoped_runtime_user
+            from app.services.runtime_user_identity import load_runtime_user, load_scoped_runtime_user
 
             owner = await load_scoped_runtime_user(db, page.parent_user_id,
                 tenant_id=page.tenant_id) if page.parent_user_id is not None else None
             if (owner is None and parent_session is not None and parent_session.source_channel == "web"
                 and parent_session.user_id is not None and parent_session.audience_kind != "group"
                 and all(item.source_kind == "approval" for item in page.items)):
-                from app.models.user import User
-
-                owner = await db.get(User, page.parent_user_id)
+                owner = await load_runtime_user(db, page.parent_user_id, include_inactive=True)
             if parent_session is not None and page.parent_user_id is None:
                 from app.services.machine_runtime_authority import machine_approval_return_actor
 

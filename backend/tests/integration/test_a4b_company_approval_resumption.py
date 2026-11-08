@@ -450,7 +450,7 @@ async def test_resume_failure_is_typed_without_a_second_delivery(
     from app.services.runtime_notification_outbox import RuntimeNotificationOutboxService
 
     seed = member_work
-    await _start_member_run(seed, app_user_sessionmaker, monkeypatch,
+    model, _ = await _start_member_run(seed, app_user_sessionmaker, monkeypatch,
         script=[_call("write_file", TOOL_ARGUMENTS)])
     async with owner_sessionmaker() as db:
         ticket = await db.scalar(select(ApprovalRequest).where(
@@ -471,7 +471,24 @@ async def test_resume_failure_is_typed_without_a_second_delivery(
     resolved = await _resolve_as_owner(seed, app_user_sessionmaker, ticket.id, action)
     if action == "approve":
         assert await _run_approval_execution(seed, app_user_sessionmaker, resolved.execution_task_id) == "succeeded"
-    await RuntimeNotificationOutboxService(session_factory=app_user_sessionmaker).reconcile_terminal_tasks_once()
+    service = RuntimeNotificationOutboxService(session_factory=app_user_sessionmaker, retry_base_seconds=0)
+    await service.reconcile_terminal_tasks_once()
+    if failure == "unavailable":
+        # S1: secret-boundary availability is temporary and must use the outbox retry path.
+        counts = await service.drain_once(worker_id="a4bf-secret-boundary")
+        assert counts["retried"] == 1 and counts["delivered"] == 0
+        async with owner_sessionmaker() as db:
+            assert (await db.get(RuntimeTask, seed["run_id"])).status == "suspended"
+            rows = list(await db.scalars(select(RuntimeNotificationOutbox).where(
+                RuntimeNotificationOutbox.tenant_id == seed["tenant_id"])))
+            assert len(rows) == 1 and rows[0].status == "pending"
+        monkeypatch.setattr(session_live_input, "submit_live_human_input", submit)
+        model.script.append({"content": "The decision returned after retry."})
+        assert (await service.drain_once(worker_id="a4bf-secret-boundary-retry"))["delivered"] == 1
+        await _drive_resumed_run(seed, app_user_sessionmaker)
+        assert len(model.requests) == 2
+        assert (seed["agent_root"] / TOOL_ARGUMENTS["path"]).exists() is (action == "approve")
+        return
     await _consume_approval_return(seed, app_user_sessionmaker)
     async with owner_sessionmaker() as db:
         resolved = await db.get(ApprovalRequest, ticket.id)

@@ -317,7 +317,6 @@ async def _configure_runtime_session(state: _WebChatRunState) -> None:
     context.channel = str(state.metadata.get("channel") or context.channel or "web")
     context.metadata["tenant_id"] = str(state.agent.tenant_id) if state.agent.tenant_id else None
     context.metadata["runtime_task_id"] = state.run_uuid.hex
-    context.metadata["source_channel"] = getattr(state.session, "source_channel", None)
     if state.system_plan_mode is not None:
         context.plan_mode = state.system_plan_mode
         context.metadata["plan_mode"] = state.system_plan_mode.to_metadata()
@@ -1540,7 +1539,9 @@ def _interactive_pause_suspends_run(state: _WebChatRunState, summary: str) -> bo
     return summary == "awaiting_session_permission" or (
         summary == "awaiting_company_approval" and session is not None
         and session.source_channel == "web" and session.user_id is not None and session.audience_kind != "group"
-        and state.ports.context.is_web_origin_turn(state.metadata, state.runtime_session_context)
+        and str(state.metadata.get("source") or getattr(state.runtime_session_context, "source", None) or "web").strip().lower()
+            in {"", "web", "web_chat", "websocket", "websocket_message", "session_input_api",
+                "legacy_rest_create_session_run", "legacy_rest_start_session_run"}
     )
 
 

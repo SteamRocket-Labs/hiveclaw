@@ -25,7 +25,7 @@ describe('approvalExecutionPresentation', () => {
   it.each([
     ['queued', 'Continuing original session'],
     ['continuing', 'Continuing original session'],
-    ['delivered', 'Original session resumed'],
+    ['delivered', 'Approval result returned'], // B1: another card can still own the run's resume.
     ['retrying', 'Continuation retrying'],
     ['needs_reconciliation', 'Continuation needs attention'],
   ])('maps continuation %s to a separate user-facing state', (status, label) => {

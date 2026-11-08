@@ -853,7 +853,9 @@ def fingerprint_rls_bypass_scopes(app_root: Path) -> str:
 # Merging R1 with main accepts the exact three-way module-source merge of session_model_round.py; no bypass scope changed on both sides.
 # G2bf r2 unifies destination secrets and handover settings; bypass callsite signatures are unchanged.
 # Merging G2bf with main keeps each entry from one side.
-RLS_BYPASS_SCOPES_SHA256 = "cfeb3cebdfd84a6674c968017925201366282a8843bf2b63d4c79f2e3dd227e3"
+# A4bf reuses tenant-scoped approval delivery/redrive; typed projection changes add no bypass call or scope.
+# Merging A4bf with main accepts the exact three-way module-source merge of web_chat_runtime.py; no bypass scope changed on both sides.
+RLS_BYPASS_SCOPES_SHA256 = "5cb52ede88bf07f61074b34c5bd2517ddc419f24146143f75ea4576c4b4fdd29"
 
 
 def scan_rls_bypass_callsites(app_root: Path) -> list[RLSBypassCallsite]:

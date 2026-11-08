@@ -414,7 +414,7 @@ def _build_result_runtime_action_payload(item: dict[str, Any]) -> dict[str, Any]
     source_kind = _text(item.get("source_kind")) or "runtime_result"
     status = _text(item.get("terminal_status")).lower() or "completed"
     if (source_kind == "approval" and status in {"completed", "done", "succeeded", "failed", "error",
-        "killed", "cancelled", "needs_reapproval"}) or _task_notification_has_dedicated_projection(task_type, source_kind):
+        "killed", "cancelled", "blocked"}) or _task_notification_has_dedicated_projection(task_type, source_kind):
         return None
     source_run_id = _text(item.get("source_run_id"))
     size_bytes = max(0, int(item.get("result_size_bytes") or 0))
@@ -488,12 +488,12 @@ async def _approval_page_origins(db, session, page_id):
 
 
 async def _continue_web_approval_result(db, *, agent, user, session, page_id, submit_input, run_id):
-    from app.models.runtime_task import SEALED_RUNTIME_TASK_STATUSES
+    from fastapi import HTTPException
+    from app.services.approval_ticket import ApprovalTicketError
+    from app.models.runtime_task import RuntimeTask, SEALED_RUNTIME_TASK_STATUSES
     from app.services.runtime_notification_outbox import CompletionDeliveryDeferred
     from app.services.session_permission_runtime import _queue_same_run_continuation, _source_result
-    from app.services.runtime_terminal_settlement import (
-        lock_runtime_task_with_session_authority, settle_and_enqueue_runtime_task_terminal,
-    )
+    from app.services.runtime_terminal_settlement import settle_and_enqueue_runtime_task_terminal
 
     reason = None
     try:
@@ -501,13 +501,13 @@ async def _continue_web_approval_result(db, *, agent, user, session, page_id, su
         if not origins:
             return None
         run, invocation = origins[0]
-        if run.status == "completed" and run.result_summary == "awaiting_company_approval" and user.is_active:
+        if run.status == "completed" and user.is_active:
             return None
         run_id = run.id
         if run.status in {"running", "pending", "resumable"}:
             raise CompletionDeliveryDeferred("approval_origin_active")
         source = await _source_result(db, invocation)
-        if run.status != "suspended" or run.result_summary != "awaiting_company_approval":
+        if run.status != "suspended":
             reason = "origin_run_not_suspended"
         elif not user.is_active:
             reason = "requester_inactive"
@@ -516,30 +516,32 @@ async def _continue_web_approval_result(db, *, agent, user, session, page_id, su
                 requested_kind="steer_current_turn", expected_run_id=run.id, expected_turn_id=source.turn_id,
                 terminal_fallback="reject")
             if receipt.get("admission_state") != "admitted" or receipt.get("status") not in {"queued", "bound", "applied"}:
-                reason = receipt.get("reason_code") or "approval_return_admission_refused"
-            else:
+                if receipt.get("reason_code") == "active_turn_conflict_after_admission":
+                    raise RuntimeError("active_turn_conflict_after_admission")
+                from app.services.session_approval import APPROVAL_CONTINUATION_REASONS
+
+                code = receipt.get("reason_code")
+                reason = code if code in APPROVAL_CONTINUATION_REASONS else "approval_return_admission_refused"
+            elif run.result_summary == "awaiting_company_approval":
                 run = await _queue_same_run_continuation(db, tenant_id=session.tenant_id, agent_id=agent.id,
                     session_id=session.id, invocation=invocation, source_result=source)
                 if run.status in SEALED_RUNTIME_TASK_STATUSES:
                     reason = "origin_run_not_suspended"
-    except CompletionDeliveryDeferred:
-        raise
-    except Exception as exc:
+    except (ApprovalTicketError, HTTPException) as exc:
+        if isinstance(exc, HTTPException) and exc.status_code != 403:
+            raise
         await db.rollback()
+        for record in (session, agent, user):
+            await db.refresh(record)
         logger.exception("Company approval origin continuation failed")
-        from app.services.approval_ticket import ApprovalTicketError
-        from fastapi import HTTPException
-
-        detail = getattr(exc, "detail", None)
-        reason = getattr(exc, "code", None) or (detail.get("code") if isinstance(detail, dict) else None) or "origin_run_resume_failed"
-        if isinstance(exc, ApprovalTicketError):
-            reason = "approval_origin_unavailable"
-        elif isinstance(exc, RuntimeError) and exc.args == ("human_input_secret_boundary_unavailable",):
-            reason = "human_input_secret_boundary_unavailable"
-        elif isinstance(exc, HTTPException) and exc.status_code == 403 and reason == "origin_run_resume_failed":
-            reason = "agent_execute_denied"
+        reason = "approval_origin_unavailable" if isinstance(exc, ApprovalTicketError) else "agent_execute_denied"
     if reason:
-        run = await lock_runtime_task_with_session_authority(db, task_id=run_id)
+        from app.services.chat_transcript import lock_transcript_session
+
+        await lock_transcript_session(db, session_id=session.id)
+        run = await db.scalar(select(RuntimeTask).where(RuntimeTask.id == run_id,
+            RuntimeTask.tenant_id == session.tenant_id, RuntimeTask.parent_session_id == str(session.id),
+            RuntimeTask.parent_agent_id == agent.id).with_for_update().execution_options(populate_existing=True))
         if run is not None and run.status == "suspended":
             from datetime import datetime, timezone
 
@@ -558,10 +560,10 @@ def _approval_continuation_display_content(reason):
         "user_prompt_submit_prevented": "这次输入被规则阻止，未继续执行。",
         "admission_refused": "这次输入未被接受，未继续执行。",
         "approval_return_admission_refused": "这次输入未被接受，未继续执行。",
-        "active_turn_conflict_after_admission": "当前对话正在处理其他输入，请稍后重试。",
         "origin_run_not_suspended": "对话已停止或结束，本次未继续执行。",
         "approval_origin_unavailable": "原对话暂不可用，本次未继续执行。",
-        "human_input_secret_boundary_unavailable": "凭据保护暂不可用，请稍后重试。",
+        "approval_return_unavailable": "审批结果暂时无法送回，原任务未继续。",
+        "origin_session_authority_unresolved": "原对话暂不可用，本次未继续执行。",
     }.get(reason, "审批结果已保留，本次对话未继续。" if reason else "审批结果已返回。")
 
 

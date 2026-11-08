@@ -195,6 +195,7 @@ async def test_failed_return_terminates_origin_with_typed_reason(
         [_call("write_file", TOOL_ARGUMENTS)])
     ticket = await pending(seed, owner_sessionmaker)
     await _resolve_as_owner(seed, app_user_sessionmaker, ticket.id, "reject")
+    submit = session_live_input.submit_live_human_input
     if failure == "access":
         async with owner_sessionmaker() as db:
             await db.execute(delete(AgentPermission).where(AgentPermission.agent_id == seed["agent_id"]))
@@ -235,15 +236,30 @@ async def test_failed_return_terminates_origin_with_typed_reason(
             await db.commit()
             return await queue(db, **kwargs)
         monkeypatch.setattr(session_permission_runtime, "_queue_same_run_continuation", sealed)
+    if failure == "unexpected":
+        # S1: unexpected failures are temporary; only permanent refusals terminate the origin.
+        service = RuntimeNotificationOutboxService(session_factory=app_user_sessionmaker, retry_base_seconds=0)
+        counts = await service.drain_once(worker_id="a4bf-unexpected")
+        assert counts["retried"] == 1 and counts["delivered"] == 0
+        async with owner_sessionmaker() as db:
+            run = await db.get(RuntimeTask, run_id)
+            assert run.status == "suspended"
+            approval = await db.get(ApprovalRequest, ticket.id)
+            assert approval.execution_receipt["continuation_status"] == "retrying"
+            assert approval.execution_receipt.get("continuation_reason") is None
+            assert "private exception detail" in approval.execution_receipt["continuation_error"]
+        assert len(model.requests) == 1
+        monkeypatch.setattr(session_live_input, "submit_live_human_input", submit)
+        model.script.append({"content": "The temporary error recovered."})
+        assert (await service.drain_once(worker_id="a4bf-unexpected-retry"))["delivered"] == 1
+        await _drive_resumed_run(seed, app_user_sessionmaker)
+        assert len(model.requests) == 2
+        return
     _page, receipt = await consume(seed, app_user_sessionmaker)
     assert receipt["continuation_status"] == "needs_reconciliation", receipt
     reason = receipt["continuation_reason"]
     assert reason, receipt
-    if failure == "unexpected":
-        assert reason == "origin_run_resume_failed"
-        assert "private exception detail" not in str(receipt)
-    else:
-        assert reason != "origin_run_resume_failed", receipt
+    assert reason != "origin_run_resume_failed", receipt
     if failure == "hook":
         assert reason == "user_prompt_submit_blocked"
     async with owner_sessionmaker() as db:

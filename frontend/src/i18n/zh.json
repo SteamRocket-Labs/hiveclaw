@@ -870,6 +870,7 @@
     "newAutomation": "新建自动化"
   },
   "approvalExecution": {
+    "declined": "审批未通过",
     "pending": "待审批",
     "approved": "已批准",
     "rejected": "已拒绝",
@@ -902,7 +903,7 @@
   "approvalContinuation": {
     "queued": "正在继续原会话",
     "continuing": "正在继续原会话",
-    "delivered": "原会话已恢复",
+    "delivered": "审批结果已返回",
     "retrying": "原会话续跑正在重试",
     "needs_reconciliation": "原会话续跑需要处理",
     "reasons": {
@@ -915,6 +916,8 @@
       "active_turn_conflict_after_admission": "当前对话正在处理其他输入，请稍后重试。",
       "origin_run_not_suspended": "对话已停止或结束，本次未继续执行。",
       "approval_origin_unavailable": "原对话暂不可用，本次未继续执行。",
+      "approval_return_unavailable": "审批结果暂时无法送回，原任务未继续。",
+      "origin_session_authority_unresolved": "原对话暂不可用，本次未继续执行。",
       "human_input_secret_boundary_unavailable": "凭据保护暂不可用，请稍后重试。"
     }
   },

@@ -59,7 +59,7 @@ it('keeps company approval in the original work and reconciles a failed response
   await screen.findByText('Succeeded');
   await screen.findByText('Continuation retrying');
   expect(invalidate).toHaveBeenCalledWith({ queryKey: ['hr-recoverable-drafts'] });
-  expect(screen.queryByText('Original session resumed')).toBeNull();
+  expect(screen.queryByText('Approval result returned')).toBeNull(); // B1: only delivered results get this label.
 });
 
 it('shows the actual decision without offering authority to a requester who cannot approve', async () => {

@@ -1,4 +1,5 @@
-import { renderToStaticMarkup } from 'react-dom/server';
+import { renderToStaticMarkup as renderWithoutRouter } from 'react-dom/server';
+import { MemoryRouter } from 'react-router-dom';
 import { describe, expect, it, vi } from 'vitest';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 
@@ -14,6 +15,8 @@ vi.mock('react-i18next', () => ({
 }));
 
 import { hrCreationActionForStatus, HrBlueprintPreviewCard } from './HrBlueprintPreviewCard';
+
+const renderToStaticMarkup = (ui: React.ReactNode) => renderWithoutRouter(<MemoryRouter>{ui}</MemoryRouter>);
 
 const preview = {
   kind: 'hr_preview' as const,

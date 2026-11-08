@@ -137,6 +137,7 @@ export interface RuntimeStepToolMeta {
 }
 
 export type ToolCallMeta =
+  | { kind: 'employee_creation_refused'; message: string }
   | { kind: 'enterprise_approval'; approvalId: string }
   | { kind: 'employee_first_task'; blueprintId: string; runtimeTaskId: string }
   | HrPreviewToolResult
@@ -271,14 +272,15 @@ export function parsePreviewAgentBlueprintResult(rawResult: unknown): HrPreviewT
     status: typeof parsed.draft_status === 'string' ? parsed.draft_status : 'legacy_preview',
     name: typeof blueprint.name === 'string' ? blueprint.name : null,
     mission: typeof summary.mission === 'string' ? summary.mission : null,
-    firstMission: typeof summary.first_mission === 'string' ? summary.first_mission : null,
+    firstMission: typeof authorization.first_task === 'string' && authorization.first_task
+      ? authorization.first_task : typeof summary.first_mission === 'string' ? summary.first_mission : null,
     primaryUsers: normalizeStringList(blueprint.primary_users),
     coreOutputs: normalizeStringList(blueprint.core_outputs),
     boundaries: typeof blueprint.boundaries === 'string' ? blueprint.boundaries : null,
     permissionScope: typeof blueprint.permission_scope === 'string' ? blueprint.permission_scope : null,
     firstTaskAutostart: typeof blueprint.first_task_autostart === 'boolean' ? blueprint.first_task_autostart : null,
     ...(authorization.mode === 'policy_direct' ? {
-      authorizationMode: 'policy_direct',
+      authorizationMode: parsed.draft_status === 'awaiting_confirmation' ? null : 'policy_direct',
       explicitFirstTask: typeof authorization.first_task === 'string' ? authorization.first_task : null,
     } : {}),
     sourceAttributions: normalizeRecordList(blueprint.source_attributions),
@@ -522,6 +524,10 @@ export function normalizeToolCallResult(toolName: string | undefined, rawResult:
   if (approval?.status === 'approval_required' && typeof approval.approval_id === 'string' && approval.approval_id) {
     return { displayResult: '', createdAgentId: null, raw,
       toolMeta: { kind: 'enterprise_approval', approvalId: approval.approval_id } };
+  }
+  if (toolName === 'create_employee_from_request' && (approval?.status === 'error' || approval?.error)) {
+    return { displayResult: '', createdAgentId: null, raw,
+      toolMeta: { kind: 'employee_creation_refused', message: typeof approval.message === 'string' ? approval.message : '' } };
   }
   if (toolName === 'delegate_to_agent') {
     const result = parseStructuredToolPayload(rawResult);

@@ -1936,7 +1936,7 @@ async def deactivate_agent(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """停用 a digital employee (scoped administrators only, PDEC-013).
+    """Deactivate an employee, including Undo of a member's private D1 creation.
 
     Deactivation is the only retirement step: it reuses
     ``agent_retirement.prepare`` (writes ``deactivated_at``, turns triggers
@@ -1944,11 +1944,6 @@ async def deactivate_agent(
     The employee, its files, memory and conversations are never deleted; a
     later ``restore`` brings the employee back.
     """
-    if current_user.role not in ("org_admin", "platform_admin"):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Agent is an enterprise asset; only an admin can deactivate it.",
-        )
     from app.core.permissions import check_agent_history_access
     from app.services.agent_retirement import prepare
 

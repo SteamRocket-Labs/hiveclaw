@@ -436,14 +436,11 @@ async def dispatch_first_task(db, draft, *, execution_context=None, arguments=No
             await require_local_write(db, policy_evidence, approved=approved or session_granted)
             capability = await check_capability(db, draft.tenant_id, draft.hr_agent_id, "delegate_to_agent")
             if capability.denied:
-                raise HrCreationConflict("capability_denied", "Company policy denies the first task delegation.")
+                raise HrCreationConflict("capability_denied", "公司不允许派发首任务。")
             if capability.policy_found and capability.escalate_to_l3 and not (approved and tool_name == "delegate_to_agent"):
                 raise HrCreationConflict("approval_required", "The first task delegation requires approval.")
-            profile = policy_evidence.get("permission_profile") or {}
-            if not capability.policy_found and not capability.allowed and not (
-                approved or session_granted or profile.get("mode") == "bypass_permissions" or "delegate_to_agent" in profile.get("allowed_tools", [])
-            ):
-                raise HrCreationConflict("approval_required", "The first task delegation needs scoped authorization.")
+            # The member already requested this work for their own new bot.
+            # Only an explicit company policy can require another approval.
             live = await build_live_approval_policy_snapshot(db=db, tenant_id=draft.tenant_id,
                                                            agent_id=draft.hr_agent_id, tool_name="delegate_to_agent")
             guard = evaluate_guard_policy(tool_name="delegate_to_agent",
@@ -451,7 +448,7 @@ async def dispatch_first_task(db, draft, *, execution_context=None, arguments=No
                                           external_visible=False, snapshot=live["guard_policy"])
             if guard.decision == "deny" or (guard.decision == "require_approval" and not (approved and tool_name == "delegate_to_agent")):
                 code = "capability_denied" if guard.decision == "deny" else "approval_required"
-                raise HrCreationConflict(code, "Company GuardPolicy blocks the first task delegation.")
+                raise HrCreationConflict(code, guard.reason or "公司规则暂不允许派发首任务。")
             source = await db.get(Agent, draft.hr_agent_id)
             model = await db.get(LLMModel, target.primary_model_id) if target.primary_model_id else None
             if (access not in {"use", "manage"} or target.deactivated_at is not None
@@ -492,7 +489,7 @@ async def dispatch_first_task(db, draft, *, execution_context=None, arguments=No
             else:
                 receipt.update(status="blocked", error=handle.status)
         except HrCreationConflict as exc:
-            receipt.update(status="blocked", error=exc.code)
+            receipt.update(status="blocked", error=exc.code, message=exc.message)
         except Exception as exc:
             # An interrupted dispatch reuses the same durable id; it never issues another intent.
             logger.exception("Explicit first-task dispatch did not finish for draft %s", draft.id)

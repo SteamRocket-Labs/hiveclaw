@@ -2272,3 +2272,12 @@ it.each(['sending', 'failed'] as const)('preserves %s and retry on a matching du
   expect(result.messages[0]).toMatchObject({ sendState, retrySend });
   expect(result.pending).toHaveLength(1);
 });
+
+it('keeps delegated first-task conversations read-only for every reader', () => {
+  const session = { id: 'first-work', session_kind: 'delegation_run', source_channel: 'agent',
+    user_id: 'owner', read_only: true };
+  expect(shouldUseWritableSessionSurface(session, 'owner')).toBe(false);
+  expect(shouldUseWritableSessionSurface(session, 'other-member')).toBe(false);
+  expect(shouldUseWritableSessionSurface({ ...session, session_kind: 'agent_chat' }, 'owner')).toBe(false);
+  expect(shouldUseWritableSessionSurface({ ...session, operator_view: true }, 'owner')).toBe(false);
+});

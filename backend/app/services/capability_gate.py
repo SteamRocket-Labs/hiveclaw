@@ -313,7 +313,7 @@ async def _resolve_tenant_tool_enabled(
 class CapabilityCheckResult:
     """Result of a capability gate check."""
 
-    __slots__ = ("allowed", "denied", "escalate_to_l3", "capability", "reason", "policy_found")
+    __slots__ = ("allowed", "denied", "escalate_to_l3", "capability", "reason", "reason_code", "policy_found")
 
     def __init__(
         self,
@@ -323,12 +323,14 @@ class CapabilityCheckResult:
         capability: str = "",
         reason: str = "",
         policy_found: bool = True,
+        reason_code: str = "",
     ):
         self.allowed = allowed
         self.denied = denied
         self.escalate_to_l3 = escalate_to_l3
         self.capability = capability
         self.reason = reason
+        self.reason_code = reason_code
         self.policy_found = policy_found
 
 
@@ -412,6 +414,14 @@ async def check_capability(
             policy = company_policy
 
     if not policy:
+        # Private creation is authorized by the member's current message.
+        # Explicit company/agent deny and approval policies still win above.
+        if tool_name == "create_employee_from_request":
+            if await _resolve_tenant_tool_enabled(db, tenant_id=tenant_id, tool_name=tool_name) is False:
+                return CapabilityCheckResult(allowed=False, denied=True, capability=capability,
+                    reason=f"Tool '{tool_name}' is disabled in workspace tool settings", policy_found=False,
+                    reason_code="tool_disabled")
+            return CapabilityCheckResult(allowed=True, capability=capability, policy_found=False)
         if await _is_hr_system_agent_default_capability(
             db,
             tenant_id=tenant_id,
@@ -473,6 +483,7 @@ async def check_capability(
                 denied=True,
                 capability=capability,
                 reason=f"Tool '{tool_name}' is disabled in workspace tool settings",
+                reason_code="tool_disabled",
                 policy_found=False,
             )
         if tool_name in _CAPABILITY_GATE_EXEMPT_TOOLS:

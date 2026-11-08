@@ -265,8 +265,15 @@ async def get_hr_creation_draft(
     task = await _linked_provisioning_task_or_none(db, draft=draft)
     from app.services.employee_first_task import load_first_task_work
 
-    return _out({**hr_creation_draft_payload(draft, runtime_task=task),
-        "first_task_work": await load_first_task_work(db, draft=draft, user=current_user)})
+    payload = {**hr_creation_draft_payload(draft, runtime_task=task),
+        "first_task_work": await load_first_task_work(db, draft=draft, user=current_user)}
+    if draft.created_agent_id:
+        from app.models.agent import Agent
+
+        employee = await db.get(Agent, draft.created_agent_id)
+        if employee is not None and employee.deactivated_at is not None:
+            payload["creation_state"] = "stopped"
+    return _out(payload)
 
 
 @router.post("/{agent_id}/hr-creation-drafts/{draft_id}/confirm", response_model=HrCreationDraftOut)

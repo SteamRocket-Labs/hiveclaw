@@ -12,10 +12,10 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
+from app.memory.profile_plane import EMPTY_SELF_CONTENT
 from app.models.agent import Agent
 
 settings = get_settings()
-EMPTY_SELF_CONTENT = "# Self — 我对自己的认识\n\n## 能力\n\n## 方法\n\n## 失败模式\n\n## 风格\n"
 
 
 def _clean_contract_line(value: str) -> str:

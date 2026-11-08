@@ -1268,6 +1268,9 @@ async def _check_guard_policy(
         logger.warning("[Governance] GuardPolicy resolution failed — blocking: %s", exc)
         return f"🔒 Tool '{context.tool_name}' blocked — GuardPolicy check unavailable. Please retry."
     if verdict.decision == "deny":
+        if context.tool_name == "create_employee_from_request":
+            return json.dumps({"status": "error", "error": "capability_denied",
+                               "message": verdict.reason or "公司规则不允许创建数字员工。"}, ensure_ascii=False)
         return _teaching_block_message(
             context.tool_name,
             reason=verdict.reason or "tenant GuardPolicy denied this tool",
@@ -1395,6 +1398,9 @@ async def _capability_denied(
             "choose an approach that does not need this tool",
         ],
     )
+    if context.tool_name == "create_employee_from_request":
+        message = ("公司已在工具设置中关闭新建助手。" if getattr(result, "reason_code", None) == "tool_disabled"
+                   else "公司不允许创建数字员工。")
     await _write_capability_audit(
         context,
         deps,
@@ -1412,6 +1418,9 @@ async def _capability_denied(
             "capability": getattr(result, "capability", None),
         },
     )
+    if context.tool_name == "create_employee_from_request":
+        return json.dumps({"status": "error", "error": "capability_denied",
+                           "message": message}, ensure_ascii=False)
     return message
 
 

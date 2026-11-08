@@ -85,3 +85,11 @@ describe('application surface routes', () => {
     expect(source).toContain('canManage={isAdministratorRole(user?.role)}');
   });
 });
+
+describe('D1 creation entry', () => {
+  it('redirects the former explanation page into the ordinary conversation entry', () => {
+    const source = readFileSync(new URL('./App.tsx', import.meta.url), 'utf8');
+    expect(source).toContain('<Route path="agents/new" element={<Navigate to="/" replace />} />');
+    expect(source).not.toContain("import('./pages/AgentCreate')");
+  });
+});

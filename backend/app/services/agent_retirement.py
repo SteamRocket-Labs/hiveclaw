@@ -178,8 +178,34 @@ async def prepare(db, *, agent, actor):
     from app.services.runtime_user_identity import load_runtime_user
 
     actor = await load_runtime_user(db, actor.id)
-    if actor is None or not actor.is_active or not is_scoped_business_admin(actor, resource_tenant_id=agent.tenant_id):
+    if actor is None or not actor.is_active:
         raise HTTPException(403, detail={"code": "agent_retirement_administrator_required"})
+    if not is_scoped_business_admin(actor, resource_tenant_id=agent.tenant_id):
+        from app.models.agent import AgentPermission
+        from app.models.hr_creation import HrCreationDraft
+        from app.models.security_audit import ResourcePermission
+
+        # The current authenticated owner may undo their own private D1 creation.
+        # The existing draft identifies that asset; it grants no other authority.
+        own_creation = None
+        if actor.tenant_id == agent.tenant_id and agent.owner_user_id == actor.id and agent.creator_id == actor.id:
+            own_creation = await db.scalar(select(HrCreationDraft.id).where(
+                HrCreationDraft.tenant_id == agent.tenant_id, HrCreationDraft.created_agent_id == agent.id,
+                HrCreationDraft.requested_by_user_id == actor.id,
+                HrCreationDraft.creation_idempotency_key.like("direct-employee:%"),
+                HrCreationDraft.blueprint_json["permission_scope"].as_string() == "self").limit(1))
+        shared = await db.scalar(select(AgentPermission.id).where(AgentPermission.agent_id == agent.id,
+            or_(AgentPermission.scope_type != "user", AgentPermission.scope_id.is_(None),
+                AgentPermission.scope_id != actor.id)).limit(1)) if own_creation else None
+        grant = await db.scalar(select(ResourcePermission.id).where(
+            ResourcePermission.tenant_id == agent.tenant_id, ResourcePermission.resource_type == "agent",
+            ResourcePermission.resource_id == agent.id, ResourcePermission.effect == "allow",
+            ResourcePermission.revoked_at.is_(None),
+            or_(ResourcePermission.expires_at.is_(None), ResourcePermission.expires_at > func.now()),
+            or_(ResourcePermission.principal_type != "user", ResourcePermission.principal_id.is_(None),
+                ResourcePermission.principal_id != actor.id)).limit(1)) if own_creation else None
+        if not own_creation or shared or grant or agent.home_business_team_id is not None:
+            raise HTTPException(403, detail={"code": "agent_retirement_administrator_required"})
     if agent.deleted_at is not None:
         raise HTTPException(409, detail={"code": "agent_retirement_scope_changed", "retryable": True})
     remote, local = await external_work(db, agent)

@@ -129,6 +129,7 @@ import { isDedicatedToolCardMessage } from './chatDisclosureReducer';
 import {
   AssistantMessageBody, assistantReplyForDisplay,
   shouldCollapseAssistantSupplement,
+  isSupersededCreationCard,
 } from './CanonicalCardAssistantSupplement';
 import { SessionToolEffectRecoveryBanner, sessionToolEffectRecoveryModel } from './SessionToolEffectRecovery';
 import { buildMessageFeedbackInput } from './messageFeedback';
@@ -1351,7 +1352,7 @@ function AgentChatSection({
       const permissionReadOnly = activeSession?.audience_kind === 'group'
         && permissionRequest != null
         && permissionRequest.requested_by_user_id !== currentUser?.id;
-      const permissionActions = canMutateSession && permissionRequest && msg.eventStatus === 'session_permission_required' ? (
+      const permissionActions = canAnswerQuestion && permissionRequest && msg.eventStatus === 'session_permission_required' ? (
         <SessionPermissionActions
           permissionRequest={permissionRequest}
           readOnly={permissionReadOnly}
@@ -1398,10 +1399,11 @@ function AgentChatSection({
         </div>
       );
     },
-    [activeSession?.operator_view, activeSession?.audience_kind, currentUser?.id, canMutateSession, onBranchMessage, onResolveSessionPermission, selectThreadItem, selectedThreadItemId, t, toolEffectRecovery.blocked, visibleTimeline, effectiveAgentId, openArtifact, downloadArtifactFile, operatorView, normalizedOperatorReason],
+    [activeSession?.operator_view, activeSession?.audience_kind, currentUser?.id, canMutateSession, canAnswerQuestion, onBranchMessage, onResolveSessionPermission, selectThreadItem, selectedThreadItemId, t, toolEffectRecovery.blocked, visibleTimeline, effectiveAgentId, openArtifact, downloadArtifactFile, operatorView, normalizedOperatorReason],
   );
 
   const renderInlinePlanToolCall = (msg: AgentChatMessage, index: number) => {
+    if (isSupersededCreationCard(visibleTimeline, index)) return null;
     const questionForAnotherReader = activeSession?.audience_kind === 'group'
       && msg.toolMeta?.kind === 'user_clarification' && msg.toolMeta.requestedByUserId !== currentUser?.id;
     return (
@@ -1425,7 +1427,7 @@ function AgentChatSection({
         onSendMessage={canMutateSession ? onSendMessage : undefined}
         onEnterPlanMode={canMutateSession ? onEnterPlanMode : undefined}
       />
-      {canMutateSession && msg.sessionPermissionRequest && (
+      {canAnswerQuestion && msg.sessionPermissionRequest && (
         <SessionPermissionActions
           permissionRequest={msg.sessionPermissionRequest}
           readOnly={activeSession?.audience_kind === 'group' && msg.sessionPermissionRequest.requested_by_user_id !== currentUser?.id}

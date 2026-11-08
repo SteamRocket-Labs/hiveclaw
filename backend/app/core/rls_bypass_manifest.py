@@ -859,7 +859,10 @@ def fingerprint_rls_bypass_scopes(app_root: Path) -> str:
 # D2 round 2 retains native answer exclusions and rechecks answers under the run lock;
 # only the two reviewed modules and terminal-frontier query digest change, with no new bypass callsite.
 # Merging D2 with main accepts the exact three-way module-source merge of session_human_input.py; no bypass scope changed on both sides.
-RLS_BYPASS_SCOPES_SHA256 = "d1e13d2185a960cb07811188cff5ffe84016eec98d2159e5258c146dca634606"
+# D1: limited private-creation Undo in the existing lifecycle; bypass calls and queries are unchanged.
+# Merging D1 with main keeps each reviewed entry from one side; no entry changed on both sides.
+# Merging D1 with main keeps each entry from one side; no bypass scope changed on both sides.
+RLS_BYPASS_SCOPES_SHA256 = "1e8eff7639c2b47148b6602f42ff3706547685a412270de4dc82f03c39ede2cd"
 
 
 def scan_rls_bypass_callsites(app_root: Path) -> list[RLSBypassCallsite]:

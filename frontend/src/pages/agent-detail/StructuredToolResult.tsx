@@ -372,6 +372,10 @@ export function StructuredToolResultBody({
   const { t } = useTranslation();
   const rawText = typeof toolRawResult === 'string' && toolRawResult.trim() ? toolRawResult : '';
 
+  if (toolMeta?.kind === 'employee_creation_refused') {
+    return <p role="alert">{toolMeta.message || t('agent.chat.toolResults.creationRefused', 'Cannot create this employee. Please contact your administrator.')}</p>;
+  }
+
   if (!toolMeta) {
     return toolResult ? <RawToolResultBlock text={toolResult} /> : null;
   }

@@ -1,7 +1,8 @@
 /** @vitest-environment jsdom */
 import React from 'react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, render as renderWithoutRouter, screen, waitFor } from '@testing-library/react';
+import { MemoryRouter } from 'react-router-dom';
 import { afterEach, expect, it, vi } from 'vitest';
 
 vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: (_key: string, fallback: string) => fallback }) }));
@@ -14,6 +15,8 @@ import { StructuredToolResultBody } from './StructuredToolResult';
 import { HrBlueprintPreviewCard } from './HrBlueprintPreviewCard';
 import { normalizeToolCallResult } from './toolResultEnvelope';
 import { useAuthStore } from '../../stores';
+
+const render = (ui: React.ReactNode) => renderWithoutRouter(ui, { wrapper: MemoryRouter });
 
 afterEach(() => { cleanup(); vi.clearAllMocks(); useAuthStore.setState({ user: null }); });
 
@@ -48,62 +51,28 @@ it('replaces the blocked first-task state on the already mounted original card',
     toolMeta={{ kind: 'employee_first_task', blueprintId: 'same-draft', runtimeTaskId: 'same-child' }}
   /></QueryClientProvider>);
   await waitFor(() => expect(screen.queryByRole('button', { name: 'Retry first task' })).toBeNull());
-  expect(screen.getByText('Draft a comparison')).toBeTruthy();
   expect(hr.get).toHaveBeenCalledWith('original-source', 'same-draft');
 });
 
-it('answers in the original creation card and reuses the input ID after a network failure', async () => {
+it.each([true, false])('opens a normal conversation with the employee (first task can answer: %s)', async (canAnswer) => {
   const draft = { status: 'preview', blueprint_id: 'same-draft', draft_status: 'completed',
-    requested_by_user_id: 'owner', blueprint: { name: 'Research colleague' }, creation_authorization: { mode: 'policy_direct', first_task: 'Draft a comparison' },
+    requested_by_user_id: 'owner', created_agent_id: 'created-employee', blueprint: { name: 'Research colleague' },
+    creation_authorization: { mode: 'policy_direct', first_task: 'Draft a comparison' },
+    provisioning: { first_task: { status: 'dispatched', session_id: 'child-session' } },
     first_task_work: { runtime_task_id: 'same-child', agent_id: 'created-employee', session_id: 'child-session',
-      status: 'suspended', can_answer: true, question: { item_id: 'child-question', payload: {
+      status: 'suspended', can_answer: canAnswer, question: { item_id: 'child-question', payload: {
         status: 'awaiting_user_clarification', questions: [{ header: 'Audience', question: 'Which audience?',
-          options: [{ label: 'Team' }, { label: 'Personal' }] }],
+          options: [{ label: 'Team' }] }],
       } } } };
   const preview = normalizeToolCallResult('create_employee_from_request', draft).toolMeta;
   if (preview?.kind !== 'hr_preview') throw new Error('Missing creation preview');
   useAuthStore.setState({ user: { id: 'owner' } as any });
   hr.get.mockResolvedValue(draft);
-  chat.answerQuestion.mockRejectedValueOnce(new Error('Network interrupted'))
-    .mockResolvedValueOnce({ admission_state: 'rejected', status: 'rejected' }).mockImplementationOnce(async () => {
-    hr.get.mockResolvedValue({ ...draft, first_task_work: { ...draft.first_task_work, status: 'running', question: null } });
-    return { admission_state: 'admitted' };
-  });
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(<QueryClientProvider client={client}><HrBlueprintPreviewCard agentId="original-source" preview={preview} /></QueryClientProvider>);
-  await screen.findByText('Which audience?');
-  fireEvent.click(screen.getByRole('radio', { name: /Team/ }));
-  fireEvent.click(screen.getByRole('button', { name: /Submit/ }));
-  await screen.findByText('Network interrupted');
-  fireEvent.click(screen.getByRole('button', { name: /Submit/ }));
-  await screen.findByText('The answer is stored but could not be applied. Retry or review this work.');
-  fireEvent.click(screen.getByRole('button', { name: /Submit/ }));
-  await screen.findByText('Running');
-  expect(chat.answerQuestion).toHaveBeenCalledTimes(3);
-  expect(chat.answerQuestion.mock.calls[0]).toEqual(chat.answerQuestion.mock.calls[1]);
-  expect(chat.answerQuestion.mock.calls[1]).toEqual(chat.answerQuestion.mock.calls[2]);
-  expect(chat.answerQuestion.mock.calls[0]).toEqual(['created-employee', 'child-session', 'child-question', 'Audience: Team', expect.any(String)]);
+  expect((await screen.findByRole('link', { name: 'Talk to it' })).getAttribute('href'))
+    .toBe('/agents/created-employee#chat');
   expect(screen.queryByText('Which audience?')).toBeNull();
-  expect(screen.queryByRole('link')).toBeNull();
-});
-
-it('keeps a readable question read-only when execution access is unavailable', async () => {
-  const draft = { status: 'preview', blueprint_id: 'same-draft', draft_status: 'completed', blueprint: { name: 'Colleague' },
-    requested_by_user_id: 'owner',
-    creation_authorization: { mode: 'policy_direct', first_task: 'Draft a comparison' },
-    first_task_work: { runtime_task_id: 'same-child', agent_id: 'created-employee', session_id: 'child-session', status: 'suspended',
-      can_answer: false, question: { item_id: 'child-question', payload: { status: 'awaiting_user_clarification',
-        questions: [{ header: 'Audience', question: 'Which audience?', options: [{ label: 'Team' }] }] } } } };
-  const preview = normalizeToolCallResult('create_employee_from_request', draft).toolMeta;
-  if (preview?.kind !== 'hr_preview') throw new Error('Missing creation preview');
-  useAuthStore.setState({ user: { id: 'owner' } as any });
-  hr.get.mockResolvedValue(draft);
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  render(<QueryClientProvider client={client}><HrBlueprintPreviewCard agentId="original-source" preview={preview} /></QueryClientProvider>);
-  await screen.findByText('Which audience?');
   expect(screen.queryByRole('button', { name: /Submit/ })).toBeNull();
   expect(chat.answerQuestion).not.toHaveBeenCalled();
-  hr.get.mockRejectedValue(new Error('Access denied'));
-  act(() => useAuthStore.setState({ user: { id: 'other-user' } as any }));
-  await waitFor(() => expect(screen.queryByText('Which audience?')).toBeNull());
 });

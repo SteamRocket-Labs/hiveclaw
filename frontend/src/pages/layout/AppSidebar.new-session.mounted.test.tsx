@@ -95,14 +95,13 @@ describe('AppSidebar bot-list authority (B3: the bot is the way in)', () => {
 
   afterEach(() => cleanup());
 
-  it('resolves the company HR agent for a platform administrator inside the selected company', async () => {
+  it('does not provision an HR bot to render a creation entry', async () => {
     renderSidebar(
       <AppSidebar {...baseProps} user={{ id: 'platform-user', role: 'platform_admin' }} agents={[]} />,
     );
 
-    await waitFor(() => {
-      expect(harness.getHrAgent).toHaveBeenCalled();
-    });
+    await Promise.resolve();
+    expect(harness.getHrAgent).not.toHaveBeenCalled();
   });
 
   it('waits for a selected company before resolving the HR agent for a platform administrator', async () => {
@@ -132,7 +131,7 @@ describe('AppSidebar bot-list authority (B3: the bot is the way in)', () => {
     });
   });
 
-  it('routes the simple employee-creation action to a fresh HR Agent conversation draft', async () => {
+  it('routes employee creation into the ordinary assistant conversation', async () => {
     harness.location.pathname = '/home';
     const { fireEvent } = await import('@testing-library/react');
     renderSidebar(
@@ -145,9 +144,7 @@ describe('AppSidebar bot-list authority (B3: the bot is the way in)', () => {
     fireEvent.click(screen.getByRole('button', { name: 'New digital employee' }));
 
     expect(harness.navigate).toHaveBeenCalledTimes(1);
-    const [to, options] = harness.navigate.mock.calls[0];
-    expect(to).toBe('/agents/hr-agent-1#chat');
-    expect(options.state.newSessionDraft.agent_id).toBe('hr-agent-1');
+    expect(harness.navigate).toHaveBeenCalledWith('/');
   });
 
   it('keeps operator-only rows as manage links without conversation affordances', () => {

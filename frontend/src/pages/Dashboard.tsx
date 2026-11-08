@@ -301,7 +301,7 @@ function EmptyWorkspaceState({ onNavigate }: { onNavigate: (path: string) => voi
             <div className="workspace-empty-icon">{Icons.bot}</div>
             <h2>{t('dashboard.emptyTitle')}</h2>
             <p>{t('dashboard.emptyDesc')}</p>
-            <button className="btn btn-primary" onClick={() => onNavigate('/agents/new')}>
+            <button className="btn btn-primary" onClick={() => onNavigate('/')}>
                 {Icons.plus} {t('dashboard.createFirst')}
             </button>
             <small>{t('dashboard.emptyHint')}</small>
@@ -438,7 +438,7 @@ export function DashboardHomeShell({
                         })}
                     </p>
                 </div>
-                <button className="btn btn-primary" onClick={() => onNavigate('/agents/new')}>
+                <button className="btn btn-primary" onClick={() => onNavigate('/')}>
                     {Icons.plus} {t('nav.newAgent')}
                 </button>
             </header>

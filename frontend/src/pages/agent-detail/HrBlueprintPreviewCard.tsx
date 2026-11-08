@@ -1,17 +1,15 @@
-import { useId, useRef, useState } from 'react';
+import { useId, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 
 import { hrCreationApi, type HrCreationDraft } from '../../api/domains/hrCreation';
-import { normalizeToolCallResult, parsePreviewAgentBlueprintResult, type HrPreviewToolResult } from './toolResultEnvelope';
-import { chatApi } from '../../api/domains/chat';
-import { StructuredToolResultBody } from './StructuredToolResult';
-import { runtimeStatusLabel } from './SessionRuntimePanel';
+import { agentApi } from '../../api/domains/agents';
+import { parsePreviewAgentBlueprintResult, type HrPreviewToolResult } from './toolResultEnvelope';
 import { useAuthStore } from '../../stores';
 import './HrBlueprintPreviewCard.css';
 import { blueprintStatusLabel } from './hrCreationStatus';
-import HrFirstTaskPermissions from './HrFirstTaskPermissions';
-import MarkdownRenderer from '../../components/MarkdownRenderer';
+import { buildNewSessionDraftNavigation } from './newSessionNavigation';
 
 interface HrBlueprintPreviewCardProps {
   agentId?: string;
@@ -121,12 +119,11 @@ export function HrBlueprintPreviewCard({ agentId, preview, onSendMessage }: HrBl
   const [revisionOpen, setRevisionOpen] = useState(false);
   const [revisionText, setRevisionText] = useState('');
   const [revisionSubmitting, setRevisionSubmitting] = useState(false);
-  const answerIntent = useRef<{ questionId: string; text: string; inputId: string } | null>(null);
   const revisionInputId = useId();
   const viewerId = useAuthStore((state) => state.user?.id);
   const queryKey = ['hr-creation-draft', agentId, preview.blueprintId, viewerId] as const;
   const canLoad = Boolean(agentId && preview.blueprintId);
-  const { data: draft, isError: loadFailed } = useQuery({
+  const { data: draft } = useQuery({
     queryKey,
     queryFn: () => hrCreationApi.get(agentId!, preview.blueprintId!),
     enabled: canLoad,
@@ -138,14 +135,13 @@ export function HrBlueprintPreviewCard({ agentId, preview, onSendMessage }: HrBl
       const current = query.state.data as HrCreationDraft | undefined;
       return (current?.draft_status && ['confirmed', 'creating', 'provisioning'].includes(current.draft_status))
         || (current?.recovery?.task_status && ['pending', 'running', 'resumable'].includes(current.recovery.task_status))
-        || (current?.first_task_work && ['pending', 'running', 'resumable', 'suspended'].includes(current.first_task_work.status))
         ? 1_500 : false;
     },
   });
   const status = draft?.draft_status || preview.status;
   const createdAgentId = draft?.created_agent_id;
   const canonicalPreview = draft && Object.keys(draft.blueprint || {}).length > 0
-    ? parsePreviewAgentBlueprintResult(draft) || preview
+    ? parsePreviewAgentBlueprintResult({ status: 'preview', ...draft }) || preview
     : preview;
   const statusLabel = blueprintStatusLabel(status, t);
   const scopeLabel = permissionScopeLabel(canonicalPreview.permissionScope, t);
@@ -156,9 +152,7 @@ export function HrBlueprintPreviewCard({ agentId, preview, onSendMessage }: HrBl
     || canonicalPreview.deferredCapabilities.length > 0
     || canonicalPreview.knowledgeDebt.length > 0;
   const durableAction = draft?.recovery?.can_retry ? 'retry' : hrCreationActionForStatus(status);
-  const firstTask = draft?.provisioning?.first_task as { status?: string; session_id?: string; error?: string } | undefined;
-  const work = !loadFailed && canLoad && viewerId && draft?.requested_by_user_id === viewerId ? draft.first_task_work : null;
-  const question = work?.question ? normalizeToolCallResult('ask_user_question', work.question.payload).toolMeta : null;
+  const firstTask = draft?.provisioning?.first_task as { status?: string; session_id?: string; error?: string; message?: string } | undefined;
 
   const confirmMutation = useMutation({
     mutationFn: () => hrCreationApi.confirm(agentId!, preview.blueprintId!, {
@@ -179,6 +173,14 @@ export function HrBlueprintPreviewCard({ agentId, preview, onSendMessage }: HrBl
     mutationFn: () => hrCreationApi.cancel(agentId!, preview.blueprintId!),
     onSuccess: (nextDraft) => queryClient.setQueryData(queryKey, nextDraft),
   });
+  const undoMutation = useMutation({
+    mutationFn: () => agentApi.deactivate(createdAgentId!),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['agents'] });
+      queryClient.invalidateQueries({ queryKey });
+    },
+  });
+  const stopped = draft?.creation_state === 'stopped' || undoMutation.isSuccess;
 
   const runDurableAction = async () => {
     setActionError(null);
@@ -238,6 +240,30 @@ export function HrBlueprintPreviewCard({ agentId, preview, onSendMessage }: HrBl
   const canCancel = canLoad && ['confirmed', 'creating', 'provisioning'].includes(status);
   const openEmployee = createdAgentId && durableAction !== 'retry';
 
+  if (canonicalPreview.authorizationMode === 'policy_direct') {
+    const conversation = createdAgentId ? buildNewSessionDraftNavigation(createdAgentId) : null;
+    return <article className="hr-blueprint-card">
+      <header><div><h3>{canonicalPreview.name}</h3></div>
+        <span className="hr-blueprint-status">{stopped ? t('agent.chat.toolResults.createdBotStopped', 'Stopped') : statusLabel}</span>
+      </header>
+      {canonicalPreview.mission && <p className="hr-blueprint-mission">{canonicalPreview.mission}</p>}
+      {status === 'failed' && <p role="alert">{(['capability_denied', 'approval_required'].includes(String(draft?.failure?.code))
+        && typeof draft?.failure?.message === 'string' && draft.failure.message)
+        || t('agent.chat.toolResults.creationFailed', 'Creation failed. Please retry.')}</p>}
+      {firstTask?.status === 'blocked' && <p role="alert">{firstTask.message || t('agent.chat.toolResults.firstTaskDenied', 'Company policy blocks this task. Restore the required permission before retrying.')}</p>}
+      {undoMutation.isError && <p role="alert">{t('agent.chat.toolResults.undoCreationFailed', 'Could not undo creation. Please retry.')}</p>}
+      <footer>
+        {conversation && !stopped && <Link className="btn btn-primary" to={conversation.to} state={conversation.state}>{t('agent.chat.toolResults.talkToCreatedBot', 'Talk to it')}</Link>}
+        {createdAgentId && !stopped && <button type="button" className="btn btn-ghost"
+          disabled={undoMutation.isPending || undoMutation.isSuccess}
+          onClick={() => undoMutation.mutate()}>{t('agent.chat.toolResults.undoCreation', 'Undo')}</button>}
+        {durableAction === 'retry' && !stopped && <button type="button" className="btn btn-secondary"
+          disabled={busy} onClick={runDurableAction}>{firstTask
+            ? t('agent.chat.toolResults.retryFirstTask', 'Retry first task') : t('common.retry', 'Retry')}</button>}
+      </footer>
+    </article>;
+  }
+
   return (
     <article className="hr-blueprint-card">
       <header>
@@ -258,41 +284,6 @@ export function HrBlueprintPreviewCard({ agentId, preview, onSendMessage }: HrBl
         <section className="hr-blueprint-boundaries">
           <h4>{t('agent.chat.toolResults.explicitFirstTask', 'Your first task')}</h4>
           <p>{canonicalPreview.explicitFirstTask}</p>
-          <p>{work
-            ? runtimeStatusLabel(work.question || work.permissions?.length ? 'waiting_user' : work.status === 'resumable' ? 'resuming' : work.status, t)
-            : firstTask?.status === 'dispatched'
-            ? t('agent.chat.toolResults.firstTaskDispatched', 'Task dispatched. Updates and results return to this work.')
-            : firstTask?.status
-              ? t('agent.chat.toolResults.firstTaskRecovery', 'Employee ready. The first task needs recovery; it has not been reported as started.')
-              : t('agent.chat.toolResults.firstTaskWaiting', 'The task will start once the employee is ready.')}</p>
-          {work?.progress && ['running', 'resumable', 'suspended'].includes(work.status) && (
-            <div aria-live="polite"><MarkdownRenderer content={work.progress.text} /></div>
-          )}
-          {firstTask?.error === 'capability_denied' && <p>{t('agent.chat.toolResults.firstTaskDenied', 'Company policy blocks this task. Restore the required permission before retrying.')}</p>}
-          {firstTask?.error === 'approval_required' && <p>{t('agent.chat.toolResults.firstTaskApproval', 'This task needs scoped authorization before retrying.')}</p>}
-          {work && question?.kind === 'user_clarification' && work.question && (
-            <StructuredToolResultBody key={work.question.item_id} toolName="ask_user_question" toolMeta={question}
-              agentId={work.agent_id} sessionId={work.session_id} questionItemId={work.question.item_id}
-              onAnswerQuestion={work.can_answer ? async (questionId, text) => {
-                if (answerIntent.current?.questionId !== questionId || answerIntent.current.text !== text) {
-                  answerIntent.current = { questionId, text, inputId: crypto.randomUUID() };
-                }
-                const receipt = await chatApi.answerQuestion(work.agent_id, work.session_id, questionId, text, answerIntent.current.inputId);
-                await queryClient.invalidateQueries({ queryKey });
-                if (receipt.admission_state !== 'admitted' || ['rejected', 'needs_reconciliation', 'cancelled'].includes(receipt.status)) {
-                  throw new Error(t('agent.clarification.notApplied', 'The answer is stored but could not be applied. Retry or review this work.'));
-                }
-                return receipt;
-              } : undefined} />
-          )}
-          {work && agentId && draft && <HrFirstTaskPermissions key={`${work.runtime_task_id}:${viewerId}`}
-            agentId={agentId} draft={draft} userId={viewerId}
-            onResolved={async () => { await queryClient.invalidateQueries({ queryKey }); }} />}
-          {work && ['unknown', 'unavailable', 'needs_reconciliation'].includes(work.status) && (
-            <button type="button" onClick={() => queryClient.invalidateQueries({ queryKey })}>
-              {t('common.refresh', 'Refresh')}
-            </button>
-          )}
         </section>
       )}
       <div className="hr-blueprint-facts">
@@ -309,7 +300,7 @@ export function HrBlueprintPreviewCard({ agentId, preview, onSendMessage }: HrBl
       </div>
       <PreviewList label={t('agent.chat.toolResults.primaryUsers', 'Primary users')} items={canonicalPreview.primaryUsers} />
       <PreviewList label={t('agent.chat.toolResults.coreOutputs', 'Core outputs')} items={canonicalPreview.coreOutputs} />
-      {canonicalPreview.firstMission && canonicalPreview.authorizationMode !== 'policy_direct' && (
+      {canonicalPreview.firstMission && !canonicalPreview.explicitFirstTask && canonicalPreview.authorizationMode !== 'policy_direct' && (
         <section className="hr-blueprint-boundaries">
           <h4>{t('agent.chat.toolResults.firstMission', 'First mission')}</h4>
           <p>{canonicalPreview.firstMission}</p>

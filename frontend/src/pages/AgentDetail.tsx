@@ -375,11 +375,7 @@ function AgentDetailInner() {
         agentId: id,
         token,
         activeSession,
-        writableSession: Boolean(
-            activeSession
-            && shouldUseWritableSessionSurface(activeSession, currentUser?.id)
-            && !isDraftHumanChatSession(activeSession),
-        ),
+        writableSession: !isDraftHumanChatSession(activeSession) && shouldUseWritableSessionSurface(activeSession, currentUser?.id),
         isRunActive: (key) => Boolean(activeRunStateRef.current[key]),
         shouldKeepalive: (key) => {
             const uiState = sessionUiStateRef.current[key];
@@ -713,7 +709,7 @@ function AgentDetailInner() {
         setSessionPermissionMode(sessionPermissionModeFromSession(sess));
         setActiveSession(sess);
         setAgentExpired(false);
-        syncActiveSocketState(sess, targetAgentId, writableSession && !draftSession);
+        syncActiveSocketState(sess, targetAgentId, !isDraftHumanChatSession(sess) && shouldUseWritableSessionSurface(sess, currentUser?.id));
 
         if (draftSession) {
             sessionMsgAbortRef.current?.abort();

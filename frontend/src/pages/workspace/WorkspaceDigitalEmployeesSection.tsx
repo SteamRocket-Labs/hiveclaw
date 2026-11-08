@@ -241,8 +241,8 @@ export default function WorkspaceDigitalEmployeesSection({ selectedTenantId }: W
                             {t('workspace.digitalEmployees.description', 'Company admins can review and deactivate tenant digital employees from this governed backend surface.')}
                         </p>
                     </div>
-                    <Link className="btn btn-primary ws-employees-create" to="/agents/new">
-                        {t('employees.createViaHr', 'Create via HR')}
+                    <Link className="btn btn-primary ws-employees-create" to="/">
+                        {t('nav.newDigitalEmployee', 'New digital employee')}
                     </Link>
                 </div>
 

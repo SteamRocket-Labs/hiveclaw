@@ -2473,6 +2473,7 @@ async def _ensure_peer_delegation_session(
     permission_profile = _permission_profile_metadata(request.permission_profile)
     instruction = _delegation_user_message(request.conversation_messages)
     task_marker = str(request.runtime_task_id or "").strip() or None
+    human_first_task = (request.execution_principal or {}).get("origin") == "explicit_employee_first_task"
 
     async with _delegation_tenant_session(tenant_id, session_factory) as db:
         result = await db.execute(select(ChatSession).where(ChatSession.id == session_id).with_for_update())
@@ -2498,7 +2499,7 @@ async def _ensure_peer_delegation_session(
                 parent_session_id=parent_session_id,
                 root_session_id=parent_session_id or session_id,
                 runtime_task_id=runtime_task_id,
-                title=f"Delegation: {getattr(request.target, 'name', 'Agent')}"[:200],
+                title=instruction[:200] if human_first_task else f"Delegation: {getattr(request.target, 'name', 'Agent')}"[:200],
                 transcript_metadata_json={},
             )
             db.add(session)

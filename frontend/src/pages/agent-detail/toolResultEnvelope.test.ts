@@ -25,6 +25,17 @@ it('projects direct creation as a recoverable creation card for live and restore
     authorizationMode: 'policy_direct', explicitFirstTask: 'Draft a comparison', firstTaskAutostart: false });
 });
 
+it('keeps a mixed-input creation proposal on the existing confirmation card with its exact first task', () => {
+  const result = { status: 'preview', blueprint_id: 'proposal', draft_status: 'awaiting_confirmation',
+    blueprint: { name: 'Researcher', permission_scope: 'self', first_task_autostart: false },
+    summary: { first_mission: 'Research role' },
+    creation_authorization: { mode: 'policy_direct', first_task: 'Draft the authorized report' } };
+  const projected = normalizeToolCallResult('create_employee_from_request', result);
+  expect(projected.toolMeta).toMatchObject({ kind: 'hr_preview', status: 'awaiting_confirmation',
+    authorizationMode: null, permissionScope: 'self', explicitFirstTask: 'Draft the authorized report',
+    firstMission: 'Draft the authorized report' });
+});
+
 describe('parseCreateEmployeeToolResult', () => {
   it('parses structured JSON payloads', () => {
     const parsed = parseCreateEmployeeToolResult(JSON.stringify({

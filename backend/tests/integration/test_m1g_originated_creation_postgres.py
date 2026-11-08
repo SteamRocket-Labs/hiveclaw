@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 import json
 import os
 from datetime import datetime, timezone
@@ -35,6 +36,7 @@ async def direct_origin(origin, owner_sessionmaker, app_user_sessionmaker, monke
     from app.models.llm import LLMModel
     from app.models.session_v2 import SessionCommand, SessionTurnInput
     from app.models.tenant_setting import TenantSetting
+    from app.services.session_model_inputs import _hash
 
     user, context = origin
     command_id, input_id, model_id = (uuid.uuid4() for _ in range(3))
@@ -73,8 +75,8 @@ async def direct_origin(origin, owner_sessionmaker, app_user_sessionmaker, monke
                 namespace="human_input",
                 command_kind="start_turn",
                 idempotency_key=str(input_id),
-                request_hash="a" * 64,
-                target_hash="b" * 64,
+                request_hash=_hash({"command_kind": "start_turn", "request": {"content": "Create a research employee"}}),
+                target_hash=_hash({"runtime_metadata": {"source": "session_input_api"}}),
                 request_json={"content": "Create a research employee"},
                 target_json={"runtime_metadata": {"source": "session_input_api"}},
                 status="applied",
@@ -136,15 +138,63 @@ def _direct_arguments(**overrides):
 async def _direct_call(context, **overrides):
     from app.tools.handlers.hr import create_employee_from_request
 
+    arguments = _direct_arguments(**overrides)
+    context = await _seal_direct_call(context, arguments)
     return json.loads(
         await create_employee_from_request(
             ToolExecutionRequest(
                 tool_name="create_employee_from_request",
                 context=context,
-                arguments=_direct_arguments(**overrides),
+                arguments=arguments,
             )
         )
     )
+
+
+async def _seal_direct_call(context, arguments, *, extra_messages=(), unbound=(), tool_name="create_employee_from_request"):
+    """Exercise the real sealed request/invocation boundary used by the kernel."""
+    from app.database import tenant_scoped_session
+    from app.models.session_v2 import SessionCommand, SessionModelResult, SessionTurnInput
+    from app.runtime.context_candidates import ContextMessageOrigin
+    from app.services.llm_client import LLMMessage
+    from app.services.session_model_round import prepare_model_request, seal_model_response, commit_sealed_model_round
+    from app.services.session_tool_runtime import prepare_tool_invocation, mark_tool_effect_started
+    from sqlalchemy import func
+
+    tenant_id, session_id, run_id = [uuid.UUID(str(value)) for value in
+                                    (context.tenant_id, context.session_id, context.runtime_task_id)]
+    call_id = context.tool_call_id or f"create-{uuid.uuid4()}"
+    async with tenant_scoped_session(tenant_id) as db:
+        run = await db.get(RuntimeTask, run_id)
+        row_id = (run.metadata_json or {}).get("session_v2_input_id")
+        row = await db.get(SessionTurnInput, uuid.UUID(row_id)) if row_id else None
+        command = await db.get(SessionCommand, row.command_id) if row else None
+        if command is None or run.status == "completed":
+            return context
+        index = 1 + (await db.scalar(select(func.count()).select_from(SessionModelResult).where(
+            SessionModelResult.run_id == run_id)))
+        content = str(command.request_json.get("content") or "Create a research employee")
+        message = LLMMessage(role="user", content=content, context_origin=ContextMessageOrigin.capture(
+            kind="human_input", role="user", content=content, sources=({
+                "source_kind": "session_command", "source_id": str(command.id),
+                "source_version": command.request_hash,
+            },), unbound=unbound))
+        scope = dict(tenant_id=tenant_id, agent_id=context.agent_id, session_id=session_id,
+                     run_id=run_id, turn_id=f"turn-{run_id.hex}", round_index=index)
+        request_id = await prepare_model_request(db, **scope, messages=[message, *extra_messages],
+            tools=[], provider="openai", model="synthetic-no-network")
+        await seal_model_response(db, **scope, provider_request_id=request_id, response={
+            "content": None, "tool_calls": [{"id": call_id, "type": "function", "function": {
+                "name": tool_name, "arguments": json.dumps(arguments)}}],
+            "finish_reason": "tool_calls"})
+        await commit_sealed_model_round(db, **scope, provider_request_id=request_id)
+        invocation = await prepare_tool_invocation(db, tenant_id=tenant_id, agent_id=context.agent_id,
+            session_id=session_id, run_id=run_id, provider_request_id=request_id,
+            provider_tool_use_id=call_id, tool_name=tool_name, arguments=arguments)
+        await mark_tool_effect_started(db, tenant_id=tenant_id, agent_id=context.agent_id,
+            session_id=session_id, invocation_id=invocation.id)
+        await db.commit()
+    return replace(context, tool_call_id=call_id)
 
 
 async def test_direct_request_queues_canonical_job_once_without_fake_confirmation(direct_origin, owner_sessionmaker):
@@ -234,6 +284,8 @@ async def test_direct_creation_from_mapped_feishu_requires_its_durable_ingress(
         row = await db.get(SessionTurnInput, input_id)
         command = await db.get(SessionCommand, row.command_id)
         command.target_json = {"runtime_metadata": {"source": "feishu", "channel_ingress_event_id": str(input_id)}}
+        from app.services.session_model_inputs import _hash
+        command.target_hash = _hash(command.target_json)
         if has_ingress:
             db.add(
                 ChannelIngressEvent(
@@ -327,7 +379,7 @@ async def test_first_task_recovery_cannot_replace_the_accepted_request(direct_or
         assert task.metadata_json["side_effect_risk"] == "journaled"
 
 
-@pytest.mark.parametrize("policy_kind", ["capability", "guard", "session"])
+@pytest.mark.parametrize("policy_kind", ["capability", "guard"])
 async def test_first_task_resumes_through_real_scoped_approval_and_the_same_child(
     direct_origin,
     owner_sessionmaker,
@@ -549,6 +601,20 @@ async def _execute_with_session_permission(
             "tools": [{"type": "function", "function": {"name": tool_name}}],
             "max_tokens": 8192,
         }
+        messages = wire["messages"]
+        if tool_name == "create_employee_from_request":
+            from app.models.session_v2 import SessionCommand, SessionTurnInput
+            from app.services.llm_client import LLMMessage
+            from app.runtime.context_candidates import ContextMessageOrigin
+
+            run = await db.get(RuntimeTask, run_id)
+            row = await db.get(SessionTurnInput, uuid.UUID(run.metadata_json["session_v2_input_id"]))
+            command = await db.get(SessionCommand, row.command_id)
+            content = command.request_json["content"]
+            wire["messages"] = [{"role": "user", "content": content}]
+            messages = [LLMMessage(role="user", content=content, context_origin=ContextMessageOrigin.capture(
+                kind="human_input", role="user", content=content, sources=({"source_kind": "session_command",
+                    "source_id": str(command.id), "source_version": command.request_hash},), unbound=()))]
         request_id = await prepare_model_request(
             db,
             tenant_id=tenant_id,
@@ -558,7 +624,7 @@ async def _execute_with_session_permission(
             turn_id=turn_id,
             round_index=1,
             continuation_index=0,
-            messages=wire["messages"],
+            messages=messages,
             tools=wire["tools"],
             provider="openai",
             model="synthetic-no-network",
@@ -681,7 +747,7 @@ async def _execute_with_session_permission(
         assert await db.get(SessionToolInvocation, invocation.id) is not None
 
 
-async def test_direct_creation_consumes_real_once_permission_and_worker_reuses_authorization(
+async def test_direct_creation_consumes_explicit_owner_permission_and_worker_reuses_authorization(
     direct_origin,
     owner_sessionmaker,
     app_user_sessionmaker,
@@ -690,6 +756,7 @@ async def test_direct_creation_consumes_real_once_permission_and_worker_reuses_a
     from app.models.capability_policy import CapabilityPolicy
     from app.services import agent_tools
     from app.services.hr_provisioning_runtime import execute_claimed_hr_provisioning
+    from app.services.owner_action_policy import save_owner_action_policy, ACTION_LOCAL_WRITE
 
     user, context, _, _ = direct_origin
     async with owner_sessionmaker() as db:
@@ -699,6 +766,9 @@ async def test_direct_creation_consumes_real_once_permission_and_worker_reuses_a
             )
         )
         await db.delete(policy)
+        await save_owner_action_policy(db, tenant_id=user.tenant_id, agent_id=context.agent_id,
+            actions={"tool.external_effect": "confirm_first", "tool.local_read": "full_authority",
+                     ACTION_LOCAL_WRITE: "confirm_first"}, changed_by_user_id=user.id)
         await db.commit()
     monkeypatch.setattr("app.tools.resolver.async_session", app_user_sessionmaker)
     monkeypatch.setattr("app.tools.governance_resolver.async_session", app_user_sessionmaker)
@@ -800,6 +870,7 @@ async def test_direct_worker_pins_model_and_creates_native_employee_without_boot
             else:
                 await db.delete(policy)
             await db.commit()
+    if first_task_mode == "denied":
         assert await execute_claimed_hr_provisioning(task_id) == "failed"
         async with _client(user, app_user_sessionmaker) as client:
             failed = await client.get(f"/api/agents/{context.agent_id}/hr-creation-drafts/{initial['blueprint_id']}")
@@ -883,7 +954,7 @@ async def test_direct_worker_pins_model_and_creates_native_employee_without_boot
                     )
                 )
             ).all()
-            assert len(receipts) == (2 if first_task_mode in {"denied", "unapproved"} else 1)
+            assert len(receipts) == (2 if first_task_mode == "denied" else 1)
             assert sum(row.terminal_status == "completed" for row in receipts) == 1
             assert all(row.parent_session_id == uuid.UUID(context.session_id) for row in receipts)
             # Crash after child commit, before saving its receipt: recover the same child, not another send.
@@ -1125,6 +1196,18 @@ def _client(user, sessionmaker):
     app.dependency_overrides[get_current_user] = lambda: user
     app.dependency_overrides[get_db] = scoped_db
     return AsyncClient(transport=ASGITransport(app=app), base_url="http://origin")
+
+
+async def _confirm_creation_preview(user, context, preview, sessionmaker):
+    """Click the existing persisted preview as the authenticated requester."""
+    async with _client(user, sessionmaker) as client:
+        path = f"/api/agents/{context.agent_id}/hr-creation-drafts/{preview['blueprint_id']}/confirm"
+        response = await client.post(path, json={"blueprint_version": preview["blueprint_version"]})
+        assert response.status_code == 200, response.text
+        repeated = await client.post(path, json={"blueprint_version": preview["blueprint_version"]})
+        assert repeated.status_code == 200, repeated.text
+        assert repeated.json()["provisioning_task_id"] == response.json()["provisioning_task_id"]
+        return {**preview, **response.json()}
 
 
 async def _draft(owner_sessionmaker, context):

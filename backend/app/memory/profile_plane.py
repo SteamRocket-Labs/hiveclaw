@@ -31,6 +31,8 @@ from pathlib import Path
 
 from app.memory.explicit_overlay import load_explicit_overlay_entries
 
+EMPTY_SELF_CONTENT = "# Self — 我对自己的认识\n\n## 能力\n\n## 方法\n\n## 失败模式\n\n## 风格\n"
+
 logger = logging.getLogger(__name__)
 
 RESIDENT_SECTION_FILES: tuple[tuple[str, str], ...] = (
@@ -92,7 +94,7 @@ def load_resident_memory(
             logger.warning("Resident memory skipped unreadable %s: %s", path, exc)
             read_errors.append(section_name)
             continue
-        if not content:
+        if not content or (section_name == "self" and content == EMPTY_SELF_CONTENT.strip()):
             continue
         sections.append(section_name)
         source_refs.append({"source_kind": "agent_resident_memory",

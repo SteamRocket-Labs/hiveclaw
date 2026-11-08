@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { ApiError } from '../api/core';
 import { ccParityApi } from '../api/domains/ccParity';
+import { StructuredToolResultBody } from './agent-detail/StructuredToolResult';
 
 const mocks = vi.hoisted(() => ({
   queryCalls: [] as Array<{ key: unknown[]; enabled: unknown }>,
@@ -33,6 +34,8 @@ const mocks = vi.hoisted(() => ({
   upload: vi.fn(),
   activeSessionRun: null as null | { run_id: string; status: string },
   chatProps: null as any,
+  answerQuestion: vi.fn(),
+  questionControl: false,
   transport: null as any,
 }));
 
@@ -124,6 +127,7 @@ vi.mock('../api/domains/chat', () => ({
     createSessionRun: mocks.createSessionRun,
     cancelSessionRun: mocks.cancelSessionRun,
     deleteSession: mocks.deleteSession,
+    answerQuestion: mocks.answerQuestion,
   },
 }));
 
@@ -186,6 +190,10 @@ vi.mock('./agent-detail/AgentChatSection', () => ({
     mocks.chatProps = { activeSession, onSendMessage, chatMessages, activeRunId, activeRunStatus, onAbortGeneration, ...composer };
     return (
     <div data-testid="fabricated-session-shell">
+      {mocks.questionControl && <StructuredToolResultBody toolName="ask_user_question" questionItemId="child-question"
+        toolMeta={{ kind: 'user_clarification', blocking: true, nextAction: null, questions: [{ header: 'Audience',
+          question: 'Which audience?', multiSelect: false, options: [{ label: 'Team', description: '' }] }] }}
+        onAnswerQuestion={composer.onAnswerQuestion} />}
       {activeSession?.operator_view ? <strong>Operator View</strong> : activeSession?.read_only ? 'Read-only · User' : null}
       {(!mocks.projectActiveTimeline || (!activeSession?.read_only && chatMessagesSessionId === activeSession?.id) ? chatMessages || [] : [])
         .map((message, index) => <span key={`chat-${index}`}>{message.content}</span>)}
@@ -236,9 +244,32 @@ beforeEach(() => {
   mocks.cancelSessionRun.mockReset();
   mocks.deleteSession.mockReset();
   mocks.activeSessionRun = null;
+  mocks.questionControl = false;
 });
 
 afterEach(() => { cleanup(); vi.restoreAllMocks(); });
+
+it('reuses one input id for three failed retries on the child conversation answer control', async () => {
+  mocks.sessionId = 'child-session';
+  mocks.questionControl = true;
+  mocks.listSessions.mockResolvedValue([{ id: 'child-session', agent_id: 'agent-1', user_id: 'platform-admin-1',
+    title: 'First task', session_kind: 'delegation_run', read_only: true }]);
+  mocks.getSessionTranscript.mockResolvedValue([]);
+  mocks.answerQuestion.mockRejectedValue(new Error('Connection lost'));
+  render(<AgentDetail />);
+  await waitFor(() => expect(mocks.chatProps?.activeSession?.id).toBe('child-session'));
+  fireEvent.click(screen.getByRole('radio', { name: 'Team' }));
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    fireEvent.click(screen.getByRole('button', { name: 'Submit answer' }));
+    await waitFor(() => expect(mocks.answerQuestion).toHaveBeenCalledTimes(attempt));
+    await screen.findByText('Connection lost');
+  }
+  const ids = mocks.answerQuestion.mock.calls.map(call => call[4]);
+  expect(ids[0]).toBeTruthy();
+  expect(new Set(ids).size).toBe(1);
+  expect(mocks.answerQuestion.mock.calls.every(call => call[0] === 'agent-1' && call[1] === 'child-session'
+    && call[2] === 'child-question' && call[3] === 'Audience: Team')).toBe(true);
+});
 
 async function mountOwnedArtifactWork() {
   mocks.sessionId = 'owned-artifact-work';
@@ -795,6 +826,7 @@ it('keeps the optimistic message visible when a draft becomes a durable session 
   mocks.sessionId = undefined;
   await act(async () => { await mocks.chatProps.onCreateNewSession(); });
   expect(mocks.chatProps.activeSession.id).toMatch(/^draft:/);
+  expect(mocks.transport.writableSession).toBe(false);
   act(() => mocks.chatProps.onSetChatInput('Keep the first draft message'));
   mocks.createSessionRun.mockResolvedValue({
     session: { id: 'new-durable-session', agent_id: 'agent-1', user_id: 'platform-admin-1',

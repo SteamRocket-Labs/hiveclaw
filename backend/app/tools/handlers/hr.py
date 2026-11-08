@@ -1645,7 +1645,7 @@ async def _claim_canonical_hr_blueprint(
             "Use approved company model and private native defaults; no extra installs, sharing, credentials or routines. "
             "Model owns interpretation: ordinary task requests use existing employees or temporary helpers instead. "
             "Only include first_task when the user explicitly requested that work; it is dispatched once after readiness. "
-            "Missing authority/defaults returns a recoverable blocker. Use preview_agent_blueprint for custom scope."
+            "Missing authority/defaults returns a recoverable blocker."
         ),
         parameters={
             "type": "object",
@@ -1685,18 +1685,18 @@ async def create_employee_from_request(request: ToolExecutionRequest) -> str:
             {
                 "status": "error",
                 "error": "direct_human_input_required",
-                "message": "Creation requires valid fields and the current authenticated human turn.",
+                "message": "请直接告诉我要建什么样的助手。",
             }
         )
-    except HTTPException as exc:
-        return json.dumps({"status": "error", "error": "source_execute_denied", "message": str(exc.detail)})
+    except HTTPException:
+        return json.dumps({"status": "error", "error": "source_execute_denied", "message": "当前账号无法在这个对话中创建助手。"})
     except SQLAlchemyError:
         logger.exception("Direct employee creation policy/storage unavailable")
         return json.dumps(
             {
                 "status": "error",
                 "error": "capability_unavailable",
-                "message": "Creation is temporarily unavailable; retry the same request.",
+                "message": "暂时无法创建助手，请稍后重试。",
             }
         )
 
@@ -1961,6 +1961,11 @@ async def preview_agent_blueprint(request: ToolExecutionRequest) -> str:
         from app.tools.handlers.knowledge import _company_kb_runtime_principal
 
         preview_arguments = dict(request.arguments)
+        from app.services.hr_creation_source import load_creation_requester
+
+        requester = await load_creation_requester(db, user_id)
+        if getattr(requester, "role", None) not in {"org_admin", "platform_admin"}:
+            preview_arguments["permission_scope"] = "self"
         if blueprint_id is not None:
             from app.models.hr_creation import HrCreationDraft
 

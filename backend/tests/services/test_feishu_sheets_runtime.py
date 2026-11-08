@@ -128,6 +128,12 @@ async def test_feishu_sheet_read_falls_back_to_openapi_when_cli_fails(
     )
 
     assert "openapi sheet fallback" in result
-    payload = _extract_tool_error_payload(result)
+    assert result.text == "已改用其他方式获取以下结果：\n\nopenapi sheet fallback"
+    assert "<tool_error>" not in result.text
+    payload = result.metadata["primary_tool_error"]
     assert payload["provider"] == "lark-cli"
     assert payload["fallback_tool"] == "feishu_sheet_read:openapi"
+    assert payload["diagnostic_message"] == "CLI auth missing"
+    assert payload["diagnostic_hint"] == "Run lark-cli auth login before enabling CLI-backed office tools."
+    assert payload["message"] == "这项功能还没有连接好。"
+    assert payload["actionable_hint"] == "请先完成连接设置，再继续操作。"

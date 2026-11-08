@@ -259,13 +259,21 @@ async def test_feishu_base_field_list_handler_uses_cli_only_access(monkeypatch: 
 @pytest.mark.asyncio
 async def test_feishu_base_record_upload_attachment_handler_uses_cli_only_access(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
 ) -> None:
+    from types import SimpleNamespace
+
     from app.tools.handlers import feishu as feishu_handler
+
+    scope, profile = object(), object()
+    context = SimpleNamespace(workspace=tmp_path, permission_profile=profile)
 
     async def fake_check_feishu_office_access(_agent_id) -> bool:
         return True
 
-    async def fake_upload(agent_id: uuid.UUID, arguments: dict) -> str:
+    async def fake_upload(agent_id: uuid.UUID, arguments: dict, *, workspace, authority_scope, permission_profile) -> str:
+        assert workspace == tmp_path
+        assert authority_scope is scope and permission_profile is profile
         assert arguments == {
             "base_token": "app-token",
             "table_id": "tbl_1",
@@ -287,6 +295,8 @@ async def test_feishu_base_record_upload_attachment_handler_uses_cli_only_access
             "field_id": "附件",
             "file_path": "workspace/report.pdf",
         },
+        authority_scope=scope,
+        execution_context=context,
     )
 
     assert result.startswith("attachment:")

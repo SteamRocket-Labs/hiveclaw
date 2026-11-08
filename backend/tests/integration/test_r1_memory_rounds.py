@@ -161,7 +161,13 @@ async def test_six_round_search_preserves_own_inputs_and_results_but_withholds_f
         assert "TAMPERED_MEMBER_BODY" not in json.dumps(snapshot["wire_request"])
         assert "LEGACY_UNVERIFIED_BODY" not in json.dumps(snapshot["wire_request"])
     assert all("LEGACY_UNVERIFIED_BODY" not in content for content in outputs), outputs
-    assert all("Memory Availability" in content for content in outputs), outputs
+    assert all("## 可用情况\n" in content for content in outputs), outputs
+    for content in outputs:
+        assert json.loads(content.split("## 可用情况\n", 1)[1]) == {
+            "schema": "hive.explicit_memory_availability.v1", "status": "partial",
+            "issues": [{"status": "unavailable", "code": "session_recall_sources_unverified", "count": 1}],
+            "message": "目前只读到了部分记忆，暂不可用的部分不能用来下结论，可以稍后重试。",
+        }
 
 
 async def test_partial_search_keeps_receipted_fact_when_one_owned_source_is_revoked(
@@ -185,8 +191,12 @@ async def test_partial_search_keeps_receipted_fact_when_one_owned_source_is_revo
         {"query": "ORCHID", "scope": "all"}, session=session, run=run)
     assert "ORCHID independent available fact" in content, content
     assert "ORCHID_PRIVATE_MARKER" not in content, content
-    issues = json.loads(content.split("## Memory Availability\n", 1)[1])["issues"]
+    availability = json.loads(content.split("## 可用情况\n", 1)[1])
+    issues = availability["issues"]
     assert len(issues) == 1, issues
+    assert availability["status"] == "partial"
+    assert issues == [{"memory_id": shared_memory.entry_id, "status": "denied",
+        "code": "content_source_access_denied"}]
     async with app_user_sessionmaker() as db:
         await pin_rls_tenant_context(db, n.tenant)
         _sources, complete = await _origin_dependencies(db, tenant_id=n.tenant, agent_id=n.agent,

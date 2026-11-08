@@ -342,8 +342,11 @@ async def test_trigger_reconcile_plan_ranges_existing_created_at_index(owner_ses
     print(json.dumps({"trigger_reconcile_plan": plan}))
     scans = [node for node in _plan_nodes(plan["Plan"]) if node.get("Relation Name") == "runtime_tasks"]
     assert len(scans) == 1
-    assert scans[0]["Node Type"] == "Index Scan", scans
-    assert scans[0]["Index Name"] == "ix_runtime_tasks_created_at", scans
-    assert "created_at >=" in scans[0]["Index Cond"] and "created_at <=" in scans[0]["Index Cond"]
+    assert scans[0]["Node Type"] in {"Index Scan", "Bitmap Heap Scan"}, scans
+    indexes = [node for node in _plan_nodes(scans[0]) if "Index Name" in node]
+    assert len(indexes) == 1 and indexes[0]["Node Type"] in {"Index Scan", "Bitmap Index Scan"}, indexes
+    assert indexes[0]["Index Name"] == "ix_runtime_tasks_created_at", indexes
+    assert "created_at >=" in indexes[0]["Index Cond"] and "created_at <=" in indexes[0]["Index Cond"]
+    assert all(node["Node Type"] != "Seq Scan" for node in _plan_nodes(plan["Plan"]))
     assert scans[0].get("Rows Removed by Filter", 0) < 100
     assert plan["Plan"]["Actual Rows"] == 10

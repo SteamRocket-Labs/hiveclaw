@@ -324,7 +324,11 @@ async def test_search_rechecks_sources_after_backend_await_and_keeps_other_resul
     # Use another current session owned by the original reader; withdrawing the
     # historical source must not change the identity of the current work.
     assert "ORCHID_PRIVATE_MARKER" not in result, result
-    assert "INDEPENDENT_AVAILABLE_FACT" in result and "Memory Availability" in result, result
+    assert "INDEPENDENT_AVAILABLE_FACT" in result and "## 可用情况\n" in result, result
+    availability = json.loads(result.split("## 可用情况\n", 1)[1])
+    assert availability == {"schema": "hive.explicit_memory_availability.v1", "status": "partial",
+        "issues": [{"memory_id": s.entry_id, "status": "denied", "code": "content_source_access_denied"}],
+        "message": "目前只读到了部分记忆，暂不可用的部分不能用来下结论，可以稍后重试。"}
 
 
 @pytest.mark.parametrize("failure", ["review", "filesystem_committed", "activation_before_commit", "activation_after_commit"])

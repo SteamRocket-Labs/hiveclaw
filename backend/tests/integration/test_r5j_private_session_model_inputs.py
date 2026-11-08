@@ -5,7 +5,7 @@ import json
 import uuid
 
 import pytest
-from sqlalchemy import select, text
+from sqlalchemy import delete, select, text
 
 from app.database import pin_rls_tenant_context
 from app.models.chat_session import ChatSession
@@ -17,11 +17,25 @@ from tests.integration.test_m1g24_workspace_artifact_authority_postgres import (
 )
 from tests.integration.test_m1g38_session_recall_actor_postgres import _shared_reader
 from tests.integration.test_m1g40_session_file_actor_postgres import _files
-from tests.integration.test_unverified_t2_recovery_postgres import t2_work  # noqa: F401
+from tests.integration.test_unverified_t2_recovery_postgres import t2_work as _t2_work
 
 pytestmark = pytest.mark.usefixtures("migrated_pg_url")
 
 READERS = [("read_file", None), ("read_document", None), ("fs_read", "text"), ("fs_read", "document")]
+
+
+@pytest.fixture
+async def t2_work(owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path):
+    from app.models.runtime_terminal_boundary_outbox import RuntimeTerminalBoundaryOutbox
+
+    seed = await _t2_work.__wrapped__(owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path)
+    try:
+        yield seed
+    finally:
+        async with owner_sessionmaker() as db:
+            await db.execute(delete(RuntimeTerminalBoundaryOutbox).where(
+                RuntimeTerminalBoundaryOutbox.tenant_id == seed["tenant_id"]))
+            await db.commit()
 
 
 async def _read_next_round(n, path, *, tool, mode, leafless=False):

@@ -259,7 +259,7 @@ def _memory_authority_error(tool_name, error):
     )
     return render_tool_error(
         tool_name=tool_name,
-        error_class="auth_or_permission" if status == 403 else "provider_unavailable",
+        error_class="incomplete_content" if integrity_error is not None else "auth_or_permission" if status == 403 else "provider_unavailable",
         message="暂时无法确认这份记忆是否可用，或这次修改是否已保存。",
         provider="explicit_memory",
         http_status=status,

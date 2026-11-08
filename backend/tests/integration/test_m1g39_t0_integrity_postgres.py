@@ -59,4 +59,8 @@ async def test_native_recall_does_not_hide_primary_corruption_with_a_secondary_s
     assert error["ok"] is False and error["http_status"] == 503 and error["retryable"] is True
     assert error["reason_code"] == "session_recall_evidence_unavailable" and error["outcome"] == "unavailable"
     assert error["integrity_code"] == ("t0_record_hash_mismatch" if damage == "body" else "t0_record_truncated")
-    assert error["actionable_hint"] == "Restore or reconcile the original ledger before retrying session recall."
+    assert error["diagnostic_hint"] == "Restore or reconcile the original ledger before retrying session recall."
+    assert error["diagnostic_message"] == "暂时无法确认这份记忆是否可用，或这次修改是否已保存。"
+    assert error["error_class"] == "incomplete_content"
+    assert error["message"] == "收到的内容不完整，操作未完成。"
+    assert error["actionable_hint"] == "请重新获取完整内容后再试。"

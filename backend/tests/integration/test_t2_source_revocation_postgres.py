@@ -30,7 +30,7 @@ pytestmark = pytest.mark.usefixtures("migrated_pg_url")
 
 
 @pytest.fixture
-async def read_turn(native_workspace, owner_sessionmaker, app_user_sessionmaker):  # noqa: F811
+async def read_turn(native_workspace, owner_sessionmaker, app_user_sessionmaker, request):  # noqa: F811
     from app.core.resource_authority import workspace_resource_id
     from app.services.runtime_control_bus import bridge_transcript_event_to_t0
     from app.services.session_permission_runtime import _execution_evidence
@@ -76,10 +76,13 @@ async def read_turn(native_workspace, owner_sessionmaker, app_user_sessionmaker)
     async with owner_sessionmaker() as db:
         from app.services.chat_transcript import append_session_event
 
-        for role, content in (("user", "REQUESTER_TYPED_INPUT_WITHOUT_SOURCE"),
-            ("system", "PLATFORM_TEXT_WITHOUT_SOURCE")):
-            await append_session_event(db=db, tenant_id=n.tenant, agent_id=n.agent, session_id=n.session,
-                user_id=n.user, event_type=f"{role}_message", actor_type=role, role=role, content=content)
+        if getattr(request, "param", None) == "live_v1":
+            for kind in ("provider_call_ledger", "model_route", "compaction_skipped", "context_window_status",
+                "permission", "file_changes", "runtime_action_started", "runtime_action_completed",
+                "runtime_action_failed", "memory_context_degraded", "subagent_completed"):
+                await append_session_event(db=db, tenant_id=n.tenant, agent_id=n.agent, session_id=n.session,
+                    user_id=n.user, event_type=kind, actor_type="agent" if kind == "subagent_completed" else "system",
+                    role="system", content="LIVE_V1_" + kind, metadata={"source": "web_chat_runtime"})
         rows = list(await db.scalars(select(ChatTranscriptEvent).where(
             ChatTranscriptEvent.session_id == n.session).order_by(ChatTranscriptEvent.sequence)))
         (await db.get(RuntimeTask, n.run)).status = "completed"
@@ -146,7 +149,7 @@ async def test_revoked_shared_read_and_derived_answer_never_reach_t2_sinks(
     assert result.status == ("committed" if mode == "available" else "held"), result.issues
     assert len(calls) == {"available": 3, "missing": 0, "failure": 1}[mode]
     bundle = json.loads((result.staging_dir / "source_bundle.json").read_text())
-    for retained in ("Read the shared file", "REQUESTER_TYPED_INPUT_WITHOUT_SOURCE", "PLATFORM_TEXT_WITHOUT_SOURCE"):
+    for retained in ("Read the shared file",):
         assert retained in json.dumps(bundle["t0_events"])
     sinks = json.dumps(calls) + _disk_text(result)
     assert s.body not in sinks

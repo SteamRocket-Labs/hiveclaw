@@ -294,6 +294,17 @@ async def build_t2_segment_package_with_llm(
     resolved_package_id = package_id or f"t2pkg-{uuid.uuid4().hex}"
     resolved_job_id = job_id or f"job-{uuid.uuid4().hex}"
 
+    if tenant_id is None:
+        try:
+            from app.services.tenant_resolver import resolve_tenant_for_agent
+
+            tenant_id = await resolve_tenant_for_agent(agent_id)
+            if tenant_id is None:
+                raise LookupError("T2 agent tenant could not be resolved")
+        except Exception as exc:
+            return _hold_without_llm(root=root, agent_id=agent_id, session_id=session_id,
+                t0_segment_id=t0_segment_id, job_id=resolved_job_id,
+                reason=f"T0->T2 tenant lookup unavailable: {type(exc).__name__}: {exc}")
     try:
         source_bundle = await _build_authorized_source_bundle(root=root, agent_id=agent_id, tenant_id=tenant_id,
             session_id=session_id, t0_segment_id=t0_segment_id, package_id=resolved_package_id,
@@ -301,7 +312,8 @@ async def build_t2_segment_package_with_llm(
     except Exception as exc:  # No unchecked replay may reach the held-job disk sink.
         return _hold_without_llm(root=root, agent_id=agent_id, session_id=session_id,
             t0_segment_id=t0_segment_id, job_id=resolved_job_id,
-            reason=f"T0->T2 source bundle unavailable: {type(exc).__name__}")
+            reason=f"T0->T2 source bundle unavailable: {type(exc).__name__}: "
+                f"{getattr(exc, 'code', 'source validation could not be completed')}")
     if source_bundle is None:
         return _not_applicable_without_llm(
             root=root,
@@ -795,10 +807,11 @@ async def _build_authorized_source_bundle(*, root, agent_id, tenant_id, session_
     from sqlalchemy import or_, select
 
     from app.database import tenant_scoped_session
-    from app.models.audit import ChatMessage
+    from app.kernel.contracts import ExecutionAuthorityUnavailable
     from app.models.chat_session import ChatSession
     from app.models.chat_transcript_event import ChatTranscriptEvent
     from app.models.runtime_task import RuntimeTask
+    from app.models.session_v2 import SessionTurnInput
     from app.services.content_input_receipts import ContentInputReceiptError, _validate_input_dependencies
     from app.services.personal_knowledge_access import AgentRuntimePrincipal
     from app.services.session_model_inputs import _origin_dependencies
@@ -807,8 +820,7 @@ async def _build_authorized_source_bundle(*, root, agent_id, tenant_id, session_
     selection = select_t2_segment_events(events, t0_segment_id=t0_segment_id)
     # V1 projects the forward id. V2 also has the existing reverse bridge id
     # on the transcript row; do not mistake its missing forward id for raw text.
-    candidates = [event for event in selection.source_events
-        if "transcript_event_id" in event.metadata or "v2_payload" in event.metadata]
+    candidates = [event for event in selection.source_events if event.event_type != "segment_boundary"]
     allowed = set()
     if candidates and tenant_id:
         tenant_id, agent_id, session_id = (uuid.UUID(str(value)) for value in (tenant_id, agent_id, session_id))
@@ -829,14 +841,9 @@ async def _build_authorized_source_bundle(*, root, agent_id, tenant_id, session_
             by_id = {str(row.id): row for row in rows}
             by_t0 = {(row.metadata_json or {}).get("t0_bridge_event_id"): row for row in rows}
             for event in candidates if session is not None else ():
-                row = (by_id.get(str(event.metadata["transcript_event_id"])) if "transcript_event_id" in event.metadata
-                    else by_t0.get(event.event_id))
+                row = by_id.get(str(event.metadata.get("transcript_event_id"))) or by_t0.get(event.event_id)
                 if row is None:
                     continue
-                actor_user_id = (row.metadata_json or {}).get("actor_user_id")
-                if row.actor_type == "user" and actor_user_id is None and row.message_id is not None:
-                    actor_user_id = await db.scalar(select(ChatMessage.user_id).where(ChatMessage.id == row.message_id,
-                        ChatMessage.tenant_id == tenant_id))
                 if row.invocation_id is not None:
                     kind = "session-tool-permission" if row.item_kind == "tool_permission" else "session-tool-result"
                     ref = f"{kind}:{row.invocation_id}"
@@ -844,10 +851,10 @@ async def _build_authorized_source_bundle(*, root, agent_id, tenant_id, session_
                     ref = f"session-model-result:{row.result_id}"
                 elif row.input_id is not None:
                     ref = f"session-input:{row.input_id}"
-                elif ((row.actor_type == "user" and session.user_id is not None
-                    and str(actor_user_id) == str(session.user_id)) or (row.actor_type in {"system", "runtime"}
-                    and (row.item_kind in {"session", "turn", "run", "input_admission", "control_input"}
-                        or row.event_type == "system_message"))):
+                elif (row.actor_type in {"system", "runtime"}
+                    and row.item_kind in {"session", "turn", "run", "input_admission", "control_input"}):
+                    # These V2 kinds contain platform state. Legacy system_message
+                    # is also used by chat-log backfill and is not a constant.
                     allowed.add(event.event_id)
                     continue
                 else:
@@ -856,13 +863,27 @@ async def _build_authorized_source_bundle(*, root, agent_id, tenant_id, session_
                     dependencies, complete = await _origin_dependencies(db, tenant_id=tenant_id, agent_id=agent_id, ref=ref)
                     if not complete:
                         continue
-                    task = await db.get(RuntimeTask, row.run_id) if row.run_id else None
-                    reader = AgentRuntimePrincipal(agent_id=uuid.UUID(str(agent_id)),
-                        requester_user_id=task.root_user_id if task else session.user_id,
-                        session_id=str(session_id), runtime_task_id=str(row.run_id) if row.run_id else None,
-                        purpose="interactive_session")
+                    run_id = row.run_id
+                    if run_id is None and row.input_id is not None:
+                        input_row = await db.get(SessionTurnInput, row.input_id)
+                        run_id = input_row.target_run_id if input_row else None
+                    task = await db.get(RuntimeTask, run_id) if run_id else None
+                    if task is not None and task.task_type in {"delegation", "remote_a2a", "subagent"}:
+                        reader = await _carried_t2_reader(db, task=task, session=session, row=row,
+                            dependencies=dependencies)
+                        if reader is None:
+                            continue
+                    else:
+                        autonomous = task is not None and task.task_type != "web_chat_turn"
+                        reader = AgentRuntimePrincipal(agent_id=agent_id,
+                            requester_user_id=task.root_user_id if task else session.user_id,
+                            session_id=str(session_id), runtime_task_id=str(run_id) if run_id else None,
+                            purpose="autonomous_agent" if autonomous else "interactive_session", autonomous=autonomous)
                     await _validate_input_dependencies(db, uuid.UUID(str(tenant_id)), dependencies, runtime_request=reader)
-                except ContentInputReceiptError:
+                except (ContentInputReceiptError, ExecutionAuthorityUnavailable) as exc:
+                    if ((isinstance(exc, ContentInputReceiptError) and exc.status_code >= 500)
+                        or (isinstance(exc, ExecutionAuthorityUnavailable) and exc.status != "denied")):
+                        raise
                     continue
                 allowed.add(event.event_id)
     dropped = {event.event_id for event in candidates} - allowed
@@ -872,6 +893,40 @@ async def _build_authorized_source_bundle(*, root, agent_id, tenant_id, session_
         return None
     return _build_source_bundle(root=root, agent_id=agent_id, tenant_id=tenant_id, session_id=session_id,
         t0_segment_id=t0_segment_id, session_events=events, **kwargs)
+
+
+async def _carried_t2_reader(db, *, task, session, row, dependencies):
+    """Recover an existing carried reader; never infer a delegated identity."""
+    from app.models.session_v2 import SessionModelResult
+    from app.services.delegation_input_origin import delegated_instruction_memory_reader
+    from app.services.learned_skill_sources import _source_reader
+
+    # Remote instruction ingress persists the parent's exact source reader.
+    # It is usable only for rows in that same source run/session/employee.
+    evidence = ((task.metadata_json or {}).get("remote_a2a") or {}).get("source_read_principal")
+    if isinstance(evidence, dict):
+        try:
+            reader = _source_reader({"source_principal": evidence})
+            if (reader.agent_id == session.agent_id and reader.requester_user_id == task.root_user_id
+                and reader.session_id == str(session.id) and reader.runtime_task_id == str(task.id)):
+                return reader
+        except (ValueError, KeyError, TypeError):
+            return None
+    # Native delegated instructions already have an attested inherited-reader
+    # mapping. Use it only if it covers every dependency of this derived row.
+    model = await db.get(SessionModelResult, row.result_id) if row.result_id else None
+    bindings = (model.model_request_snapshot_json or {}).get("input_bindings", {}) if model else {}
+    reader, covered = None, []
+    for entry in bindings.get("messages", []):
+        if not entry.get("dependencies"):
+            continue
+        carried = await delegated_instruction_memory_reader(db, task=task, agent_id=session.agent_id,
+            session_id=session.id, source_ref=entry.get("source_ref"))
+        if carried is None or (reader is not None and reader != carried):
+            return None
+        reader = carried
+        covered.extend(entry["dependencies"])
+    return reader if reader is not None and all(ref in covered for ref in dependencies) else None
 
 
 def _build_source_bundle(
@@ -1008,7 +1063,9 @@ def _is_t2_semantic_source_event(
 def _is_semantic_content_event(event: Any) -> bool:
     if getattr(event, "event_type", None) == "segment_boundary":
         return False
-    return bool(str(getattr(event, "content", "") or "").strip())
+    from app.services.session_user_checkpoint import user_checkpoint_content
+
+    return bool(user_checkpoint_content(event).strip())
 
 
 def _is_false_metadata_flag(value: Any) -> bool:
@@ -1194,24 +1251,8 @@ def _work_ledger_payload(*, root: Path, agent_id: uuid.UUID | str, session_id: u
     except Exception:
         ledger = {}
 
-    findings: list[dict[str, Any]] = []
-    source_refs: list[str] = []
-    for item in ledger.get("findings") or []:
-        if not isinstance(item, dict):
-            continue
-        summary = str(item.get("summary") or "").strip()
-        refs = [str(ref).strip() for ref in (item.get("source_refs") or []) if str(ref).strip()]
-        if (item.get("trust") or "").strip().lower() != "verified" or not summary or not refs:
-            continue
-        findings.append(
-            {
-                "id": str(item.get("id") or f"finding-{len(findings) + 1}"),
-                "summary": summary,
-                "trust": "verified",
-                "source_refs": refs,
-            }
-        )
-        source_refs.extend(refs)
+    # Findings record free-form source_refs, not an attested origin/run.
+    # Their trust label cannot authorize their text for distillation.
 
     failures: list[dict[str, Any]] = []
     for item in ledger.get("failures") or []:
@@ -1232,9 +1273,9 @@ def _work_ledger_payload(*, root: Path, agent_id: uuid.UUID | str, session_id: u
     return {
         "schema_version": "t2.work_ledger_source.v1",
         "path": f"runtime_artifacts/sessions/{session_id}/work_ledger.json",
-        "findings": findings,
+        "findings": [],
         "failures": failures,
-        "source_refs": _dedupe(source_refs),
+        "source_refs": [],
     }
 
 

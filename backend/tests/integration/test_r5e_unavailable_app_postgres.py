@@ -274,6 +274,45 @@ async def test_no_device_is_plain_and_does_not_create_a_browser_or_lease(
             .where(EnvironmentLease.runtime_task_id == s["run_id"])) == 0
 
 
+async def test_no_device_with_an_active_lease_released_after_precheck_leaves_no_browser_attempt(
+    browser_case, browser_tools, owner_sessionmaker, monkeypatch,
+):
+    from app.config import get_settings
+    from app.services.browser_device import browser_device_spec
+    from app.services.execution_environments import EnvironmentCommandScope
+
+    s, source, manager, _, _ = browser_case
+    monkeypatch.setattr(get_settings(), "BROWSER_DEVICE_PROFILE", "disabled")
+    monkeypatch.setattr("app.services.browser_control.browser_device_spec", browser_device_spec)
+    other = EnvironmentCommandScope(
+        source.tenant_id, source.agent_id, source.user_id, "other-command", s["run_id"],
+        source_binding=source, session_id=source.session_id,
+    )
+    await other._acquire("local_os_sandbox", 30)
+    original = manager._provider
+
+    async def release_after_precheck(*args):
+        async with owner_sessionmaker() as db:
+            assert (await db.get(EnvironmentLease, other.lease_id)).status == "active"
+        try:
+            return await original(*args)
+        finally:
+            await other.release()
+
+    monkeypatch.setattr(manager, "_provider", release_after_precheck)
+    error = _error_payload(await browser_tools("browser_manage", operation("start")))
+    assert error["reason_code"] == "browser_device_not_configured"
+    assert "No browser is configured" in error["message"]
+    assert "retrying will not help" in error["actionable_hint"]
+    assert error["retryable"] is False and error["effect"] == "not_started"
+    async with owner_sessionmaker() as db:
+        assert await db.scalar(select(func.count()).select_from(EnvironmentBrowser)
+            .where(EnvironmentBrowser.agent_id == s["agent_id"])) == 0
+        leases = list(await db.scalars(select(EnvironmentLease)
+            .where(EnvironmentLease.environment_id == other.environment_id)))
+        assert [(lease.id, lease.status) for lease in leases] == [(other.lease_id, "released")]
+
+
 async def test_revision_conflict_returns_current_state_without_a_failed_attempt_lease(
     browser_case, browser_tools, owner_sessionmaker, monkeypatch,
 ):

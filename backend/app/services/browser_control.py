@@ -355,21 +355,18 @@ class BrowserControlService:
                     ExecutionEnvironment.tenant_id == source.tenant_id, ExecutionEnvironment.agent_id == source.agent_id
                 )
             )
-            if env is not None:
-                if await active_leases(db, env.id):
-                    # Acquisition owns active/unknown-command recovery and must
-                    # settle that before evaluating a repeat or stale revision.
-                    return env.provider_key
-                await self._check_request(db, env.id, invocation_key)
             if action == "start" and not browser_device_configured():
                 raise BrowserControlError("browser_device_not_configured", 503)
-            if row is None and action != "start":
-                raise BrowserControlError("browser_not_started")
-            if row is not None:
-                _expire(row, datetime.now(UTC))
-            # Reject stale requests before acquiring a command lease. The
-            # effect boundary still fences state changes after this read.
-            self._expect(row, revision, epoch)
+            if env is None or not await active_leases(db, env.id):
+                if env is not None:
+                    await self._check_request(db, env.id, invocation_key)
+                if row is None and action != "start":
+                    raise BrowserControlError("browser_not_started")
+                if row is not None:
+                    _expire(row, datetime.now(UTC))
+                # Reject stale requests before acquiring a command lease. The
+                # effect boundary still fences state changes after this read.
+                self._expect(row, revision, epoch)
             return env.provider_key if env is not None else "local_os_sandbox"
 
     async def execute(
@@ -458,10 +455,6 @@ class BrowserControlService:
                     effect = "unknown" if scope.resource_state == "unknown" else "not_started"
                 if control_error is not None:
                     control_error.effect = effect
-                    if control_error.code == "browser_revision_conflict" and control_error.current_revision is None:
-                        current = await self.read(source)
-                        control_error.current_revision = current["revision"] if current else 0
-                        control_error.current_epoch = current["control_epoch"] if current else 0
                     raise control_error
                 raise BrowserControlError(
                     result.evidence.get("reason_code", "browser_execution_unavailable"),

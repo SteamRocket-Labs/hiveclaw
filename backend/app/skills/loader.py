@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from app.services.skill_evolution_registry import is_skill_runtime_loadable
+from app.services.skill_evolution_registry import get_skill_evolution_entry, is_skill_runtime_loadable
 
 from .parser import SkillParser
 from .retired import RETIRED_BUILTIN_SKILL_FOLDERS
@@ -209,17 +209,18 @@ class WorkspaceSkillLoader:
                 continue
 
             if entry.is_dir():
-                for filename in ("SKILL.md", "skill.md"):
-                    skill_file = entry / filename
-                    if (
-                        skill_file.exists()
-                        and self._is_inside_workspace(skill_file.resolve(), workspace_root)
-                        and (source_authorizer is None or source_authorizer(skill_file))
-                    ):
+                candidates = [path for path in (entry / "SKILL.md", entry / "skill.md")
+                    if path.exists() and self._is_inside_workspace(path.resolve(), workspace_root)]
+                if len(candidates) == 2 and candidates[0].samefile(candidates[1]):
+                    candidates = [next((path for path in candidates if get_skill_evolution_entry(
+                        workspace_root, path.resolve().relative_to(workspace_root).as_posix()
+                    ) is not None), candidates[0])]
+                for skill_file in candidates:
+                    if source_authorizer is None or source_authorizer(skill_file):
                         if not is_skill_runtime_loadable(
                             workspace_root, skill_file.resolve().relative_to(workspace_root).as_posix()
                         ):
-                            break
+                            continue
                         parsed = self._parse_file(skill_file, relative_path=skill_file.resolve().relative_to(workspace_root).as_posix(),
                             default_name=entry.name)
                         if parsed is not None:

@@ -52,7 +52,6 @@ class AgentContextResource:
     content: str
     status: str = "ok"
     source_refs: tuple[dict[str, str], ...] = ()
-    company_name: str | None = None  # Mutable display context, outside the source hash.
 
     @property
     def sha256(self) -> str:
@@ -450,6 +449,7 @@ async def _load_company_intro(
 ) -> tuple[str, str | None]:
     if tenant_id is None:
         return "", None
+    company_intro = ""
     try:
         from app.database import tenant_scoped_session
         from app.models.system_settings import SystemSetting
@@ -461,7 +461,6 @@ async def _load_company_intro(
             require_tenant=True,
             source="agent_context_resource_company",
         ) as db:
-            company_intro = ""
             try:
                 from app.models.tenant_setting import TenantSetting
 
@@ -492,8 +491,8 @@ async def _load_company_intro(
             company_name = (await db.execute(sa_select(Tenant.name).where(Tenant.id == tenant_id))).scalar_one_or_none()
             return company_intro, company_name
     except Exception as exc:
-        logger.debug("Failed to load company intro for agent {}: {}", agent_id, exc)
-        return "", None
+        logger.debug("Failed to load company context for agent {}: {}", agent_id, exc)
+        return company_intro, None
 
 
 async def load_agent_context_resource(
@@ -521,8 +520,8 @@ async def load_agent_context_resource(
         return AgentContextResource(ref=resource_ref, source_ref=source_ref, content=content)
 
     if resource_ref == "company":
-        content, company_name = await _load_company_intro(agent_id, tenant_id=tenant_id)
-        return AgentContextResource(ref=resource_ref, source_ref=source_ref, content=content, company_name=company_name)
+        content, _ = await _load_company_intro(agent_id, tenant_id=tenant_id)
+        return AgentContextResource(ref=resource_ref, source_ref=source_ref, content=content)
 
     if resource_ref == "organization":
         content = ""
@@ -709,17 +708,14 @@ async def build_agent_context(
             "Read the matching integration skill before using channel-specific tools."
         )
 
-    company_resource = await load_agent_context_resource(
-        agent_id=agent_id,
-        tenant_id=_agent_tenant_id,
-        resource_ref="company",
-    )
+    company_intro, company_name = await _load_company_intro(agent_id, tenant_id=_agent_tenant_id)
+    company_resource = AgentContextResource(ref="company", source_ref="agent-context://company", content=company_intro)
     identity_section = build_identity_section(
         agent_name=agent_name,
         role_description=role_description,
         invocation_scope=invocation_scope,
         soul_text=soul,
-        company_name=company_resource.company_name,
+        company_name=company_name,
     )
     if company_resource.content:
         context_parts.append(f"### Company Information\n{company_resource.content.strip()}")

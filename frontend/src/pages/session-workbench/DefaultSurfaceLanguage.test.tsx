@@ -554,13 +554,14 @@ describe('default screen language (B2)', () => {
 
   it('keeps every step reachable with member labels and hides raw generic payloads', () => {
     const messages: AgentChatMessage[] = [
-      { role: 'tool_call', content: '', id: 't1', toolName: 'read_context_resource', toolArgs: { ref: 'index' }, toolStatus: 'done', toolResult: 'INDEX CONTENT 42', timestamp: '2026-11-04T12:00:01Z' },
-      { role: 'tool_call', content: '', id: 't2', toolName: 'call_mcp_tool', toolArgs: { tool_name: 'weather' }, toolStatus: 'done', toolResult: 'MCP RESULT ok', timestamp: '2026-11-04T12:00:02Z' },
+      { role: 'tool_call', content: '', id: 't1', toolName: 'read_context_resource', toolArgs: { ref: 'index' }, toolStatus: 'done', toolResult: '{"private_content":"INDEX CONTENT 42"}', timestamp: '2026-11-04T12:00:01Z' },
+      { role: 'tool_call', content: '', id: 't2', toolName: 'call_mcp_tool', toolArgs: { tool_name: 'weather' }, toolStatus: 'done', toolResult: '{"result":"MCP RESULT ok","tool_name":"weather"}', timestamp: '2026-11-04T12:00:02Z' },
+      { role: 'tool_call', content: '', id: 't3', toolName: 'send_message_to_agent', toolArgs: {}, toolStatus: 'done', toolMeta: { kind: 'runtime_step', stepId: 'failed-delegation', toolCallId: 'call-3', status: 'failed', durationMs: 800, visibility: 'collapsed' }, toolResult: '对方数字员工暂不可用', timestamp: '2026-11-04T12:00:03Z' },
     ];
     const timeline = buildRunTimelineFromMessages(messages, { turnStartedAt: '2026-11-04T12:00:00Z' });
     render(<RunDisclosureBlock timeline={timeline} />);
-    // The run finished: its disclosure starts folded. Open it like a user.
-    fireEvent.click(document.querySelector('button.run-disclosure-header')!);
+    // A failed run opens for attention; every step remains reachable.
+    expect(document.querySelector('button.run-disclosure-header')?.getAttribute('aria-expanded')).toBe('true');
     // The folded nameless steps live behind the quiet "…" group: open it.
     const group = screen.getByTestId('run-disclosure-tool-group') as HTMLDetailsElement;
     group.open = true;
@@ -571,7 +572,10 @@ describe('default screen language (B2)', () => {
       fireEvent.click(row);
       expect(row.getAttribute('aria-expanded')).toBe('true');
     }
-    expect(document.body.textContent).not.toMatch(/read_context_resource|call_mcp_tool|MCP RESULT|INDEX CONTENT|weather|toolName|rawResult/);
+    fireEvent.click(screen.getByRole('button', { name: /交给其他数字员工/ }));
+    expect(document.body.textContent).not.toMatch(/read_context_resource|call_mcp_tool|send_message_to_agent|MCP RESULT|INDEX CONTENT|weather|toolName|rawResult/);
+    expect(document.body.textContent).not.toMatch(/private_content|tool_name|"ref"/);
+    expect(screen.getAllByText('对方数字员工暂不可用')).toHaveLength(1);
     expect(findInternalWords(visibleSurface(document.body.innerHTML))).toEqual([]);
     cleanup();
   });

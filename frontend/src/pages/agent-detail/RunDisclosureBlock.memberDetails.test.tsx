@@ -15,7 +15,7 @@ afterEach(cleanup);
 
 it.each(['send_message_to_agent', 'save_memory', 'unknown_tool'])(
   'shows a member label for %s even after its details are expanded', (toolName) => {
-    const details = { toolName, result: 'PRIVATE_RAW_RESULT', rawResult: 'PRIVATE_RAW_RESULT', meta: null };
+    const details = { toolName, result: '{"private_field":"PRIVATE_RAW_RESULT"}', rawResult: 'PRIVATE_RAW_RESULT', meta: null };
     const { container } = render(<RunDisclosureBlock timeline={{ id: 'run', status: 'running', steps: [{
       id: 'step', kind: 'tool', title: 'Tool call', status: 'running', visibility: 'visible', details,
     }] }} />);
@@ -26,8 +26,23 @@ it.each(['send_message_to_agent', 'save_memory', 'unknown_tool'])(
     expect(container.querySelector('.run-detail-pre')).toBeNull();
     expect(container.textContent).not.toMatch(/toolName|rawResult|PRIVATE_RAW_RESULT|send_message_to_agent|unknown_tool/);
     expect(container.textContent).toMatch(/工具|交给其他数字员工|保存记忆/);
+    expect(container.querySelector('.run-tool-history-item')?.querySelector('p')).toBeNull();
   },
 );
+
+it('shows a plain-text failure reason once when a generic step is expanded', () => {
+  const { container } = render(<RunDisclosureBlock timeline={{ id: 'failed-run', status: 'failed', steps: [{
+    id: 'failed-tool', kind: 'tool', title: 'Working', status: 'failed', visibility: 'visible',
+    details: { toolName: 'send_message_to_agent', args: { agent_id: 'private-id' },
+      result: '对方数字员工暂不可用', rawResult: { internal_error: 'private-error' } },
+  }] }} />);
+  const row = container.querySelector('.run-step-toggle') as HTMLButtonElement;
+  expect(container.textContent).not.toContain('对方数字员工暂不可用');
+  fireEvent.click(row);
+  expect(screen.getAllByText('对方数字员工暂不可用')).toHaveLength(1);
+  expect(container.querySelectorAll('p')).toHaveLength(1);
+  expect(container.textContent).not.toMatch(/send_message_to_agent|agent_id|rawResult|internal_error|private-/);
+});
 
 it('keeps the dedicated command output renderer', () => {
   render(<RunDisclosureBlock timeline={{ id: 'command-run', status: 'running', steps: [{

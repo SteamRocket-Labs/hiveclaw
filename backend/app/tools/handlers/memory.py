@@ -171,11 +171,11 @@ async def save_memory(
         )
     if result.status == "duplicate" and execution_context is None:
         return (
-            "[Skipped] Exact explicit memory already exists "
+            "[Skipped] Exact memory already exists "
             f"in {result.target_hint}: {result.content}"
         )
 
-    content = f"Saved to explicit memory overlay [{result.category}] ({result.target_hint}): {result.content}"
+    content = f"Saved memory [{result.category}] ({result.target_hint}): {result.content}"
     if execution_context is not None:
         return await _record_memory_output(
             "save_memory", agent_id, arguments, execution_context, content, entry_id=result.entry_id
@@ -618,7 +618,7 @@ async def update_memory(
                     execution_context,
                     f"[{result.status.title()}] {result.reason}",
                 )
-            content = f"Updated explicit memory [{result.category}]: {result.content}"
+            content = f"Updated memory [{result.category}]: {result.content}"
             return await _record_memory_output(
                 "update_memory", agent_id, arguments, execution_context, content, entry_id=result.entry_id
             )
@@ -658,7 +658,7 @@ async def update_memory(
                 reason=f"superseded_by:{result.entry_id}",
                 accepted_blocks=[],
             )
-            return f"Updated explicit memory [{result.category}]: {content}"
+            return f"Updated memory [{result.category}]: {content}"
     if old_entry is None:
         return f"[Error] Memory entry not found or not visible: {memory_id}"
     if is_accepted_t3_target(old_entry.source):
@@ -731,7 +731,8 @@ async def retire_memory(
                 data_root=Path(get_settings().AGENT_DATA_DIR),
             )
             return await _record_memory_output(
-                "retire_memory", agent_id, arguments, execution_context, json.dumps(result)
+                "retire_memory", agent_id, arguments, execution_context,
+                json.dumps({key: value for key, value in result.items() if key not in {"memory_id", "target_memory_id"}})
             )
         except Exception as exc:
             return await _record_memory_error("retire_memory", agent_id, arguments, execution_context, exc)
@@ -743,16 +744,16 @@ async def retire_memory(
         explicit_entry = explicit_entries[0] if explicit_entries else None
         if explicit_entry is not None and explicit_entry.status == "active":
             update_explicit_overlay_status(data_root, agent_id, memory_id, status="retired", reason=reason)
-            return f"Retired explicit memory {memory_id}: {reason}"
+            return f"Retired memory: {reason}"
     if old_entry is None:
-        return f"[Error] Memory entry not found or not visible: {memory_id}"
+        return "[Error] Memory entry not found or not visible."
     if is_accepted_t3_target(old_entry.source):
         return (
-            f"[Needs T3 Patch] Accepted T3 memory {memory_id} lives in {old_entry.source}. "
+            "[Needs T3 Patch] Accepted T3 memory cannot be retired directly. "
             "Retirement requires a T3 revised_patch with retire_block/supersede evidence and Platform Gate commit."
         )
     return (
-        f"[Needs T3 Patch] Memory {memory_id} is not an explicit overlay entry. "
+        "[Needs T3 Patch] Memory is not an explicit overlay entry. "
         "Use the T3 consolidation lane for accepted memory retirement."
     )
 
@@ -817,7 +818,7 @@ async def reconcile_memory_write(agent_id, arguments, tenant_id=None, *, executi
             agent_id,
             arguments,
             execution_context,
-            f"Saved to explicit memory overlay [{result.category}] ({result.target_hint}): {result.content}",
+            f"Saved memory [{result.category}] ({result.target_hint}): {result.content}",
             entry_id=result.entry_id,
         )
     except Exception as exc:

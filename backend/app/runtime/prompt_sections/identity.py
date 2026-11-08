@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 from app.services.bootstrap_soul import project_bootstrap_soul_role
 
 
@@ -29,6 +31,10 @@ _DEFAULT_IDENTITY = (
 )
 
 
+def _quoted_display_name(name: str) -> str:
+    return json.dumps("".join(c for c in name if c.isprintable()).strip()[:200], ensure_ascii=False)
+
+
 def build_identity_section(
     agent_name: str,
     role_description: str | None = None,
@@ -46,6 +52,7 @@ def build_identity_section(
         company_name: Current tenant display name; not an authority source.
     """
     template = _IDENTITY_BY_MODE.get(invocation_scope, _DEFAULT_IDENTITY)
+    agent_name = _quoted_display_name(agent_name)
     identity = template.format(agent_name=agent_name)
 
     parts = ["## Identity & Mission", identity]
@@ -58,8 +65,8 @@ def build_identity_section(
             soul_text = project_bootstrap_soul_role(soul_text, role_description)
         parts.append(f"### Personality\n{soul_text}")
 
-    parts.append(f"Your current display name is {agent_name}. Use this name instead of any name in Personality.")
+    parts.append(f"Your current display name is {agent_name}. Use this display name when introducing yourself.")
     if company_name:
-        parts.append(f"Your company is {company_name}. Use this name instead of any company name in Personality.")
+        parts.append(f"Your company is {_quoted_display_name(company_name)}. Use this name instead of any company name in Personality.")
 
     return "\n\n".join(parts)

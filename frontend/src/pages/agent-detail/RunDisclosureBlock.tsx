@@ -246,11 +246,17 @@ function ExecOutput({ exec }: { exec: ExecDetails }) {
 }
 
 function RunStepDetails({ step }: { step: RunStepSnapshot }) {
-  const { t } = useTranslation();
   const exec = step.kind === 'command' ? asExecDetails(step.details, step.kind) : null;
   if (exec) return <ExecOutput exec={exec} />;
   if (step.kind === 'tool' || step.kind === 'file' || step.kind === 'search' || typeof step.details !== 'string') {
-    return <p>{localizedToolTitle(step, t)}</p>;
+    const result = typeof step.details === 'string' ? step.details : (step.details as { result?: unknown } | null)?.result;
+    if (typeof result !== 'string' || !result.trim()) return null;
+    try {
+      JSON.parse(result);
+      return null;
+    } catch {
+      return <p><PastedCredentialText content={result.trim().replace(/\s+/g, ' ')} /></p>;
+    }
   }
   const detailText = step.details;
   if (!detailText) return null;
@@ -423,7 +429,7 @@ function ToolHistoryItem({ step }: { step: RunStepSnapshot }) {
     );
   }
 
-  // Generic tools show the same member label when expanded.
+  // Generic tools expose plain-text results without dumping structured payloads.
   return (
     <div className="run-tool-history-item" role="listitem" data-status={step.status}>
       <button

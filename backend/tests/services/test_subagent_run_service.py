@@ -20,6 +20,38 @@ from app.services.runtime_budget_service import RuntimeBudgetApprovalRequired, R
 from app.services.runtime_task_authority import RuntimeTaskRequesterUnavailable
 
 
+@pytest.mark.asyncio
+async def test_foreground_child_session_has_task_before_autoflush_and_settles_inline(owner_sessionmaker):
+    from tests.services.test_runtime_terminal_boundary_outbox import _seed_terminal_task
+    from app.models.chat_session import ChatSession
+
+    seed = await _seed_terminal_task(owner_sessionmaker, tenant_name="Foreground child")
+    run_id = uuid.uuid4()
+    child_id = await svc.create_subagent_child_session(
+        parent_agent_id=seed.agent_id, parent_user_id=seed.user_id,
+        spec_name="scout", spec_type=SUBAGENT_TYPE_WORKER, task="Inspect current work",
+        run_id=run_id.hex, parent_session_id=str(seed.session_id), tenant_id=seed.tenant_id,
+    )
+    async with owner_sessionmaker() as db:
+        session = await db.get(ChatSession, uuid.UUID(child_id))
+        task = await db.get(RuntimeTask, run_id)
+        assert task is not None
+        assert session.runtime_task_id == task.id
+        assert task.root_user_id == seed.user_id
+        assert task.root_session_id == str(seed.session_id)
+        assert task.status == "running"
+        assert task.completion_outbox_settled_at is not None
+    await svc.update_subagent_child_session_state(child_session_id=child_id,
+        parent_agent_id=seed.agent_id, status="completed", summary="Inspection complete", run_id=run_id.hex)
+    async with owner_sessionmaker() as db:
+        task = await db.get(RuntimeTask, run_id)
+        session = await db.get(ChatSession, uuid.UUID(child_id))
+        assert task.status == "completed"
+        assert task.completed_at is not None
+        assert task.result_summary == "Inspection complete"
+        assert session.transcript_metadata_json["session_state"] == "completed"
+
+
 def _runtime_requester_fields(
     *,
     requester_user_id: uuid.UUID,

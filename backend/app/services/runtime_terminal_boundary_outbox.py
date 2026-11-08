@@ -23,6 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 import app.database as _app_database  # late-bound: a test (or redeploy) may rebind the app session factories
 from app.models.runtime_task import (
+    TERMINAL_BOUNDARY_RECENT_WINDOW,
     TERMINAL_BOUNDARY_RETRY_SECONDS,
     TERMINAL_BOUNDARY_TERMINAL_STATUSES,
     RuntimeTask,
@@ -602,9 +603,11 @@ class RuntimeTerminalBoundaryOutboxService:
             # so the ordered partial index also excludes delivered history.
             queue.status.in_((literal_column("'pending'"), literal_column("'processing'"))),
             or_(
-                and_(queue.status == "pending", queue.available_at <= current),
+                and_(queue.status == "pending", queue.available_at >= current - TERMINAL_BOUNDARY_RECENT_WINDOW,
+                    queue.available_at <= current),
                 and_(queue.status == "processing",
-                    or_(queue.lease_expires_at.is_(None), queue.lease_expires_at <= current)),
+                    queue.lease_expires_at >= current - TERMINAL_BOUNDARY_RECENT_WINDOW,
+                    queue.lease_expires_at <= current),
             ),
         )
         async with self._tenant_session(tenant_uuid, operation="claim") as db:
@@ -1009,10 +1012,13 @@ class RuntimeTerminalBoundaryOutboxService:
             RuntimeTask.tenant_id == tenant_id,
             RuntimeTask.terminal_boundary_generation.is_not(None),
             RuntimeTask.terminal_boundary_enqueued_at.is_(None),
+            RuntimeTask.created_at >= now - TERMINAL_BOUNDARY_RECENT_WINDOW,
+            RuntimeTask.created_at <= now,
             RuntimeTask.status.in_(TERMINAL_BOUNDARY_TERMINAL_STATUSES),
             or_(
                 RuntimeTask.terminal_boundary_reconcile_attempted_at.is_(None),
-                RuntimeTask.terminal_boundary_reconcile_attempted_at <= retry_before,
+                and_(RuntimeTask.terminal_boundary_reconcile_attempted_at >= now - TERMINAL_BOUNDARY_RECENT_WINDOW,
+                    RuntimeTask.terminal_boundary_reconcile_attempted_at <= retry_before),
             ),
         ]
         if task_types:
@@ -1099,9 +1105,9 @@ class RuntimeTerminalBoundaryOutboxService:
                         continue
                     rows = await builder(db, task)
                     await db.flush()
-                    if not rows or task.terminal_boundary_enqueued_at is None:
+                    if task.terminal_boundary_enqueued_at is None:
                         raise TerminalBoundaryCanonicalMismatch("reconcile builder did not enqueue a terminal boundary")
-                    for row in rows:
+                    for row in rows or ():
                         if row.tenant_id != tenant_uuid or row.runtime_task_id != task.id:
                             raise TerminalBoundaryCanonicalMismatch(
                                 "reconcile builder returned a cross-authority boundary"

@@ -893,7 +893,7 @@ async def test_web_terminal_boundary_lane_is_cross_tenant_scoped_and_web_only(
     from app.models.user import User
 
     now = datetime.now(UTC)
-    fixture_epoch = datetime(2000, 1, 1, tzinfo=UTC)
+    fixture_epoch = now
     tenant_ids = [uuid4(), uuid4()]
     web_task_ids = [uuid4(), uuid4(), uuid4()]
     non_web_task_id = uuid4()

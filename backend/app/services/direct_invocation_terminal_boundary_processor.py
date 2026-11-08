@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 import json
 import logging
 from pathlib import Path
@@ -510,6 +511,12 @@ async def enqueue_direct_terminal_boundary_for_task(
     if task.terminal_boundary_generation is None or task.terminal_boundary_enqueued_at is not None:
         return None
     spec = await _build_direct_terminal_spec(db, task)
+    if task.task_type == "trigger" and spec.event_kind == "runtime_terminal":
+        # This consumer has no trigger effect without a transcript frontier.
+        # Acknowledge it in the terminal transaction without growing the queue.
+        task.terminal_boundary_enqueued_at = datetime.now(UTC)
+        task.terminal_boundary_reconcile_last_error = None
+        return None
     return await enqueue_terminal_boundary(
         db,
         task=task,

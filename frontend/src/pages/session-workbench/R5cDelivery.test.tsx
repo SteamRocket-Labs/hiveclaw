@@ -49,7 +49,8 @@ it.each(['tool-only', 'file-card', 'empty-final'] as const)('settles %s after th
     expect(pending.header.status).toBe('running');
     for (const settled of [buildThreadTimeline({ ...timelineInput, terminalTranscriptPending: false }), buildThreadTimeline(timelineInput)]) {
       expect(settled.header.status).toBe('complete');
-      expect(settled.cells.filter(cell => cell.kind === 'active_run').map(cell => cell.timeline.status)).toEqual(['done']);
+      expect(settled.cells.filter(cell => cell.kind === 'active_run').map(cell => cell.timeline.status))
+        .toEqual(kind === 'empty-final' ? [] : ['done']);
     }
   }
 });

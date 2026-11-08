@@ -1886,7 +1886,7 @@ function buildCells(messages: AgentChatMessage[], runtimePhase?: string | null):
 
     if (message.role === 'event') {
       if (message.sessionItem?.kind === 'run' && CANONICAL_RUN_TERMINAL_LIFECYCLES.has(message.sessionItem.lifecycle)
-        && (runtimePhase !== 'idle' || ['cancelled', 'killed', 'canceled'].includes(message.sessionItem.lifecycle))
+        && (runtimePhase !== 'idle' || ['cancelled', 'killed', 'canceled', 'failed'].includes(message.sessionItem.lifecycle))
         && !cells.some(cell => cell.kind === 'active_run' && isSameSessionRunId(cell.runId, messageRunId(message)))) {
         cells.push(buildRunCell(runIndex++, [{ message, index }], undefined, false, turnStartedAt));
       }
@@ -1933,7 +1933,11 @@ function mergeProcessCells(
   messages: AgentChatMessage[],
   turnStartedAt?: string,
 ): Extract<ThreadTimelineCell, { kind: 'active_run' }> {
-  const sourceMessages = [...current.sourceMessages, ...next.sourceMessages];
+  const sources = new Map<string | number, { message: AgentChatMessage; index: number }>();
+  for (const entry of [...current.sourceMessages, ...next.sourceMessages]) {
+    sources.set(entry.message.sessionItem?.id || entry.message.id || entry.index, entry);
+  }
+  const sourceMessages = [...sources.values()];
   const answerMessageId = next.timeline.answerMessageId || current.timeline.answerMessageId;
   const answer = answerMessageId
     ? messages
@@ -1955,6 +1959,7 @@ function coalesceProcessCellsByUserTurn(
   messages: AgentChatMessage[],
 ): ThreadTimelineCell[] {
   const coalesced: ThreadTimelineCell[] = [];
+  const processIndexByRunId = new Map<string, number>();
   let currentProcessIndex: number | null = null;
   let turnStartedAt: string | undefined;
   let insideAcceptedUserTurn = false;
@@ -1973,7 +1978,22 @@ function coalesceProcessCellsByUserTurn(
       coalesced.push(cell);
       return;
     }
-    if (cell.kind !== 'active_run' || !insideAcceptedUserTurn) {
+    if (cell.kind !== 'active_run') {
+      coalesced.push(cell);
+      return;
+    }
+    // Answers and file cards do not end a run's identity. Live delivery and
+    // transcript replay can place more of the same run after either surface.
+    const existingIndex = cell.runId ? processIndexByRunId.get(cell.runId) : undefined;
+    if (existingIndex != null) {
+      const existing = coalesced[existingIndex];
+      if (existing.kind === 'active_run') {
+        coalesced[existingIndex] = mergeProcessCells(existing, cell, messages, existing.timeline.startedAt);
+        return;
+      }
+    }
+    if (cell.runId) processIndexByRunId.set(cell.runId, coalesced.length);
+    if (!insideAcceptedUserTurn) {
       coalesced.push(cell);
       return;
     }
@@ -1992,6 +2012,7 @@ function coalesceProcessCellsByUserTurn(
 
     // Canonical lifecycle boundaries remain independently available, but they
     // cannot split one accepted user turn into multiple process disclosures.
+    if (cell.runId) processIndexByRunId.set(cell.runId, currentProcessIndex);
     coalesced[currentProcessIndex] = mergeProcessCells(current, cell, messages, turnStartedAt);
   });
 
@@ -2227,7 +2248,10 @@ export function buildThreadTimeline(input: BuildThreadTimelineInput): ThreadTime
         && (!headerRunId || !cell.runId || isSameSessionRunId(cell.runId, headerRunId))
         && cell.timeline.status === 'done'
         ? { ...cell, timeline: { ...cell.timeline, status: 'running' as const }, phase: undefined }
-        : cell),
+        : cell)
+      .filter(cell => cell.kind !== 'active_run' || cell.timeline.status !== 'done'
+        || cell.timeline.steps.length > 0
+        || cell.sourceMessages.some(({ message }) => message.artifacts?.length)),
     header: {
       title: getSessionTitle(input.activeSession),
       status: headerStatus,

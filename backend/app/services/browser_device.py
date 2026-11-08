@@ -13,11 +13,16 @@ from app.services.runtime_task_fence import StaleRuntimeTaskFenceError
 from sqlalchemy.exc import SQLAlchemyError
 
 
+def browser_device_configured():
+    settings = get_settings()
+    return settings.BROWSER_DEVICE_PROFILE == "trusted_host" and bool(
+        settings.BROWSER_DEVICE_EXECUTABLE and settings.BROWSER_PRIVATE_PROFILE_DIR
+    )
+
+
 def browser_device_spec(resource_id, tenant_id, agent_id):
     settings = get_settings()
-    if settings.BROWSER_DEVICE_PROFILE != "trusted_host":
-        raise BrowserPipeError("browser_device_not_configured", "not_started")
-    if not settings.BROWSER_DEVICE_EXECUTABLE or not settings.BROWSER_PRIVATE_PROFILE_DIR:
+    if not browser_device_configured():
         raise BrowserPipeError("browser_device_not_configured", "not_started")
     root = Path(settings.BROWSER_PRIVATE_PROFILE_DIR).expanduser()
     agents = Path(settings.AGENT_DATA_DIR).expanduser().resolve()

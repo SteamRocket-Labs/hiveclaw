@@ -61,6 +61,12 @@ async def browser_case(owner_sessionmaker, app_user_sessionmaker, tmp_path, monk
     from app.core.security import get_current_user
     from app.database import get_db
     from app.models.user import User
+    from app.config import get_settings
+
+    # This fixture supplies a local protocol child as the configured device.
+    monkeypatch.setattr(get_settings(), "BROWSER_DEVICE_PROFILE", "trusted_host")
+    monkeypatch.setattr(get_settings(), "BROWSER_DEVICE_EXECUTABLE", sys.executable)
+    monkeypatch.setattr(get_settings(), "BROWSER_PRIVATE_PROFILE_DIR", str(tmp_path / "private-browser"))
 
     seed = await _seed_run(owner_sessionmaker, tmp_path)
     source = BrowserSource(*(seed[key] for key in ("tenant_id", "agent_id", "user_id", "session_id")))

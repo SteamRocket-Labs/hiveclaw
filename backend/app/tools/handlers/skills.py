@@ -47,17 +47,23 @@ from app.tools.decorator import RESULT_CHARS_UNLIMITED, ToolMeta, tool
         adapter="workspace_args",
     )
 )
-def load_skill(
+async def load_skill(
     workspace: Path,
     arguments: dict,
     tenant_id: str | None = None,
     *,
     session_id: str | None = None,
     authority_scope=None,
+    execution_context=None,
 ) -> str:
     from app.services.agent_tool_domains.workspace import _load_skill
+    from app.services.agent_tools import available_deferred_tool_names_for_agent
+    from app.services.governance_capability_taxonomy import CORE_TOOL_NAMES
 
-    return _load_skill(workspace, arguments.get("name", ""), session_id=session_id, authority_scope=authority_scope)
+    available = (set(CORE_TOOL_NAMES) | set(await available_deferred_tool_names_for_agent(execution_context.agent_id))
+        if execution_context is not None else None)
+    return _load_skill(workspace, arguments.get("name", ""), session_id=session_id, authority_scope=authority_scope,
+        available_tool_names=available)
 
 
 # -- run_skill_tool -----------------------------------------------------------
@@ -327,7 +333,9 @@ async def reconcile_skill_candidate(agent_id: uuid.UUID, workspace: Path, argume
             "- Use `load_skill` only when you need the skill's instructions or component guidance, not merely to unlock tool schemas.\n"
             "- Prefer builtin tools, loaded skills, and direct web/file workflows first; reach for an imported MCP tool "
             "when the task genuinely needs it.\n"
-            "- For installing or importing a NEW MCP server, use the explicit MCP resource tools and approval flow."
+            "- When no tool matches, use the returned company-app list to distinguish an unconnected company app from a missing personal account.\n"
+            "- If the company has not registered the app, briefly ask the member to contact an administrator in company connections. "
+            "Do not keep searching or try installation or browser workarounds. Installation tools require explicit availability."
         ),
         parameters={
             "type": "object",

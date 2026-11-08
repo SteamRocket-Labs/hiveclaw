@@ -85,6 +85,7 @@ def build_tool_search_manifest(
     loaded_tool_names: Iterable[str] = (),
     skills: Iterable[Any] = (),
     subagents: Iterable[dict[str, Any]] = (),
+    company_applications: Iterable[dict[str, str]] | None = None,
 ) -> dict[str, Any]:
     loaded_tool_schemas = _loaded_tool_schema_entries(loaded_tool_names)
     return {
@@ -94,6 +95,8 @@ def build_tool_search_manifest(
         "skill_candidates": _skill_candidate_entries(skills, query),
         "subagent_candidates": _subagent_candidate_entries(subagents, query),
         "mcp_candidates": _mcp_candidate_entries(entry["name"] for entry in loaded_tool_schemas),
+        **({"company_applications": list(company_applications)}
+            if company_applications is not None else {}),
     }
 
 
@@ -104,6 +107,7 @@ def render_tool_search_manifest_sections(manifest: dict[str, Any]) -> str:
         ("skill_candidates", "name"),
         ("subagent_candidates", "name"),
         ("mcp_candidates", "name"),
+        *((("company_applications", "name"),) if "company_applications" in manifest else ()),
     )
     for section_name, label_key in sections:
         lines.append(f"{section_name}:")
@@ -116,6 +120,8 @@ def render_tool_search_manifest_sections(manifest: dict[str, Any]) -> str:
                 continue
             label = _as_text(row.get(label_key))
             detail = _as_text(row.get("description") or row.get("source") or row.get("activation"))
+            if section_name == "company_applications":
+                detail = f"mcp_server_id: {row['mcp_server_id']}"
             suffix = f" | {detail}" if detail else ""
             lines.append(f"- {label}{suffix}")
     return "\n".join(lines)

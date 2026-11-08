@@ -4,6 +4,8 @@ import json
 
 from uuid import uuid4
 
+import pytest
+
 
 def test_load_skill_reads_folder_and_flat_file(tmp_path):
     from app.services.agent_tools import _load_skill
@@ -412,6 +414,56 @@ def test_workspace_skill_loader_filters_non_loadable_registry_states(tmp_path):
     names = [skill.metadata.name for skill in WorkspaceSkillLoader().load_from_workspace(tmp_path)]
     assert names == ["active-skill", "trial-skill"]
     assert WorkspaceSkillLoader().list_resources(tmp_path, "review-skill") == ()
+
+
+@pytest.mark.parametrize("disk_name", ["SKILL.md", "skill.md"])
+@pytest.mark.parametrize("registered_name", ["SKILL.md", "skill.md"])
+def test_workspace_skill_loader_uses_the_registered_case_alias(tmp_path, disk_name, registered_name):
+    from app.services.skill_evolution_registry import ORIGIN_T3_AUTO_CREATED, upsert_skill_evolution_entry
+    from app.skills.loader import WorkspaceSkillLoader
+
+    folder = tmp_path / "skills" / "demo"
+    folder.mkdir(parents=True)
+    (folder / disk_name).write_text("---\nname: Demo Display\n---\n# Blocked body\n", encoding="utf-8")
+    upper, lower = folder / "SKILL.md", folder / "skill.md"
+    if not (upper.exists() and lower.exists() and upper.samefile(lower)):
+        pytest.skip("Requires a case-insensitive filesystem")
+    for state in ("blocked", "active"):
+        upsert_skill_evolution_entry(
+            tmp_path, skill_name="Demo Display", target_path=f"skills/demo/{registered_name}",
+            skill_origin=ORIGIN_T3_AUTO_CREATED, state=state,
+        )
+        names = [skill.metadata.name for skill in WorkspaceSkillLoader().load_from_workspace(tmp_path)]
+        assert names == ([] if state == "blocked" else ["Demo Display"])
+
+
+def test_workspace_skill_loader_tries_a_distinct_lowercase_file_after_a_blocked_uppercase_file(tmp_path, monkeypatch):
+    from pathlib import Path
+
+    from app.services.skill_evolution_registry import ORIGIN_T3_AUTO_CREATED, upsert_skill_evolution_entry
+    from app.skills.loader import WorkspaceSkillLoader
+
+    folder = tmp_path / "skills" / "demo"
+    folder.mkdir(parents=True)
+    upper, lower = folder / "SKILL.md", folder / "skill.md"
+    upper.write_text("---\nname: Demo\n---\n# Demo\n", encoding="utf-8")
+    if not lower.exists():
+        lower.write_text("---\nname: Demo\n---\n# Demo\n", encoding="utf-8")
+    upsert_skill_evolution_entry(
+        tmp_path, skill_name="Blocked Upper", target_path="skills/demo/SKILL.md",
+        skill_origin=ORIGIN_T3_AUTO_CREATED, state="blocked",
+    )
+    samefile = Path.samefile
+
+    def distinct_candidates(path, other):
+        if {path, Path(other)} == {upper, lower}:
+            return False
+        return samefile(path, other)
+
+    # Model two distinct files on case-sensitive disks, even on macOS.
+    monkeypatch.setattr(Path, "samefile", distinct_candidates)
+    loaded = WorkspaceSkillLoader().load_from_workspace(tmp_path)
+    assert [skill.relative_path for skill in loaded] == ["skills/demo/skill.md"]
 
 
 def test_skill_catalog_surfaces_provisional_trial_without_raw_control_paths(monkeypatch, tmp_path):

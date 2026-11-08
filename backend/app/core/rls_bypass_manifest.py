@@ -877,7 +877,14 @@ def fingerprint_rls_bypass_scopes(app_root: Path) -> str:
 # Merging the landing fix with A4sf keeps each entry from one side; no bypass scope changed on both sides.
 # Lfix5 aligns R5c's event/tenant/session projection grant with the merged source.
 # Against 651cfffb, all 785 scope entries and 122 callsites are unchanged.
-RLS_BYPASS_SCOPES_SHA256 = "a947a47d5cb860d39338e0bcad3cbd4574c5a2bd3deeaa28ba7aac88f7814f50"
+# Native source preflight reuses completed validations and transaction identities (R5a);
+# private-session recovery shares one session-source predicate (R5j). Against 3940d31c
+# (a947a47d, 785 entries) the merged tree has 790 entries: only <module-source> and
+# function entries of agent_identity_lifecycle, content_input_receipts,
+# machine_runtime_authority, shared_group_authority and workspace_resource_authority
+# changed (16 removed / 21 added); the 122 callsites are identical. No new bypass
+# scope, authorization, or callsite.
+RLS_BYPASS_SCOPES_SHA256 = "1eb32d2e39c0c35d9caeb747323fa6f1f6a43271673d10f72bd74b9eace307cd"
 
 
 def scan_rls_bypass_callsites(app_root: Path) -> list[RLSBypassCallsite]:

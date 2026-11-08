@@ -101,6 +101,16 @@ async def resolve_live_effect_principal(db: AsyncSession, agent: Any) -> LiveEff
         return LiveEffectPrincipal(user_id=None, block_reason="responsible_principal_missing")
     user = (await db.execute(select(User).where(User.id == owner_id)
         .execution_options(populate_existing=True))).scalar_one_or_none()
+    return _live_effect_principal_from_owner(agent, user)
+
+
+def _live_effect_principal_from_owner(agent, user):
+    """Evaluate an owner row selected by this Agent's effective owner id."""
+    from app.core.permissions import effective_agent_owner_id
+
+    owner_id = effective_agent_owner_id(agent)
+    if owner_id is None:
+        return LiveEffectPrincipal(user_id=None, block_reason="responsible_principal_missing")
     if user is None:
         return LiveEffectPrincipal(user_id=None, block_reason="responsible_principal_missing")
     if getattr(user, "is_active", True) is False:

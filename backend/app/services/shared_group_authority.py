@@ -93,6 +93,22 @@ def _principal_binding_method(config):
 
 
 async def require_current_group_member(db, *, session, user=None, principal=None):
+    from app.services.content_input_receipts import _preflight_inputs
+
+    rows = _preflight_inputs(db)
+    key = ("group_member", session.tenant_id, session.agent_id, session.audience_kind, session.source_channel,
+        session.group_installation_ref, session.group_subject_id, session.user_id, session.external_principal_id,
+        getattr(user, "id", None), getattr(user, "tenant_id", None), getattr(user, "is_active", None),
+        getattr(principal, "id", None))
+    if rows is not None and key in rows:
+        return rows[key]
+    config = await _require_current_group_member(db, session=session, user=user, principal=principal)
+    if rows is not None:
+        rows[key] = config
+    return config
+
+
+async def _require_current_group_member(db, *, session, user=None, principal=None):
     config, members = await load_current_group_members(db, session=session)
     query = select(ExternalPrincipal).where(
         ExternalPrincipal.tenant_id == session.tenant_id,

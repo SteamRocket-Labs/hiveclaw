@@ -408,7 +408,7 @@ async def published_creation_seed_sources(db, *, tenant_id, request, requested_d
     from app.agents.delegation_token import DelegationToken, validate_delegation_token
     from app.models.agent import Agent
     from app.models.runtime_task import RuntimeTask
-    from app.services.content_input_receipts import _runtime_input_actor
+    from app.services.content_input_receipts import _input_row, _preflight_inputs, _runtime_input_actor
     from app.services.hr_creation_service import direct_creation_authorization
 
     context = getattr(request, "context", None)
@@ -422,7 +422,8 @@ async def published_creation_seed_sources(db, *, tenant_id, request, requested_d
         task_id, session_id = uuid.UUID(str(context.runtime_task_id)), uuid.UUID(str(context.session_id))
     except (ValueError, TypeError):
         return None, []
-    task = await db.scalar(
+    cached = _preflight_inputs(db)
+    task = await _input_row(db, RuntimeTask, task_id) if cached is not None else await db.scalar(
         select(RuntimeTask).where(
             RuntimeTask.id == task_id,
             RuntimeTask.tenant_id == tenant_id,
@@ -431,7 +432,11 @@ async def published_creation_seed_sources(db, *, tenant_id, request, requested_d
             RuntimeTask.root_user_id == context.user_id,
         )
     )
-    if task is None or uuid.UUID(task.child_session_id) != session_id or token.parent_agent_id != task.parent_agent_id:
+    if (
+        task is None or task.tenant_id != tenant_id or task.task_type != "delegation"
+        or task.child_agent_id != context.agent_id or task.root_user_id != context.user_id
+        or uuid.UUID(task.child_session_id) != session_id or token.parent_agent_id != task.parent_agent_id
+    ):
         return None, []
     if not (
         task.status == "running"
@@ -449,7 +454,8 @@ async def published_creation_seed_sources(db, *, tenant_id, request, requested_d
     principal, requester = await _runtime_input_actor(db, tenant_id, request)
     if principal.purpose != "a2a_delegation":
         return None, []
-    draft = await db.scalar(
+    draft_key = ("creation_seed_draft", task.id, requester.id)
+    draft = cached[draft_key] if cached is not None and draft_key in cached else await db.scalar(
         select(HrCreationDraft).where(
             HrCreationDraft.tenant_id == tenant_id,
             HrCreationDraft.created_agent_id == task.child_agent_id,
@@ -459,9 +465,11 @@ async def published_creation_seed_sources(db, *, tenant_id, request, requested_d
             HrCreationDraft.requested_by_user_id == requester.id,
         )
     )
+    if cached is not None:
+        cached[draft_key] = draft
     evidence = direct_creation_authorization(draft) if draft else None
-    parent = await db.get(Agent, task.parent_agent_id, populate_existing=True)
-    child = await db.get(Agent, task.child_agent_id, populate_existing=True)
+    parent = await _input_row(db, Agent, task.parent_agent_id)
+    child = await _input_row(db, Agent, task.child_agent_id)
     if draft is None or task.id != uuid.uuid5(draft.id, "explicit-first-task.v1"):
         return await _owned_delegation_parent_sources(
             db,
@@ -490,7 +498,13 @@ async def published_creation_seed_sources(db, *, tenant_id, request, requested_d
         or child.owner_user_id != requester.id
     ):
         return None, []
-    original = await load_employee_creation_dependencies(db, draft=draft)
+    original_key = ("creation_seed_inputs", draft.id)
+    original = (
+        cached[original_key] if cached is not None and original_key in cached
+        else await load_employee_creation_dependencies(db, draft=draft)
+    )
+    if cached is not None and original is not None and original[1]:
+        cached[original_key] = original
     if original is None or not original[1]:
         return None, []
     return requester, await _creation_seed_dependencies(
@@ -548,6 +562,7 @@ async def _creation_seed_dependencies(db, *, draft, parent, dependencies):
 
 async def _owned_context_source(db, *, dependency, agent_id, tenant_id, session_id, user_id):
     from app.models.invocation_span import InvocationSpan
+    from app.services.content_input_receipts import _input_row, _preflight_inputs
 
     kind, source_id = dependency["source_kind"], dependency["source_id"]
     if kind == "agent_directory_observation":
@@ -571,7 +586,7 @@ async def _owned_context_source(db, *, dependency, agent_id, tenant_id, session_
         return True
     if kind in {"session_actor_identity", "memory_resource_reference"}:
         try:
-            row = await db.get(InvocationSpan, uuid.UUID(source_id), populate_existing=True)
+            row = await _input_row(db, InvocationSpan, uuid.UUID(source_id))
         except ValueError:
             return False
         return bool(
@@ -604,12 +619,13 @@ async def _owned_context_source(db, *, dependency, agent_id, tenant_id, session_
         from app.services.work_ledger_tool_sources import LEDGER_RESULT_TOOLS, ledger_result_sources
 
         try:
-            call = await db.get(SessionToolInvocation, uuid.UUID(source_id), populate_existing=True)
+            call = await _input_row(db, SessionToolInvocation, uuid.UUID(source_id))
         except ValueError:
             return False
         if call is None or call.tenant_id != tenant_id or call.session_id != session_id:
             return False
-        event = await db.scalar(
+        cached = _preflight_inputs(db)
+        event = await _input_row(db, ChatTranscriptEvent, call.result_event_id) if cached is not None else await db.scalar(
             select(ChatTranscriptEvent)
             .where(
                 ChatTranscriptEvent.id == call.result_event_id,
@@ -621,9 +637,14 @@ async def _owned_context_source(db, *, dependency, agent_id, tenant_id, session_
             )
             .execution_options(populate_existing=True)
         )
+        if event is not None and (
+            event.tenant_id != tenant_id or event.agent_id != agent_id or event.session_id != session_id
+            or event.run_id != call.run_id or event.invocation_id != call.id
+        ):
+            event = None
         payload = _event_payload(event) if event else {}
         model = (
-            await db.scalar(
+            (await _input_row(db, SessionModelResult, event.result_id) if cached is not None else await db.scalar(
                 select(SessionModelResult)
                 .where(
                     SessionModelResult.id == event.result_id,
@@ -633,12 +654,14 @@ async def _owned_context_source(db, *, dependency, agent_id, tenant_id, session_
                     SessionModelResult.provider_request_id == call.provider_request_id,
                 )
                 .execution_options(populate_existing=True)
-            )
+            ))
             if event
             else None
         )
         if (
             model is None
+            or model.tenant_id != tenant_id or model.session_id != session_id or model.run_id != call.run_id
+            or model.provider_request_id != call.provider_request_id
             or not _model_dependencies(model)[1]
             or tool_result_source_hash(payload) != dependency["source_version"]
         ):
@@ -834,11 +857,6 @@ async def _owned_context_source(db, *, dependency, agent_id, tenant_id, session_
 
 
 async def _owned_delegation_parent_sources(db, *, task, requester, parent, child, requested_dependencies):
-    from app.agents.orchestrator import _delegation_projection_request_from_record
-    from app.models.chat_session import ChatSession
-    from app.models.invocation_span import InvocationSpan
-    from app.services.delegation_context_sources import _facts
-    from app.services.delegation_input_origin import load_delegation_instruction_origin
 
     if any(
         agent is None
@@ -849,46 +867,18 @@ async def _owned_delegation_parent_sources(db, *, task, requester, parent, child
         for agent in (parent, child)
     ):
         return None, []
-    original_work = await db.get(ChatSession, uuid.UUID(task.parent_session_id), populate_existing=True)
-    if (
-        original_work is None
-        or original_work.tenant_id != task.tenant_id
-        or original_work.agent_id != parent.id
-        or original_work.user_id != requester.id
-        or original_work.audience_kind not in {None, "private"}
-        or await _facts(db, task) is None
-    ):
-        return None, []
-    original = _delegation_projection_request_from_record(
-        {
-            "id": task.id,
-            "tenant_id": task.tenant_id,
-            "parent_agent_id": task.parent_agent_id,
-            "child_agent_id": task.child_agent_id,
-            "parent_session_id": task.parent_session_id,
-            "child_session_id": task.child_session_id,
-            "root_user_id": task.root_user_id,
-            "metadata_json": task.metadata_json,
-        }
+    from app.services.content_input_receipts import _preflight_inputs
+
+    cached = _preflight_inputs(db)
+    key = ("owned_delegation_origin", task.id, requester.id)
+    context = cached[key] if cached is not None and key in cached else await _owned_delegation_origin(
+        db, task=task, requester=requester, parent=parent
     )
-    if original is None:
+    if context is None:
         return None, []
-    try:
-        pointer = original.conversation_messages[0]["a2a_instruction_origin"]
-        retained = await db.get(InvocationSpan, uuid.UUID(pointer["source_id"]))
-    except (KeyError, IndexError, TypeError, ValueError):
-        return None, []
-    if (
-        retained is None
-        or ((retained.metadata_json or {}).get("instruction_origin") or {}).get("schema")
-        != "hive.delegation_instruction_origin.v1"
-    ):
-        return None, []
-    origin = await load_delegation_instruction_origin(
-        db, request=original, tenant_id=task.tenant_id, content=task.prompt
-    )
-    if origin is None or origin.unbound:
-        return None, []
+    if cached is not None:
+        cached[key] = context
+    original_work, origin = context
     published = [
         source
         for source in origin.sources
@@ -903,6 +893,58 @@ async def _owned_delegation_parent_sources(db, *, task, requester, parent, child
         )
     ]
     return requester, published
+
+
+async def _owned_delegation_origin(db, *, task, requester, parent):
+    from app.agents.orchestrator import _delegation_projection_request_from_record
+    from app.models.chat_session import ChatSession
+    from app.models.invocation_span import InvocationSpan
+    from app.services.delegation_context_sources import _facts
+    from app.services.delegation_input_origin import load_delegation_instruction_origin
+
+    from app.services.content_input_receipts import _input_row
+
+    original_work = await _input_row(db, ChatSession, uuid.UUID(task.parent_session_id))
+    if (
+        original_work is None
+        or original_work.tenant_id != task.tenant_id
+        or original_work.agent_id != parent.id
+        or original_work.user_id != requester.id
+        or original_work.audience_kind not in {None, "private"}
+        or await _facts(db, task) is None
+    ):
+        return None
+    original = _delegation_projection_request_from_record(
+        {
+            "id": task.id,
+            "tenant_id": task.tenant_id,
+            "parent_agent_id": task.parent_agent_id,
+            "child_agent_id": task.child_agent_id,
+            "parent_session_id": task.parent_session_id,
+            "child_session_id": task.child_session_id,
+            "root_user_id": task.root_user_id,
+            "metadata_json": task.metadata_json,
+        }
+    )
+    if original is None:
+        return None
+    try:
+        pointer = original.conversation_messages[0]["a2a_instruction_origin"]
+        retained = await _input_row(db, InvocationSpan, uuid.UUID(pointer["source_id"]), populate_existing=False)
+    except (KeyError, IndexError, TypeError, ValueError):
+        return None
+    if (
+        retained is None
+        or ((retained.metadata_json or {}).get("instruction_origin") or {}).get("schema")
+        != "hive.delegation_instruction_origin.v1"
+    ):
+        return None
+    origin = await load_delegation_instruction_origin(
+        db, request=original, tenant_id=task.tenant_id, content=task.prompt
+    )
+    if origin is None or origin.unbound:
+        return None
+    return original_work, origin
 
 
 async def creation_tool_result_bound(db, *, tenant_id, agent_id, invocation, content):

@@ -7,6 +7,7 @@ import uuid
 from sqlalchemy import or_, select
 
 from app.config import get_settings
+from app.memory.rendering import quote_memory_text
 from app.core.source_read_purpose import source_recipient_read
 from app.database import tenant_scoped_session
 from app.models.agent_team import AgentTeam
@@ -39,7 +40,8 @@ def source_dependency(receipt):
 
 
 def render_entry(entry):
-    return f"[team_memory] id={memory_id(entry)} title={entry.title}\n{entry.content}"
+    return (f"### {quote_memory_text(entry.title)}\n{quote_memory_text(entry.content)}\n"
+        f"管理引用（仅用于读取、更正或忘记，不要向用户展示）：id={memory_id(entry)}")
 
 
 async def _latest(db, tenant_id, carrier_ref):

@@ -5135,7 +5135,7 @@ async def test_governed_delegation_preserves_its_parent_instruction_origin(
                 for m in parent_client.requests[2]["messages"]
                 if m.get("tool_call_id") == "parent-namespace-glob"
             )
-            assert all(path in globbed for path in namespace_paths)
+            assert namespace_paths[0] not in globbed and namespace_paths[1] in globbed
             assert "UNVERIFIED_NAMESPACE_BODY" not in json.dumps(parent_client.requests)
             if parent_control_case:
                 assert "OLD_UNVERIFIED_CONTROL_BODY" not in json.dumps(parent_client.requests)

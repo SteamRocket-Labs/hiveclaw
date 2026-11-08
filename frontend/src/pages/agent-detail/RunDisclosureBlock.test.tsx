@@ -390,7 +390,7 @@ describe('RunDisclosureBlock', () => {
     expect(markup).toContain('session-tui-shimmer');
     expect(markup).toContain('Running');
     expect(markup).toContain('aria-expanded="true"');
-    expect(markup).toContain('Using read_file · path: frontend/src/pages/agent-detail/AgentChatSection.tsx');
+    expect(markup).toContain('Using Read file · path: frontend/src/pages/agent-detail/AgentChatSection.tsx');
     expect(markup).toContain('Tool call history');
     expect(markup).not.toContain('RAW FILE CONTENT');
     expect(markup).toMatch(/1[0-9]s/); // live elapsed derived from startedAt

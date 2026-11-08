@@ -201,7 +201,7 @@ async def test_search_and_load_memory_include_explicit_overlay(tmp_path: Path) -
         )
         result = await search_memory(agent_id, {"query": "snake_case", "scope": "facts"})
 
-        assert "## Explicit Memory Overlay" in result
+        assert "## 你要求记住的内容" in result
         assert "snake_case" in result
         match = re.search(r"id=([a-zA-Z0-9_-]+)", result)
         assert match
@@ -211,9 +211,10 @@ async def test_search_and_load_memory_include_explicit_overlay(tmp_path: Path) -
 
         loaded = load_memory(agent_id, {"ids": [match.group(1)]})
 
-    assert "## Loaded Explicit Memory Overlay" in loaded
+    assert "## 你要求记住的内容" in loaded
     assert "Use snake_case for Python variable names" in loaded
-    assert "source=memory/explicit/entries/" in loaded
+    assert "管理引用（仅用于读取、更正或忘记，不要向用户展示）：id=" in loaded
+    assert "source=" not in loaded
     assert "session:feedback-origin" in loaded
 
 
@@ -229,7 +230,7 @@ async def test_session_query_miss_exposes_scope_and_memory_recovery(tmp_path, mo
     result = await search_memory(uuid.uuid4(), {"query": "分两轮", "scope": "sessions"})
     assert "scope=sessions" in result
     assert "load_memory" in result
-    assert "not proof" in result
+    assert "不代表相关记忆不存在" in result
 
 
 @pytest.mark.asyncio
@@ -383,7 +384,7 @@ async def test_retire_memory_deactivates_explicit_overlay_entry(tmp_path: Path) 
     assert result == "Retired memory: obsolete"
     assert entry.entry_id not in result
     assert entries[0].status == "retired"
-    assert "No memory found" in search_result
+    assert "没有找到" in search_result
 
 
 @pytest.mark.asyncio

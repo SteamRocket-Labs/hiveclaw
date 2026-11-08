@@ -5,6 +5,7 @@ from __future__ import annotations
 import uuid
 from pathlib import Path
 
+from app.memory.rendering import quote_memory_text
 from app.services.session_recall import SessionRecallError, search_session_history
 from app.tools.decorator import RESULT_CHARS_UNLIMITED, ToolMeta, tool
 
@@ -259,7 +260,7 @@ def _memory_authority_error(tool_name, error):
     return render_tool_error(
         tool_name=tool_name,
         error_class="auth_or_permission" if status == 403 else "provider_unavailable",
-        message="This memory operation could not verify its source or commit state.",
+        message="暂时无法确认这份记忆是否可用，或这次修改是否已保存。",
         provider="explicit_memory",
         http_status=status,
         retryable=status == 503,
@@ -896,7 +897,7 @@ def load_memory(
         )
     ]
     if not entries and not explicit_entries:
-        return f"No memory entries found for ids: {', '.join(ids)}"
+        return f"没有找到可读取的记忆。\n未找到的管理引用（不要向用户展示）：{', '.join(ids)}"
 
     visible_entries = []
     suppressed_ids = []
@@ -908,32 +909,35 @@ def load_memory(
 
     found_ids = {entry.entry_id for entry in visible_entries} | explicit_ids
     if not visible_entries and not explicit_entries:
-        lines = ["No visible memory entries found."]
+        lines = ["没有找到可读取的记忆。"]
     else:
-        lines = ["## Loaded Memory"]
+        lines = ["## 读取到的记忆"]
     if explicit_entries:
-        lines.append("## Loaded Explicit Memory Overlay")
+        lines.append("## 你要求记住的内容")
         for entry in explicit_entries:
             if entry.status != "active":
                 continue
-            lines.append(
-                f"- id={entry.entry_id} source=memory/explicit/entries/{entry.entry_id}.md "
-                f"category={entry.category} target_hint={entry.target_hint}"
-            )
-            lines.append(f"  {entry.content}")
-            if entry.source_refs:
-                lines.append(f"  source_refs: {', '.join(entry.source_refs)}")
+            lines.append(_render_memory_fact(entry.content, entry.entry_id, source=", ".join(entry.source_refs)))
     for entry in visible_entries:
-        ts = f" timestamp={entry.timestamp}" if entry.timestamp else ""
-        lines.append(f"- id={entry.entry_id} source={entry.source} category={entry.category}{ts}")
-        lines.append(f"  {entry.content}")
+        lines.append(_render_memory_fact(entry.content, entry.entry_id, source=entry.source, timestamp=entry.timestamp))
     missing = [entry_id for entry_id in ids if entry_id not in found_ids and entry_id not in suppressed_ids]
     if missing:
         lines.append("")
-        lines.append(f"Missing ids: {', '.join(missing)}")
+        lines.append(f"未找到的管理引用（不要向用户展示）：{', '.join(missing)}")
     if suppressed_ids:
         lines.append("")
-        lines.append(f"Suppressed entries: {len(suppressed_ids)}")
+        lines.append(f"另有 {len(suppressed_ids)} 条记忆当前不可读取。")
+    return "\n".join(lines)
+
+
+def _render_memory_fact(content, entry_id, *, source="", timestamp=""):
+    lines = [f"- {quote_memory_text(content)}"]
+    if timestamp:
+        lines.append(f"  记录时间：{quote_memory_text(timestamp)}")
+    if source:
+        lines.append(f"  来源参考（仅供核对，不要向用户展示）：{quote_memory_text(source)}")
+    if entry_id:
+        lines.append(f"  管理引用（仅用于读取、更正或忘记，不要向用户展示）：id={entry_id}")
     return "\n".join(lines)
 
 
@@ -965,8 +969,9 @@ def _memory_availability(content, issues):
 
     return (
         content
-        + "\n\n## Memory Availability\n"
-        + json.dumps({"schema": "hive.explicit_memory_availability.v1", "status": "partial", "issues": issues})
+        + "\n\n## 可用情况\n"
+        + json.dumps({"schema": "hive.explicit_memory_availability.v1", "status": "partial", "issues": issues,
+            "message": "目前只读到了部分记忆，暂不可用的部分不能用来下结论，可以稍后重试。"}, ensure_ascii=False)
     )
 
 
@@ -1005,7 +1010,7 @@ async def _load_scoped_memory(agent_id, arguments, execution_context):
             else []
         )
         if teams:
-            content += "\n\n## Team Memory\n" + "\n".join(render_entry(entry) for entry, _receipt in teams)
+            content += "\n\n## 团队记忆\n" + "\n".join(render_entry(entry) for entry, _receipt in teams)
         content = _memory_availability(
             content or "No team memory was found for the supplied current load references.", issues
         )
@@ -1103,8 +1108,8 @@ async def search_memory(
                 "status": "invalid_arguments",
                 "code": "session_recall_arguments_invalid",
                 "retryable": False,
-                "message": "Unsupported fields cannot select the memory reader.",
-            }
+                "message": "提供的信息不支持这次记忆查询，请更正后再试。",
+            }, ensure_ascii=False
         )
     query = (arguments.get("query") or "").strip()
     if not query:
@@ -1177,18 +1182,11 @@ async def search_memory(
             facts = []
         if facts:
             unbound.append("legacy_memory_sources")
-            results.append("## Semantic Memory")
+            results.append("## 相关记忆")
             for f in facts:
                 entry_id = f.get("id", "")
-                cat = f.get("category", "general")
                 content = f.get("content") or f.get("preview", "")
-                ts = f.get("timestamp", "")
-                ts_display = f" ({ts[:10]})" if ts else ""
-                source = f.get("source", "")
-                source_display = f" source={source}" if source else ""
-                id_display = f"id={entry_id} " if entry_id else ""
-                load_hint = f' load_memory(ids=["{entry_id}"])' if entry_id else ""
-                results.append(f"- {id_display}[{cat}]{ts_display}{source_display} {content}{load_hint}")
+                results.append(_render_memory_fact(content, entry_id, source=f.get("source", ""), timestamp=f.get("timestamp", "")))
 
     # --- Cross-session recall ---
     if scope in ("sessions", "all"):
@@ -1217,12 +1215,11 @@ async def search_memory(
                 recalled = []
             if recalled:
                 unbound.append("session_recall_sources")
-                results.append("## Session Recall")
+                results.append("## 相关对话")
                 for hit in recalled:
                     ts = hit.get("started_at", "?")
-                    source = hit.get("source", "unknown")
                     headline = hit.get("headline", "past session")
-                    results.append(f"- ({ts} [{source}]) {headline}")
+                    results.append(f"- {headline}（{ts}）")
                     complete_transcript = (hit.get("transcript") or "").strip()
                     if complete_transcript:
                         results.append("  Complete transcript:")
@@ -1258,28 +1255,29 @@ async def search_memory(
             if scope == "sessions" and execution_context is not None:
                 return await _record_memory_error("search_memory", agent_id, arguments, execution_context, exc)
             results.append(
-                "## Session Recall\n"
+                "## 相关对话\n"
                 + json.dumps(
                     {
                         "schema": "hive.session_recall_error.v1",
                         "status": exc.status,
                         "code": exc.code,
                         "retryable": exc.retryable,
-                        "message": str(exc),
-                    }
+                        "message": "暂时无法读取这部分历史对话，请稍后重试。",
+                        "diagnostic_message": str(exc),
+                    }, ensure_ascii=False
                 )
             )
         except Exception:
             results.append(
-                "## Session Recall\n"
+                "## 相关对话\n"
                 + json.dumps(
                     {
                         "schema": "hive.session_recall_error.v1",
                         "status": "unavailable",
                         "code": "session_recall_authority_unavailable",
                         "retryable": True,
-                        "message": "Session recall is temporarily unavailable. Retry later.",
-                    }
+                        "message": "历史对话暂时不可用，请稍后重试。",
+                    }, ensure_ascii=False
                 )
             )
 
@@ -1311,25 +1309,21 @@ async def search_memory(
             if limit is not None:
                 team_pairs = team_pairs[:limit]
             if team_pairs:
-                results.append("## Team Memory\n" + "\n".join(render_entry(entry) for entry, _receipt in team_pairs))
+                results.append("## 团队记忆\n" + "\n".join(render_entry(entry) for entry, _receipt in team_pairs))
         except Exception:
             issues.append({"status": "unavailable", "code": "team_memory_source_unavailable"})
     overlay_lines = []
     if overlay_facts:
-        overlay_lines.append("## Explicit Memory Overlay")
+        overlay_lines.append("## 你要求记住的内容")
         for fact in overlay_facts:
             entry_id = fact["id"]
-            overlay_lines.append(
-                f"- id={entry_id} [{fact.get('category', 'general')}] source=explicit_overlay "
-                f"target={fact.get('target_hint', 'unknown')} {fact.get('content') or fact.get('preview', '')} "
-                f'load_memory(ids=["{entry_id}"])'
-            )
+            overlay_lines.append(_render_memory_fact(fact.get('content') or fact.get('preview', ''), entry_id))
     results = [*overlay_lines, *results]
     if not results:
         content = (
-            f"No memory found for query: {query} (scope={scope}). "
-            "This is a query miss, not proof that related memory does not exist. "
-            "Try alternative wording or load_memory with previously returned IDs and follow their source_refs."
+            f"没有找到与“{query}”匹配的记忆。这只是本次查询未命中，不代表相关记忆不存在。"
+            "可以换一种说法查找，或使用先前返回的管理引用读取完整内容。\n"
+            f"管理信息（不要向用户展示）：scope={scope}; load_memory 接受先前的引用，来源参考可继续核对。"
         )
 
     else:

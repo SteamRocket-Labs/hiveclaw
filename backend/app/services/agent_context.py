@@ -622,6 +622,20 @@ async def build_agent_runtime_context(
     return "\n".join(sections)
 
 
+async def _is_member_assistant(agent_id, tenant_id, user_id) -> bool:
+    if tenant_id is None or user_id is None:
+        return False
+    from sqlalchemy import select
+    from app.database import tenant_scoped_session
+    from app.models.user_assistant_binding import UserAssistantBinding
+
+    async with tenant_scoped_session(tenant_id) as db:
+        bound = await db.scalar(select(UserAssistantBinding.agent_id).where(
+            UserAssistantBinding.tenant_id == tenant_id, UserAssistantBinding.user_id == user_id,
+            UserAssistantBinding.agent_id == agent_id))
+    return bound == agent_id
+
+
 async def build_agent_context(
     agent_id: uuid.UUID,
     agent_name: str,
@@ -639,6 +653,7 @@ async def build_agent_context(
     source_refs: list[dict[str, str]] | None = None,
     source_unbound: list[str] | None = None,
     runtime_request=None,
+    requesting_user_id: uuid.UUID | None = None,
 ) -> str:
     """Build a rich system prompt incorporating agent's full context.
 
@@ -716,6 +731,7 @@ async def build_agent_context(
         invocation_scope=invocation_scope,
         soul_text=soul,
         company_name=company_name,
+        member_assistant=await _is_member_assistant(agent_id, _agent_tenant_id, requesting_user_id),
     )
     if company_resource.content:
         context_parts.append(f"### Company Information\n{company_resource.content.strip()}")

@@ -498,6 +498,7 @@ function statusForMessage(message: AgentChatMessage, allowLiveRunning: boolean):
   const live = (status: RunStepStatus): RunStepStatus =>
     status === 'running' && !allowLiveRunning ? 'interrupted' : status;
   if (message.role === 'tool_call') {
+    if (message.eventStatus === 'failed' || message.eventStatus === 'error') return 'failed';
     if (message.toolMeta?.kind === 'user_clarification' && message.toolMeta.blocking && !message.toolMeta.answered) return 'blocked';
     if (message.toolMeta?.kind === 'runtime_step') {
       const status = String(message.toolMeta.status || '').toLowerCase();

@@ -18,6 +18,7 @@ import MarkdownRenderer from '../../components/MarkdownRenderer';
 import { assistantReplyForDisplay } from './CanonicalCardAssistantSupplement';
 import { approvalActionFor } from '../session-workbench/approvalActionPresentation';
 import { toolStepLabel as localizedToolName } from './toolStepLabel';
+import { toolFailureForDisplay } from './toolFailurePresentation';
 import { PastedCredentialText } from '../session-workbench/PastedCredentialNotice';
 import { presentSystemStep } from './systemStepPresentation';
 import type {
@@ -247,6 +248,9 @@ function ExecOutput({ exec }: { exec: ExecDetails }) {
 }
 
 function RunStepDetails({ step }: { step: RunStepSnapshot }) {
+  const { t } = useTranslation();
+  const failure = toolFailureForDisplay(step.details, t, step.status);
+  if (failure) return <p>{failure}</p>;
   const exec = step.kind === 'command' ? asExecDetails(step.details, step.kind) : null;
   if (exec) return <ExecOutput exec={exec} />;
   if (step.kind === 'tool' || step.kind === 'file' || step.kind === 'search' || typeof step.details !== 'string') {

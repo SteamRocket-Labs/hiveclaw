@@ -19,6 +19,7 @@ import { assistantReplyForDisplay } from './CanonicalCardAssistantSupplement';
 import { approvalActionFor } from '../session-workbench/approvalActionPresentation';
 import { toolStepLabel as localizedToolName } from './toolStepLabel';
 import { PastedCredentialText } from '../session-workbench/PastedCredentialNotice';
+import { presentSystemStep } from './systemStepPresentation';
 import type {
   RunStepKind,
   RunStepPresentation,
@@ -255,7 +256,7 @@ function RunStepDetails({ step }: { step: RunStepSnapshot }) {
       JSON.parse(result);
       return null;
     } catch {
-      return <p><PastedCredentialText content={result.trim().replace(/\s+/g, ' ')} /></p>;
+      return <p><PastedCredentialText content={result.trim()} /></p>;
     }
   }
   const detailText = step.details;
@@ -519,7 +520,9 @@ export default function RunDisclosureBlock({
     'agent.chat.disclosure.interruptedHint',
     'This turn has no completion record; send a new message to continue.',
   );
-  const visibleSteps = timeline.steps.filter((step) => getRunStepPresentation(step) !== 'external');
+  const visibleSteps = timeline.steps
+    .filter((step) => getRunStepPresentation(step) !== 'external')
+    .map((step) => presentSystemStep(step, t));
   if (visibleSteps.length === 0) {
     if (timeline.status === 'idle') return null;
     return (

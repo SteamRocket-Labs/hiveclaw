@@ -1,7 +1,7 @@
 """Outbound tools need deliver authority and consume only approved file bytes."""
 
 from pathlib import Path
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 from uuid import UUID
 
 import httpx
@@ -214,3 +214,23 @@ async def test_image_limit_applies_to_bytes_read_after_source_grows(delivery_fil
     no_effects(n)
     assert "File too large" in result
     assert "Maximum is 25MB" in result
+
+
+async def test_feishu_attachment_without_office_access_does_not_read_or_deliver(delivery_files, monkeypatch):
+    from app.services.agent_tool_domains import feishu_base, workspace
+    from app.tools.handlers import feishu
+
+    n = delivery_files
+    access = AsyncMock(return_value=False)
+    read = Mock(wraps=workspace._read_workspace_tool_file)
+    monkeypatch.setattr(feishu, "_check_feishu_office_access", access)
+    monkeypatch.setattr(workspace, "_read_workspace_tool_file", read)
+
+    result = await invoke(n, "feishu_base_record_upload_attachment", n.own)
+
+    read.assert_not_called()
+    assert result == feishu._FEISHU_NOT_CONFIGURED_MSG
+    access.assert_awaited_once_with(n.context.agent_id)
+    feishu_base._get_feishu_token.assert_not_awaited()
+    n.cli_available.assert_not_called()
+    no_effects(n)

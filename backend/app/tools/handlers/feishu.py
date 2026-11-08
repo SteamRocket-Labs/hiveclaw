@@ -1003,6 +1003,8 @@ async def feishu_base_field_create(agent_id: uuid.UUID, arguments: dict) -> str:
 )
 async def feishu_base_record_upload_attachment(agent_id: uuid.UUID, arguments: dict, *, authority_scope=None,
     execution_context=None) -> str:
+    if not await _check_feishu_office_access(agent_id):
+        return _FEISHU_NOT_CONFIGURED_MSG
     from app.services.agent_tools import _feishu_base_record_upload_attachment
 
     return await _feishu_base_record_upload_attachment(agent_id, arguments,

@@ -111,6 +111,33 @@ def _is_within_path(path: Path, root: Path) -> bool:
     return True
 
 
+_PLATFORM_MEMORY_ROOTS = (
+    "memory/.staging", "memory/.archive", "memory/.rollback", "memory/.dream_workspace",
+    "memory/control", "memory/indexes", "memory/retired_artifacts", "memory/learnings",
+    "memory/lifecycle.json", "memory/distillation_audit.jsonl", "memory/archive.md",
+    "memory/memory.sqlite3", "memory/memory.json",
+)
+
+
+def _is_platform_memory_path(workspace: Path, relative: str) -> bool:
+    """Exclude platform jobs/sidecars, preserving session evidence and recall."""
+    path = os.path.normcase(relative)
+    for root in _PLATFORM_MEMORY_ROOTS:
+        normalized_root = os.path.normcase(root)
+        if path == normalized_root or path.startswith(normalized_root + "/"):
+            return True
+        # POSIX normcase is a no-op even on case-insensitive macOS volumes.
+        # Check only a case alias, against the actual disk; Linux stays sensitive.
+        if path.casefold() == normalized_root.casefold() or path.casefold().startswith(normalized_root.casefold() + "/"):
+            ancestor = workspace.joinpath(*PurePosixPath(relative).parts[:len(PurePosixPath(root).parts)])
+            try:
+                if ancestor.samefile(workspace / root):
+                    return True
+            except OSError:
+                pass
+    return False
+
+
 def _resolved_workspace_path(ws: Path, rel_path: str, permission_profile: Any | None = None) -> Path | None:
     """Resolve a workspace path and enforce an exact session root at the final I/O boundary."""
 
@@ -121,6 +148,9 @@ def _resolved_workspace_path(ws: Path, rel_path: str, permission_profile: Any | 
         target = resolve_workspace_storage_path(ws, rel_path)
     except WorkspaceAuthorityError:
         return None
+    for path in (PurePosixPath(rel_path).as_posix(), target.relative_to(workspace).as_posix()):
+        if _is_platform_memory_path(workspace, path):
+            return None
     profile = permission_profile_snapshot(permission_profile)
     snapshot = profile.get("capability_policy_snapshot")
     if not isinstance(snapshot, dict) or snapshot.get("session_exact_scope") is not True:
@@ -316,22 +346,28 @@ def _list_files(
     withheld_count = 0
 
     def visible(p):
+        # Nested item counts must not inflate this directory's withheld notice.
         nonlocal withheld_count
         if p.name.startswith(".") or (enterprise_context and p.name not in COMPANY_CONTEXT_FILENAMES):
             return False
         if not enterprise_context:
             relative = p.relative_to(ws.resolve()).as_posix()
+            if relative == "logs" and authority_scope is not None and authority_scope.can_read_session_source(relative) is False:
+                return False
+            if any(_is_platform_memory_path(ws.resolve(), path)
+                for path in (relative, os.path.relpath(p.resolve(), ws.resolve()))):
+                return False
             resolved = _resolved_workspace_path(ws, relative)
             if resolved is None or not _authority_allows_path(authority_scope,
                 resolved.relative_to(ws.resolve()).as_posix(), directory=p.is_dir()):
-                withheld_count += 1
+                withheld_count += int(p.parent == target)
                 return False
             parent = p.parent.relative_to(ws.resolve()).as_posix()
         else:
             parent = rel_path
         allowed = authority_scope is None or authority_scope.visible_child(parent, p.name, is_dir=p.is_dir())
         if not allowed:
-            withheld_count += 1
+            withheld_count += int(p.parent == target)
         return allowed
 
     for p in sorted(target.iterdir()):

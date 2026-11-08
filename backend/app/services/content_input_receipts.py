@@ -1919,7 +1919,7 @@ async def authorize_workspace_receipt_read(request):
             exc.code if isinstance(exc, ContentInputReceiptError) else "content_source_unavailable")
 
 
-def _platform_control_read_unavailable(tool_name):
+def _platform_control_read_unavailable(tool_name, *, legacy_format=False):
     from app.tools.result_envelope import render_tool_error
 
     return render_tool_error(
@@ -1931,10 +1931,11 @@ def _platform_control_read_unavailable(tool_name):
         retryable=False,
         actionable_hint="Use read_ledger for canonical work state and memory tools for memory evidence. Reconcile the original control source before reading its body; keep using other verified results.",
         extra={"reason_code": "platform_content_unverified", "outcome": "unavailable"},
+        legacy_format=legacy_format,
     )
 
 
-def _workspace_read_denial(tool_name, status, code):
+def _workspace_read_denial(tool_name, status, code, *, legacy_format=False):
     from app.tools.result_envelope import render_tool_error
 
     return render_tool_error(
@@ -1946,6 +1947,7 @@ def _workspace_read_denial(tool_name, status, code):
         retryable=status == 503,
         actionable_hint="Restore the scoped source grant or regenerate from current authorized inputs.",
         extra={"reason_code": code, "outcome": "denied" if status == 403 else "unavailable"},
+        legacy_format=legacy_format,
     )
 
 
@@ -2575,7 +2577,8 @@ def _native_read_denial_matches(tool_name, arguments, observation, *, content_ha
         return (
             path.startswith("memory/control/")
             and observation["path"] == path
-            and content_hash == _sha256(_platform_control_read_unavailable(tool_name))
+            and any(content_hash == _sha256(_platform_control_read_unavailable(tool_name, legacy_format=legacy))
+                for legacy in (False, True))
         )
     if isinstance(observation, dict) and observation.get("kind") in {
         "filesystem_read_not_found",
@@ -2613,7 +2616,7 @@ def _native_read_denial_matches(tool_name, arguments, observation, *, content_ha
             if set(observation) != {"kind", "path", "boundary"} or observation.get("boundary") not in messages:
                 return False
             error_class, message = "auth_or_permission", messages[observation["boundary"]]
-        expected = render_tool_error(
+        options = dict(
             tool_name=producer,
             error_class=error_class,
             message=message,
@@ -2621,7 +2624,7 @@ def _native_read_denial_matches(tool_name, arguments, observation, *, content_ha
             retryable=False,
             actionable_hint=hint,
         )
-        return content_hash == _sha256(expected)
+        return any(content_hash == _sha256(render_tool_error(**options, legacy_format=legacy)) for legacy in (False, True))
     if (
         tool_name not in {"read_file", "read_document", "fs_read", "exit_plan_mode"}
         or not isinstance(arguments, dict)
@@ -2645,9 +2648,8 @@ def _native_read_denial_matches(tool_name, arguments, observation, *, content_ha
             return False
     except (ValueError, TypeError):
         return False
-    return content_hash == _sha256(
-        _workspace_read_denial(tool_name, observation["http_status"], observation["reason_code"])
-    )
+    return any(content_hash == _sha256(_workspace_read_denial(tool_name,
+        observation["http_status"], observation["reason_code"], legacy_format=legacy)) for legacy in (False, True))
 
 
 async def load_native_read_denial_evidence(db, **kwargs):

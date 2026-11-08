@@ -75,7 +75,7 @@ def workspace_glob_read_observation(root: str, pattern: str, *, matched_paths: l
 
 def _is_session_source_path(path: str) -> bool:
     return any(path == root or path.startswith(f"{root}/")
-        for root in ("memory/t0/sessions", "memory/t2/sessions", "memory/sessions", "logs"))
+        for root in ("memory/t0/sessions", "memory/t2/sessions", "memory/sessions", "memory/session_state", "logs"))
 
 
 async def authorize_browser_session_source(
@@ -102,7 +102,7 @@ async def authorize_browser_session_source(
         except ContentInputReceiptError as exc:
             raise HTTPException(status_code=exc.status_code, detail={"code": exc.code, "message": str(exc)}) from exc
     source_id = None
-    for root in ("memory/t0/sessions/", "memory/t2/sessions/", "memory/sessions/"):
+    for root in ("memory/t0/sessions/", "memory/t2/sessions/", "memory/sessions/", "memory/session_state/"):
         if normalized.startswith(root):
             source_id = normalized[len(root):].split("/", 1)[0]
             break
@@ -483,7 +483,7 @@ class WorkspaceAuthorityScope:
         # Legacy log headers and filenames are not authenticated source bindings.
         if normalized == "logs" or normalized.startswith("logs/"):
             return False
-        for prefix in ("memory/t0/sessions/", "memory/t2/sessions/", "memory/sessions/"):
+        for prefix in ("memory/t0/sessions/", "memory/t2/sessions/", "memory/sessions/", "memory/session_state/"):
             if normalized.startswith(prefix):
                 return normalized[len(prefix):].split("/", 1)[0] in self.session_source_ids
         return None

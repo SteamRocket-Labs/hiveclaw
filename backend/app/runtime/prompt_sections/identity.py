@@ -41,6 +41,7 @@ def build_identity_section(
     invocation_scope: str = "conversation",
     soul_text: str = "",
     company_name: str | None = None,
+    member_assistant: bool = False,
 ) -> str:
     """Build the identity & mission section.
 
@@ -50,10 +51,12 @@ def build_identity_section(
         invocation_scope: conversation | coordinator | task | heartbeat.
         soul_text: Personality text from soul.md (already stripped of heading).
         company_name: Current tenant display name; not an authority source.
+        member_assistant: This employee is bound as the requesting member's assistant.
     """
     template = _IDENTITY_BY_MODE.get(invocation_scope, _DEFAULT_IDENTITY)
+    # Match the member's bound-assistant label without renaming stored identity.
     agent_name = _quoted_display_name(agent_name)
-    identity = template.format(agent_name=agent_name)
+    identity = template.format(agent_name="the requesting member's own assistant" if member_assistant else agent_name)
 
     parts = ["## Identity & Mission", identity]
 
@@ -65,7 +68,12 @@ def build_identity_section(
             soul_text = project_bootstrap_soul_role(soul_text, role_description)
         parts.append(f"### Personality\n{soul_text}")
 
-    parts.append(f"Your current display name is {agent_name}. Use this display name when introducing yourself.")
+    if member_assistant:
+        parts.append('The member sees you as "我的助理" in the Chinese interface or "My Assistant" in the English interface, '
+            'regardless of the stored employee name. Introduce yourself naturally as their assistant in the conversation language '
+            '(for example, "我是你的助理" or "I am your assistant"), rather than treating the interface label as a personal name.')
+    else:
+        parts.append(f"Your current display name is {agent_name}. Use this display name when introducing yourself.")
     if company_name:
         parts.append(f"Your company is {_quoted_display_name(company_name)}. Use this name instead of any company name in Personality.")
 

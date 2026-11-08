@@ -441,7 +441,7 @@ function projectCanonicalItem(
       artifacts: extractArtifactParts(pairedResult?.payload ?? item.payload),
       toolMeta: normalized.toolMeta,
       eventType: item.kind,
-      eventStatus: item.lifecycle,
+      eventStatus: typeof pairedResult?.payload.outcome === 'string' ? pairedResult.payload.outcome : item.lifecycle,
       sessionItem: item,
     };
   }

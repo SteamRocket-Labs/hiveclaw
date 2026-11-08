@@ -308,8 +308,9 @@ def first_task_preflight_result_bound(*, agent_id, invocation, payload, content)
             and payload.get("content_or_error_ref") == invocation.receipt_ref == f"tool-frame:{_hash(content)}"
             and body.get("native_first_task_preflight") == proof
             and isinstance(body.get("error_class"), str) and isinstance(body.get("message"), str)
-            and content == render_tool_error(tool_name="delegate_to_agent", error_class=body["error_class"],
-                message=body["message"], retryable=False, extra={"native_first_task_preflight": proof}))
+            and any(content == render_tool_error(tool_name="delegate_to_agent", error_class=body["error_class"],
+                message=body.get("diagnostic_message", body["message"]), retryable=False,
+                extra={"native_first_task_preflight": proof}, legacy_format=legacy) for legacy in (False, True)))
     except (AttributeError, KeyError, ValueError, TypeError):
         return False
 

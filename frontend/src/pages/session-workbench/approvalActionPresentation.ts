@@ -54,7 +54,7 @@ const PREFIX_TOOLS: Array<[prefix: string, ApprovalActionLabel]> = [
  * alone says nothing safe (callers fall back to a generic phrase). */
 export function approvalActionFor(toolName: string | null | undefined): ApprovalActionLabel | null {
   const name = String(toolName || '').trim();
-  return EXACT_TOOLS[name]
+  return (Object.prototype.hasOwnProperty.call(EXACT_TOOLS, name) ? EXACT_TOOLS[name] : null)
     ?? PREFIX_TOOLS.find(([prefix]) => name.startsWith(prefix))?.[1]
     ?? null;
 }

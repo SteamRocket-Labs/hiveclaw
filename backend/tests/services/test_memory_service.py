@@ -267,7 +267,8 @@ async def test_compressed_summary_wrapper_aligns_cc(monkeypatch, _clean_breaker)
     assert "fine summary" in content  # the LLM summary body
     assert "Resume directly" in content
     assert "do not acknowledge the summary" in content
-    assert "logs/" in content  # system-injected recovery pointer (CC transcriptPath pattern)
+    assert "memory/t0/sessions/<session_id>/segments/<segment_id>/source.md" in content
+    assert "logs/" not in content  # Native session readers cannot authorize legacy log names.
 
 
 @pytest.mark.asyncio

@@ -38,9 +38,9 @@ def test_native_namespace_observation_filters_authority_and_never_reads_bodies(t
         result = (_glob_search(tmp_path, **arguments, authority_scope=scope) if tool == "glob_search"
             else _list_files(tmp_path, arguments["path"], authority_scope=scope))
     assert capture.observations == 1 and capture.content == result
-    assert capture.observation["outcome"] == "listing"
+    assert capture.observation["outcome"] == ("listing" if tool == "glob_search" else "auth_or_permission")
     assert _native_directory_read_matches(tool, arguments, capture.observation, content_hash=_sha256(str(result)))
-    assert "native-report.json" in result and "UNVERIFIED_NAMESPACE_BODY" not in result
+    assert "native-report.json" not in result and "UNVERIFIED_NAMESPACE_BODY" not in result
     if tool == "glob_search":
         assert str(session_id) in result and str(foreign_id) not in result
         assert "chat_artifact_snapshots/objects" not in result and "workspace/private" not in result

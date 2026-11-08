@@ -180,6 +180,8 @@ export function ArtifactPreviewPanel({
   t: Translate;
 }) {
   const previewKind = getEffectiveArtifactPreviewKind(preview.artifact);
+  const isSvg = preview.artifact.mimeType?.split(';')[0].trim().toLowerCase() === 'image/svg+xml'
+    || [preview.artifact.name, preview.artifact.path].some(value => value.toLowerCase().endsWith('.svg'));
   const workspaceAgentId = artifactWorkspaceAgentId(preview.artifact, agentId);
   const fileIdentity = `${workspaceAgentId}:${preview.artifact.path}:${workspaceAuthority?.operatorView ? workspaceAuthority.reason : 'owner'}`;
   const [openedFile, setOpenedFile] = useState<string | null>(null);
@@ -264,7 +266,7 @@ export function ArtifactPreviewPanel({
               {preview.workspaceChanged ? ` · ${t('agent.chat.artifacts.workspaceChanged', 'Workspace file changed after delivery')}` : ''}
             </div>
           </div>
-          {preview.url && previewKind !== 'office' && (
+          {preview.url && previewKind !== 'office' && !isSvg && (
             <a
               href={preview.url}
               target="_blank"
@@ -463,7 +465,7 @@ export function ArtifactCards({
               <IconFileText size={14} className="chat-artifact-icon" />
               <span className="chat-artifact-name" title={artifact.name}>{artifact.name}</span>
               <span className="chat-artifact-meta">
-                {[artifact.previewKind, size].filter(Boolean).join(' · ')}
+                {[getEffectiveArtifactPreviewKind(artifact) === 'html' ? t('agent.chat.artifacts.preview', 'Preview') : artifact.previewKind, size].filter(Boolean).join(' · ')}
               </span>
             </button>
             <span className="chat-artifact-actions">

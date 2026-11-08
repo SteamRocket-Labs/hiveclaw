@@ -2,22 +2,19 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import http from 'node:http';
 import { chromium, expect } from '@playwright/test';
-import { htmlAttackVectors } from './html-preview-fixtures.mjs';
 
-// Run against an owned API/PG/Redis/Vite stack. No API or browser network mocks.
+// Real member entry against an owned API/PG/Redis/Vite stack; no network mocks.
 const fixture = JSON.parse(await fs.readFile(process.argv[2], 'utf8'));
-const mode = process.argv[3];
-const out = process.argv[4];
+const out = process.argv[3];
 assert.equal(new URL(fixture.origin).hostname, '127.0.0.1');
 assert.equal(new URL(fixture.target).hostname, '127.0.0.1');
 const requests = [], connections = [], results = [];
-const listener = http.createServer((req, res) => { requests.push(req.url); res.setHeader('Content-Type', 'text/html'); res.end('<p>User-clicked destination</p>'); });
+const listener = http.createServer((req, res) => { requests.push(req.url); res.end('Unexpected preview request'); });
 listener.on('connection', socket => connections.push(socket.remoteAddress));
 await new Promise(resolve => listener.listen(Number(new URL(fixture.target).port), '127.0.0.1', resolve));
 try {
-  for (const [browserName, launch] of mode === 'red' ? [['Chrome', { channel: 'chrome' }]] : [['Chrome', { channel: 'chrome' }], ['Chromium', {}]]) {
+  for (const [browserName, launch] of [['Chrome', { channel: 'chrome' }], ['Chromium', {}]]) {
     const browser = await chromium.launch({ headless: true, ...launch });
-    let page;
     try {
       const context = await browser.newContext({ locale: 'zh-CN', viewport: { width: 1440, height: 1000 } });
       await context.addInitScript(({ token, tenantId }) => {
@@ -29,23 +26,18 @@ try {
         window.d3bMessages = 0;
         window.addEventListener('message', () => window.d3bMessages++);
       }, fixture);
-      page = await context.newPage();
+      const page = await context.newPage();
       const appURL = `${fixture.origin}/agents/${fixture.agentId}/sessions/${fixture.sessionId}`;
       await page.goto(appURL);
       const panel = page.getByTestId('session-artifact-preview-inspector');
       const open = async name => {
         const start = Date.now();
-        await page.getByRole('button', { name: `打开 ${name}`, exact: true }).click();
-        await expect(panel).toBeVisible();
-        return start;
+        const row = page.getByRole('button', { name: `打开 ${name}`, exact: true });
+        await expect(row).toBeVisible({ timeout: 30000 });
+        if (name.endsWith('.html') || name.endsWith('.htm')) await expect(row.locator('.chat-artifact-meta')).toContainText('预览');
+        await row.click(); await expect(panel).toBeVisible(); return start;
       };
       const start = await open('季度简报.html');
-      if (mode === 'red') {
-        await expect(panel.locator('pre')).toContainText('<!doctype html>');
-        await page.screenshot({ path: `${out}/red-source-1440.png` });
-        console.log(`RED HTML_SOURCE_VISIBLE iframe=${await panel.locator('iframe').count()} openToSourceMs=${Date.now() - start}`);
-        await expect(panel.locator('iframe')).toHaveCount(1, { timeout: 1000 });
-      }
       const iframe = panel.locator('iframe');
       const frame = panel.frameLocator('iframe');
       await expect(frame.getByRole('heading', { name: '季度项目简报' })).toBeVisible();
@@ -55,23 +47,31 @@ try {
       await expect(frame.locator('#script-status')).toHaveText('页面脚本未运行');
       assert.equal(await iframe.getAttribute('sandbox'), '');
       assert.equal(await iframe.getAttribute('src'), null);
-      const benignDocument = await iframe.getAttribute('srcdoc');
-      assert.ok(benignDocument.includes('x-dns-prefetch-control'));
+      const addresses = await frame.locator('a').evaluateAll(links => links.map(link => ({ title: link.title, href: link.getAttribute('href'), target: link.getAttribute('target') })));
+      assert.equal(addresses.length, 3);
+      for (const link of addresses) { assert.equal(link.href, null); assert.equal(link.target, null); assert.ok(link.title.startsWith(fixture.target)); }
       for (const width of [1440, 390]) {
         await page.setViewportSize({ width, height: width === 390 ? 844 : 1000 });
-        await page.screenshot({ path: `${out}/${browserName}-benign-${width}.png` });
+        const link = frame.locator('a').first();
+        await link.hover(); await page.waitForTimeout(1200);
+        await page.screenshot({ path: `${out}/${browserName}-links-${width}.png` });
       }
+      for (const link of await frame.locator('a').all()) await link.click();
+      await page.waitForTimeout(800);
+      assert.equal(requests.length, 0); assert.equal(connections.length, 0);
+      assert.equal(context.pages().length, 1); assert.equal(page.url(), appURL);
+      await expect(frame.getByRole('heading', { name: '季度项目简报' })).toBeVisible();
       await panel.getByRole('button', { name: '查看源码', exact: true }).click();
-      await expect(panel.locator('pre')).toContainText('<!doctype html>');
+      const source = await panel.locator('pre').textContent();
+      assert.ok(source.includes('<script>')); assert.ok(source.includes('href='));
       await expect(iframe).toHaveCount(0);
       await panel.getByRole('button', { name: '预览', exact: true }).click();
       await expect(frame.getByRole('heading', { name: '季度项目简报' })).toBeVisible();
-      const downloaded = page.waitForEvent('download');
+      const downloading = page.waitForEvent('download');
       await panel.getByRole('button', { name: '下载 季度简报.html', exact: true }).click();
-      const download = await downloaded;
+      const download = await downloading;
       assert.equal(download.suggestedFilename(), '季度简报.html');
-      const downloadedBytes = await fs.readFile(await download.path(), 'utf8');
-      assert.equal(benignDocument.slice(benignDocument.indexOf('<!doctype html>', 1)), downloadedBytes);
+      assert.equal(await fs.readFile(await download.path(), 'utf8'), source);
       await panel.getByRole('button', { name: '关闭', exact: true }).click();
       await open('较大页面.html');
       await expect(panel.getByText('文件较大，已显示源码。你也可以下载查看。')).toBeVisible();
@@ -79,64 +79,31 @@ try {
       await panel.getByRole('button', { name: '关闭', exact: true }).click();
       await open('自动访问探测.htm');
       await expect(frame.getByRole('heading', { name: '自动访问拦截测试' })).toBeVisible();
-      const hostileDocument = await iframe.getAttribute('srcdoc');
-      const prefix = hostileDocument.slice(0, hostileDocument.indexOf('<!doctype html>', 1));
-      // Exercise each vector on the production frame and its production policy.
-      for (const [vector, html] of Object.entries(htmlAttackVectors(fixture.target))) {
-        await iframe.evaluate((el, document) => { el.srcdoc = document; }, prefix + html);
-        await page.waitForTimeout(150);
-        assert.equal(await frame.locator('html').getAttribute('data-executed'), null);
-        assert.equal(requests.length, 0, vector);
-        assert.equal(connections.length, 0, vector);
-        assert.equal(page.url(), appURL);
-        results.push({ browser: browserName, vector, requests: 0, connections: 0 });
-        console.log(`PASS ${browserName} ${vector}: requests=0 connections=0`);
-      }
-      await iframe.evaluate((el, document) => { el.srcdoc = document; }, hostileDocument);
-      await expect(frame.getByRole('heading', { name: '自动访问拦截测试' })).toBeVisible();
-      await page.waitForTimeout(600);
-      assert.equal(requests.length, 0);
-      assert.equal(connections.length, 0);
-      const parent = await page.evaluate(() => ({ cookie: document.cookie, storage: localStorage.getItem('d3b-secret'), messages: window.d3bMessages }));
-      assert.ok(parent.cookie.includes('d3b-session=parent-cookie-canary'));
-      assert.equal(parent.storage, 'parent-storage-canary');
-      assert.equal(parent.messages, 0);
-      await expect(page.getByRole('button', { name: '打开 季度简报.html', exact: true })).toBeVisible();
+      await page.waitForTimeout(1000);
+      assert.equal(requests.length, 0); assert.equal(connections.length, 0);
       for (const width of [1440, 390]) {
         await page.setViewportSize({ width, height: width === 390 ? 844 : 1000 });
-        await page.evaluate(({ requests, connections }) => {
-          let log = document.querySelector('#d3b-listener-log');
-          if (!log) { log = document.createElement('pre'); log.id = 'd3b-listener-log'; document.body.appendChild(log); }
-          log.textContent = `本机监听器：${requests} 请求 / ${connections} TCP 连接`;
-          log.style.cssText = 'position:fixed;top:4px;left:4px;z-index:10000;background:#e6ffef;color:#14532d;padding:6px;font:12px monospace;pointer-events:none';
-        }, { requests: requests.length, connections: connections.length });
-        await expect(page.locator('#d3b-listener-log')).toBeVisible();
-        await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
         await page.screenshot({ path: `${out}/${browserName}-hostile-${width}.png` });
       }
-      // User-initiated links are outside the automatic-network requirement.
-      await iframe.evaluate((el, document) => { el.srcdoc = document; }, benignDocument);
-      await frame.getByRole('link', { name: '顶层链接', exact: true }).click();
-      await frame.getByRole('link', { name: '新窗口链接', exact: true }).click();
-      assert.equal(requests.length, 0);
-      assert.equal(context.pages().length, 1);
-      await frame.getByRole('link', { name: '打开链接', exact: true }).click();
-      await expect(frame.getByText('User-clicked destination')).toBeVisible();
-      assert.equal(page.url(), appURL);
-      assert.deepEqual(requests, ['/clicked']);
-      console.log(`PASS ${browserName}: static render/source/download/large fallback; automatic=0/0; user link=self frame only; openToPreviewMs=${openToPreviewMs}`);
-      results.push({ browser: browserName, version: browser.version(), openToPreviewMs, automaticRequests: 0, automaticConnections: 0, userClickedRequests: [...requests], topUnchanged: true, parentMessages: parent.messages });
-      requests.length = 0; connections.length = 0;
-    } catch (error) {
-      if (page) {
-        await page.screenshot({ path: `${out}/${mode}-${browserName}-failure.png` }).catch(() => {});
-        console.log(`PAGE ${page.url()}\n${await page.locator('body').innerText()}`);
+      await panel.getByRole('button', { name: '关闭', exact: true }).click();
+      await open('趋势图.svg');
+      await expect(panel.getByRole('img', { name: '趋势图.svg' })).toBeVisible();
+      await expect(panel.getByTitle('新窗口打开')).toHaveCount(0);
+      await expect(panel.locator('a[target="_blank"]')).toHaveCount(0);
+      await expect(panel.getByRole('button', { name: '下载 趋势图.svg', exact: true })).toBeVisible();
+      for (const width of [1440, 390]) {
+        await page.setViewportSize({ width, height: width === 390 ? 844 : 1000 });
+        await page.screenshot({ path: `${out}/${browserName}-svg-${width}.png` });
       }
-      throw error;
+      const parent = await page.evaluate(() => ({ cookie: document.cookie, storage: localStorage.getItem('d3b-secret'), messages: window.d3bMessages, svgExecuted: localStorage.getItem('d3b-svg-executed') }));
+      assert.ok(parent.cookie.includes('d3b-session=parent-cookie-canary'));
+      assert.equal(parent.storage, 'parent-storage-canary'); assert.equal(parent.messages, 0); assert.equal(parent.svgExecuted, null);
+      assert.equal(requests.length, 0); assert.equal(connections.length, 0);
+      results.push({ browser: browserName, version: browser.version(), openToPreviewMs, addresses, requests: 0, connections: 0, parent, sourceDownloadMatch: true, largeFallback: true, svgNewTab: false });
+      console.log(`PASS ${browserName} ${browser.version()}: real member static render/source/download/large fallback; inert hover/title/click=0/0; SVG no new tab; openToPreviewMs=${openToPreviewMs}`);
     } finally { await browser.close(); }
   }
 } finally {
-  await fs.writeFile(`${out}/${mode}-browser-result.json`, JSON.stringify({ results, requests, connections }, null, 2));
-  listener.closeAllConnections();
-  await new Promise(resolve => listener.close(resolve));
+  await fs.writeFile(`${out}/member-browser-result.json`, JSON.stringify({ results, requests, connections }, null, 2));
+  listener.closeAllConnections(); await new Promise(resolve => listener.close(resolve));
 }

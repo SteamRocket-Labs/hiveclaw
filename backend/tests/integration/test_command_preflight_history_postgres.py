@@ -62,7 +62,7 @@ async def add_history(n, factory, sessions=50):
                     receipt_ref=f"session-command:{command_id}"))
                 snapshot = {"input_bindings": {"schema": "hive.model_input_bindings.v1", "dependencies": [
                     {"source_kind": "session_command", "source_id": command_id.hex if round_index == 0 else str(command_id),
-                        "source_version": version}],
+                        "source_version": version}, *([n.history_identity] if hasattr(n, "history_identity") else [])],
                     "dependency_coverage": {"complete": True}, "messages": []}, "wire_request": {"messages": []}}
                 provider_request = f"history:{result_id}"
                 content = f"Prior result {index}/{round_index}"
@@ -104,10 +104,12 @@ async def add_history(n, factory, sessions=50):
 
 
 @pytest.fixture
-async def history_workspace(native_workspace, owner_sessionmaker, app_user_sessionmaker, monkeypatch):  # noqa: F811
+async def history_workspace(native_workspace, owner_sessionmaker, app_user_sessionmaker, monkeypatch, request):  # noqa: F811
     from app.memory.write_gate import MemoryWriteDecision
 
     n = native_workspace
+    if getattr(request, "param", False):
+        n.history_identity = await identity_source(n, owner_sessionmaker)
     async with owner_sessionmaker() as db:
         for capability in ("workspace.command.execute", "workspace.code.execute", "agent.memory.write", "agent.memory.read"):
             db.add(CapabilityPolicy(tenant_id=n.tenant, capability=capability, allowed=True, requires_approval=False))
@@ -132,6 +134,17 @@ async def history_workspace(native_workspace, owner_sessionmaker, app_user_sessi
     prior, _ = await memory_call(n, app_user_sessionmaker, "execute_code", {"language": "python", "code": "print('PRIOR_CODE_OK')"})
     assert "PRIOR_CODE_OK" in prior, prior
     return n
+
+
+async def identity_source(n, factory):
+    from app.models.agent import Agent
+    from app.services.agent_context import agent_identity_content
+    from app.services.config_versioning import canonical_content_hash
+
+    async with factory() as db:
+        agent = await db.get(Agent, n.agent)
+        return {"source_kind": "agent_identity", "source_id": f"{n.agent}\nidentity",
+            "source_version": canonical_content_hash(agent_identity_content(agent.name, agent.role_description))}
 
 
 @pytest.fixture
@@ -197,6 +210,65 @@ async def test_command_preflight_is_constant_at_double_history(
         assert sample["provider_evidence"]["network_policy"] == "deny-all"
         counts.append(sample["preflight_statements"])
     assert counts[0] == counts[1], counts
+    assert max(counts) <= PREFLIGHT_STATEMENT_BOUND, counts
+
+
+@pytest.mark.parametrize("history_workspace", [True], indirect=True)
+async def test_identity_bearing_history_preflight_is_constant(
+    history_workspace, command_probe, owner_sessionmaker, app_user_sessionmaker,
+):
+    n, counts = history_workspace, []
+    for scale in (1, 2):
+        if scale == 2:
+            await add_history(n, owner_sessionmaker)
+        raw, _ = await memory_call(n, app_user_sessionmaker, "run_command", command_arguments("run_command"))
+        assert all(f"History report {i}\n" in raw for i in range(12)), raw
+        assert "PRIVATE_FOREIGN_FILE_BODY" not in raw, raw
+        counts.append(command_probe[-1]["preflight_statements"])
+    print("IDENTITY_HISTORY_COUNTS", counts)
+    assert counts[0] == counts[1], counts
+    assert max(counts) <= PREFLIGHT_STATEMENT_BOUND, counts
+
+
+async def test_retained_identity_models_preflight_is_constant(
+    history_workspace, command_probe, owner_sessionmaker, app_user_sessionmaker,
+):
+    n, sources, counts = history_workspace, [], []
+    identity = await identity_source(n, owner_sessionmaker)
+    path, body = "workspace/report-identity.txt", "Identity history report\n"
+    (n.root / path).write_text(body)
+    digest = hashlib.sha256(body.encode()).hexdigest()
+    for revision in range(1, 4):
+        async with owner_sessionmaker() as db:
+            session_id, run_id = uuid.uuid4(), uuid.uuid4()
+            db.add(ChatSession(id=session_id, tenant_id=n.tenant, agent_id=n.agent, user_id=n.user, title="Identity work"))
+            await db.flush()
+            db.add(RuntimeTask(id=run_id, tenant_id=n.tenant, task_type="web_chat_turn", status="completed",
+                parent_agent_id=n.agent, child_agent_id=n.agent, root_user_id=n.user,
+                parent_session_id=str(session_id), child_session_id=str(session_id), prompt="Identity work"))
+            await db.flush()
+            for index in range(12):
+                result_id = uuid.uuid4()
+                snapshot = {"input_bindings": {"schema": "hive.model_input_bindings.v1", "dependencies": [identity],
+                    "dependency_coverage": {"complete": True}, "messages": []}, "wire_request": {"messages": []}}
+                provider_request, content = f"identity:{result_id}", f"Identity result {index}"
+                model = SessionModelResult(id=result_id, tenant_id=n.tenant, session_id=session_id, run_id=run_id,
+                    turn_id=f"turn-{run_id.hex}", round_id=f"{run_id}:round:{index}", provider_request_id=provider_request,
+                    state="round_committed", model_request_hash=_hash(snapshot), model_request_snapshot_json=snapshot,
+                    seal_json={"result_id": str(result_id), "run_id": str(run_id), "provider_request_id": provider_request,
+                        "semantic_content": content, "content_hash": _hash(content)})
+                db.add(model)
+                sources.append(model_source(model))
+            await register_workspace_path(db, tenant_id=n.tenant, agent_id=n.agent, path=path,
+                owner_user_id=n.user, root_session_id=n.session, source="fixture", content_hash=digest)
+            db.add(ContentInputReceipt(id=uuid.uuid4(), tenant_id=n.tenant, carrier_kind="workspace_artifact",
+                carrier_ref=f"{n.agent}\n{path}", revision=revision, content_sha256=digest, dependencies_json=list(sources)))
+            await db.commit()
+        raw, _ = await memory_call(n, app_user_sessionmaker, "run_command", command_arguments("run_command"))
+        assert body in raw and "PRIVATE_FOREIGN_FILE_BODY" not in raw, raw
+        counts.append(command_probe[-1]["preflight_statements"])
+    print("RETAINED_IDENTITY_COUNTS", counts)
+    assert len(set(counts)) == 1, counts
     assert max(counts) <= PREFLIGHT_STATEMENT_BOUND, counts
 
 
@@ -412,7 +484,7 @@ async def test_preflight_reuse_preserves_transitive_receipt_cycle_rejection(
     from app.services import content_input_receipts
     from app.tools.runtime import ToolExecutionContext, ToolExecutionRequest
 
-    n, dependencies = native_workspace, []
+    n, dependencies, receipts = native_workspace, [], []
     async with owner_sessionmaker() as db:
         for index in range(2):
             path, content = f"workspace/cycle-{index}.txt", f"Cycle reference {index}"
@@ -424,8 +496,10 @@ async def test_preflight_reuse_preserves_transitive_receipt_cycle_rejection(
                 carrier_ref=f"{n.agent}\n{path}", revision=1, content_sha256=digest,
                 dependencies_json=list(dependencies))
             db.add(receipt)
+            receipts.append(receipt)
             dependencies.append({"source_kind": "workspace_artifact", "source_id": str(receipt.id),
                 "source_version": digest})
+        receipts[0].dependencies_json = [dependencies[1]]
         await db.commit()
     request = ToolExecutionRequest("run_command", {"command": "printf CHECK"}, ToolExecutionContext(
         agent_id=n.agent, user_id=n.user, tenant_id=str(n.tenant), session_id=str(n.session),
@@ -435,11 +509,52 @@ async def test_preflight_reuse_preserves_transitive_receipt_cycle_rejection(
         with group_source_read(batch_inputs=True):
             if hasattr(content_input_receipts, "_preload_execution_sources"):
                 await content_input_receipts._preload_execution_sources(db, n.tenant, dependencies)
-            await _validate_input_dependencies(db, n.tenant, [dependencies[1]], runtime_request=request)
-            with pytest.raises(ContentInputReceiptError) as denied:
-                await _validate_input_dependencies(db, n.tenant, [dependencies[1]], runtime_request=request,
-                    active_workspace_receipts=frozenset({uuid.UUID(dependencies[0]["source_id"])}))
-            assert (denied.value.code, denied.value.status_code) == ("content_source_unavailable", 503)
+            # Each real file's retained inputs reach the other file and return to itself.
+            for dependency in dependencies:
+                with pytest.raises(ContentInputReceiptError) as denied:
+                    await _validate_input_dependencies(db, n.tenant, [dependency], runtime_request=request)
+                assert (denied.value.code, denied.value.status_code) == ("content_source_unavailable", 503)
+
+
+@pytest.mark.parametrize("reason", ["no_task", "delegation", "no_receipts"])
+async def test_execution_skips_source_preload_when_no_receipt_needs_validation(
+    history_workspace, owner_sessionmaker, app_user_sessionmaker, monkeypatch, reason,
+):
+    from dataclasses import replace
+    from app.database import pin_rls_tenant_context
+    from app.models.user import User
+    from app.services import content_input_receipts as receipts
+    from app.services.workspace_resource_authority import load_workspace_authority_scope
+    from app.tools.runtime import ToolExecutionContext, ToolExecutionRequest
+
+    n, calls = history_workspace, []
+    async with owner_sessionmaker() as db:
+        if reason == "delegation":
+            (await db.get(RuntimeTask, n.run)).task_type = "delegation"
+            await db.commit()
+    async with app_user_sessionmaker() as db:
+        await pin_rls_tenant_context(db, n.tenant)
+        scope = await load_workspace_authority_scope(db, await db.get(User, n.user),
+            agent_id=n.agent, session_id=n.session)
+    if reason == "no_receipts":
+        scope = replace(scope, allowed_paths=frozenset())
+
+    async def preload(*_args, **_kwargs):
+        calls.append(True)
+
+    monkeypatch.setattr(receipts, "_preload_execution_sources", preload)
+    request = ToolExecutionRequest("run_command", {"command": "printf CHECK"}, ToolExecutionContext(
+        agent_id=n.agent, user_id=n.user, tenant_id=str(n.tenant), session_id=str(n.session),
+        runtime_task_id=None if reason == "no_task" else str(n.run),
+        workspace=n.root, workspace_authority_scope=scope))
+    assert await receipts.authorize_workspace_execution_inputs(request) is None
+    reads = request.context.workspace_authority_scope.input_reads
+    if reason == "no_receipts":
+        assert reads == ()
+    else:
+        assert {f"workspace/report-{i}.txt" for i in range(12)} <= {read.path for read in reads}
+        assert all(read.receipt_id is not None and read.revision > 0 for read in reads)
+    assert calls == []
 
 
 @pytest.mark.parametrize("change", ["caller_inactive", "owner_inactive", "tenant_inactive", "agent_inactive", "task_terminal"])

@@ -51,30 +51,20 @@ async def validate_model_source(db, tenant_id, dependency, *, request=None, user
 
 
 async def validate_model_sources(db, tenant_id, dependencies, *, request=None, user=None):
-    from app.services.content_input_receipts import _input_row, _preflight_inputs
+    from app.services.content_input_receipts import _input_row
 
-    cached = _preflight_inputs(db)
-    ids = []
-    for item in dependencies:
-        try:
-            ids.append(uuid.UUID(item["source_id"]))
-        except (ValueError, KeyError, TypeError, AttributeError):
-            pass  # Validate a malformed sibling only after earlier models' inputs.
-    rows = {str(result.id): (result, session) for result, session in await db.execute(
-        select(SessionModelResult, ChatSession).join(ChatSession, ChatSession.id == SessionModelResult.session_id)
-        .where(SessionModelResult.tenant_id == tenant_id, ChatSession.tenant_id == tenant_id,
-            SessionModelResult.id.in_(ids))
-        .execution_options(populate_existing=True))} if cached is None and len(dependencies) != 1 else {
-            str(source_id): (result, await _input_row(db, ChatSession, result.session_id) if result else None)
-            for source_id in ids for result in [await _input_row(db, SessionModelResult, source_id)]}
+    rows = []
     for dependency in dependencies:
         try:
-            result, session = rows.get(dependency["source_id"], (None, None))
-        except (KeyError, TypeError) as exc:
+            source_id = uuid.UUID(dependency["source_id"])
+        except (ValueError, KeyError, TypeError, AttributeError) as exc:
             raise ContentInputReceiptError("learned_model_source_unavailable", "Restore the exact sealed workflow and its inputs.", 403) from exc
+        result = await _input_row(db, SessionModelResult, source_id)
+        session = await _input_row(db, ChatSession, result.session_id) if result else None
         sources = await _validate_model_source(db, tenant_id, dependency, result, session, request=request, user=user)
         await _validate_input_dependencies(db, tenant_id, sources, user=user, runtime_request=request)
-    return [rows[item["source_id"]] for item in dependencies]
+        rows.append((result, session))
+    return rows
 
 
 async def _validate_model_source(db, tenant_id, dependency, result, session, *, request, user):

@@ -107,7 +107,6 @@ class _DisclosureSourceValidations:
         self.verified = {}
         self.actors = {}
         self.inputs = {}
-        self.walk = []
 
 
 @contextmanager
@@ -135,7 +134,7 @@ class ContentInputReceiptError(ValueError):
 def _preflight_inputs(db):
     scope = _DISCLOSURE_SOURCE_VALIDATIONS.get()
     if scope is not None and scope.active and scope.batch_inputs:
-        return scope.inputs.setdefault((db, db.get_transaction()), {})
+        return scope.inputs.setdefault(db.get_transaction(), {})
     return None
 
 
@@ -379,53 +378,28 @@ async def _validate_input_dependencies(
         )
     ):
         return await _validate_input_dependency_batch(db, tenant_id, dependencies, **context)
-    if scope.batch_inputs:
-        for dependency in dependencies:
-            source_key = (dependency["source_kind"], dependency["source_id"], dependency["source_version"])
-            key = (db, db.get_transaction(), tenant_id, id(user), id(runtime_request), recipient, source_key)
-            prior = scope.verified.get(key)
-            active = set(active_workspace_receipts) | set(_ACTIVE_GROUP_TOOL_SOURCES.get())
-            # Reuse across files only when the proven closure cannot hide an active cycle.
-            if prior is not None and None not in prior[3] and not prior[3] & active:
-                footprint = prior[3]
-            else:
-                footprint = set()
-                scope.walk.append(footprint)
-                try:
-                    await _validate_input_dependency_batch(db, tenant_id, [dependency], **context)
-                    if source_key[0] in {"workspace_artifact", "explicit_memory", "team_memory"}:
-                        footprint.add(uuid.UUID(source_key[1]))
-                    elif source_key[0] == "session_tool_invocation":
-                        footprint.add(source_key[1:])
-                    elif source_key[0] not in {"session_command", "session_model_result", "session_actor_identity"}:
-                        # Specialized readers retain their own cycle/purpose scopes.
-                        footprint.add(None)
-                    if scope.active:
-                        scope.verified[key] = (db, user, runtime_request, footprint)
-                finally:
-                    scope.walk.pop()
-            if scope.walk:
-                scope.walk[-1].update(footprint)
-        return
     for dependency in dependencies:
         source_key = (dependency["source_kind"], dependency["source_id"], dependency["source_version"])
+        transaction = db.get_transaction()
         reader_key = (
-            id(db),
+            transaction,
             tenant_id,
             id(user),
             id(runtime_request),
             recipient,
-            active_workspace_receipts,
+            None if scope.batch_inputs else active_workspace_receipts,
             source_key,
         )
         if (
             not scope.active
+            or transaction is None
             or reader_key not in scope.verified
             or (source_key[0] == "session_tool_invocation" and source_key[1:] in _ACTIVE_GROUP_TOOL_SOURCES.get())
         ):
             await _validate_input_dependency_batch(db, tenant_id, [dependency], **context)
-            if scope.active:
-                scope.verified[reader_key] = (db, user, runtime_request)
+            if scope.active and transaction is not None:
+                # A cyclic walk cannot complete and enter this preflight's cache.
+                scope.verified[reader_key] = (user, runtime_request)
 
 
 async def _validate_input_dependency_batch(
@@ -1690,14 +1664,14 @@ async def _runtime_input_actor(db, tenant_id, request):
     scope = _DISCLOSURE_SOURCE_VALIDATIONS.get()
     if scope is None or not scope.active or not scope.batch_inputs:
         return await _resolve_runtime_input_actor(db, tenant_id, request)
-    key = (id(db), db.get_transaction(), tenant_id, id(request), current_source_recipient())
+    key = (db.get_transaction(), tenant_id, id(request), current_source_recipient())
     if key in scope.actors:
-        return scope.actors[key][2]
+        return scope.actors[key][1]
     # One preflight uses a point-in-time reader frame; the next preflight resolves it afresh.
     actor = await _resolve_runtime_input_actor(db, tenant_id, request)
     if scope.active:
-        key = (id(db), db.get_transaction(), tenant_id, id(request), current_source_recipient())
-        scope.actors[key] = (db, request, actor)
+        key = (db.get_transaction(), tenant_id, id(request), current_source_recipient())
+        scope.actors[key] = (request, actor)
     return actor
 
 
@@ -2044,9 +2018,14 @@ async def authorize_workspace_execution_inputs(request):
                 source_rows = _preflight_inputs(db)
                 if task is not None:
                     source_rows[(RuntimeTask, task.id)] = task
-                await _preload_execution_sources(db, tenant_id, [{"source_kind": "workspace_artifact",
-                    "source_id": str(receipt_id)} for receipt_id in receipt_ids.values()], latest_receipts=receipt_ids)
-                receipts = {ref: source_rows.get((ContentInputReceipt, receipt_id)) for ref, receipt_id in receipt_ids.items()}
+                if receipt_ids and task is not None and task.task_type == "web_chat_turn":
+                    await _preload_execution_sources(db, tenant_id, [{"source_kind": "workspace_artifact",
+                        "source_id": str(receipt_id)} for receipt_id in receipt_ids.values()], latest_receipts=receipt_ids)
+                    receipts = {ref: source_rows.get((ContentInputReceipt, receipt_id)) for ref, receipt_id in receipt_ids.items()}
+                else:
+                    receipts = {row.carrier_ref: row for row in await db.scalars(select(ContentInputReceipt).where(
+                        ContentInputReceipt.tenant_id == tenant_id, ContentInputReceipt.id.in_(receipt_ids.values()))
+                        .execution_options(populate_existing=True))} if receipt_ids else {}
                 for path in sorted(paths):
                     ref = workspace_artifact_ref(context.agent_id, path)
                     receipt = receipts.get(ref)

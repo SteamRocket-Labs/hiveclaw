@@ -55,8 +55,10 @@ async def test_first_models_child_precedes_later_models_failure(monkeypatch, lat
     second.seal_json["content_hash"] = "invalid"
 
     class Database:
-        async def execute(self, _statement):
-            return [(first, session), (second, session)]
+        async def get(self, model_type, source_id, **_kwargs):
+            if model_type is learned.ChatSession:
+                return session
+            return {first.id: first, second.id: second}.get(source_id)
 
     async def authorize(*_args, **_kwargs):
         return None
@@ -70,5 +72,6 @@ async def test_first_models_child_precedes_later_models_failure(monkeypatch, lat
     if later_failure == "bad_id":
         second_source["source_id"] = "invalid"
     with pytest.raises(receipts.ContentInputReceiptError) as denied:
-        await learned.validate_model_sources(Database(), tenant, [learned.model_source(first), second_source])
+        await receipts._validate_input_dependency_batch(Database(), tenant,
+            [learned.model_source(first), second_source])
     assert (denied.value.code, denied.value.status_code) == ("content_source_access_denied", 403)

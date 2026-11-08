@@ -14,6 +14,10 @@ class _Reader:
     def __init__(self):
         self.id = uuid.uuid4()
 
+    def get_transaction(self):
+        # A session transaction keeps its session alive for the disclosure.
+        return self
+
 
 @pytest.fixture
 def source_read():

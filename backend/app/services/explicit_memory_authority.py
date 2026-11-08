@@ -147,6 +147,7 @@ async def memory_effect_actor(db, tenant_id, request):
 async def latest_memory_receipt(db, tenant_id, agent_id, entry_id):
     rows = _preflight_inputs(db)
     key = ("latest", "explicit_memory", memory_ref(agent_id, entry_id))
+    # Like the reader frame, latest is a preflight snapshot; the next call sees revocations.
     if rows is not None and key in rows:
         return rows[key]
     return await db.scalar(select(ContentInputReceipt).where(

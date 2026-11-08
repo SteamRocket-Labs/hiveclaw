@@ -203,3 +203,47 @@ async def test_tool_runtime_resolver_blocks_missing_tenant(monkeypatch):
     assert workspace_opened is False
     assert exc.value.status == "blocked_precondition"
     assert exc.value.reason_code == "agent_tenant_missing"
+
+
+@pytest.mark.parametrize("machine", [False, True])
+async def test_denied_runtime_never_loads_secret_boundary(monkeypatch, machine):
+    from fastapi import HTTPException
+    from app.tools.resolver import ToolRuntimeResolver
+    from app.services.machine_runtime_authority import MachineRuntimeAuthorityDenied
+
+    tenant_id, agent_id = uuid4(), uuid4()
+    loaded = []
+
+    async def tenant(_agent_id):
+        return tenant_id
+
+    async def workspace(*_args, **_kwargs):
+        return Path("/tmp/agent-ws")
+
+    async def denied(**_kwargs):
+        raise HTTPException(403, detail="Current execution authority is denied")
+
+    async def secrets(**_kwargs):
+        loaded.append(True)
+        return object()
+
+    monkeypatch.setattr("app.tools.resolver.resolve_tenant_for_agent", tenant)
+    monkeypatch.setattr("app.tools.resolver.ensure_workspace", workspace)
+    monkeypatch.setattr("app.tools.resolver._load_exact_secret_boundary", secrets)
+    if machine:
+        from contextlib import asynccontextmanager
+
+        @asynccontextmanager
+        async def session(*_args, **_kwargs):
+            yield object()
+
+        async def machine_denied(*_args, **_kwargs):
+            await denied()
+
+        monkeypatch.setattr("app.tools.resolver.tenant_scoped_session", session)
+        monkeypatch.setattr("app.services.machine_runtime_authority.machine_task_actor", machine_denied)
+    with pytest.raises(MachineRuntimeAuthorityDenied if machine else HTTPException):
+        await ToolRuntimeResolver(workspace_authority_loader=denied).resolve(
+            agent_id=agent_id, user_id=None if machine else uuid4(),
+            runtime_task_id=str(uuid4()) if machine else None)
+    assert loaded == []

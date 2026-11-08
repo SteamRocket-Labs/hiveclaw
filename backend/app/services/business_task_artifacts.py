@@ -32,7 +32,7 @@ async def capture_business_task_artifacts(db, run):
     from app.services.chat_artifact_delivery import _native_artifact_for_final_message
     from app.services.direct_invocation_terminal_boundary_processor import _latest_run_event, _validate_response_payload
     from app.services.runtime_terminal_boundary_outbox import TerminalBoundaryCanonicalMismatch
-    from app.services.session_model_inputs import _model_dependencies
+    from app.services.session_model_inputs import model_output_dependencies
     from app.services.web_chat_runtime import _terminal_artifact_candidate_paths
 
     metadata = dict(run.metadata_json or {})
@@ -52,7 +52,7 @@ async def capture_business_task_artifacts(db, run):
             model = await db.scalar(select(SessionModelResult).where(SessionModelResult.run_id == run.id,
                 SessionModelResult.tenant_id == run.tenant_id, SessionModelResult.session_id == session.id,
                 SessionModelResult.round_committed_event_id == event.id, SessionModelResult.state == 'round_committed'))
-            if model is None or model.seal_json.get('semantic_content') != outcome.get('result') or not _model_dependencies(model)[1]:
+            if model is None or model.seal_json.get('semantic_content') != outcome.get('result') or not model_output_dependencies(model)[1]:
                 raise ContentInputReceiptError('business_artifact_sources_unavailable', 'Reconcile the saved file sources.', 503)
             for path in paths:
                 _handled, artifact = await _native_artifact_for_final_message(db, tenant_id=run.tenant_id,

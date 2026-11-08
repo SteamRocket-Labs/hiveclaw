@@ -597,7 +597,7 @@ class ChannelDeliveryOutboxService:
         from app.core.source_read_purpose import source_recipient_read
         from app.models.session_v2 import SessionModelResult, SessionRunOutcome
         from app.services.content_input_receipts import ContentInputReceiptError, _validate_input_dependencies
-        from app.services.session_model_inputs import _model_dependencies
+        from app.services.session_model_inputs import model_output_dependencies
 
         if item.terminal_status == "in_progress" or item.metadata.get("source") == "original_work_progress":
             from app.services.original_work_progress import authorize_original_work_progress
@@ -684,7 +684,7 @@ class ChannelDeliveryOutboxService:
             raise ContentInputReceiptError(
                 "native_result_source_changed", "The result no longer matches its delivery.", 403
             )
-        dependencies, complete = _model_dependencies(result)
+        dependencies, complete = model_output_dependencies(result)
         if not complete:
             raise ContentInputReceiptError(
                 "native_result_sources_unavailable", "The result lacks its complete source receipt.", 503
@@ -717,7 +717,7 @@ class ChannelDeliveryOutboxService:
             _validate_response_payload,
         )
         from app.services.runtime_terminal_boundary_outbox import TerminalBoundaryCanonicalMismatch
-        from app.services.session_model_inputs import _model_dependencies
+        from app.services.session_model_inputs import model_output_dependencies
 
         task = await db.get(RuntimeTask, item.runtime_task_id, populate_existing=True)
         session = await db.get(ChatSession, item.session_id, populate_existing=True)
@@ -836,7 +836,7 @@ class ChannelDeliveryOutboxService:
             raise ContentInputReceiptError(
                 "business_result_changed", "The task output differs from its sealed result.", 403
             )
-        dependencies, complete = _model_dependencies(model)
+        dependencies, complete = model_output_dependencies(model)
         if not complete:
             raise ContentInputReceiptError(
                 "business_result_sources_unavailable", "The task input source receipt is incomplete.", 503

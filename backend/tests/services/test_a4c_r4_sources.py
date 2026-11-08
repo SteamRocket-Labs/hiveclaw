@@ -85,7 +85,7 @@ async def test_parent_memory_is_attested_only_for_exact_same_member_instruction(
     source = {"source_kind": "explicit_memory", "source_id": str(uuid.uuid4()), "source_version": "v1"}
     instruction = "INHERITED_MEMORY_MARKER Reply ready."
     call = NS(id=uuid.uuid4())
-    model = NS(id=uuid.uuid4(), model_request_hash="parent-hash", model_request_snapshot_json={
+    model = NS(id=uuid.uuid4(), state="round_committed", model_request_hash="parent-hash", model_request_snapshot_json={
         "input_bindings": {"schema": "hive.model_input_bindings.v1", "dependencies": [source],
             "dependency_coverage": {"complete": True}}})
     model.model_request_hash = _hash(model.model_request_snapshot_json)

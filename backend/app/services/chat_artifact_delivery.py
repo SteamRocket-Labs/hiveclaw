@@ -1646,12 +1646,12 @@ async def materialize_declared_read_artifacts(db, *, task, model_result_id, path
     from app.models.invocation_span import InvocationSpan
     from app.models.organization_identity import ContentInputReceipt
     from app.models.session_v2 import SessionModelResult, SessionToolInvocation
-    from app.services.session_model_inputs import _model_dependencies, _origin_dependencies
+    from app.services.session_model_inputs import model_output_dependencies, _origin_dependencies
     from app.services.web_chat_runtime import _ensure_tool_result_artifact_message
 
     model = await db.get(SessionModelResult, model_result_id)
-    dependencies, _complete = _model_dependencies(model) if model else ([], False)
-    if model is None or (model.tenant_id, model.session_id, model.run_id) != (
+    dependencies, complete = model_output_dependencies(model)
+    if model is None or not complete or (model.tenant_id, model.session_id, model.run_id) != (
         task.tenant_id,
         uuid.UUID(task.parent_session_id),
         task.id,

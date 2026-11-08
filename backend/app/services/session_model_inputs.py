@@ -497,6 +497,16 @@ def _model_dependencies(result) -> tuple[list[dict[str, str]], bool]:
     return _model_snapshot_dependencies(result)
 
 
+def model_output_dependencies(result) -> tuple[list[dict[str, str]], bool]:
+    """Keep available inputs usable while refusing outputs without their permission frame."""
+    dependencies, complete = _model_dependencies(result)
+    if not complete:
+        return dependencies, False
+    entries = result.model_request_snapshot_json["input_bindings"].get("messages", [])
+    return dependencies, not any(entry.get("status") == "withheld"
+        and entry.get("code") == "session_permission_frame_unbound" for entry in entries)
+
+
 def _model_snapshot_dependencies(result) -> tuple[list[dict[str, str]], bool]:
     snapshot = result.model_request_snapshot_json
     if not isinstance(snapshot, dict) or _hash(snapshot) != result.model_request_hash:

@@ -23,7 +23,7 @@ from app.services.content_input_receipts import (
     _validate_source_bytes,
     validate_runtime_input_dependencies,
 )
-from app.services.session_model_inputs import _model_dependencies
+from app.services.session_model_inputs import model_output_dependencies
 from app.services.session_tool_runtime import _sha256
 
 AUTHORITY_SCHEMA = "hive.explicit_memory_authority.v1"
@@ -392,7 +392,7 @@ async def _writer_input(db, request, *, require_sources=True):
     invocation, model = rows[0]
     arguments_hash = _sha256({"tool_name": request.tool_name, "arguments": request.arguments})
     effective = invocation.effective_args_hash or invocation.args_hash
-    dependencies, complete = _model_dependencies(model)
+    dependencies, complete = model_output_dependencies(model)
     if (effective != arguments_hash or model.state not in {"sealed", "round_committed"}
         or _sha256(model.model_request_snapshot_json) != model.model_request_hash
         or (require_sources and not complete)):

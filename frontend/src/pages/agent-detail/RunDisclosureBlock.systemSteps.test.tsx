@@ -65,13 +65,23 @@ it.each(['zh', 'en'])('keeps denied results available for review in %s without e
 
 it.each(['zh', 'en'])('localizes other member-visible system producers in %s and keeps model prose', language => {
   locale.language = language;
-  const events = ['tool_group_activation', 'pack_activation', 'deferred_tools_delta', 'hook_progress', 'hook_summary',
-    'hook_attachment', 'hook_blocked', 'workflow_run', 'workflow_step', 'team_member', 'schedule_fire',
-    'agent_task_notification', 'runtime_action_completed'];
-  const messages = events.map((type, index) => getRuntimeEventMessage({ type, id: `event-${index}`,
-    message: 'INTERNAL_PRODUCER_TEXT command_hook 81efc180-9869-44af-8188-e33c25e3d27d',
-    status: 'completed', task_notification: type === 'agent_task_notification', tool_groups: ['filesystem'],
-  })!);
+  const stepId = '81efc180-9869-44af-8188-e33c25e3d27d';
+  const events = [
+    { type: 'tool_group_activation', message: 'Activated MCP runtime tool group.' },
+    { type: 'pack_activation', message: 'Activated runtime tool groups for this task.' },
+    { type: 'deferred_tools_delta', message: 'Discovered deferred tools: read_file, list_files' },
+    { type: 'workflow_run', message: 'Workflow run completed' },
+    { type: 'workflow_step', message: `Workflow step ${stepId} completed`, workflow_step_id: stepId },
+    { type: 'team_member', message: 'Team member created: 白鹭助手', member_name: '白鹭助手' },
+    { type: 'schedule_fire', message: 'Workflow trigger fired: 周报计划', trigger_name: '周报计划' },
+    { type: 'agent_task_notification', message: 'Background task completed: 报告已准备好。', summary: '报告已准备好。' },
+    { type: 'runtime_action_completed', message: `Workflow step ${stepId} completed`, workflow_step_id: stepId, action_kind: 'workflow' },
+    { type: 'runtime_action_started', message: 'Subagent 资料助手 is running in the background.', target_agent_name: '资料助手' },
+    { type: 'goal', message: 'Goal started: 整理本周资料', objective: '整理本周资料' },
+    { type: 'file_changes', message: 'file_changes', file_change_count: 2 },
+  ];
+  const messages = events.map((event, index) => getRuntimeEventMessage({ id: `event-${index}`,
+    status: 'completed', tool_groups: ['filesystem'], ...event })!);
   expect(messages.every(Boolean)).toBe(true);
   const { container } = render(<RunDisclosureBlock timeline={buildRunTimelineFromMessages([
     ...messages, { role: 'assistant', content: 'Keep this exact model progress.', eventType: 'assistant_commentary' },
@@ -79,6 +89,12 @@ it.each(['zh', 'en'])('localizes other member-visible system producers in %s and
   expand(container);
   expect(container.textContent).toContain('Keep this exact model progress.');
   expect(container.textContent).not.toMatch(/INTERNAL_PRODUCER_TEXT|command_hook|81efc180|filesystem|Workflow step|Runtime Tool|Hook /);
+  expect(container.textContent).not.toMatch(/read_file|list_files|Workflow run|Team member created:|Subagent |Goal started:/);
+  expect(container.textContent).not.toContain('file_changes');
+  expect(container.textContent).toContain(language === 'zh' ? '已更新 2 个文件' : 'Updated 2 files');
+  for (const text of ['白鹭助手', '周报计划', '报告已准备好。', '资料助手', '整理本周资料']) {
+    expect(container.textContent).toContain(text);
+  }
   expect(container.querySelectorAll('[data-testid="run-disclosure-step"], .run-tool-history-item').length).toBe(events.length);
 });
 

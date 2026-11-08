@@ -3179,7 +3179,7 @@
     background: var(--bg-elevated);
   }
 
-  .main-content .swb-header { padding-left: 44px; }
+  .main-content .swb-header { padding-left: 60px; }
   .has-notification-bar .sidebar.collapsed .sidebar-collapse-btn { top: 40px; }
   .swb-header-title-row { flex-wrap: wrap; }
   .swb-header-title { flex: 1; min-width: 0; }

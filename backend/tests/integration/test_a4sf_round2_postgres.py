@@ -16,6 +16,7 @@ from app.models.user import User
 from app.services.content_input_receipts import ContentInputReceiptError, validate_browser_input_dependencies
 from tests.integration.test_permission_command_environment import _command, _result, _url
 from tests.integration.test_session_permission_execution_once import _mounted_client
+from tests.memory.test_t2_segment_package_builder import authorized_t2_sources  # noqa: F401
 from tests.services.test_session_permission_runtime import _seed_waiting_batch
 
 pytestmark = pytest.mark.usefixtures("migrated_pg_url")
@@ -38,7 +39,7 @@ def _member(db, tenant_id, user_id):
     "group", "channel_group", "shared_after_package", "shared_after_staging", "private_then_shared",
 ])
 async def test_conversation_consolidation_requires_a_private_owner_audience(
-    owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, audience,
+    owner_sessionmaker, app_user_sessionmaker, monkeypatch, tmp_path, audience, request,
 ):
     from app.config import get_settings
     from app.memory.profile_plane import load_resident_memory
@@ -46,8 +47,10 @@ async def test_conversation_consolidation_requires_a_private_owner_audience(
     from app.memory.t2.segment_package import build_t2_segment_package
     from app.memory.t3_consolidation import stage_pending_t3_consolidation_job
     from app.memory.t3_platform_gate import file_sha256
+    from app.models.chat_transcript_event import ChatTranscriptEvent
     from tests.memory.test_t2_segment_package_builder import _summary_xml, _labels_xml, _approved_review_xml
     from tests.memory.test_t3_consolidation_platform_gate import _accepted_review_for, _entry_patch
+    from tests.services.test_session_input_control_v2 import _accepted_input, _authority
 
     seed = await _seed_waiting_batch(owner_sessionmaker)
     other = uuid.uuid4()
@@ -72,9 +75,24 @@ async def test_conversation_consolidation_requires_a_private_owner_audience(
                 access_level="manage" if audience == "other_user" else "use"))
         await db.commit()
     monkeypatch.setattr(get_settings(), "AGENT_DATA_DIR", str(tmp_path))
+    metadata = {"audience_kind": "private"}
+    if audience in {"other_member", "group"}:
+        # These audiences cannot pass T2's live source reader. Keep the real
+        # T3 audience gate under test using T2's existing post-boundary fixture.
+        request.getfixturevalue("authorized_t2_sources")
+    else:
+        async with owner_sessionmaker() as db:
+            authority = await _authority(db, user_id=source_member, agent_id=seed.agent_id,
+                session_id=seed.session_id)
+            accepted = await _accepted_input(db, authority=authority, session_id=seed.session_id,
+                content=private_marker)
+            transcript_id = await db.scalar(select(ChatTranscriptEvent.id).where(
+                ChatTranscriptEvent.input_id == accepted.input_id,
+                ChatTranscriptEvent.sequence == accepted.accepted_sequence))
+        metadata["transcript_event_id"] = str(transcript_id)
     event = append_t0_session_event(agent_id=seed.agent_id, session_id=seed.session_id, tenant_id=seed.tenant_id,
         actor_id=source_member, event_type="user_message", role="user", content=private_marker,
-        source="web", metadata={"audience_kind": "private"}, data_root=tmp_path)
+        source="web", metadata=metadata, data_root=tmp_path)
 
     async def summary(bundle):
         assert private_marker in str(bundle["t0_events"])

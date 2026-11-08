@@ -351,6 +351,12 @@ async def test_spawn_tool_foreground_releases_admission_when_spawn_raises(monkey
     async def fake_active_agent_team_contract(_request):
         return None
 
+    async def create_child(**_kwargs):
+        return "child-session"
+
+    async def settle_child(**kwargs):
+        captured["child_terminal"] = kwargs
+
     class BudgetService:
         async def reserve(self, reservation):
             return RuntimeBudgetReservationResult(
@@ -367,7 +373,9 @@ async def test_spawn_tool_foreground_releases_admission_when_spawn_raises(monkey
     monkeypatch.setattr(handler_mod, "active_agent_team_contract_from_tool_request", fake_active_agent_team_contract)
     monkeypatch.setattr(handler_mod, "spawn_subagent", failing_spawn)
     monkeypatch.setattr(handler_mod, "RuntimeBudgetService", BudgetService)
-    request = _tool_request({"task": "investigate", "name": "scout"}, session_id=None)
+    monkeypatch.setattr(handler_mod, "create_subagent_child_session", create_child)
+    monkeypatch.setattr(handler_mod, "update_subagent_child_session_state", settle_child)
+    request = _tool_request({"task": "investigate", "name": "scout"}, session_id=str(uuid.uuid4()))
     request.context.budget_run_id = str(budget_run_id)
 
     with pytest.raises(RuntimeError, match="spawn failed before result"):
@@ -376,6 +384,8 @@ async def test_spawn_tool_foreground_releases_admission_when_spawn_raises(monkey
     assert captured["settlement"].actual_subagents == 1
     assert captured["settlement"].actual_tokens == 0
     assert captured["settlement"].reason == "foreground_subagent_failed"
+    assert captured["child_terminal"]["child_session_id"] == "child-session"
+    assert captured["child_terminal"]["status"] == "failed"
 
 
 @pytest.mark.asyncio

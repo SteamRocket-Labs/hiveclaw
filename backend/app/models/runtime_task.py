@@ -11,7 +11,7 @@ agent execution machinery.
 import hashlib
 import json
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from sqlalchemy import (
     CheckConstraint,
@@ -68,6 +68,9 @@ COMPLETION_OUTBOX_PENDING_SQL = (
 
 TERMINAL_BOUNDARY_GENERATION = 1
 TERMINAL_BOUNDARY_RETRY_SECONDS = 30
+# Normal delivery polls every second, with a 60s lease and eight retries.
+# Keep a full day for short outages without replaying historical results.
+TERMINAL_BOUNDARY_RECENT_WINDOW = timedelta(hours=24)
 TERMINAL_BOUNDARY_REQUIRED_TASK_TYPES = (
     "web_chat_turn",
     "goal_continuation",

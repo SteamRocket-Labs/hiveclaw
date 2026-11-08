@@ -10,12 +10,13 @@ from typing import Any
 from uuid import UUID
 
 from loguru import logger
-from sqlalchemy import and_, case, exists, func, literal, literal_column, or_, select, union_all
+from sqlalchemy import and_, exists, func, literal, or_, select, union_all
 
 from app.config import get_settings
 from app.database import async_session, enter_rls_bypass, tenant_scoped_session
 from app.models.runtime_task import (
     TERMINAL_BOUNDARY_REQUIRED_TASK_TYPES,
+    TERMINAL_BOUNDARY_RECENT_WINDOW,
     TERMINAL_BOUNDARY_RETRY_SECONDS,
     TERMINAL_BOUNDARY_TERMINAL_STATUSES,
     RuntimeTask,
@@ -337,64 +338,62 @@ async def _discover_terminal_boundary_tenants(
     """Use one bounded bypass read to find tenant-scoped terminal work."""
 
     current = now or _utcnow()
+    recent_after = current - TERMINAL_BOUNDARY_RECENT_WINDOW
     retry_before = current - timedelta(seconds=TERMINAL_BOUNDARY_RETRY_SECONDS)
     # These are fixed routing values. Keep them visible to generic prepared
     # plans so a large sibling lane cannot determine this lane's scan.
     route_types = tuple(literal(task_type, literal_execute=True) for task_type in task_types)
-    outbox_ready_at = case(
-        (RuntimeTerminalBoundaryOutbox.status == "pending", RuntimeTerminalBoundaryOutbox.available_at),
-        else_=func.coalesce(
-            RuntimeTerminalBoundaryOutbox.lease_expires_at,
-            RuntimeTerminalBoundaryOutbox.created_at,
-        ),
-    )
-    outbox_candidates = (
+    queue = RuntimeTerminalBoundaryOutbox
+    # Split lanes and status/time ranges so only the trigger backlog is bounded.
+    outbox_candidates = [
         select(
-            RuntimeTerminalBoundaryOutbox.tenant_id.label("tenant_id"),
-            outbox_ready_at.label("ready_at"),
+            queue.tenant_id.label("tenant_id"),
+            func.coalesce(ready_at, queue.created_at).label("ready_at"),
         )
         .where(
-            RuntimeTerminalBoundaryOutbox.task_type.in_(route_types),
-            RuntimeTerminalBoundaryOutbox.status.in_((literal_column("'pending'"), literal_column("'processing'"))),
+            queue.task_type == route_type,
+            queue.status == literal(status, type_=queue.status.type, literal_execute=True),
+            *(
+                (ready_at >= recent_after, ready_at <= current) if task_type == "trigger"
+                else (or_(ready_at.is_(None), ready_at <= current),) if status == "processing"
+                else (ready_at <= current,)
+            ),
             # Route through active lanes first. Recheck the canonical task per
             # candidate without materializing every historical task identity.
             exists(select(RuntimeTask.id).where(
-                RuntimeTask.id == RuntimeTerminalBoundaryOutbox.runtime_task_id,
-                RuntimeTask.tenant_id == RuntimeTerminalBoundaryOutbox.tenant_id,
+                RuntimeTask.id == queue.runtime_task_id,
+                RuntimeTask.tenant_id == queue.tenant_id,
                 RuntimeTask.task_type.in_(route_types),
             ).correlate(RuntimeTerminalBoundaryOutbox).offset(0)),
-            or_(
-                and_(
-                    RuntimeTerminalBoundaryOutbox.status == "pending",
-                    RuntimeTerminalBoundaryOutbox.available_at <= current,
-                ),
-                and_(
-                    RuntimeTerminalBoundaryOutbox.status == "processing",
-                    or_(
-                        RuntimeTerminalBoundaryOutbox.lease_expires_at.is_(None),
-                        RuntimeTerminalBoundaryOutbox.lease_expires_at <= current,
-                    ),
-                ),
-            ),
         )
-    )
-    reconcile_candidates = select(
+        for task_type, route_type in zip(task_types, route_types, strict=True)
+        for status, ready_at in (("pending", queue.available_at), ("processing", queue.lease_expires_at))
+    ]
+    reconcile_candidates = [select(
         RuntimeTask.tenant_id.label("tenant_id"),
         func.coalesce(
             RuntimeTask.terminal_boundary_reconcile_attempted_at,
             RuntimeTask.created_at,
         ).label("ready_at"),
     ).where(
-        RuntimeTask.task_type.in_(route_types),
+        RuntimeTask.task_type == route_type,
         RuntimeTask.terminal_boundary_generation.is_not(None),
         RuntimeTask.terminal_boundary_enqueued_at.is_(None),
         RuntimeTask.status.in_(TERMINAL_BOUNDARY_TERMINAL_STATUSES),
-        or_(
-            RuntimeTask.terminal_boundary_reconcile_attempted_at.is_(None),
+        *((RuntimeTask.created_at >= recent_after, RuntimeTask.created_at <= current)
+            if task_type == "trigger" else ()),
+    ).where(
+        RuntimeTask.terminal_boundary_reconcile_attempted_at.is_(None) if not retry else and_(
+            *((RuntimeTask.terminal_boundary_reconcile_attempted_at >= recent_after,)
+                if task_type == "trigger" else ()),
             RuntimeTask.terminal_boundary_reconcile_attempted_at <= retry_before,
         ),
-    )
-    candidates = union_all(outbox_candidates, reconcile_candidates).subquery()
+    ) for task_type, route_type in zip(task_types, route_types, strict=True) for retry in (False, True)]
+    # NULL-first and retry ranges match the second key of terminal_discovery.
+    candidates = union_all(
+        *outbox_candidates,
+        *reconcile_candidates,
+    ).subquery()
     statement = (
         select(candidates.c.tenant_id)
         .group_by(candidates.c.tenant_id)

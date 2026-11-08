@@ -207,8 +207,23 @@ async def create_subagent_child_session(
         "requester_authority_source": "subagent_enqueue.parent_user_id",
         "lightweight_identity": True,
         "has_digital_employee_identity": False,
+        "foreground_subagent": runtime_task_id is None,
     }
     async with tenant_scoped_session(resolved_tenant_id) as db:
+        if runtime_task_id is None and runtime_task_uuid is not None:
+            now = datetime.now(timezone.utc)
+            db.add(RuntimeTask(
+                id=runtime_task_uuid, tenant_id=resolved_tenant_id, task_type=SUBAGENT_RUN_TASK_TYPE,
+                parent_agent_id=parent_agent_id, parent_session_id=parent_session_id,
+                root_user_id=parent_user_id, root_session_id=parent_session_id,
+                child_session_id=str(child_session_uuid), child_agent_name=spec_name,
+                status="running", started_at=now, prompt=task, metadata_json=metadata,
+                # Synchronous callers receive the result inline, never by outbox.
+                completion_outbox_settled_at=now,
+            ))
+            # Scalar FKs do not give the ORM a mapper dependency. Flush the
+            # task before adding its session, including on transcript autoflush.
+            await db.flush()
         session = ChatSession(
             id=child_session_uuid,
             agent_id=parent_agent_id,
@@ -223,8 +238,8 @@ async def create_subagent_child_session(
             listed_surface="parent",
             parent_session_id=parent_session_uuid,
             root_session_id=parent_session_uuid,
-            # Group 3 admission contract: the durable RuntimeTask is committed
-            # before this projection, so the FK can bind the exact queued intent.
+            # Background admission commits first; foreground admission above
+            # inserts first within this transaction.
             runtime_task_id=runtime_task_uuid,
             transcript_metadata_json=metadata,
         )
@@ -733,12 +748,7 @@ async def update_subagent_child_session_state(
     run_id: str | None = None,
     runtime_task_id: str | None = None,
 ) -> None:
-    """Update a subagent child session that is not necessarily backed by a RuntimeTask.
-
-    Foreground AgentTool-compatible subagents are synchronous, so they do not
-    have a durable RuntimeTask row, but they still need a child session address
-    for SendMessage-style continuation and transcript inspection.
-    """
+    """Persist a synchronous subagent's result and child-session continuation."""
 
     child_session_uuid = _uuid_or_none(child_session_id)
     if child_session_uuid is None:
@@ -757,6 +767,12 @@ async def update_subagent_child_session_state(
             metadata["last_run_id"] = run_id
         metadata["last_result_summary"] = summary
         session.transcript_metadata_json = metadata
+        if metadata.get("foreground_subagent") and session.runtime_task_id is not None:
+            foreground_task = await db.get(RuntimeTask, session.runtime_task_id)
+            if foreground_task is not None:
+                foreground_task.status = status if status in {"completed", "failed", "killed", "needs_reconciliation"} else "failed"
+                foreground_task.completed_at = datetime.now(timezone.utc)
+                foreground_task.result_summary = summary
         await append_session_event(
             db=db,
             agent_id=parent_agent_id,

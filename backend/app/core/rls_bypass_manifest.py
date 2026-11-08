@@ -862,7 +862,9 @@ def fingerprint_rls_bypass_scopes(app_root: Path) -> str:
 # D1: limited private-creation Undo in the existing lifecycle; bypass calls and queries are unchanged.
 # Merging D1 with main keeps each reviewed entry from one side; no entry changed on both sides.
 # Merging D1 with main keeps each entry from one side; no bypass scope changed on both sides.
-RLS_BYPASS_SCOPES_SHA256 = "1e8eff7639c2b47148b6602f42ff3706547685a412270de4dc82f03c39ede2cd"
+# R4b bounds stale trigger terminal-boundary discovery; worker query shapes change, bypass grants are unchanged.
+# Merging R4b into the landing branch keeps each entry from one side; no bypass scope changed on both sides.
+RLS_BYPASS_SCOPES_SHA256 = "1296e84474efab0d157ca82e67792af32ec63a3f327dcde63fdd8fd6af6726de"
 
 
 def scan_rls_bypass_callsites(app_root: Path) -> list[RLSBypassCallsite]:

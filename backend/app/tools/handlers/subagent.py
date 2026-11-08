@@ -900,6 +900,14 @@ async def spawn_subagent_tool(request: ToolExecutionRequest) -> str:
                     "status": "failed_before_result",
                 },
             )
+        if child_session_id:
+            await update_subagent_child_session_state(
+                child_session_id=child_session_id,
+                parent_agent_id=agent_id,
+                status="failed",
+                summary="Subagent failed before returning a result.",
+                run_id=foreground_run_id,
+            )
         raise
     result = handle.result
     if foreground_admission is not None and foreground_admission_service is not None:

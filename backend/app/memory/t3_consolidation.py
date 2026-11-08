@@ -10,7 +10,7 @@ import json
 import re
 import uuid
 import xml.etree.ElementTree as ET
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -65,6 +65,22 @@ def _source_scoped_entry(entry):
     # These receipts retain a requester and recursive current-source authority.
     # An unscoped T3 file cannot preserve that audience or later withdrawal.
     return bool(entry.metadata.get("authority_schema") or entry.metadata.get("source_receipt_id"))
+
+
+async def filter_private_t3_sources(*, pending, agent_id, tenant_id, data_root):
+    from app.memory.t3_platform_gate import _conversation_audience_issues
+
+    packages = []
+    for path in pending.package_dirs:
+        try:
+            manifest = json.loads((path / "manifest.json").read_text(encoding="utf-8"))
+            refs = [_package_ref_from_dir(root=Path(data_root), agent_id=agent_id, package_dir=path),
+                *manifest["source_refs"]]
+            if not await _conversation_audience_issues(agent_id=agent_id, tenant_id=tenant_id, source_refs=refs):
+                packages.append(path)
+        except (OSError, ValueError, TypeError, KeyError):
+            continue
+    return replace(pending, package_dirs=tuple(packages))
 
 
 def build_t3_consolidation_batch(
@@ -169,6 +185,7 @@ def stage_pending_t3_consolidation_job(
     agent_id: uuid.UUID | str,
     data_root: Path | str,
     job_id: str | None = None,
+    pending: PendingT3Sources | None = None,
 ) -> T3ConsolidationBatchResult:
     """Stage one T3 job from currently unabsorbed canonical inputs.
 
@@ -178,7 +195,7 @@ def stage_pending_t3_consolidation_job(
 
     root = Path(data_root)
     resolved_agent_id = uuid.UUID(str(agent_id)) if not isinstance(agent_id, uuid.UUID) else agent_id
-    pending = discover_pending_t3_sources(
+    pending = pending or discover_pending_t3_sources(
         agent_id=resolved_agent_id,
         data_root=root,
     )

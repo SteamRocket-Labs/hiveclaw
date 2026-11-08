@@ -4,6 +4,8 @@ import json
 import uuid
 from pathlib import Path
 
+import pytest
+
 
 def _write_reviewed_t2_package(
     root: Path, agent_id: uuid.UUID, session_id: str = "s1", segment_id: str = "seg-1"
@@ -341,7 +343,8 @@ def test_build_t3_consolidation_batch_embeds_explicit_overlay_details(tmp_path: 
     assert "tool:save_memory" in bundle["explicit_overlay_entries"][0]["source_refs"]
 
 
-def test_platform_gate_honors_model_accept_decision_without_score_cutoff(tmp_path: Path) -> None:
+@pytest.mark.usefixtures("t3_private_owner_audience")
+async def test_platform_gate_honors_model_accept_decision_without_score_cutoff(tmp_path: Path) -> None:
     from app.memory.t3_platform_gate import apply_t3_consolidation_patch, file_sha256
 
     agent_id = uuid.uuid4()
@@ -354,7 +357,7 @@ def test_platform_gate_honors_model_accept_decision_without_score_cutoff(tmp_pat
     low_review = _accepted_review_for(t2_ref, decision="accept_new")
     low_review = low_review.replace('value="4"', 'value="1"')
 
-    result = apply_t3_consolidation_patch(
+    result = await apply_t3_consolidation_patch(
         agent_id=agent_id,
         data_root=tmp_path,
         job_id="job-low-reinforce",
@@ -402,7 +405,8 @@ def test_stage_pending_t3_consolidation_job_reuses_existing_staged_job(tmp_path:
     assert len(job_dirs) == 1
 
 
-def test_platform_gate_holds_patch_with_legacy_target(tmp_path: Path) -> None:
+@pytest.mark.usefixtures("t3_private_owner_audience")
+async def test_platform_gate_holds_patch_with_legacy_target(tmp_path: Path) -> None:
     from app.memory.t3_platform_gate import apply_t3_consolidation_patch
 
     agent_id = uuid.uuid4()
@@ -414,7 +418,7 @@ def test_platform_gate_holds_patch_with_legacy_target(tmp_path: Path) -> None:
   <evidence><source_ref>t2://session/s1/segment/seg-1#summary</source_ref></evidence>
 </t3_consolidation_patch>"""
 
-    result = apply_t3_consolidation_patch(
+    result = await apply_t3_consolidation_patch(
         agent_id=agent_id,
         data_root=tmp_path,
         job_id="job-bad-target",
@@ -427,7 +431,8 @@ def test_platform_gate_holds_patch_with_legacy_target(tmp_path: Path) -> None:
     assert not (tmp_path / str(agent_id) / "memory" / "feedback.md").exists()
 
 
-def test_platform_gate_holds_patch_with_t0_ref_not_derivable_from_t2_source_refs(tmp_path: Path) -> None:
+@pytest.mark.usefixtures("t3_private_owner_audience")
+async def test_platform_gate_holds_patch_with_t0_ref_not_derivable_from_t2_source_refs(tmp_path: Path) -> None:
     from app.memory.t3_platform_gate import apply_t3_consolidation_patch, file_sha256
 
     agent_id = uuid.uuid4()
@@ -443,7 +448,7 @@ def test_platform_gate_holds_patch_with_t0_ref_not_derivable_from_t2_source_refs
   <evidence><source_ref>t2://session/s1/segment/seg-1#summary</source_ref><source_ref>t0://session/s2/segment/seg-9#seq=1..2</source_ref></evidence>
 </t3_consolidation_patch>"""
 
-    result = apply_t3_consolidation_patch(
+    result = await apply_t3_consolidation_patch(
         agent_id=agent_id,
         data_root=tmp_path,
         job_id="job-bad-t0-ref",
@@ -523,7 +528,8 @@ def test_build_t3_consolidation_batch_stages_source_bundle_and_neighborhood(tmp_
     assert "base_revision" in neighborhood
 
 
-def test_platform_gate_rebuilds_wiki_map_after_commit(tmp_path: Path) -> None:
+@pytest.mark.usefixtures("t3_private_owner_audience")
+async def test_platform_gate_rebuilds_wiki_map_after_commit(tmp_path: Path) -> None:
     from app.memory.t3_platform_gate import apply_t3_consolidation_patch, file_sha256
 
     agent_id = uuid.uuid4()
@@ -532,7 +538,7 @@ def test_platform_gate_rebuilds_wiki_map_after_commit(tmp_path: Path) -> None:
     sha = file_sha256(tmp_path / str(agent_id) / target)
     entry = "### 讨论先行 — 已确认\n<!-- id: pref-discuss-first -->\n架构改造先讨论。\n- 证据: t2-a1b2"
 
-    result = apply_t3_consolidation_patch(
+    result = await apply_t3_consolidation_patch(
         agent_id=agent_id,
         data_root=tmp_path,
         job_id="job-t3-index-sync",
@@ -546,7 +552,8 @@ def test_platform_gate_rebuilds_wiki_map_after_commit(tmp_path: Path) -> None:
     assert "pref-discuss-first" in wiki_map.read_text(encoding="utf-8")
 
 
-def test_platform_gate_marks_t2_and_explicit_overlay_absorbed_after_commit(tmp_path: Path) -> None:
+@pytest.mark.usefixtures("t3_private_owner_audience")
+async def test_platform_gate_marks_t2_and_explicit_overlay_absorbed_after_commit(tmp_path: Path) -> None:
     from app.memory.explicit_overlay import load_explicit_overlay_entries
     from app.memory.t3_platform_gate import apply_t3_consolidation_patch, file_sha256
 
@@ -559,7 +566,7 @@ def test_platform_gate_marks_t2_and_explicit_overlay_absorbed_after_commit(tmp_p
     sha = file_sha256(tmp_path / str(agent_id) / target)
     entry = "### 架构改造先讨论 — 已确认\n<!-- id: usr-discuss-first -->\n用户要求架构改造前必须先讨论并落文档。\n- 证据: t2-a1b2"
 
-    result = apply_t3_consolidation_patch(
+    result = await apply_t3_consolidation_patch(
         agent_id=agent_id,
         data_root=tmp_path,
         job_id="job-explicit-commit",
@@ -599,7 +606,8 @@ def test_platform_gate_marks_t2_and_explicit_overlay_absorbed_after_commit(tmp_p
     }
 
 
-def test_platform_gate_replays_same_job_without_second_asset_revision(tmp_path: Path) -> None:
+@pytest.mark.usefixtures("t3_private_owner_audience")
+async def test_platform_gate_replays_same_job_without_second_asset_revision(tmp_path: Path) -> None:
     from app.memory.t3_platform_gate import apply_t3_consolidation_patch, file_sha256
 
     agent_id = uuid.uuid4()
@@ -610,7 +618,7 @@ def test_platform_gate_replays_same_job_without_second_asset_revision(tmp_path: 
     patch = _entry_patch(target, sha, "idempotent-t3", entry, refs=["t2://session/s1/segment/seg-1"])
     review = _accepted_review()
 
-    first = apply_t3_consolidation_patch(
+    first = await apply_t3_consolidation_patch(
         agent_id=agent_id,
         data_root=tmp_path,
         job_id="job-t3-idempotent",
@@ -621,7 +629,7 @@ def test_platform_gate_replays_same_job_without_second_asset_revision(tmp_path: 
     reference_index = tmp_path / str(agent_id) / "memory/indexes/index.sqlite"
     wiki_map.unlink(missing_ok=True)
     reference_index.unlink(missing_ok=True)
-    replay = apply_t3_consolidation_patch(
+    replay = await apply_t3_consolidation_patch(
         agent_id=agent_id,
         data_root=tmp_path,
         job_id="job-t3-idempotent",
@@ -637,7 +645,8 @@ def test_platform_gate_replays_same_job_without_second_asset_revision(tmp_path: 
     assert revision["revision"] == 1
 
 
-def test_platform_gate_reinforce_mode_marks_sources_reinforced(tmp_path: Path) -> None:
+@pytest.mark.usefixtures("t3_private_owner_audience")
+async def test_platform_gate_reinforce_mode_marks_sources_reinforced(tmp_path: Path) -> None:
     from app.memory.t3_platform_gate import apply_t3_consolidation_patch, file_sha256
 
     agent_id = uuid.uuid4()
@@ -652,7 +661,7 @@ def test_platform_gate_reinforce_mode_marks_sources_reinforced(tmp_path: Path) -
     sha = file_sha256(owner_path)
     entry = "### 讨论先行 — 已确认\n<!-- id: pref-discuss-first -->\n旧证据 + 新证据确认。\n- 证据: t2-old · t2-a1b2"
 
-    result = apply_t3_consolidation_patch(
+    result = await apply_t3_consolidation_patch(
         agent_id=agent_id,
         data_root=tmp_path,
         job_id="job-reinforce",

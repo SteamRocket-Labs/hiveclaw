@@ -43,6 +43,7 @@ def test_heartbeat_t3_review_contract_matches_platform_gate() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("t3_private_owner_audience")
 async def test_heartbeat_t3_core_writes_artifacts_without_tools(tmp_path, monkeypatch) -> None:
     from app.memory.t3_consolidation import build_t3_consolidation_batch
     from app.memory.md_store import ensure_t3_layout

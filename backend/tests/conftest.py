@@ -20,6 +20,18 @@ if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
 
+@pytest.fixture
+def t3_private_owner_audience(monkeypatch):
+    """Isolate file-format unit tests from live DB audience authorization.
+
+    PostgreSQL consolidation tests exercise the real ownership and session
+    reader; these file-only tests use synthetic session references.
+    """
+    from unittest.mock import AsyncMock
+
+    monkeypatch.setattr("app.memory.t3_platform_gate._conversation_audience_issues", AsyncMock(return_value=[]))
+
+
 _HERMETIC_ENV_KEYS = (
     "HOME",
     "AGENT_DATA_DIR",

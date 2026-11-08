@@ -159,7 +159,8 @@ def test_tombstone_chain_and_cycle_safety(tmp_path: Path) -> None:
     assert resolved in {"a", "b", "c"}  # terminates without infinite loop
 
 
-def test_rewrite_file_tombstones_flow_into_index(tmp_path: Path) -> None:
+@pytest.mark.usefixtures("t3_private_owner_audience")
+async def test_rewrite_file_tombstones_flow_into_index(tmp_path: Path) -> None:
     """The convergence rewrite declares merges; the gate records tombstones."""
     from app.memory.reference_index import resolve_entry_id
     from app.memory.t3_platform_gate import apply_t3_consolidation_patch, file_sha256
@@ -207,7 +208,7 @@ def test_rewrite_file_tombstones_flow_into_index(tmp_path: Path) -> None:
         f"{scores}<decision>merge_required</decision></memory_gate_rubric></memory_gate_review>"
     )
 
-    result = apply_t3_consolidation_patch(
+    result = await apply_t3_consolidation_patch(
         agent_id=agent_id,
         data_root=tmp_path,
         job_id="t3job-merge",

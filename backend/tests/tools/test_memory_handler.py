@@ -480,7 +480,8 @@ async def test_search_memory_suppresses_sensitive_wiki_page_even_when_preview_is
     assert "salary planning is confidential" not in result
 
 
-def test_submit_t3_revised_patch_after_existing_review_requires_fresh_review(tmp_path: Path) -> None:
+@pytest.mark.usefixtures("t3_private_owner_audience")
+async def test_submit_t3_revised_patch_after_existing_review_requires_fresh_review(tmp_path: Path) -> None:
     from app.memory.md_store import ensure_t3_layout
     from app.memory.t3_consolidation import build_t3_consolidation_batch
     from app.memory.t3_platform_gate import file_sha256
@@ -511,10 +512,10 @@ User prefers concise answers.
 
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr("app.config.get_settings", lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)))
-        review_result = submit_t3_memory_gate_review(
+        review_result = await submit_t3_memory_gate_review(
             agent_id, {"job_id": result.job_id, "content": _accepted_t3_review()}
         )
-        patch_result = submit_t3_revised_patch(agent_id, {"job_id": result.job_id, "content": patch})
+        patch_result = await submit_t3_revised_patch(agent_id, {"job_id": result.job_id, "content": patch})
 
     assert "Submitted T3 job artifact" in review_result
     assert "waiting for fresh Memory Gate review" in patch_result
@@ -522,7 +523,7 @@ User prefers concise answers.
 
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr("app.config.get_settings", lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)))
-        final_review_result = submit_t3_memory_gate_review(
+        final_review_result = await submit_t3_memory_gate_review(
             agent_id,
             {"job_id": result.job_id, "content": _accepted_t3_review()},
         )
@@ -531,7 +532,8 @@ User prefers concise answers.
     assert "usr_concise" in target.read_text(encoding="utf-8")
 
 
-def test_submit_t3_memory_gate_review_triggers_platform_gate_when_patch_ready(tmp_path: Path) -> None:
+@pytest.mark.usefixtures("t3_private_owner_audience")
+async def test_submit_t3_memory_gate_review_triggers_platform_gate_when_patch_ready(tmp_path: Path) -> None:
     from app.memory.md_store import ensure_t3_layout
     from app.memory.t3_consolidation import build_t3_consolidation_batch
     from app.memory.t3_platform_gate import file_sha256
@@ -562,8 +564,8 @@ Discuss memory architecture changes before implementation.
 
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr("app.config.get_settings", lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)))
-        patch_result = submit_t3_revised_patch(agent_id, {"job_id": result.job_id, "content": patch})
-        review_result = submit_t3_memory_gate_review(
+        patch_result = await submit_t3_revised_patch(agent_id, {"job_id": result.job_id, "content": patch})
+        review_result = await submit_t3_memory_gate_review(
             agent_id, {"job_id": result.job_id, "content": _accepted_t3_review()}
         )
 

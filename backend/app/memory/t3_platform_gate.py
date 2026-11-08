@@ -102,19 +102,25 @@ def file_sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest() if path.exists() else hashlib.sha256(b"").hexdigest()
 
 
-def apply_t3_consolidation_patch(
+async def apply_t3_consolidation_patch(
     *,
     agent_id: uuid.UUID | str,
     data_root: Path | str,
     job_id: str,
     revised_patch_md: str,
     review_md: str,
+    tenant_id: uuid.UUID | str | None = None,
 ) -> T3PlatformGateResult:
     """Apply a reviewed LLM-authored T3 patch exactly, or hold/rebase it."""
 
     root = Path(data_root)
     resolved_agent_id = uuid.UUID(str(agent_id)) if not isinstance(agent_id, uuid.UUID) else agent_id
     agent_root = root / str(resolved_agent_id)
+    job_dir = agent_root / "memory" / ".staging" / "t3_jobs" / job_id
+    issues = await _conversation_audience_issues(
+        agent_id=resolved_agent_id, tenant_id=tenant_id, job_dir=job_dir,
+        revised_patch_md=revised_patch_md,
+    )
     with AgentAssetTransaction(
         agent_root,
         operation="t3_platform_gate_commit",
@@ -136,6 +142,9 @@ def apply_t3_consolidation_patch(
 
             rebuild_reference_index(agent_id=resolved_agent_id, data_root=root)
             return result
+        if issues:
+            job_dir.mkdir(parents=True, exist_ok=True)
+            return _write_manifest_result(job_dir, status="held", job_id=job_id, issues=issues)
         return _apply_t3_consolidation_patch_transactional(
             agent_id=resolved_agent_id,
             data_root=root,
@@ -144,6 +153,79 @@ def apply_t3_consolidation_patch(
             review_md=review_md,
             transaction=transaction,
         )
+
+
+async def _conversation_audience_issues(*, agent_id, tenant_id, job_dir=None, revised_patch_md="", source_refs=()):
+    from sqlalchemy import or_, select
+    from sqlalchemy.exc import SQLAlchemyError
+
+    from app.core.permissions import effective_agent_owner_id
+    from app.core.policy import permission_allows
+    from app.database import get_current_tenant_id, tenant_scoped_session
+    from app.models.agent import Agent, AgentPermission
+    from app.models.chat_session import ChatSession
+    from app.models.security_audit import ResourcePermission
+    from app.services.a2a_collaboration_policy import list_active_collaboration_groups_for_agent
+
+    try:
+        # Recheck staged packages too; explicit entries retain their scope rules.
+        patch = _extract_xml(revised_patch_md, "t3_consolidation_patch", [])
+        refs = [*source_refs, *(_refs_embedded_in_patch(patch) if patch is not None else [])]
+        if job_dir is not None and (job_dir / "source_bundle.json").exists():
+            bundle = json.loads((job_dir / "source_bundle.json").read_text(encoding="utf-8"))
+            for package in bundle["source_packages"]:
+                refs.extend([package["ref"], *package["source_refs"]])
+        session_ids = {uuid.UUID(match.group(1)) for ref in refs
+            for pattern in (_T0_SESSION_SEGMENT_RE, _T2_SESSION_SEGMENT_RE) for match in pattern.finditer(ref)}
+        session_ids.update(uuid.UUID(ref.removeprefix("t2://session/").split("/", 1)[0])
+            for ref in refs if ref.startswith("t2://session/") and "/episode/" in ref)
+        if not session_ids:
+            return []
+        tenant_id = uuid.UUID(str(tenant_id or get_current_tenant_id()))
+        async with tenant_scoped_session(
+            tenant_id, require_tenant=True, source="t3_conversation_audience"
+        ) as db:
+            agent = await db.scalar(select(Agent).where(
+                Agent.id == agent_id, Agent.tenant_id == tenant_id,
+            ).execution_options(populate_existing=True))
+            owner_id = effective_agent_owner_id(agent) if agent is not None else None
+            if owner_id is None:
+                return ["conversation consolidation requires the bot's sole owner"]
+            shared = await db.scalar(select(AgentPermission.id).where(
+                AgentPermission.agent_id == agent_id, AgentPermission.tenant_id == agent.tenant_id,
+                or_(AgentPermission.scope_type == "company", AgentPermission.access_level.in_(("use", "manage", "")),
+                    AgentPermission.access_level.is_(None)),
+                or_(AgentPermission.scope_type != "user", AgentPermission.scope_id.is_(None),
+                    AgentPermission.scope_id != owner_id),
+            ).limit(1))
+            grants = (await db.scalars(select(ResourcePermission).where(
+                ResourcePermission.tenant_id == agent.tenant_id, ResourcePermission.resource_type == "agent",
+                ResourcePermission.resource_id == agent_id, ResourcePermission.revoked_at.is_(None),
+                or_(ResourcePermission.principal_type != "user", ResourcePermission.principal_id.is_(None),
+                    ResourcePermission.principal_id != owner_id),
+            ).execution_options(populate_existing=True))).all()
+            if shared is not None or any(permission_allows(grant, action=action,
+                context={"tenant_id": str(agent.tenant_id)}) for grant in grants for action in ("read", "execute", "manage")):
+                return ["conversation consolidation requires the bot's sole owner"]
+            for group in await list_active_collaboration_groups_for_agent(db, agent):
+                for member in group.members:
+                    peer = await db.get(Agent, member.agent_id, populate_existing=True)
+                    if effective_agent_owner_id(peer) != owner_id:
+                        return ["conversation consolidation requires the bot's sole owner"]
+            sessions = (await db.scalars(select(ChatSession).where(
+                ChatSession.id.in_(session_ids), ChatSession.agent_id == agent_id,
+                ChatSession.tenant_id == agent.tenant_id,
+            ).execution_options(populate_existing=True))).all()
+            if len(sessions) != len(session_ids) or any(
+                session.source_channel != "web" or session.user_id != owner_id
+                or session.audience_kind not in {None, "private"}
+                or session.peer_agent_id is not None or session.visibility_scope != "direct_user"
+                for session in sessions
+            ):
+                return ["conversation consolidation requires the sole owner's private session"]
+    except (OSError, ValueError, TypeError, KeyError, AttributeError, SQLAlchemyError):
+        return ["conversation consolidation audience is unavailable"]
+    return []
 
 
 def _apply_t3_consolidation_patch_transactional(

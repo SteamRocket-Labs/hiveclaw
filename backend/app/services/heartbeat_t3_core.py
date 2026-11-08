@@ -18,6 +18,7 @@ from typing import Any
 from app.memory.metrics import record_autonomous_llm_call
 from app.memory.t3_consolidation import (
     discover_pending_t3_sources,
+    filter_private_t3_sources,
     stage_pending_t3_consolidation_job,
     write_t3_job_artifact,
 )
@@ -63,6 +64,9 @@ async def run_heartbeat_t3_core(
     root = Path(data_root)
     resolved_agent_id = uuid.UUID(str(agent_id)) if not isinstance(agent_id, uuid.UUID) else agent_id
     pending = discover_pending_t3_sources(agent_id=resolved_agent_id, data_root=root)
+    pending = await filter_private_t3_sources(
+        pending=pending, agent_id=resolved_agent_id, tenant_id=tenant_id, data_root=root,
+    )
     if not pending.has_sources:
         record_autonomous_llm_call(source="heartbeat", outcome="skipped")
         return HeartbeatT3CoreResult(
@@ -73,7 +77,7 @@ async def run_heartbeat_t3_core(
             skip_reason="no_pending_t3_sources",
         )
 
-    staged = stage_pending_t3_consolidation_job(agent_id=resolved_agent_id, data_root=root)
+    staged = stage_pending_t3_consolidation_job(agent_id=resolved_agent_id, data_root=root, pending=pending)
     if staged.status != "staged":
         record_autonomous_llm_call(source="heartbeat", outcome="skipped")
         _record_job_direct_core_summary(
@@ -136,12 +140,13 @@ async def run_heartbeat_t3_core(
             content=patch_heading(review_md, "T3 Memory Gate Review"),
         )
 
-        gate_result = apply_t3_consolidation_patch(
+        gate_result = await apply_t3_consolidation_patch(
             agent_id=resolved_agent_id,
             data_root=root,
             job_id=staged.job_id,
             revised_patch_md=patch_path.read_text(encoding="utf-8", errors="replace"),
             review_md=review_path.read_text(encoding="utf-8", errors="replace"),
+            tenant_id=tenant_id,
         )
         status = str(getattr(gate_result, "status", "held") or "held")
         issues = tuple(str(issue) for issue in getattr(gate_result, "issues", ()) or ())

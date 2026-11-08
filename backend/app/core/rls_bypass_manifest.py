@@ -871,7 +871,9 @@ def fingerprint_rls_bypass_scopes(app_root: Path) -> str:
 # Artifact selection releases the task lock before materialization; bypass grants and scopes are unchanged.
 # Merging R4a into the landing branch accepts the exact three-way module-source merge of
 # content_input_receipts.py and web_chat_runtime.py; no bypass scope changed on both sides.
-RLS_BYPASS_SCOPES_SHA256 = "65637486aa782c9f6723642a483e9a95c595d0a241b355342c62d465b64c230b"
+# Merging A4sf into the landing branch accepts the exact three-way module-source merge of
+# content_input_receipts.py; no bypass scope changed on both sides.
+RLS_BYPASS_SCOPES_SHA256 = "1bbb752ad3bbfd8db09f2d970dadaf251140053bc3aebb447eca5317ebf5426c"
 
 
 def scan_rls_bypass_callsites(app_root: Path) -> list[RLSBypassCallsite]:

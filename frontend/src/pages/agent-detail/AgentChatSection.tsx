@@ -89,6 +89,7 @@ import {
   computeComposerHeight,
   isA2ASession,
   isDraftHumanChatSession,
+  isTranscriptOnlySession,
   shouldUseWritableSessionSurface,
   type AgentChatMessage,
   type ChatArtifactPart,
@@ -271,6 +272,7 @@ interface AgentChatSectionProps {
   isWaiting: boolean;
   /** Turn lifecycle phase for the active session (§3 seam 1). Rendering seams 2-4 consume this. */
   runtimePhase?: RuntimePhase;
+  terminalTranscriptPending?: boolean;
   activeRunStatus?: string | null;
   activeRunId?: string | null;
   runtimeBudget?: React.ComponentProps<typeof SessionTransportStatus>['runtimeBudget'];
@@ -1014,6 +1016,7 @@ function AgentChatSection({
   transportNotice,
   isWaiting: selectedIsWaiting,
   runtimePhase: selectedRuntimePhase = 'idle',
+  terminalTranscriptPending = false,
   activeRunStatus: selectedActiveRunStatus,
   activeRunId: selectedActiveRunId,
   runtimeBudget,
@@ -1066,6 +1069,7 @@ function AgentChatSection({
   const effectiveAgentId = agentId ? String(agentId) : (agent?.id ? String(agent.id) : null);
 
   const isReadOnlySession = !!activeSession && !shouldUseWritableSessionSurface(activeSession as any, currentUser?.id);
+  const transcriptOnlySession = isTranscriptOnlySession(activeSession, currentUser?.id);
   const isDraftSession = isDraftHumanChatSession(activeSession as any);
   const canMutateSession = Boolean(activeSession) && !isReadOnlySession && agent?.action_capabilities?.can_use !== false;
   const canAnswerQuestion = canMutateSession || (activeSession?.session_kind === 'delegation_run'
@@ -1579,7 +1583,7 @@ function AgentChatSection({
     queryFn: () => guardOperatorRead(
       chatApi.listSessionDecisions(effectiveAgentId!, activeSessionId!, sessionOperatorOptions),
     ),
-    enabled: Boolean(effectiveAgentId && activeSessionId && !isDraftSession && operatorReadEnabled),
+    enabled: Boolean(effectiveAgentId && activeSessionId && !isDraftSession && !transcriptOnlySession && operatorReadEnabled),
     staleTime: 30_000,
     refetchOnWindowFocus: false,
   });
@@ -1644,7 +1648,7 @@ function AgentChatSection({
     queryFn: () => guardOperatorRead(
       ccParityApi.getSessionContextUsage(effectiveAgentId!, activeSessionId!, sessionOperatorOptions),
     ),
-    enabled: Boolean(effectiveAgentId && activeSessionId && !isDraftSession && operatorReadEnabled),
+    enabled: Boolean(effectiveAgentId && activeSessionId && !isDraftSession && !transcriptOnlySession && operatorReadEnabled),
     staleTime: 60_000,
     refetchOnWindowFocus: false,
   });
@@ -1849,6 +1853,7 @@ function AgentChatSection({
       activeRunStatus,
       activeRunId,
       runtimePhase,
+      terminalTranscriptPending,
     }, threadTimelineCacheRef.current),
     [
       activeRunStatus,
@@ -1858,6 +1863,7 @@ function AgentChatSection({
       isStreaming,
       isWaiting,
       runtimePhase,
+      terminalTranscriptPending,
       runtimeSummary,
       sessionIndex,
       sessionWorkbench,

@@ -20,6 +20,7 @@ import {
     buildSessionTranscriptLoadFailureMessage,
     createEmptyTranscriptReplayState,
     isDraftHumanChatSession,
+    isTranscriptOnlySession,
     isUnfinishedSessionRun,
     markActiveRunTerminalInRegistry, normalizeSessionRunId,
     mergePendingUserMessages,
@@ -330,6 +331,7 @@ function AgentDetailInner() {
     const sessionEventFullHydrationKeysRef = useRef<Set<SessionRuntimeKey>>(new Set());
     const transcriptBackfillInFlightRef = useRef<Record<SessionRuntimeKey, Promise<number | void> | undefined>>({});
     const terminalTranscriptReadsRef = useRef(new Map<string, Promise<unknown>>());
+    const [terminalTranscriptPendingKeys, setTerminalTranscriptPendingKeys] = useState<Set<string>>(new Set());
     const toolCallInvalidateAtRef = useRef<Record<SessionRuntimeKey, number>>({});
     const activeRunStateRef = useRef<Record<SessionRuntimeKey, SessionRunState>>({});
     const pendingUserMessagesRef = useRef<Record<SessionRuntimeKey, PendingUserMessage[]>>({});
@@ -418,6 +420,7 @@ function AgentDetailInner() {
 
     const setActiveRunState = (key: SessionRuntimeKey, run: SessionRunState | null) => {
         if (run) {
+            setTerminalTranscriptPendingKeys(previous => previous.has(key) ? previous : new Set(previous).add(key));
             runtimeActivityAtRef.current[key] = Date.now();
             locallyTerminalSessionKeysRef.current.delete(key);
             if (run.runId) locallyTerminalRunIdsRef.current.delete(normalizeSessionRunId(run.runId));
@@ -437,6 +440,9 @@ function AgentDetailInner() {
     };
 
     const observeActiveRunState = (key: SessionRuntimeKey, run: SessionRunState) => {
+        if (!activeRunStateRef.current[key]) {
+            setTerminalTranscriptPendingKeys(previous => previous.has(key) ? previous : new Set(previous).add(key));
+        }
         runtimeActivityAtRef.current[key] = Date.now();
         const next = applySessionActiveRunObservedState(activeRunStateRef.current, sessionUiStateRef.current, key, run);
         activeRunStateRef.current = next.activeRuns;
@@ -617,10 +623,19 @@ function AgentDetailInner() {
 
     const reconcileTerminalTranscript = (sess: any, agentId: string) => {
         const key = buildSessionRuntimeKey(agentId, String(sess.id));
+        if (terminalTranscriptReadsRef.current.has(key)) return;
+        setTerminalTranscriptPendingKeys(previous => new Set(previous).add(key));
         reconcileSessionTranscriptSafely(() => reconcileSessionTranscriptTail(
             terminalTranscriptReadsRef.current, key, transcriptBackfillInFlightRef.current[key],
             () => backfillSessionTranscript(sess, agentId, true),
-        ), () => undefined);
+        ).finally(() => {
+            sessionMessageStore.flushSession(String(sess.id));
+            setTerminalTranscriptPendingKeys(previous => {
+                const next = new Set(previous);
+                next.delete(key);
+                return next;
+            });
+        }), () => undefined);
     };
 
     const isWritableSession = (sess: any) => {
@@ -907,7 +922,7 @@ function AgentDetailInner() {
     };
 
     const fetchBranchLineage = async (agentId: string | undefined = id, sessionId: string | undefined = activeSession?.id ? String(activeSession.id) : undefined) => {
-        if (!agentId || !sessionId) {
+        if (!agentId || !sessionId || isTranscriptOnlySession(activeSession, currentUser?.id)) {
             setBranchLineage([]);
             return;
         }
@@ -2368,7 +2383,7 @@ function AgentDetailInner() {
     const { data: persistedRuntimeSummary, error: persistedRuntimeSummaryError } = useQuery({
         queryKey: ['chat-runtime-summary', id, activeSession?.id, activeSession?.operator_view ? normalizedOperatorReason : 'owner'],
         queryFn: () => chatApi.getRuntimeSummary(String(activeSession!.id), operatorSessionRequestOptions(Boolean(activeSession?.operator_view), normalizedOperatorReason)),
-        enabled: canLoadAgentScopedData && activeTab === 'chat' && !!activeSession?.id && activeOperatorSessionAuthorized && (!activeSession?.operator_view || Boolean(canOperatorInspect && normalizedOperatorReason)) && activeSession?.is_pending_session_lookup !== true && !sessionAccessError && !isDraftHumanChatSession(activeSession),
+        enabled: canLoadAgentScopedData && activeTab === 'chat' && !!activeSession?.id && activeOperatorSessionAuthorized && !isTranscriptOnlySession(activeSession, currentUser?.id) && (!activeSession?.operator_view || Boolean(canOperatorInspect && normalizedOperatorReason)) && activeSession?.is_pending_session_lookup !== true && !sessionAccessError && !isDraftHumanChatSession(activeSession),
         refetchInterval: activeTab === 'chat' && activeSession?.id && activeSession?.is_pending_session_lookup !== true && !sessionAccessError && !isDraftHumanChatSession(activeSession) ? 10000 : false,
     });
     useEffect(() => {
@@ -2413,7 +2428,7 @@ function AgentDetailInner() {
         if (shouldReconcileTranscriptOnActiveRunAbsence({
             observedActiveRun: activeSessionRun,
             hasLocalActiveRuntime: staleRuntimeState,
-        })) {
+        }) || (activeSessionRun === null && terminalTranscriptPendingKeys.has(key))) {
             // The authoritative active-run read observed the turn's terminal state
             // while live frames may have been lost; the UI grace below must not
             // defer projection truth. Reconcile the durable transcript now.
@@ -2740,6 +2755,8 @@ function AgentDetailInner() {
                                     ? t('agent.chat.groupDiscoveryUnavailable', 'Shared group conversations are unavailable. Try refreshing.') : null)}
                             isWaiting={isWaiting}
                             runtimePhase={activePhase}
+                            terminalTranscriptPending={Boolean(id && activeSession?.id
+                                && terminalTranscriptPendingKeys.has(buildSessionRuntimeKey(id, String(activeSession.id))))}
                             activeRunStatus={currentActiveRunState?.status || null}
                             activeRunId={currentActiveRunState?.runId || null}
                             runtimeBudget={currentActiveRunState?.runtimeBudget || null}

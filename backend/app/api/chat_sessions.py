@@ -1032,7 +1032,7 @@ async def _get_run_session_and_agent(
     require_writable: bool = False,
     require_execution: bool = False,
 ) -> tuple[ChatSession, Agent, str]:
-    read_only = action in {"read_workbench", "read_session_index", "read_context_usage", "read_lineage", "read_decision_history"} and not require_writable and not require_execution
+    read_only = action in {"read_workbench", "read_session_index"} and not require_writable and not require_execution
     result = await db.execute(select(ChatSession).where(ChatSession.id == session_id,
         ((ChatSession.agent_id == agent_id) | (ChatSession.peer_agent_id == agent_id))
         if read_only else ChatSession.agent_id == agent_id))
@@ -1044,7 +1044,7 @@ async def _get_run_session_and_agent(
         check_agent_operator_reachability(db, current_user, agent_id)
         if operator_view and not require_writable
         else (check_agent_history_access(db, current_user, agent_id)
-            if action in {"read_workbench", "read_session_index", "read_active_run", "read_session_approval", "read_context_usage", "read_lineage", "read_branches", "read_thread", "export_session", "read_decision_history"}
+            if action in {"read_workbench", "read_session_index", "read_active_run", "read_session_approval", "read_context_usage", "read_lineage", "read_branches", "read_thread", "export_session"}
             and not require_writable and not require_execution
             else check_agent_access(db, current_user, agent_id))
     )

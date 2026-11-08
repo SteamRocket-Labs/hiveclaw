@@ -609,12 +609,12 @@ def replay_t0_session_events(
 
 
 def find_t0_transcript_event(*, agent_id, session_id, transcript_event_id, transcript_sequence,
-    data_root: Path | str | None = None) -> T0SessionEvent | None:
+    data_root: Path | str | None = None, after_transcript_event_id=None) -> T0SessionEvent | None:
     """Recover an append-before-DB-ack from the ordered, unfinished suffix.
 
-    A committed earlier transcript sequence proves the requested row has not
-    been appended. Read backwards to that frontier instead of replaying the
-    session for each delivered event. No new index or receipt is persisted.
+    The ordered bridge can supply its last acknowledged predecessor as an
+    exact lower boundary. Numeric transcript order alone cannot prove absence
+    in a ledger written by another caller; those reads fall back to replay.
     """
     session_dir = _session_dir(data_root, agent_id, session_id)
     index = _read_index(session_dir)
@@ -639,9 +639,13 @@ def find_t0_transcript_event(*, agent_id, session_id, transcript_event_id, trans
             if str(event.metadata.get("transcript_event_id") or "") == str(transcript_event_id):
                 found = event
                 break
-            sequence = event.metadata.get("transcript_sequence")
-            if isinstance(sequence, int) and sequence < transcript_sequence:
+            if after_transcript_event_id is not None and str(event.metadata.get("transcript_event_id") or "") == str(after_transcript_event_id):
                 break
+            sequence = event.metadata.get("transcript_sequence")
+            if after_transcript_event_id is None and type(sequence) is int and sequence < transcript_sequence:
+                return next((candidate for candidate in replay_t0_session_events(agent_id=agent_id,
+                    session_id=session_id, data_root=data_root)
+                    if candidate.metadata.get("transcript_event_id") == str(transcript_event_id)), None)
         else:
             continue
         break

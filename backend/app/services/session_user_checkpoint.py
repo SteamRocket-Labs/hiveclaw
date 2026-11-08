@@ -154,9 +154,9 @@ def user_checkpoint_content(event: Any, *, draft: bool = False, display: bool = 
         ):
             return "\n".join(
                 part.get("text", part.get("content", "")) if draft
-                else part.get("display_content", part.get("text", part.get("content", "")))
+                else part.get("display_content", "")
                 for part in content_parts if isinstance(part, dict) and part.get("type") == "text"
-                and isinstance(part.get("text", part.get("content")), str)
+                and isinstance(part.get("text", part.get("content")) if draft else part.get("display_content", ""), str)
             )
         rendered = render_human_input_content(content_parts)
         if rendered:

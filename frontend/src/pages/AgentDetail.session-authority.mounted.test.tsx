@@ -697,11 +697,31 @@ it.each([
     mocks.activeSessionRun = null;
     act(() => mocks.chatProps.onSetChatInput('Trigger the authoritative active-run read'));
   }
+  await waitFor(() => expect(mocks.chatProps.terminalTranscriptPending).toBe(true));
   await act(async () => { olderRead.resolve([]); await read; });
   await screen.findByText('The saved continuation is ready.');
   await waitFor(() => expect(mocks.chatProps.chatMessages.find((message: any) => message.sessionItem?.kind === 'assistant_final')?.artifacts)
     .toEqual(expect.arrayContaining([expect.objectContaining({ id: 'new-report', path: 'workspace/report.md' })])));
   expect(mocks.getSessionTranscript.mock.calls.length).toBe(initialReads + 2);
+  await waitFor(() => expect(mocks.chatProps.terminalTranscriptPending).toBe(false));
+});
+
+it.each(['stream', 'rest'] as const)('releases terminal delivery after a fresh %s read with no reply', async channel => {
+  mocks.userRole = 'member';
+  mocks.activeSessionRun = { run_id: 'run-1', status: 'running' };
+  await mountOwnedArtifactWork();
+  await waitFor(() => expect(mocks.chatProps.terminalTranscriptPending).toBe(true));
+  const fresh = deferred<any[]>();
+  mocks.getSessionTranscript.mockReturnValueOnce(fresh.promise);
+  if (channel === 'stream') {
+    await act(async () => { receiveLiveMessage({ type: 'done', run_id: 'run-1', content: '' }); });
+  } else {
+    mocks.activeSessionRun = null;
+    act(() => mocks.chatProps.onSetChatInput('Observe terminal'));
+  }
+  await waitFor(() => expect(mocks.chatProps.terminalTranscriptPending).toBe(true));
+  await act(async () => { fresh.resolve([]); });
+  await waitFor(() => expect(mocks.chatProps.terminalTranscriptPending).toBe(false));
 });
 
 it('replaces the optimistic pasted text from the live server input before the send response', async () => {

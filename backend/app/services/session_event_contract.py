@@ -1627,7 +1627,7 @@ def serialize_session_event(row: Any, *, audience: str = "operator") -> dict[str
         "metadata": metadata,
         "legacy": True,
     }
-    if item_kind == "human_input" and isinstance(metadata.get("display_content"), str) and metadata["display_content"]:
+    if audience != "operator" and item_kind == "human_input" and isinstance(metadata.get("display_content"), str) and metadata["display_content"]:
         payload["content"] = metadata["display_content"]
     if item_kind in {"tool_call", "tool_result"}:
         payload.update(_legacy_tool_payload(row, metadata))

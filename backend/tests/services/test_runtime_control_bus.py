@@ -329,7 +329,7 @@ async def test_lifecycle_source_outage_is_typed_without_private_database_text(mo
 
 
 @pytest.mark.asyncio
-async def test_runtime_control_transcript_t0_bridge_dispatches_to_bridge(monkeypatch):
+async def test_runtime_control_transcript_t0_bridge_wakes_sweeper_without_blocking_listener(monkeypatch):
     import app.services.runtime_control_bus as bus
 
     calls = []
@@ -340,17 +340,18 @@ async def test_runtime_control_transcript_t0_bridge_dispatches_to_bridge(monkeyp
 
     monkeypatch.setattr(bus, "bridge_transcript_event_to_t0", fake_bridge)
 
-    transcript_event_id = uuid4()
-    handled = await bus.handle_runtime_control_message(
-        {
-            "schema": bus.RUNTIME_CONTROL_SCHEMA,
-            "type": "transcript_t0_bridge",
-            "transcript_event_id": str(transcript_event_id),
-        }
-    )
-
-    assert handled is True
-    assert calls == [{"transcript_event_id": str(transcript_event_id)}]
+    wake = asyncio.Event()
+    monkeypatch.setattr(bus, "_TRANSCRIPT_PROJECTION_WAKE", wake)
+    class Pubsub:
+        async def subscribe(self, _channel): pass
+        async def listen(self):
+            yield {"type": "message", "data": json.dumps({"schema": bus.RUNTIME_CONTROL_SCHEMA,
+                "type": "transcript_t0_bridge", "transcript_event_id": str(uuid4())})}
+    async def redis(): return SimpleNamespace(pubsub=Pubsub)
+    monkeypatch.setattr(bus, "get_redis", redis)
+    await bus._listen_runtime_control_once()
+    assert wake.is_set()
+    assert calls == []
 
 
 @pytest.mark.asyncio

@@ -26,6 +26,13 @@ async def test_long_session_delivery_has_constant_work_and_batch_transactions(ow
     from app.services.session_event_outbox import SessionEventOutboxPublisher
 
     monkeypatch.setattr(database, "async_session", owner_sessionmaker)
+    # A global sweeper must not make this session's cost depend on other tests.
+    foreign_tenant, foreign_user, foreign_agent, foreign_session, _ = await _seed_session(owner_sessionmaker)
+    async with owner_sessionmaker() as db:
+        await append_session_event(db=db, tenant_id=foreign_tenant, agent_id=foreign_agent,
+            session_id=foreign_session, actor_type="user", event_type="user_message", role="user",
+            user_id=foreign_user, content="Unrelated pending projection", materialize_chat_message=False)
+        await db.commit()
     samples = []
     for history_length in (2000, 4000):
         tenant_id, user_id, agent_id, session_id, _ = await _seed_session(owner_sessionmaker)
@@ -68,7 +75,7 @@ async def test_long_session_delivery_has_constant_work_and_batch_transactions(ow
             bridge = {**counts, "seconds": time.perf_counter() - start}
             counts.update(statements=0, commits=0, parsed_records=0)
             start = time.perf_counter()
-            projected = await sweep_pending_transcript_t0_bridges(limit=100)
+            projected = await sweep_pending_transcript_t0_bridges(limit=100, session_id=session_id)
             sweep = {**counts, "seconds": time.perf_counter() - start, "projected": projected}
             counts.update(statements=0, commits=0, parsed_records=0)
             publisher = SessionEventOutboxPublisher(session_factory=owner_sessionmaker)
@@ -85,6 +92,8 @@ async def test_long_session_delivery_has_constant_work_and_batch_transactions(ow
             monkeypatch.setattr(ledger, "_event_from_record", original)
         samples.append({"history": history_length, "bridge": bridge, "sweep": sweep, "outbox": outbox})
         async with owner_sessionmaker() as db:
+            assert await db.scalar(select(ChatTranscriptEvent.projection_status).where(
+                ChatTranscriptEvent.session_id == foreign_session)) == "pending"
             await db.execute(update(ChatTranscriptEvent).where(ChatTranscriptEvent.session_id == session_id)
                 .values(projection_status="projected"))
             await db.commit()
@@ -148,7 +157,7 @@ async def test_cancel_reaches_inflight_model_while_transcript_projection_is_slow
         runtime._CANCEL_EVENTS.pop(run_id, None)
 
 
-@pytest.mark.parametrize("resource", ["index", "context-usage", "decisions", "workbench", "lineage"])
+@pytest.mark.parametrize("resource", ["index", "workbench"])
 async def test_peer_child_subresources_share_transcript_read_authority(owner_sessionmaker, resource):
     from app.api import chat_sessions as api
     from app.models.agent import Agent

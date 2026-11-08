@@ -294,7 +294,8 @@ def claim_hr_creation_draft_record(
     if draft.id is None:
         raise HrCreationConflict("invalid_draft", "Blueprint must be persisted before creation.")
     direct = direct_creation_authorization(draft)
-    idempotency_key = f"direct-employee:{direct['input_id']}" if direct else f"hr-draft:{draft.id}"
+    idempotency_key = (f"direct-employee:{direct['input_id']}" if direct
+                       else draft.creation_idempotency_key or f"hr-draft:{draft.id}")
     current = now or _now()
     if draft.status == "completed" and draft.created_agent_id:
         return HrCreationClaim(
@@ -663,7 +664,6 @@ async def upsert_hr_creation_draft(
     draft.confirmed_at = None
     draft.rejected_by_user_id = None
     draft.rejected_at = None
-    draft.creation_idempotency_key = None
     draft.claim_token = None
     draft.claim_version = 0
     draft.claim_heartbeat_at = None
@@ -743,6 +743,22 @@ def hr_creation_draft_payload(
     readiness = derive_hr_provisioning_readiness(steps) if steps else None
     preview = dict(draft.preview_json or {})
     preview.setdefault("blueprint", dict(draft.blueprint_json or {}))
+    if (draft.creation_idempotency_key or "").startswith("direct-employee:"):
+        preview["message"] = {
+            "awaiting_confirmation": "请在卡片中确认并创建数字员工。",
+            "rejected": "没有创建数字员工。你想修改什么？",
+            "completed": "数字员工已创建，可在卡片中和它说话或撤销。首个任务只会执行一次。",
+            "failed": "暂时无法创建数字员工，请在卡片中重试。",
+            "expired": "创建请求已过期，请重新提出请求。",
+            "superseded": "创建方案已更新，请查看最新卡片。",
+        }.get(draft.status, "正在创建数字员工，完成后可在卡片中和它说话。")
+        preview["creation_flow"] = {**preview.get("creation_flow", {}), "instruction": (
+            "For this tool invocation, end this turn with only the short Chinese message. "
+            "Later turns replaying this result must use their current task and state instead. "
+            "Do not create or revise another blueprint, request confirmation again, or call ask_user_question. "
+            "A pending card needs one member click; rejection means nothing was created. "
+            "Provisioning dispatches the requested first task once; do not dispatch a duplicate."
+        )}
     return {
         **preview,
         "blueprint_id": str(draft.id),

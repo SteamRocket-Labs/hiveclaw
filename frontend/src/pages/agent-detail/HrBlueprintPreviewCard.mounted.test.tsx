@@ -127,6 +127,34 @@ it('recovers a requested first task on the existing employee without confirming 
   expect(hrMocks.confirm).not.toHaveBeenCalled();
 });
 
+it.each(['rejected', 'completed'])('reloads %s from the draft instead of the pending transcript', async (status) => {
+  hrMocks.get.mockResolvedValue({ blueprint_id: 'draft-1', blueprint_version: 1, draft_status: status,
+    blueprint: { name: '周报助手', permission_scope: 'self' },
+    summary: { mission: '整理周报' },
+    created_agent_id: status === 'completed' ? 'employee' : null,
+    creation_authorization: { mode: 'policy_direct', first_task: '列出三条要点' } });
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  render(<QueryClientProvider client={client}><HrBlueprintPreviewCard agentId="source" preview={preview} /></QueryClientProvider>);
+  await screen.findByRole('heading', { name: '周报助手' });
+  expect(screen.queryByRole('button', { name: 'agent.chat.toolResults.confirmAndCreate' })).toBeNull();
+  if (status === 'rejected') {
+    expect(screen.getAllByText('No digital employee was created. What would you like to change?')).toHaveLength(1);
+    expect(screen.queryByRole('link', { name: 'Talk to it' })).toBeNull();
+  } else {
+    expect(screen.getByRole('link', { name: 'Talk to it' }).getAttribute('href')).toBe('/agents/employee#chat');
+    expect(screen.getByRole('button', { name: 'Undo' })).toBeTruthy();
+  }
+  expect(hrMocks.confirm).not.toHaveBeenCalled();
+});
+
+it('keeps internal confirmation errors out of the member card', async () => {
+  hrMocks.confirm.mockRejectedValue(new Error('focus_content is empty; creation gates incomplete: activation bp_private'));
+  renderCard();
+  fireEvent.click(screen.getByRole('button', { name: 'agent.chat.toolResults.confirmAndCreate' }));
+  expect(await screen.findByRole('alert')).toHaveProperty('textContent', 'Could not update creation. Please reload the card and retry.');
+  expect(document.body.textContent).not.toMatch(/focus_content|creation gates|activation|bp_private/);
+});
+
 describe('HrBlueprintPreviewCard revision UX', () => {
   it('shows the preserved company reason when the first task is blocked', async () => {
     const cardPreview = { ...preview, status: 'completed', authorizationMode: 'policy_direct',
@@ -191,7 +219,8 @@ describe('HrBlueprintPreviewCard revision UX', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Preview changes' }));
 
-    expect((await screen.findByRole('alert')).textContent).toContain('network offline');
+    expect((await screen.findByRole('alert')).textContent).toBe('Could not update creation. Please reload the card and retry.');
+    expect(document.body.textContent).not.toContain('network offline');
     expect((screen.getByRole('textbox', { name: 'What would you like to change?' }) as HTMLTextAreaElement).value)
       .toBe('Keep this change for retry.');
     expect(onSendMessage).toHaveBeenCalledTimes(1);

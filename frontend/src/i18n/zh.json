@@ -2685,6 +2685,8 @@
         "undoCreation": "撤销",
         "createdBotStopped": "已停用",
         "creationFailed": "创建失败，请重试。",
+        "creationActionFailed": "操作未完成，请刷新卡片后重试。",
+        "creationRejected": "没有创建数字员工。你想修改什么？",
         "creationRefused": "暂时无法创建助手，请联系管理员。",
         "undoCreationFailed": "暂时无法撤销，请重试。",
         "retryFirstTask": "重试首任务",

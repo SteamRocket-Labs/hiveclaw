@@ -22,6 +22,7 @@ export interface HrCreationDraft {
   blueprint_version: number;
   blueprint_hash: string;
   draft_status: string;
+  message?: string | null;
   blueprint: Record<string, unknown>;
   risk_class?: string | null;
   missing_gates?: string[];

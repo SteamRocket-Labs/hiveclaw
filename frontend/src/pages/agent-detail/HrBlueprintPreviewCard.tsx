@@ -190,8 +190,8 @@ export function HrBlueprintPreviewCard({ agentId, preview, onSendMessage }: HrBl
       } else if (durableAction === 'retry') {
         await retryMutation.mutateAsync();
       }
-    } catch (error) {
-      setActionError(error instanceof Error ? error.message : String(error));
+    } catch {
+      setActionError(t('agent.chat.toolResults.creationActionFailed', 'Could not update creation. Please reload the card and retry.'));
     }
   };
   const submitRevision = async () => {
@@ -206,8 +206,8 @@ export function HrBlueprintPreviewCard({ agentId, preview, onSendMessage }: HrBl
       }));
       setRevisionText('');
       setRevisionOpen(false);
-    } catch (error) {
-      setActionError(error instanceof Error ? error.message : String(error));
+    } catch {
+      setActionError(t('agent.chat.toolResults.creationActionFailed', 'Could not update creation. Please reload the card and retry.'));
     } finally {
       setRevisionSubmitting(false);
     }
@@ -216,16 +216,16 @@ export function HrBlueprintPreviewCard({ agentId, preview, onSendMessage }: HrBl
     setActionError(null);
     try {
       await rejectMutation.mutateAsync();
-    } catch (error) {
-      setActionError(error instanceof Error ? error.message : String(error));
+    } catch {
+      setActionError(t('agent.chat.toolResults.creationActionFailed', 'Could not update creation. Please reload the card and retry.'));
     }
   };
   const cancel = async () => {
     setActionError(null);
     try {
       await cancelMutation.mutateAsync();
-    } catch (error) {
-      setActionError(error instanceof Error ? error.message : String(error));
+    } catch {
+      setActionError(t('agent.chat.toolResults.creationActionFailed', 'Could not update creation. Please reload the card and retry.'));
     }
   };
   const busy = confirmMutation.isPending
@@ -247,6 +247,8 @@ export function HrBlueprintPreviewCard({ agentId, preview, onSendMessage }: HrBl
         <span className="hr-blueprint-status">{stopped ? t('agent.chat.toolResults.createdBotStopped', 'Stopped') : statusLabel}</span>
       </header>
       {canonicalPreview.mission && <p className="hr-blueprint-mission">{canonicalPreview.mission}</p>}
+      {status === 'rejected' && <p>{t('agent.chat.toolResults.creationRejected', 'No digital employee was created. What would you like to change?')}</p>}
+      {actionError && <p role="alert">{actionError}</p>}
       {status === 'failed' && <p role="alert">{(['capability_denied', 'approval_required'].includes(String(draft?.failure?.code))
         && typeof draft?.failure?.message === 'string' && draft.failure.message)
         || t('agent.chat.toolResults.creationFailed', 'Creation failed. Please retry.')}</p>}

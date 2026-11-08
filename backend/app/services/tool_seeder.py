@@ -126,7 +126,7 @@ async def assign_default_tools_to_agent(db, agent_id) -> int:
     """Assign all is_default=True tools to a newly created agent.
 
     Call this after creating an agent to ensure it has all platform tools.
-    Excludes HR-only tools (create_digital_employee) from normal agents.
+    Excludes HR-only preview and creation tools from normal agents.
     Returns the number of tools assigned.
     """
     result = await db.execute(select(Tool).where(Tool.is_default.is_(True)))

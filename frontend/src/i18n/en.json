@@ -2685,6 +2685,8 @@
         "undoCreation": "Undo",
         "createdBotStopped": "Stopped",
         "creationFailed": "Creation failed. Please retry.",
+        "creationActionFailed": "Could not update creation. Please reload the card and retry.",
+        "creationRejected": "No digital employee was created. What would you like to change?",
         "creationRefused": "Cannot create this employee. Please contact your administrator.",
         "undoCreationFailed": "Could not undo creation. Please retry.",
         "retryFirstTask": "Retry first task",

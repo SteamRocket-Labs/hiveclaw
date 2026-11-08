@@ -7,6 +7,15 @@ import {
   parsePreviewAgentBlueprintResult,
 } from './toolResultEnvelope';
 
+it.each(['awaiting_confirmation', 'rejected', 'completed'])('uses the Chinese next step for creation %s', (status) => {
+  const message = status === 'rejected' ? '没有创建数字员工。你想修改什么？' : '请在卡片中查看数字员工。';
+  const result = normalizeToolCallResult('create_employee_from_request', { status: 'preview', draft_status: status,
+    blueprint_id: 'draft', blueprint_hash: 'bp_private', blueprint: { name: '周报助手' }, message });
+  expect(result.displayResult).toBe(message);
+  expect(result.toolMeta).toMatchObject({ kind: 'hr_preview', status });
+  expect(result.displayResult).not.toMatch(/bp_private|Blueprint|activation/);
+});
+
 it('recognizes only a confirmed recorded first-task receipt', () => {
   const receipt = { ok: true, status: 'queued', first_task_draft_id: 'draft', runtime_task_id: 'same-child' };
   expect(normalizeToolCallResult('delegate_to_agent', receipt).toolMeta).toEqual({

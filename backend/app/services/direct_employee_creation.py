@@ -306,20 +306,9 @@ async def create_from_request(db, request):
     for field in ("skill_names", "effective_skill_names", "requested_skill_names", "deferred_skill_names"):
         preview["blueprint"][field] = []
     preview["will_install"] = []
-    direct_flow = {
-        **preview["creation_flow"], "mode": "policy_direct",
-        "instruction": (
-            "The approved private package is authorized by this human request and current policy; no preview click is needed. "
-            "Read draft_status and the durable provisioning receipt for execution state. "
-            "first_task_autostart controls the generic boot task only. "
-            + ("The explicit first task in creation_authorization is already authorized by the original request; "
-               "the provisioning worker dispatches it once after the employee is ready. Do not dispatch another copy. "
-               "Read provisioning.first_task and the original-work result for its progress and outcome."
-               if evidence["first_task"] else "No explicit first task was requested; creation does not authorize unrelated work.")
-        ),
-    }
+    preview["ready_now"] = ["默认工具与技能", "独立工作空间与记忆"]
     if direct:
-        preview["creation_flow"] = direct_flow
+        preview["creation_flow"]["mode"] = "policy_direct"
         preview["confirmation_requirements"] = {"required": False, "authorization_mode": "policy_direct"}
     preview["blueprint"]["approved_model_id"] = str(model_id)
     preview["blueprint_hash"] = canonical_hr_blueprint_hash(preview["blueprint"])

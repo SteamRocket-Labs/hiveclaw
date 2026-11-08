@@ -1563,11 +1563,12 @@ async def test_original_work_drives_real_native_provisioning_and_reopens_the_rec
         )
 
 
-def test_preview_is_discoverable_by_native_employees_but_creation_stays_worker_owned():
+def test_native_employees_use_one_creation_tool_while_legacy_creation_stays_hr_owned():
     from types import SimpleNamespace
     from app.services.agent_tools import _core_tools_for_agent
 
     agent = SimpleNamespace(agent_class="internal_tenant", name="My Assistant", agent_type="native")
     names = {tool["function"]["name"] for tool in _core_tools_for_agent(agent)}
-    assert "preview_agent_blueprint" in names
+    assert "create_employee_from_request" in names
+    assert "preview_agent_blueprint" not in names
     assert "create_digital_employee" not in names

@@ -1645,7 +1645,9 @@ async def _claim_canonical_hr_blueprint(
             "Use approved company model and private native defaults; no extra installs, sharing, credentials or routines. "
             "Model owns interpretation: ordinary task requests use existing employees or temporary helpers instead. "
             "Only include first_task when the user explicitly requested that work; it is dispatched once after readiness. "
-            "Missing authority/defaults returns a recoverable blocker."
+            "Missing authority/defaults returns a recoverable blocker. "
+            "A returned card already owns this request: end the turn with its short Chinese message; "
+            "never create another blueprint or ask for confirmation again."
         ),
         parameters={
             "type": "object",

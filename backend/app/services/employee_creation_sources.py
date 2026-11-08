@@ -179,7 +179,9 @@ async def load_known_native_default_context(db, *, tenant_id, agent_id, ref):
     known = {
         "schema": "hive.native_default_context.v1",
         "source_revision_id": str(revision.id),
-        "identity": agent_identity_content(ASSISTANT_EMPLOYEE_NAME, ASSISTANT_ROLE),
+        # Editable labels follow the observation-time rule; resident sources below
+        # still require their original native-default witness.
+        "identity": agent_identity_content(agent.name, agent.role_description),
     }
     if ref == "memory/self/self.md":
         known["resident_sources"] = {ref: hashlib.sha256(EMPTY_SELF_CONTENT.encode("utf-8")).hexdigest()}

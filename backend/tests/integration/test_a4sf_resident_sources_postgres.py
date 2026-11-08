@@ -36,6 +36,8 @@ async def test_renamed_default_assistant_keeps_its_original_resident_rule(
     owner_sessionmaker, app_user_sessionmaker, monkeypatch, filled,
 ):
     from app.services.employee_creation_sources import load_known_native_default_context
+    from app.services.agent_context import agent_identity_content
+    from app.services.config_versioning import canonical_content_hash
 
     tenant_id, user_id = uuid.uuid4(), uuid.uuid4()
     tag = user_id.hex
@@ -70,11 +72,13 @@ async def test_renamed_default_assistant_keeps_its_original_resident_rule(
                 agent.role_description = "Edited role description"
                 await db.commit()
             user = await db.get(User, user_id)
+            identity = {"source_kind": "agent_identity", "source_id": f"{agent_id}\nidentity",
+                "source_version": canonical_content_hash(agent_identity_content(agent.name, agent.role_description))}
             if filled:
                 with pytest.raises(ContentInputReceiptError, match="exact bootstrap witness"):
-                    await validate_browser_input_dependencies(db, tenant_id, user, [dependency])
+                    await validate_browser_input_dependencies(db, tenant_id, user, [dependency, identity])
             else:
-                await validate_browser_input_dependencies(db, tenant_id, user, [dependency])
+                await validate_browser_input_dependencies(db, tenant_id, user, [dependency, identity])
             known = await load_known_native_default_context(
                 db, tenant_id=tenant_id, agent_id=agent_id, ref="memory/self/self.md")
             assert known is not None, "Editable labels must not change the native-default source rule."

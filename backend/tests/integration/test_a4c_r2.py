@@ -218,9 +218,16 @@ async def test_recovered_attachment_is_removed_from_rejections(monkeypatch):
     part = {"path": "workspace/report.md", "artifact_id": str(uuid.uuid4())}
     monkeypatch.setattr("app.services.chat_artifact_delivery.materialize_declared_read_artifacts",
         AsyncMock(return_value=[part]))
-    task = NS(metadata_json={"rejected_artifact_paths": [part["path"]]})
-    result = NS(id=uuid.uuid4(), seal_json={"semantic_content": "DELIVERABLE: workspace/report.md"})
-    await _recover_read_artifact_selection(DB(), task=task, result=result)
+    session_id = uuid.uuid4()
+    task = NS(id=uuid.uuid4(), tenant_id=uuid.uuid4(), parent_agent_id=uuid.uuid4(),
+        root_session_id=str(session_id), root_user_id=uuid.uuid4(),
+        metadata_json={"rejected_artifact_paths": [part["path"]]})
+    result = NS(id=uuid.uuid4(), session_id=session_id,
+        seal_json={"semantic_content": "DELIVERABLE: workspace/report.md"})
+    db = DB()
+    db.scalars = AsyncMock(return_value=[])
+    await _recover_read_artifact_selection(db, task=task, result=result)
+    db.scalars.assert_awaited_once()
     assert task.metadata_json["artifacts"] == [part]
     assert task.metadata_json["rejected_artifact_paths"] == []
 

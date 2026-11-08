@@ -318,17 +318,22 @@ class ToolGovernanceResolver:
                     source="tool_governance_mcp_mode",
                 ) as db:
                     result = await db.execute(
-                        select(Tool)
+                        select(Tool, AgentTool.enabled)
+                        .join(AgentTool, AgentTool.tool_id == Tool.id)
                         .where(
+                            AgentTool.agent_id == agent_id,
                             Tool.name == target,
                             Tool.type == "mcp",
                             Tool.enabled.is_(True),
                             Tool.tenant_id == tenant_id,
                         )
                     )
-                    tool = result.scalar_one_or_none()
-                    if tool is None:
+                    row = result.one_or_none()
+                    if row is None:
                         return None
+                    tool, assignment_enabled = row
+                    if not assignment_enabled:
+                        return "deny"
                     return await resolve_agent_mcp_tool_mode(db, agent_id, tool)
 
             return await self._mcp_tool_mode_cache.get((agent_id, target), _load)

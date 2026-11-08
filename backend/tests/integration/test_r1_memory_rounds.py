@@ -176,7 +176,7 @@ async def test_partial_search_keeps_receipted_fact_when_one_owned_source_is_revo
     saved, _ = await memory_call(n, app_user_sessionmaker, "save_memory",
         {"category": "project", "content": "ORCHID independent available fact"},
         session=session, run=run)
-    assert "Saved to explicit memory overlay" in saved, saved
+    assert "Saved memory [project] (capabilities):" in saved, saved
     async with owner_sessionmaker() as db:
         (await db.get(ChatSession, original_session)).user_id = n.foreign
         await db.commit()

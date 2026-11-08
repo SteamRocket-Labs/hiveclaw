@@ -151,7 +151,7 @@ async def save_group(g, factory):
 
     result, invocation = await group_call(g, factory, "save_memory",
         {"content": "Remember our group release cadence GROUP_RELEASE_MARKER", "category": "project"})
-    assert "Saved to explicit memory overlay" in result, result
+    assert "Saved memory [project] (capabilities):" in result, result
     async with tenant_scoped_session(g.n.tenant, session_factory=factory) as db:
         row = await db.get(ContentInputReceipt, uuid5(invocation.id, "explicit-memory-source"))
         assert row.authority_json["audience_kind"] == "group"
@@ -224,7 +224,7 @@ async def test_another_member_can_correct_group_memory_in_the_original_group_wor
     corrected, invocation = await group_call(g, app_user_sessionmaker, "update_memory",
         {"memory_id": g.entry_id, "content": "Our group cadence MEMBER_CORRECTION_MARKER", "reason": "incorrect"},
         user_id=n.foreign, include_history=True)
-    assert "Updated explicit memory" in corrected, corrected
+    assert "Updated memory [project]:" in corrected, corrected
     async with tenant_scoped_session(n.tenant, session_factory=app_user_sessionmaker) as db:
         row = await db.get(ContentInputReceipt, uuid5(invocation.id, "explicit-memory-source"))
         assert row.authority_json["owner_user_id"] == str(n.foreign)
@@ -335,7 +335,7 @@ async def test_group_correction_changes_later_member_work_and_privacy_withdrawal
     changed, invocation = await group_call(g, app_user_sessionmaker, "update_memory",
         {"memory_id": g.entry_id, "content": "Our group release cadence is GROUP_REVISED_MARKER", "reason": "incorrect"},
         include_history=True)
-    assert "Updated explicit memory" in changed, changed
+    assert "Updated memory [project]:" in changed, changed
     async with tenant_scoped_session(n.tenant, session_factory=app_user_sessionmaker) as db:
         model = await db.scalar(select(SessionModelResult).where(SessionModelResult.provider_request_id == invocation.provider_request_id))
         dependencies, complete = _model_dependencies(model)
@@ -351,7 +351,7 @@ async def test_group_correction_changes_later_member_work_and_privacy_withdrawal
     used, use_invocation = await memory_call(n, app_user_sessionmaker, "save_memory",
         {"content": "For my next release note use GROUP_REVISED_MARKER", "category": "project"},
         user=n.foreign, session=g.s.second_session, run=g.s.second_run, include_history=True)
-    assert "Saved to explicit" in used, used
+    assert "Saved memory [project] (capabilities):" in used, used
     async with tenant_scoped_session(n.tenant, session_factory=app_user_sessionmaker) as db:
         derived = await db.get(ContentInputReceipt, uuid5(use_invocation.id, "explicit-memory-source"))
         assert derived.authority_json["audience_kind"] == "private"
@@ -374,7 +374,7 @@ async def test_private_correction_cannot_disclose_into_group_memory(group_memory
     before = {p.relative_to(n.root).as_posix(): p.read_bytes() for p in (n.root / "memory/explicit").rglob("*") if p.is_file()}
     result, invocation = await memory_call(n, app_user_sessionmaker, "update_memory",
         {"memory_id": g.entry_id, "content": "My private correction PRIVATE_GROUP_PROMOTION_MARKER", "reason": "incorrect"})
-    assert "Updated explicit" not in result and "PRIVATE_GROUP_PROMOTION_MARKER" not in result, result
+    assert "Updated memory" not in result and "PRIVATE_GROUP_PROMOTION_MARKER" not in result, result
     assert "Return to the group where this memory was recorded" in result, result
     after = {p.relative_to(n.root).as_posix(): p.read_bytes() for p in (n.root / "memory/explicit").rglob("*") if p.is_file()}
     assert before == after
@@ -506,7 +506,7 @@ async def test_group_write_losing_membership_after_file_commit_can_be_cancelled_
     result, invocation = await group_call(g, app_user_sessionmaker, "update_memory",
         {"memory_id": g.entry_id, "content": "Group cadence UNPUBLISHED_GROUP_CHANGE_MARKER", "reason": "incorrect"})
     operation_id = str(uuid5(invocation.id, "explicit-memory-source"))
-    assert "Updated explicit" not in result and "UNPUBLISHED_GROUP_CHANGE_MARKER" not in result and operation_id in result, result
+    assert "Updated memory" not in result and "UNPUBLISHED_GROUP_CHANGE_MARKER" not in result and operation_id in result, result
     async with tenant_scoped_session(n.tenant, session_factory=app_user_sessionmaker) as db:
         row = await db.get(ContentInputReceipt, uuid5(invocation.id, "explicit-memory-source"))
         assert row.authority_json["state"] == "prepared"

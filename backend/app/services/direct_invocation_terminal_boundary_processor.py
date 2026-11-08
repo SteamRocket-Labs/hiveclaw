@@ -511,9 +511,13 @@ async def enqueue_direct_terminal_boundary_for_task(
     if task.terminal_boundary_generation is None or task.terminal_boundary_enqueued_at is not None:
         return None
     spec = await _build_direct_terminal_spec(db, task)
-    if task.task_type == "trigger" and spec.event_kind == "runtime_terminal":
-        # This consumer has no trigger effect without a transcript frontier.
-        # Acknowledge it in the terminal transaction without growing the queue.
+    if task.task_type == "trigger" and spec.event_kind == "runtime_terminal" and (
+        (task.status == "skipped" and not _task_metadata(task)) or (
+            task.status in {"completed", "failed"} and _task_metadata(task).get("delivery") == "workflow"
+        )
+    ):
+        # Empty skips and workflow handoffs have no direct trigger effect.
+        # Other outcomes still need their durable delivery/reconciliation record.
         task.terminal_boundary_enqueued_at = datetime.now(UTC)
         task.terminal_boundary_reconcile_last_error = None
         return None

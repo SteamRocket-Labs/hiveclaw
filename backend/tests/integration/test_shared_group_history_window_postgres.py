@@ -36,7 +36,7 @@ async def test_history_window_rechecks_revocation_across_native_protocol_groups(
         {"content": "Review the shared checklist before release.", "category": "project"},
         include_history=True,
     )
-    assert "Saved to explicit memory overlay" in first and "Saved to explicit memory overlay" in second
+    assert "Saved memory [project] (capabilities):" in first and "Saved memory [project] (capabilities):" in second
     async with app_user_sessionmaker() as db:
         await pin_rls_tenant_context(db, g.n.tenant)
         session = await db.get(ChatSession, g.session)

@@ -52,6 +52,10 @@ async def test_tool_governance_resolver_builds_context_from_runtime_context():
 @pytest.mark.asyncio
 async def test_tool_governance_resolver_dependencies_wrap_services(monkeypatch):
     from app.tools.governance_resolver import ToolGovernanceResolver
+    from app.tools.registry import is_read_only_tool
+
+    # Lazy handler imports must capture the real locator before this test replaces it.
+    is_read_only_tool("write_file")
 
     tenant_id = uuid4()
     agent_id = uuid4()
@@ -179,6 +183,9 @@ async def test_resolver_mcp_mode_unwraps_target_and_fast_paths(monkeypatch):
         def scalar_one_or_none(self):
             return self._value
 
+        def one_or_none(self):
+            return (self._value, True) if self._value is not None else None
+
     class _FakeSession:
         def __init__(self, row):
             self._row = row
@@ -262,6 +269,9 @@ async def test_resolver_mcp_mode_lookup_is_scoped_to_enabled_agent_assignment(mo
     class _FakeScalar:
         def scalar_one_or_none(self):
             return mcp_tool_row
+
+        def one_or_none(self):
+            return mcp_tool_row, True
 
     class _FakeSession:
         def __init__(self):

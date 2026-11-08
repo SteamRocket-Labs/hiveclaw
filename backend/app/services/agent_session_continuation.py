@@ -413,8 +413,9 @@ def _build_result_runtime_action_payload(item: dict[str, Any]) -> dict[str, Any]
     task_type = _text(item.get("task_type")) or "background_task"
     source_kind = _text(item.get("source_kind")) or "runtime_result"
     status = _text(item.get("terminal_status")).lower() or "completed"
-    if (source_kind == "approval" and status in {"completed", "done", "succeeded", "failed", "error",
-        "killed", "cancelled", "blocked"}) or _task_notification_has_dedicated_projection(task_type, source_kind):
+    if (source_kind == "approval" and (status in {"completed", "done", "succeeded", "failed", "error",
+        "killed", "cancelled"} or (status == "blocked" and task_type == "approval_decision"))
+    ) or _task_notification_has_dedicated_projection(task_type, source_kind):
         return None
     source_run_id = _text(item.get("source_run_id"))
     size_bytes = max(0, int(item.get("result_size_bytes") or 0))

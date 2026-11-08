@@ -51,7 +51,6 @@ async def mark_latest_pending_clarification_answered(
         .where(
             ChatTranscriptEvent.agent_id == _uuid(agent_id),
             ChatTranscriptEvent.session_id == _uuid(session_id),
-            ChatTranscriptEvent.listed_surface == "chat",
             ChatTranscriptEvent.item_id == _uuid(question_item_id),
         )
         .order_by(ChatTranscriptEvent.sequence.desc())

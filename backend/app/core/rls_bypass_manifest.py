@@ -873,7 +873,9 @@ def fingerprint_rls_bypass_scopes(app_root: Path) -> str:
 # content_input_receipts.py and web_chat_runtime.py; no bypass scope changed on both sides.
 # Merging A4sf into the landing branch accepts the exact three-way module-source merge of
 # content_input_receipts.py; no bypass scope changed on both sides.
-RLS_BYPASS_SCOPES_SHA256 = "1bbb752ad3bbfd8db09f2d970dadaf251140053bc3aebb447eca5317ebf5426c"
+# Direct trigger delivery and scoped MCP checks retain the existing bypass grants.
+# Merging the landing fix with A4sf keeps each entry from one side; no bypass scope changed on both sides.
+RLS_BYPASS_SCOPES_SHA256 = "978899de82d86f979711ff0020d256433561a2aec1b0c2c97750fe6e1b79e141"
 
 
 def scan_rls_bypass_callsites(app_root: Path) -> list[RLSBypassCallsite]:

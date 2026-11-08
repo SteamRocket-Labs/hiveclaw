@@ -35,7 +35,7 @@ async def test_native_disclosure_rechecks_changes_without_repeating_exact_source
         "save_memory",
         {"content": "Remember our authorized shared operating guideline.", "category": "project"},
     )
-    assert "Saved to explicit memory overlay" in raw
+    assert "Saved memory [project] (capabilities):" in raw
     reference = f"session-tool-result:{invocation.id}"
     async with app_user_sessionmaker() as db:
         await pin_rls_tenant_context(db, g.n.tenant)

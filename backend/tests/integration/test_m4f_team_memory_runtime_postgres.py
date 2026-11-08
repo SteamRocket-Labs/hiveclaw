@@ -180,7 +180,7 @@ async def test_actual_tool_result_sources_reach_private_derived_memory_and_membe
     saved, derived_invocation = await memory_call(n, app_user_sessionmaker, "save_memory",
         {"content": "Remember the team's cadence TEAM_DERIVED_MEMORY_MARKER", "category": "project"}, user=n.foreign,
         session=s.second_session, run=s.second_run, include_history=True)
-    assert "Saved to explicit memory overlay" in saved, saved
+    assert "Saved memory [project] (capabilities):" in saved, saved
     async with tenant_scoped_session(n.tenant, session_factory=app_user_sessionmaker) as db:
         derived = await db.get(ContentInputReceipt, uuid5(derived_invocation.id, "explicit-memory-source"))
         assert dependency in derived.dependencies_json
@@ -277,7 +277,7 @@ async def test_next_provider_request_stops_after_team_membership_is_withdrawn(
     saved, invocation = await memory_call(n, app_user_sessionmaker, "save_memory",
         {"content": "Remember a note derived from the team's release cadence", "category": "project"},
         user=n.foreign, session=s.second_session, run=s.second_run, include_history=True)
-    assert "Saved to explicit memory overlay" in saved and "TEAM_PROJECT_RELEASE_MARKER" not in saved
+    assert "Saved memory [project] (capabilities):" in saved and "TEAM_PROJECT_RELEASE_MARKER" not in saved
     denied = str(await n.service.execute("load_memory", {"ids": [f"team_memory:{workspace}:report"]},
         agent_id=n.agent, user_id=n.foreign, session_id=str(s.second_session), runtime_task_id=str(s.second_run),
         emit_runtime_hooks=False))
@@ -316,7 +316,7 @@ async def test_ordinary_team_correction_preserves_historical_provenance_and_new_
     saved, invocation = await memory_call(n, app_user_sessionmaker, "save_memory",
         {"content": "Retain the historical team release note", "category": "project"}, user=n.foreign,
         session=s.second_session, run=s.second_run, include_history=True)
-    assert "Saved to explicit memory overlay" in saved, saved
+    assert "Saved memory [project] (capabilities):" in saved, saved
     async with tenant_scoped_session(n.tenant, session_factory=app_user_sessionmaker) as db:
         model = await db.scalar(select(SessionModelResult).where(
             SessionModelResult.provider_request_id == invocation.provider_request_id))

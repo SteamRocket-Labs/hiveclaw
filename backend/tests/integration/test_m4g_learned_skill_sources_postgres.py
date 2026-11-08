@@ -72,7 +72,7 @@ async def learned_skill(shared_memory, app_user_sessionmaker, owner_sessionmaker
         ):
             saved, _invocation = await memory_call(n, app_user_sessionmaker, "save_memory", {
                 "content": f"- skill候选: {marker}", "category": "strategy"}, user=user, session=session, run=run)
-            assert "Saved to explicit memory overlay" in saved, saved
+            assert "Saved memory [strategy] (capabilities):" in saved, saved
     if background:
         from app.models.chat_session import ChatSession
         from tests.integration.test_m4c_explicit_memory_scope_postgres import new_owner_work
@@ -505,7 +505,7 @@ async def test_correction_discovers_new_bytes_and_preserves_previous_use_as_evid
     derived, _invocation = await memory_call(n, app_user_sessionmaker, "save_memory", {
         "content": "The revised evidence method replaces the earlier method while preserving its prior work.",
         "category": "strategy"}, include_history=True)
-    assert "Saved to explicit memory overlay" in derived, derived
+    assert "Saved memory [strategy] (capabilities):" in derived, derived
     if after_review == "rollback":
         from app.services.provisional_trial import record_provisional_trial_signal, review_pending_provisional_trials
 
@@ -525,7 +525,7 @@ async def test_correction_discovers_new_bytes_and_preserves_previous_use_as_evid
         historical, _invocation = await memory_call(n, app_user_sessionmaker, "save_memory", {
             "content": "The earlier method is current again; the rolled back revision and its prior work remain verifiable.",
             "category": "strategy"}, include_history=True)
-        assert "Saved to explicit memory overlay" in historical, historical
+        assert "Saved memory [strategy] (capabilities):" in historical, historical
 
 
 @pytest.mark.parametrize("reader", ["author", "other_member"])
@@ -551,7 +551,7 @@ async def test_reviewed_skill_can_be_loaded_with_exact_sources_only_by_its_actua
             assert complete and any(source["source_kind"] == "learned_skill_file" for source in sources), (sources, complete)
         derived, _invocation = await memory_call(n, app_user_sessionmaker, "save_memory",
             {"content": "Use the learned evidence-checking method", "category": "strategy"}, include_history=True)
-        assert "Saved to explicit memory overlay" in derived, derived
+        assert "Saved memory [strategy] (capabilities):" in derived, derived
     else:
         assert "EVIDENCE_METHOD_VERSION_ONE" not in loaded, loaded
 
@@ -691,7 +691,7 @@ async def test_retirement_removes_discovery_but_preserves_historical_sources(lea
     saved, _invocation = await memory_call(n, app_user_sessionmaker, "save_memory", {
         "content": "The method has been retired; its earlier authorized use remains part of this work.",
         "category": "strategy"}, include_history=True)
-    assert "Saved to explicit memory overlay" in saved, saved
+    assert "Saved memory [strategy] (capabilities):" in saved, saved
 
 
 @pytest.mark.parametrize("reader", ["author", "other_manager"])
@@ -1142,7 +1142,7 @@ async def test_trial_rollback_stops_discovery_and_preserves_exact_prior_work_sou
     history, _invocation = await memory_call(n, app_user_sessionmaker, "save_memory",
         {"content": "The method used earlier was rolled back; its original work remains verifiable.", "category": "strategy"},
         include_history=True)
-    assert "Saved to explicit memory overlay" in history, history
+    assert "Saved memory [strategy] (capabilities):" in history, history
     repeated = await review_pending_provisional_trials(n.root, reviewer=rollback)
     assert repeated["reviewed"] == 0 and len(inspected) == 1
     assert target.read_bytes() == before
@@ -1389,7 +1389,7 @@ async def test_owner_asset_rollback_restores_native_learning_state_and_preserves
     assert "EVIDENCE_METHOD_VERSION_ONE" in restored, restored
     historical, _invocation = await memory_call(n, app_user_sessionmaker, "save_memory", {
         "content": "Earlier use of this exact method remains verifiable after owner lifecycle rollback.", "category": "strategy"}, include_history=True)
-    assert "Saved to explicit memory overlay" in historical, historical
+    assert "Saved memory [strategy] (capabilities):" in historical, historical
     if transition == "retire":
         # Retirement is a distinct owner fact, even though a curator archive looks identical.
         retired_again = await n.client.post(f"/enterprise/ai-assets/{identity}/rollback", json={
@@ -1668,7 +1668,7 @@ async def test_curator_archive_and_restore_retain_native_skill_history_without_p
     assert "EVIDENCE_METHOD_VERSION_ONE" not in denied, denied
     historical, _invocation = await memory_call(n, app_user_sessionmaker, "save_memory", {
         "content": "The archived method's earlier work remains verifiable.", "category": "strategy"}, include_history=True)
-    assert "Saved to explicit memory overlay" in historical, historical
+    assert "Saved memory [strategy] (capabilities):" in historical, historical
     decision = "restore"
     restored = await curate()
     assert restored["applied"] == [{"slug": path.split("/")[1], "decision": "restore"}], restored
@@ -1961,7 +1961,7 @@ async def test_later_work_rechecks_learned_inputs_before_the_next_model_request(
     saved, invocation = await memory_call(n, app_user_sessionmaker, "save_memory",
         {"content": "Use the method whose original inputs were withdrawn", "category": "strategy"},
         session=session, run=run, include_history=True)
-    assert "Saved to explicit memory overlay" in saved and "EVIDENCE_METHOD_VERSION_ONE" not in saved
+    assert "Saved memory [strategy] (capabilities):" in saved and "EVIDENCE_METHOD_VERSION_ONE" not in saved
     denied = str(await n.service.execute("load_skill", {"name": "Evidence Review"}, agent_id=n.agent,
         user_id=n.user, session_id=str(session), runtime_task_id=str(run), emit_runtime_hooks=False))
     assert "EVIDENCE_METHOD_VERSION_ONE" not in denied, denied

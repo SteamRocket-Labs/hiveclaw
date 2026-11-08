@@ -138,7 +138,7 @@ async def shared_memory(native_workspace, owner_sessionmaker, app_user_sessionma
         "category": "project", "content": "Remember my private release codename ORCHID_PRIVATE_MARKER for future work."
     }
     saved, _invocation = await memory_call(n, app_user_sessionmaker, "save_memory", arguments)
-    assert "Saved to explicit memory overlay" in saved, saved
+    assert "Saved memory [project] (capabilities):" in saved, saved
     manifest = n.root / "memory/explicit/manifest.jsonl"
     entry = json.loads(manifest.read_text().splitlines()[-1])
     return SimpleNamespace(n=n, second_session=second_session, second_run=second_run, entry_id=entry["id"])
@@ -253,7 +253,7 @@ async def test_corrected_memory_is_used_by_new_work_and_still_depends_on_origina
     correction, invocation = await memory_call(n, app_user_sessionmaker, "update_memory",
         {"memory_id": s.entry_id, "content": "The corrected private release codename is CEDAR_REVISED_MARKER.",
             "reason": "explicit_user_correction"}, include_history=True)
-    assert "Updated explicit memory" in correction, correction
+    assert "Updated memory [project]:" in correction, correction
     async with tenant_scoped_session(n.tenant, session_factory=app_user_sessionmaker) as db:
         original = await latest_memory_receipt(db, n.tenant, n.agent, s.entry_id)
         assert original.authority_json["state"] == "retired"
@@ -283,7 +283,7 @@ async def test_corrected_memory_is_used_by_new_work_and_still_depends_on_origina
     downstream, downstream_invocation = await memory_call(n, app_user_sessionmaker, "save_memory",
         {"content": "For future release notes use CEDAR_REVISED_MARKER.", "category": "project"},
         session=new_session, run=new_run, command="Remember this exact release-note convention", include_history=True)
-    assert "Saved to explicit memory overlay" in downstream, downstream
+    assert "Saved memory [project] (capabilities):" in downstream, downstream
     async with tenant_scoped_session(n.tenant, session_factory=app_user_sessionmaker) as db:
         derived = await db.get(ContentInputReceipt, uuid5(downstream_invocation.id, "explicit-memory-source"))
         assert any(d["source_id"] == str(revised.id) for d in derived.dependencies_json), derived.dependencies_json
@@ -310,7 +310,7 @@ async def test_search_rechecks_sources_after_backend_await_and_keeps_other_resul
     saved, _ = await memory_call(n, app_user_sessionmaker, "save_memory",
         {"category": "project", "content": "release INDEPENDENT_AVAILABLE_FACT"},
         session=session, run=run)
-    assert "Saved to explicit memory overlay" in saved, saved
+    assert "Saved memory [project] (capabilities):" in saved, saved
 
     async def backend_with_source_withdrawal(*_args, **_kwargs):
         async with owner_sessionmaker() as db:
@@ -375,7 +375,7 @@ async def test_original_work_recovers_retained_memory_plan_without_second_review
     monkeypatch.setattr(AsyncSession, "commit", activation_commit)
     result, invocation = await memory_call(n, app_user_sessionmaker, "update_memory",
         {"memory_id": s.entry_id, "content": "Remember the corrected release RECOVERED_PRIVATE_MARKER", "reason": "incorrect"})
-    assert "Updated explicit memory" not in result and "RECOVERED_PRIVATE_MARKER" not in result, result
+    assert "Updated memory" not in result and "RECOVERED_PRIVATE_MARKER" not in result, result
     operation_id = str(uuid5(invocation.id, "explicit-memory-source"))
     assert operation_id in result and "reconcile_memory_write" in result, result
     status, _invocation = await memory_call(n, app_user_sessionmaker, "reconcile_memory_write",
@@ -383,7 +383,7 @@ async def test_original_work_recovers_retained_memory_plan_without_second_review
     assert json.loads(status)["status"] == ("reviewing" if failure == "review" else "active" if failure == "activation_after_commit" else "prepared"), status
     denied, _invocation = await memory_call(n, app_user_sessionmaker, "reconcile_memory_write",
         {"operation_id": operation_id, "action": "retry"}, user=n.foreign, session=s.second_session, run=s.second_run)
-    assert "RECOVERED_PRIVATE_MARKER" not in denied and "Saved to explicit" not in denied, denied
+    assert "RECOVERED_PRIVATE_MARKER" not in denied and "Saved memory" not in denied, denied
     action = "cancel" if failure == "review" else "retry"
     recovered, _invocation = await memory_call(n, app_user_sessionmaker, "reconcile_memory_write",
         {"operation_id": operation_id, "action": action})
@@ -420,7 +420,7 @@ async def test_source_review_cannot_write_after_current_work_or_policy_is_withdr
     monkeypatch.setattr("app.memory.explicit_overlay.prepare_memory_write_with_llm", reviewer)
     result, invocation = await memory_call(n, app_user_sessionmaker, "save_memory",
         {"content": "Remember WITHDRAWN_WRITE_MARKER for future releases", "category": "project"})
-    assert "Saved to explicit" not in result and "WITHDRAWN_WRITE_MARKER" not in result, result
+    assert "Saved memory" not in result and "WITHDRAWN_WRITE_MARKER" not in result, result
     assert str(uuid5(invocation.id, "explicit-memory-source")) in result, result
     after = {p.relative_to(n.root).as_posix(): p.read_bytes()
         for p in (n.root / "memory/explicit").rglob("*") if p.is_file()}
@@ -571,7 +571,7 @@ async def test_employee_owner_browser_does_not_inherit_another_members_private_m
     result, _invocation = await memory_call(n, app_user_sessionmaker, "save_memory",
         {"content": "Remember FOREIGN_PRIVATE_BROWSER_MARKER for my future work", "category": "project"},
         user=n.foreign, session=s.second_session, run=s.second_run)
-    assert "Saved to explicit" in result, result
+    assert "Saved memory [project] (capabilities):" in result, result
     entry = next(e for e in load_explicit_overlay_entries(n.root.parent, n.agent)
         if "FOREIGN_PRIVATE_BROWSER_MARKER" in e.content)
     journal = next((n.root / "runtime_artifacts/asset_transactions/transactions").glob("*/journal.json"))

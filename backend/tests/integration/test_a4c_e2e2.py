@@ -234,7 +234,7 @@ async def test_member_can_remember_own_request_with_incomplete_ambient_context(
     memory_content = "A4c test credential value: [REDACTED_SECRET]." if pasted_key else command
     memory_arguments = {"category": "project", "content": memory_content}
     saved, invocation = await memory_call(n, app_user_sessionmaker, "save_memory", memory_arguments, command=command)
-    assert "Saved to explicit memory overlay" in saved, saved
+    assert "Saved memory [project] (capabilities):" in saved, saved
     entries = list((n.root / "memory/explicit/entries").glob("*.md"))
     assert len(entries) == 1 and memory_content in entries[0].read_text()
     assert "UNBOUND_MEMORY_SECRET" not in entries[0].read_text()
@@ -269,7 +269,7 @@ async def test_created_profile_keeps_memory_scoped_to_its_original_bot(
         saved, _ = await memory_call(n, app_user_sessionmaker, "save_memory",
             {"content": "Other member private source", "category": "project"},
             user=n.foreign, session=s.second_session, run=s.second_run)
-        assert "Saved to explicit memory overlay" in saved
+        assert "Saved memory [project] (capabilities):" in saved
         entry_id = json.loads((n.root / "memory/explicit/manifest.jsonl").read_text().splitlines()[-1])["id"]
     elif source_state == "revoked":
         retired, _ = await memory_call(n, app_user_sessionmaker, "retire_memory",

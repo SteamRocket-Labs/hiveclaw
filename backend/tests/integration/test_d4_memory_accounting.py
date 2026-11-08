@@ -42,7 +42,7 @@ async def test_scoped_memory_write_classifier_charges_requester_instead_of_bot_o
     result, _ = await memory_call(n, app_user_sessionmaker, "save_memory", {
         "category": "project", "content": "The project release codename is ORCHID42."
     })
-    assert "Saved to explicit memory overlay" in result, result
+    assert "Saved memory [project] (capabilities):" in result, result
     async with owner_sessionmaker() as db:
         events = list(await db.scalars(select(TokenUsageEvent).where(TokenUsageEvent.agent_id == n.agent)))
         assert len(events) == 1 and events[0].source == "memory_write_threat_classifier"

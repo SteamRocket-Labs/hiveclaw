@@ -29,7 +29,7 @@ async def test_inherited_disclosure_rechecks_a_revoked_native_result(
         "save_memory",
         {"content": "Use the approved shared delivery checklist.", "category": "project"},
     )
-    assert "Saved to explicit memory overlay" in raw
+    assert "Saved memory [project] (capabilities):" in raw
     principal = AgentRuntimePrincipal(
         agent_id=g.n.agent,
         requester_user_id=g.n.user,

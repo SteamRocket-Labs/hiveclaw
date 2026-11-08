@@ -139,6 +139,8 @@ async def resolve_mcp_api_key(db, *, tool, tenant_id, agent_config: dict, oauth_
         raise MCPAuthzError("MCP tool is disabled by company policy.")
     if oauth_bearer:
         return oauth_bearer
+    if "api_key" in agent_config and not str(agent_config["api_key"] or "").strip():
+        raise MCPStoredCredentialRequired("MCP tool needs a new employee API key; configure it before use.")
     if not (tool.config or {}).get("api_key"):
         return None
     expected = mcp_company_credential_binding(tool, tenant_id)

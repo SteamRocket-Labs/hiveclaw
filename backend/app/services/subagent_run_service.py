@@ -769,9 +769,10 @@ async def update_subagent_child_session_state(
         session.transcript_metadata_json = metadata
         if metadata.get("foreground_subagent") and session.runtime_task_id is not None:
             foreground_task = await db.get(RuntimeTask, session.runtime_task_id)
-            foreground_task.status = status if status in {"completed", "failed", "killed", "needs_reconciliation"} else "failed"
-            foreground_task.completed_at = datetime.now(timezone.utc)
-            foreground_task.result_summary = summary
+            if foreground_task is not None:
+                foreground_task.status = status if status in {"completed", "failed", "killed", "needs_reconciliation"} else "failed"
+                foreground_task.completed_at = datetime.now(timezone.utc)
+                foreground_task.result_summary = summary
         await append_session_event(
             db=db,
             agent_id=parent_agent_id,

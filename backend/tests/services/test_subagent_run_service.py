@@ -52,6 +52,33 @@ async def test_foreground_child_session_has_task_before_autoflush_and_settles_in
         assert session.transcript_metadata_json["session_state"] == "completed"
 
 
+@pytest.mark.asyncio
+async def test_foreground_child_state_tolerates_missing_task(owner_sessionmaker, monkeypatch):
+    from sqlalchemy.ext.asyncio import AsyncSession
+    from tests.services.test_runtime_terminal_boundary_outbox import _seed_terminal_task
+
+    seed = await _seed_terminal_task(owner_sessionmaker, tenant_name="Missing foreground task")
+    async with owner_sessionmaker() as db:
+        session = await db.get(ChatSession, seed.session_id)
+        session.transcript_metadata_json = {"foreground_subagent": True}
+        await db.commit()
+    original_get = AsyncSession.get
+
+    async def missing_task(db, model, *args, **kwargs):
+        if model is RuntimeTask:
+            return None
+        return await original_get(db, model, *args, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(AsyncSession, "get", missing_task)
+        await svc.update_subagent_child_session_state(child_session_id=str(seed.session_id),
+            parent_agent_id=seed.agent_id, status="failed", summary="Foreground task unavailable")
+    async with owner_sessionmaker() as db:
+        session = await db.get(ChatSession, seed.session_id)
+        assert session.transcript_metadata_json["session_state"] == "failed"
+        assert session.transcript_metadata_json["last_result_summary"] == "Foreground task unavailable"
+
+
 def _runtime_requester_fields(
     *,
     requester_user_id: uuid.UUID,

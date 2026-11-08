@@ -17,7 +17,7 @@ import re
 from typing import Any
 import uuid
 
-from sqlalchemy import and_, exists, literal, literal_column, or_, select, tuple_
+from sqlalchemy import and_, exists, literal, literal_column, or_, select, tuple_, union_all
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -597,30 +597,39 @@ class RuntimeTerminalBoundaryOutboxService:
         queue = RuntimeTerminalBoundaryOutbox
         route_types = tuple(literal(task_type, literal_execute=True) for task_type in (task_types or ()))
         order = (queue.available_at, queue.created_at, queue.id)
+        # Each branch exposes a lane/status/time index range. Other lanes keep
+        # BASE recovery semantics, including processing rows without a lease.
+        lanes = [(kind, queue.task_type == route) for kind, route in zip(task_types or (), route_types, strict=True)]
+        if not lanes:
+            lanes = [("trigger", queue.task_type == literal("trigger", literal_execute=True)),
+                (None, queue.task_type.is_distinct_from("trigger"))]
+        ranges = [and_(
+            lane,
+            queue.status == literal(status, type_=queue.status.type, literal_execute=True),
+            *((ready_at >= current - TERMINAL_BOUNDARY_RECENT_WINDOW, ready_at <= current) if kind == "trigger"
+                else (or_(ready_at.is_(None), ready_at <= current),) if status == "processing"
+                else (ready_at <= current,)),
+        ) for kind, lane in lanes
+            for status, ready_at in (("pending", queue.available_at), ("processing", queue.lease_expires_at))]
         ready = (
             queue.tenant_id == tenant_uuid,
             # Keep the exact active-state predicate visible to prepared plans
             # so the ordered partial index also excludes delivered history.
             queue.status.in_((literal_column("'pending'"), literal_column("'processing'"))),
-            or_(
-                and_(queue.status == "pending", queue.available_at >= current - TERMINAL_BOUNDARY_RECENT_WINDOW,
-                    queue.available_at <= current),
-                and_(queue.status == "processing",
-                    queue.lease_expires_at >= current - TERMINAL_BOUNDARY_RECENT_WINDOW,
-                    queue.lease_expires_at <= current),
-            ),
+            or_(*ranges),
         )
         async with self._tenant_session(tenant_uuid, operation="claim") as db:
             cursor = None
             while True:
                 # Read a bounded ordered page without locks. A page with only
                 # sibling lanes or locked rows must not hide later ready work.
-                page_query = select(queue.id, queue.available_at, queue.created_at).where(*ready)
-                if task_types:
-                    page_query = page_query.where(queue.task_type.in_(route_types))
+                candidates = union_all(*(select(queue.id, queue.available_at, queue.created_at)
+                    .where(queue.tenant_id == tenant_uuid, ready_range) for ready_range in ranges)).subquery()
+                page_query = select(candidates)
                 if cursor is not None:
-                    page_query = page_query.where(tuple_(*order) > cursor)
-                page = list((await db.execute(page_query.order_by(*order).limit(_CLAIM_SCAN_PAGE_SIZE))).all())
+                    page_query = page_query.where(tuple_(candidates.c.available_at, candidates.c.created_at, candidates.c.id) > cursor)
+                page = list((await db.execute(page_query.order_by(candidates.c.available_at, candidates.c.created_at,
+                    candidates.c.id).limit(_CLAIM_SCAN_PAGE_SIZE))).all())
                 if not page:
                     return []
                 statement = select(queue.id).where(*ready, queue.id.in_([row.id for row in page]))
@@ -1012,13 +1021,16 @@ class RuntimeTerminalBoundaryOutboxService:
             RuntimeTask.tenant_id == tenant_id,
             RuntimeTask.terminal_boundary_generation.is_not(None),
             RuntimeTask.terminal_boundary_enqueued_at.is_(None),
-            RuntimeTask.created_at >= now - TERMINAL_BOUNDARY_RECENT_WINDOW,
-            RuntimeTask.created_at <= now,
+            or_(RuntimeTask.task_type != "trigger", and_(
+                RuntimeTask.created_at >= now - TERMINAL_BOUNDARY_RECENT_WINDOW,
+                RuntimeTask.created_at <= now,
+            )),
             RuntimeTask.status.in_(TERMINAL_BOUNDARY_TERMINAL_STATUSES),
             or_(
                 RuntimeTask.terminal_boundary_reconcile_attempted_at.is_(None),
-                and_(RuntimeTask.terminal_boundary_reconcile_attempted_at >= now - TERMINAL_BOUNDARY_RECENT_WINDOW,
-                    RuntimeTask.terminal_boundary_reconcile_attempted_at <= retry_before),
+                and_(RuntimeTask.terminal_boundary_reconcile_attempted_at <= retry_before,
+                    or_(RuntimeTask.task_type != "trigger",
+                        RuntimeTask.terminal_boundary_reconcile_attempted_at >= now - TERMINAL_BOUNDARY_RECENT_WINDOW)),
             ),
         ]
         if task_types:

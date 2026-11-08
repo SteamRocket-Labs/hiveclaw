@@ -28,7 +28,7 @@ async def _outbox(db, seeded, *, available_at, status="pending", lease_expires_a
 
 
 @pytest.mark.parametrize("task_type", TERMINAL_BOUNDARY_REQUIRED_TASK_TYPES)
-async def test_discovery_finds_current_work_in_each_lane_and_ignores_old_tenants(owner_sessionmaker, task_type):
+async def test_discovery_windows_only_old_trigger_tenants(owner_sessionmaker, task_type):
     from app.services.runtime_task_worker import _discover_terminal_boundary_tenants
 
     now = datetime.now(UTC)
@@ -48,11 +48,63 @@ async def test_discovery_finds_current_work_in_each_lane_and_ignores_old_tenants
                 elif source == "retry":
                     task.terminal_boundary_reconcile_attempted_at = now - age
                 await db.commit()
-            (excluded if stale else expected).add(seed.tenant_id)
+            (excluded if stale and task_type == "trigger" else expected).add(seed.tenant_id)
     found = set(await _discover_terminal_boundary_tenants(worker_id="recent-test", task_types=(task_type,),
         now=now, limit=1000, session_factory=owner_sessionmaker))
     assert expected <= found
     assert found.isdisjoint(excluded)
+
+
+@pytest.mark.parametrize("task_type", [kind for kind in TERMINAL_BOUNDARY_REQUIRED_TASK_TYPES if kind != "trigger"])
+@pytest.mark.parametrize("source", ["pending", "processing", "null_lease", "reconcile", "retry"])
+async def test_old_nontrigger_boundary_is_found_claimed_and_delivered(owner_sessionmaker, task_type, source):
+    from app.services.runtime_task_worker import _discover_terminal_boundary_tenants
+    from app.services.runtime_terminal_boundary_outbox import RuntimeTerminalBoundaryOutboxService, enqueue_terminal_boundary
+
+    seed = await _seed_terminal_task(owner_sessionmaker, tenant_name="Old due boundary", task_type=task_type)
+    now = datetime.now(UTC)
+    old = now - timedelta(hours=25)
+
+    async def build(db, task):
+        row = await enqueue_terminal_boundary(db, task=task, event_kind="turn_stop", agent_id=seed.agent_id,
+            session_id=seed.session_id, terminal_status="completed", authority_ref="runtime_task",
+            authority_id=task.id, binding={"terminal_event_id": uuid4(), "terminal_sequence": 1})
+        return (row,)
+
+    async with owner_sessionmaker() as db:
+        task = await db.get(RuntimeTask, seed.task_id)
+        task.created_at = old
+        if source in {"pending", "processing", "null_lease"}:
+            row, = await build(db, task)
+            row.available_at = old
+            row.status = "pending" if source == "pending" else "processing"
+            row.lease_expires_at = old if source == "processing" else None
+        elif source == "retry":
+            task.terminal_boundary_reconcile_attempted_at = old
+        await db.commit()
+
+    found = await _discover_terminal_boundary_tenants(worker_id="old-due", task_types=(task_type,), now=now,
+        limit=1000, session_factory=owner_sessionmaker)
+    assert seed.tenant_id in found
+    service = RuntimeTerminalBoundaryOutboxService(session_factory=owner_sessionmaker)
+    if source in {"reconcile", "retry"}:
+        assert await service.reconcile_terminal_tasks_once(tenant_id=seed.tenant_id, builder=build,
+            now=now, task_types=(task_type,)) == {"claimed": 1, "enqueued": 1, "held": 0}
+    claimed = await service.claim_batch(tenant_id=seed.tenant_id, worker_id="old-due", task_types=(task_type,))
+    assert [item.runtime_task_id for item in claimed] == [seed.task_id]
+
+    async def canonical(_db, item):
+        return dict(item.binding)
+
+    async def delivered(item):
+        return {"source_ref": f"runtime-terminal-boundary://{item.id}"}
+
+    assert await service.process_terminal_boundary(item=claimed[0], worker_id="old-due",
+        canonical_validator=canonical, process_callback=delivered)
+    async with owner_sessionmaker() as db:
+        row = await db.get(RuntimeTerminalBoundaryOutbox, claimed[0].id)
+        assert row.status == "delivered"
+        assert row.delivered_at is not None
 
 
 async def test_claim_skips_old_rows_even_when_tenant_has_current_work(owner_sessionmaker):

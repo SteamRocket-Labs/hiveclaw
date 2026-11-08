@@ -1659,12 +1659,12 @@ async def _group_permission_browser(web, seed, session_id, permission_id, reques
         process = await asyncio.create_subprocess_exec("node", str(frontend / "e2e" / script), str(fixture_path),
             cwd=frontend, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
         line = await asyncio.wait_for(process.stdout.readline(), 60)
-        assert line and json.loads(line)["event"] == "readonly_checked", line
+        assert line and json.loads(line)["event"] == "readonly_checked", (line, await process.stderr.read())
         await requester_ready()
         process.stdin.write(json.dumps({"event": "requester_ready"}).encode() + bytes([10]))
         await process.stdin.drain()
         line = await asyncio.wait_for(process.stdout.readline(), 60)
-        assert line and json.loads(line)["event"] == "permission_recorded", line
+        assert line and json.loads(line)["event"] == "permission_recorded", (line, await process.stderr.read())
         yield json.loads((tmp_path / "permission-browser-receipt.json").read_text())
         if await_completion:
             if completion_ready is not None:

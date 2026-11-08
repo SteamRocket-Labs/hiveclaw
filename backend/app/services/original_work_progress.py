@@ -56,7 +56,7 @@ async def read_original_work_progress(db, *, run, user):
     from app.core.source_read_purpose import source_recipient_read
     from app.services.content_input_receipts import _validate_input_dependencies
     from app.services.original_work_permission_notices import _original_work
-    from app.services.session_model_inputs import _model_dependencies
+    from app.services.session_model_inputs import model_output_dependencies
 
     if run.task_type != 'delegation' or run.status not in ACTIVE:
         return None
@@ -74,7 +74,7 @@ async def read_original_work_progress(db, *, run, user):
     if candidate is None:
         return None
     model, event, text = candidate
-    dependencies, complete = _model_dependencies(model)
+    dependencies, complete = model_output_dependencies(model)
     if not complete:
         raise ContentInputReceiptError('progress_sources_unverified', 'Restore the complete progress source receipt.', 503)
     with source_recipient_read(session_id=session.id, user_id=user.id):

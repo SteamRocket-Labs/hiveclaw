@@ -864,7 +864,10 @@ def fingerprint_rls_bypass_scopes(app_root: Path) -> str:
 # Merging D1 with main keeps each entry from one side; no bypass scope changed on both sides.
 # R4b bounds stale trigger terminal-boundary discovery; worker query shapes change, bypass grants are unchanged.
 # Merging R4b into the landing branch keeps each entry from one side; no bypass scope changed on both sides.
-RLS_BYPASS_SCOPES_SHA256 = "1296e84474efab0d157ca82e67792af32ec63a3f327dcde63fdd8fd6af6726de"
+# Merging T-browser with main preserves all reviewed entries; no entry changed on both sides.
+# Merging T-browser into the landing branch accepts the exact three-way module-source merge of
+# content_input_receipts.py and session_model_round.py; no bypass scope changed on both sides.
+RLS_BYPASS_SCOPES_SHA256 = "df6506298cf437533052aca5819fa66e5af596d0a26bfd26460500b2fe9e8afe"
 
 
 def scan_rls_bypass_callsites(app_root: Path) -> list[RLSBypassCallsite]:

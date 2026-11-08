@@ -523,7 +523,9 @@ def _withhold_model_source(messages, wire_request, input_bindings, source, code,
 async def _validate_or_withhold_model_sources(db, *, tenant_id, agent_id, session_id, run_id,
     input_bindings, messages, wire_request):
     from app.kernel.contracts import ExecutionAuthorityUnavailable
+    from app.runtime.context_candidates import ContextMessageOrigin
     from app.services.content_input_receipts import ContentInputReceiptError
+    from app.services.delegation_context_sources import PERMISSION_INPUT_KEYS
     from app.services.shared_group_authority import validate_shared_group_model_inputs
     from app.services.trigger_read_sources import validate_native_trigger_model_sources
     from app.services.team_task_context import validate_model_sources
@@ -537,7 +539,14 @@ async def _validate_or_withhold_model_sources(db, *, tenant_id, agent_id, sessio
     unbound = [entry["message_index"] for entry in input_bindings["messages"]
         if entry.get("dependency_status") != "resolved"]
     if unbound:
+        permission_unbound = {index for index in unbound
+            if isinstance(origin := getattr(messages[index], "context_origin", None), ContextMessageOrigin)
+            and any(section.get("name") in PERMISSION_INPUT_KEYS for section in origin.sections)
+        }
         _withhold_model_source(messages, wire_request, input_bindings, None, "model_input_source_unbound", unbound)
+        for entry in input_bindings["messages"]:
+            if entry["message_index"] in permission_unbound:
+                entry["code"] = "session_permission_frame_unbound"
         input_bindings["status"] = "resolved"
         input_bindings["dependency_coverage"]["complete"] = True
     group_principal = await validate_shared_group_model_inputs(db, tenant_id=tenant_id, agent_id=agent_id,

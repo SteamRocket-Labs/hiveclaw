@@ -14,7 +14,7 @@ from app.models.chat_session import ChatSession
 from app.models.invocation_span import InvocationSpan
 from app.models.session_v2 import SessionModelResult, SessionToolInvocation
 from app.runtime.context_candidates import ContextMessageOrigin
-from app.services.session_model_inputs import _hash, _model_dependencies, _model_snapshot_dependencies
+from app.services.session_model_inputs import _hash, model_output_dependencies
 from app.tools.runtime import ToolExecutionContext
 
 
@@ -260,7 +260,7 @@ async def load_employee_creation_dependencies(db, *, draft):
         or source_id != uuid.uuid5(invocation.id, f"delegation-instruction:{pointer['source_hash']}")
     ):
         return None
-    return _model_dependencies(model)
+    return model_output_dependencies(model)
 
 
 async def capture_delegation_instruction_origin(context, arguments, *, recipient_agent_id):
@@ -398,7 +398,7 @@ async def load_delegation_instruction_origin(db, *, request, tenant_id, content)
         or source_id != uuid.uuid5(invocation.id, f"delegation-instruction:{pointer['source_hash']}")
     ):
         return None
-    dependencies, complete = _model_snapshot_dependencies(model)
+    dependencies, complete = model_output_dependencies(model)
     return ContextMessageOrigin.capture(
         kind="delegated_instruction",
         role="user",

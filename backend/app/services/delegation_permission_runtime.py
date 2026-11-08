@@ -6,7 +6,7 @@ from app.core.execution_context import A2AToolAuthorityFrame, ExecutionIdentity,
 from app.models.runtime_task import RuntimeTask
 from app.runtime.ccplus_contracts import build_permission_profile, permission_profile_snapshot, permission_profile_snapshot_hash
 from app.services.content_input_receipts import ContentInputReceiptError, _validate_input_dependencies
-from app.services.session_model_inputs import _hash, _model_dependencies
+from app.services.session_model_inputs import _hash, _model_dependencies, model_output_dependencies
 
 
 async def delegated_permission_execution(db, *, authority, session, invocation, profile, control_id, model):
@@ -54,7 +54,7 @@ async def delegated_permission_execution(db, *, authority, session, invocation, 
         root_runtime_task_id=original.get('root_runtime_task_id'), budget_run_id=original.get('budget_run_id') or None,
         trace_id=original.get('trace_id'), delegation_id=token.delegation_id,
         sandbox_profile=snapshot['permission_profile']['sandbox'], approval_policy=snapshot['permission_profile']['approval_policy'])
-    _dependencies, complete = _model_dependencies(model)
+    _dependencies, complete = model_output_dependencies(model)
     if not complete:
         raise ContentInputReceiptError('delegation_permission_sources_unavailable', 'Restore the committed tool input inventory.', 503)
     return {'authority_frame': frame, 'execution_identity': identity, 'delegation_token': token,
@@ -84,7 +84,7 @@ async def validate_permission_input_sources(db, *, authority, session, invocatio
         execution_principal=frame.principal, execution_identity=frame.execution_identity,
         delegation_token=frame.delegation_token, authority_frame_required=True,
         budget_run_id=frame.budget_run_id, permission_profile=frame.permission_profile)
-    dependencies, complete = _model_dependencies(model)
+    dependencies, complete = model_output_dependencies(model)
     if not complete:
         raise ContentInputReceiptError('delegation_permission_sources_unavailable', 'Restore the committed tool input inventory.', 503)
     await _validate_input_dependencies(db, authority.tenant_id, dependencies,

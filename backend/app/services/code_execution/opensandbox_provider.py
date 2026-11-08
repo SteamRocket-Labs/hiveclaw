@@ -86,7 +86,7 @@ async def _dependencies(scope, previous):
     """Revalidate every retained input through the current original-work reader."""
     from app.models.session_v2 import SessionModelResult, SessionToolInvocation
     from app.services.content_input_receipts import validate_runtime_input_dependencies
-    from app.services.session_model_inputs import _model_dependencies
+    from app.services.session_model_inputs import model_output_dependencies
     from app.services.session_tool_runtime import _sha256
 
     request = scope.runtime_request
@@ -113,7 +113,7 @@ async def _dependencies(scope, previous):
             SessionModelResult.session_id == invocation.session_id,
             SessionModelResult.run_id == invocation.run_id,
             SessionModelResult.provider_request_id == invocation.provider_request_id))
-        sources, complete = _model_dependencies(model)
+        sources, complete = model_output_dependencies(model)
         _require(complete, "compute_model_inputs_unavailable", 409)
         sources = [*sources, *snapshot["sources"], *previous]
         unique = sorted({(row["source_kind"], row["source_id"], row["source_version"]) for row in sources})

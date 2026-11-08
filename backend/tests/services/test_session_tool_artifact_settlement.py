@@ -108,11 +108,12 @@ async def _prepare_live_round(
             run_id=run_id,
             turn_id=turn_id,
             round_index=1,
-            messages=[{"role": "user", "content": "write the production-shaped report"}],
+            messages=[{"role": "user", "content": "write the production-shaped report",
+                "source_ref": f"session-input:{input_id}"}],
             tools=None,
             provider="openai",
             model="gpt-test",
-            wire_request={"messages": [], "tools": []},
+            wire_request={"messages": [{"role": "user", "content": "write the production-shaped report"}], "tools": []},
             attempt_owner="tool-artifact-settlement-test",
         )
         await db.commit()
@@ -160,8 +161,9 @@ async def _start_effect(
     path,
     tool_name="write_file",
 ):
-    from app.models.session_v2 import SessionToolInvocation
+    from app.models.session_v2 import SessionModelResult, SessionToolInvocation
     from app.services import web_chat_runtime as runtime
+    from app.services.session_model_round import commit_sealed_model_round, seal_model_response
     from app.services.workspace_resource_authority import register_workspace_path
 
     async with owner_sessionmaker() as db:
@@ -188,6 +190,18 @@ async def _start_effect(
         "runtime_task_id": str(run_id),
         "provider_request_id": provider_request_id,
     }
+    # Both native entry points commit the provider response before executing its calls.
+    async with owner_sessionmaker() as db:
+        model = await db.scalar(select(SessionModelResult).where(
+            SessionModelResult.run_id == run_id, SessionModelResult.provider_request_id == provider_request_id))
+        scope = dict(tenant_id=tenant_id, agent_id=agent_id, session_id=session_id,
+            run_id=run_id, turn_id=model.turn_id, round_index=1, provider_request_id=provider_request_id)
+        await seal_model_response(db, **scope, response={"content": "", "tool_calls": [
+            {"id": provider_tool_use_id, "name": tool_name, "arguments": base["args"]}]})
+        await db.commit()
+    async with owner_sessionmaker() as db:
+        await commit_sealed_model_round(db, **scope)
+        await db.commit()
     await runtime._persist_tool_call(
         agent_id=agent_id,
         user_id=user_id,

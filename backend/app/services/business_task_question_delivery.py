@@ -79,14 +79,14 @@ async def authorize_business_question_notice(db, *, item, run, session, user):
     from app.core.resource_authority import authorize_resource_action
     from app.core.source_read_purpose import source_recipient_read
     from app.services.content_input_receipts import _validate_input_dependencies
-    from app.services.session_model_inputs import _model_dependencies
+    from app.services.session_model_inputs import model_output_dependencies
 
     business, question, model = await _waiting_question(db, run, item.metadata.get('question_item_id'))
     if (item.delivery_kind != 'interactive_prompt' or item.artifact_ids
         or item.metadata.get('business_task_id') != str(business.id)
         or item.metadata.get('model_result_id') != str(model.id) or item.text != _question_text(business, question)):
         raise ContentInputReceiptError('business_question_delivery_changed', 'The saved question no longer matches.', 403)
-    dependencies, complete = _model_dependencies(model)
+    dependencies, complete = model_output_dependencies(model)
     if not complete:
         raise ContentInputReceiptError('business_question_sources_unavailable', 'Restore the question source receipt.', 503)
     if user is None:

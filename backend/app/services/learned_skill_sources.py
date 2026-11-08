@@ -48,12 +48,12 @@ def model_source(result):
 
 async def validate_model_source(db, tenant_id, dependency, *, request=None, user=None):
     from app.services.content_input_receipts import _authorize_session_input_source
-    from app.services.session_model_inputs import _model_dependencies
+    from app.services.session_model_inputs import model_output_dependencies
 
     try:
         result = await db.get(SessionModelResult, uuid.UUID(dependency["source_id"]), populate_existing=True)
         session = await db.get(ChatSession, result.session_id, populate_existing=True) if result else None
-        sources, complete = _model_dependencies(result)
+        sources, complete = model_output_dependencies(result)
         seal = result.seal_json if result is not None else None
         if (result is None or result.tenant_id != tenant_id or session is None or session.tenant_id != tenant_id
             or not complete or not isinstance(seal, dict) or seal.get("result_id") != str(result.id)

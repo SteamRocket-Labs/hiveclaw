@@ -873,7 +873,9 @@ async def complete_tool_invocation(
         if paths:
             from app.core.resource_authority import normalize_workspace_resource_path
             from app.services.content_input_receipts import ContentInputReceiptError, load_workspace_execution_evidence
+            from app.services.session_model_inputs import model_output_dependencies
 
+            _dependencies, complete = model_output_dependencies(result)
             try:
                 workspace_execution_ref, expected_content_hashes = await load_workspace_execution_evidence(
                     db,
@@ -887,7 +889,7 @@ async def complete_tool_invocation(
                 expected_content_hashes = {}
             verified_paths = []
             for path in paths:
-                if normalize_workspace_resource_path(path) in expected_content_hashes:
+                if complete and normalize_workspace_resource_path(path) in expected_content_hashes:
                     verified_paths.append(path)
                 else:
                     publication_errors.append(

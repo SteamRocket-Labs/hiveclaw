@@ -45,6 +45,10 @@ try {
   const approver = await openWork(fixture.requesterToken);
   const approve = page.getByRole('button', { name: 'Approve', exact: true });
   await expect(approve).toBeVisible({ timeout: 30000 });
+  await expect(page.getByText('Company approval', { exact: true })).toBeVisible();
+  await expect(page.getByText('Write a workspace file', { exact: true })).toBeVisible();
+  await expect(page.getByTestId('chat-inline-plan-tool-call').getByText('workspace/shared-report.md', { exact: true })).toBeVisible();
+  await expect(page.getByTestId('chat-inline-plan-tool-call').getByText('Pending', { exact: true })).toBeVisible();
   const url = `${fixture.origin}/api/agents/${fixture.agentId}/sessions/${fixture.sessionId}/approvals/${fixture.permissionId}/resolve`;
   await page.route(url, route => route.abort('failed'), { times: 1 });
   await approve.click();

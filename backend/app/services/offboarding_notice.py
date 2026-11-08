@@ -16,6 +16,7 @@ from app.models.notification import Notification
 from app.models.runtime_task import RuntimeTask
 from app.models.session_v2 import SessionToolInvocation
 from app.models.task import Task
+from app.models.tenant_tool_config import TenantToolConfig
 from app.models.tool import AgentTool, Tool
 from app.models.trigger import AgentTrigger
 from app.models.user import User
@@ -23,7 +24,7 @@ from app.services.personal_knowledge_service import (
     PersonalKnowledgeJobConflict, PersonalKnowledgeService, _merge_source_refs, _merge_unique_strings,
 )
 from app.services.privacy_layer import max_sensitivity
-from app.services.tool_config_service import clear_agent_tool_config_secrets
+from app.services.tool_config_service import clear_agent_tool_config_secrets, decrypt_tool_config_secrets
 
 
 def _knowledge_handover_entry(document, match=None):
@@ -199,14 +200,16 @@ async def transfer_knowledge_and_notify(db, *, target_user, successor, agents, h
         documents, provenance = await _move_knowledge(db, target_user, successor)
     agent_ids = [agent.id for agent in agents]
     tools_needing_credentials = []
-    assignments = (await db.execute(select(AgentTool, Tool).join(Tool, Tool.id == AgentTool.tool_id).where(
+    assignments = (await db.execute(select(AgentTool, Tool, TenantToolConfig).join(Tool, Tool.id == AgentTool.tool_id)
+        .outerjoin(TenantToolConfig, (TenantToolConfig.tool_id == Tool.id) & (TenantToolConfig.tenant_id == target_user.tenant_id)).where(
         AgentTool.tenant_id == target_user.tenant_id, AgentTool.agent_id.in_(agent_ids))
         .order_by(AgentTool.agent_id, Tool.name))).all()
     agent_names = {agent.id: agent.name for agent in agents}
-    for assignment, tool in assignments:
+    for assignment, tool, company in assignments:
         def clear(stored):
             cleared = clear_agent_tool_config_secrets(stored, tool.config_schema,
-                platform_tool=tool.type == "builtin" and tool.tenant_id is None)
+                platform_tool=tool.type == "builtin" and tool.tenant_id is None,
+                company_config=decrypt_tool_config_secrets({**(tool.config or {}), **(company.config if company else {})}, tool.config_schema))
             if cleared != stored:
                 tools_needing_credentials.append({"agent_id": str(assignment.agent_id),
                     "agent_name": agent_names[assignment.agent_id], "name": tool.display_name or tool.name})
@@ -252,4 +255,5 @@ async def transfer_knowledge_and_notify(db, *, target_user, successor, agents, h
                 for trigger in triggers]}
         db.add(Notification(user_id=successor.id, type="offboarding_handover", title="工作交接",
             body=json.dumps(payload, ensure_ascii=False), ref_id=target_user.id))
-    return {"task_original_creators": originals, "merged_knowledge_provenance": provenance}
+    return {"task_original_creators": originals, "merged_knowledge_provenance": provenance,
+        "cleared_tool_names": sorted({tool["name"] for tool in tools_needing_credentials})}

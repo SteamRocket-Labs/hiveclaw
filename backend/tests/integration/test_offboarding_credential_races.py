@@ -104,6 +104,7 @@ async def test_undeclared_credentials_are_removed_and_listed_on_the_card(owner_s
         assert displayed["agent_config"] == dict.fromkeys(original, MASKED_SECRET_SENTINEL)
         await offboard(state)
         await db.refresh(assignment)
+        # G2bf r2 S3: one safe rule; tenant-defined text fields may hold secrets.
         assert assignment.config == dict.fromkeys(original, "")
         card = await db.scalar(select(Notification).where(Notification.user_id == state.successor.id))
         assert json.loads(card.body)["tools_needing_credentials"] == [{"agent_id": str(state.bot.id),
@@ -145,7 +146,7 @@ async def test_save_started_before_offboarding_rechecks_authority_and_stored_con
                 await resume.wait()
             return await original(session, agent_id, current_user=current_user)
 
-        monkeypatch.setattr(assignments, "lock_agent_tool_config_write", pause_before_lock)
+        monkeypatch.setattr(tools_api, "lock_agent_tool_config_write", pause_before_lock)
 
         async def save():
             nonlocal save_db
@@ -176,6 +177,7 @@ async def test_save_started_before_offboarding_rechecks_authority_and_stored_con
             assert not isinstance(result, HTTPException), result
         stored = await db.get(AgentTool, assignment_id, populate_existing=True)
         assert stored.config["api_key"] == ""
+        # G2bf r2 S3: only platform-declared scalars survive; a later admin save is new input.
         assert stored.config["timeout"] == ("" if caller == "leaver" else 2)
 
 
@@ -268,6 +270,14 @@ async def test_six_moved_documents_are_all_promotable_with_daemon_off(owner_sess
     monkeypatch.setattr(get_settings(), "CORE_DAEMON_STARTUP_ENABLED", False)
     root = get_settings().AGENT_DATA_DIR
     service = PersonalKnowledgeService(data_root=root, extractor=None)
+    process = service.process_import_jobs
+    limits = []
+
+    async def bounded_process(*args, **kwargs):
+        limits.append(kwargs["limit"])
+        return await process(*args, **kwargs)
+
+    monkeypatch.setattr(service, "process_import_jobs", bounded_process)
     monkeypatch.setattr("app.api.agent_knowledge.PersonalKnowledgeService", lambda: service)
     async with owner_sessionmaker() as db:
         state = await seed_handover(db)
@@ -294,6 +304,7 @@ async def test_six_moved_documents_are_all_promotable_with_daemon_off(owner_sess
                         purpose="interactive_session", risk_level="normal", title=None, attest_scope_change=True,
                         idempotency_key=str(uuid4()), trace_id=str(uuid4())))
                 assert promotion.status == "queued"
+        assert len(limits) >= 2 and all(limit == 5 for limit in limits)
 
 
 async def test_rebuild_claim_race_returns_retryable_409_and_rolls_back(owner_sessionmaker, monkeypatch):

@@ -20,7 +20,7 @@ from app.models.tenant_setting import TenantSetting
 from app.models.tenant_tool_config import TenantToolConfig
 from app.models.tool import AgentTool, Tool
 from app.models.user import User
-from app.services.agent_tool_assignment_service import ensure_agent_tool_assignment
+from app.services.agent_tool_assignment_service import ensure_agent_tool_assignment, lock_agent_tool_config_write
 from app.services.agent_tool_domains.feishu_helpers import _get_feishu_token_status
 from app.services.email_service import test_connection as test_email_connection
 from app.services.governance_capability_taxonomy import capability_descriptor_for_tool, is_agent_base_tool
@@ -31,6 +31,7 @@ from app.services.tool_config_service import (
     mask_agent_tool_config_secrets,
     merge_agent_tool_config_secrets,
     merge_tool_config_secrets,
+    resolve_tool_config,
     resolve_tool_config_for_tenant_display,
     update_tenant_tool_config,
 )
@@ -575,6 +576,12 @@ def _serialize_agent_tool_row(tool: Tool, agent_tool: AgentTool | None, *, base_
     }
 
 
+def _replace_agent_config(incoming: dict, stored: dict, tool: Tool) -> dict:
+    return {key: value for key, value in merge_agent_tool_config_secrets(incoming, stored, tool.config_schema or {}).items()
+        if key in incoming or not is_safe_agent_tool_setting(key, value, tool.config_schema or {},
+            platform_tool=tool.type == "builtin" and tool.tenant_id is None)}
+
+
 async def _upsert_tenant_tool_assignments(
     db: AsyncSession,
     tenant_id: uuid.UUID | None,
@@ -582,7 +589,6 @@ async def _upsert_tenant_tool_assignments(
     *,
     enabled: bool | None = None,
     config: dict | None = None,
-    current_user: User,
 ) -> None:
     for agent_id in await _get_tenant_agent_ids(db, tenant_id):
         await ensure_agent_tool_assignment(
@@ -593,7 +599,6 @@ async def _upsert_tenant_tool_assignments(
             config=config if config is not None else None,
             source="system",
             merge_config=False,
-            current_user=current_user,
         )
 
 
@@ -759,7 +764,7 @@ async def create_tool(
         category=data.category,
         icon=data.icon,
         parameters_schema=data.parameters_schema,
-        config=data.config,
+        config=merge_tool_config_secrets(data.config, {}, data.config_schema),
         config_schema=data.config_schema,
         mcp_server_url=data.mcp_server_url,
         mcp_server_name=data.mcp_server_name,
@@ -785,7 +790,6 @@ async def create_tool(
             # defaults into employee overrides that survive company rotation.
             config={} if tool.type == "mcp" else data.config or {},
             source="system",
-            current_user=current_user,
             merge_config=False,
         )
 
@@ -855,7 +859,6 @@ async def update_global_tool(
             tool,
             enabled=data.enabled,
             config=(ttc.config if data.config is not None else None),
-            current_user=current_user,
         )
     else:
         # Tenant-scoped tool (e.g. MCP): owning tenant can modify directly
@@ -1041,7 +1044,7 @@ async def update_agent_tools(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    agent = await _require_manage_access(db, current_user, agent_id)
+    agent = await lock_agent_tool_config_write(db, agent_id, current_user=current_user)
     for update_item in data.tools:
         tool_id = uuid.UUID(update_item.tool_id)
         assignment = await _get_agent_tool(db, agent_id, tool_id)
@@ -1070,7 +1073,7 @@ async def update_agent_tools(
             tool_id=tool.id,
             enabled=update_item.enabled,
             source="system",
-            current_user=current_user,
+            locked_agent=agent,
         )
     await db.commit()
     return {"ok": True}
@@ -1121,8 +1124,6 @@ async def update_category_config(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    from app.services.agent_tool_assignment_service import lock_agent_tool_config_write
-
     agent = await lock_agent_tool_config_write(db, agent_id, current_user=current_user)
     rows_result = await db.execute(
         select(AgentTool, Tool)
@@ -1133,7 +1134,7 @@ async def update_category_config(
     rows = [row for row in rows_result.all() if is_tool_allowed_for_agent(row[1], agent)]
     for assignment, tool in rows:
         await ensure_agent_tool_assignment(db, agent_id=agent_id, tool_id=tool.id,
-            enabled=None, source=None, config=data.config, current_user=current_user)
+            enabled=None, source=None, config=lambda stored: _replace_agent_config(data.config, stored, tool), locked_agent=agent)
     await db.commit()
     response_config = mask_agent_tool_config_secrets(rows[0][0].config, rows[0][1].config_schema or {},
         platform_tool=rows[0][1].type == "builtin" and rows[0][1].tenant_id is None) if rows else {}
@@ -1163,7 +1164,8 @@ async def test_category_config(
         runtime_rows = [
             (agent_tool, tool) for agent_tool, tool in config_result.all() if is_tool_allowed_for_agent(tool, agent)
         ]
-        config = {**(runtime_rows[0][1].config or {}), **(runtime_rows[0][0].config or {})} if runtime_rows else {}
+        config = await resolve_tool_config(runtime_rows[0][1].name, tenant_id=agent.tenant_id,
+            agent_id=agent_id, db=db) if runtime_rows else {}
     else:
         config = {}
     if category == "email":
@@ -1182,18 +1184,12 @@ async def update_tool_config(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    from app.services.agent_tool_assignment_service import lock_agent_tool_config_write
-
     agent = await lock_agent_tool_config_write(db, agent_id, current_user=current_user)
     tool = await _get_visible_agent_tool(db, agent, tool_id)
     if not tool:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tool not found")
     assignment, _ = await ensure_agent_tool_assignment(db, agent_id=agent_id, tool_id=tool.id,
-        config=lambda stored: {
-            key: value for key, value in merge_agent_tool_config_secrets(data.config, stored, tool.config_schema or {}).items()
-            if key in data.config or not is_safe_agent_tool_setting(key, value, tool.config_schema or {},
-                platform_tool=tool.type == "builtin" and tool.tenant_id is None)
-        }, current_user=current_user)
+        config=lambda stored: _replace_agent_config(data.config, stored, tool), locked_agent=agent)
     await db.commit()
     defaults, _enabled = await resolve_tool_config_for_tenant_display(db, tool, agent.tenant_id)
     return {"ok": True, "tool": _serialize_agent_tool_row(tool, assignment, base_config=defaults)}
@@ -1205,7 +1201,6 @@ async def _configuration_question_context(
     from app.services.chat_transcript import lock_transcript_session
     from app.services.session_user_question import load_configuration_question, question_payload
     from app.services.session_v2_persistence import resolve_session_mutation_authority
-    from app.services.agent_tool_assignment_service import lock_agent_tool_config_write
 
     authority = await resolve_session_mutation_authority(
         db, user=current_user, agent_id=agent_id, session_id=session_id, action="mutate_session_input"
@@ -1322,7 +1317,7 @@ async def save_session_tool_configuration(
     if question.lifecycle not in {"created", "waiting"}:
         raise HTTPException(status_code=409, detail="Configuration request is no longer waiting")
     await ensure_agent_tool_assignment(db, agent_id=target.id, tool_id=tool.id,
-        config=data.config, current_user=current_user)
+        config=lambda stored: _replace_agent_config(data.config, stored, tool), locked_agent=target)
     events = await append_session_events(
         db,
         tenant_id=authority.tenant_id,

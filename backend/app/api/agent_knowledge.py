@@ -16,7 +16,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Query, Response, UploadFile
 from pydantic import BaseModel, Field, model_validator
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
@@ -24,7 +24,6 @@ from app.core.permissions import check_agent_access, is_scoped_business_admin
 from app.core.security import get_current_user
 from app.database import get_db, tenant_scoped_session
 from app.models.agent import Agent
-from app.models.knowledge import KnowledgeIndexJob
 from app.models.user import User
 from app.services.personal_knowledge_access import HumanBrowserPrincipal
 from app.services.personal_knowledge_service import (
@@ -204,19 +203,13 @@ def _source_preview_response(preview: Any) -> Response:
 async def _process_current_user_personal_import_jobs(*, tenant_id: uuid.UUID, owner_user_id: uuid.UUID) -> None:
     # Two-phase worker: the claim (running + attempt increment) commits before
     # long conversion starts, so concurrent readers see the real state.
-    async with tenant_scoped_session(tenant_id) as db:
-        queued = await db.scalar(select(func.count()).select_from(KnowledgeIndexJob).where(
-            KnowledgeIndexJob.tenant_id == tenant_id, KnowledgeIndexJob.scope_type == "person",
-            KnowledgeIndexJob.scope_id == owner_user_id, KnowledgeIndexJob.status == "queued"))
-    if not queued:
-        return
     await PersonalKnowledgeService().process_import_jobs(
         None,
         session_factory=lambda: tenant_scoped_session(tenant_id),
         tenant_id=tenant_id,
         owner_user_id=owner_user_id,
         current_user_id=owner_user_id,
-        limit=queued,
+        limit=5,
         statuses=("queued",),
     )
 

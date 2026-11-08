@@ -271,9 +271,9 @@ async def update_agent_mcp_server(
     db: AsyncSession = Depends(get_db),
 ):
     """Assign or update one agent's connection to an MCP server."""
-    agent, access_level = await check_agent_access(db, current_user, agent_id)
-    if access_level != "manage":
-        raise HTTPException(status_code=403, detail="Manage access required")
+    from app.services.agent_tool_assignment_service import lock_agent_tool_config_write
+
+    agent = await lock_agent_tool_config_write(db, agent_id, current_user=current_user)
     try:
         return await set_agent_mcp_assignment(
             db,
@@ -284,6 +284,7 @@ async def update_agent_mcp_server(
             default_tool_mode=data.default_tool_mode,
             always_load=data.always_load,
             current_user=current_user,
+            locked_agent=agent,
         )
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc))

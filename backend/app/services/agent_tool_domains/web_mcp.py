@@ -896,21 +896,13 @@ async def _search_duckduckgo(query: str, max_results: int) -> str:
 
 
 async def _get_exa_api_key() -> str:
-    return get_settings().EXA_API_KEY
+    config = await _get_tool_config("exa_search")
+    return config.get("api_key") or config.get("exa_api_key")
 
 
 async def _get_tavily_api_key() -> str:
-    try:
-        from app.models.system_settings import SystemSetting
-
-        async with async_session() as db:
-            result = await db.execute(select(SystemSetting).where(SystemSetting.key == "tavily_api_key"))
-            setting = result.scalar_one_or_none()
-            if setting and setting.value.get("api_key"):
-                return setting.value["api_key"]
-    except Exception as e:
-        logger.debug("Suppressed: %s", e)
-    return get_settings().TAVILY_API_KEY
+    config = await _get_tool_config("tavily_search")
+    return config.get("api_key") or config.get("tavily_api_key")
 
 
 async def _exa_search(arguments: dict) -> str:
@@ -931,7 +923,7 @@ async def _exa_search(arguments: dict) -> str:
         )
 
     config = await _get_tool_config("exa_search")
-    api_key = config.get("api_key") or config.get("exa_api_key") or await _get_exa_api_key()
+    api_key = config.get("api_key") or config.get("exa_api_key")
     auth_mode = _optional_enum(config.get("auth_mode"), _WEB_PROVIDER_AUTH_MODES | {"mcp_keyless"}, default="auto")
     if auth_mode == "api_key" and not api_key:
         return render_tool_error(
@@ -993,7 +985,7 @@ async def _tavily_search(arguments: dict) -> str:
         )
 
     config = await _get_tool_config("tavily_search")
-    api_key = config.get("api_key") or config.get("tavily_api_key") or await _get_tavily_api_key()
+    api_key = config.get("api_key") or config.get("tavily_api_key")
     auth_mode = _optional_enum(config.get("auth_mode"), _WEB_PROVIDER_AUTH_MODES, default="auto")
     if auth_mode == "api_key" and not api_key:
         return render_tool_error(
@@ -1461,12 +1453,12 @@ async def _web_fetch(arguments: dict) -> str:
 
 async def _get_firecrawl_api_key() -> str:
     config = await _get_tool_config("firecrawl_fetch")
-    return config.get("api_key") or get_settings().FIRECRAWL_API_KEY
+    return config.get("api_key") or config.get("firecrawl_api_key")
 
 
 async def _get_xcrawl_api_key() -> str:
     config = await _get_tool_config("xcrawl_scrape")
-    return config.get("api_key") or get_settings().XCRAWL_API_KEY
+    return config.get("api_key") or config.get("xcrawl_api_key")
 
 
 async def _firecrawl_search(arguments: dict) -> str:
@@ -1487,7 +1479,7 @@ async def _firecrawl_search(arguments: dict) -> str:
         )
 
     config = await _get_tool_config("firecrawl_search")
-    api_key = config.get("api_key") or config.get("firecrawl_api_key") or await _get_firecrawl_api_key()
+    api_key = config.get("api_key") or config.get("firecrawl_api_key")
     auth_mode = _provider_auth_mode(config)
     if auth_mode == "api_key" and not api_key:
         return render_tool_error(
@@ -1587,7 +1579,7 @@ async def _tavily_extract(arguments: dict) -> str:
         return denied
 
     config = await _get_tool_config("tavily_extract")
-    api_key = config.get("api_key") or config.get("tavily_api_key") or await _get_tavily_api_key()
+    api_key = config.get("api_key") or config.get("tavily_api_key")
     auth_mode = _provider_auth_mode(config)
     if auth_mode == "api_key" and not api_key:
         return render_tool_error(
@@ -1676,7 +1668,7 @@ async def _exa_fetch(arguments: dict) -> str:
         return denied
 
     config = await _get_tool_config("exa_fetch")
-    api_key = config.get("api_key") or config.get("exa_api_key") or await _get_exa_api_key()
+    api_key = config.get("api_key") or config.get("exa_api_key")
     auth_mode = _provider_auth_mode(config)
     if auth_mode == "api_key" and not api_key:
         return render_tool_error(
@@ -1733,7 +1725,7 @@ async def _firecrawl_fetch(arguments: dict) -> str:
         return denied
 
     config = await _get_tool_config("firecrawl_fetch")
-    api_key = config.get("api_key") or config.get("firecrawl_api_key") or await _get_firecrawl_api_key()
+    api_key = config.get("api_key") or config.get("firecrawl_api_key")
     auth_mode = _optional_enum(config.get("auth_mode"), _WEB_PROVIDER_AUTH_MODES, default="auto")
     if auth_mode == "api_key" and not api_key:
         return render_tool_error(

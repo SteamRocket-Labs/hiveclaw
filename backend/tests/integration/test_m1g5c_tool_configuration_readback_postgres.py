@@ -30,7 +30,8 @@ async def test_profile_configuration_inherits_company_defaults_and_reads_back_a_
     async with owner_sessionmaker() as db:
         db.add(Tool(id=tool_id, name=name, display_name="Readback probe", type="builtin", category="general",
             is_default=True, enabled=True, config={"endpoint": "platform-value", "api_key": "synthetic-platform-key"},
-            config_schema={"fields": [{"key": "endpoint", "type": "text"}, {"key": "api_key", "type": "password"}]}))
+            # Less code 2: safe fixtures use the current platform's select schema.
+            config_schema={"fields": [{"key": "endpoint", "type": "select"}, {"key": "api_key", "type": "password"}]}))
         await db.flush()
         await update_tenant_tool_config(db, tenant_id, tool_id,
             config={"endpoint": "company-value", "api_key": "synthetic-company-key"},
@@ -110,7 +111,7 @@ async def test_api_save_replaces_safe_settings_and_preserves_omitted_or_masked_c
     async with owner_sessionmaker() as db:
         db.add(Tool(id=tool_id, name=name, display_name="Replace probe", type="builtin", category="general",
             is_default=True, enabled=True, config={}, config_schema={"fields": [
-                {"key": "endpoint", "type": "text"}, {"key": "timeout", "type": "number"},
+                {"key": "endpoint", "type": "select"}, {"key": "timeout", "type": "number"},
                 {"key": "api_key", "type": "password"}]}))
         await db.flush()
         await update_tenant_tool_config(db, tenant_id, tool_id,

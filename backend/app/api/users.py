@@ -14,6 +14,7 @@ from app.database import get_db
 from app.models.agent import Agent
 from app.models.audit import AuditLog
 from app.models.local_bridge import LocalAgentBridgePairingSession
+from app.models.knowledge import KnowledgeIndexJob
 from app.models.user import User
 from app.services.external_principal_service import platform_member_user_predicate
 from app.api.agent_knowledge import _schedule_personal_import_worker
@@ -335,9 +336,13 @@ async def offboard_user(
         request_id=data.request_id,
     )
     if replay is not None:
+        queued = await db.scalar(select(func.count()).select_from(KnowledgeIndexJob).where(
+            KnowledgeIndexJob.tenant_id == pinned_tenant_id, KnowledgeIndexJob.scope_type == "person",
+            KnowledgeIndexJob.scope_id == data.successor_user_id, KnowledgeIndexJob.status == "queued"))
         await db.commit()
-        _schedule_personal_import_worker(background_tasks, tenant_id=pinned_tenant_id,
-            owner_user_id=data.successor_user_id)
+        for _ in range((queued + 4) // 5):
+            _schedule_personal_import_worker(background_tasks, tenant_id=pinned_tenant_id,
+                owner_user_id=data.successor_user_id)
         await publish_user_offboarding_runtime_cancellations(replay)
         return _offboarding_response(replay)
     successor = (
@@ -356,12 +361,15 @@ async def offboard_user(
         reason=data.reason,
         request_id=data.request_id,
     )
+    queued = await db.scalar(select(func.count()).select_from(KnowledgeIndexJob).where(
+        KnowledgeIndexJob.tenant_id == pinned_tenant_id, KnowledgeIndexJob.scope_type == "person",
+        KnowledgeIndexJob.scope_id == data.successor_user_id, KnowledgeIndexJob.status == "queued"))
     # Commit the complete authority change before advisory cross-process stop
     # signals are published. The RuntimeTask status + claim-version fence is
     # authoritative even when Redis is unavailable.
     await db.commit()
-    _schedule_personal_import_worker(background_tasks, tenant_id=pinned_tenant_id,
-        owner_user_id=data.successor_user_id)
+    for _ in range((queued + 4) // 5):
+        _schedule_personal_import_worker(background_tasks, tenant_id=pinned_tenant_id, owner_user_id=data.successor_user_id)
     await publish_user_offboarding_runtime_cancellations(receipt)
     return _offboarding_response(receipt)
 

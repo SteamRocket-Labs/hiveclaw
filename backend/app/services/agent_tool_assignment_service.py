@@ -5,7 +5,7 @@ from __future__ import annotations
 import uuid
 from collections.abc import Callable
 
-from sqlalchemy import select, text
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.agent import Agent
@@ -18,15 +18,15 @@ async def lock_agent_tool_config_write(db: AsyncSession, agent_id: uuid.UUID, *,
     from app.core.permissions import require_agent_manage_access
     from app.services.runtime_user_identity import load_runtime_user
 
+    if current_user is not None:
+        await require_agent_manage_access(db, current_user, agent_id)
     agent = (await db.execute(select(Agent).where(Agent.id == agent_id).with_for_update(key_share=True)
         .execution_options(populate_existing=True))).scalar_one_or_none()
     if agent is None:
         raise HTTPException(404, "Agent not found")
     if current_user is not None:
-        actor = await load_runtime_user(db, current_user.id)
-        if actor is None:
+        if await load_runtime_user(db, current_user.id) is None:
             raise HTTPException(403, "Manage access required")
-        await require_agent_manage_access(db, actor, agent_id)
     return agent
 
 
@@ -42,16 +42,16 @@ async def ensure_agent_tool_assignment(
     config: dict | Callable[[dict], dict] | None = None,
     merge_config: bool = True,
     quarantine_for_mcp_trust: bool = False,
-    current_user=None,
     create: bool = True,
+    locked_agent: Agent | None = None,
 ) -> tuple[AgentTool | None, bool]:
     """Create or update a single AgentTool row without duplicating assignments."""
-    agent = await lock_agent_tool_config_write(db, agent_id, current_user=current_user)
+    agent = locked_agent if locked_agent is not None else await lock_agent_tool_config_write(db, agent_id)
     if tenant_id is None:
         tenant_id = agent.tenant_id
 
     assignment, created, _changed = await db.run_sync(
-        _write_agent_tool_config, agent_id=agent_id, tool_id=tool_id, agent=agent,
+        _write_agent_tool_config, agent_id=agent_id, tool_id=tool_id,
         tenant_id=tenant_id, enabled=enabled, source=source, installed_by_agent_id=installed_by_agent_id,
         config=config, merge_config=merge_config, quarantine_for_mcp_trust=quarantine_for_mcp_trust, create=create,
     )
@@ -59,32 +59,10 @@ async def ensure_agent_tool_assignment(
 
 
 def _write_agent_tool_config(
-    db, *, agent_id, tool_id, agent=None, tenant_id=None, enabled=True, source="system",
+    db, *, agent_id, tool_id, tenant_id=None, enabled=True, source="system",
     installed_by_agent_id=None, config=None, merge_config=True, quarantine_for_mcp_trust=False, create=True,
-    provider=None,
 ) -> tuple[AgentTool | None, bool, bool]:
-    """The sole config mutator, shared by AsyncSession and legacy storage rotation.
-
-    A live request supplies its already locked, authorized Agent. The existing
-    synchronous migration/rotation connection takes the same Agent lock here.
-    Returns assignment, created, changed; storage-only rotation has no ORM row.
-    """
-    if agent is None:
-        db.execute(select(Agent.__table__.c.id).where(Agent.id == agent_id).with_for_update(key_share=True))
-    if provider is not None:
-        import json
-        from app.services.agent_tool_config_storage import encrypt_agent_tool_config
-
-        row = db.execute(text("SELECT id, config FROM agent_tools WHERE agent_id = :agent_id AND tool_id = :tool_id FOR UPDATE")
-            .execution_options(populate_existing=True), {"agent_id": agent_id, "tool_id": tool_id}).mappings().one_or_none()
-        if row is None:
-            return None, False, False
-        encrypted = encrypt_agent_tool_config(row["config"], provider=provider)
-        changed = encrypted != row["config"]
-        if changed:
-            db.execute(text("UPDATE agent_tools SET config = CAST(:config AS json) WHERE id = :id"),
-                {"config": json.dumps(encrypted), "id": row["id"]})
-        return None, False, changed
+    """Mutate the assignment after its caller has locked the Agent row."""
 
     result = db.execute(
         select(AgentTool).where(

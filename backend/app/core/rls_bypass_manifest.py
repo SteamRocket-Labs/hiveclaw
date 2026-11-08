@@ -851,7 +851,9 @@ def fingerprint_rls_bypass_scopes(app_root: Path) -> str:
 # R1 retains native-pair reader proofs and scopes source withholding to its round; no bypass callsite or allowlist changes.
 # R1 round 2 validates workspace sources at input admission; no bypass callsite or allowlist changes.
 # Merging R1 with main accepts the exact three-way module-source merge of session_model_round.py; no bypass scope changed on both sides.
-RLS_BYPASS_SCOPES_SHA256 = "02d0a47ca51dfcf86f2f3931a157e22f3062d89d1bcbba8f1170e35ebcdad6c8"
+# G2bf r2 unifies destination secrets and handover settings; bypass callsite signatures are unchanged.
+# Merging G2bf with main keeps each entry from one side.
+RLS_BYPASS_SCOPES_SHA256 = "cfeb3cebdfd84a6674c968017925201366282a8843bf2b63d4c79f2e3dd227e3"
 
 
 def scan_rls_bypass_callsites(app_root: Path) -> list[RLSBypassCallsite]:

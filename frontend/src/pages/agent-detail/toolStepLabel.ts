@@ -27,6 +27,7 @@ const TOOL_TITLE_KEY: Record<string, string> = {
   'Plan step': 'agent.chat.disclosure.toolTitle.planStep',
   'Tool call': 'agent.chat.disclosure.toolTitle.toolCall',
   'Runtime event': 'agent.chat.disclosure.toolTitle.runtimeEvent',
+  'Goal updated': 'agent.chat.disclosure.toolTitle.goalUpdated',
 };
 
 const MEMORY_AND_CREATION: Record<string, [string, string]> = {

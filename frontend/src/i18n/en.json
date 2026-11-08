@@ -2644,6 +2644,7 @@
           "generic": "The operation did not complete; the outcome is unconfirmed."
         },
         "toolTitle": {
+          "goalUpdated": "Goal updated",
           "saveMemory": "Save memory",
           "searchMemory": "Search memory",
           "loadMemory": "Load memory",

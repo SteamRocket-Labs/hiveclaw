@@ -2644,6 +2644,7 @@
           "generic": "操作未能完成，结果尚未确认。"
         },
         "toolTitle": {
+          "goalUpdated": "任务已更新",
           "saveMemory": "保存记忆",
           "searchMemory": "查找记忆",
           "loadMemory": "读取记忆",

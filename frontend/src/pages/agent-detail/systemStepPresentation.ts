@@ -9,7 +9,7 @@ export function presentSystemStep(step: RunStepSnapshot, t: TFunction): RunStepS
   if (!event) return step;
   const metadata = event.metadata;
   const text = typeof step.details === 'string' ? step.details : step.summary || '';
-  const display = (title: string, summary?: string): RunStepSnapshot => ({ ...step, title, summary, details: summary });
+  const display = (title: string, summary?: string): RunStepSnapshot => ({ ...step, title, titleIsLocalized: true, summary, details: summary });
   const statusLabel = (status: unknown) => status === 'needs_reconciliation'
     ? t('agent.businessTasks.status.needs_reconciliation', 'Review required')
     : runtimeStatusLabel(status, t);

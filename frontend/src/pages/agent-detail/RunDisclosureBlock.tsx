@@ -260,7 +260,15 @@ function RunStepDetails({ step }: { step: RunStepSnapshot }) {
       JSON.parse(result);
       return null;
     } catch {
-      return <p><PastedCredentialText content={result.trim()} /></p>;
+      // Native breaks retain line layout while DOM text reads as a sentence.
+      const lines = result.trim().split(/\r?\n/);
+      return <p>{lines.map((line, index) => (
+        <React.Fragment key={index}>
+          {index > 0 && <br />}
+          <PastedCredentialText content={line} />
+          {line && index < lines.length - 1 && ' '}
+        </React.Fragment>
+      ))}</p>;
     }
   }
   const detailText = step.details;
@@ -356,6 +364,7 @@ function toolNameOf(step: RunStepSnapshot): string | null {
 }
 
 function localizedToolTitle(step: RunStepSnapshot, t: TFunction): string {
+  if (step.titleIsLocalized) return step.title;
   if (step.kind === 'permission' && step.title === 'permission_resolved') {
     return t('sessionWorkbench.threadItem.type.approval_decision', 'Approval decision');
   }

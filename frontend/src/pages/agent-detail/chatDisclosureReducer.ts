@@ -61,6 +61,8 @@ export interface RunStepSnapshot {
   blocking?: boolean;
   presentation?: RunStepPresentation;
   systemEvent?: { type: string; metadata: Record<string, unknown> };
+  // Set only on render-time copies by the system step presenter.
+  titleIsLocalized?: boolean;
 }
 
 /** Locale-neutral run aggregate: the renderer composes the sentence. */

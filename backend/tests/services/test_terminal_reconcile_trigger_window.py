@@ -10,7 +10,7 @@ import json
 import uuid
 
 import pytest
-from sqlalchemy import and_, literal, or_, select, text
+from sqlalchemy import and_, delete, literal, or_, select, text
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -112,18 +112,39 @@ async def test_nontrigger_and_mixed_claim_sql_is_byte_identical(monkeypatch, tas
     assert _sql(actual) == _sql(_base_statement(tenant_id, task_types=task_types))
 
 
-async def _tenant(sessionmaker, name):
-    seed = await _seed_terminal_task(sessionmaker, tenant_name=name, task_type="trigger")
-    async with sessionmaker() as db:
-        task = await db.get(RuntimeTask, seed.task_id)
-        task.terminal_boundary_enqueued_at = NOW
-        await db.commit()
-    return seed
+@pytest.fixture
+async def _tenant(owner_sessionmaker):
+    from app.models.agent import Agent
+    from app.models.chat_session import ChatSession
+    from app.models.runtime_terminal_boundary_outbox import RuntimeTerminalBoundaryOutbox
+    from app.models.tenant import Tenant
+    from app.models.user import User
+
+    tenant_ids = []
+
+    async def create(name):
+        seed = await _seed_terminal_task(owner_sessionmaker, tenant_name=name, task_type="trigger")
+        tenant_ids.append(seed.tenant_id)
+        async with owner_sessionmaker() as db:
+            task = await db.get(RuntimeTask, seed.task_id)
+            task.terminal_boundary_enqueued_at = NOW
+            await db.commit()
+        return seed
+
+    try:
+        yield create
+    finally:
+        async with owner_sessionmaker() as db:
+            for tenant_id in tenant_ids:
+                for model in (RuntimeTerminalBoundaryOutbox, ChatSession, RuntimeTask, Agent, User):
+                    await db.execute(delete(model).where(model.tenant_id == tenant_id))
+                await db.execute(delete(Tenant).where(Tenant.id == tenant_id))
+            await db.commit()
 
 
 @pytest.mark.parametrize("limit", [0, 1, 17, 10000])
-async def test_trigger_claim_ids_order_and_retry_writes_match_base(owner_sessionmaker, limit):
-    seed = await _tenant(owner_sessionmaker, "Trigger reconcile equivalence")
+async def test_trigger_claim_ids_order_and_retry_writes_match_base(owner_sessionmaker, _tenant, limit):
+    seed = await _tenant("Trigger reconcile equivalence")
     cutoff = NOW - TERMINAL_BOUNDARY_RECENT_WINDOW
     rows = []
     for index, (kind, status, created, attempted) in enumerate(
@@ -205,8 +226,8 @@ async def test_trigger_claim_ids_order_and_retry_writes_match_base(owner_session
     print(json.dumps({"limit": limit, "claimed_ids": [str(task_id) for task_id in actual]}))
 
 
-async def test_two_reconcile_claimers_skip_each_others_locked_rows(owner_sessionmaker):
-    seed = await _tenant(owner_sessionmaker, "Concurrent trigger reconcile")
+async def test_two_reconcile_claimers_skip_each_others_locked_rows(owner_sessionmaker, _tenant):
+    seed = await _tenant("Concurrent trigger reconcile")
     first_locked, release_first = asyncio.Event(), asyncio.Event()
 
     class PausedClaimSession(AsyncSession):
@@ -265,8 +286,8 @@ async def test_two_reconcile_claimers_skip_each_others_locked_rows(owner_session
     assert set(first_ids + second_ids) == expected
 
 
-async def _seed_large_reconcile(sessionmaker):
-    seed = await _tenant(sessionmaker, "Trigger reconcile plan")
+async def _seed_large_reconcile(sessionmaker, _tenant):
+    seed = await _tenant("Trigger reconcile plan")
     async with sessionmaker() as db:
         await db.execute(
             text("""
@@ -311,8 +332,8 @@ def _plan_nodes(node):
         yield from _plan_nodes(child)
 
 
-async def test_trigger_reconcile_plan_ranges_existing_created_at_index(owner_sessionmaker, monkeypatch):
-    seed = await _seed_large_reconcile(owner_sessionmaker)
+async def test_trigger_reconcile_plan_ranges_existing_created_at_index(owner_sessionmaker, _tenant, monkeypatch):
+    seed = await _seed_large_reconcile(owner_sessionmaker, _tenant)
     statement = await _claim_statement(monkeypatch, seed.tenant_id, now=PLAN_NOW)
     async with tenant_scoped_session(seed.tenant_id, session_factory=owner_sessionmaker) as db:
         plan = (await db.execute(text("EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) " + _sql(statement)))).scalar_one()[0]

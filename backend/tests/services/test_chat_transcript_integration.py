@@ -994,7 +994,7 @@ async def test_terminal_incoming_guest_join_fails_closed_without_proven_incoming
         assert events[0].content == "owner open segment event", scenario
 
 
-async def test_sweeper_selects_only_each_sessions_earliest_unfinished_frontier(
+async def test_sweeper_batches_uncapped_sessions_without_redriving_a_capped_frontier(
     owner_sessionmaker,
     monkeypatch,
     tmp_path,
@@ -1123,7 +1123,7 @@ async def test_sweeper_selects_only_each_sessions_earliest_unfinished_frontier(
         capped_row.projection_attempts = 20
         await db.commit()
 
-    assert await runtime_control_bus.sweep_pending_transcript_t0_bridges(limit=50, max_attempts=20) == 1
+    assert await runtime_control_bus.sweep_pending_transcript_t0_bridges(limit=50, max_attempts=20) == 2
 
     async with owner_sessionmaker() as db:
         rows = {
@@ -1141,18 +1141,18 @@ async def test_sweeper_selects_only_each_sessions_earliest_unfinished_frontier(
         assert rows[capped_event.event_id].projection_attempts == 20
         assert rows[later_descendant.event_id].projection_status == "pending"
         assert rows[later_descendant.event_id].projection_attempts == 0
-        # Other sessions recover exactly their own earliest unfinished row.
+        # An uncapped session drains its ordered batch in the same transaction.
         assert rows[recoverable_frontier.event_id].projection_status == "projected"
         assert rows[recoverable_frontier.event_id].projection_attempts == 1
-        assert rows[later_sibling.event_id].projection_status == "pending"
-        assert rows[later_sibling.event_id].projection_attempts == 0
+        assert rows[later_sibling.event_id].projection_status == "projected"
+        assert rows[later_sibling.event_id].projection_attempts == 1
 
     stalled_events = replay_t0_session_events(agent_id=agent_id, session_id=stalled_session_id, data_root=tmp_path)
     assert [event.event_type for event in stalled_events] == ["assistant_message"]
     recoverable_events = replay_t0_session_events(
         agent_id=agent_id, session_id=recoverable_session_id, data_root=tmp_path
     )
-    assert [event.content for event in recoverable_events] == ["recoverable frontier event"]
+    assert [event.content for event in recoverable_events] == ["recoverable frontier event", "later pending sibling"]
 
 
 async def _prepare_unbridged_backlog_session(

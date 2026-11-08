@@ -141,7 +141,7 @@ def render_human_input_content(content_parts: Any) -> str:
     return json.dumps(content_parts, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
-def user_checkpoint_content(event: Any, *, draft: bool = False) -> str:
+def user_checkpoint_content(event: Any, *, draft: bool = False, display: bool = False) -> str:
     """Exact current user content: V2 renders ``content_parts``; a payload that
     carried inline ``content`` instead (mirrored onto the row) falls back to the
     row's own durable content; legacy rows return their row content."""
@@ -149,11 +149,15 @@ def user_checkpoint_content(event: Any, *, draft: bool = False) -> str:
     if is_human_input_checkpoint(event):
         payload = _event_metadata(event).get("v2_payload")
         content_parts = payload.get("content_parts") if isinstance(payload, dict) else None
-        if draft and isinstance(content_parts, list) and any(
+        if (draft or display) and isinstance(content_parts, list) and any(
             isinstance(part, dict) and part.get("type") == "workspace_file_ref" for part in content_parts
         ):
-            return "\n".join(part.get("text", part.get("content", "")) for part in content_parts
-                if isinstance(part, dict) and part.get("type") == "text" and isinstance(part.get("text", part.get("content")), str))
+            return "\n".join(
+                part.get("text", part.get("content", "")) if draft
+                else part.get("display_content", part.get("text", part.get("content", "")))
+                for part in content_parts if isinstance(part, dict) and part.get("type") == "text"
+                and isinstance(part.get("text", part.get("content")), str)
+            )
         rendered = render_human_input_content(content_parts)
         if rendered:
             return rendered

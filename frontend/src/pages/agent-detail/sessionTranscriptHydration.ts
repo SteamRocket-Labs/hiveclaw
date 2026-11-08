@@ -11,6 +11,23 @@ import type { SessionEventStore } from '../session-workbench/sessionEventStore';
 
 export const CANONICAL_TRANSCRIPT_PAGE_SIZE = 1000;
 
+/** A terminal witness needs a read started AFTER an older snapshot finishes.
+ * Reusing that snapshot can miss the committed final forever on a healthy socket.
+ * Concurrent terminal witnesses share this one fresh read. */
+export function reconcileSessionTranscriptTail(
+  pending: Map<string, Promise<unknown>>,
+  key: string,
+  currentRead: Promise<unknown> | undefined,
+  readFresh: () => Promise<unknown>,
+): Promise<unknown> {
+  const existing = pending.get(key);
+  if (existing) return existing;
+  const task = Promise.resolve(currentRead).catch(() => undefined)
+    .then(readFresh).finally(() => { if (pending.get(key) === task) pending.delete(key); });
+  pending.set(key, task);
+  return task;
+}
+
 export function isCanonicalSessionHistory(events: readonly unknown[]): boolean {
   return events.length > 0 && events.every((event) => {
     if (!event || typeof event !== 'object') return false;

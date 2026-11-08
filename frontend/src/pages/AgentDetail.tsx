@@ -84,7 +84,7 @@ import { projectSessionSocketEvent } from './agent-detail/sessionSocketEventProj
 import { applyTranscriptToSessionRuntime } from './agent-detail/sessionTranscriptApplier';
 import { buildSessionCommandStatusControl } from './agent-detail/sessionCommandPanelPresentation';
 import { AgentDetailErrorBoundary, SessionAccessErrorSurface, SessionResolvingSurface } from './agent-detail/AgentDetailErrorSurfaces';
-import { isCanonicalSessionHistory, liveSubscriptionWatermark, loadCanonicalSessionTranscript, nextSessionBackfillNotice, projectCanonicalTranscriptSnapshot, realtimeSubscriptionCursor } from './agent-detail/sessionTranscriptHydration';
+import { isCanonicalSessionHistory, liveSubscriptionWatermark, loadCanonicalSessionTranscript, nextSessionBackfillNotice, projectCanonicalTranscriptSnapshot, realtimeSubscriptionCursor, reconcileSessionTranscriptTail } from './agent-detail/sessionTranscriptHydration';
 import type { CompatibilityMessageTimeline, SessionVisibilityBoundary } from './agent-detail/sessionEventConsumer';
 import { buildSessionVisibilityBoundary, createCompatibilityMessageTimeline, installRewindVisibilityBoundary, installRewindVisibilityBoundaryFromStore, seedCompatibilityTimelineIdentities } from './agent-detail/sessionEventConsumer';
 import { createSessionEventStore, type SessionEventStore } from './session-workbench/sessionEventStore';
@@ -329,6 +329,7 @@ function AgentDetailInner() {
     const sessionEventStoresRef = useRef<Record<SessionRuntimeKey, SessionEventStore>>({});
     const sessionEventFullHydrationKeysRef = useRef<Set<SessionRuntimeKey>>(new Set());
     const transcriptBackfillInFlightRef = useRef<Record<SessionRuntimeKey, Promise<number | void> | undefined>>({});
+    const terminalTranscriptReadsRef = useRef(new Map<string, Promise<unknown>>());
     const toolCallInvalidateAtRef = useRef<Record<SessionRuntimeKey, number>>({});
     const activeRunStateRef = useRef<Record<SessionRuntimeKey, SessionRunState>>({});
     const pendingUserMessagesRef = useRef<Record<SessionRuntimeKey, PendingUserMessage[]>>({});
@@ -552,7 +553,7 @@ function AgentDetailInner() {
         syncActivePhase('idle');
     };
 
-    const backfillSessionTranscript = async (sess: any, agentId: string) => {
+    const backfillSessionTranscript = async (sess: any, agentId: string, fresh = false) => {
         const sessionId = String(sess?.id || '');
         if (!sessionId) return;
         const key = buildSessionRuntimeKey(agentId, sessionId);
@@ -569,7 +570,7 @@ function AgentDetailInner() {
         );
         if (!transcriptReplayStateRef.current[key]) return;
         const inFlight = transcriptBackfillInFlightRef.current[key];
-        if (inFlight) return liveSubscriptionWatermark(sessionEventStoresRef.current[key]) ?? inFlight;
+        if (inFlight && !fresh) return inFlight;
 
         const task: Promise<number | void> = Promise.resolve().then(async () => {
             if (transcriptBackfillInFlightRef.current[key] !== task) return;
@@ -612,6 +613,14 @@ function AgentDetailInner() {
         });
         transcriptBackfillInFlightRef.current[key] = task;
         return task;
+    };
+
+    const reconcileTerminalTranscript = (sess: any, agentId: string) => {
+        const key = buildSessionRuntimeKey(agentId, String(sess.id));
+        reconcileSessionTranscriptSafely(() => reconcileSessionTranscriptTail(
+            terminalTranscriptReadsRef.current, key, transcriptBackfillInFlightRef.current[key],
+            () => backfillSessionTranscript(sess, agentId, true),
+        ), () => undefined);
     };
 
     const isWritableSession = (sess: any) => {
@@ -1734,7 +1743,7 @@ function AgentDetailInner() {
             invalidateSessionRuntimeQueries,
             reconcileSessionTranscript: (agentId, sessionId) => {
                 const sess = String(activeSession?.id || '') === sessionId ? activeSession : { id: sessionId };
-                reconcileSessionTranscriptSafely(() => backfillSessionTranscript(sess, agentId), () => undefined);
+                reconcileTerminalTranscript(sess, agentId);
             },
             shouldInvalidateToolCall: (key) => {
                 const now = Date.now();
@@ -2408,7 +2417,7 @@ function AgentDetailInner() {
             // The authoritative active-run read observed the turn's terminal state
             // while live frames may have been lost; the UI grace below must not
             // defer projection truth. Reconcile the durable transcript now.
-            reconcileSessionTranscriptSafely(() => backfillSessionTranscript(activeSession, id), () => undefined);
+            reconcileTerminalTranscript(activeSession, id);
         }
         if (shouldClearStaleRuntimeState({
             hasStaleRuntimeState: staleRuntimeState,

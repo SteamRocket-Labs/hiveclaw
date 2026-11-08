@@ -367,6 +367,7 @@ async def test_bridge_transcript_event_to_t0_writes_ledger_and_marks_metadata(mo
     transcript_event_id = uuid4()
     transcript_event = SimpleNamespace(
         id=transcript_event_id,
+        sequence=1,
         tenant_id=tenant_id,
         agent_id=agent_id,
         session_id=session_id,

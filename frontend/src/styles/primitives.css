@@ -319,6 +319,7 @@
 
 .ui-modal-body {
   padding: var(--space-3) var(--space-5);
+  min-height: 0;
   overflow-y: auto;
   font-size: var(--text-body);
   color: var(--text-secondary);

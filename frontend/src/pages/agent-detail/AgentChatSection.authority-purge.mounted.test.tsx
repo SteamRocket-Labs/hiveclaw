@@ -444,6 +444,16 @@ beforeEach(() => {
 
 afterEach(cleanup);
 
+it.each([
+  { item: 'ordinary employee with the reserved name', name: '__system_hr__', agent_class: 'internal_tenant', label: '__system_hr__' },
+  { item: 'system HR employee', name: '__system_hr__', agent_class: 'internal_system', label: 'HR Agent' },
+  { item: 'system employee without the HR name', name: 'System helper', agent_class: 'internal_system', label: 'System helper' },
+])('G3f round 3 item 3: labels $item by its actual system identity', ({ name, agent_class, label }) => {
+  const base = props('Audit employee conversations');
+  const { container } = render(<AgentChatSection {...base} agent={{ ...base.agent, name, agent_class }} historyMsgs={[]} />);
+  expect(container.querySelector('.detail-session-browser-subtitle')?.textContent).toBe(label);
+});
+
 function noticeProps() {
   const base = props('', false, 'original-work');
   return { ...base, agent: { ...base.agent, access_level: 'use' },

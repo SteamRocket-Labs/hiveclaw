@@ -2007,13 +2007,15 @@ function applyCanonicalRunTerminalEvidence(
   const terminalByRunId = new Map<string, { completedAtMs: number; status: RunTimelineSnapshot['status'] }>();
   messages.forEach((message) => {
     const item = message.sessionItem;
-    if (item?.kind !== 'run' || !CANONICAL_RUN_TERMINAL_LIFECYCLES.has(item.lifecycle)) return;
+    const lifecycle = message.eventType === 'error' && message.eventStatus === 'needs_reconciliation'
+      ? 'needs_reconciliation' : item?.kind === 'run' ? item.lifecycle : null;
+    if (!lifecycle || !CANONICAL_RUN_TERMINAL_LIFECYCLES.has(lifecycle)) return;
     const runId = messageRunId(message);
-    const completedAtMs = Date.parse(message.timestamp || item.occurredAt || '');
+    const completedAtMs = Date.parse(message.timestamp || item?.occurredAt || '');
     if (!runId || !Number.isFinite(completedAtMs)) return;
-    const status: RunTimelineSnapshot['status'] = item.lifecycle === 'failed' || item.lifecycle === 'needs_reconciliation'
+    const status: RunTimelineSnapshot['status'] = lifecycle === 'failed' || lifecycle === 'needs_reconciliation'
       ? 'failed'
-      : item.lifecycle === 'cancelled' || item.lifecycle === 'killed'
+      : lifecycle === 'cancelled' || lifecycle === 'killed'
         ? 'cancelled'
         : 'done';
     terminalByRunId.set(runId, { completedAtMs, status });

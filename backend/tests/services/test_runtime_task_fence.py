@@ -227,9 +227,9 @@ async def test_shared_terminal_boundary_disarms_blocked_lease_renewer_before_ses
     renewal_started = asyncio.Event()
     real_renew = fence_service.renew_current_runtime_task_lease
 
-    async def observed_renew(*, lease_seconds):
+    async def observed_renew(*, lease_seconds, skip_locked=False):
         renewal_started.set()
-        return await real_renew(lease_seconds=lease_seconds)
+        return await real_renew(lease_seconds=lease_seconds, skip_locked=skip_locked)
 
     monkeypatch.setattr(fence_service, "renew_current_runtime_task_lease", observed_renew)
 
@@ -322,7 +322,7 @@ async def test_claimed_runtime_wrapper_keeps_fence_and_renews_until_completion(m
     task_id = uuid4()
     renewals: list[tuple[str, int, str]] = []
 
-    async def fake_renew(*, lease_seconds):
+    async def fake_renew(*, lease_seconds, skip_locked=False):
         fence = fence_service.current_runtime_task_fence()
         assert fence is not None
         renewals.append((str(fence.task_id), fence.claim_version, fence.worker_id))
@@ -356,7 +356,7 @@ async def test_claimed_runtime_wrapper_allows_cleanup_after_committed_claim_tran
     task_id = uuid4()
     renewals = 0
 
-    async def fake_renew(*, lease_seconds):
+    async def fake_renew(*, lease_seconds, skip_locked=False):
         nonlocal renewals
         renewals += 1
         return datetime.now(timezone.utc)

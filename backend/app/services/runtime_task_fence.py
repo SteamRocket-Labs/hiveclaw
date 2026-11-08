@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Awaitable, TypeVar
 
-from sqlalchemy import update
+from sqlalchemy import select, update
 
 _ResultT = TypeVar("_ResultT")
 
@@ -116,7 +116,7 @@ def assert_runtime_task_fence(task: Any) -> None:
         )
 
 
-async def renew_current_runtime_task_lease(*, lease_seconds: float) -> datetime | None:
+async def renew_current_runtime_task_lease(*, lease_seconds: float, skip_locked: bool = False) -> datetime | None:
     """Atomically renew the active worker lease or reject a stale worker.
 
     The update predicate binds task id, claim version, worker id, and running
@@ -145,18 +145,26 @@ async def renew_current_runtime_task_lease(*, lease_seconds: float) -> datetime 
         require_tenant=True,
         source="runtime_task_fenced_lease_renewal",
     ) as db:
-        result = await db.execute(
-            update(RuntimeTask)
-            .where(
-                RuntimeTask.id == fence.task_id,
-                RuntimeTask.claim_version == fence.claim_version,
-                RuntimeTask.claimed_by == fence.worker_id,
-                RuntimeTask.status == "running",
-                RuntimeTask.claim_expires_at > now,
-            )
-            .values(claim_expires_at=expires_at)
+        predicates = (
+            RuntimeTask.id == fence.task_id,
+            RuntimeTask.claim_version == fence.claim_version,
+            RuntimeTask.claimed_by == fence.worker_id,
+            RuntimeTask.status == "running",
+            RuntimeTask.claim_expires_at > now,
         )
+        statement = update(RuntimeTask).where(*predicates)
+        if skip_locked:
+            # Terminal writers hold this same row while selecting artifacts.
+            # A heartbeat must not queue behind its own work and cancel it.
+            statement = statement.where(RuntimeTask.id.in_(
+                select(RuntimeTask.id).where(*predicates).with_for_update(skip_locked=True)
+            ))
+        result = await db.execute(statement.values(claim_expires_at=expires_at))
         if int(getattr(result, "rowcount", 0) or 0) != 1:
+            if skip_locked:
+                active_until = await db.scalar(select(RuntimeTask.claim_expires_at).where(*predicates))
+                if active_until is not None:
+                    return active_until
             raise StaleRuntimeTaskFenceError(
                 f"stale RuntimeTask worker {fence.worker_id} cannot renew {fence.task_id} "
                 f"at claim_version={fence.claim_version}"
@@ -190,7 +198,7 @@ async def run_claimed_runtime_task(
             try:
                 await asyncio.wait_for(fence.claim_finished.wait(), timeout=interval)
             except TimeoutError:
-                await renew_current_runtime_task_lease(lease_seconds=lease_seconds)
+                await renew_current_runtime_task_lease(lease_seconds=lease_seconds, skip_locked=True)
 
     try:
         work_task = asyncio.ensure_future(work)

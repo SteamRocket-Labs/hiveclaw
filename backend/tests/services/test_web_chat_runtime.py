@@ -122,6 +122,9 @@ class _ScalarResult:
     def scalar_one_or_none(self):
         return self._value
 
+    def all(self):
+        return [self._value] if self._value is not None else []
+
     def scalars(self):
         return SimpleNamespace(first=lambda: self._value, all=lambda: [self._value] if self._value else [])
 
@@ -5928,7 +5931,10 @@ async def test_claimed_web_chat_run_quarantines_after_recovery_budget_is_exhaust
 
         async def execute(self, _stmt):
             self.calls += 1
-            return _ScalarResult(task if self.calls == 1 else None)
+            return _ScalarResult(task if str(_stmt).startswith("SELECT runtime_tasks.") else None)
+
+        async def rollback(self):
+            pass
 
         async def commit(self):
             self.commits += 1

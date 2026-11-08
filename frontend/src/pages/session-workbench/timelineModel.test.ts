@@ -17,6 +17,22 @@ import type { SessionIndex } from '../../api/domains/chat';
 import type { SessionWorkbench } from '../../api/domains/ccParity';
 
 describe('session workbench timeline model', () => {
+  it('keeps a quarantined historical run failed after a later run completes', () => {
+    const messages: AgentChatMessage[] = [
+      { id: 'input', role: 'user', content: 'Continue the report.', timestamp: '2026-11-08T01:31:25Z' },
+      { id: 'tool', role: 'tool_call', content: 'Report saved.', toolName: 'edit_file', toolStatus: 'done',
+        eventRuntimeTaskId: 'run-quarantined', timestamp: '2026-11-08T01:35:54Z' },
+      { id: 'quarantine', role: 'event', content: 'Task interrupted.', eventType: 'error',
+        eventStatus: 'needs_reconciliation', eventRuntimeTaskId: 'run-quarantined', timestamp: '2026-11-08T01:47:17Z' },
+      { id: 'next-input', role: 'user', content: 'Count the lines.', timestamp: '2026-11-08T01:47:26Z' },
+      { id: 'answer', role: 'assistant', content: '106', eventRuntimeTaskId: 'run-next', timestamp: '2026-11-08T02:01:53Z' },
+    ];
+    const model = buildThreadTimeline({ messages, activeSession: { id: 'session-1', title: 'Report' },
+      isWaiting: false, isStreaming: false, activeRunStatus: null });
+    const run = model.cells.find(cell => cell.kind === 'active_run' && cell.runId === 'run-quarantined');
+    expect(run?.kind === 'active_run' && run.timeline.status).toBe('failed');
+  });
+
   it('keeps branch lineage in navigation instead of repeating it in the session title', () => {
     const activeSession = {
       id: 'session-grandchild',

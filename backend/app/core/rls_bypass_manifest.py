@@ -875,7 +875,9 @@ def fingerprint_rls_bypass_scopes(app_root: Path) -> str:
 # content_input_receipts.py; no bypass scope changed on both sides.
 # Direct trigger delivery and scoped MCP checks retain the existing bypass grants.
 # Merging the landing fix with A4sf keeps each entry from one side; no bypass scope changed on both sides.
-RLS_BYPASS_SCOPES_SHA256 = "33606fd20635b5d992f3ee5f40bd8c926d6678377b4fd6a298cdd3563336a8d3"
+# Lfix5 aligns R5c's event/tenant/session projection grant with the merged source.
+# Against 651cfffb, all 785 scope entries and 122 callsites are unchanged.
+RLS_BYPASS_SCOPES_SHA256 = "a947a47d5cb860d39338e0bcad3cbd4574c5a2bd3deeaa28ba7aac88f7814f50"
 
 
 def scan_rls_bypass_callsites(app_root: Path) -> list[RLSBypassCallsite]:
@@ -1553,7 +1555,7 @@ RLS_BYPASS_ALLOWLIST = (
             "app/services/runtime_control_bus.py",
             "sweep_pending_transcript_t0_bridges",
             "'sweep pending transcript T0 projections'",
-            ("select:ChatTranscriptEvent.id",),
+            ("select:ChatTranscriptEvent.id,ChatTranscriptEvent.tenant_id,ChatTranscriptEvent.session_id",),
         )
     ),
     _grant(

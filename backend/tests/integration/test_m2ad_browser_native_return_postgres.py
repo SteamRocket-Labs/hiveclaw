@@ -28,6 +28,7 @@ async def test_native_delegated_browser_question_resumes_once_and_returns_artifa
 ):
     from app.agents import orchestrator
     from app.api import browser_control as api, chat_sessions, files
+    from app.config import get_settings
     from app.core.security import create_access_token
     from app.database import get_db, tenant_scoped_session
     from app.models.agent import Agent
@@ -70,6 +71,9 @@ async def test_native_delegated_browser_question_resumes_once_and_returns_artifa
         pass
 
     monkeypatch.setattr("app.services.runtime_task_worker.notify_runtime_task_worker", no_wakeup)
+    monkeypatch.setattr(get_settings(), "BROWSER_DEVICE_PROFILE", "trusted_host")
+    monkeypatch.setattr(get_settings(), "BROWSER_DEVICE_EXECUTABLE", sys.executable)
+    monkeypatch.setattr(get_settings(), "BROWSER_PRIVATE_PROFILE_DIR", str(tmp_path / "private-browser"))
     monkeypatch.setattr(secrets_provider, "_provider", secrets_provider._provider)
     secrets_provider.init_secrets_provider(os.environ["SECRETS_MASTER_KEY"])
     manager = BrowserControlService()

@@ -7,11 +7,12 @@ import time
 from uuid import UUID, uuid4
 
 import pytest
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 
 from app.models.environment_browser import EnvironmentBrowser
 from app.models.execution_environment import EnvironmentLease
 from app.models.mcp_server import MCPServer
+from app.models.runtime_terminal_boundary_outbox import RuntimeTerminalBoundaryOutbox
 from app.models.session_v2 import SessionToolInvocation
 from app.models.user import User
 from app.services.runtime_task_fence import reset_runtime_task_fence, set_runtime_task_fence
@@ -60,7 +61,13 @@ async def app_work(owner_sessionmaker, app_user_sessionmaker, tmp_path, monkeypa
     monkeypatch.setattr(agent_context, "PERSISTENT_DATA", s["data_root"])
     monkeypatch.setattr(agent_context, "TOOL_WORKSPACE", s["data_root"])
     monkeypatch.setattr(agent_manager, "settings", get_settings())
-    return s
+    try:
+        yield s
+    finally:
+        async with owner_sessionmaker() as db:
+            await db.execute(delete(RuntimeTerminalBoundaryOutbox).where(
+                RuntimeTerminalBoundaryOutbox.tenant_id == s["tenant_id"]))
+            await db.commit()
 
 
 def _error_payload(result):
@@ -264,8 +271,11 @@ async def test_no_device_is_plain_and_does_not_create_a_browser_or_lease(
     for tool_name, arguments in [("browser_observe", {}), ("browser_manage", operation("start"))]:
         error = _error_payload(await browser_tools(tool_name, arguments))
         assert error["ok"] is False and error["reason_code"] == "browser_device_not_configured"
-        assert "No browser is configured" in error["message"]
-        assert "retrying will not help" in error["actionable_hint"]
+        assert error["error_class"] == "not_configured"
+        assert "No browser is configured" in error["diagnostic_message"]
+        assert error["message"] == "这项功能还没有连接好。"
+        assert "retrying will not help" in error["diagnostic_hint"]
+        assert error["actionable_hint"] == "请先完成连接设置，再继续操作。"
         assert error["retryable"] is False and error["effect"] == "not_started"
     async with owner_sessionmaker() as db:
         assert await db.scalar(select(func.count()).select_from(EnvironmentBrowser)
@@ -302,8 +312,11 @@ async def test_no_device_with_an_active_lease_released_after_precheck_leaves_no_
     monkeypatch.setattr(manager, "_provider", release_after_precheck)
     error = _error_payload(await browser_tools("browser_manage", operation("start")))
     assert error["reason_code"] == "browser_device_not_configured"
-    assert "No browser is configured" in error["message"]
-    assert "retrying will not help" in error["actionable_hint"]
+    assert error["error_class"] == "not_configured"
+    assert "No browser is configured" in error["diagnostic_message"]
+    assert error["message"] == "这项功能还没有连接好。"
+    assert "retrying will not help" in error["diagnostic_hint"]
+    assert error["actionable_hint"] == "请先完成连接设置，再继续操作。"
     assert error["retryable"] is False and error["effect"] == "not_started"
     async with owner_sessionmaker() as db:
         assert await db.scalar(select(func.count()).select_from(EnvironmentBrowser)

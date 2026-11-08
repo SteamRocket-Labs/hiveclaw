@@ -331,6 +331,8 @@ async def reconcile_skill_candidate(agent_id: uuid.UUID, workspace: Path, argume
             "- After this search, matching deferred tool schemas — including this agent's imported MCP server tools — "
             "become callable in the current session; already-loaded tools are a no-op.\n"
             "- Use `load_skill` only when you need the skill's instructions or component guidance, not merely to unlock tool schemas.\n"
+            "- For installing or importing a NEW MCP server, use the explicit MCP resource tools "
+            "only when those tools are explicitly available to this agent.\n"
             "- Prefer builtin tools, loaded skills, and direct web/file workflows first; reach for an imported MCP tool "
             "when the task genuinely needs it.\n"
             "- When no tool matches, use the returned company-app list to distinguish an unconnected company app from a missing personal account.\n"

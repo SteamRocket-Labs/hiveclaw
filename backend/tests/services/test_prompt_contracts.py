@@ -189,6 +189,7 @@ def test_core_tool_descriptions_define_when_not_to_use_and_fallbacks() -> None:
     assert "imported MCP server tools" in tools["tool_search"]
     assert "become callable" in tools["tool_search"]
     assert "For installing or importing a NEW MCP server, use the explicit MCP resource tools" in tools["tool_search"]
+    assert "only when those tools are explicitly available to this agent" in tools["tool_search"]
     assert "Return skill slugs" in tools["search_clawhub"]
 
 

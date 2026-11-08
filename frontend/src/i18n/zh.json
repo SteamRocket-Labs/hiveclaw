@@ -1944,7 +1944,8 @@
       "reviewPlanLead": "请规划如何启用唤醒策略「{{title}}」（{{id}}）。",
       "reviewPlanSchedule": "日程：{{schedule}}。",
       "reviewPlanCause": "当前原因：{{reason}}。",
-      "reviewPlanIntent": "预期动作是启用这次自主唤醒。请审阅范围、权限、投递、失败恢复和预算。在我确认计划之前不要启用。"
+      "reviewPlanIntent": "预期动作是启用这次自主唤醒。请审阅范围、权限、投递、失败恢复和预算。在我确认计划之前不要启用。",
+      "scheduleUnavailable": "时间暂不可用"
     },
     "plan": {
       "badge": "计划",
@@ -6233,5 +6234,21 @@
     "approvalUsed": "此审批已使用，请先核对原操作结果，再选择后续操作。",
     "approvalChanged": "此审批已不适用，请核对当前控制状态，必要时重新提交操作。",
     "moreApprovals": "此处显示最近 20 项操作，更早的记录仍可在公司审批中查看。"
+  },
+  "memberSettings": {
+    "canUse": "它能用什么",
+    "hasDone": "它做过什么",
+    "rules": "规则",
+    "schedules": "定时任务",
+    "noSchedules": "你还没有定时任务。需要时在对话里告诉它。",
+    "stop": "停止",
+    "stopped": "已停止",
+    "failed": "暂时无法完成，请重试。",
+    "account": "账号：{{name}}",
+    "memory": "它记得什么",
+    "memoryHint": "你让它记住的内容。可以查看或删除；删除后不再使用。",
+    "noMemory": "还没有你让它记住的内容。",
+    "botFailed": "无法读取「{{name}}」的任务，请稍后重试。",
+    "onRequest": "收到请求时"
   }
 }

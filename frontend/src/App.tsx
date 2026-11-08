@@ -26,6 +26,7 @@ const Dashboard = lazy(() => import('./pages/Dashboard'));
 const DigitalEmployees = lazy(() => import('./pages/DigitalEmployees'));
 const WorkspaceFeatureHub = lazy(() => import('./pages/WorkspaceFeatureHub'));
 const Connections = lazy(() => import('./pages/Connections'));
+const ScheduledWork = lazy(() => import('./pages/ScheduledWork'));
 const Projects = lazy(() => import('./pages/Projects'));
 const PersonalKnowledge = lazy(() => import('./pages/PersonalKnowledge'));
 const CompanyKnowledgeLibrary = lazy(() => import('./pages/CompanyKnowledgeLibrary'));
@@ -188,6 +189,7 @@ export default function App() {
                         <Route path="automations" element={<WorkspaceFeatureHub kind="automations" />} />
                         <Route path="knowledge" element={<PersonalKnowledge />} />
                         <Route path="connections" element={<Connections />} />
+                        <Route path="scheduled-work" element={<ScheduledWork />} />
                         <Route path="knowledge/company" element={<CompanyKnowledgeLibrary />} />
                         <Route path="workspace/knowledge" element={<Navigate to="/knowledge" replace />} />
                         <Route path="memory" element={<WorkspaceFeatureHub kind="memory" />} />

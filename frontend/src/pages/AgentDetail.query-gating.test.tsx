@@ -151,9 +151,9 @@ describe('AgentDetail aware reflection session gating', () => {
     const html = renderToStaticMarkup(<AgentDetail />);
 
     expect(html).toContain('>Chat<');
-    expect(html).toContain('Overview');
-    expect(html).toContain('Conversation &amp; Tasks');
-    expect(html).toContain('Documents &amp; Workspace');
+    expect(html).toContain('What it can use');
+    expect(html).toContain('What it has done');
+    expect(html).not.toContain('>Rules<');
     expect(html).not.toContain('>Status<');
     expect(html).not.toContain('>Memory<');
     expect(html).not.toContain('>Workflows<');
@@ -207,13 +207,11 @@ describe('AgentDetail aware reflection session gating', () => {
 
     const markup = renderToStaticMarkup(<AgentDetail />);
 
-    expect(markup).toContain('Overview');
-    expect(markup).toContain('Conversation &amp; Tasks');
-    expect(markup).toContain('Capabilities');
-    expect(markup).toContain('Memory &amp; Knowledge');
-    expect(markup).toContain('A2A / Team');
-    expect(markup).toContain('Documents &amp; Workspace');
-    expect(markup).toContain('Permissions &amp; Settings');
+    expect(markup).toContain('What it can use');
+    expect(markup).toContain('What it has done');
+    expect(markup).toContain('Rules');
+    expect(markup.match(/role="tab"/g)).toHaveLength(3);
+    expect(markup).not.toContain('A2A / Team');
     expect(markup).toContain('Extensions');
     expect(markup).toContain('Workflows');
   });

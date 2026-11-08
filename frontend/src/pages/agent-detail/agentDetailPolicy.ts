@@ -340,53 +340,25 @@ export const AGENT_WORKBENCH_AREAS: Array<{
     tabs: AgentDetailTab[];
 }> = [
     {
-        id: 'overview',
-        labelKey: 'agent.workbench.overview',
-        fallback: 'Overview',
-        primaryTab: 'status',
-        tabs: ['status', 'activityLog'],
-    },
-    {
-        id: 'conversation',
-        labelKey: 'agent.workbench.conversation',
-        fallback: 'Conversation & Tasks',
-        primaryTab: 'chat',
-        tabs: ['chat', 'tasks', 'aware'],
-    },
-    {
         id: 'capabilities',
-        labelKey: 'agent.workbench.capabilities',
-        fallback: 'Capabilities',
+        labelKey: 'memberSettings.canUse',
+        fallback: 'What it can use',
         primaryTab: 'extensions',
-        tabs: ['extensions', 'workflows'],
+        tabs: ['status', 'extensions', 'workflows', 'workspace'],
     },
     {
-        id: 'memory',
-        labelKey: 'agent.workbench.memory',
-        fallback: 'Memory & Knowledge',
+        id: 'work',
+        labelKey: 'memberSettings.hasDone',
+        fallback: 'What it has done',
+        primaryTab: 'tasks',
+        tabs: ['chat', 'tasks', 'aware', 'activityLog', 'evolution'],
+    },
+    {
+        id: 'rules',
+        labelKey: 'memberSettings.rules',
+        fallback: 'Rules',
         primaryTab: 'knowledge',
-        tabs: ['knowledge', 'evolution'],
-    },
-    {
-        id: 'team',
-        labelKey: 'agent.workbench.team',
-        fallback: 'A2A / Team',
-        primaryTab: 'a2a',
-        tabs: ['a2a'],
-    },
-    {
-        id: 'documents',
-        labelKey: 'agent.workbench.documents',
-        fallback: 'Documents & Workspace',
-        primaryTab: 'workspace',
-        tabs: ['workspace'],
-    },
-    {
-        id: 'permissions',
-        labelKey: 'agent.workbench.permissions',
-        fallback: 'Permissions & Settings',
-        primaryTab: 'approvals',
-        tabs: ['approvals', 'settings'],
+        tabs: ['knowledge', 'approvals', 'settings', 'a2a'],
     },
 ];
 

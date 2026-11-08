@@ -547,6 +547,8 @@ def _render_memory_index(entries: list[ExplicitMemoryOverlayEntry]) -> str:
         "|----|--------|--------|----------|---------|---------|",
     ]
     for entry in entries:
+        if entry.status != "active":
+            continue
         lines.append(
             f"| {entry.entry_id} | {entry.status} | {entry.target_hint} | {entry.category} | "
             f"{entry.created_at[:10] or '-'} | {_escape_table(_preview(entry.content, 90))} |"

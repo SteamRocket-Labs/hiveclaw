@@ -1944,7 +1944,8 @@
       "reviewPlanLead": "Plan how to enable wake policy \"{{title}}\" ({{id}}).",
       "reviewPlanSchedule": "Schedule: {{schedule}}.",
       "reviewPlanCause": "Current reason: {{reason}}.",
-      "reviewPlanIntent": "The intended action is enabling this autonomous wake. Review scope, permissions, delivery, failure recovery, and budget. Do not enable it until I confirm the plan."
+      "reviewPlanIntent": "The intended action is enabling this autonomous wake. Review scope, permissions, delivery, failure recovery, and budget. Do not enable it until I confirm the plan.",
+      "scheduleUnavailable": "Time unavailable"
     },
     "plan": {
       "badge": "Plan",
@@ -6233,5 +6234,21 @@
     "approvalUsed": "This approval was already consumed. Inspect the recorded outcome before choosing another operation.",
     "approvalChanged": "This approval is no longer applicable. Review the current control state and submit a fresh operation if needed.",
     "moreApprovals": "Showing the latest 20 operations. Earlier records remain in company approvals."
+  },
+  "memberSettings": {
+    "canUse": "What it can use",
+    "hasDone": "What it has done",
+    "rules": "Rules",
+    "schedules": "Scheduled work",
+    "noSchedules": "No scheduled work yet. Ask in a conversation when you need it.",
+    "stop": "Stop",
+    "stopped": "Stopped",
+    "failed": "Could not complete this. Try again.",
+    "account": "Account: {{name}}",
+    "memory": "What it remembers",
+    "memoryHint": "Things you asked it to remember. View or delete them; deleted entries are no longer used.",
+    "noMemory": "Nothing you asked it to remember yet.",
+    "botFailed": "Could not read work for {{name}}. Try again later.",
+    "onRequest": "When a request arrives"
   }
 }

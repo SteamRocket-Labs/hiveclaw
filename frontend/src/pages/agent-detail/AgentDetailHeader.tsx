@@ -286,10 +286,12 @@ export default function AgentDetailHeader({
   );
 }
 
-export function AgentDetailNavigation({ visibleTabs, activeTab, onSelectTab }: {
+export function AgentDetailNavigation({ visibleTabs, activeTab, onSelectTab, children, memberView = false }: {
   visibleTabs: AgentDetailTab[];
   activeTab: string;
   onSelectTab: (tab: string) => void;
+  children?: React.ReactNode;
+  memberView?: boolean;
 }) {
   const { t } = useTranslation();
   const visibleWorkbenchAreas = AGENT_WORKBENCH_AREAS
@@ -302,12 +304,15 @@ export function AgentDetailNavigation({ visibleTabs, activeTab, onSelectTab }: {
     visibleWorkbenchAreas.find((area) => area.tabs.includes(activeTab as AgentDetailTab)) ||
     visibleWorkbenchAreas[0];
   return (
-    <div className="agent-workbench-nav" data-testid="agent-workbench-nav">
+    <><div className="agent-workbench-nav" data-testid="agent-workbench-nav">
       <div className="agent-workbench-areas" role="tablist" aria-label={t('agent.workbench.title', 'Agent workbench')}>
         {visibleWorkbenchAreas.map((area) => (
           <button
             key={area.id}
             type="button"
+            role="tab"
+            id={`agent-section-${area.id}`}
+            aria-selected={activeWorkbenchArea?.id === area.id}
             className={`agent-workbench-area ${activeWorkbenchArea?.id === area.id ? 'active' : ''}`}
             onClick={() => onSelectTab(area.tabs.includes(area.primaryTab) ? area.primaryTab : area.tabs[0])}
           >
@@ -324,12 +329,13 @@ export function AgentDetailNavigation({ visibleTabs, activeTab, onSelectTab }: {
               className={`agent-workbench-subtab ${activeTab === tab ? 'active' : ''}`}
               onClick={() => onSelectTab(tab)}
             >
-              {t(`agent.tabs.${tab}`, AGENT_TAB_LABELS[tab])}
+                {memberView && tab === 'knowledge' ? t('memberSettings.memory') : memberView && tab === 'aware'
+                  ? t('memberSettings.schedules') : t(`agent.tabs.${tab}`, AGENT_TAB_LABELS[tab])}
             </button>
           ))}
         </div>
       )}
-    </div>
+    </div>{children}</>
   );
 }
 

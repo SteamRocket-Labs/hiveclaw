@@ -315,6 +315,10 @@ export default function AppSidebar({
                   <IconWorld size={15} stroke={1.5} />
                   <span>{t('agent.mcpConnect.title')}</span>
                 </NavLink>
+                <NavLink to="/scheduled-work" className="account-dropdown-item">
+                  <IconBell size={15} stroke={1.5} />
+                  <span>{t('memberSettings.schedules')}</span>
+                </NavLink>
                 {canSeeControlPlane && (
                   <NavLink to="/enterprise/users" className="account-dropdown-item">
                     <IconBuilding size={15} stroke={1.5} />

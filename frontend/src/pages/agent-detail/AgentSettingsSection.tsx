@@ -502,7 +502,7 @@ export default function AgentSettingsSection({
 
   return (
     <div>
-      <CommandEnvironment agentId={agentId} />
+      {user?.role !== 'member' && <CommandEnvironment agentId={agentId} />}
       <div className="agent-settings-header">
         <h3 className="agent-settings-title">{t('agent.settings.title')}</h3>
         {agentId === assistantAgentId && <Link className="btn btn-secondary" to="/assistant?settings=true">{t('assistant.chooseAnother')}</Link>}

@@ -8,12 +8,12 @@ import Connections from './Connections';
 import { useAuthStore } from '../stores';
 import type { User } from '../types';
 import { act } from '@testing-library/react';
-const translate = (key: string) => translateFromCatalog(en, key);
+const translate = (key: string, options?: Record<string, unknown>) => translateFromCatalog(en, key, options);
 vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: translate }) }));
 afterEach(() => { cleanup(); vi.restoreAllMocks(); });
 beforeEach(() => {
   localStorage.setItem('current_tenant_id', 'company');
-  useAuthStore.setState({ user: { id: 'member-a', tenant_id: 'company' } as User });
+  useAuthStore.setState({ user: { id: 'member-a', tenant_id: 'company', display_name: 'Member A' } as User });
 });
 it('removes the member connection from settings without returning its credential', async () => {
   let removed = false; const calls: string[] = [];
@@ -25,6 +25,7 @@ it('removes the member connection from settings without returning its credential
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(<QueryClientProvider client={client}><Connections /></QueryClientProvider>);
   await screen.findByText('Documents');
+  expect(screen.getByText('Account: Member A')).toBeTruthy();
   fireEvent.click(screen.getByRole('button', { name: 'Remove connection' }));
   await screen.findByText('No connected applications yet. I will ask here when a task needs one.');
   await waitFor(() => expect(calls).toEqual(['/api/mcp-accounts', '/api/mcp-accounts/owned/revoke', '/api/mcp-accounts']));

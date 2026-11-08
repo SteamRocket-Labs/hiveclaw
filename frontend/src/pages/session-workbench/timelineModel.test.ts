@@ -775,7 +775,7 @@ describe('session workbench timeline model', () => {
     expect(model.cells).not.toContainEqual(expect.objectContaining({ id: 'active-run-pending' }));
   });
 
-  it('groups delayed evidence by exact run identity even after the next user turn is visible', () => {
+  it('keeps delayed evidence after the next member message while a new run is active', () => {
     const runScope = {
       level: 'round' as const,
       session_id: 'session-1',
@@ -842,15 +842,20 @@ describe('session workbench timeline model', () => {
     });
 
     const runCells = model.cells.filter((cell) => cell.kind === 'active_run');
-    expect(runCells).toHaveLength(2);
+    expect(runCells).toHaveLength(3);
     expect(runCells[0]).toMatchObject({ runId: 'run-1', timeline: { status: 'done', durationMs: 12_000 } });
     expect(runCells[1]).toMatchObject({
+      runId: 'run-1',
+      sourceMessages: [expect.objectContaining({ message: expect.objectContaining({ id: 'late-file-changes-1' }) })],
+    });
+    expect(runCells[2]).toMatchObject({
       runId: 'run-2',
       timeline: { status: 'running', startedAt: '2026-08-29T00:01:00Z' },
     });
     if (runCells[0]?.kind === 'active_run') {
-      expect(runCells[0].sourceMessages.some((entry) => entry.message.id === 'late-file-changes-1')).toBe(true);
+      expect(runCells[0].sourceMessages.some((entry) => entry.message.id === 'late-file-changes-1')).toBe(false);
     }
+    expect(model.cells.indexOf(runCells[1])).toBeGreaterThan(model.cells.findIndex(cell => cell.id === 'user-2'));
   });
 
   it('reuses the previous timeline model when streaming state did not change', () => {

@@ -524,7 +524,7 @@ describe('session transcript applier real consumption path (Codex REQUEST_CHANGE
       expect(disconnectedTimeline.header.status).toBe('failed');
       expect(disconnectedTimeline.cells.filter((cell) => (
         cell.kind === 'active_run' && cell.timeline.status === 'failed'
-      ))).toHaveLength(hasProgress ? 1 : 0);
+      ))).toHaveLength(1);
       expect(disconnectedTimeline.cells.some((cell) => (
         cell.kind === 'assistant_final'
         || (cell.kind === 'active_run' && cell.timeline.status === 'running')

@@ -1874,6 +1874,7 @@ function buildCells(messages: AgentChatMessage[], runtimePhase?: string | null):
 
     flushRun();
     if (message.role === 'user') {
+      answeredRuns.clear();
       turnStartedAt = message.timestamp;
       cells.push({
         kind: 'user_turn',
@@ -1886,7 +1887,7 @@ function buildCells(messages: AgentChatMessage[], runtimePhase?: string | null):
 
     if (message.role === 'event') {
       if (message.sessionItem?.kind === 'run' && CANONICAL_RUN_TERMINAL_LIFECYCLES.has(message.sessionItem.lifecycle)
-        && (runtimePhase !== 'idle' || ['cancelled', 'killed', 'canceled', 'failed'].includes(message.sessionItem.lifecycle))
+        && (runtimePhase !== 'idle' || ['cancelled', 'killed', 'canceled', 'failed', 'needs_reconciliation'].includes(message.sessionItem.lifecycle))
         && !cells.some(cell => cell.kind === 'active_run' && isSameSessionRunId(cell.runId, messageRunId(message)))) {
         cells.push(buildRunCell(runIndex++, [{ message, index }], undefined, false, turnStartedAt));
       }
@@ -1934,8 +1935,13 @@ function mergeProcessCells(
   turnStartedAt?: string,
 ): Extract<ThreadTimelineCell, { kind: 'active_run' }> {
   const sources = new Map<string | number, { message: AgentChatMessage; index: number }>();
+  const toolContentSize = (message: AgentChatMessage) => JSON.stringify([
+    message.toolName, message.toolArgs, message.toolResult, message.toolRawResult, message.toolMeta, message.artifacts,
+  ]).length;
   for (const entry of [...current.sourceMessages, ...next.sourceMessages]) {
-    sources.set(entry.message.sessionItem?.id || entry.message.id || entry.index, entry);
+    const key = entry.message.sessionItem?.id || entry.message.id || entry.index;
+    const existing = sources.get(key);
+    if (!existing || toolContentSize(entry.message) >= toolContentSize(existing.message)) sources.set(key, entry);
   }
   const sourceMessages = [...sources.values()];
   const answerMessageId = next.timeline.answerMessageId || current.timeline.answerMessageId;
@@ -1966,6 +1972,7 @@ function coalesceProcessCellsByUserTurn(
 
   cells.forEach((cell) => {
     if (cell.kind === 'user_turn') {
+      processIndexByRunId.clear();
       insideAcceptedUserTurn = true;
       currentProcessIndex = null;
       turnStartedAt = cell.message.timestamp;

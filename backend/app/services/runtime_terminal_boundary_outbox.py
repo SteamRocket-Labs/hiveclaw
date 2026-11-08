@@ -1017,20 +1017,22 @@ class RuntimeTerminalBoundaryOutboxService:
         task_types: Sequence[str] | None = None,
     ) -> list[uuid.UUID]:
         retry_before = now - timedelta(seconds=self._reconcile_retry_seconds)
+        trigger_only = bool(task_types) and all(kind == "trigger" for kind in task_types)
+        created_window = and_(
+            RuntimeTask.created_at >= now - TERMINAL_BOUNDARY_RECENT_WINDOW,
+            RuntimeTask.created_at <= now,
+        )
+        retry_window = RuntimeTask.terminal_boundary_reconcile_attempted_at >= now - TERMINAL_BOUNDARY_RECENT_WINDOW
         filters = [
             RuntimeTask.tenant_id == tenant_id,
             RuntimeTask.terminal_boundary_generation.is_not(None),
             RuntimeTask.terminal_boundary_enqueued_at.is_(None),
-            or_(RuntimeTask.task_type != "trigger", and_(
-                RuntimeTask.created_at >= now - TERMINAL_BOUNDARY_RECENT_WINDOW,
-                RuntimeTask.created_at <= now,
-            )),
+            created_window if trigger_only else or_(RuntimeTask.task_type != "trigger", created_window),
             RuntimeTask.status.in_(TERMINAL_BOUNDARY_TERMINAL_STATUSES),
             or_(
                 RuntimeTask.terminal_boundary_reconcile_attempted_at.is_(None),
                 and_(RuntimeTask.terminal_boundary_reconcile_attempted_at <= retry_before,
-                    or_(RuntimeTask.task_type != "trigger",
-                        RuntimeTask.terminal_boundary_reconcile_attempted_at >= now - TERMINAL_BOUNDARY_RECENT_WINDOW)),
+                    retry_window if trigger_only else or_(RuntimeTask.task_type != "trigger", retry_window)),
             ),
         ]
         if task_types:

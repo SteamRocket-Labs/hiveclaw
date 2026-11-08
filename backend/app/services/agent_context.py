@@ -446,12 +446,14 @@ async def _load_company_intro(
     agent_id: uuid.UUID,
     *,
     tenant_id: uuid.UUID | str | None,
-) -> str:
+) -> tuple[str, str | None]:
     if tenant_id is None:
-        return ""
+        return "", None
+    company_intro = ""
     try:
         from app.database import tenant_scoped_session
         from app.models.system_settings import SystemSetting
+        from app.models.tenant import Tenant
         from sqlalchemy import select as sa_select
 
         async with tenant_scoped_session(
@@ -459,7 +461,6 @@ async def _load_company_intro(
             require_tenant=True,
             source="agent_context_resource_company",
         ) as db:
-            company_intro = ""
             try:
                 from app.models.tenant_setting import TenantSetting
 
@@ -487,10 +488,11 @@ async def _load_company_intro(
                 setting = result.scalar_one_or_none()
                 if setting and setting.value and setting.value.get("content"):
                     company_intro = str(setting.value["content"]).strip()
-            return company_intro
+            company_name = (await db.execute(sa_select(Tenant.name).where(Tenant.id == tenant_id))).scalar_one_or_none()
+            return company_intro, company_name
     except Exception as exc:
-        logger.debug("Failed to load company intro for agent {}: {}", agent_id, exc)
-        return ""
+        logger.debug("Failed to load company context for agent {}: {}", agent_id, exc)
+        return company_intro, None
 
 
 async def load_agent_context_resource(
@@ -518,7 +520,7 @@ async def load_agent_context_resource(
         return AgentContextResource(ref=resource_ref, source_ref=source_ref, content=content)
 
     if resource_ref == "company":
-        content = await _load_company_intro(agent_id, tenant_id=tenant_id)
+        content, _ = await _load_company_intro(agent_id, tenant_id=tenant_id)
         return AgentContextResource(ref=resource_ref, source_ref=source_ref, content=content)
 
     if resource_ref == "organization":
@@ -686,12 +688,6 @@ async def build_agent_context(
         build_tone_style_section,
     )
 
-    identity_section = build_identity_section(
-        agent_name=agent_name,
-        role_description=role_description,
-        invocation_scope=invocation_scope,
-        soul_text=soul,
-    )
     context_parts: list[str] = []
 
     # These previews and the on-demand tool share one loader, so no second
@@ -712,10 +708,14 @@ async def build_agent_context(
             "Read the matching integration skill before using channel-specific tools."
         )
 
-    company_resource = await load_agent_context_resource(
-        agent_id=agent_id,
-        tenant_id=_agent_tenant_id,
-        resource_ref="company",
+    company_intro, company_name = await _load_company_intro(agent_id, tenant_id=_agent_tenant_id)
+    company_resource = AgentContextResource(ref="company", source_ref="agent-context://company", content=company_intro)
+    identity_section = build_identity_section(
+        agent_name=agent_name,
+        role_description=role_description,
+        invocation_scope=invocation_scope,
+        soul_text=soul,
+        company_name=company_name,
     )
     if company_resource.content:
         context_parts.append(f"### Company Information\n{company_resource.content.strip()}")

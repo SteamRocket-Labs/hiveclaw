@@ -119,11 +119,13 @@ class TestToneStyleSection:
         assert "Keep the facts, explain failures and next steps" in section
         assert "Technical terms and code identifiers remain in their original form" not in section
 
-    def test_names_written_files_and_keeps_code_references(self) -> None:
+    def test_names_written_files_without_requiring_paths_in_member_replies(self) -> None:
         section = build_tone_style_section()
         assert "Name the files you wrote or changed for the user in plain language" in section
         assert "and workspace paths" not in section
-        assert "When referencing specific functions or code, include `file_path:line_number`" in section
+        assert "file_path:line_number" not in section
+        from app.runtime.prompt_sections import build_scenario_section
+        assert "file paths" not in build_scenario_section(None)
 
 
 class TestExecutingActionsContract:

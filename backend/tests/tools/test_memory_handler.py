@@ -76,7 +76,7 @@ async def test_save_memory_writes_explicit_overlay_not_accepted_t3(tmp_path: Pat
     memory_dir = tmp_path / str(agent_id) / "memory"
     overlay_index = memory_dir / "explicit" / "MEMORY.md"
 
-    assert "Saved to explicit memory overlay [feedback]" in result
+    assert "Saved memory [feedback]" in result
     assert overlay_index.exists()
     assert "User prefers concise answers" in overlay_index.read_text(encoding="utf-8")
     assert not (memory_dir / "feedback.md").exists()
@@ -151,7 +151,7 @@ async def test_save_memory_never_uses_regex_to_reject_episodic_semantics(tmp_pat
         result = await save_memory(agent_id, {"content": content, "category": "reference"})
 
     assert captured["content"] == content
-    assert result.startswith("Saved to explicit memory overlay")
+    assert result.startswith("Saved memory")
     assert "[Skipped]" not in result
 
 
@@ -174,7 +174,7 @@ async def test_save_memory_does_not_reject_secret_shaped_documentation_before_mo
             {"content": "Production API key is sk-live-abcdef1234567890abcdef", "category": "reference"},
         )
 
-    assert result.startswith("Saved to explicit memory overlay")
+    assert result.startswith("Saved memory")
     entry = next((tmp_path / str(agent_id) / "memory" / "explicit" / "entries").glob("*.md"))
     assert "sk-live-abcdef1234567890abcdef" in entry.read_text(encoding="utf-8")
 
@@ -191,7 +191,7 @@ async def test_search_and_load_memory_include_explicit_overlay(tmp_path: Path) -
             "app.memory.write_gate.classify_memory_write_threat_with_llm",
             _safe_memory_threat_classifier,
         )
-        await save_memory(
+        saved = await save_memory(
             agent_id,
             {
                 "content": "Use snake_case for Python variable names",
@@ -205,6 +205,9 @@ async def test_search_and_load_memory_include_explicit_overlay(tmp_path: Path) -
         assert "snake_case" in result
         match = re.search(r"id=([a-zA-Z0-9_-]+)", result)
         assert match
+        duplicate = await save_memory(agent_id, {"content": "Use snake_case for Python variable names", "category": "feedback"})
+        assert match.group(1) not in saved
+        assert match.group(1) not in duplicate
 
         loaded = load_memory(agent_id, {"ids": [match.group(1)]})
 
@@ -295,7 +298,7 @@ async def test_search_memory_returns_complete_recalled_session_transcript(tmp_pa
 @pytest.mark.asyncio
 async def test_update_memory_supersedes_explicit_overlay_entry(tmp_path: Path) -> None:
     from app.memory.explicit_overlay import load_explicit_overlay_entries
-    from app.tools.handlers.memory import save_memory, update_memory
+    from app.tools.handlers.memory import load_memory, save_memory, search_memory, update_memory
 
     agent_id = uuid.uuid4()
 
@@ -306,21 +309,53 @@ async def test_update_memory_supersedes_explicit_overlay_entry(tmp_path: Path) -
             _safe_memory_threat_classifier,
         )
         await save_memory(agent_id, {"content": "User prefers short replies", "category": "feedback"})
-        old_entry = load_explicit_overlay_entries(tmp_path, agent_id)[0]
+        recalled_before = await search_memory(agent_id, {"query": "short replies", "scope": "facts"})
+        old_id = re.search(r"id=([a-zA-Z0-9_-]+)", recalled_before).group(1)
+        loaded = load_memory(agent_id, {"ids": [old_id]})
+        assert f"id={old_id}" in loaded
+        assert "User prefers short replies" in loaded
 
         result = await update_memory(
             agent_id,
             {
-                "memory_id": old_entry.entry_id,
+                "memory_id": old_id,
                 "content": "User prefers short replies, but include concrete examples when useful",
                 "category": "feedback",
             },
         )
         entries = load_explicit_overlay_entries(tmp_path, agent_id)
+        active_entry = next(entry for entry in entries if entry.status == "active")
+        recalled = await search_memory(agent_id, {"query": "concrete examples", "scope": "facts"})
 
-    assert result.startswith(f"Updated explicit memory {old_entry.entry_id} ->")
+    assert result.startswith("Updated memory [feedback]:")
+    assert old_id not in result
+    assert all(entry.entry_id not in result for entry in entries)
     assert {entry.status for entry in entries} == {"retired", "active"}
     assert any("include concrete examples" in entry.content and entry.status == "active" for entry in entries)
+    assert active_entry.entry_id in recalled
+
+
+@pytest.mark.asyncio
+async def test_scoped_memory_update_keeps_internal_source_id_out_of_confirmation(monkeypatch, tmp_path):
+    from app.tools.handlers import memory
+
+    captured = {}
+    result = SimpleNamespace(status="active", category="feedback", content="Use examples", entry_id="explicit_new")
+
+    async def execute(*_args, **_kwargs):
+        return result
+
+    async def record(_tool, _agent, _args, _context, content, **kwargs):
+        captured.update(kwargs)
+        return content
+
+    monkeypatch.setattr("app.config.get_settings", lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)))
+    monkeypatch.setattr("app.services.explicit_memory_operations.execute_memory_operation", execute)
+    monkeypatch.setattr(memory, "_record_memory_output", record)
+    text = await memory.update_memory(uuid.uuid4(), {"memory_id": "explicit_old", "content": "Use examples"},
+        execution_context=SimpleNamespace())
+    assert text == "Updated memory [feedback]: Use examples"
+    assert captured["entry_id"] == "explicit_new"
 
 
 @pytest.mark.asyncio
@@ -345,9 +380,38 @@ async def test_retire_memory_deactivates_explicit_overlay_entry(tmp_path: Path) 
         search_result = await search_memory(agent_id, {"query": "blue buttons", "scope": "facts"})
         entries = load_explicit_overlay_entries(tmp_path, agent_id)
 
-    assert result == f"Retired explicit memory {entry.entry_id}: obsolete"
+    assert result == "Retired memory: obsolete"
+    assert entry.entry_id not in result
     assert entries[0].status == "retired"
     assert "No memory found" in search_result
+
+
+@pytest.mark.asyncio
+async def test_scoped_retire_memory_omits_memory_ids_but_keeps_recovery_status(monkeypatch, tmp_path):
+    import json
+    from app.tools.handlers import memory
+
+    outcome = {"status": "completed", "operation_id": "operation-for-recovery", "memory_id": "explicit_old",
+        "target_memory_id": "explicit_old", "kind": "retire"}
+    captured = {}
+
+    async def execute(*_args, **_kwargs):
+        return outcome
+
+    async def record(_tool, _agent, arguments, _context, content, **_kwargs):
+        captured.update(arguments)
+        return content
+
+    monkeypatch.setattr("app.config.get_settings", lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)))
+    monkeypatch.setattr("app.services.explicit_memory_operations.execute_memory_operation", execute)
+    monkeypatch.setattr(memory, "_record_memory_output", record)
+    text = await memory.retire_memory(uuid.uuid4(), {"memory_id": "explicit_old", "reason": "obsolete"},
+        execution_context=SimpleNamespace())
+    assert "memory_id" not in text
+    assert "explicit_old" not in text
+    assert json.loads(text) == {"status": "completed", "operation_id": "operation-for-recovery", "kind": "retire"}
+    assert captured["memory_id"] == "explicit_old"
+    assert outcome["memory_id"] == "explicit_old"
 
 
 def test_load_memory_reads_profile_plane_entries(tmp_path: Path) -> None:

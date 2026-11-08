@@ -7,15 +7,7 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 
-def _is_within_path(path: Path, root: Path) -> bool:
-    try:
-        path.resolve().relative_to(root.resolve())
-    except ValueError:
-        return False
-    return True
-
-
-async def _upload_image(agent_id: uuid.UUID, ws: Path, arguments: dict) -> str:
+async def _upload_image(agent_id: uuid.UUID, ws: Path, arguments: dict, *, authority_scope=None, permission_profile=None) -> str:
     """Upload an image to ImageKit CDN and return the public URL.
 
     Credential resolution order:
@@ -32,6 +24,23 @@ async def _upload_image(agent_id: uuid.UUID, ws: Path, arguments: dict) -> str:
 
     if not file_path and not url:
         return "❌ Please provide either 'file_path' (workspace path) or 'url' (public image URL)"
+
+    if file_path:
+        from app.services.agent_tool_domains.workspace import _read_workspace_tool_file, _workspace_tool_file_refusal
+        from app.services.workspace_resource_authority import WorkspaceAuthorityError
+
+        try:
+            full_path, file_content = _read_workspace_tool_file(ws, file_path,
+                authority_scope=authority_scope, permission_profile=permission_profile)
+        except (WorkspaceAuthorityError, OSError, ValueError):
+            return _workspace_tool_file_refusal(file_path, "uploaded")
+        size_mb = len(file_content) / (1024 * 1024)
+        if size_mb > 25:
+            return f"❌ File too large ({size_mb:.1f}MB). Maximum is 25MB."
+        if not file_name:
+            file_name = full_path.name
+    else:
+        file_content = None
 
     if url:
         from app.services.governed_egress import GovernedEgressError, validate_public_http_url
@@ -57,27 +66,7 @@ async def _upload_image(agent_id: uuid.UUID, ws: Path, arguments: dict) -> str:
 
     # ── Prepare the file ──
     form_data = {}
-    file_content = None
-
-    if file_path:
-        # Read from workspace
-        full_path = (ws / file_path).resolve()
-        if not _is_within_path(full_path, ws):
-            return "❌ Access denied: path is outside the workspace"
-        if not full_path.exists():
-            return f"❌ File not found: {file_path}"
-        if not full_path.is_file():
-            return f"❌ Not a file: {file_path}"
-
-        # Check file size (max 25MB for free plan)
-        size_mb = full_path.stat().st_size / (1024 * 1024)
-        if size_mb > 25:
-            return f"❌ File too large ({size_mb:.1f}MB). Maximum is 25MB."
-
-        file_content = full_path.read_bytes()
-        if not file_name:
-            file_name = full_path.name
-    elif url:
+    if not file_path and url:
         # Pass URL directly to ImageKit
         form_data["file"] = url
         if not file_name:

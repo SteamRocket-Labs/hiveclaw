@@ -8,6 +8,7 @@ import mimetypes
 import re
 import uuid
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 import httpx
 
@@ -469,17 +470,6 @@ def _render_invalid_input(message: str, *, tool_name: str, actionable_hint: str 
         retryable=False,
         actionable_hint=actionable_hint,
     )
-
-
-def _resolve_workspace_file(agent_id, file_path: str) -> Path:
-    settings = get_settings()
-    workspace_root = Path(settings.AGENT_DATA_DIR).resolve() / str(agent_id)
-    candidate = (workspace_root / file_path).resolve()
-    try:
-        candidate.relative_to(workspace_root)
-    except ValueError:
-        raise ValueError("file_path must stay inside the agent workspace")
-    return candidate
 
 
 def _not_configured_error(tool_name: str) -> str:
@@ -1119,12 +1109,13 @@ async def _feishu_base_record_upsert(agent_id, arguments: dict) -> str:
     return _render_base_upsert(table_id, payload)
 
 
-async def _feishu_base_record_upload_attachment(agent_id, arguments: dict) -> str:
+async def _feishu_base_record_upload_attachment(agent_id, arguments: dict, *, workspace=None,
+    authority_scope=None, permission_profile=None) -> str:
     base_token = str(arguments.get("base_token") or "").strip()
     table_id = str(arguments.get("table_id") or "").strip()
     record_id = str(arguments.get("record_id") or "").strip()
     field_id = str(arguments.get("field_id") or "").strip()
-    file_path = str(arguments.get("file_path") or "").strip()
+    file_path = str(arguments.get("file_path") or "")
     tn = "feishu_base_record_upload_attachment"
     if not base_token:
         return _render_invalid_input("Missing required argument 'base_token'.", tool_name=tn)
@@ -1134,26 +1125,22 @@ async def _feishu_base_record_upload_attachment(agent_id, arguments: dict) -> st
         return _render_invalid_input("Missing required argument 'record_id'.", tool_name=tn)
     if not field_id:
         return _render_invalid_input("Missing required argument 'field_id'.", tool_name=tn)
-    if not file_path:
+    if not file_path.strip():
         return _render_invalid_input(
             "Missing required argument 'file_path'.",
             tool_name=tn,
             actionable_hint="Pass a workspace-relative file path, for example 'workspace/report.pdf'.",
         )
 
+    from app.services.agent_tool_domains.workspace import _read_workspace_tool_file, _workspace_tool_file_refusal
+    from app.services.workspace_resource_authority import WorkspaceAuthorityError
+
+    workspace = workspace or Path(get_settings().AGENT_DATA_DIR) / str(agent_id)
     try:
-        absolute_file = _resolve_workspace_file(agent_id, file_path)
-    except ValueError as exc:
-        return _render_invalid_input(str(exc), tool_name=tn)
-    if not absolute_file.exists():
-        return render_tool_error(
-            tool_name=tn,
-            error_class="not_found",
-            message=f"Workspace file not found: {file_path}",
-            provider="feishu_openapi",
-            retryable=False,
-            actionable_hint="Write the file into the agent workspace before uploading it to Feishu Base.",
-        )
+        absolute_file, file_content = _read_workspace_tool_file(workspace, file_path,
+            authority_scope=authority_scope, permission_profile=permission_profile)
+    except (WorkspaceAuthorityError, OSError, ValueError):
+        return _workspace_tool_file_refusal(file_path, "uploaded")
 
     display_name = str(arguments.get("name") or "").strip() or absolute_file.name
 
@@ -1162,7 +1149,6 @@ async def _feishu_base_record_upload_attachment(agent_id, arguments: dict) -> st
     if creds:
         _, token = creds
         try:
-            file_size = absolute_file.stat().st_size
             mime_type = mimetypes.guess_type(str(absolute_file))[0] or "application/octet-stream"
             async with httpx.AsyncClient(timeout=60) as client:
                 resp = await client.post(
@@ -1172,9 +1158,9 @@ async def _feishu_base_record_upload_attachment(agent_id, arguments: dict) -> st
                         "file_name": display_name,
                         "parent_type": "bitable_file",
                         "parent_node": base_token,
-                        "size": str(file_size),
+                        "size": str(len(file_content)),
                     },
-                    files={"file": (display_name, absolute_file.open("rb"), mime_type)},
+                    files={"file": (display_name, file_content, mime_type)},
                 )
             upload_data = resp.json()
             if upload_data.get("code") != 0:
@@ -1219,7 +1205,11 @@ async def _feishu_base_record_upload_attachment(agent_id, arguments: dict) -> st
     ]
     if display_name != absolute_file.name:
         command.extend(["--name", display_name])
-    payload = await _run_feishu_base_shortcut(command)
+    with TemporaryDirectory(prefix="hive-feishu-upload-") as temporary:
+        upload_file = Path(temporary) / absolute_file.name
+        upload_file.write_bytes(file_content)
+        command[command.index("--file") + 1] = str(upload_file)
+        payload = await _run_feishu_base_shortcut(command)
     return _render_base_attachment_upload(table_id, payload)
 
 

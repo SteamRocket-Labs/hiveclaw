@@ -778,25 +778,9 @@ async def upload_image(
     workspace: Path,
     arguments: dict,
     authority_scope=None,
+    execution_context=None,
 ) -> str:
-    from app.services.workspace_resource_authority import (
-        WorkspaceAuthorityError,
-        authorize_workspace_tool_path,
-    )
-
-    local_path = arguments.get("file_path")
-    if authority_scope is not None and local_path:
-        try:
-            authorize_workspace_tool_path(
-                workspace,
-                authority_scope,
-                str(local_path),
-                action="publish",
-                require_user_workspace=True,
-            )
-        except WorkspaceAuthorityError as exc:
-            return f"❌ {exc.code}: {exc.message}"
-
     from app.services.agent_tools import _upload_image
 
-    return await _upload_image(agent_id, workspace, arguments)
+    return await _upload_image(agent_id, workspace, arguments, authority_scope=authority_scope,
+        permission_profile=getattr(execution_context, "permission_profile", None))

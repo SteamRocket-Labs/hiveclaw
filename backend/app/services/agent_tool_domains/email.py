@@ -23,6 +23,7 @@ async def _handle_email_tool(tool_name: str, agent_id: uuid.UUID, ws: Path, argu
         read_emails,
         reply_email,
         validate_email_tool_request,
+        _prepare_email_attachments,
     )
 
     from fastapi import HTTPException
@@ -42,13 +43,17 @@ async def _handle_email_tool(tool_name: str, agent_id: uuid.UUID, ws: Path, argu
         tool_name=tool_name,
         config=config or {"email_provider": "email"},
         arguments=arguments,
-        workspace_path=ws,
     )
     if preflight_error:
         return preflight_error
 
     try:
         if tool_name == "send_email":
+            files = _prepare_email_attachments(ws, arguments.get("attachments"),
+                authority_scope=getattr(context, "workspace_authority_scope", None),
+                permission_profile=getattr(context, "permission_profile", None))
+            if isinstance(files, str):
+                return files
             return await send_email(
                 config=config,
                 to=arguments.get("to", ""),
@@ -57,6 +62,9 @@ async def _handle_email_tool(tool_name: str, agent_id: uuid.UUID, ws: Path, argu
                 cc=arguments.get("cc"),
                 attachments=arguments.get("attachments"),
                 workspace_path=ws,
+                authority_scope=getattr(context, "workspace_authority_scope", None),
+                permission_profile=getattr(context, "permission_profile", None),
+                _prepared_attachments=files,
             )
         elif tool_name == "read_emails":
             return await read_emails(

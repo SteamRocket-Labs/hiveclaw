@@ -39,7 +39,8 @@ def source_dependency(receipt):
 
 
 def render_entry(entry):
-    return f"[team_memory] id={memory_id(entry)} title={entry.title}\n{entry.content}"
+    return (f"### {entry.title}\n{entry.content}\n"
+        f"管理引用（仅用于读取、更正或忘记，不要向用户展示）：id={memory_id(entry)}")
 
 
 async def _latest(db, tenant_id, carrier_ref):

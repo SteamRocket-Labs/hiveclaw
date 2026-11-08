@@ -121,6 +121,18 @@ def _resolved_workspace_path(ws: Path, rel_path: str, permission_profile: Any | 
         target = resolve_workspace_storage_path(ws, rel_path)
     except WorkspaceAuthorityError:
         return None
+    # These are platform jobs, evidence packages, control state and derived
+    # indexes, not the employee's work or accepted memory. Dedicated memory
+    # readers retain their existing semantics and authorization.
+    internal_roots = (
+        "memory/.staging", "memory/.archive", "memory/t0", "memory/t2", "memory/sessions",
+        "memory/control", "memory/indexes", "memory/retired_artifacts",
+        "memory/lifecycle.json", "memory/distillation_audit.jsonl", "memory/archive.md",
+        "memory/memory.sqlite3", "memory/memory.json",
+    )
+    for path in (PurePosixPath(rel_path).as_posix(), target.relative_to(workspace).as_posix()):
+        if any(path == root or path.startswith(root + "/") for root in internal_roots):
+            return None
     profile = permission_profile_snapshot(permission_profile)
     snapshot = profile.get("capability_policy_snapshot")
     if not isinstance(snapshot, dict) or snapshot.get("session_exact_scope") is not True:

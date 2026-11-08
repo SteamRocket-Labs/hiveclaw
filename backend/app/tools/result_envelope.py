@@ -102,6 +102,33 @@ def classify_http_status(status_code: int) -> tuple[str, bool]:
     return "provider_error", False
 
 
+_ERROR_COPY_GROUPS = (
+    (("bad_arguments", "invalid_arguments", "invalid_input", "invalid_tool_arguments", "invalid_approval_form", "provider_bad_request", "wrong_tool"),
+        "这次操作缺少必要信息，或提供的信息不正确。", "补充或更正信息后再试。"),
+    (("auth_or_permission", "auth_required", "forbidden", "authz_policy_violation", "unauthorized_secret_bytes", "plan_mode_readonly_violation"),
+        "当前没有权限完成这次操作。", "请使用你有权访问的资料，或先申请相应授权。"),
+    (("authority_context_unavailable", "missing_handoff_authority"),
+        "暂时无法确认这次操作所需的授权。", "请稍后重试，或改用已获授权的资料。"),
+    (("approval_required",), "这次操作需要你确认后才能继续。", "请先确认或拒绝这次操作。"),
+    (("approval_asset_revision_drift", "approval_payload_mutation", "approval_hook_block"),
+        "这次操作的内容已变化，需要重新确认。", "请查看最新内容后再确认。"),
+    (("quota_or_billing",), "可用额度不足，操作未完成。", "补充额度或调整用量后再试。"),
+    (("rate_limited",), "请求过于频繁，操作未完成。", "稍等片刻后再试。"),
+    (("not_found",), "没有找到要使用的内容。", "请检查名称或位置后再试。"),
+    (("timeout",), "操作等待超时，结果未知。", "先查看原操作的状态或已有结果，再决定是否重试。"),
+    (("cancelled",), "操作已停止。", "如需继续，请重新发起请求。"),
+    (("configuration_required", "not_configured", "provider_not_configured", "extension_disabled"),
+        "这项功能还没有连接好。", "请先完成连接设置，再继续操作。"),
+    (("provider_unavailable", "backend_unavailable", "transport_failure", "governance_dependency_unavailable", "runtime_budget_service_unavailable", "approval_ticket_unavailable"),
+        "所需服务暂时不可用，操作未完成。", "请稍后再试。"),
+    (("empty_content", "provider_empty_response"), "没有收到可用内容。", "请补充内容或稍后再试。"),
+    (("incomplete_content", "provider_bad_response"), "收到的内容不完整，操作未完成。", "请重新获取完整内容后再试。"),
+    (("unsupported_file_type", "unreadable_pdf"), "暂时无法读取这种文件。", "请换用可读取的文件格式。"),
+    (("bad_state",), "当前状态不支持这次操作。", "请查看当前进度后再决定下一步。"),
+)
+_ERROR_COPY = {name: (message, hint) for names, message, hint in _ERROR_COPY_GROUPS for name in names}
+
+
 def render_tool_error(
     *,
     tool_name: str,
@@ -112,7 +139,16 @@ def render_tool_error(
     retryable: bool = False,
     actionable_hint: str | None = None,
     extra: dict[str, Any] | None = None,
+    legacy_format: bool = False,
 ) -> str:
+    """Render current copy, or reconstruct immutable historical evidence bytes."""
+    diagnostic_message, diagnostic_hint = message, actionable_hint
+    if not legacy_format:
+        message, actionable_hint = _ERROR_COPY.get(
+            error_class, ("操作未能完成，结果尚未确认。", "请查看已有结果后再决定下一步。")
+        )
+        if error_class == "timeout" and extra and extra.get("timeout_seconds") is not None:
+            message = f"操作超过 {int(extra['timeout_seconds'])} 秒没有完成，结果未知。"
     payload: dict[str, Any] = {
         "ok": False,
         "tool_name": tool_name,
@@ -122,6 +158,10 @@ def render_tool_error(
         "http_status": http_status,
         "retryable": retryable,
     }
+    if not legacy_format:
+        payload["diagnostic_message"] = diagnostic_message
+        if diagnostic_hint:
+            payload["diagnostic_hint"] = diagnostic_hint
     if actionable_hint:
         payload["actionable_hint"] = actionable_hint
     if extra:
@@ -129,7 +169,7 @@ def render_tool_error(
 
     parts = [f"❌ {message}"]
     if actionable_hint:
-        parts.append(f"Hint: {actionable_hint}")
+        parts.append(f"Hint: {actionable_hint}" if legacy_format else actionable_hint)
     parts.append(f"<tool_error>{json.dumps(payload, ensure_ascii=False)}</tool_error>")
     return "\n\n".join(parts)
 
@@ -157,4 +197,4 @@ def render_tool_fallback(
         actionable_hint=actionable_hint,
         extra=payload_extra,
     )
-    return f"⚠️ {message}\n\nFallback tool used: `{fallback_tool}`\n\n{fallback_result}\n\n{error_block}"
+    return f"{error_block}\n\n已改用其他方式获取以下结果：\n\n{fallback_result}"

@@ -46,7 +46,8 @@ async def test_mcp_tool_result_preserves_protocol_error_flag(monkeypatch, is_err
         payload = _extract_tool_error_payload(result)
         assert payload["ok"] is False
         assert payload["error_class"] == "operation_failed"
-        assert payload["message"] == content
+        assert payload["diagnostic_message"] == content
+        assert payload["message"] == "操作未能完成，结果尚未确认。"
         assert payload["retryable"] is False
     else:
         assert result == content  # Natural-language error words are not the failure classifier.
@@ -372,7 +373,7 @@ async def test_web_fetch_escalates_to_firecrawl_on_http_error(monkeypatch):
 
     result = await web_mcp._web_fetch({"url": "https://example.com/app", "max_chars": 1000})
 
-    assert "Fallback tool used: `firecrawl_fetch`" in result
+    assert "已改用其他方式获取以下结果：" in result
     assert "Firecrawl content from: https://example.com/app" in result
     assert "Rendered" in result
     payload = _extract_tool_error_payload(result)
@@ -413,7 +414,7 @@ async def test_web_fetch_escalates_to_xcrawl_when_firecrawl_fails(monkeypatch):
 
     result = await web_mcp._web_fetch({"url": "https://example.com/app", "max_chars": 1000})
 
-    assert "Fallback tool used: `xcrawl_scrape`" in result
+    assert "已改用其他方式获取以下结果：" in result
     assert "XCrawl content from: https://example.com/app" in result
     assert "Xcrawl Rendered" in result
     payload = _extract_tool_error_payload(result)
@@ -448,7 +449,8 @@ async def test_web_fetch_rejects_feishu_open_api_urls_before_http(monkeypatch):
 
     payload = _extract_tool_error_payload(result)
     assert payload["error_class"] == "wrong_tool"
-    assert "feishu_calendar_list" in payload["actionable_hint"]
+    assert "feishu_calendar_list" in payload["diagnostic_hint"]
+    assert payload["actionable_hint"] == "补充或更正信息后再试。"
 
 
 @pytest.mark.asyncio

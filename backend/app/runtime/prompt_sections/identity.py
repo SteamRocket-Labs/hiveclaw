@@ -52,7 +52,9 @@ def build_identity_section(
         company_name: Current tenant display name; not an authority source.
     """
     template = _IDENTITY_BY_MODE.get(invocation_scope, _DEFAULT_IDENTITY)
-    agent_name = _quoted_display_name(agent_name)
+    # Match assistantNameForDisplay in the member UI without renaming stored identity.
+    default_assistant = agent_name == "My Assistant"
+    agent_name = _quoted_display_name("我的助理" if default_assistant else agent_name)
     identity = template.format(agent_name=agent_name)
 
     parts = ["## Identity & Mission", identity]
@@ -66,6 +68,8 @@ def build_identity_section(
         parts.append(f"### Personality\n{soul_text}")
 
     parts.append(f"Your current display name is {agent_name}. Use this display name when introducing yourself.")
+    if default_assistant:
+        parts.append('In English conversations, the same display name is "My Assistant".')
     if company_name:
         parts.append(f"Your company is {_quoted_display_name(company_name)}. Use this name instead of any company name in Personality.")
 

@@ -843,7 +843,7 @@ def fingerprint_rls_bypass_scopes(app_root: Path) -> str:
 # G3: preview and inventory lifecycle source updates only; merging G3 with main keeps each entry from one side.
 # Merging A4c with G3 keeps each entry from one side.
 # A4bf reuses tenant-scoped approval delivery/redrive; typed projection changes add no bypass call or scope.
-RLS_BYPASS_SCOPES_SHA256 = "8e9aab3fbb114e0fce5fa693b9a665dd4f305de531a1c9fe93719992839d4688"
+RLS_BYPASS_SCOPES_SHA256 = "d7aa26afc4a553168c7501b2097351d3dd0d4073bdfb1ae5a6d3a1e860e5e8a5"
 
 
 def scan_rls_bypass_callsites(app_root: Path) -> list[RLSBypassCallsite]:

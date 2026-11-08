@@ -29,6 +29,7 @@ async def rearm_decided_company_approval_returns(db, *, task):
     tickets = await db.scalars(select(ApprovalRequest).where(
         ApprovalRequest.tenant_id == task.tenant_id, ApprovalRequest.agent_id == task.parent_agent_id,
         ApprovalRequest.execution_envelope["runtime_task_id"].astext.in_((str(task.id), task.id.hex)),
+        ApprovalRequest.status.in_(("approved", "rejected")),
         ApprovalRequest.execution_status.in_(("succeeded", "failed", "rejected", "needs_reapproval", "needs_reconciliation"))))
     for ticket in tickets:
         row = await db.scalar(select(RuntimeNotificationOutbox).where(

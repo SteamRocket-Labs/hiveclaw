@@ -1103,14 +1103,6 @@ async def _project_loop_guard_warning(
     )
 
 
-def _approval_pause_state(decision: Any, session_pending: bool, terminal_signal: str | None) -> tuple[bool, str | None]:
-    if isinstance(decision, dict) and decision.get("outcome") == "require_approval":
-        if set(decision.get("reason_codes") or ()) & {"approval_required", "action_preflight_requires_approval"}:
-            return session_pending, "awaiting_company_approval"
-        return True, terminal_signal
-    return session_pending, terminal_signal
-
-
 async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> InvocationResult:
     # Bind an explicit per-call dependency snapshot so tests, DI, and runtime
     # overrides observe the same facade values without copying a module namespace.
@@ -3197,8 +3189,8 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                         _loop_proof = (_side_effects or {}).get("loop_guard_proof") or {}
                         _execution_evidence = (_side_effects or {}).get("tool_execution_evidence") or {}
                         _decision = _execution_evidence.get("tool_decision")
-                        _session_permission_pause_pending, _tool_terminal_signal = _approval_pause_state(
-                            _decision, _session_permission_pause_pending, _tool_terminal_signal)
+                        if isinstance(_decision, dict) and _decision.get("outcome") == "require_approval":
+                            _session_permission_pause_pending = True
                         result_loop_decision = loop_guard.observe_tool_result(
                             tool_name,
                             effective_args,
@@ -3402,8 +3394,8 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                         _loop_proof = (_side_effects or {}).get("loop_guard_proof") or {}
                         _execution_evidence = (_side_effects or {}).get("tool_execution_evidence") or {}
                         _decision = _execution_evidence.get("tool_decision")
-                        _session_permission_pause_pending, _tool_terminal_signal = _approval_pause_state(
-                            _decision, _session_permission_pause_pending, _tool_terminal_signal)
+                        if isinstance(_decision, dict) and _decision.get("outcome") == "require_approval":
+                            _session_permission_pause_pending = True
                         result_loop_decision = loop_guard.observe_tool_result(
                             tool_name,
                             args,

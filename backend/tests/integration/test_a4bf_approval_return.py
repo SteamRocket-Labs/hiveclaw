@@ -1,5 +1,6 @@
 """Post-landing company decisions use the real outbox and original work."""
 
+import json
 import uuid
 
 import pytest
@@ -37,7 +38,7 @@ async def company_call(seed, factory, tool, path=TOOL_ARGUMENTS["path"]):
     return _call(tool, {"path": path, **({"content": TOOL_ARGUMENTS["content"]} if tool == "write_file" else {})})
 
 
-@pytest.mark.parametrize("company_tool", ["write_file", "read_file"])
+@pytest.mark.parametrize("company_tool", ["read_file"])
 async def test_b1_other_permission_keeps_run_suspended_and_consumes_company_decision_once(
     member_work, owner_sessionmaker, app_user_sessionmaker, monkeypatch, company_tool,  # noqa: F811
 ):
@@ -93,6 +94,65 @@ async def test_b1_other_permission_keeps_run_suspended_and_consumes_company_deci
         assert list(await db.scalars(select(RuntimeTask.id).where(RuntimeTask.tenant_id == seed["tenant_id"],
             RuntimeTask.task_type == "web_chat_turn"))) == [run_id]
     assert disposable.exists()
+
+
+@pytest.mark.parametrize("later_tool", ["edit_file", "fs_write"], ids=["b1-write-pair", "s3-write-pair"])
+async def test_grok_should_fix_1_sequential_sibling_is_aborted_until_company_decision(
+    member_work, owner_sessionmaker, app_user_sessionmaker, monkeypatch, later_tool,  # noqa: F811
+):
+    from app.models.chat_session import ChatSession
+    from app.services.approval_ticket import hash_tool_input
+    from app.services.workspace_resource_authority import register_workspace_path
+
+    seed = member_work
+    marker = seed["agent_root"] / "workspace/a4bf-later.txt"
+    marker.write_text("Before the decision.")
+    arguments = {"path": "workspace/a4bf-later.txt", **(
+        {"old_text": "Before the decision.", "new_text": "After the decision."} if later_tool == "edit_file" else
+        {"mode": "edit", "old_string": "Before the decision.", "new_string": "After the decision."})}
+    later = _call(later_tool, arguments)
+    retry = _call(later_tool, arguments)
+    retry["tool_calls"][0]["id"] += "-retry"
+    async with owner_sessionmaker() as db:
+        await register_workspace_path(db, tenant_id=seed["tenant_id"], agent_id=seed["agent_id"],
+            path="workspace/a4bf-later.txt", owner_user_id=seed["member_id"],
+            root_session_id=seed["session_id"], source="workspace_api")
+        session = await db.get(ChatSession, seed["session_id"])
+        session.transcript_metadata_json = {**(session.transcript_metadata_json or {}),
+            "session_permission_grants": [{"scope": "session", "status": "active", "tool_name": later_tool,
+                "input_hash": hash_tool_input(later_tool, arguments),
+                "principal_type": "user", "principal_id": str(seed["member_id"])}]}
+        await db.commit()
+    model, run_id = await _start_member_run(seed, app_user_sessionmaker, monkeypatch, [
+        batch(_call("write_file", TOOL_ARGUMENTS), later), retry,
+        {"content": "Continued after the decision and retried the aborted mutation."},
+    ])
+    ticket = await pending(seed, owner_sessionmaker)
+    async with owner_sessionmaker() as db:
+        assert ticket.status == "pending"
+        run = await db.get(RuntimeTask, run_id)
+        assert (run.status, run.result_summary) == ("suspended", "awaiting_company_approval")
+        invocation = await db.scalar(select(SessionToolInvocation).where(
+            SessionToolInvocation.run_id == run_id,
+            SessionToolInvocation.provider_tool_use_id == later["tool_calls"][0]["id"]))
+        event = await db.get(ChatTranscriptEvent, invocation.result_event_id)
+        result = json.loads(event.metadata_json["v2_payload"]["content"])
+        assert result == {"status": "aborted", "reason_code": "earlier_tool_waiting_for_session_permission",
+            "retryable": True}, "Grok should-fix 1: a pending company ticket aborts later sequential effects"
+    assert marker.read_text() == "Before the decision.", "Grok should-fix 1: the later mutation must not precede the decision"
+    await _resolve_as_owner(seed, app_user_sessionmaker, ticket.id, "reject")
+    page, receipt = await consume(seed, app_user_sessionmaker, replay=True)
+    assert receipt["continuation_status"] == "delivered"
+    await _drive_resumed_run(seed, app_user_sessionmaker)
+    assert marker.read_text() == "After the decision.", "the same mutation is allowed after the company decision"
+    assert len(model.requests) == 3
+    assert str(model.requests[1]["messages"]).count("Runtime result integration page.") == 1
+    assert "status=blocked" in str(model.requests[1]["messages"])
+    async with owner_sessionmaker() as db:
+        assert (await db.get(RuntimeTask, run_id)).status == "completed"
+        assert (await db.get(SessionTurnInput, uuid.uuid5(page.id, "web-approval-return"))).status == "applied"
+        assert list(await db.scalars(select(RuntimeTask.id).where(RuntimeTask.tenant_id == seed["tenant_id"],
+            RuntimeTask.task_type == "web_chat_turn"))) == [run_id]
 
 
 @pytest.mark.parametrize("failure", ["unexpected", "sqlalchemy_code", "serialization", "secret_boundary", "active_conflict"])
@@ -168,7 +228,65 @@ async def test_s2_dead_letter_before_suspend_rearms_the_existing_page(
     assert len(model.requests) == 2 and "status=blocked" in str(model.requests[1]["messages"])
 
 
-@pytest.mark.parametrize("company_tool", ["write_file", "read_file"])
+async def test_s2_two_tickets_rearms_only_the_decided_return_and_keeps_the_pending_ticket(
+    member_work, owner_sessionmaker, app_user_sessionmaker, monkeypatch,  # noqa: F811
+):
+    from app.services.web_chat_runtime import _update_runtime_task
+
+    seed = member_work
+    first = await company_call(seed, owner_sessionmaker, "read_file")
+    second = await company_call(seed, owner_sessionmaker, "read_file", "workspace/a4bf-second.md")
+    second["tool_calls"][0]["id"] += "-second"
+    model, run_id = await _start_member_run(seed, app_user_sessionmaker, monkeypatch, [
+        batch(first, second), {"content": "First late decision received."},
+        {"content": "Second decision received."},
+    ])
+    async with owner_sessionmaker() as db:
+        tickets = list(await db.scalars(select(ApprovalRequest).where(ApprovalRequest.tenant_id == seed["tenant_id"])
+            .order_by(ApprovalRequest.created_at)))
+        assert len(tickets) == 2 and all(ticket.status == "pending" for ticket in tickets)
+    await _resolve_as_owner(seed, app_user_sessionmaker, tickets[0].id, "reject")
+    async with owner_sessionmaker() as db:
+        run = await db.get(RuntimeTask, run_id)
+        run.status, run.result_summary = "running", None
+        await db.commit()
+    service = RuntimeNotificationOutboxService(session_factory=app_user_sessionmaker, max_attempts=1, retry_base_seconds=0)
+    assert (await service.drain_once(worker_id="a4bf-two-before-suspend"))["dead_lettered"] == 1
+    async with owner_sessionmaker() as db:
+        page = await db.scalar(select(RuntimeResultIntegrationPage).where(RuntimeResultIntegrationPage.tenant_id == seed["tenant_id"]))
+        assert page.status == "dead_letter"
+        page_id, manifest_hash = page.id, page.manifest_sha256
+    await _update_runtime_task(run_id, status="suspended", result_summary="awaiting_company_approval")
+    async with owner_sessionmaker() as db:
+        run = await db.get(RuntimeTask, run_id)
+        assert (run.status, run.result_summary) == ("suspended", "awaiting_company_approval"), "Grok S2 nit: a pending ticket cannot fail suspension"
+        undecided = await db.get(ApprovalRequest, tickets[1].id)
+        assert undecided.status == "pending" and undecided.execution_status == "pending"
+        assert await db.scalar(select(RuntimeNotificationOutbox.id).where(
+            RuntimeNotificationOutbox.tenant_id == seed["tenant_id"],
+            RuntimeNotificationOutbox.metadata_json["approval_id"].astext == str(undecided.id))) is None
+        page = await db.get(RuntimeResultIntegrationPage, page_id)
+        assert page.status == "prepared" and page.manifest_sha256 == manifest_hash
+    assert (await service.drain_once(worker_id="a4bf-two-after-suspend"))["delivered"] == 1, "S2: only the decided dead-letter page is re-armed"
+    await _drive_resumed_run(seed, app_user_sessionmaker)
+    await _resolve_as_owner(seed, app_user_sessionmaker, tickets[1].id, "reject")
+    second_page, receipt = await consume(seed, app_user_sessionmaker, replay=True)
+    assert receipt["ok"] is True
+    async with owner_sessionmaker() as db:
+        assert (await db.get(ApprovalRequest, tickets[1].id)).execution_receipt["continuation_status"] == "delivered"
+        successor = await db.scalar(select(RuntimeTask).where(RuntimeTask.tenant_id == seed["tenant_id"],
+            RuntimeTask.task_type == "web_chat_turn", RuntimeTask.id != run_id))
+        assert successor is not None
+    await _drive_resumed_run({**seed, "run_id": successor.id}, app_user_sessionmaker)
+    assert len(model.requests) == 3
+    for expected_count, (request, result_ref) in enumerate([
+        (model.requests[1], page.manifest_json["items"][0]["result_ref"]),
+        (model.requests[2], second_page.manifest["items"][0]["result_ref"])], start=1):
+        assert str(request["messages"]).count("Runtime result integration page.") == expected_count
+        assert result_ref in str(request["messages"])
+
+
+@pytest.mark.parametrize("company_tool", ["read_file"])
 async def test_s3_second_company_decision_after_normal_completion_starts_a_new_round(
     member_work, owner_sessionmaker, app_user_sessionmaker, monkeypatch, company_tool,  # noqa: F811
 ):

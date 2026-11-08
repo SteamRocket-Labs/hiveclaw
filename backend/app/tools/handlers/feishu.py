@@ -1001,12 +1001,13 @@ async def feishu_base_field_create(agent_id: uuid.UUID, arguments: dict) -> str:
         governance="sensitive",
     )
 )
-async def feishu_base_record_upload_attachment(agent_id: uuid.UUID, arguments: dict) -> str:
-    if not await _check_feishu_office_access(agent_id):
-        return _FEISHU_NOT_CONFIGURED_MSG
+async def feishu_base_record_upload_attachment(agent_id: uuid.UUID, arguments: dict, *, authority_scope=None,
+    execution_context=None) -> str:
     from app.services.agent_tools import _feishu_base_record_upload_attachment
 
-    return await _feishu_base_record_upload_attachment(agent_id, arguments)
+    return await _feishu_base_record_upload_attachment(agent_id, arguments,
+        workspace=getattr(execution_context, "workspace", None), authority_scope=authority_scope,
+        permission_profile=getattr(execution_context, "permission_profile", None))
 
 
 # -- feishu_task_list ---------------------------------------------------------

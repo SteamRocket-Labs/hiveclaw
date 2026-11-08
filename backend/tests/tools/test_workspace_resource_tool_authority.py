@@ -574,7 +574,7 @@ async def test_channel_delivery_and_upload_reject_foreign_workspace_files(tmp_pa
     )
 
     assert "workspace_resource_forbidden" in delivered
-    assert "workspace_resource_forbidden" in uploaded
+    assert uploaded == "❌ workspace/foreign.png cannot be uploaded. Use a file under workspace/ that you may send."
 
 
 @pytest.mark.asyncio

@@ -162,14 +162,27 @@ def _render_email_error(
     )
 
 
+def _prepare_email_attachments(workspace_path, attachments, *, authority_scope=None, permission_profile=None):
+    from app.services.agent_tool_domains.workspace import _read_workspace_tool_file, _workspace_tool_file_refusal
+    from app.services.workspace_resource_authority import WorkspaceAuthorityError
+
+    files = []
+    for rel_path in attachments or []:
+        if workspace_path is None:
+            return _workspace_tool_file_refusal(rel_path, "attached")
+        try:
+            files.append(_read_workspace_tool_file(workspace_path, rel_path,
+                authority_scope=authority_scope, permission_profile=permission_profile))
+        except (WorkspaceAuthorityError, OSError, ValueError):
+            return _workspace_tool_file_refusal(rel_path, "attached")
+    return files
+
+
 def validate_email_tool_request(
     *,
     tool_name: str,
     config: dict,
     arguments: dict,
-    workspace_path: Path | None = None,
-    authority_scope=None,
-    permission_profile=None,
 ) -> str | None:
     """Perform static preflight before opening IMAP/SMTP connections."""
     email_address = str(config.get("email_address") or "").strip()
@@ -217,46 +230,6 @@ def validate_email_tool_request(
                 message="Email body must not be empty.",
                 actionable_hint="Write the email body before sending.",
             )
-        attachments = arguments.get("attachments") or []
-        if attachments:
-            if workspace_path is None:
-                return _render_email_error(
-                    tool_name=tool_name,
-                    config=config,
-                    error_class="bad_arguments",
-                    message="Attachments require a workspace path but none was provided.",
-                    actionable_hint="Generate attachments inside the agent workspace before sending.",
-                )
-            from app.services.agent_tool_domains.workspace import (
-                _authority_known_foreign_path, _resolved_workspace_path, _resolve_workspace_tool_file,
-            )
-            from app.services.workspace_resource_authority import WorkspaceAuthorityError
-
-            missing_attachments = []
-            for rel_path in attachments:
-                # Preserve missing-file feedback without probing known foreign resources.
-                candidate = _resolved_workspace_path(workspace_path, rel_path, permission_profile)
-                if candidate is None:
-                    return f"❌ {rel_path} cannot be attached."
-                if not _authority_known_foreign_path(authority_scope, rel_path) and not candidate.exists():
-                    missing_attachments.append(rel_path)
-                    continue
-                try:
-                    target = _resolve_workspace_tool_file(workspace_path, rel_path,
-                        authority_scope=authority_scope, permission_profile=permission_profile)
-                except WorkspaceAuthorityError:
-                    return f"❌ {rel_path} cannot be attached."
-                if not target.is_file():
-                    missing_attachments.append(rel_path)
-            if missing_attachments:
-                return _render_email_error(
-                    tool_name=tool_name,
-                    config=config,
-                    error_class="bad_arguments",
-                    message="One or more requested email attachments do not exist in the workspace.",
-                    actionable_hint="Generate the file first and pass workspace-relative attachment paths that exist.",
-                    extra={"missing_attachments": missing_attachments},
-                )
 
     if tool_name == "reply_email":
         if not str(arguments.get("message_id", "")).strip():
@@ -367,6 +340,7 @@ async def send_email(
     *,
     authority_scope=None,
     permission_profile=None,
+    _prepared_attachments: list[tuple[Path, bytes]] | None = None,
 ) -> str:
     """Send an email via SMTP.
 
@@ -390,12 +364,21 @@ async def send_email(
             "cc": cc,
             "attachments": attachments or [],
         },
-        workspace_path=workspace_path,
-        authority_scope=authority_scope,
-        permission_profile=permission_profile,
     )
     if preflight_error:
         return preflight_error
+
+    if attachments and authority_scope is None:
+        from app.services.agent_tool_domains.workspace import _workspace_tool_file_refusal
+
+        return _workspace_tool_file_refusal(attachments[0], "attached")
+    # The dispatcher passes its already-authorized byte buffers; direct callers prepare them here.
+    files = _prepared_attachments if attachments else []
+    if files is None:
+        files = _prepare_email_attachments(workspace_path, attachments,
+            authority_scope=authority_scope, permission_profile=permission_profile)
+    if isinstance(files, str):
+        return files
 
     addr = cfg["email_address"]
     password = cfg["auth_code"]
@@ -411,21 +394,12 @@ async def send_email(
 
     msg.attach(MIMEText(body, "plain", "utf-8"))
 
-    # Attach files
-    if attachments and workspace_path:
-        from app.services.agent_tool_domains.workspace import _read_receipted_workspace_bytes
-        from app.services.workspace_resource_authority import WorkspaceAuthorityError
-
-        for rel_path in attachments:
-            try:
-                raw = _read_receipted_workspace_bytes(workspace_path, rel_path, authority_scope, rel_path)
-            except (WorkspaceAuthorityError, OSError):
-                return f"❌ {rel_path} cannot be attached."
-            part = MIMEBase("application", "octet-stream")
-            part.set_payload(raw)
-            encoders.encode_base64(part)
-            part.add_header("Content-Disposition", "attachment", filename=Path(rel_path).name)
-            msg.attach(part)
+    for full_path, raw in files:
+        part = MIMEBase("application", "octet-stream")
+        part.set_payload(raw)
+        encoders.encode_base64(part)
+        part.add_header("Content-Disposition", "attachment", filename=full_path.name)
+        msg.attach(part)
 
     try:
         with _force_ipv4():

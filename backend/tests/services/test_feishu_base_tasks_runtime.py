@@ -931,13 +931,25 @@ async def test_feishu_task_comment_uses_current_openapi_comment_endpoint(monkeyp
     assert "comment_openapi_1" in result
 
 
+def _attachment_scope(agent_id, path="workspace/report.pdf"):
+    from uuid import UUID, uuid4
+    from app.services.workspace_resource_authority import WorkspaceAuthorityScope
+
+    return WorkspaceAuthorityScope(agent_id=UUID(agent_id), user_id=uuid4(), root_session_id=None,
+        allowed_paths=frozenset({path}), operator_view=False, authority_source="resource_owner",
+        action_permissions=frozenset({(path, "deliver")}))
+
+
 @pytest.mark.asyncio
 async def test_feishu_base_record_upload_attachment_uses_workspace_file(
     monkeypatch: pytest.MonkeyPatch, tmp_path
 ) -> None:
     from app.services.agent_tool_domains import feishu_base
 
-    agent_id = "agent-1"
+    from pathlib import Path
+    from uuid import uuid4
+
+    agent_id = str(uuid4())
     workspace_root = tmp_path / "agents"
     workspace = workspace_root / agent_id / "workspace"
     workspace.mkdir(parents=True)
@@ -948,6 +960,10 @@ async def test_feishu_base_record_upload_attachment_uses_workspace_file(
         return True
 
     async def fake_run_feishu_cli_command(args: list[str]) -> tuple[int, str, str]:
+        staged = Path(args[args.index("--file") + 1])
+        assert staged.name == source_file.name
+        assert staged.read_bytes() == source_file.read_bytes() == b"pdf"
+        assert staged != source_file
         assert args == [
             "lark-cli",
             "base",
@@ -961,7 +977,7 @@ async def test_feishu_base_record_upload_attachment_uses_workspace_file(
             "--field-id",
             "附件",
             "--file",
-            str(source_file),
+            str(staged),
             "--name",
             "Q1-final.pdf",
             "--format",
@@ -996,6 +1012,7 @@ async def test_feishu_base_record_upload_attachment_uses_workspace_file(
             "file_path": "workspace/report.pdf",
             "name": "Q1-final.pdf",
         },
+        authority_scope=_attachment_scope(agent_id),
     )
 
     assert "file_1" in result
@@ -1039,7 +1056,7 @@ async def test_feishu_base_record_upload_attachment_rejects_sibling_prefix_escap
             "field_id": "附件",
             "file_path": f"../{agent_id}-evil/secret.pdf",
         },
+        authority_scope=_attachment_scope(agent_id),
     )
 
-    assert "<tool_error>" in result
-    assert "inside the agent workspace" in result
+    assert result == f"❌ ../{agent_id}-evil/secret.pdf cannot be uploaded. Use a file under workspace/ that you may send."

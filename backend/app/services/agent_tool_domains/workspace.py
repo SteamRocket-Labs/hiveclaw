@@ -215,14 +215,27 @@ def _authority_known_foreign_path(authority_scope, rel_path: str) -> bool:
 
 
 def _resolve_workspace_tool_file(ws: Path, rel_path: str, *, authority_scope=None, permission_profile=None) -> Path:
-    """Resolve an outbound work file using the native file reader's scope."""
+    """Resolve a work file the requester may deliver outside the workspace."""
+    if authority_scope is None:
+        raise WorkspaceAuthorityError("workspace_resource_forbidden", "Outbound files require requester authority.")
     normalized = authorize_workspace_tool_path(
-        ws, authority_scope, rel_path, action="read", require_user_workspace=True,
+        ws, authority_scope, rel_path, action="deliver", require_user_workspace=True,
     )
     target = _resolved_workspace_path(ws, rel_path, permission_profile)
-    if target is None or not _authority_allows_path(authority_scope, normalized):
+    if target is None or not _authority_allows_path(authority_scope, normalized, action="deliver"):
         raise WorkspaceAuthorityError("workspace_resource_forbidden", "Access denied for this path.")
     return target
+
+
+def _read_workspace_tool_file(ws: Path, rel_path: str, *, authority_scope=None, permission_profile=None) -> tuple[Path, bytes]:
+    target = _resolve_workspace_tool_file(ws, rel_path,
+        authority_scope=authority_scope, permission_profile=permission_profile)
+    canonical = target.relative_to(ws.resolve()).as_posix()
+    return target, _read_receipted_workspace_bytes(ws, canonical, authority_scope, canonical)
+
+
+def _workspace_tool_file_refusal(rel_path: str, verb: str) -> str:
+    return f"❌ {rel_path} cannot be {verb}. Use a file under workspace/ that you may send."
 
 
 def _authorize_workspace_mutation_path(

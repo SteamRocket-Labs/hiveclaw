@@ -77,11 +77,7 @@ async def test_handle_email_tool_rejects_missing_attachment_before_smtp(
         },
     )
 
-    payload = _extract_tool_error_payload(result)
-    assert payload["tool_name"] == "send_email"
-    assert payload["error_class"] == "bad_arguments"
-    assert payload["provider"] == "outlook"
-    assert payload["missing_attachments"] == ["reports/daily.pdf"]
+    assert result == "❌ reports/daily.pdf cannot be attached. Use a file under workspace/ that you may send."
     assert called == {}
 
 

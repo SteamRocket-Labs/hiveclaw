@@ -288,7 +288,7 @@ def _t3_job_artifact_result(path: Path) -> str:
 _T3_REVIEW_STALE_MARKER = ".review_stale_after_patch"
 
 
-def _maybe_apply_t3_platform_gate(*, agent_id: uuid.UUID, data_root: Path, job_id: str) -> str | None:
+async def _maybe_apply_t3_platform_gate(*, agent_id: uuid.UUID, data_root: Path, job_id: str, tenant_id=None) -> str | None:
     from app.memory.md_store import memory_dir
     from app.memory.t3_platform_gate import apply_t3_consolidation_patch
 
@@ -303,12 +303,13 @@ def _maybe_apply_t3_platform_gate(*, agent_id: uuid.UUID, data_root: Path, job_i
     patch_md = patch_path.read_text(encoding="utf-8", errors="replace")
     if "<memory_gate_review" not in review_md or "<t3_consolidation_patch" not in patch_md:
         return None
-    result = apply_t3_consolidation_patch(
+    result = await apply_t3_consolidation_patch(
         agent_id=agent_id,
         data_root=data_root,
         job_id=job_id,
         revised_patch_md=patch_md,
         review_md=review_md,
+        tenant_id=tenant_id,
     )
     if result.status == "committed":
         return (
@@ -398,11 +399,10 @@ def submit_t3_consolidation_pitch(
         adapter="agent_args",
     )
 )
-def submit_t3_memory_gate_review(agent_id: uuid.UUID, arguments: dict, tenant_id: uuid.UUID | str | None = None) -> str:
+async def submit_t3_memory_gate_review(agent_id: uuid.UUID, arguments: dict, tenant_id: uuid.UUID | str | None = None) -> str:
     from app.config import get_settings
     from app.memory.t3_consolidation import write_t3_job_artifact
 
-    del tenant_id
     job_id = (arguments.get("job_id") or "").strip()
     content = (arguments.get("content") or "").strip()
     if not job_id:
@@ -423,7 +423,7 @@ def submit_t3_memory_gate_review(agent_id: uuid.UUID, arguments: dict, tenant_id
             stale_marker.unlink()
     except Exception as exc:
         return f"[Error] submit_t3_memory_gate_review failed: {exc}"
-    gate_result = _maybe_apply_t3_platform_gate(agent_id=agent_id, data_root=data_root, job_id=job_id)
+    gate_result = await _maybe_apply_t3_platform_gate(agent_id=agent_id, data_root=data_root, job_id=job_id, tenant_id=tenant_id)
     if gate_result:
         return f"{_t3_job_artifact_result(path)}\n{gate_result}"
     return _t3_job_artifact_result(path)
@@ -454,11 +454,10 @@ def submit_t3_memory_gate_review(agent_id: uuid.UUID, arguments: dict, tenant_id
         adapter="agent_args",
     )
 )
-def submit_t3_revised_patch(agent_id: uuid.UUID, arguments: dict, tenant_id: uuid.UUID | str | None = None) -> str:
+async def submit_t3_revised_patch(agent_id: uuid.UUID, arguments: dict, tenant_id: uuid.UUID | str | None = None) -> str:
     from app.config import get_settings
     from app.memory.t3_consolidation import write_t3_job_artifact
 
-    del tenant_id
     job_id = (arguments.get("job_id") or "").strip()
     content = (arguments.get("content") or "").strip()
     if not job_id:
@@ -482,7 +481,7 @@ def submit_t3_revised_patch(agent_id: uuid.UUID, arguments: dict, tenant_id: uui
             )
     except Exception as exc:
         return f"[Error] submit_t3_revised_patch failed: {exc}"
-    gate_result = _maybe_apply_t3_platform_gate(agent_id=agent_id, data_root=data_root, job_id=job_id)
+    gate_result = await _maybe_apply_t3_platform_gate(agent_id=agent_id, data_root=data_root, job_id=job_id, tenant_id=tenant_id)
     if gate_result:
         return f"{_t3_job_artifact_result(path)}\n{gate_result}"
     return _t3_job_artifact_result(path)

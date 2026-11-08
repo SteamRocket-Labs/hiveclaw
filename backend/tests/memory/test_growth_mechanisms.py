@@ -156,7 +156,8 @@ CONVERGED_SELF = """## 能力
 """
 
 
-def test_rewrite_file_converges_profile_file_with_archive(tmp_path: Path) -> None:
+@pytest.mark.usefixtures("t3_private_owner_audience")
+async def test_rewrite_file_converges_profile_file_with_archive(tmp_path: Path) -> None:
     from app.memory.t3_platform_gate import apply_t3_consolidation_patch, file_sha256
 
     agent_id = uuid4()
@@ -164,7 +165,7 @@ def test_rewrite_file_converges_profile_file_with_archive(tmp_path: Path) -> Non
     target = "memory/self/self.md"
     sha = file_sha256(self_path)
 
-    result = apply_t3_consolidation_patch(
+    result = await apply_t3_consolidation_patch(
         agent_id=agent_id,
         data_root=tmp_path,
         job_id="t3job-converge",
@@ -189,14 +190,15 @@ def test_rewrite_file_converges_profile_file_with_archive(tmp_path: Path) -> Non
     assert "cap-0" in backup.read_text(encoding="utf-8")
 
 
-def test_rewrite_file_without_convergence_note_is_held(tmp_path: Path) -> None:
+@pytest.mark.usefixtures("t3_private_owner_audience")
+async def test_rewrite_file_without_convergence_note_is_held(tmp_path: Path) -> None:
     from app.memory.t3_platform_gate import apply_t3_consolidation_patch, file_sha256
 
     agent_id = uuid4()
     self_path = _write_self(tmp_path, agent_id, DIRTY_SELF)
     sha = file_sha256(self_path)
 
-    result = apply_t3_consolidation_patch(
+    result = await apply_t3_consolidation_patch(
         agent_id=agent_id,
         data_root=tmp_path,
         job_id="t3job-no-note",
@@ -208,14 +210,15 @@ def test_rewrite_file_without_convergence_note_is_held(tmp_path: Path) -> None:
     assert "cap-0" in self_path.read_text(encoding="utf-8")  # untouched
 
 
-def test_rewrite_file_with_stale_sha_requires_rebase(tmp_path: Path) -> None:
+@pytest.mark.usefixtures("t3_private_owner_audience")
+async def test_rewrite_file_with_stale_sha_requires_rebase(tmp_path: Path) -> None:
     from app.memory.t3_platform_gate import apply_t3_consolidation_patch
 
     agent_id = uuid4()
     _write_self(tmp_path, agent_id, DIRTY_SELF)
     stale = hashlib.sha256(b"").hexdigest()
 
-    result = apply_t3_consolidation_patch(
+    result = await apply_t3_consolidation_patch(
         agent_id=agent_id,
         data_root=tmp_path,
         job_id="t3job-stale",
@@ -226,7 +229,8 @@ def test_rewrite_file_with_stale_sha_requires_rebase(tmp_path: Path) -> None:
     assert result.status == "rebase_required"
 
 
-def test_rewrite_file_rejects_emptying_a_populated_file(tmp_path: Path) -> None:
+@pytest.mark.usefixtures("t3_private_owner_audience")
+async def test_rewrite_file_rejects_emptying_a_populated_file(tmp_path: Path) -> None:
     """Anti-deletion guard: convergence must converge, not wipe."""
     from app.memory.t3_platform_gate import apply_t3_consolidation_patch, file_sha256
 
@@ -234,7 +238,7 @@ def test_rewrite_file_rejects_emptying_a_populated_file(tmp_path: Path) -> None:
     self_path = _write_self(tmp_path, agent_id, DIRTY_SELF)
     sha = file_sha256(self_path)
 
-    result = apply_t3_consolidation_patch(
+    result = await apply_t3_consolidation_patch(
         agent_id=agent_id,
         data_root=tmp_path,
         job_id="t3job-wipe",

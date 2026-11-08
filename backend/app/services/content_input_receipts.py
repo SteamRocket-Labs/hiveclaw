@@ -633,9 +633,10 @@ async def _validate_agent_context_dependency(db, tenant_id, dependency, *, user,
                 from app.services.employee_creation_sources import load_employee_creation_context
 
                 content = await load_employee_creation_context(
-                    db, tenant_id=tenant_id, agent_id=peer.id, user=user, runtime_request=runtime_request
+                    db, tenant_id=tenant_id, agent_id=peer.id, user=user, runtime_request=runtime_request,
+                    allow_missing=True,
                 )
-                if content.get("identity") != agent_identity_content(peer.name, peer.role_description):
+                if content is not None and content.get("identity") != agent_identity_content(peer.name, peer.role_description):
                     raise ContentInputReceiptError(
                         "content_source_unavailable",
                         "A collaborator label lacks an exact original creation witness.",

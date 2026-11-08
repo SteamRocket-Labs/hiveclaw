@@ -842,7 +842,7 @@ def fingerprint_rls_bypass_scopes(app_root: Path) -> str:
 # Merging A4c with B6 accepts the exact three-way module-source merge; no bypass scope changed on both sides.
 # G3: preview and inventory lifecycle source updates only; merging G3 with main keeps each entry from one side.
 # Merging A4c with G3 keeps each entry from one side.
-RLS_BYPASS_SCOPES_SHA256 = "828e0319f62922b568950c5a5aaa62745fed8d798afd3fa38a0d44038db8af4a"
+RLS_BYPASS_SCOPES_SHA256 = "01819414d0d067bf6a11d5419b78ad547f07ad55a277ae692aa57c1da5a4f9f0"
 
 
 def scan_rls_bypass_callsites(app_root: Path) -> list[RLSBypassCallsite]:

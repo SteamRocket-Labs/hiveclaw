@@ -12,6 +12,16 @@ from app.services.config_versioning import canonical_content_hash, save_revision
 from app.services.delegation_input_origin import employee_creation_source_pointer, load_employee_creation_dependencies
 
 
+async def _creation_revision_id(db, *, tenant_id, agent_id):
+    return await db.scalar(
+        select(ConfigRevision.id).where(
+            ConfigRevision.tenant_id == tenant_id,
+            ConfigRevision.entity_id == agent_id,
+            ConfigRevision.entity_type.in_(("agent_bootstrap", "agent_hr_bootstrap")),
+        ).limit(1)
+    )
+
+
 async def load_known_native_default_context(db, *, tenant_id, agent_id, ref):
     """Recognize unchanged public defaults without minting a historical bootstrap.
 
@@ -35,15 +45,7 @@ async def load_known_native_default_context(db, *, tenant_id, agent_id, ref):
         return None
     # An existing original-source record, including an invalid one, is never
     # bypassed by this recognition of the older default constructor.
-    prior = await db.scalar(
-        select(ConfigRevision.id)
-        .where(
-            ConfigRevision.tenant_id == tenant_id,
-            ConfigRevision.entity_id == agent_id,
-            ConfigRevision.entity_type.in_(("agent_bootstrap", "agent_hr_bootstrap")),
-        )
-        .limit(1)
-    )
+    prior = await _creation_revision_id(db, tenant_id=tenant_id, agent_id=agent_id)
     agent = await db.scalar(
         select(Agent)
         .where(Agent.id == agent_id, Agent.tenant_id == tenant_id)
@@ -270,13 +272,7 @@ async def load_employee_creation_context(db, *, tenant_id, agent_id, user, runti
         .execution_options(populate_existing=True)
     )
     if revision is None and allow_missing:
-        prior = await db.scalar(
-            select(ConfigRevision.id).where(
-                ConfigRevision.tenant_id == tenant_id,
-                ConfigRevision.entity_id == agent_id,
-                ConfigRevision.entity_type.in_(("agent_bootstrap", "agent_hr_bootstrap")),
-            ).limit(1)
-        )
+        prior = await _creation_revision_id(db, tenant_id=tenant_id, agent_id=agent_id)
         draft = await db.scalar(
             select(HrCreationDraft.id).where(
                 HrCreationDraft.tenant_id == tenant_id,

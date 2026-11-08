@@ -12,6 +12,8 @@ import json
 from pathlib import Path
 from uuid import uuid4
 
+import pytest
+
 
 def _mem_dir(tmp_path: Path, agent_id) -> Path:
     return tmp_path / str(agent_id) / "memory"
@@ -102,7 +104,8 @@ def test_source_bundle_allows_two_plane_targets(tmp_path: Path) -> None:
     assert any("memory/milestones/<slug>.md" in item for item in allowed)
 
 
-def test_updating_knowledge_page_must_preserve_contradictions(tmp_path: Path) -> None:
+@pytest.mark.usefixtures("t3_private_owner_audience")
+async def test_updating_knowledge_page_must_preserve_contradictions(tmp_path: Path) -> None:
     from app.memory.t3_platform_gate import apply_t3_consolidation_patch, file_sha256
 
     agent_id = uuid4()
@@ -143,7 +146,7 @@ def test_updating_knowledge_page_must_preserve_contradictions(tmp_path: Path) ->
         )
 
     patch_md, review_md = _patch(dropped, current_sha)
-    held = apply_t3_consolidation_patch(
+    held = await apply_t3_consolidation_patch(
         agent_id=agent_id, data_root=tmp_path, job_id="t3job-drop", revised_patch_md=patch_md, review_md=review_md
     )
     assert held.status == "held"
@@ -152,7 +155,7 @@ def test_updating_knowledge_page_must_preserve_contradictions(tmp_path: Path) ->
 
     current_sha = file_sha256(page_path)
     patch_md, review_md = _patch(kept, current_sha)
-    committed = apply_t3_consolidation_patch(
+    committed = await apply_t3_consolidation_patch(
         agent_id=agent_id, data_root=tmp_path, job_id="t3job-keep", revised_patch_md=patch_md, review_md=review_md
     )
     assert committed.status == "committed", committed.issues

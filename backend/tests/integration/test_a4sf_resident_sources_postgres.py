@@ -114,9 +114,10 @@ async def test_approved_action_accepts_recorded_platform_consolidation(
             transaction.stage_text("memory/self/self.md", path.read_text() + "\n" + entry + "\n")
             transaction.commit()
     else:
-        _write_reviewed_t2_package(tmp_path, seed.agent_id)
-        ref = "t2://session/s1/segment/seg-1"
-        result = apply_t3_consolidation_patch(agent_id=seed.agent_id, data_root=tmp_path, job_id="learned-method",
+        _write_reviewed_t2_package(tmp_path, seed.agent_id, session_id=str(seed.session_id))
+        ref = f"t2://session/{seed.session_id}/segment/seg-1"
+        result = await apply_t3_consolidation_patch(agent_id=seed.agent_id, data_root=tmp_path, job_id="learned-method",
+            tenant_id=seed.tenant_id,
             revised_patch_md=_entry_patch("memory/self/self.md", file_sha256(path), "learned-method", entry, refs=[ref]),
             review_md=_accepted_review_for(ref))
         assert result.status == "committed", result.issues

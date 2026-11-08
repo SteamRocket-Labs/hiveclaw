@@ -136,12 +136,13 @@ async def run_heartbeat_t3_core(
             content=patch_heading(review_md, "T3 Memory Gate Review"),
         )
 
-        gate_result = apply_t3_consolidation_patch(
+        gate_result = await apply_t3_consolidation_patch(
             agent_id=resolved_agent_id,
             data_root=root,
             job_id=staged.job_id,
             revised_patch_md=patch_path.read_text(encoding="utf-8", errors="replace"),
             review_md=review_path.read_text(encoding="utf-8", errors="replace"),
+            tenant_id=tenant_id,
         )
         status = str(getattr(gate_result, "status", "held") or "held")
         issues = tuple(str(issue) for issue in getattr(gate_result, "issues", ()) or ())

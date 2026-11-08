@@ -13,6 +13,8 @@ import hashlib
 from pathlib import Path
 from uuid import uuid4
 
+import pytest
+
 
 def test_heartbeat_template_teaches_retroactive_milestones() -> None:
     template = Path("app/templates/HEARTBEAT.md").read_text(encoding="utf-8")
@@ -22,7 +24,8 @@ def test_heartbeat_template_teaches_retroactive_milestones() -> None:
     assert "ms-" in template
 
 
-def test_combined_patch_creates_milestone_and_references_it(tmp_path: Path) -> None:
+@pytest.mark.usefixtures("t3_private_owner_audience")
+async def test_combined_patch_creates_milestone_and_references_it(tmp_path: Path) -> None:
     from app.memory.t3_platform_gate import apply_t3_consolidation_patch
 
     agent_id = uuid4()
@@ -72,7 +75,7 @@ def test_combined_patch_creates_milestone_and_references_it(tmp_path: Path) -> N
         f"{scores}<decision>accept_new</decision></memory_gate_rubric></memory_gate_review>"
     )
 
-    result = apply_t3_consolidation_patch(
+    result = await apply_t3_consolidation_patch(
         agent_id=agent_id,
         data_root=tmp_path,
         job_id="t3job-anchor",

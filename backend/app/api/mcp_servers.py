@@ -48,19 +48,14 @@ class PersonalMcpAccountIn(BaseModel):
 @router.get("/mcp-accounts")
 async def list_my_mcp_accounts(current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
     from sqlalchemy import select
-    from sqlalchemy.orm import aliased
     from app.core.tenant_scope import resolve_and_pin_tenant_scope
     from app.models.mcp_server import MCPServer
     from app.services.mcp_accounts import account_public
 
     tenant = await resolve_and_pin_tenant_scope(db, current_user)
-    application = aliased(MCPServer)
-    accounts = (await db.execute(select(MCPServer, application.name).outerjoin(application,
-        (application.id == MCPServer.parent_server_id) & (application.tenant_id == tenant)).where(
-        MCPServer.tenant_id == tenant, MCPServer.owner_user_id == current_user.id
-    ).order_by(MCPServer.name, MCPServer.id))).all()
-    return [{**account_public(account), "app_name": app_name or account.name}
-        for account, app_name in accounts if account.auth_status != "none"]
+    accounts = (await db.scalars(select(MCPServer).where(MCPServer.tenant_id == tenant,
+        MCPServer.owner_user_id == current_user.id).order_by(MCPServer.name, MCPServer.id))).all()
+    return [account_public(account) for account in accounts if account.auth_status != "none"]
 
 
 @router.post("/agents/{agent_id}/mcp-servers/{server_id}/accounts")

@@ -2576,7 +2576,7 @@ function AgentDetailInner() {
                 {canOperatorInspect && <AgentOperatorReason value={operatorReason} onChange={setOperatorReason} />}
 
                 <AgentDetailBody visibleTabs={visibleAgentTabs} activeTab={activeTab}
-                    onSelectTab={selectDetailTab} plain={isSystemHr || sessionWorkbenchMode}>
+                    onSelectTab={selectDetailTab} plain={isSystemHr || sessionWorkbenchMode} memberView={currentUser?.role === 'member'}>
                 <Suspense fallback={<AgentDetailSectionFallback />}>
                 {/* ── Enhanced Status Tab ── */}
                 {activeTab === 'status' && (

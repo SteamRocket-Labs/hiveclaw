@@ -155,5 +155,5 @@ export function triggerScheduleLabel(trigger: any, t: (key: string, fallback: st
       return t('agent.aware.scheduleOnMessage', 'On message from {{source}}', { source });
     }
     if (trigger.type === 'webhook') return t('agent.aware.scheduleWebhook', 'Webhook');
-    return t('agent.aware.scheduleUnavailable', 'Time unavailable');
+    return String(trigger.type || '');
 }

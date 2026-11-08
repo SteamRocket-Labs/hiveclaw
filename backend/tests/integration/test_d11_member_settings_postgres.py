@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import uuid
 
 import pytest
+from sqlalchemy import select
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
@@ -55,7 +56,7 @@ async def test_connection_identifies_application_and_member_account_then_request
         user = await db.get(User, user_id)
         user.role = "member"
         created = await create_personal_account(db, user=user, tenant_id=tenant, server_id=server_id,
-            account_id=uuid.uuid4(), name="My work account")
+            account_id=uuid.uuid4(), name="Company documents")
         account = await db.get(MCPServer, uuid.UUID(created["id"]))
         account.auth_status = "configured"
         account.config_json = {"oauth": {"token": encrypt_token_set(OAuthTokenSet("local-test-only"))}}
@@ -65,8 +66,8 @@ async def test_connection_identifies_application_and_member_account_then_request
     async with await _client(owner_sessionmaker, user_id) as http:
         listed = await http.get("/api/mcp-accounts")
         assert listed.status_code == 200
-        assert listed.json()[0]["app_name"] == "Company documents"
-        assert listed.json()[0]["name"] == "My work account"
+        assert listed.json()[0]["name"] == "Company documents"
+        assert listed.json()[0]["owner_user_id"] == str(user_id)
         assert "local-test-only" not in listed.text
         assert (await http.post(f"/api/mcp-accounts/{account.id}/revoke")).status_code == 200
         assert (await http.get("/api/mcp-accounts")).json() == []
@@ -142,4 +143,7 @@ async def test_memory_read_and_delete_are_scoped_to_member_even_on_shared_bot(ow
         assert (await http.get(path)).json() == []
     assert load_explicit_overlay_entries(root, bot)[0].status == "retired"
     async with owner_sessionmaker() as db:
-        assert (await db.get(ContentInputReceipt, receipt.id)).authority_json["state"] == "revoked"
+        assert (await db.get(ContentInputReceipt, receipt.id)).authority_json["state"] == "active"
+        rows = (await db.scalars(select(ContentInputReceipt).where(
+            ContentInputReceipt.carrier_ref == receipt.carrier_ref).order_by(ContentInputReceipt.revision))).all()
+        assert [(row.revision, row.authority_json["state"]) for row in rows] == [(1, "active"), (2, "retired")]

@@ -24,6 +24,7 @@ it('shows a read-only own memory list, deletes an entry, and clears it on member
   });
   render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><MemberMemory agentId="bot" /></QueryClientProvider>);
   await screen.findByText('Use Chinese for summaries.');
+  expect(screen.queryByRole('heading', { name: 'What it remembers' })).toBeNull();
   expect(screen.queryByRole('textbox')).toBeNull();
   fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
   await screen.findByText('Nothing you asked it to remember yet.');

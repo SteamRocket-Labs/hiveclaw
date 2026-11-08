@@ -15,7 +15,6 @@ export default function MemberMemory({ agentId }: { agentId: string }) {
   const [removing, setRemoving] = useState<string>();
   const [error, setError] = useState(false);
   return <section>
-    <h2>{t('memberSettings.memory')}</h2>
     <p>{t('memberSettings.memoryHint')}</p>
     {(entries.isError || error) && <p role="alert">{t('memberSettings.failed')}</p>}
     {entries.isPending && <p>{t('common.loading')}</p>}

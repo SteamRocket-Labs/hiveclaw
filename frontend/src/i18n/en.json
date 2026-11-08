@@ -6247,6 +6247,8 @@
     "account": "Account: {{name}}",
     "memory": "What it remembers",
     "memoryHint": "Things you asked it to remember. View or delete them; deleted entries are no longer used.",
-    "noMemory": "Nothing you asked it to remember yet."
+    "noMemory": "Nothing you asked it to remember yet.",
+    "botFailed": "Could not read work for {{name}}. Try again later.",
+    "onRequest": "When a request arrives"
   }
 }

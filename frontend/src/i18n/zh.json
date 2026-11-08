@@ -6247,6 +6247,8 @@
     "account": "账号：{{name}}",
     "memory": "它记得什么",
     "memoryHint": "你让它记住的内容。可以查看或删除；删除后不再使用。",
-    "noMemory": "还没有你让它记住的内容。"
+    "noMemory": "还没有你让它记住的内容。",
+    "botFailed": "无法读取「{{name}}」的任务，请稍后重试。",
+    "onRequest": "收到请求时"
   }
 }

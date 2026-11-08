@@ -286,11 +286,12 @@ export default function AgentDetailHeader({
   );
 }
 
-export function AgentDetailNavigation({ visibleTabs, activeTab, onSelectTab, children }: {
+export function AgentDetailNavigation({ visibleTabs, activeTab, onSelectTab, children, memberView = false }: {
   visibleTabs: AgentDetailTab[];
   activeTab: string;
   onSelectTab: (tab: string) => void;
   children?: React.ReactNode;
+  memberView?: boolean;
 }) {
   const { t } = useTranslation();
   const visibleWorkbenchAreas = AGENT_WORKBENCH_AREAS
@@ -303,7 +304,7 @@ export function AgentDetailNavigation({ visibleTabs, activeTab, onSelectTab, chi
     visibleWorkbenchAreas.find((area) => area.tabs.includes(activeTab as AgentDetailTab)) ||
     visibleWorkbenchAreas[0];
   return (
-    <div className="agent-workbench-nav" data-testid="agent-workbench-nav">
+    <><div className="agent-workbench-nav" data-testid="agent-workbench-nav">
       <div className="agent-workbench-areas" role="tablist" aria-label={t('agent.workbench.title', 'Agent workbench')}>
         {visibleWorkbenchAreas.map((area) => (
           <button
@@ -320,23 +321,21 @@ export function AgentDetailNavigation({ visibleTabs, activeTab, onSelectTab, chi
         ))}
       </div>
       {activeWorkbenchArea && (
-        <section aria-labelledby={`agent-section-${activeWorkbenchArea.id}`}>
+        <div className="agent-workbench-subnav" aria-label={t('agent.workbench.sectionTabs', 'Section tabs')}>
           {activeWorkbenchArea.tabs.map((tab) => (
-            <details
+            <button
               key={tab}
-              className="card"
-              open={activeTab === tab}
+              type="button"
+              className={`agent-workbench-subtab ${activeTab === tab ? 'active' : ''}`}
+              onClick={() => onSelectTab(tab)}
             >
-              <summary onClick={(event) => { event.preventDefault(); onSelectTab(tab); }}>
-                {tab === 'knowledge' ? t('memberSettings.memory') : tab === 'aware'
+                {memberView && tab === 'knowledge' ? t('memberSettings.memory') : memberView && tab === 'aware'
                   ? t('memberSettings.schedules') : t(`agent.tabs.${tab}`, AGENT_TAB_LABELS[tab])}
-              </summary>
-              {activeTab === tab && children}
-            </details>
+            </button>
           ))}
-        </section>
+        </div>
       )}
-    </div>
+    </div>{children}</>
   );
 }
 

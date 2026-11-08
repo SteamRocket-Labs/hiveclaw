@@ -272,8 +272,9 @@ async def _member_memory(db, user, agent_id, memory_id=None):
     from app.config import get_settings
     from app.core.permissions import check_agent_access
     from app.models.organization_identity import ContentInputReceipt
-    from app.memory.explicit_overlay import load_explicit_overlay_entries_by_ids
+    from app.memory.explicit_overlay import load_explicit_overlay_entries
     from app.services.explicit_memory_authority import latest_memory_receipt, source_dependency, validate_browser_memory_dependency
+    from app.services.explicit_memory_operations import _owned
     from app.services.content_input_receipts import ContentInputReceiptError
 
     agent, _ = await check_agent_access(db, user, agent_id)
@@ -288,21 +289,28 @@ async def _member_memory(db, user, agent_id, memory_id=None):
         ContentInputReceipt.authority_json["audience_kind"].astext == "private",
     ))).all()
     root = Path(get_settings().AGENT_DATA_DIR)
+    entries = {entry.entry_id: entry for entry in load_explicit_overlay_entries(root, agent_id)} if memory_id is None else {}
     result = []
-    for entry_id in {row.carrier_ref.split("\n", 1)[1] for row in rows}:
+    for entry_id in sorted({row.carrier_ref.split("\n", 1)[1] for row in rows}):
         if memory_id is not None and entry_id != memory_id:
             continue
         receipt = await latest_memory_receipt(db, agent.tenant_id, agent_id, entry_id)
-        if (receipt.authority_json.get("state") != "active"
-            or receipt.authority_json.get("owner_user_id") != str(user.id)):
+        try:
+            _owned(receipt, tenant_id=agent.tenant_id, agent_id=agent_id, actor_id=user.id)
+        except ContentInputReceiptError:
+            continue
+        if receipt.authority_json.get("state") != "active" or receipt.authority_json.get("audience_kind") != "private":
+            continue
+        if memory_id is not None:
+            result.append((None, receipt))
             continue
         try:
             await validate_browser_memory_dependency(db, agent.tenant_id, source_dependency(receipt), user=user)
-        except ContentInputReceiptError as exc:
-            raise _content_receipt_http_error(exc) from exc
-        entries = load_explicit_overlay_entries_by_ids(root, agent_id, [entry_id])
-        if entries and entries[0].status == "active":
-            result.append((entries[0], receipt))
+        except ContentInputReceiptError:
+            continue
+        entry = entries.get(entry_id)
+        if entry is not None and entry.status == "active":
+            result.append((entry, receipt))
     return result
 
 
@@ -318,15 +326,19 @@ async def delete_member_memory(agent_id: uuid.UUID, memory_id: str,
     current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
     from pathlib import Path
     from app.config import get_settings
-    from app.memory.explicit_overlay import update_explicit_overlay_status
+    from app.services.agent_asset_transaction import AgentAssetTransaction
+    from app.services.explicit_memory_operations import prepare_retirement_revision, _stage_target
 
     entries = await _member_memory(db, current_user, agent_id, memory_id)
     if not entries:
         raise HTTPException(404, "Memory entry not found")
-    entry, receipt = entries[0]
-    update_explicit_overlay_status(Path(get_settings().AGENT_DATA_DIR), agent_id,
-        entry.entry_id, status="retired", reason="user_requested")
-    receipt.authority_json = {**receipt.authority_json, "state": "revoked"}
+    _, receipt = entries[0]
+    retired, target = prepare_retirement_revision(receipt, reason="user_requested")
+    root = Path(get_settings().AGENT_DATA_DIR)
+    with AgentAssetTransaction(root / str(agent_id), operation="explicit_memory_source_write") as transaction:
+        _stage_target(transaction, root, agent_id, target)
+        transaction.commit()
+    db.add(retired)
     await db.commit()
     return {"deleted": True}
 

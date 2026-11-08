@@ -3618,6 +3618,11 @@ def _build_restoration_context(
                 if _resolved_recent is None:
                     continue
                 _fp, _label = _resolved_recent
+                if _resolved_ws and _fp.parent == (_resolved_ws / "memory/explicit/entries").resolve():
+                    from app.memory.explicit_overlay import load_explicit_overlay_entries_by_ids
+                    _entries = load_explicit_overlay_entries_by_ids(_resolved_ws.parent, agent_id, [_fp.stem])
+                    if not _entries or _entries[0].status != "active":
+                        continue
                 if _fp.exists() and _fp.is_file():
                     content = _fp.read_text(encoding="utf-8", errors="replace").strip()
                     if content:

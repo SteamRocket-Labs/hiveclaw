@@ -51,6 +51,24 @@ def _outcome(row):
         "target_memory_id": a.get("target", {}).get("entry_id")}
 
 
+def prepare_retirement_revision(previous, *, reason, receipt_id=None, superseded_by=None):
+    """Keep the historical source intact and append its retirement revision."""
+    metadata = deepcopy(previous.authority_json["metadata"])
+    final_state = "revoked" if reason == "privacy" and superseded_by is None else "retired"
+    new_metadata = {**metadata, "status": "retired", "status_reason": reason,
+        "accepted_blocks": "", "updated_at": datetime.now(timezone.utc).isoformat()}
+    if superseded_by is not None:
+        new_metadata["status_reason"] = f"superseded_by:{superseded_by}"
+    successor = ContentInputReceipt(id=receipt_id or uuid.uuid4(), tenant_id=previous.tenant_id,
+        carrier_kind="explicit_memory", carrier_ref=previous.carrier_ref, revision=previous.revision + 1,
+        content_sha256=previous.content_sha256, dependencies_json=deepcopy(previous.dependencies_json),
+        authority_json={**deepcopy(previous.authority_json), "state": final_state, "metadata": new_metadata})
+    target = {"entry_id": previous.carrier_ref.split("\n", 1)[1], "previous_receipt_id": str(previous.id),
+        "previous_state": previous.authority_json["state"], "pending_receipt_id": str(successor.id),
+        "metadata": metadata, "new_metadata": new_metadata, "final_state": final_state}
+    return successor, target
+
+
 async def _reserve_target(db, request, row, *, root, actor, dependencies):
     a = deepcopy(row.authority_json)
     target_id = request.arguments.get("memory_id") or request.arguments.get("id")
@@ -71,26 +89,14 @@ async def _reserve_target(db, request, row, *, root, actor, dependencies):
         await _authorize_entry(db, tenant_id=row.tenant_id, agent_id=request.context.agent_id,
             request=request, entry=entries[0], receipt=previous)
         dependencies = _unique_dependencies([*dependencies, source_dependency(previous)])
-    metadata = deepcopy(previous.authority_json["metadata"])
     reason = request.arguments.get("reason") or "user_requested"
-    final_state = "revoked" if a["operation_kind"] == "retire" and reason == "privacy" else "retired"
-    new_metadata = {**metadata, "status": "retired", "status_reason": reason,
-        "accepted_blocks": "", "updated_at": datetime.now(timezone.utc).isoformat()}
-    if a["operation_kind"] == "update":
-        new_metadata["status_reason"] = f"superseded_by:{a['entry_id']}"
-    pending_id = uuid.uuid5(row.id, "target-reservation")
-    pending_authority = {**deepcopy(previous.authority_json), "state": "prepared",
-        "operation_id": str(row.id), "operation_kind": "target_reservation", "planned_state": final_state,
-        "metadata": new_metadata}
-    pending = ContentInputReceipt(id=pending_id, tenant_id=row.tenant_id, carrier_kind="explicit_memory",
-        carrier_ref=previous.carrier_ref, revision=previous.revision + 1,
-        content_sha256=previous.content_sha256, dependencies_json=deepcopy(previous.dependencies_json),
-        authority_json=pending_authority)
+    pending, target = prepare_retirement_revision(previous, reason=reason,
+        receipt_id=uuid.uuid5(row.id, "target-reservation"),
+        superseded_by=a["entry_id"] if a["operation_kind"] == "update" else None)
+    pending.authority_json.update(state="prepared", operation_id=str(row.id),
+        operation_kind="target_reservation", planned_state=target["final_state"])
     db.add(pending)
-    a["target"] = {"entry_id": target_id, "previous_receipt_id": str(previous.id),
-        "previous_state": previous.authority_json["state"],
-        "pending_receipt_id": str(pending_id), "metadata": metadata, "new_metadata": new_metadata,
-        "final_state": final_state}
+    a["target"] = target
     row.authority_json = a
     return dependencies
 

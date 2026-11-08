@@ -107,6 +107,52 @@ class _FakeSession:
         return _FakeScalarResult(self._execute_values.pop(0))
 
 
+@pytest.fixture
+async def legacy_bot_prompt(monkeypatch, tmp_path):
+    import app.services.agent_context as context
+    from app.runtime.prompt_builder import build_frozen_prompt_prefix
+
+    agent_id, tenant_id = uuid4(), uuid4()
+    soul = "I am My Assistant, a digital employee of the company."
+    root = tmp_path / str(agent_id)
+    root.mkdir()
+    soul_file = root / "soul.md"
+    soul_file.write_text(soul, encoding="utf-8")
+    sessions = [_FakeSession([[]]), _FakeSession([None, None, None, "rocky的实验室"])]
+
+    async def no_collaborators(*_args, **_kwargs):
+        return ""
+
+    monkeypatch.setattr(context, "TOOL_WORKSPACE", tmp_path)
+    monkeypatch.setattr(context, "PERSISTENT_DATA", tmp_path)
+    monkeypatch.setattr(context, "_build_a2a_collaborators_context", no_collaborators)
+    monkeypatch.setattr("app.database.tenant_scoped_session", lambda *_a, **_k: sessions.pop(0))
+    built = await context.build_agent_context(
+        agent_id, "我的助理", tenant_id=tenant_id, include_skill_catalog=False,
+    )
+    assert soul_file.read_text(encoding="utf-8") == soul
+    return build_frozen_prompt_prefix(agent_context=built), soul
+
+
+async def test_legacy_soul_uses_current_display_name_and_tenant_name(legacy_bot_prompt):
+    prompt, soul = legacy_bot_prompt
+    after_soul = prompt[prompt.index(soul) + len(soul):]
+    assert "我的助理" in after_soul
+    assert "rocky的实验室" in after_soul
+    assert "instead of any name in Personality" in after_soul
+    assert "instead of any company name in Personality" in after_soul
+
+
+async def test_legacy_soul_gets_one_platform_member_language_rule(legacy_bot_prompt):
+    prompt, soul = legacy_bot_prompt
+    assert prompt.count("same language the user uses") == 1
+    rule = prompt[prompt.index("## Tone and Style"):]
+    assert prompt.index("## Tone and Style") > prompt.index(soul)
+    assert "internal identifiers, field names, tool names, error codes, raw errors" in rule
+    assert "file-system paths or internal concepts" in rule
+    assert "unless the user asks for those technical details" in rule
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("source_case", ["trigger", "team", "invalid_timezone"])
 async def test_runtime_metadata_keeps_unverified_contributors_visible_and_unbound(monkeypatch, source_case):

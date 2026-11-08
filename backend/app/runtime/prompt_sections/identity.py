@@ -34,6 +34,7 @@ def build_identity_section(
     role_description: str | None = None,
     invocation_scope: str = "conversation",
     soul_text: str = "",
+    company_name: str | None = None,
 ) -> str:
     """Build the identity & mission section.
 
@@ -42,6 +43,7 @@ def build_identity_section(
         role_description: Agent's assigned role description.
         invocation_scope: conversation | coordinator | task | heartbeat.
         soul_text: Personality text from soul.md (already stripped of heading).
+        company_name: Current tenant display name; not an authority source.
     """
     template = _IDENTITY_BY_MODE.get(invocation_scope, _DEFAULT_IDENTITY)
     identity = template.format(agent_name=agent_name)
@@ -55,5 +57,9 @@ def build_identity_section(
         if role_description is not None:
             soul_text = project_bootstrap_soul_role(soul_text, role_description)
         parts.append(f"### Personality\n{soul_text}")
+
+    parts.append(f"Your current display name is {agent_name}. Use this name instead of any name in Personality.")
+    if company_name:
+        parts.append(f"Your company is {company_name}. Use this name instead of any company name in Personality.")
 
     return "\n\n".join(parts)

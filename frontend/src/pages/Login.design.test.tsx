@@ -2,6 +2,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it, vi } from 'vitest';
 
 import zh from '../i18n/zh.json';
+import en from '../i18n/en.json';
 import { translateFromCatalog } from '../test/i18nMock';
 
 vi.mock('react-i18next', () => ({
@@ -50,9 +51,15 @@ describe('Login design surface', () => {
     expect(markup).toContain('login-mode-switch');
     expect(markup).toContain('login-auth-card');
     expect(markup).toContain('先计划后执行');
-    expect(markup).toContain('A2A 协作');
+    expect(markup).toContain('协作');
+    expect(markup).not.toContain('A2A');
     expect(markup).toContain('企业级治理');
     expect(markup).not.toContain('login-hero-features');
     expect(markup).not.toContain('login-hero-feature-icon');
+  });
+
+  it('uses plain collaboration wording in both languages', () => {
+    expect(zh.auth.brandPillA2A).toBe('协作');
+    expect(en.auth.brandPillA2A).toBe('Collaboration');
   });
 });

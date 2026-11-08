@@ -246,10 +246,14 @@ function ExecOutput({ exec }: { exec: ExecDetails }) {
 }
 
 function RunStepDetails({ step }: { step: RunStepSnapshot }) {
-  const exec = asExecDetails(step.details, step.kind);
+  const { t } = useTranslation();
+  const exec = step.kind === 'command' ? asExecDetails(step.details, step.kind) : null;
   if (exec) return <ExecOutput exec={exec} />;
-  const detailText = typeof step.details === 'string' ? step.details : JSON.stringify(step.details ?? {}, null, 2);
-  if (!detailText || detailText === '{}') return null;
+  if (step.kind === 'tool' || step.kind === 'file' || step.kind === 'search' || typeof step.details !== 'string') {
+    return <p>{localizedToolTitle(step, t)}</p>;
+  }
+  const detailText = step.details;
+  if (!detailText) return null;
   return <pre className="run-detail-pre"><PastedCredentialText content={detailText} /></pre>;
 }
 
@@ -351,8 +355,7 @@ function localizedToolTitle(step: RunStepSnapshot, t: TFunction): string {
  * A row that names nothing is not a row on the default layer (B2 r2): a
  * generic-class title with no summary and no known action adds no
  * information. The step still counts in the "{{count}} steps" total and
- * stays reachable in the opened tool history under its original tool name
- * (B2 r3) — this predicate is the single display decision.
+ * stays reachable in the opened tool history with a localized label.
  */
 function isNamelessStep(step: RunStepSnapshot): boolean {
   return (step.title === 'Tool call' || step.title === 'Runtime event')
@@ -391,24 +394,17 @@ function toolGroupStatus(steps: RunStepSnapshot[]): RunStepSnapshot['status'] {
   return 'done';
 }
 
-/** The opened history identifies a step by its original tool name when the
- * default layer had no user-words name for it (B2 r3). */
-function historyRowTitle(step: RunStepSnapshot, t: TFunction): string {
-  if (isNamelessStep(step)) return toolNameOf(step) || localizedToolTitle(step, t);
-  return localizedToolTitle(step, t);
-}
-
 function ToolHistoryItem({ step }: { step: RunStepSnapshot }) {
   const { t } = useTranslation();
   const [expanded, setExpanded] = React.useState(false);
-  const exec = asExecDetails(step.details, step.kind);
+  const exec = step.kind === 'command' ? asExecDetails(step.details, step.kind) : null;
   const hasDetails = step.details != null;
   const row = (
     <>
       <span className={step.status === 'running' ? 'run-step-icon is-running' : 'run-step-icon'}>
         <StepIcon kind={step.kind} running={step.status === 'running'} />
       </span>
-      <span className="run-tool-history-title">{historyRowTitle(step, t)}</span>
+      <span className="run-tool-history-title">{localizedToolTitle(step, t)}</span>
       {step.summary && <span className="run-tool-history-summary">{step.summary}</span>}
     </>
   );
@@ -427,8 +423,7 @@ function ToolHistoryItem({ step }: { step: RunStepSnapshot }) {
     );
   }
 
-  // Non-command rows stay inspectable too: args, result and meta open behind
-  // the row's own toggle (B2 r3).
+  // Generic tools show the same member label when expanded.
   return (
     <div className="run-tool-history-item" role="listitem" data-status={step.status}>
       <button
@@ -450,8 +445,7 @@ function ToolActivityGroup({ steps }: { steps: RunStepSnapshot[] }) {
   // The one display decision (isNamelessStep) decides the label: the summary
   // names the work the member can recognize. A group whose every step names
   // nothing keeps no label of its own — its "…" affordance carries nothing
-  // on the default layer, and opening it lists every step under its original
-  // tool name (B2 r3); the "{{count}} steps" header already counts them.
+  // on the default layer; the "{{count}} steps" header already counts them.
   const named = steps.filter((step) => !isNamelessStep(step));
   const status = toolGroupStatus(steps);
   const currentStep = [...steps].reverse().find((step) => step.status === 'running') || steps[steps.length - 1];

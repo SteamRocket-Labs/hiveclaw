@@ -171,7 +171,7 @@ async def save_memory(
         )
     if result.status == "duplicate" and execution_context is None:
         return (
-            f"[Skipped] Exact explicit memory already exists ({result.entry_id}) "
+            "[Skipped] Exact explicit memory already exists "
             f"in {result.target_hint}: {result.content}"
         )
 
@@ -618,7 +618,7 @@ async def update_memory(
                     execution_context,
                     f"[{result.status.title()}] {result.reason}",
                 )
-            content = f"Updated explicit memory {memory_id} -> {result.entry_id} [{result.category}]: {result.content}"
+            content = f"Updated explicit memory [{result.category}]: {result.content}"
             return await _record_memory_output(
                 "update_memory", agent_id, arguments, execution_context, content, entry_id=result.entry_id
             )
@@ -658,7 +658,7 @@ async def update_memory(
                 reason=f"superseded_by:{result.entry_id}",
                 accepted_blocks=[],
             )
-            return f"Updated explicit memory {memory_id} -> {result.entry_id} [{result.category}]: {content}"
+            return f"Updated explicit memory [{result.category}]: {content}"
     if old_entry is None:
         return f"[Error] Memory entry not found or not visible: {memory_id}"
     if is_accepted_t3_target(old_entry.source):

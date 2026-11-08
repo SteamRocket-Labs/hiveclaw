@@ -6,6 +6,40 @@ import pytest
 from app.services.llm_client import AnthropicClient, LLMMessage, OpenAICompatibleClient
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("replacement", ["Updated bullet.", "Updated bullet.</new_string>"])
+async def test_minimax_preserves_edit_arguments_without_adding_xml_tags(monkeypatch, replacement):
+    import json
+
+    arguments = json.dumps({"mode": "edit", "path": "report.md", "old_string": "Old bullet.", "new_string": replacement})
+    call = {"id": "edit-1", "type": "function", "function": {"name": "fs_write", "arguments": arguments}}
+    client = OpenAICompatibleClient(api_key="test", model="MiniMax-M3", provider="minimax")
+
+    class Transport:
+        async def post(self, *_args, **_kwargs):
+            return httpx.Response(200, json={"choices": [{"message": {"tool_calls": [call]},
+                "finish_reason": "tool_calls"}]})
+
+        def stream(self, *_args, **_kwargs):
+            class Response(_FakeStreamResponse):
+                async def aiter_lines(self):
+                    for fragment in (arguments[:len(arguments) // 2], arguments[len(arguments) // 2:]):
+                        yield "data: " + json.dumps({"choices": [{"delta": {"tool_calls": [{"index": 0,
+                            "id": "edit-1", "function": {"name": "fs_write", "arguments": fragment}}]}}]})
+                    yield "data: [DONE]"
+            return Response()
+
+    async def transport():
+        return Transport()
+
+    monkeypatch.setattr(client, "_get_client", transport)
+    for response in (await client.complete([LLMMessage(role="user", content="Edit the report")]),
+                     await client.stream([LLMMessage(role="user", content="Edit the report")])):
+        assert json.loads(response.tool_calls[0]["function"]["arguments"]) == {
+            "mode": "edit", "path": "report.md", "old_string": "Old bullet.", "new_string": replacement,
+        }
+
+
 class _FakeStreamResponse:
     status_code = 200
 

@@ -191,7 +191,7 @@ async def test_search_and_load_memory_include_explicit_overlay(tmp_path: Path) -
             "app.memory.write_gate.classify_memory_write_threat_with_llm",
             _safe_memory_threat_classifier,
         )
-        await save_memory(
+        saved = await save_memory(
             agent_id,
             {
                 "content": "Use snake_case for Python variable names",
@@ -205,6 +205,9 @@ async def test_search_and_load_memory_include_explicit_overlay(tmp_path: Path) -
         assert "snake_case" in result
         match = re.search(r"id=([a-zA-Z0-9_-]+)", result)
         assert match
+        duplicate = await save_memory(agent_id, {"content": "Use snake_case for Python variable names", "category": "feedback"})
+        assert match.group(1) not in saved
+        assert match.group(1) not in duplicate
 
         loaded = load_memory(agent_id, {"ids": [match.group(1)]})
 
@@ -295,7 +298,7 @@ async def test_search_memory_returns_complete_recalled_session_transcript(tmp_pa
 @pytest.mark.asyncio
 async def test_update_memory_supersedes_explicit_overlay_entry(tmp_path: Path) -> None:
     from app.memory.explicit_overlay import load_explicit_overlay_entries
-    from app.tools.handlers.memory import save_memory, update_memory
+    from app.tools.handlers.memory import save_memory, search_memory, update_memory
 
     agent_id = uuid.uuid4()
 
@@ -317,10 +320,38 @@ async def test_update_memory_supersedes_explicit_overlay_entry(tmp_path: Path) -
             },
         )
         entries = load_explicit_overlay_entries(tmp_path, agent_id)
+        active_entry = next(entry for entry in entries if entry.status == "active")
+        recalled = await search_memory(agent_id, {"query": "concrete examples", "scope": "facts"})
 
-    assert result.startswith(f"Updated explicit memory {old_entry.entry_id} ->")
+    assert result.startswith("Updated explicit memory [feedback]:")
+    assert old_entry.entry_id not in result
+    assert all(entry.entry_id not in result for entry in entries)
     assert {entry.status for entry in entries} == {"retired", "active"}
     assert any("include concrete examples" in entry.content and entry.status == "active" for entry in entries)
+    assert active_entry.entry_id in recalled
+
+
+@pytest.mark.asyncio
+async def test_scoped_memory_update_keeps_internal_source_id_out_of_confirmation(monkeypatch, tmp_path):
+    from app.tools.handlers import memory
+
+    captured = {}
+    result = SimpleNamespace(status="active", category="feedback", content="Use examples", entry_id="explicit_new")
+
+    async def execute(*_args, **_kwargs):
+        return result
+
+    async def record(_tool, _agent, _args, _context, content, **kwargs):
+        captured.update(kwargs)
+        return content
+
+    monkeypatch.setattr("app.config.get_settings", lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)))
+    monkeypatch.setattr("app.services.explicit_memory_operations.execute_memory_operation", execute)
+    monkeypatch.setattr(memory, "_record_memory_output", record)
+    text = await memory.update_memory(uuid.uuid4(), {"memory_id": "explicit_old", "content": "Use examples"},
+        execution_context=SimpleNamespace())
+    assert text == "Updated explicit memory [feedback]: Use examples"
+    assert captured["entry_id"] == "explicit_new"
 
 
 @pytest.mark.asyncio

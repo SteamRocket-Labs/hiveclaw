@@ -101,7 +101,8 @@ def _error(request, exc):
             else "Use current_revision and current_epoch from this result for a corrected request; do not repeat the stale values.")
     text = render_tool_error(
         tool_name=request.tool_name,
-        error_class="auth_or_permission" if exc.status == 403 else "browser_unavailable",
+        error_class=("not_configured" if exc.code == "browser_device_not_configured"
+            else "auth_or_permission" if exc.status == 403 else "browser_unavailable"),
         message=message,
         provider="private_browser",
         retryable=exc.code == "browser_revision_conflict",

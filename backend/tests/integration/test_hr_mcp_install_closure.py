@@ -64,6 +64,8 @@ async def test_hr_installs_and_reuses_reviewable_mcp_for_only_requested_employee
     user, context, _model_id, _input_id = direct_origin
     admin_id = uuid.uuid4()
     async with owner_sessionmaker() as db:
+        agent = await db.get(Agent, context.agent_id)
+        agent.name, agent.agent_class = "__system_hr__", "internal_system"
         admin = User(id=admin_id, tenant_id=user.tenant_id, username="hr-review-" + admin_id.hex,
             email=admin_id.hex + "@hr-mcp.test", display_name="Company reviewer", password_hash="synthetic", role="org_admin")
         db.add(admin)

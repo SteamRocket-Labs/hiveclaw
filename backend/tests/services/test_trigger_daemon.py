@@ -926,6 +926,62 @@ async def test_message_trigger_reads_admitted_v2_input_without_legacy_projection
 
 
 @pytest.mark.asyncio
+async def test_identity_trigger_preserves_channel_sender_newest_and_global_twenty(monkeypatch, owner_sessionmaker):
+    from app.models.audit import ChatMessage
+    from app.models.chat_session import ChatSession
+    from app.services import trigger_daemon as daemon
+    from tests.services.test_session_input_control_v2 import _seed_session
+
+    tenant_id, user_id, agent_id, session_id, _ = await _seed_session(owner_sessionmaker)
+    now = datetime.now(timezone.utc)
+    async with owner_sessionmaker() as db:
+        session = await db.get(ChatSession, session_id)
+        session.source_channel = "feishu"
+        session.delivery_target_json = {"channel": "feishu", "user_id": "alice", "user_label": "Alice"}
+        others = [
+            ChatSession(id=uuid4(), agent_id=agent_id, tenant_id=tenant_id, user_id=user_id,
+                source_channel=channel, delivery_target_json={"channel": channel, "user_id": sender})
+            for channel, sender in [("feishu", "bob"), ("slack", "alice")]
+        ]
+        db.add_all(others)
+        await db.flush()
+        messages = []
+        for index, sid in enumerate([session_id, session_id, others[0].id, others[1].id]):
+            message = ChatMessage(id=uuid4(), agent_id=agent_id, tenant_id=tenant_id, user_id=user_id,
+                conversation_id=str(sid), role="user", content=f"message {index}",
+                created_at=now + timedelta(seconds=index))
+            db.add(message)
+            messages.append(message)
+        # Legacy non-session conversation identifiers must not cause a UUID cast failure.
+        db.add(ChatMessage(agent_id=agent_id, tenant_id=tenant_id, role="user", conversation_id="web",
+            content="not a session", created_at=now + timedelta(seconds=4)))
+        await db.commit()
+
+    _route_scoped_session(monkeypatch, daemon, owner_sessionmaker, tenant_id=tenant_id)
+
+    def trigger():
+        return SimpleNamespace(agent_id=agent_id, name="identity lookup", fire_count=0, last_fired_at=None,
+            created_at=now - timedelta(seconds=1), config={"from_user_identity": "feishu:alice", "from_channel": "feishu"})
+
+    matching = trigger()
+    assert await daemon._check_new_agent_messages(matching) is True
+    assert matching.config["_matched_message"] == "message 1"
+    assert matching.config["_matched_from"] == "Alice"
+    assert matching.config["_matched_event_key"] == f"chat_message:{messages[1].id}"
+
+    # Matching happens after the original global LIMIT 20, even if an older
+    # message from Alice exists in another session's per-session candidates.
+    async with owner_sessionmaker() as db:
+        db.add_all([
+            ChatMessage(agent_id=agent_id, tenant_id=tenant_id, role="user", conversation_id=str(others[0].id),
+                content=f"newer bob {i}", created_at=now + timedelta(seconds=10+i))
+            for i in range(20)
+        ])
+        await db.commit()
+    assert await daemon._check_new_agent_messages(trigger()) is False
+
+
+@pytest.mark.asyncio
 async def test_check_new_agent_messages_from_agent_name_rejects_ambiguous_agent_names(monkeypatch):
     import app.services.trigger_daemon as trigger_daemon
 

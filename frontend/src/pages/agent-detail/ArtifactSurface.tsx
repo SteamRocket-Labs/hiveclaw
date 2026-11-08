@@ -12,6 +12,7 @@ import AgentWorkspaceSection from './AgentWorkspaceSection';
 import ArtifactContinuation, { type ArtifactContinuationContext } from './ArtifactContinuation';
 import OriginalUploadAction from './OriginalUploadAction';
 import type { FileEditorState } from '../../components/FileBrowser';
+import HtmlArtifactPreview from './HtmlArtifactPreview';
 import './ArtifactContinuation.css';
 
 type Translate = ReturnType<typeof useTranslation>['t'];
@@ -41,9 +42,10 @@ export function formatArtifactSize(size: number | undefined): string | null {
 export type ArtifactOpenMode = 'inspector_preview' | 'download';
 
 export function getEffectiveArtifactPreviewKind(artifact: Pick<ChatArtifactPart, 'name' | 'path' | 'previewKind'>): string {
+  const suffix = (artifact.name || artifact.path).split('.').pop()?.toLowerCase() || '';
+  if (['html', 'htm'].includes(suffix)) return 'html';
   const explicit = artifact.previewKind?.toLowerCase();
   if (explicit) return explicit;
-  const suffix = (artifact.name || artifact.path).split('.').pop()?.toLowerCase() || '';
   if (['md', 'markdown'].includes(suffix)) return 'markdown';
   if (['txt', 'csv', 'json', 'jsonl', 'log', 'xml', 'yaml', 'yml'].includes(suffix)) return 'text';
   if (['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg'].includes(suffix)) return 'image';
@@ -54,7 +56,7 @@ export function getEffectiveArtifactPreviewKind(artifact: Pick<ChatArtifactPart,
 
 export function getArtifactOpenMode(artifact: Pick<ChatArtifactPart, 'name' | 'path' | 'previewKind'>): ArtifactOpenMode {
   const previewKind = getEffectiveArtifactPreviewKind(artifact);
-  if (previewKind && ['markdown', 'text', 'image', 'pdf', 'office'].includes(previewKind)) {
+  if (previewKind && ['markdown', 'text', 'html', 'image', 'pdf', 'office'].includes(previewKind)) {
     return 'inspector_preview';
   }
   return 'download';
@@ -178,6 +180,8 @@ export function ArtifactPreviewPanel({
   t: Translate;
 }) {
   const previewKind = getEffectiveArtifactPreviewKind(preview.artifact);
+  const isSvg = preview.artifact.mimeType?.split(';')[0].trim().toLowerCase() === 'image/svg+xml'
+    || [preview.artifact.name, preview.artifact.path].some(value => value.toLowerCase().endsWith('.svg'));
   const workspaceAgentId = artifactWorkspaceAgentId(preview.artifact, agentId);
   const fileIdentity = `${workspaceAgentId}:${preview.artifact.path}:${workspaceAuthority?.operatorView ? workspaceAuthority.reason : 'owner'}`;
   const [openedFile, setOpenedFile] = useState<string | null>(null);
@@ -262,7 +266,7 @@ export function ArtifactPreviewPanel({
               {preview.workspaceChanged ? ` · ${t('agent.chat.artifacts.workspaceChanged', 'Workspace file changed after delivery')}` : ''}
             </div>
           </div>
-          {preview.url && previewKind !== 'office' && (
+          {preview.url && previewKind !== 'office' && !isSvg && (
             <a
               href={preview.url}
               target="_blank"
@@ -365,6 +369,9 @@ export function ArtifactPreviewPanel({
               referrerPolicy="no-referrer"
               style={{ width: '100%', height: '62vh', border: '1px solid var(--border-subtle)', borderRadius: '6px', background: '#fff' }}
             />
+          ) : previewKind === 'html' ? (
+            showPendingEmptyPreview ? pendingEmptyPreview : <HtmlArtifactPreview key={`${fileIdentity}:${preview.artifact.id}:${preview.artifact.snapshotHash}`}
+              content={preview.content || ''} name={preview.artifact.name} t={t} />
           ) : previewKind === 'markdown' ? (
             <div style={{ fontSize: '12px', lineHeight: 1.6 }}>
               {showPendingEmptyPreview ? pendingEmptyPreview : <MarkdownRenderer content={preview.content || ''} />}
@@ -458,7 +465,7 @@ export function ArtifactCards({
               <IconFileText size={14} className="chat-artifact-icon" />
               <span className="chat-artifact-name" title={artifact.name}>{artifact.name}</span>
               <span className="chat-artifact-meta">
-                {[artifact.previewKind, size].filter(Boolean).join(' · ')}
+                {[getEffectiveArtifactPreviewKind(artifact) === 'html' ? t('agent.chat.artifacts.preview', 'Preview') : artifact.previewKind, size].filter(Boolean).join(' · ')}
               </span>
             </button>
             <span className="chat-artifact-actions">

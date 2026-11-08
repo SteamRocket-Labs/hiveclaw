@@ -41,6 +41,15 @@ function Preview({ artifact }: { artifact: ChatArtifactPart }) {
 }
 
 describe('current source authority for saved text previews', () => {
+  it('loads HTML text from the existing authorized artifact endpoint', async () => {
+    const artifact = { id: 'html-1', name: 'report.htm', path: 'workspace/report.htm', previewKind: 'download' };
+    const request = vi.spyOn(fileApi, 'readArtifact').mockResolvedValue({ path: artifact.path, content: '<h1>Report</h1>', uses_snapshot: true });
+    render(<Preview artifact={artifact} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Open saved file' }));
+    const frame = await screen.findByTitle('report.htm');
+    expect(frame.getAttribute('srcdoc')).toContain('<h1>Report</h1>');
+    expect(request).toHaveBeenCalledWith('agent-1', 'html-1', undefined);
+  });
   it.each([
     ['artifact', 403], ['artifact', 503],
     ['workspace', 403], ['workspace', 503],

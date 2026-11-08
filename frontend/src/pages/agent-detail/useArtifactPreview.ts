@@ -149,7 +149,7 @@ export function useArtifactPreview({
       }
       return;
     }
-    if (previewKind === 'markdown' || previewKind === 'text' || !previewKind) {
+    if (previewKind === 'markdown' || previewKind === 'text' || previewKind === 'html' || !previewKind) {
       if (requestIsCurrent()) setArtifactPreview({ artifact, loading: true });
       try {
         const response = artifact.id

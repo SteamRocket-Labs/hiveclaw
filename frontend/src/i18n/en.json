@@ -2643,6 +2643,10 @@
         }
       },
       "artifacts": {
+        "viewSource": "View source",
+        "staticHtml": "Static preview. Page scripts do not run.",
+        "htmlTooLarge": "This file is large. Source is shown; you can also download it.",
+        "htmlUnavailable": "Preview unavailable. Source is shown; you can also download it.",
         "open": "Open",
         "download": "Download",
         "count": "{{count}} files",

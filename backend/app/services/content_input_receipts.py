@@ -714,12 +714,23 @@ async def _validate_agent_context_dependency(db, tenant_id, dependency, *, user,
                 )
             return
         if resident:
+            root = Path(get_settings().AGENT_DATA_DIR) / str(agent_id)
             sources = content.get("resident_sources", {}) if content is not None else None
             if content is not None and (not isinstance(sources, dict) or sources.get(ref) != dependency["source_version"]):
-                raise ContentInputReceiptError(
-                    "content_source_unavailable", "The resident source lacks an exact bootstrap witness.", 503
-                )
-            _validate_source_bytes(Path(get_settings().AGENT_DATA_DIR) / str(agent_id) / ref, dependency["source_version"])
+                from app.services.agent_asset_transaction import AssetTransactionError, committed_asset_file_snapshot
+
+                try:
+                    snapshot = committed_asset_file_snapshot(root, ref)
+                except (AssetTransactionError, OSError, ValueError) as exc:
+                    raise ContentInputReceiptError(
+                        "content_source_unavailable", "The resident source's recorded write could not be verified.", 503
+                    ) from exc
+                if (snapshot is None or snapshot[1].operation != "t3_platform_gate_commit"
+                    or hashlib.sha256(snapshot[0]).hexdigest() != dependency["source_version"]):
+                    raise ContentInputReceiptError(
+                        "content_source_unavailable", "The resident source lacks an exact bootstrap witness or recorded consolidation write.", 503
+                    )
+            _validate_source_bytes(root / ref, dependency["source_version"])
             return
 
 

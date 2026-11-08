@@ -54,8 +54,6 @@ async def load_known_native_default_context(db, *, tenant_id, agent_id, ref):
         or agent is None
         or agent.agent_type != "native"
         or agent.agent_class != "internal_tenant"
-        or agent.name != ASSISTANT_EMPLOYEE_NAME
-        or agent.role_description != ASSISTANT_ROLE
         or agent.creator_id is None
     ):
         return None

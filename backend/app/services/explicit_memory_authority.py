@@ -19,6 +19,8 @@ from app.models.session_v2 import SessionModelResult, SessionToolInvocation
 from app.services.content_input_receipts import (
     ContentInputReceiptError,
     _runtime_input_actor,
+    _input_row,
+    _preflight_inputs,
     _validate_input_dependencies,
     _validate_source_bytes,
     validate_runtime_input_dependencies,
@@ -44,7 +46,7 @@ async def _actor(db, tenant_id, request):
     from app.models.chat_session import ChatSession
 
     principal, actor = await _runtime_input_actor(db, tenant_id, request)
-    session = await db.get(ChatSession, uuid.UUID(str(principal.session_id)), populate_existing=True)
+    session = await _input_row(db, ChatSession, uuid.UUID(str(principal.session_id)))
     if getattr(actor, "id", None) is None or session.audience_kind not in {None, "private", "group"}:
         raise ContentInputReceiptError("explicit_memory_scoped_audience_unavailable",
             "This memory operation requires a supported current source audience.")
@@ -81,7 +83,7 @@ async def authorize_memory_audience(db, *, tenant_id, agent_id, request, authori
             raise ContentInputReceiptError("explicit_memory_source_unverified", "The private memory is not authorized in this work.", 403)
     elif authority.get("audience_kind") == "group":
         try:
-            origin = await db.get(ChatSession, uuid.UUID(authority["source_session_id"]), populate_existing=True)
+            origin = await _input_row(db, ChatSession, uuid.UUID(authority["source_session_id"]))
             if (origin is None or origin.tenant_id != tenant_id or origin.agent_id != agent_id
                 or not _same_group(authority, origin)
                 or (current.audience_kind == "group" and not _same_group(authority, current))
@@ -143,6 +145,10 @@ async def memory_effect_actor(db, tenant_id, request):
 
 
 async def latest_memory_receipt(db, tenant_id, agent_id, entry_id):
+    rows = _preflight_inputs(db)
+    key = ("latest", "explicit_memory", memory_ref(agent_id, entry_id))
+    if rows is not None and key in rows:
+        return rows[key]
     return await db.scalar(select(ContentInputReceipt).where(
         ContentInputReceipt.tenant_id == tenant_id, ContentInputReceipt.carrier_kind == "explicit_memory",
         ContentInputReceipt.carrier_ref == memory_ref(agent_id, entry_id),
@@ -248,7 +254,7 @@ async def authorize_explicit_memory_file_read(request, path):
 async def validate_explicit_memory_dependency(db, tenant_id, dependency, *, request, active_receipts=frozenset()):
 
     try:
-        receipt = await db.get(ContentInputReceipt, uuid.UUID(dependency["source_id"]), populate_existing=True)
+        receipt = await _input_row(db, ContentInputReceipt, uuid.UUID(dependency["source_id"]))
         if receipt is None or receipt.tenant_id != tenant_id or receipt.carrier_kind != "explicit_memory":
             raise ValueError("explicit_memory_receipt_missing")
         raw_agent, entry_id = receipt.carrier_ref.split("\n", 1)

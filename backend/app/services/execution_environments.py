@@ -11,6 +11,7 @@ from typing import Any
 from fastapi import HTTPException
 from sqlalchemy import func, select
 from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.orm import aliased
 
 from app.database import tenant_scoped_session
 from app.models.agent import Agent
@@ -192,10 +193,22 @@ class EnvironmentCommandScope:
 
     async def _authority(self, db, *, before_command=False):
         from app.models.tenant import Tenant
-        from app.services.agent_identity_lifecycle import resolve_live_effect_principal
+        from app.services.agent_identity_lifecycle import resolve_live_effect_principal, _live_effect_principal_from_owner
         from app.services.machine_runtime_authority import is_machine_runtime_actor, machine_task_actor
 
-        agent = await db.get(Agent, self.agent_id, populate_existing=True)
+        human_snapshot = self.source_binding is None and self.user_id is not None
+        if human_snapshot:
+            owner = aliased(User)
+            row = (await db.execute(select(Agent, User, Tenant, RuntimeTask, owner)
+                .select_from(Agent)
+                .outerjoin(User, User.id == self.user_id)
+                .outerjoin(Tenant, Tenant.id == self.tenant_id)
+                .outerjoin(RuntimeTask, RuntimeTask.id == self.runtime_task_id)
+                .outerjoin(owner, owner.id == func.coalesce(Agent.owner_user_id, Agent.creator_id))
+                .where(Agent.id == self.agent_id).execution_options(populate_existing=True))).first()
+            agent, user, tenant, task, responsible = row if row is not None else (None,) * 5
+        else:
+            agent = await db.get(Agent, self.agent_id, populate_existing=True)
         if self.source_binding is not None:
             user = (
                 await self.source_binding.authorize(db, self)
@@ -212,7 +225,7 @@ class EnvironmentCommandScope:
                 )
             except HTTPException as exc:
                 raise EnvironmentError("environment_authority_unavailable", 503 if exc.status_code >= 500 else 403) from exc
-        else:
+        elif not human_snapshot:
             user = await db.get(User, self.user_id, populate_existing=True)
         if is_machine_runtime_actor(user):
             if (
@@ -224,7 +237,8 @@ class EnvironmentCommandScope:
                 raise EnvironmentError("environment_authority_unavailable", 403)
         elif self.machine_credential_id is not None or self.user_id is None:
             raise EnvironmentError("environment_authority_unavailable", 403)
-        tenant = await db.get(Tenant, self.tenant_id, populate_existing=True)
+        if not human_snapshot:
+            tenant = await db.get(Tenant, self.tenant_id, populate_existing=True)
         if (
             agent is None
             or agent.tenant_id != self.tenant_id
@@ -236,11 +250,13 @@ class EnvironmentCommandScope:
             or not tenant.is_active
             or user.tenant_id != self.tenant_id
             and user.role != "platform_admin"
-            or (await resolve_live_effect_principal(db, agent)).block_reason is not None
+            or (_live_effect_principal_from_owner(agent, responsible) if human_snapshot
+                else await resolve_live_effect_principal(db, agent)).block_reason is not None
         ):
             raise EnvironmentError("environment_authority_unavailable", 403)
         if self.runtime_task_id is not None:
-            task = await db.get(RuntimeTask, self.runtime_task_id, populate_existing=True)
+            if not human_snapshot:
+                task = await db.get(RuntimeTask, self.runtime_task_id, populate_existing=True)
             if task is None or task.tenant_id != self.tenant_id:
                 raise EnvironmentError("environment_runtime_claim_unavailable", 403)
             terminal_owner = getattr(self.source_binding, "owns_terminal_task", None)

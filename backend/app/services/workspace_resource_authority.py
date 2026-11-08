@@ -658,13 +658,22 @@ async def _load_manifest(
     path: str,
     for_update: bool = False,
 ) -> WorkspaceResourceManifest | None:
+    from app.services.content_input_receipts import _preflight_inputs
+
+    rows = _preflight_inputs(db) if not for_update else None
+    key = ("manifest", agent_id, path)
+    if rows is not None and key in rows:
+        return rows[key]
     query = select(WorkspaceResourceManifest).where(
         WorkspaceResourceManifest.agent_id == agent_id,
         WorkspaceResourceManifest.path == path,
     )
     if for_update:
         query = query.with_for_update()
-    return (await db.execute(query)).scalar_one_or_none()
+    manifest = (await db.execute(query)).scalar_one_or_none()
+    if rows is not None:
+        rows[key] = manifest
+    return manifest
 
 
 async def _canonical_root_session(
@@ -684,7 +693,13 @@ async def _canonical_root_session(
     """
     if session_id is None:
         return None
-    session = (
+    from app.services.content_input_receipts import _preflight_inputs
+
+    rows = _preflight_inputs(db)
+    key = ("workspace_root", agent_id, user.id, resource_tenant_id, session_id)
+    if rows is not None and key in rows:
+        return rows[key]
+    session = rows[(ChatSession, session_id)] if rows is not None and (ChatSession, session_id) in rows else (
         await db.execute(
             select(ChatSession).where(
                 ChatSession.id == session_id,
@@ -695,6 +710,11 @@ async def _canonical_root_session(
             )
         )
     ).scalar_one_or_none()
+    if rows is not None and (ChatSession, session_id) in rows and session is not None and session.agent_id != agent_id and not (
+        session.peer_agent_id == agent_id and session.tenant_id == resource_tenant_id
+        and session.source_channel == "agent" and session.session_kind == "agent_chat"
+    ):
+        session = None
     shared_member = False
     if session is not None and session.audience_kind == "group":
         from app.services.shared_group_authority import require_current_group_member
@@ -710,7 +730,10 @@ async def _canonical_root_session(
             "workspace_session_authority_mismatch",
             "The workspace operation is not bound to a session owned by the requester.",
         )
-    return session.root_session_id or session.id
+    root = session.root_session_id or session.id
+    if rows is not None:
+        rows[key] = root
+    return root
 
 
 async def authorize_workspace_path(
@@ -734,9 +757,12 @@ async def authorize_workspace_path(
             "workspace_resource_path_required",
             "User-owned files must be stored below workspace/.",
         )
+    from app.services.content_input_receipts import _input_agent_access, _preflight_inputs
+
     agent, access_level = agent_access or await (
         check_agent_operator_reachability(db, user, agent_id)
         if runtime_principal is None and allow_manager_override and action == "read"
+        else _input_agent_access(db, user, agent_id) if _preflight_inputs(db) is not None
         else check_agent_access(db, user, agent_id)
     )
     if agent.tenant_id is None:

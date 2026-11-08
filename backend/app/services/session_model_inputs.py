@@ -686,16 +686,24 @@ async def permission_abort_result_bound(db, *, invocation, event, content):
 
 async def _origin_dependencies(db, *, tenant_id, agent_id, ref):
     from app.services.historical_model_inputs import source_resolution
+    from app.services.content_input_receipts import _preflight_inputs
 
+    cached = _preflight_inputs(db)
+    key = ("origin", tenant_id, agent_id, ref)
+    if cached is not None and key in cached:
+        return cached[key]
     with source_resolution():
-        return await _resolve_origin_dependencies(db, tenant_id=tenant_id, agent_id=agent_id, ref=ref)
+        result = await _resolve_origin_dependencies(db, tenant_id=tenant_id, agent_id=agent_id, ref=ref)
+    if cached is not None:
+        cached[key] = result
+    return result
 
 
 async def _resolve_origin_dependencies(db, *, tenant_id, agent_id, ref):
     from app.models.chat_transcript_event import ChatTranscriptEvent
     from app.models.organization_identity import ContentInputReceipt
     from app.models.session_v2 import SessionCommand
-    from app.services.content_input_receipts import ContentInputReceiptError, load_workspace_input_evidence
+    from app.services.content_input_receipts import ContentInputReceiptError, load_workspace_input_evidence, _preflight_inputs
     from app.services.knowledge_provenance import KNOWLEDGE_TOOL_NAMES, build_knowledge_provenance
     from app.services.session_semantic_history import _event_payload
     from app.services.historical_model_inputs import recover_context_dependencies, recover_model_dependencies
@@ -788,7 +796,9 @@ async def _resolve_origin_dependencies(db, *, tenant_id, agent_id, ref):
         return await recover_model_dependencies(db, tenant_id=tenant_id, agent_id=agent_id, result=result)
     if kind not in {"session-tool-result", "session-tool-permission"}:
         return [], False
-    invocation = await db.scalar(
+    cached = _preflight_inputs(db)
+    retained = cached.get(("session_source", SessionToolInvocation, source_id)) if cached is not None else None
+    invocation = retained[0] if retained is not None and retained[1].agent_id == agent_id else await db.scalar(
         select(SessionToolInvocation)
         .join(ChatSession, ChatSession.id == SessionToolInvocation.session_id)
         .where(
@@ -853,7 +863,7 @@ async def _resolve_origin_dependencies(db, *, tenant_id, agent_id, ref):
         return dependencies, complete and valid
     if invocation.result_event_id is None:
         return [], False
-    event = await db.scalar(
+    event = retained[2] if retained is not None and retained[0] is invocation else await db.scalar(
         select(ChatTranscriptEvent).where(
             ChatTranscriptEvent.id == invocation.result_event_id,
             ChatTranscriptEvent.tenant_id == tenant_id,
@@ -869,7 +879,8 @@ async def _resolve_origin_dependencies(db, *, tenant_id, agent_id, ref):
     content = payload.get("content")
     if not isinstance(content, str) or payload.get("content_hash") != _hash(content):
         return [], False
-    model = await db.scalar(
+    model_key = (invocation.session_id, invocation.run_id, invocation.provider_request_id)
+    model = cached["tool_models"][model_key] if cached is not None and model_key in cached.get("tool_models", {}) else await db.scalar(
         select(SessionModelResult)
         .where(
             SessionModelResult.tenant_id == tenant_id,

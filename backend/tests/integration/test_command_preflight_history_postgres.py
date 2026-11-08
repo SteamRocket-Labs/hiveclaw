@@ -1,7 +1,6 @@
 """Native command preflight stays bounded as retained conversation history grows."""
 
 import hashlib
-import inspect
 from contextvars import ContextVar
 import platform
 import shlex
@@ -9,7 +8,7 @@ import time
 import uuid
 
 import pytest
-from sqlalchemy import event
+from sqlalchemy import event, select
 from sqlalchemy.engine import Engine
 
 from app.models.capability_policy import CapabilityPolicy
@@ -27,7 +26,7 @@ from tests.integration.test_m4c_explicit_memory_scope_postgres import memory_cal
 pytestmark = [pytest.mark.usefixtures("migrated_pg_url"),
     pytest.mark.skipif(platform.system() != "Darwin", reason="Requires the native macOS command sandbox.")]
 
-PREFLIGHT_STATEMENT_BOUND = 300
+PREFLIGHT_STATEMENT_BOUND = 130
 
 
 async def add_history(n, factory, sessions=50):
@@ -92,9 +91,15 @@ async def add_history(n, factory, sessions=50):
             digest = hashlib.sha256(content.encode()).hexdigest()
             await register_workspace_path(db, tenant_id=n.tenant, agent_id=n.agent, path=path,
                 owner_user_id=n.user, root_session_id=n.session, source="fixture", content_hash=digest)
+            prior = await db.scalar(select(ContentInputReceipt).where(ContentInputReceipt.tenant_id == n.tenant,
+                ContentInputReceipt.carrier_kind == "workspace_artifact",
+                ContentInputReceipt.carrier_ref == f"{n.agent}\n{path}").order_by(ContentInputReceipt.revision.desc()).limit(1))
+            from app.services.session_model_inputs import _unique_dependencies
+
             db.add(ContentInputReceipt(id=uuid.uuid4(), tenant_id=n.tenant, carrier_kind="workspace_artifact",
-                carrier_ref=f"{n.agent}\n{path}", revision=n.history_revision, content_sha256=digest,
-                dependencies_json=n.history_sources[index::12]))
+                carrier_ref=f"{n.agent}\n{path}", revision=prior.revision + 1 if prior else 1, content_sha256=digest,
+                dependencies_json=_unique_dependencies([*(prior.dependencies_json if prior else []),
+                    *n.history_sources[index::12]])))
         await db.commit()
 
 
@@ -195,6 +200,145 @@ async def test_command_preflight_is_constant_at_double_history(
     assert max(counts) <= PREFLIGHT_STATEMENT_BOUND, counts
 
 
+async def add_command_sources(n, app_factory, count):
+    from app.database import pin_rls_tenant_context
+    from app.services.session_model_inputs import _origin_dependencies
+
+    sources = []
+    for index in range(count):
+        tool = "execute_code" if index % 2 else "run_command"
+        arguments = {"language": "python", "code": "print('SOURCE_OK')"} if tool == "execute_code" else {
+            "command": "printf SOURCE_OK"}
+        raw, invocation = await memory_call(n, app_factory, tool, arguments)
+        assert "SOURCE_OK" in raw, raw
+        async with app_factory() as db:
+            await pin_rls_tenant_context(db, n.tenant)
+            dependencies, complete = await _origin_dependencies(db, tenant_id=n.tenant, agent_id=n.agent,
+                ref=f"session-tool-result:{invocation.id}")
+        assert complete, dependencies
+        own = [d for d in dependencies if d["source_kind"] == "session_tool_invocation"
+            and d["source_id"] == str(invocation.id)]
+        assert len(own) == 1
+        sources.extend(own)
+    return sources
+
+
+@pytest.fixture
+async def lab_history_workspace(history_workspace, app_user_sessionmaker):
+    from app.database import pin_rls_tenant_context
+    from app.services.llm_client import LLMMessage
+    from app.services.session_semantic_history import load_session_semantic_history
+    from app.services.session_permission_runtime import _execution_evidence
+    from app.services.web_chat_runtime import _persist_tool_call
+    from tests.integration.test_m1g24_workspace_artifact_authority_postgres import (
+        _admitted_write_messages, _prepare_write,
+    )
+
+    n = history_workspace
+    await add_command_sources(n, app_user_sessionmaker, 13)
+    async with app_user_sessionmaker() as db:
+        await pin_rls_tenant_context(db, n.tenant)
+        history = await load_session_semantic_history(db, tenant_id=n.tenant, agent_id=n.agent, session_id=n.session)
+    prior = [LLMMessage(role=m.role, content=m.content, tool_calls=m.tool_calls,
+        tool_call_id=m.tool_call_id, source_ref=m.id) for m in history.messages]
+    # One actual native producer writes twelve successor receipts, retaining
+    # prior file sources and historical command/code tool inputs from the model.
+    code = ("from pathlib import Path\nfor i in range(12):\n"
+        " Path(f'report-{i}.txt').write_text(f'History report {i}\\nNative successor\\n')\n"
+        "print('LAB_RECEIPTS_OK')")
+    round_index = n.memory_rounds[str(n.run)] + 1
+    n.memory_rounds[str(n.run)] = round_index
+    async with app_user_sessionmaker() as db:
+        await pin_rls_tenant_context(db, n.tenant)
+        admitted = await _admitted_write_messages(db, n, round_index=round_index)
+        invocation, arguments, turn = await _prepare_write(db, n, messages=[*prior, *admitted], tool_name="run_command",
+            arguments={"command": "python3 -c " + shlex.quote(code)}, round_index=round_index)
+    trace = {}
+    raw = await n.service.execute("run_command", arguments, agent_id=n.agent, user_id=n.user,
+        session_id=str(n.session), runtime_task_id=str(n.run), turn_id=turn,
+        tool_call_id=invocation.provider_tool_use_id, emit_runtime_hooks=False, trace_metadata_sink=trace)
+    assert "LAB_RECEIPTS_OK" in str(raw), raw
+    await _persist_tool_call(agent_id=n.agent, user_id=n.user, session_id=str(n.session), data={
+        "name": "run_command", "args": arguments, "status": "done", "result": str(raw),
+        "tool_call_id": invocation.provider_tool_use_id, "provider_request_id": invocation.provider_request_id,
+        "runtime_task_id": str(n.run), "tool_execution_evidence": _execution_evidence(trace)})
+    async with app_user_sessionmaker() as db:
+        await pin_rls_tenant_context(db, n.tenant)
+        latest = list(await db.scalars(select(ContentInputReceipt).where(ContentInputReceipt.tenant_id == n.tenant,
+            ContentInputReceipt.carrier_kind == "workspace_artifact").distinct(ContentInputReceipt.carrier_ref)
+            .order_by(ContentInputReceipt.carrier_ref, ContentInputReceipt.revision.desc())))
+        assert len(latest) == 12
+        assert all(r.id == uuid.uuid5(invocation.id, f"workspace-content:{r.carrier_ref.split(chr(10), 1)[1]}")
+            for r in latest)
+        assert all(len([d for d in r.dependencies_json if d["source_kind"] == "session_tool_invocation"]) >= 13
+            for r in latest)
+    return n
+
+
+async def test_command_preflight_batches_lab_receipts_at_double_history(
+    lab_history_workspace, command_probe, owner_sessionmaker, app_user_sessionmaker,
+):
+    n, counts = lab_history_workspace, []
+    for scale in (1, 2):
+        if scale == 2:
+            await add_history(n, owner_sessionmaker)
+        raw, _ = await memory_call(n, app_user_sessionmaker, "run_command", command_arguments("run_command"))
+        assert all(f"History report {i}\n" in raw for i in range(12)), raw
+        counts.append(command_probe[-1]["preflight_statements"])
+    print("LAB_HISTORY_COUNTS", counts)
+    assert counts[0] == counts[1], counts
+    assert max(counts) <= PREFLIGHT_STATEMENT_BOUND, counts
+
+
+async def test_command_preflight_batches_real_tool_sources(
+    history_workspace, command_probe, owner_sessionmaker, app_user_sessionmaker,
+):
+    n, sources, counts = history_workspace, [], []
+    path, content = "workspace/report-probe.txt", "Real command source report\n"
+    (n.root / path).write_text(content)
+    digest = hashlib.sha256(content.encode()).hexdigest()
+    for revision, extra in enumerate((1, 4, 8), 1):
+        sources.extend(await add_command_sources(n, app_user_sessionmaker, extra))
+        async with owner_sessionmaker() as db:
+            await register_workspace_path(db, tenant_id=n.tenant, agent_id=n.agent, path=path,
+                owner_user_id=n.user, root_session_id=n.session, source="fixture", content_hash=digest)
+            db.add(ContentInputReceipt(id=uuid.uuid4(), tenant_id=n.tenant, carrier_kind="workspace_artifact",
+                carrier_ref=f"{n.agent}\n{path}", revision=revision, content_sha256=digest,
+                dependencies_json=list(sources)))
+            await db.commit()
+        raw, _ = await memory_call(n, app_user_sessionmaker, "run_command", command_arguments("run_command"))
+        assert content in raw and "PRIVATE_FOREIGN_FILE_BODY" not in raw, raw
+        counts.append(command_probe[-1]["preflight_statements"])
+    print("TOOL_SOURCE_COUNTS", counts)
+    assert len(set(counts)) == 1, counts
+    assert max(counts) <= PREFLIGHT_STATEMENT_BOUND, counts
+
+
+async def test_command_preflight_batches_current_files(
+    history_workspace, command_probe, owner_sessionmaker, app_user_sessionmaker,
+):
+    n, counts = history_workspace, []
+    for scale in (1, 2):
+        if scale == 2:
+            async with owner_sessionmaker() as db:
+                for index in range(12, 24):
+                    path, content = f"workspace/report-{index}.txt", f"History report {index}\n"
+                    (n.root / path).write_text(content)
+                    digest = hashlib.sha256(content.encode()).hexdigest()
+                    await register_workspace_path(db, tenant_id=n.tenant, agent_id=n.agent, path=path,
+                        owner_user_id=n.user, root_session_id=n.session, source="fixture", content_hash=digest)
+                    db.add(ContentInputReceipt(id=uuid.uuid4(), tenant_id=n.tenant, carrier_kind="workspace_artifact",
+                        carrier_ref=f"{n.agent}\n{path}", revision=1, content_sha256=digest,
+                        dependencies_json=n.history_sources[index % 12::12]))
+                await db.commit()
+        raw, _ = await memory_call(n, app_user_sessionmaker, "run_command", command_arguments("run_command"))
+        assert all(f"History report {i}\n" in raw for i in range(12 * scale)), raw
+        counts.append(command_probe[-1]["preflight_statements"])
+    print("FILE_COUNTS", counts)
+    assert counts[0] == counts[1], counts
+    assert max(counts) <= PREFLIGHT_STATEMENT_BOUND, counts
+
+
 @pytest.mark.parametrize("change", ["model_withdrawn", "command_tampered"])
 async def test_new_command_rechecks_history_sources_and_preserves_other_inputs(
     history_workspace, command_probe, owner_sessionmaker, app_user_sessionmaker, change,
@@ -218,30 +362,117 @@ async def test_new_command_rechecks_history_sources_and_preserves_other_inputs(
     assert len(command_probe) == 2 and all("provider_evidence" in sample for sample in command_probe)
 
 
-async def test_disclosure_rechecks_the_runtime_reader_after_transaction_commit(
+@pytest.mark.parametrize("change", ["user_inactive", "permission_removed", "session_moved"])
+async def test_next_preflight_rechecks_foreign_transaction_revocation(
+    history_workspace, owner_sessionmaker, app_user_sessionmaker, change,
+):
+    from app.database import pin_rls_tenant_context
+    from app.models.agent import Agent, AgentPermission
+    from app.models.user import User
+    from app.services.content_input_receipts import authorize_workspace_execution_inputs
+    from app.services.workspace_resource_authority import load_workspace_authority_scope
+    from app.tools.runtime import ToolExecutionContext, ToolExecutionRequest
+
+    n = history_workspace
+    permission = AgentPermission(tenant_id=n.tenant, agent_id=n.agent, scope_type="user", scope_id=n.user)
+    if change == "permission_removed":
+        async with owner_sessionmaker() as db:
+            (await db.get(Agent, n.agent)).creator_id = n.foreign
+            db.add(permission)
+            await db.commit()
+    async with app_user_sessionmaker() as db:
+        await pin_rls_tenant_context(db, n.tenant)
+        actor = await db.get(User, n.user)
+        scope = await load_workspace_authority_scope(db, actor, agent_id=n.agent, session_id=n.session)
+    request = ToolExecutionRequest("run_command", {"command": "printf CHECK"}, ToolExecutionContext(
+        agent_id=n.agent, user_id=n.user, tenant_id=str(n.tenant), session_id=str(n.session),
+        runtime_task_id=str(n.run), workspace=n.root, workspace_authority_scope=scope))
+    assert await authorize_workspace_execution_inputs(request) is None
+    assert len(request.context.workspace_authority_scope.input_reads) == 12
+    async with owner_sessionmaker() as writer:
+        if change == "user_inactive":
+            (await writer.get(User, n.user)).is_active = False
+        elif change == "permission_removed":
+            await writer.delete(await writer.get(AgentPermission, permission.id))
+        else:
+            (await writer.get(ChatSession, n.session)).user_id = n.foreign
+        await writer.commit()
+    request.context.workspace_authority_scope = scope
+    denial = await authorize_workspace_execution_inputs(request)
+    assert denial is not None or not request.context.workspace_authority_scope.input_reads
+
+
+async def test_preflight_reuse_preserves_transitive_receipt_cycle_rejection(
     native_workspace, owner_sessionmaker, app_user_sessionmaker,  # noqa: F811
 ):
     from app.database import pin_rls_tenant_context
-    from app.services.content_input_receipts import ContentInputReceiptError, _runtime_input_actor, group_source_read
+    from app.services.content_input_receipts import (
+        ContentInputReceiptError, _validate_input_dependencies, group_source_read,
+    )
+    from app.services import content_input_receipts
     from app.tools.runtime import ToolExecutionContext, ToolExecutionRequest
 
-    n = native_workspace
+    n, dependencies = native_workspace, []
+    async with owner_sessionmaker() as db:
+        for index in range(2):
+            path, content = f"workspace/cycle-{index}.txt", f"Cycle reference {index}"
+            (n.root / path).write_text(content)
+            digest = hashlib.sha256(content.encode()).hexdigest()
+            await register_workspace_path(db, tenant_id=n.tenant, agent_id=n.agent, path=path,
+                owner_user_id=n.user, root_session_id=n.session, source="fixture", content_hash=digest)
+            receipt = ContentInputReceipt(id=uuid.uuid4(), tenant_id=n.tenant, carrier_kind="workspace_artifact",
+                carrier_ref=f"{n.agent}\n{path}", revision=1, content_sha256=digest,
+                dependencies_json=list(dependencies))
+            db.add(receipt)
+            dependencies.append({"source_kind": "workspace_artifact", "source_id": str(receipt.id),
+                "source_version": digest})
+        await db.commit()
     request = ToolExecutionRequest("run_command", {"command": "printf CHECK"}, ToolExecutionContext(
         agent_id=n.agent, user_id=n.user, tenant_id=str(n.tenant), session_id=str(n.session),
         runtime_task_id=str(n.run), workspace=n.root))
     async with app_user_sessionmaker() as db:
-        # BASE predates the optional command-input batching mode.
-        options = {"batch_inputs": True} if "batch_inputs" in inspect.signature(group_source_read).parameters else {}
-        with group_source_read(**options):
-            await pin_rls_tenant_context(db, n.tenant)
-            _, actor = await _runtime_input_actor(db, n.tenant, request)
-            assert actor.id == n.user
-            await db.commit()
-            async with owner_sessionmaker() as writer:
-                (await writer.get(ChatSession, n.session)).user_id = n.foreign
-                await writer.commit()
-            await pin_rls_tenant_context(db, n.tenant)
-            with pytest.raises(ContentInputReceiptError) as revoked:
-                await _runtime_input_actor(db, n.tenant, request)
-            assert revoked.value.status_code == 403
-            assert revoked.value.code == "content_source_access_denied"
+        await pin_rls_tenant_context(db, n.tenant)
+        with group_source_read(batch_inputs=True):
+            if hasattr(content_input_receipts, "_preload_execution_sources"):
+                await content_input_receipts._preload_execution_sources(db, n.tenant, dependencies)
+            await _validate_input_dependencies(db, n.tenant, [dependencies[1]], runtime_request=request)
+            with pytest.raises(ContentInputReceiptError) as denied:
+                await _validate_input_dependencies(db, n.tenant, [dependencies[1]], runtime_request=request,
+                    active_workspace_receipts=frozenset({uuid.UUID(dependencies[0]["source_id"])}))
+            assert (denied.value.code, denied.value.status_code) == ("content_source_unavailable", 503)
+
+
+@pytest.mark.parametrize("change", ["caller_inactive", "owner_inactive", "tenant_inactive", "agent_inactive", "task_terminal"])
+async def test_environment_checks_refresh_after_a_foreign_commit(
+    native_workspace, owner_sessionmaker, app_user_sessionmaker, change,  # noqa: F811
+):
+    from app.database import pin_rls_tenant_context
+    from app.models.agent import Agent
+    from app.models.tenant import Tenant
+    from app.models.user import User
+    from app.services.execution_environments import EnvironmentCommandScope, EnvironmentError
+    from datetime import datetime, timezone
+
+    n = native_workspace
+    async with owner_sessionmaker() as writer:
+        (await writer.get(Agent, n.agent)).owner_user_id = n.foreign
+        await writer.commit()
+    current = EnvironmentCommandScope(n.tenant, n.agent, n.user, "fresh-authority", n.run)
+    async with app_user_sessionmaker() as inspecting:
+        await pin_rls_tenant_context(inspecting, n.tenant)
+        await current._authority(inspecting)
+        async with owner_sessionmaker() as writer:
+            if change in {"caller_inactive", "owner_inactive"}:
+                (await writer.get(User, n.user if change == "caller_inactive" else n.foreign)).is_active = False
+            elif change == "tenant_inactive":
+                (await writer.get(Tenant, n.tenant)).is_active = False
+            elif change == "agent_inactive":
+                (await writer.get(Agent, n.agent)).deactivated_at = datetime.now(timezone.utc)
+            else:
+                (await writer.get(RuntimeTask, n.run)).status = "completed"
+            await writer.commit()
+        with pytest.raises(EnvironmentError) as denied:
+            await current._authority(inspecting, before_command=True)
+        assert denied.value.status == 403
+        assert denied.value.code == ("environment_runtime_claim_unavailable" if change == "task_terminal"
+            else "environment_authority_unavailable")

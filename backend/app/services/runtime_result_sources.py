@@ -863,9 +863,12 @@ async def validate_published_workspace_inputs(db, request, receipt, *, active_re
         validate_creation_publication_inputs,
     )
     from app.services.hr_creation_service import direct_creation_authorization
+    from app.services.content_input_receipts import _preflight_inputs
 
     principal, requester = await _runtime_input_actor(db, receipt.tenant_id, request)
-    draft = await db.scalar(
+    rows = _preflight_inputs(db)
+    key = ("workspace_publication_draft", receipt.tenant_id, principal.agent_id, requester.id)
+    draft = rows[key] if rows is not None and key in rows else await db.scalar(
         select(HrCreationDraft).where(
             HrCreationDraft.tenant_id == receipt.tenant_id,
             HrCreationDraft.created_agent_id == principal.agent_id,
@@ -873,6 +876,8 @@ async def validate_published_workspace_inputs(db, request, receipt, *, active_re
             HrCreationDraft.status == "completed",
         )
     )
+    if rows is not None:
+        rows[key] = draft
     if draft is None:
         return False
     task_id = uuid.uuid5(draft.id, "explicit-first-task.v1")

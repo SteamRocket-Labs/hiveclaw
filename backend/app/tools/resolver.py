@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import uuid
 from dataclasses import replace
@@ -111,29 +112,42 @@ class ToolRuntimeResolver:
             session_uuid = uuid.UUID(str(session_id)) if session_id else None
         except (TypeError, ValueError):
             session_uuid = None
-        from app.services.machine_runtime_authority import machine_task_actor, load_machine_workspace_scope
-        machine_actor, workspace_authority_scope = None, None
-        if user_id is None and runtime_task_id:
-            from fastapi import HTTPException
-            from app.services.machine_runtime_authority import MachineRuntimeAuthorityDenied
+        async def workspace_scope():
+            from app.services.machine_runtime_authority import machine_task_actor, load_machine_workspace_scope
 
-            try:
-                async with tenant_scoped_session(tenant, session_factory=async_session, require_tenant=True) as machine_db:
-                    machine_actor = await machine_task_actor(machine_db, tenant_id=tenant, agent_id=agent_id,
-                        runtime_task_id=runtime_task_id, session_id=session_id, user_id=user_id)
-                    workspace_authority_scope = (await load_machine_workspace_scope(machine_db, actor=machine_actor, session_id=session_uuid)
-                        if machine_actor is not None else None)
-            except HTTPException as exc:
-                raise MachineRuntimeAuthorityDenied('Current machine authority is unavailable') from exc
-        if machine_actor is None:
-            workspace_authority_scope = await self.workspace_authority_loader(
-                tenant_id=tenant, agent_id=agent_id, user_id=user_id, session_id=session_uuid,
-                runtime_task_id=runtime_task_id)
+            machine_actor, scope = None, None
+            if user_id is None and runtime_task_id:
+                from fastapi import HTTPException
+                from app.services.machine_runtime_authority import MachineRuntimeAuthorityDenied
+
+                try:
+                    async with tenant_scoped_session(tenant, session_factory=async_session, require_tenant=True) as machine_db:
+                        machine_actor = await machine_task_actor(machine_db, tenant_id=tenant, agent_id=agent_id,
+                            runtime_task_id=runtime_task_id, session_id=session_id, user_id=user_id)
+                        scope = (await load_machine_workspace_scope(machine_db, actor=machine_actor, session_id=session_uuid)
+                            if machine_actor is not None else None)
+                except HTTPException as exc:
+                    raise MachineRuntimeAuthorityDenied('Current machine authority is unavailable') from exc
+            if machine_actor is None:
+                scope = await self.workspace_authority_loader(
+                    tenant_id=tenant, agent_id=agent_id, user_id=user_id, session_id=session_uuid,
+                    runtime_task_id=runtime_task_id)
+            return machine_actor, scope
+
+        # Independent readers use separate tenant-scoped sessions. Keep the
+        # original error order and do not create policy until authority passes.
+        async def secret_scope():
+            return await self.secret_boundary_loader(tenant_id=tenant, agent_id=agent_id)
+
+        authority, secrets = await asyncio.gather(workspace_scope(),
+            secret_scope(), return_exceptions=True)
+        if isinstance(authority, BaseException):
+            raise authority
+        machine_actor, workspace_authority_scope = authority
         try:
-            exact_secret_boundary = await self.secret_boundary_loader(
-                tenant_id=tenant,
-                agent_id=agent_id,
-            )
+            if isinstance(secrets, BaseException):
+                raise secrets
+            exact_secret_boundary = secrets
         except Exception as exc:
             logger.error(
                 "[Governance] credential authority resolution failed for agent %s (%s)",
@@ -147,11 +161,17 @@ class ToolRuntimeResolver:
                 agent_id=agent_id,
                 tenant_id=tenant,
             ) from exc
+        async def budget_scope():
+            return str(budget_run_id) if budget_run_id else await _resolve_budget_run_id_from_runtime_task(runtime_task_id)
+
+        async def policy_scope():
+            return await self.owner_action_policy_loader(tenant_id=tenant, agent_id=agent_id)
+
+        policy, budget = await asyncio.gather(policy_scope(), budget_scope(), return_exceptions=True)
         try:
-            owner_action_policy = await self.owner_action_policy_loader(
-                tenant_id=tenant,
-                agent_id=agent_id,
-            )
+            if isinstance(policy, BaseException):
+                raise policy
+            owner_action_policy = policy
         except Exception as exc:
             logger.warning(
                 "[Governance] Owner action policy resolution failed for agent %s: %s",
@@ -165,9 +185,9 @@ class ToolRuntimeResolver:
                 tenant_id=tenant,
                 error_code="policy_dependency_unavailable",
             )
-        resolved_budget_run_id = (
-            str(budget_run_id) if budget_run_id else await _resolve_budget_run_id_from_runtime_task(runtime_task_id)
-        )
+        if isinstance(budget, BaseException):
+            raise budget
+        resolved_budget_run_id = budget
         return ToolExecutionContext(
             agent_id=agent_id,
             user_id=user_id,

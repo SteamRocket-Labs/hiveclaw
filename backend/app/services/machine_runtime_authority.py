@@ -65,13 +65,15 @@ async def machine_task_actor(db, *, tenant_id, agent_id, runtime_task_id, sessio
     """Return None for a nonmachine run; never reinterpret a machine as a User."""
     if not runtime_task_id:
         return None
-    task = await db.get(RuntimeTask, uuid.UUID(str(runtime_task_id)), populate_existing=True)
+    from app.services.content_input_receipts import _input_row
+
+    task = await _input_row(db, RuntimeTask, uuid.UUID(str(runtime_task_id)))
     if task is None or task.machine_credential_id is None:
         return None
     if (str(task.tenant_id) != str(tenant_id) or task.parent_agent_id != agent_id or user_id is not None
         or str(task.parent_session_id) != str(session_id)):
         raise HTTPException(403, detail={'code': 'machine_task_authority_mismatch'})
-    session = await db.get(ChatSession, uuid.UUID(str(session_id)), populate_existing=True)
+    session = await _input_row(db, ChatSession, uuid.UUID(str(session_id)))
     if session is None:
         raise HTTPException(403, detail={'code': 'machine_task_session_unavailable'})
     return await load_machine_runtime_actor(db, task=task, session=session, scope=scope)

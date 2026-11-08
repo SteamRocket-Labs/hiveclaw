@@ -5,7 +5,7 @@ import uuid
 
 from app.database import tenant_scoped_session
 from app.models.invocation_span import InvocationSpan
-from app.services.content_input_receipts import ContentInputReceiptError
+from app.services.content_input_receipts import ContentInputReceiptError, _input_row
 from app.services.explicit_memory_authority import _actor, _authorize_entry, _writer_input, source_dependency
 from app.services.session_model_inputs import _hash, _stored_dependencies, _unique_dependencies
 
@@ -55,7 +55,7 @@ async def record_memory_result(request, *, content, entries=(), team_entries=(),
 
 
 async def memory_result_sources(db, *, tenant_id, agent_id, invocation, model, content_hash):
-    row = await db.get(InvocationSpan, uuid.uuid5(invocation.id, "explicit-memory-tool-result"), populate_existing=True)
+    row = await _input_row(db, InvocationSpan, uuid.uuid5(invocation.id, "explicit-memory-tool-result"))
     proof = (row.metadata_json or {}).get("memory_result") if row else None
     valid = (row is not None and row.tenant_id == tenant_id and row.agent_id == agent_id
         and row.runtime_task_id == invocation.run_id and row.session_id == str(invocation.session_id)

@@ -25,7 +25,9 @@ from uuid import uuid4
 import pytest
 
 from app.memory.t0.ledger import append_t0_session_event
+from tests.memory.test_t2_segment_package_builder import authorized_t2_sources  # noqa: F401
 
+pytestmark = pytest.mark.usefixtures("authorized_t2_sources")
 
 # --- compliant LLM-output fixtures (same shapes as test_t2_segment_package_builder) ---
 

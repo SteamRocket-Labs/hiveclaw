@@ -10,6 +10,28 @@ import pytest
 from app.memory.t0.ledger import append_t0_session_event
 from app.services.agent_work_ledger import append_agent_work_ledger_finding
 
+pytestmark = pytest.mark.usefixtures("authorized_t2_sources")
+
+
+@pytest.fixture
+def authorized_t2_sources(monkeypatch):
+    """Unit-test package generation from authorized inputs, without a database.
+
+    The PostgreSQL T2 tests exercise the real source resolver. These fixtures
+    contain raw T0 only and isolate package/gate/output behavior after that boundary.
+    """
+    from app.memory.t2 import segment_package
+
+    async def collect(**kwargs):
+        events = segment_package.replay_t0_session_events(agent_id=kwargs["agent_id"],
+            session_id=kwargs["session_id"], data_root=kwargs["root"])
+        selection = segment_package.select_t2_segment_events(events, t0_segment_id=kwargs["t0_segment_id"])
+        if selection.segment_events and not selection.has_semantic_content:
+            return None
+        return segment_package._build_source_bundle(**kwargs)
+
+    monkeypatch.setattr(segment_package, "_build_authorized_source_bundle", collect)
+
 
 def _assert_xml_block(path: Path, tag: str) -> ET.Element:
     text = path.read_text(encoding="utf-8")
@@ -837,7 +859,7 @@ async def test_high_risk_t2_package_requires_independent_memory_gate(tmp_path: P
 
 
 @pytest.mark.asyncio
-async def test_source_bundle_includes_verified_work_ledger_findings(tmp_path: Path) -> None:
+async def test_source_bundle_excludes_findings_without_attested_origins(tmp_path: Path) -> None:
     from app.memory.t2.segment_package import build_t2_segment_package
 
     agent_id = uuid4()
@@ -915,15 +937,9 @@ async def test_source_bundle_includes_verified_work_ledger_findings(tmp_path: Pa
     )
 
     assert seen_source_bundle is not None
-    assert seen_source_bundle["work_ledger"]["findings"] == [
-        {
-            "id": "finding-1",
-            "summary": "Webhook retries use exponential backoff capped at 5 minutes",
-            "trust": "verified",
-            "source_refs": ["workspace/webhook-notes.md"],
-        }
-    ]
-    assert seen_source_bundle["work_ledger"]["source_refs"] == ["workspace/webhook-notes.md"]
+    assert seen_source_bundle["work_ledger"]["findings"] == []
+    assert seen_source_bundle["work_ledger"]["source_refs"] == []
+    assert "Webhook retries use exponential backoff capped at 5 minutes" not in json.dumps(seen_source_bundle)
 
 
 @pytest.mark.asyncio

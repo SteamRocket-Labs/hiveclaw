@@ -17,6 +17,9 @@ from uuid import uuid4
 import pytest
 
 from app.memory.t2.prompts import LEARNING_BRAIN_LABELS_PROMPT
+from tests.memory.test_t2_segment_package_builder import authorized_t2_sources  # noqa: F401
+
+pytestmark = pytest.mark.usefixtures("authorized_t2_sources")
 
 
 def test_labels_prompt_teaches_four_plane_signals() -> None:

@@ -1817,6 +1817,7 @@ async def _record_canonical_terminal_artifact_selection(
     from app.models.runtime_task import RuntimeTask
     from app.services.chat_artifact_delivery import artifact_part_from_model, materialize_declared_read_artifacts
     from app.services.session_terminal_outcome import TerminalOutcomeNeedsReconciliation
+    from app.services.runtime_task_fence import assert_runtime_task_fence
     from app.services.web_chat_runtime import _is_user_visible_terminal_artifact_path
 
     selected_paths = state.ports.artifacts.artifact_paths(state.runtime_session_context, response)
@@ -1836,9 +1837,12 @@ async def _record_canonical_terminal_artifact_selection(
         )
         if task is None:
             raise TerminalOutcomeNeedsReconciliation("canonical terminal artifact selection has no RuntimeTask")
+        selection_task = task
+        db.expunge(selection_task)
+        await db.commit()
         read_parts = await materialize_declared_read_artifacts(
             db,
-            task=task,
+            task=selection_task,
             model_result_id=terminal_result_id,
             paths=[path for path in declared_paths if _is_user_visible_terminal_artifact_path(path)],
         )
@@ -1878,7 +1882,14 @@ async def _record_canonical_terminal_artifact_selection(
         missing_paths = [path for path in [*declared_paths, *selected_paths]
             if _is_user_visible_terminal_artifact_path(path) and path not in newest_by_path]
         artifact_parts = [artifact_part_from_model(row) for row in selected]
+        task = await db.scalar(select(RuntimeTask).where(RuntimeTask.id == state.run_uuid).with_for_update()
+            .execution_options(populate_existing=True))
+        if task is None:
+            raise TerminalOutcomeNeedsReconciliation("canonical terminal artifact selection has no RuntimeTask")
+        assert_runtime_task_fence(task)
         metadata = dict(task.metadata_json or {})
+        if "artifact_read_publication_errors" in (selection_task.metadata_json or {}):
+            metadata["artifact_read_publication_errors"] = selection_task.metadata_json["artifact_read_publication_errors"]
         metadata.update(
             {
                 "declared_artifact_paths": declared_paths,

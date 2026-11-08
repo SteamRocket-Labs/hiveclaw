@@ -310,8 +310,8 @@ async def test_runtime_task_lease_renewal_predicate_cannot_revive_expired_claim(
     finally:
         reset_runtime_task_fence(token)
 
-    assert len(statements) == 1
-    compiled = str(statements[0].compile(dialect=postgresql.dialect()))
+    assert len(statements) == 2
+    compiled = str(statements[-1].compile(dialect=postgresql.dialect()))
     assert "runtime_tasks.claim_expires_at >" in compiled
 
 

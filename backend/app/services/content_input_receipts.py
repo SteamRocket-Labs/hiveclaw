@@ -1818,8 +1818,16 @@ async def authorize_workspace_execution_inputs(request):
         tenant_id = uuid.UUID(str(context.tenant_id))
         async with tenant_scoped_session(tenant_id) as db:
             task = await db.get(RuntimeTask, uuid.UUID(str(context.runtime_task_id))) if context.runtime_task_id else None
+            receipts = {receipt.carrier_ref: receipt for receipt in await db.scalars(
+                select(ContentInputReceipt).where(ContentInputReceipt.tenant_id == tenant_id,
+                    ContentInputReceipt.carrier_kind == "workspace_artifact",
+                    ContentInputReceipt.carrier_ref.in_([workspace_artifact_ref(context.agent_id, path) for path in paths]))
+                .distinct(ContentInputReceipt.carrier_ref)
+                .order_by(ContentInputReceipt.carrier_ref, ContentInputReceipt.revision.desc())
+                .execution_options(populate_existing=True)
+            )} if paths else {}
             for path in sorted(paths):
-                receipt = await latest_workspace_receipt(db, tenant_id, context.agent_id, path)
+                receipt = receipts.get(workspace_artifact_ref(context.agent_id, path))
                 if receipt is None and path not in scope.full_control_paths:
                     continue
                 if receipt is not None and task is not None and task.task_type == "web_chat_turn":

@@ -867,7 +867,11 @@ def fingerprint_rls_bypass_scopes(app_root: Path) -> str:
 # Merging T-browser with main preserves all reviewed entries; no entry changed on both sides.
 # Merging T-browser into the landing branch accepts the exact three-way module-source merge of
 # content_input_receipts.py and session_model_round.py; no bypass scope changed on both sides.
-RLS_BYPASS_SCOPES_SHA256 = "df6506298cf437533052aca5819fa66e5af596d0a26bfd26460500b2fe9e8afe"
+# Committed-final recovery retains the owning claim; bypass grants and query shapes are unchanged.
+# Artifact selection releases the task lock before materialization; bypass grants and scopes are unchanged.
+# Merging R4a into the landing branch accepts the exact three-way module-source merge of
+# content_input_receipts.py and web_chat_runtime.py; no bypass scope changed on both sides.
+RLS_BYPASS_SCOPES_SHA256 = "65637486aa782c9f6723642a483e9a95c595d0a241b355342c62d465b64c230b"
 
 
 def scan_rls_bypass_callsites(app_root: Path) -> list[RLSBypassCallsite]:

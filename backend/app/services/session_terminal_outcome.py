@@ -61,14 +61,36 @@ def _read_selection_retry(task: RuntimeTask, result_id: uuid.UUID) -> bool:
 
 async def _recover_read_artifact_selection(db: AsyncSession, *, task: RuntimeTask, result: SessionModelResult) -> None:
     from app.services.chat_artifact_delivery import materialize_declared_read_artifacts
-    from app.services.web_chat_runtime import _declared_terminal_artifact_paths, _is_user_visible_terminal_artifact_path
+    from app.services.web_chat_runtime import (
+        _declared_terminal_artifact_paths, _is_user_visible_terminal_artifact_path, _terminal_artifact_candidate_paths,
+    )
 
     metadata = dict(task.metadata_json or {})
     if metadata.get("artifact_selection_result_id") == str(result.id):
         return
     paths = _declared_terminal_artifact_paths(str(result.seal_json.get("semantic_content") or ""))
+    candidates = _terminal_artifact_candidate_paths(str(result.seal_json.get("semantic_content") or ""))
     parts = await materialize_declared_read_artifacts(db, task=task, model_result_id=result.id,
         paths=[path for path in paths if _is_user_visible_terminal_artifact_path(path)])
+    # A crash may precede live artifact selection, after write artifacts were
+    # committed. Recover only this run's declared, owned snapshots.
+    statement = select(ChatArtifact).where(
+        ChatArtifact.tenant_id == task.tenant_id,
+        ChatArtifact.agent_id == task.parent_agent_id,
+        ChatArtifact.session_id == result.session_id,
+        ChatArtifact.runtime_task_id == task.id,
+        ChatArtifact.authority_state == "owned",
+        ChatArtifact.path.in_([path for path in candidates if _is_user_visible_terminal_artifact_path(path)]),
+        ChatArtifact.root_session_id == uuid.UUID(task.root_session_id or str(result.session_id)),
+    )
+    if task.root_user_id is not None:
+        statement = statement.where(ChatArtifact.owner_user_id == task.root_user_id)
+    rows = await db.scalars(statement.order_by(ChatArtifact.created_at.desc(), ChatArtifact.id.desc()))
+    writes = {}
+    for row in rows:
+        if row.source != "workspace_read":
+            writes.setdefault(row.path, artifact_part_from_model(row))
+    parts = [*writes.values(), *parts]
     by_path = {part["path"]: part for part in metadata.get("artifacts") or []}
     by_path.update({part["path"]: part for part in parts})
     if parts:
@@ -970,6 +992,10 @@ async def recover_terminal_candidates_once(
 ) -> dict[str, int]:
     """Close latest terminal candidates that crashed before RunOutcome creation."""
 
+    from app.services.runtime_task_fence import current_runtime_task_fence
+
+    fence = current_runtime_task_fence()
+    owned_claim = run_id is not None and fence is not None and fence.task_id == run_id
     committed_outcome_exists = (
         select(SessionRunOutcome.id)
         .where(
@@ -997,11 +1023,13 @@ async def recover_terminal_candidates_once(
                 RuntimeTask.tenant_id == SessionModelResult.tenant_id,
             ),
         )
-        .where(SessionModelResult.state == "round_committed", ~committed_outcome_exists,
-            ~_active_runtime_claim_exists(SessionModelResult.run_id, SessionModelResult.tenant_id, datetime.now(timezone.utc)))
+        .where(SessionModelResult.state == "round_committed", ~committed_outcome_exists)
         .order_by(ChatTranscriptEvent.sequence.desc(), SessionModelResult.id.desc())
         .limit(max(1, int(limit)) * 4)
     )
+    if not owned_claim:
+        candidate_statement = candidate_statement.where(~_active_runtime_claim_exists(
+            SessionModelResult.run_id, SessionModelResult.tenant_id, datetime.now(timezone.utc)))
     if run_id is not None:
         candidate_statement = candidate_statement.where(SessionModelResult.run_id == run_id)
     if tenant_id is not None:
@@ -1033,7 +1061,7 @@ async def recover_terminal_candidates_once(
                 turn_id=turn_id,
                 run_id=result_run_id,
                 terminal_result_id=result_id,
-                recovery=True,
+                recovery=not owned_claim,
             )
             await commit_terminal_outcome(
                 db,
@@ -1042,7 +1070,7 @@ async def recover_terminal_candidates_once(
                 session_id=session_id,
                 run_id=result_run_id,
                 outcome_id=outcome.id,
-                recovery=True,
+                recovery=not owned_claim,
             )
             await db.commit()
             completed += 1

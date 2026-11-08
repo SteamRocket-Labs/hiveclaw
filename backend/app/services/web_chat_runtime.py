@@ -6765,6 +6765,17 @@ async def _reconcile_claimed_web_chat_terminal_ghost(run_uuid: uuid.UUID) -> boo
         assert_runtime_task_fence(task)
         if await _reconcile_terminal_transcript_ghost(db, task):
             return True
+        if (task.metadata_json or {}).get("reclaimed_expired_claim"):
+            # Recover a committed final before consuming another execution
+            # attempt or quarantining it. The current claim still fences writes.
+            from app.services.session_terminal_outcome import recover_terminal_candidates_once
+
+            recovered = await recover_terminal_candidates_once(
+                db, worker_id=task.claimed_by, run_id=run_uuid, tenant_id=tenant_id, limit=1,
+            )
+            if recovered["terminal_committed"]:
+                return True
+            task = await _load_web_chat_run_by_id(db, run_uuid)
         return await _quarantine_exhausted_web_chat_recovery(db, task)
 
 

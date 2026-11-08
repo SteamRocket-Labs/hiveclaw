@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Awaitable, TypeVar
 
-from sqlalchemy import update
+from sqlalchemy import select, update
 
 _ResultT = TypeVar("_ResultT")
 
@@ -132,7 +132,6 @@ async def renew_current_runtime_task_lease(*, lease_seconds: float) -> datetime 
     from app.services.tenant_resolver import resolve_tenant_for_runtime_task
 
     now = datetime.now(timezone.utc)
-    expires_at = now + timedelta(seconds=max(0.03, float(lease_seconds)))
     tenant_id = await resolve_tenant_for_runtime_task(
         fence.task_id,
         session_factory=async_session,
@@ -145,17 +144,19 @@ async def renew_current_runtime_task_lease(*, lease_seconds: float) -> datetime 
         require_tenant=True,
         source="runtime_task_fenced_lease_renewal",
     ) as db:
-        result = await db.execute(
-            update(RuntimeTask)
-            .where(
-                RuntimeTask.id == fence.task_id,
-                RuntimeTask.claim_version == fence.claim_version,
-                RuntimeTask.claimed_by == fence.worker_id,
-                RuntimeTask.status == "running",
-                RuntimeTask.claim_expires_at > now,
-            )
-            .values(claim_expires_at=expires_at)
+        predicates = (
+            RuntimeTask.id == fence.task_id,
+            RuntimeTask.claim_version == fence.claim_version,
+            RuntimeTask.claimed_by == fence.worker_id,
+            RuntimeTask.status == "running",
+            RuntimeTask.claim_expires_at > now,
         )
+        await db.execute(select(RuntimeTask.id).where(*predicates).with_for_update())
+        # Re-evaluate expiry after a foreign row lock releases, not before waiting.
+        now = datetime.now(timezone.utc)
+        expires_at = now + timedelta(seconds=max(0.03, float(lease_seconds)))
+        result = await db.execute(update(RuntimeTask).where(*predicates, RuntimeTask.claim_expires_at > now)
+            .values(claim_expires_at=expires_at))
         if int(getattr(result, "rowcount", 0) or 0) != 1:
             raise StaleRuntimeTaskFenceError(
                 f"stale RuntimeTask worker {fence.worker_id} cannot renew {fence.task_id} "

@@ -171,14 +171,13 @@ async def build_t2_segment_package(
     package_id: str | None = None,
     job_id: str | None = None,
     session_lineage: dict[str, Any] | None = None,
+    _source_bundle: dict[str, Any] | None = None,
 ) -> T2SegmentPackageResult:
     root = _data_root(data_root)
     resolved_package_id = package_id or f"t2pkg-{uuid.uuid4().hex}"
     resolved_job_id = job_id or f"job-{uuid.uuid4().hex}"
     staging_dir = _staging_dir(root, agent_id, resolved_job_id)
-    staging_dir.mkdir(parents=True, exist_ok=True)
-
-    source_bundle = _build_source_bundle(
+    source_bundle = _source_bundle if _source_bundle is not None else await _build_authorized_source_bundle(
         root=root,
         agent_id=agent_id,
         tenant_id=tenant_id,
@@ -187,6 +186,10 @@ async def build_t2_segment_package(
         package_id=resolved_package_id,
         session_lineage=session_lineage,
     )
+    if source_bundle is None:
+        return _not_applicable_without_llm(root=root, agent_id=agent_id, session_id=session_id,
+            t0_segment_id=t0_segment_id, job_id=resolved_job_id, reason_code="no_semantic_t0_events")
+    staging_dir.mkdir(parents=True, exist_ok=True)
     _write_json(staging_dir / SOURCE_BUNDLE_FILENAME, source_bundle)
 
     summary_md = await _call_agent(summary_agent, source_bundle)
@@ -292,13 +295,14 @@ async def build_t2_segment_package_with_llm(
     resolved_job_id = job_id or f"job-{uuid.uuid4().hex}"
 
     try:
-        selection = select_t2_segment_events(
-            replay_t0_session_events(agent_id=agent_id, session_id=session_id, data_root=root),
-            t0_segment_id=t0_segment_id,
-        )
-    except OSError:
-        selection = None
-    if selection is not None and selection.segment_events and not selection.has_semantic_content:
+        source_bundle = await _build_authorized_source_bundle(root=root, agent_id=agent_id, tenant_id=tenant_id,
+            session_id=session_id, t0_segment_id=t0_segment_id, package_id=resolved_package_id,
+            session_lineage=session_lineage)
+    except Exception as exc:  # No unchecked replay may reach the held-job disk sink.
+        return _hold_without_llm(root=root, agent_id=agent_id, session_id=session_id,
+            t0_segment_id=t0_segment_id, job_id=resolved_job_id,
+            reason=f"T0->T2 source bundle unavailable: {type(exc).__name__}")
+    if source_bundle is None:
         return _not_applicable_without_llm(
             root=root,
             agent_id=agent_id,
@@ -319,13 +323,11 @@ async def build_t2_segment_package_with_llm(
         return _hold_without_llm(
             root=root,
             agent_id=agent_id,
-            tenant_id=tenant_id,
             session_id=session_id,
             t0_segment_id=t0_segment_id,
-            package_id=resolved_package_id,
             job_id=resolved_job_id,
             reason="no summary model config for T0->T2 package build",
-            session_lineage=session_lineage,
+            source_bundle=source_bundle,
         )
 
     async def summary_agent(source_bundle: dict[str, Any]) -> str:
@@ -371,6 +373,7 @@ async def build_t2_segment_package_with_llm(
             package_id=resolved_package_id,
             job_id=resolved_job_id,
             session_lineage=session_lineage,
+            _source_bundle=source_bundle,
         )
         if result.status == "committed" and _package_requests_episode_stitching(result.package_dir):
             episode_result = await build_t2_episode_stitch_package_with_llm(
@@ -386,13 +389,11 @@ async def build_t2_segment_package_with_llm(
         return _hold_without_llm(
             root=root,
             agent_id=agent_id,
-            tenant_id=tenant_id,
             session_id=session_id,
             t0_segment_id=t0_segment_id,
-            package_id=resolved_package_id,
             job_id=resolved_job_id,
             reason=f"T0->T2 package build failed: {type(exc).__name__}: {exc}",
-            session_lineage=session_lineage,
+            source_bundle=source_bundle,
         )
 
 
@@ -789,6 +790,90 @@ def _known_failure_modes(*, root: Path, agent_id: uuid.UUID | str) -> list[dict[
     return [mode for mode in modes if mode["id"]]
 
 
+async def _build_authorized_source_bundle(*, root, agent_id, tenant_id, session_id, t0_segment_id, **kwargs):
+    """Use the existing origin inventory and requester reader before any T2 sink."""
+    from sqlalchemy import or_, select
+
+    from app.database import tenant_scoped_session
+    from app.models.audit import ChatMessage
+    from app.models.chat_session import ChatSession
+    from app.models.chat_transcript_event import ChatTranscriptEvent
+    from app.models.runtime_task import RuntimeTask
+    from app.services.content_input_receipts import ContentInputReceiptError, _validate_input_dependencies
+    from app.services.personal_knowledge_access import AgentRuntimePrincipal
+    from app.services.session_model_inputs import _origin_dependencies
+
+    events = replay_t0_session_events(agent_id=agent_id, session_id=session_id, data_root=root)
+    selection = select_t2_segment_events(events, t0_segment_id=t0_segment_id)
+    # V1 projects the forward id. V2 also has the existing reverse bridge id
+    # on the transcript row; do not mistake its missing forward id for raw text.
+    candidates = [event for event in selection.source_events
+        if "transcript_event_id" in event.metadata or "v2_payload" in event.metadata]
+    allowed = set()
+    if candidates and tenant_id:
+        tenant_id, agent_id, session_id = (uuid.UUID(str(value)) for value in (tenant_id, agent_id, session_id))
+        transcript_ids = []
+        for event in candidates:
+            try:
+                transcript_ids.append(uuid.UUID(str(event.metadata.get("transcript_event_id"))))
+            except ValueError:
+                pass
+        async with tenant_scoped_session(str(tenant_id)) as db:
+            session = await db.scalar(select(ChatSession).where(ChatSession.id == session_id,
+                ChatSession.tenant_id == tenant_id, ChatSession.agent_id == agent_id))
+            rows = list(await db.scalars(select(ChatTranscriptEvent).where(
+                ChatTranscriptEvent.tenant_id == tenant_id, ChatTranscriptEvent.agent_id == agent_id,
+                ChatTranscriptEvent.session_id == session_id,
+                or_(ChatTranscriptEvent.id.in_(transcript_ids),
+                    ChatTranscriptEvent.metadata_json["t0_bridge_event_id"].astext.in_([e.event_id for e in candidates])))))
+            by_id = {str(row.id): row for row in rows}
+            by_t0 = {(row.metadata_json or {}).get("t0_bridge_event_id"): row for row in rows}
+            for event in candidates if session is not None else ():
+                row = (by_id.get(str(event.metadata["transcript_event_id"])) if "transcript_event_id" in event.metadata
+                    else by_t0.get(event.event_id))
+                if row is None:
+                    continue
+                actor_user_id = (row.metadata_json or {}).get("actor_user_id")
+                if row.actor_type == "user" and actor_user_id is None and row.message_id is not None:
+                    actor_user_id = await db.scalar(select(ChatMessage.user_id).where(ChatMessage.id == row.message_id,
+                        ChatMessage.tenant_id == tenant_id))
+                if row.invocation_id is not None:
+                    kind = "session-tool-permission" if row.item_kind == "tool_permission" else "session-tool-result"
+                    ref = f"{kind}:{row.invocation_id}"
+                elif row.result_id is not None:
+                    ref = f"session-model-result:{row.result_id}"
+                elif row.input_id is not None:
+                    ref = f"session-input:{row.input_id}"
+                elif ((row.actor_type == "user" and session.user_id is not None
+                    and str(actor_user_id) == str(session.user_id)) or (row.actor_type in {"system", "runtime"}
+                    and (row.item_kind in {"session", "turn", "run", "input_admission", "control_input"}
+                        or row.event_type == "system_message"))):
+                    allowed.add(event.event_id)
+                    continue
+                else:
+                    continue
+                try:
+                    dependencies, complete = await _origin_dependencies(db, tenant_id=tenant_id, agent_id=agent_id, ref=ref)
+                    if not complete:
+                        continue
+                    task = await db.get(RuntimeTask, row.run_id) if row.run_id else None
+                    reader = AgentRuntimePrincipal(agent_id=uuid.UUID(str(agent_id)),
+                        requester_user_id=task.root_user_id if task else session.user_id,
+                        session_id=str(session_id), runtime_task_id=str(row.run_id) if row.run_id else None,
+                        purpose="interactive_session")
+                    await _validate_input_dependencies(db, uuid.UUID(str(tenant_id)), dependencies, runtime_request=reader)
+                except ContentInputReceiptError:
+                    continue
+                allowed.add(event.event_id)
+    dropped = {event.event_id for event in candidates} - allowed
+    events = [event for event in events if event.event_id not in dropped]
+    selection = select_t2_segment_events(events, t0_segment_id=t0_segment_id)
+    if (selection.segment_events or dropped) and not selection.has_semantic_content:
+        return None
+    return _build_source_bundle(root=root, agent_id=agent_id, tenant_id=tenant_id, session_id=session_id,
+        t0_segment_id=t0_segment_id, session_events=events, **kwargs)
+
+
 def _build_source_bundle(
     *,
     root: Path,
@@ -798,8 +883,10 @@ def _build_source_bundle(
     t0_segment_id: str,
     package_id: str,
     session_lineage: dict[str, Any] | None = None,
+    session_events: list[Any] | None = None,
 ) -> dict[str, Any]:
-    session_events = replay_t0_session_events(agent_id=agent_id, session_id=session_id, data_root=root)
+    if session_events is None:
+        session_events = replay_t0_session_events(agent_id=agent_id, session_id=session_id, data_root=root)
     selection = select_t2_segment_events(session_events, t0_segment_id=t0_segment_id)
     segment_events = list(selection.segment_events)
     events = list(selection.source_events)
@@ -1326,29 +1413,16 @@ def _hold_without_llm(
     *,
     root: Path,
     agent_id: uuid.UUID | str,
-    tenant_id: uuid.UUID | str | None,
     session_id: uuid.UUID | str,
     t0_segment_id: str,
-    package_id: str,
     job_id: str,
     reason: str,
-    session_lineage: dict[str, Any] | None = None,
+    source_bundle: dict[str, Any] | None = None,
 ) -> T2SegmentPackageResult:
     staging_dir = _staging_dir(root, agent_id, job_id)
     staging_dir.mkdir(parents=True, exist_ok=True)
-    try:
-        source_bundle = _build_source_bundle(
-            root=root,
-            agent_id=agent_id,
-            tenant_id=tenant_id,
-            session_id=session_id,
-            t0_segment_id=t0_segment_id,
-            package_id=package_id,
-            session_lineage=session_lineage,
-        )
+    if source_bundle is not None:
         _write_json(staging_dir / SOURCE_BUNDLE_FILENAME, source_bundle)
-    except Exception as exc:  # noqa: BLE001
-        reason = f"{reason}; source bundle unavailable: {type(exc).__name__}: {exc}"
     _write_json(
         staging_dir / "platform_gate_report.json",
         {

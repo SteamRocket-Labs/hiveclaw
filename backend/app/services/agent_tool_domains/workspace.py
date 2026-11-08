@@ -214,6 +214,17 @@ def _authority_known_foreign_path(authority_scope, rel_path: str) -> bool:
     return normalized in authority_scope.known_paths and not authority_scope.can_read(normalized)
 
 
+def _resolve_workspace_tool_file(ws: Path, rel_path: str, *, authority_scope=None, permission_profile=None) -> Path:
+    """Resolve an outbound work file using the native file reader's scope."""
+    normalized = authorize_workspace_tool_path(
+        ws, authority_scope, rel_path, action="read", require_user_workspace=True,
+    )
+    target = _resolved_workspace_path(ws, rel_path, permission_profile)
+    if target is None or not _authority_allows_path(authority_scope, normalized):
+        raise WorkspaceAuthorityError("workspace_resource_forbidden", "Access denied for this path.")
+    return target
+
+
 def _authorize_workspace_mutation_path(
     ws: Path,
     rel_path: str,

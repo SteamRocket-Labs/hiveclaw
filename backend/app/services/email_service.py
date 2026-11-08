@@ -168,6 +168,8 @@ def validate_email_tool_request(
     config: dict,
     arguments: dict,
     workspace_path: Path | None = None,
+    authority_scope=None,
+    permission_profile=None,
 ) -> str | None:
     """Perform static preflight before opening IMAP/SMTP connections."""
     email_address = str(config.get("email_address") or "").strip()
@@ -225,11 +227,27 @@ def validate_email_tool_request(
                     message="Attachments require a workspace path but none was provided.",
                     actionable_hint="Generate attachments inside the agent workspace before sending.",
                 )
-            missing_attachments = [
-                rel_path
-                for rel_path in attachments
-                if not (workspace_path / rel_path).exists() or not (workspace_path / rel_path).is_file()
-            ]
+            from app.services.agent_tool_domains.workspace import (
+                _authority_known_foreign_path, _resolved_workspace_path, _resolve_workspace_tool_file,
+            )
+            from app.services.workspace_resource_authority import WorkspaceAuthorityError
+
+            missing_attachments = []
+            for rel_path in attachments:
+                # Preserve missing-file feedback without probing known foreign resources.
+                candidate = _resolved_workspace_path(workspace_path, rel_path, permission_profile)
+                if candidate is None:
+                    return f"❌ {rel_path} cannot be attached."
+                if not _authority_known_foreign_path(authority_scope, rel_path) and not candidate.exists():
+                    missing_attachments.append(rel_path)
+                    continue
+                try:
+                    target = _resolve_workspace_tool_file(workspace_path, rel_path,
+                        authority_scope=authority_scope, permission_profile=permission_profile)
+                except WorkspaceAuthorityError:
+                    return f"❌ {rel_path} cannot be attached."
+                if not target.is_file():
+                    missing_attachments.append(rel_path)
             if missing_attachments:
                 return _render_email_error(
                     tool_name=tool_name,
@@ -346,6 +364,9 @@ async def send_email(
     cc: Optional[str] = None,
     attachments: Optional[list[str]] = None,
     workspace_path: Optional[Path] = None,
+    *,
+    authority_scope=None,
+    permission_profile=None,
 ) -> str:
     """Send an email via SMTP.
 
@@ -370,6 +391,8 @@ async def send_email(
             "attachments": attachments or [],
         },
         workspace_path=workspace_path,
+        authority_scope=authority_scope,
+        permission_profile=permission_profile,
     )
     if preflight_error:
         return preflight_error
@@ -390,15 +413,19 @@ async def send_email(
 
     # Attach files
     if attachments and workspace_path:
+        from app.services.agent_tool_domains.workspace import _read_receipted_workspace_bytes
+        from app.services.workspace_resource_authority import WorkspaceAuthorityError
+
         for rel_path in attachments:
-            full_path = workspace_path / rel_path
-            if full_path.exists() and full_path.is_file():
-                with open(full_path, "rb") as f:
-                    part = MIMEBase("application", "octet-stream")
-                    part.set_payload(f.read())
-                encoders.encode_base64(part)
-                part.add_header("Content-Disposition", f"attachment; filename={full_path.name}")
-                msg.attach(part)
+            try:
+                raw = _read_receipted_workspace_bytes(workspace_path, rel_path, authority_scope, rel_path)
+            except (WorkspaceAuthorityError, OSError):
+                return f"❌ {rel_path} cannot be attached."
+            part = MIMEBase("application", "octet-stream")
+            part.set_payload(raw)
+            encoders.encode_base64(part)
+            part.add_header("Content-Disposition", "attachment", filename=Path(rel_path).name)
+            msg.attach(part)
 
     try:
         with _force_ipv4():

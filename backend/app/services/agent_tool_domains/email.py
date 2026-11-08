@@ -43,6 +43,8 @@ async def _handle_email_tool(tool_name: str, agent_id: uuid.UUID, ws: Path, argu
         config=config or {"email_provider": "email"},
         arguments=arguments,
         workspace_path=ws,
+        authority_scope=getattr(context, "workspace_authority_scope", None),
+        permission_profile=getattr(context, "permission_profile", None),
     )
     if preflight_error:
         return preflight_error
@@ -57,6 +59,8 @@ async def _handle_email_tool(tool_name: str, agent_id: uuid.UUID, ws: Path, argu
                 cc=arguments.get("cc"),
                 attachments=arguments.get("attachments"),
                 workspace_path=ws,
+                authority_scope=getattr(context, "workspace_authority_scope", None),
+                permission_profile=getattr(context, "permission_profile", None),
             )
         elif tool_name == "read_emails":
             return await read_emails(

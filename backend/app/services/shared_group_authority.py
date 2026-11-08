@@ -839,7 +839,7 @@ async def validate_shared_group_delivery(db, *, item, session):
     from app.core.source_read_purpose import source_recipient_read
     from app.services.channel_delivery_outbox import ChannelDeliveryPermanentError, ChannelDeliveryRetryableError
     from app.services.content_input_receipts import ContentInputReceiptError, _validate_input_dependencies
-    from app.services.session_model_inputs import _model_dependencies
+    from app.services.session_model_inputs import model_output_dependencies
 
     target = item.delivery_target
     if (
@@ -931,7 +931,7 @@ async def validate_shared_group_delivery(db, *, item, session):
             if model_id is not None:
                 statement = statement.where(SessionModelResult.id == model_id)
             result = await db.scalar(statement.order_by(ChatTranscriptEvent.sequence.desc()).limit(1))
-            dependencies, complete = _model_dependencies(result)
+            dependencies, complete = model_output_dependencies(result)
             if not complete:
                 raise ContentInputReceiptError(
                     "group_output_sources_unavailable", "The group output lacks its complete source receipt.", 503

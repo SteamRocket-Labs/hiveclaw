@@ -2029,7 +2029,7 @@ async def validate_artifact_content_receipt(db, tenant_id, user, artifact, *, ru
         await _runtime_input_actor(db, tenant_id, runtime_principal)
     if snapshot.get("selection_model_result_id") is not None:
         from app.models.session_v2 import SessionModelResult
-        from app.services.session_model_inputs import _model_dependencies
+        from app.services.session_model_inputs import model_output_dependencies
 
         try:
             model_id = uuid.UUID(snapshot["selection_model_result_id"])
@@ -2038,7 +2038,7 @@ async def validate_artifact_content_receipt(db, tenant_id, user, artifact, *, ru
                 "artifact_selection_unavailable", "The artifact selection source is invalid.", 503
             ) from exc
         model = await db.get(SessionModelResult, model_id, populate_existing=True)
-        dependencies, complete = _model_dependencies(model)
+        dependencies, complete = model_output_dependencies(model)
         if not complete or (model.tenant_id, model.session_id, model.run_id) != (
             artifact.tenant_id,
             artifact.session_id,
@@ -3134,7 +3134,7 @@ async def load_approved_workspace_result(db, *, approval):
     from app.models.session_v2 import SessionModelResult
     from app.services.approval_ticket import ApprovalTicketError
     from app.services.session_approval import group_approval_origin
-    from app.services.session_model_inputs import _model_dependencies, _unique_dependencies
+    from app.services.session_model_inputs import _unique_dependencies, model_output_dependencies
     from app.services.session_tool_runtime import _sha256
 
     if (
@@ -3167,7 +3167,7 @@ async def load_approved_workspace_result(db, *, approval):
                 SessionModelResult.provider_request_id == invocation.provider_request_id,
             )
         )
-        dependencies, complete = _model_dependencies(model)
+        dependencies, complete = model_output_dependencies(model)
         if not complete:
             return None
         content_hash = _sha256(str(approval.execution_result))

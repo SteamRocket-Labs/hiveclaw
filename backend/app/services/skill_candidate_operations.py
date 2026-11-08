@@ -18,7 +18,7 @@ from app.services.config_versioning import canonical_content_hash, save_revision
 from app.services.content_input_receipts import ContentInputReceiptError, _validate_input_dependencies
 from app.services.explicit_memory_authority import _actor, _writer_input, authorize_memory_audience, memory_effect_actor
 from app.services.learned_skill_sources import CANDIDATE_ENTITY, _candidate_entity, _candidate_proof
-from app.services.session_model_inputs import _model_dependencies, _stored_dependencies
+from app.services.session_model_inputs import _stored_dependencies, model_output_dependencies
 from app.services.session_tool_runtime import _sha256
 
 TOOLS = {"save_skill", "reconcile_skill_candidate", "inspect_reviewed_skill"}
@@ -108,7 +108,7 @@ async def validate_recovery(db, row, *, tenant_id, agent_id):
         invocation = await db.get(SessionToolInvocation, uuid.UUID(r["invocation_id"]), populate_existing=True)
         model = await db.get(SessionModelResult, uuid.UUID(r["model_result_id"]), populate_existing=True)
         task = await db.get(RuntimeTask, invocation.run_id, populate_existing=True) if invocation else None
-        sources, complete = _model_dependencies(model)
+        sources, complete = model_output_dependencies(model)
         args = invocation.effective_arguments_json or invocation.provider_arguments_json if invocation else {}
         if (invocation is None or invocation.tenant_id != tenant_id or invocation.tool_name != "reconcile_skill_candidate"
             or invocation.effect_state != "effect_committed" or args.get("action") != "retry"

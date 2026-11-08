@@ -843,7 +843,7 @@ def fingerprint_rls_bypass_scopes(app_root: Path) -> str:
 # G3: preview and inventory lifecycle source updates only; merging G3 with main keeps each entry from one side.
 # Merging A4c with G3 keeps each entry from one side.
 # Merging T-browser with main preserves all reviewed entries; no entry changed on both sides.
-RLS_BYPASS_SCOPES_SHA256 = "40498145f130c8993fab96556d411a338c9334e9d812421f8f54cca152536646"
+RLS_BYPASS_SCOPES_SHA256 = "2178c08e7ba66fb86beff8364ed5450fe69bab5c89cf00c14cb954e09d308e0e"
 
 
 def scan_rls_bypass_callsites(app_root: Path) -> list[RLSBypassCallsite]:

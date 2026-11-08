@@ -530,7 +530,8 @@ def _skill_control_error(authority_scope, tool_name, error_class, message):
     return _workspace_error(tool_name, error_class, message)
 
 
-def _load_skill(ws: Path, skill_name: str, tool_name: str = "load_skill", *, session_id: str | None = None, authority_scope=None) -> str:
+def _load_skill(ws: Path, skill_name: str, tool_name: str = "load_skill", *, session_id: str | None = None, authority_scope=None,
+                available_tool_names: set[str] | None = None) -> str:
     requested = (skill_name or "").strip()
     if not requested:
         return _skill_control_error(authority_scope, tool_name, "bad_arguments", "Skill name cannot be empty.")
@@ -539,6 +540,20 @@ def _load_skill(ws: Path, skill_name: str, tool_name: str = "load_skill", *, ses
     skills_dir = (ws / "skills").resolve()
 
     from app.services.skill_evolution_registry import LOADABLE_STATES, skill_runtime_state
+
+    def _unavailable(declared_tools):
+        missing = set(declared_tools) - available_tool_names if available_tool_names is not None else set()
+        if not missing:
+            return None
+        guidance = "Do not repeatedly search for these unavailable tools."
+        if "import_mcp_server" in missing:
+            guidance += (
+                " This assistant cannot install company connections. If the company has not connected the requested app, "
+                "tell the member to ask an administrator to add it in company connections. "
+                "For an already registered app, use its available tools and the existing personal-account connection card."
+            )
+        return _skill_control_error(authority_scope, tool_name, "skill_tools_unavailable",
+            f"This skill requires tools unavailable to this assistant: {', '.join(sorted(missing))}. {guidance}")
 
     def _apply_trial_state(content: str, identity: str) -> str:
         state = skill_runtime_state(ws, identity)
@@ -571,6 +586,11 @@ def _load_skill(ws: Path, skill_name: str, tool_name: str = "load_skill", *, ses
             raw = _read_receipted_workspace_bytes(workspace_root, relative_path, authority_scope, relative_path)
             with io.TextIOWrapper(io.BytesIO(raw), encoding="utf-8", errors="replace") as reader:
                 content = reader.read()
+            from app.skills.parser import SkillParser
+
+            unavailable = _unavailable(SkillParser().parse_content(content, path=path, relative_path=relative_path).metadata.declared_tools)
+            if unavailable:
+                return unavailable
             return _apply_trial_state(sanitize_managed_credential_guidance(content), relative_path)
         except Exception as e:
             return _workspace_error(tool_name, "operation_failed", f"Read failed: {e}")
@@ -616,6 +636,9 @@ def _load_skill(ws: Path, skill_name: str, tool_name: str = "load_skill", *, ses
         with io.TextIOWrapper(io.BytesIO(raw), encoding="utf-8", errors="replace") as reader:
             skill = SkillParser().parse_content(reader.read(), path=skill.file_path, relative_path=skill.relative_path,
                 default_name=skill.file_path.parent.name if skill.file_path.name.lower() == "skill.md" else skill.file_path.stem)
+        unavailable = _unavailable(skill.metadata.declared_tools)
+        if unavailable:
+            return unavailable
         body = sanitize_managed_credential_guidance(skill.body)
         body += _skill_scope_guidance(skill.metadata)
         body = _apply_trial_state(body, skill.relative_path or requested)
@@ -633,6 +656,9 @@ def _load_skill(ws: Path, skill_name: str, tool_name: str = "load_skill", *, ses
 
     pack = runtime_tool_group_for_name(requested)
     if pack:
+        unavailable = _unavailable(pack.tools)
+        if unavailable:
+            return unavailable
         tool_selectors = ", ".join(f"`select:{tool_name}`" for tool_name in pack.tools[:8])
         if len(pack.tools) > 8:
             tool_selectors += ", ..."
@@ -1641,7 +1667,8 @@ def _grep_search(
 
 
 async def _tool_search(ws: Path, query: str = "", agent_id: uuid.UUID | str | None = None, *, authority_scope=None) -> str:
-    from app.services.agent_tools import discoverable_tool_names_for_query
+    from app.services.agent_tools import available_deferred_tool_names_for_agent, discoverable_tool_names_for_query
+    from app.services.governance_capability_taxonomy import CORE_TOOL_NAMES
     from app.services.tool_search_manifest import build_tool_search_manifest, render_tool_search_manifest_sections
 
     def source_allowed(path):
@@ -1661,6 +1688,34 @@ async def _tool_search(ws: Path, query: str = "", agent_id: uuid.UUID | str | No
         or normalized in skill.metadata.description.lower()
         or any(normalized in tool.lower() for tool in skill.metadata.declared_tools)
     ]
+    # Step 3: single source of truth — the deferred tool names listed here are
+    # EXACTLY what the schema path loads. discoverable_tool_names_for_query covers
+    # static packs + agent-reachable MCP and excludes CORE (already turn-1). Text
+    # == schema (🦴#2). agent_id falls back to the workspace dir name.
+    deferred_names: list[str] = []
+    company_applications = None
+    resolved_agent_id = agent_id if agent_id is not None else ws.name
+    if resolved_agent_id:
+        try:
+            resolved_agent_id = uuid.UUID(str(resolved_agent_id))
+        except ValueError:
+            resolved_agent_id = None
+    if resolved_agent_id:
+        deferred_names = await discoverable_tool_names_for_query(resolved_agent_id, query)
+        if matching_skills:
+            available = set(CORE_TOOL_NAMES) | set(await available_deferred_tool_names_for_agent(resolved_agent_id))
+            matching_skills = [skill for skill in matching_skills if set(skill.metadata.declared_tools) <= available]
+        from app.database import tenant_scoped_session
+        from sqlalchemy import select
+        from app.models.mcp_server import MCPServer
+        from app.services.tenant_resolver import resolve_tenant_for_agent
+
+        tenant_id = await resolve_tenant_for_agent(resolved_agent_id)
+        if tenant_id is not None:
+            async with tenant_scoped_session(tenant_id, require_tenant=True) as db:
+                company_applications = [{"name": name, "mcp_server_id": str(server_id)}
+                    for server_id, name in await db.execute(select(MCPServer.id, MCPServer.name).where(
+                        MCPServer.tenant_id == tenant_id, MCPServer.owner_user_id.is_(None)).order_by(MCPServer.name, MCPServer.id))]
     capture = getattr(authority_scope, "skill_inputs", None)
     if capture is not None:
         for skill in matching_skills:
@@ -1670,18 +1725,6 @@ async def _tool_search(ws: Path, query: str = "", agent_id: uuid.UUID | str | No
                 capture.unbound.append("discovery_skill_workspace_unverified")
                 continue
             capture.observe_file(path, skill.source_sha256)
-
-    # Step 3: single source of truth — the deferred tool names listed here are
-    # EXACTLY what the schema path loads. discoverable_tool_names_for_query covers
-    # static packs + agent-reachable MCP and excludes CORE (already turn-1). Text
-    # == schema (🦴#2). agent_id falls back to the workspace dir name.
-    deferred_names: list[str] = []
-    resolved_agent_id = agent_id if agent_id is not None else ws.name
-    if resolved_agent_id:
-        try:
-            deferred_names = await discoverable_tool_names_for_query(uuid.UUID(str(resolved_agent_id)), query)
-        except Exception:
-            deferred_names = []
     subagent_rows: list[dict] = []
     if resolved_agent_id:
         try:
@@ -1696,6 +1739,7 @@ async def _tool_search(ws: Path, query: str = "", agent_id: uuid.UUID | str | No
         loaded_tool_names=deferred_names,
         skills=matching_skills,
         subagents=subagent_rows,
+        company_applications=company_applications,
     )
     if capture is not None and manifest.get("subagent_candidates"):
         # Keep discovery usable while retaining unknown provenance for metadata
@@ -1703,10 +1747,21 @@ async def _tool_search(ws: Path, query: str = "", agent_id: uuid.UUID | str | No
         capture.unbound.append("discovery_subagent_sources_unverified")
 
     lines = [
-        "Tool search discovered deferred capabilities. Matching deferred tool schemas become callable in this session.",
+        "Tool search discovered deferred capabilities. Matching deferred tool schemas become callable in this session."
+        if deferred_names else "No matching deferred tool schemas are available to this assistant. Repeating this search will not enable unavailable tools.",
         "",
         render_tool_search_manifest_sections(manifest),
     ]
+    if company_applications is not None:
+        lines.append(
+            "company_applications is the complete list of company-registered apps, not a list of personal accounts. "
+            "If the requested app is absent, the company has not connected it: give a brief answer in the member's language "
+            "and ask an administrator to add it in company connections. Do not install, create, or connect anything. "
+            "If the app is registered but needs the member's account, use ask_user_question with configuration.mcp_server_id "
+            "from the matching entry to show the personal-account connection card; never ask for credentials in chat."
+        )
+    else:
+        lines.append("Company application registration is unknown; do not claim that an application is unconnected.")
     if deferred_names:
         lines.append("")
         lines.append(
@@ -1722,8 +1777,6 @@ async def _tool_search(ws: Path, query: str = "", agent_id: uuid.UUID | str | No
                 ", ".join(skill.metadata.declared_tools) if skill.metadata.declared_tools else "no declared tools"
             )
             lines.append(f"- {skill.metadata.name}: {skill.metadata.description} | declared tools: {declared}")
-    if len(lines) == 1:
-        return f"🔎 No delayed tools or skills matched '{query}'"
     return "\n".join(lines)
 
 

@@ -1079,7 +1079,7 @@ async def _project_loop_guard_warning(
     decision: LoopGuardDecision, *, reminder_scheduler: Any, _emit_event: Any, current_tools: Any
 ) -> None:
     control_only = decision.reason in {"provider_call_cost_pressure", "total_tool_calls", "failed_tool_calls"}
-    if decision.reason == "identical_tool_args":
+    if decision.reason in {"identical_tool_args", "repeated_tool_failure"}:
         control_only = decision.trace_event.get("tool") in {tool["function"]["name"] for tool in current_tools()}
     reminder_scheduler.enqueue(
         decision.message,

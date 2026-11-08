@@ -40,6 +40,8 @@ def _error(exc):
     if isinstance(exc, BrowserControlError):
         return HTTPException(
             exc.status, detail={"code": exc.code, "effect": exc.effect,
+                **({"current_revision": exc.current_revision, "current_epoch": exc.current_epoch}
+                    if exc.current_revision is not None else {}),
                 **({"approval_id": str(exc.approval_id)} if hasattr(exc, "approval_id") else {})},
             headers={"Cache-Control": "no-store"}
         )

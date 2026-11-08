@@ -79,6 +79,23 @@ def test_loop_guard_does_not_infer_failure_from_benign_tool_result_prose() -> No
     assert guard.failed_tool_calls == 0
 
 
+def test_same_failure_warns_even_when_the_model_changes_revision_arguments():
+    from app.kernel.loop_guard import LoopGuard
+
+    guard = LoopGuard(repeated_failure_threshold=4, failed_tool_threshold=100)
+    for revision in range(3):
+        assert guard.observe_tool_result("browser_manage", {"action": "start", "expected_revision": revision},
+            "EXACT_FAILURE_RECEIPT", machine_outcome="failed") is None
+    warning = guard.observe_tool_result("browser_manage", {"action": "start", "expected_revision": 3},
+        "EXACT_FAILURE_RECEIPT", machine_outcome="failed")
+    assert warning is not None and warning.reason == "repeated_tool_failure" and warning.severity == "warn"
+    assert "EXACT_FAILURE_RECEIPT" not in warning.message, "A control diagnostic must not replay tool content"
+    for revision in range(4, 20):
+        assert guard.observe_tool_result("browser_manage", {"action": "start", "expected_revision": revision},
+            "EXACT_FAILURE_RECEIPT", machine_outcome="failed", side_effect_free=True,
+            retry_exhausted=True, progress_token="same-state") is None
+
+
 def test_loop_guard_total_tool_heuristic_never_substitutes_for_explicit_round_budget() -> None:
     from app.kernel.loop_guard import LoopGuard
 
@@ -186,7 +203,8 @@ def test_loop_guard_detects_repeated_tool_failures() -> None:
 
     assert decision is not None
     assert decision.reason == "repeated_tool_failure"
-    assert "timeout" in decision.message
+    assert "web_search failed repeatedly with the same result digest" in decision.message
+    assert "[Tool execution error] timeout" not in decision.message
 
 
 def test_loop_guard_detects_repeated_assistant_text() -> None:

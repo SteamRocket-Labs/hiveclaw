@@ -215,11 +215,11 @@ class WorkspaceSkillLoader:
                         skill_file.exists()
                         and self._is_inside_workspace(skill_file.resolve(), workspace_root)
                         and (source_authorizer is None or source_authorizer(skill_file))
-                        and is_skill_runtime_loadable(
-                            workspace_root,
-                            skill_file.resolve().relative_to(workspace_root).as_posix(),
-                        )
                     ):
+                        if not is_skill_runtime_loadable(
+                            workspace_root, skill_file.resolve().relative_to(workspace_root).as_posix()
+                        ):
+                            break
                         parsed = self._parse_file(skill_file, relative_path=skill_file.resolve().relative_to(workspace_root).as_posix(),
                             default_name=entry.name)
                         if parsed is not None:

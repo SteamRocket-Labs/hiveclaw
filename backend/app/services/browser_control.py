@@ -17,7 +17,7 @@ from app.core.execution_context import ExecutionPrincipal
 from app.database import tenant_scoped_session
 from app.models.environment_browser import EnvironmentBrowser
 from app.models.execution_environment import EnvironmentLease, ExecutionEnvironment
-from app.services.browser_device import BrowserPage, browser_device_spec
+from app.services.browser_device import BrowserPage, browser_device_configured, browser_device_spec
 from app.services.browser_lifecycle import BrowserLifecycleSpec
 from app.services.browser_pipe import BrowserPipeError
 from app.services.channel_secret_storage import (
@@ -38,9 +38,10 @@ from app.services.execution_environments import (
 
 
 class BrowserControlError(EnvironmentError):
-    def __init__(self, code, status=409, *, effect="not_started"):
+    def __init__(self, code, status=409, *, effect="not_started", current_revision=None, current_epoch=None):
         super().__init__(code, status)
         self.effect = effect
+        self.current_revision, self.current_epoch = current_revision, current_epoch
 
 
 class _NoArguments(BaseModel):
@@ -323,7 +324,7 @@ class BrowserControlService:
                     await self._settle_browser_leases(db, row, "stopped")
             return self._view(row)
 
-    async def _provider(self, source):
+    async def _provider(self, source, action, revision, epoch, invocation_key):
         async with tenant_scoped_session(
             source.tenant_id, require_tenant=True, source="browser_environment_binding"
         ) as db:
@@ -354,6 +355,21 @@ class BrowserControlService:
                     ExecutionEnvironment.tenant_id == source.tenant_id, ExecutionEnvironment.agent_id == source.agent_id
                 )
             )
+            if env is not None:
+                if await active_leases(db, env.id):
+                    # Acquisition owns active/unknown-command recovery and must
+                    # settle that before evaluating a repeat or stale revision.
+                    return env.provider_key
+                await self._check_request(db, env.id, invocation_key)
+            if action == "start" and not browser_device_configured():
+                raise BrowserControlError("browser_device_not_configured", 503)
+            if row is None and action != "start":
+                raise BrowserControlError("browser_not_started")
+            if row is not None:
+                _expire(row, datetime.now(UTC))
+            # Reject stale requests before acquiring a command lease. The
+            # effect boundary still fences state changes after this read.
+            self._expect(row, revision, epoch)
             return env.provider_key if env is not None else "local_os_sandbox"
 
     async def execute(
@@ -393,8 +409,9 @@ class BrowserControlService:
         )
         async with environment_command_scope(frame, invocation_key) as scope:
             scope.resource_receipt = {"kind": "browser", "action": action, "effect": "not_started"}
+            control_error = None
 
-            async def operation():
+            async def dispatch():
                 nonlocal payload
                 from app.services.browser_rpc import ACTIONS, forward
 
@@ -404,7 +421,7 @@ class BrowserControlService:
                         source.tenant_id, require_tenant=True, source="browser_rpc_route"
                     ) as db:
                         await source.authorize(db, scope)
-                        await self._check_request(db, scope)
+                        await self._check_request(db, scope.environment_id, scope.invocation_key, scope.lease_id)
                         candidate = await self._row(db, source)
                         if candidate is not None and candidate.worker_instance != self.instance_id:
                             remote = candidate
@@ -425,11 +442,27 @@ class BrowserControlService:
                     )
                 return CodeExecutionResult(evidence={"provider": "trusted_host_browser_device"})
 
-            result = await scope.execute(operation, provider=await self._provider(source), timeout=30)
+            async def operation():
+                nonlocal control_error
+                try:
+                    return await dispatch()
+                except BrowserControlError as exc:
+                    control_error = exc
+                    raise
+
+            result = await scope.execute(operation,
+                provider=await self._provider(source, action, expected_revision, expected_epoch, invocation_key), timeout=30)
             if result.error:
                 effect = scope.resource_receipt.get("effect")
                 if effect not in {"unknown", "not_started"}:
                     effect = "unknown" if scope.resource_state == "unknown" else "not_started"
+                if control_error is not None:
+                    control_error.effect = effect
+                    if control_error.code == "browser_revision_conflict" and control_error.current_revision is None:
+                        current = await self.read(source)
+                        control_error.current_revision = current["revision"] if current else 0
+                        control_error.current_epoch = current["control_epoch"] if current else 0
+                    raise control_error
                 raise BrowserControlError(
                     result.evidence.get("reason_code", "browser_execution_unavailable"),
                     503 if result.evidence.get("status") == "unavailable" else 409,
@@ -537,13 +570,13 @@ class BrowserControlService:
         return True
 
     @staticmethod
-    async def _check_request(db, scope):
+    async def _check_request(db, environment_id, invocation_key, lease_id=None):
         repeated = await db.scalar(
             select(EnvironmentLease.id)
             .where(
-                EnvironmentLease.environment_id == scope.environment_id,
-                EnvironmentLease.invocation_key == scope.invocation_key,
-                EnvironmentLease.id != scope.lease_id,
+                EnvironmentLease.environment_id == environment_id,
+                EnvironmentLease.invocation_key == invocation_key,
+                EnvironmentLease.id != lease_id,
             )
             .limit(1)
         )
@@ -555,14 +588,13 @@ class BrowserControlService:
         async with tenant_scoped_session(source.tenant_id, require_tenant=True, source="browser_effect_intent") as db:
             await source.authorize(db, scope)
             await lock_environment(db, source.tenant_id, source.agent_id)
-            await self._check_request(db, scope)
+            await self._check_request(db, scope.environment_id, scope.invocation_key, scope.lease_id)
             row = await self._row(db, source, lock=True)
             from app.services.browser_human_approval import check_effect
             await check_effect(db, source, action, scope.invocation_key.rsplit(":", 1)[-1], revision, epoch, arguments, row, actor_kind)
             if action == "start":
                 if row is None:
-                    if revision != 0 or epoch != 0:
-                        raise BrowserControlError("browser_revision_conflict")
+                    self._expect(None, revision, epoch)
                     active = await db.scalar(
                         select(EnvironmentBrowser.id)
                         .where(
@@ -709,8 +741,11 @@ class BrowserControlService:
 
     @staticmethod
     def _expect(row, revision, epoch):
-        if row.revision != revision or row.control_epoch != epoch:
-            raise BrowserControlError("browser_revision_conflict")
+        current_revision = row.revision if row is not None else 0
+        current_epoch = row.control_epoch if row is not None else 0
+        if current_revision != revision or current_epoch != epoch:
+            raise BrowserControlError("browser_revision_conflict",
+                current_revision=current_revision, current_epoch=current_epoch)
 
     async def _prepare_lifecycle(self, source, browser_id, spec):
         nonce, key = uuid.uuid4().hex, secrets.token_hex(32)

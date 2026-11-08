@@ -182,9 +182,10 @@ class LoopGuard:
 
         repeat_check = _PatternCheck(
             reason="repeated_tool_failure",
-            detail=(f"{tool_name} failed repeatedly with the same result digest {result_digest}: {str(result)}"),
-            warn_key=f"failure:{tool_name}:{_digest(canonical)}:{result_digest}",
-            count=self._failure_counts[key],
+            detail=(f"{tool_name} failed repeatedly with the same result digest {result_digest}"),
+            warn_key=f"failure:{tool_name}:{result_digest}",
+            count=sum(count for (name, _args, digest), count in self._failure_counts.items()
+                if name == tool_name and digest == result_digest),
             warn_threshold=self.repeated_failure_threshold,
         )
         decision = self._escalate(repeat_check, tool_name=tool_name, args_digest=_digest(canonical))

@@ -9,6 +9,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from app.database import tenant_scoped_session
 from app.services.browser_control import BrowserControlError, BrowserSource, browser_control
+from app.services.browser_device import browser_device_configured
 from app.services.execution_environments import EnvironmentCommandScope, EnvironmentError
 from app.services.runtime_task_fence import StaleRuntimeTaskFenceError, current_runtime_task_fence
 from app.tools.decorator import RESULT_CHARS_UNLIMITED, ToolMeta, tool
@@ -86,17 +87,30 @@ async def _source(request):
 
 
 def _error(request, exc):
+    message = exc.code
+    hint = "Inspect the browser state in the original work before choosing a safe next action."
+    state = {}
+    if exc.code == "browser_device_not_configured":
+        message = "No browser is configured for this assistant."
+        hint = "No browser is available; retrying will not help. Explain the limitation in the member's language and use an available non-browser path."
+    elif exc.code == "browser_revision_conflict":
+        state = {"current_revision": exc.current_revision, "current_epoch": exc.current_epoch}
+        message = "The browser state changed; the requested revision and epoch are stale."
+        hint = ("No browser exists; start with expected_revision=0 and expected_epoch=0."
+            if exc.current_revision == 0 and exc.current_epoch == 0
+            else "Use current_revision and current_epoch from this result for a corrected request; do not repeat the stale values.")
     text = render_tool_error(
         tool_name=request.tool_name,
         error_class="auth_or_permission" if exc.status == 403 else "browser_unavailable",
-        message=exc.code,
+        message=message,
         provider="private_browser",
-        retryable=False,
-        actionable_hint="Inspect the browser state in the original work before choosing a safe next action.",
+        retryable=exc.code == "browser_revision_conflict",
+        actionable_hint=hint,
         extra={
             "reason_code": exc.code,
             "effect": getattr(exc, "effect", "not_started"),
             "business_outcome": "unverified",
+            **state,
         },
     )
     if request.tool_name == "browser_action" and getattr(exc, "effect", "not_started") == "unknown":
@@ -214,6 +228,8 @@ async def browser_observe(request):
     try:
         source = await _source(request)
         view = await browser_control.read(source)
+        if view is None and not browser_device_configured():
+            raise BrowserControlError("browser_device_not_configured", 503)
         payload = {"browser": view}
         if view is not None and view["status"] == "ready" and view["control_mode"] == "agent":
             payload = await browser_control.execute(

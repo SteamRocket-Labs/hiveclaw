@@ -482,6 +482,16 @@ class EnvironmentCommandScope:
             if isinstance(browser_rpc, dict) and browser_rpc.get("phase") == "finished":
                 self.resource_state = browser_rpc["resource_state"]
                 self.resource_receipt = dict(browser_rpc["resource_receipt"])
+            if (
+                self.outcome.get("reason_code") == "browser_revision_conflict"
+                and self.resource_receipt.get("kind") == "browser"
+                and self.resource_receipt.get("effect") == "not_started"
+                and self.resource_state == "not_created"
+            ):
+                # A revision can change after browser admission. No command
+                # ran, so discard this attempt's lease; the tool audit remains.
+                await db.delete(lease)
+                return
             if (lease.status == "released" and browser_reconciliation is not None
                 and (lease.outcome or {}).get("resource_state") in {"stopped", "command_completed"}):
                 # A trusted resource reconciliation may finish while its old

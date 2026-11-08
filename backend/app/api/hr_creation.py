@@ -38,7 +38,6 @@ class HrCreationDraftOut(BaseModel):
     blueprint_version: int
     blueprint_hash: str
     draft_status: str
-    message: str | None = None
     blueprint: dict[str, Any]
     summary: dict[str, Any] = Field(default_factory=dict)
     ready_now: list[str] = Field(default_factory=list)

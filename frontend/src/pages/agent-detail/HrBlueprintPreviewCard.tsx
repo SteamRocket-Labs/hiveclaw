@@ -5,6 +5,7 @@ import { useTranslation } from 'react-i18next';
 
 import { hrCreationApi, type HrCreationDraft } from '../../api/domains/hrCreation';
 import { agentApi } from '../../api/domains/agents';
+import { ApiError } from '../../api/core';
 import { parsePreviewAgentBlueprintResult, type HrPreviewToolResult } from './toolResultEnvelope';
 import { useAuthStore } from '../../stores';
 import './HrBlueprintPreviewCard.css';
@@ -57,6 +58,23 @@ function PreviewList({ label, items }: { label: string; items: unknown[] }) {
 }
 
 type Translate = (key: string, fallback: string) => string;
+
+function creationActionError(error: unknown, t: Translate): string {
+  const detail = error instanceof ApiError ? error.data : error;
+  const data = detail && typeof detail === 'object' ? detail as Record<string, unknown> : {};
+  switch (data.reason_code || data.error || data.code) {
+    case 'expired':
+      return t('agent.chat.toolResults.creationExpired', 'The proposal expired. Please make a new creation request.');
+    case 'missing_gates':
+      return t('agent.chat.toolResults.creationIncomplete', 'The proposal is incomplete. Please add the missing information before confirming.');
+    case 'capability_denied':
+      return t('agent.chat.toolResults.creationDenied', 'Company policy does not allow employee creation. Please contact your administrator.');
+    case 'approval_required':
+      return t('agent.chat.toolResults.creationNeedsApproval', 'Employee creation needs company approval. Please contact your administrator.');
+    default:
+      return t('agent.chat.toolResults.creationActionFailed', 'Could not update creation. Please reload the card and retry.');
+  }
+}
 
 function permissionScopeLabel(scope: string | null, t: Translate): string | null {
   if (!scope) return null;
@@ -153,6 +171,9 @@ export function HrBlueprintPreviewCard({ agentId, preview, onSendMessage }: HrBl
     || canonicalPreview.knowledgeDebt.length > 0;
   const durableAction = draft?.recovery?.can_retry ? 'retry' : hrCreationActionForStatus(status);
   const firstTask = draft?.provisioning?.first_task as { status?: string; session_id?: string; error?: string; message?: string } | undefined;
+  const companyFailure = ['capability_denied', 'approval_required'].includes(String(draft?.failure?.code))
+    ? (typeof draft?.failure?.message === 'string' && draft.failure.message) || creationActionError(draft?.failure, t)
+    : null;
 
   const confirmMutation = useMutation({
     mutationFn: () => hrCreationApi.confirm(agentId!, preview.blueprintId!, {
@@ -190,8 +211,8 @@ export function HrBlueprintPreviewCard({ agentId, preview, onSendMessage }: HrBl
       } else if (durableAction === 'retry') {
         await retryMutation.mutateAsync();
       }
-    } catch {
-      setActionError(t('agent.chat.toolResults.creationActionFailed', 'Could not update creation. Please reload the card and retry.'));
+    } catch (error) {
+      setActionError(creationActionError(error, t));
     }
   };
   const submitRevision = async () => {
@@ -206,8 +227,8 @@ export function HrBlueprintPreviewCard({ agentId, preview, onSendMessage }: HrBl
       }));
       setRevisionText('');
       setRevisionOpen(false);
-    } catch {
-      setActionError(t('agent.chat.toolResults.creationActionFailed', 'Could not update creation. Please reload the card and retry.'));
+    } catch (error) {
+      setActionError(creationActionError(error, t));
     } finally {
       setRevisionSubmitting(false);
     }
@@ -216,16 +237,16 @@ export function HrBlueprintPreviewCard({ agentId, preview, onSendMessage }: HrBl
     setActionError(null);
     try {
       await rejectMutation.mutateAsync();
-    } catch {
-      setActionError(t('agent.chat.toolResults.creationActionFailed', 'Could not update creation. Please reload the card and retry.'));
+    } catch (error) {
+      setActionError(creationActionError(error, t));
     }
   };
   const cancel = async () => {
     setActionError(null);
     try {
       await cancelMutation.mutateAsync();
-    } catch {
-      setActionError(t('agent.chat.toolResults.creationActionFailed', 'Could not update creation. Please reload the card and retry.'));
+    } catch (error) {
+      setActionError(creationActionError(error, t));
     }
   };
   const busy = confirmMutation.isPending
@@ -237,10 +258,11 @@ export function HrBlueprintPreviewCard({ agentId, preview, onSendMessage }: HrBl
     && canonicalPreview.missingGates.length === 0
     && durableAction !== 'none';
   const canReviseOrReject = canLoad && status === 'awaiting_confirmation';
+  const canRevise = canReviseOrReject && canonicalPreview.authorizationMode !== 'policy_direct';
   const canCancel = canLoad && ['confirmed', 'creating', 'provisioning'].includes(status);
   const openEmployee = createdAgentId && durableAction !== 'retry';
 
-  if (canonicalPreview.authorizationMode === 'policy_direct') {
+  if (canonicalPreview.authorizationMode === 'policy_direct' && status !== 'awaiting_confirmation') {
     const conversation = createdAgentId ? buildNewSessionDraftNavigation(createdAgentId) : null;
     return <article className="hr-blueprint-card">
       <header><div><h3>{canonicalPreview.name}</h3></div>
@@ -249,9 +271,7 @@ export function HrBlueprintPreviewCard({ agentId, preview, onSendMessage }: HrBl
       {canonicalPreview.mission && <p className="hr-blueprint-mission">{canonicalPreview.mission}</p>}
       {status === 'rejected' && <p>{t('agent.chat.toolResults.creationRejected', 'No digital employee was created. What would you like to change?')}</p>}
       {actionError && <p role="alert">{actionError}</p>}
-      {status === 'failed' && <p role="alert">{(['capability_denied', 'approval_required'].includes(String(draft?.failure?.code))
-        && typeof draft?.failure?.message === 'string' && draft.failure.message)
-        || t('agent.chat.toolResults.creationFailed', 'Creation failed. Please retry.')}</p>}
+      {status === 'failed' && <p role="alert">{companyFailure || t('agent.chat.toolResults.creationFailed', 'Creation failed. Please retry.')}</p>}
       {firstTask?.status === 'blocked' && <p role="alert">{firstTask.message || t('agent.chat.toolResults.firstTaskDenied', 'Company policy blocks this task. Restore the required permission before retrying.')}</p>}
       {undoMutation.isError && <p role="alert">{t('agent.chat.toolResults.undoCreationFailed', 'Could not undo creation. Please retry.')}</p>}
       <footer>
@@ -279,9 +299,6 @@ export function HrBlueprintPreviewCard({ agentId, preview, onSendMessage }: HrBl
       </header>
 
       {canonicalPreview.mission && <p className="hr-blueprint-mission">{canonicalPreview.mission}</p>}
-      {canonicalPreview.authorizationMode === 'policy_direct' && (
-        <p>{t('agent.chat.toolResults.directCreationAuthorization', 'Authorized from your request using approved private defaults.')}</p>
-      )}
       {canonicalPreview.explicitFirstTask && (
         <section className="hr-blueprint-boundaries">
           <h4>{t('agent.chat.toolResults.explicitFirstTask', 'Your first task')}</h4>
@@ -351,7 +368,7 @@ export function HrBlueprintPreviewCard({ agentId, preview, onSendMessage }: HrBl
         </p>
       )}
       {actionError && <p className="hr-blueprint-error" role="alert">{actionError}</p>}
-      {revisionOpen && canReviseOrReject && (
+      {revisionOpen && canRevise && (
         <form
           className="hr-blueprint-revision"
           onSubmit={(event) => {
@@ -416,9 +433,9 @@ export function HrBlueprintPreviewCard({ agentId, preview, onSendMessage }: HrBl
             {t('hrChat.goToAgent')}
           </button>
         )}
-        <button type="button" className="btn btn-secondary" disabled={!canReviseOrReject || busy || !onSendMessage || revisionOpen} onClick={() => setRevisionOpen(true)}>
+        {canonicalPreview.authorizationMode !== 'policy_direct' && <button type="button" className="btn btn-secondary" disabled={!canRevise || busy || !onSendMessage || revisionOpen} onClick={() => setRevisionOpen(true)}>
           {t('agent.chat.toolResults.requestChanges', 'Request changes')}
-        </button>
+        </button>}
         <button type="button" className="btn btn-ghost" disabled={!canReviseOrReject || busy || revisionOpen} onClick={reject}>
           {t('common.reject', 'Reject')}
         </button>

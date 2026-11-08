@@ -12,7 +12,7 @@ from app.models.hr_creation import HrCreationDraft
 from app.models.runtime_task import RuntimeTask
 from app.models.tool import Tool
 from app.services.hr_creation_service import (
-    reject_hr_creation_draft_record, upsert_hr_creation_draft,
+    HrCreationConflict, reject_hr_creation_draft_record, upsert_hr_creation_draft,
 )
 from app.tools.handlers.hr import _build_blueprint_preview_payload, create_employee_from_request
 from app.tools.runtime import ToolExecutionRequest
@@ -48,7 +48,7 @@ async def test_same_input_three_calls_including_rejection(direct_origin, owner_s
     assert [first["blueprint_id"], second["blueprint_id"], third["blueprint_id"]] == [first["blueprint_id"]] * 3
     assert third["draft_status"] == "rejected"
     assert third["message"] == "没有创建数字员工。你想修改什么？"
-    assert first["message"] == "请在卡片中确认并创建数字员工。"
+    assert first["message"] == "创建方案在上面的卡片里。"
     assert "Do not" in first["creation_flow"]["instruction"]
     async with owner_sessionmaker() as db:
         drafts = list(await db.scalars(select(HrCreationDraft).where(HrCreationDraft.tenant_id == user.tenant_id)))
@@ -59,12 +59,17 @@ async def test_same_input_three_calls_including_rejection(direct_origin, owner_s
 async def test_in_place_preview_revision_cannot_erase_request_identity(direct_origin, owner_sessionmaker):
     user, context, _, input_id = direct_origin
     first = await pending_request(context)
-    # Reproduce the old preview tool's shared upsert, which ran between D1 calls.
+    # A revision cannot erase the request identity or change its undo category.
     async with owner_sessionmaker() as db:
         preview = _build_blueprint_preview_payload(creation._arguments())
-        draft = await upsert_hr_creation_draft(db, tenant_id=user.tenant_id, hr_agent_id=context.agent_id,
-            session_id=uuid.UUID(context.session_id), requested_by_user_id=user.id,
-            blueprint_id=uuid.UUID(first["blueprint_id"]), preview_payload=preview)
+        with pytest.raises(HrCreationConflict, match="这张卡片不能修改") as refused:
+            await upsert_hr_creation_draft(db, tenant_id=user.tenant_id, hr_agent_id=context.agent_id,
+                session_id=uuid.UUID(context.session_id), requested_by_user_id=user.id,
+                blueprint_id=uuid.UUID(first["blueprint_id"]), preview_payload=preview)
+        assert refused.value.code == "immutable"
+        draft = await db.get(HrCreationDraft, uuid.UUID(first["blueprint_id"]))
+        assert draft.blueprint_hash == first["blueprint_hash"]
+        assert draft.blueprint_version == first["blueprint_version"]
         reject_hr_creation_draft_record(draft, rejecting_user_id=user.id)
         await db.commit()
     replay = await creation._direct_call(replace(context, tool_call_id="after-old-preview"))

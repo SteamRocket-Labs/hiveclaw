@@ -282,7 +282,7 @@ export function parsePreviewAgentBlueprintResult(rawResult: unknown): HrPreviewT
     permissionScope: typeof blueprint.permission_scope === 'string' ? blueprint.permission_scope : null,
     firstTaskAutostart: typeof blueprint.first_task_autostart === 'boolean' ? blueprint.first_task_autostart : null,
     ...(authorization.mode === 'policy_direct' ? {
-      authorizationMode: parsed.draft_status === 'awaiting_confirmation' ? null : 'policy_direct',
+      authorizationMode: 'policy_direct',
       explicitFirstTask: typeof authorization.first_task === 'string' ? authorization.first_task : null,
     } : {}),
     sourceAttributions: normalizeRecordList(blueprint.source_attributions),

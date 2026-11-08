@@ -23,7 +23,7 @@ it.each(['awaiting_confirmation', 'rejected', 'completed'])('keeps one card when
 it('shows the short creation reply in the conversation', () => {
   const messages = [
     { role: 'tool_call', toolName: 'create_employee_from_request', toolMeta: { kind: 'hr_preview' } },
-    { role: 'assistant', content: '请在卡片中确认并创建数字员工。' },
+    { role: 'assistant', content: '创建方案在上面的卡片里。' },
   ] as AgentChatMessage[];
   expect(shouldCollapseAssistantSupplement(messages, 1)).toBe(false);
 });

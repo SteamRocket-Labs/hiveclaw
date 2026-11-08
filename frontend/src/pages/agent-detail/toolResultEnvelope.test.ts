@@ -41,7 +41,7 @@ it('keeps a mixed-input creation proposal on the existing confirmation card with
     creation_authorization: { mode: 'policy_direct', first_task: 'Draft the authorized report' } };
   const projected = normalizeToolCallResult('create_employee_from_request', result);
   expect(projected.toolMeta).toMatchObject({ kind: 'hr_preview', status: 'awaiting_confirmation',
-    authorizationMode: null, permissionScope: 'self', explicitFirstTask: 'Draft the authorized report',
+    authorizationMode: 'policy_direct', permissionScope: 'self', explicitFirstTask: 'Draft the authorized report',
     firstMission: 'Draft the authorized report' });
 });
 

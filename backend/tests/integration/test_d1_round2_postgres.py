@@ -246,7 +246,7 @@ async def test_company_tool_off_without_capability_policy_still_refuses(
 
 
 @pytest.mark.parametrize("system_hr", [False, True])
-async def test_member_preview_is_private_even_when_company_scope_is_requested(
+async def test_member_creation_is_private_and_legacy_preview_is_hr_only(
     direct_origin, owner_sessionmaker, system_hr,
 ):
     from app.models.user import User
@@ -263,6 +263,9 @@ async def test_member_preview_is_private_even_when_company_scope_is_requested(
         await db.commit()
     result = json.loads(await preview_agent_blueprint(ToolExecutionRequest(tool_name="preview_agent_blueprint",
         context=context, arguments={**_direct_arguments(), "permission_scope": "company"})))
+    if not system_hr:
+        assert result["status"] == "error" and result["error"] == "hr_agent_required", result
+        result = await _direct_call(context)
     assert result["blueprint"]["permission_scope"] == "self", result
 
 
